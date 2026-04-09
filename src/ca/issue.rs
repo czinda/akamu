@@ -234,8 +234,8 @@ mod tests {
     };
     use synta_certificate::OpensslSignatureVerifier;
 
-    use crate::ca::csr::{validate_csr, ValidatedCsr};
-    use super::issue_certificate;
+    use crate::ca::csr::{SanEntry, validate_csr, ValidatedCsr};
+    use super::{issue_certificate, ip_string_to_bytes, hex_encode};
 
     /// Build a minimal self-signed CA certificate DER for testing.
     fn make_test_ca() -> (BackendPrivateKey, Vec<u8>) {
@@ -370,5 +370,91 @@ mod tests {
 
         verify(&leaf_vcert, &[], &policy, &store, RevocationChecks::default())
             .expect("certificate chain verification failed");
+    }
+
+    #[test]
+    fn issue_cert_with_crl_and_ocsp_urls() {
+        let (ca_key, ca_cert_der) = make_test_ca();
+        let (_ee_key, validated_csr) = make_test_csr("crl-test.example.com");
+
+        let issued = issue_certificate(
+            &ca_key,
+            &ca_cert_der,
+            "sha256",
+            90,
+            Some("http://crl.example.com/ca.crl"),
+            Some("http://ocsp.example.com"),
+            &validated_csr,
+        )
+        .unwrap();
+
+        assert!(!issued.cert_der.is_empty());
+        assert!(issued.cert_pem.contains("-----BEGIN CERTIFICATE-----"));
+    }
+
+    #[test]
+    fn issue_cert_with_ip_san() {
+        let (ca_key, ca_cert_der) = make_test_ca();
+        let ee_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let spki_der = ee_key.public_key().unwrap().spki_der().to_vec();
+        let name_der = NameBuilder::new().common_name("ip-test").build().unwrap();
+
+        // Build an IP SAN CSR using CsrBuilder.
+        let ip_bytes = [127u8, 0, 0, 1];
+        let san_der = SubjectAlternativeNameBuilder::new()
+            .ip_address(&ip_bytes)
+            .build()
+            .unwrap();
+        let signer = ee_key.as_signer("sha256");
+        let csr_der = CsrBuilder::new()
+            .subject_name(&name_der)
+            .public_key_der(&spki_der)
+            .add_extension_oid(synta_certificate::oids::SUBJECT_ALT_NAME, false, &san_der)
+            .sign(&signer)
+            .unwrap();
+
+        let validated = validate_csr(&csr_der, &[("ip", "127.0.0.1")]).unwrap();
+
+        let issued = issue_certificate(
+            &ca_key,
+            &ca_cert_der,
+            "sha256",
+            90,
+            None,
+            None,
+            &validated,
+        )
+        .unwrap();
+
+        assert!(!issued.cert_der.is_empty());
+        assert!(issued.cert_pem.contains("-----BEGIN CERTIFICATE-----"));
+    }
+
+    #[test]
+    fn ip_string_to_bytes_ipv4() {
+        let bytes = ip_string_to_bytes("192.168.1.1").unwrap();
+        assert_eq!(bytes, vec![192, 168, 1, 1]);
+    }
+
+    #[test]
+    fn ip_string_to_bytes_ipv6() {
+        let bytes = ip_string_to_bytes("::1").unwrap();
+        assert_eq!(bytes.len(), 16);
+        assert_eq!(bytes[15], 1);
+    }
+
+    #[test]
+    fn ip_string_to_bytes_invalid_returns_none() {
+        assert!(ip_string_to_bytes("not-an-ip").is_none());
+    }
+
+    #[test]
+    fn hex_encode_empty() {
+        assert_eq!(hex_encode(&[]), "");
+    }
+
+    #[test]
+    fn hex_encode_bytes() {
+        assert_eq!(hex_encode(&[0xde, 0xad, 0xbe, 0xef]), "deadbeef");
     }
 }
