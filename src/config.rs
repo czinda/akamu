@@ -125,3 +125,144 @@ impl Config {
         toml::from_str(&content).map_err(|e| format!("config parse error: {}", e))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn minimal_toml() -> &'static str {
+        r#"
+listen_addr = "127.0.0.1:8080"
+base_url = "https://acme.example.com"
+
+[database]
+path = "/tmp/test.db"
+
+[ca]
+key_file = "/tmp/ca.key"
+cert_file = "/tmp/ca.crt"
+
+[mtc]
+log_path = "/tmp/mtc.log"
+enabled = false
+"#
+    }
+
+    #[test]
+    fn parse_minimal_config() {
+        let cfg: Config = toml::from_str(minimal_toml()).unwrap();
+        assert_eq!(cfg.listen_addr, "127.0.0.1:8080");
+        assert_eq!(cfg.base_url, "https://acme.example.com");
+        assert_eq!(cfg.database.path, "/tmp/test.db");
+        assert_eq!(cfg.ca.key_file, "/tmp/ca.key");
+        assert_eq!(cfg.ca.cert_file, "/tmp/ca.crt");
+        assert_eq!(cfg.mtc.log_path, "/tmp/mtc.log");
+        assert!(!cfg.mtc.enabled);
+    }
+
+    #[test]
+    fn config_ca_defaults_applied() {
+        let cfg: Config = toml::from_str(minimal_toml()).unwrap();
+        // CaConfig defaults
+        assert_eq!(cfg.ca.key_type, "ec:P-256");
+        assert_eq!(cfg.ca.hash_alg, "sha256");
+        assert_eq!(cfg.ca.validity_days, 90);
+        assert_eq!(cfg.ca.common_name, "ACME Server CA");
+        assert_eq!(cfg.ca.organization, "ACME Server");
+        assert_eq!(cfg.ca.ca_validity_years, 10);
+        assert!(cfg.ca.crl_url.is_none());
+        assert!(cfg.ca.ocsp_url.is_none());
+    }
+
+    #[test]
+    fn config_server_defaults_applied_when_section_present() {
+        // When [server] section is present, serde uses the `default = "fn"` defaults
+        let toml_with_empty_server = format!("{}\n[server]\n", minimal_toml());
+        let cfg: Config = toml::from_str(&toml_with_empty_server).unwrap();
+        assert_eq!(cfg.server.order_expiry_secs, 86400);
+        assert_eq!(cfg.server.authz_expiry_secs, 86400);
+        assert_eq!(cfg.server.max_body_bytes, 65536);
+        assert!(!cfg.server.external_account_required);
+        assert!(cfg.server.caa_identities.is_empty());
+        assert!(cfg.server.terms_of_service_url.is_none());
+        assert!(cfg.server.website_url.is_none());
+    }
+
+    #[test]
+    fn config_optional_fields() {
+        let toml = r#"
+listen_addr = "0.0.0.0:443"
+base_url = "https://ca.example.org"
+
+[database]
+path = ":memory:"
+
+[ca]
+key_file = "/etc/ca.key"
+cert_file = "/etc/ca.crt"
+key_type = "rsa:4096"
+hash_alg = "sha512"
+validity_days = 365
+crl_url = "http://crl.example.org/ca.crl"
+ocsp_url = "http://ocsp.example.org"
+common_name = "Test CA"
+organization = "Test Org"
+ca_validity_years = 5
+
+[mtc]
+log_path = "/var/mtc.log"
+enabled = true
+
+[server]
+terms_of_service_url = "https://example.org/tos"
+website_url = "https://example.org"
+caa_identities = ["ca.example.org"]
+external_account_required = true
+order_expiry_secs = 3600
+authz_expiry_secs = 7200
+max_body_bytes = 131072
+"#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.ca.key_type, "rsa:4096");
+        assert_eq!(cfg.ca.hash_alg, "sha512");
+        assert_eq!(cfg.ca.validity_days, 365);
+        assert_eq!(cfg.ca.crl_url.as_deref(), Some("http://crl.example.org/ca.crl"));
+        assert_eq!(cfg.ca.ocsp_url.as_deref(), Some("http://ocsp.example.org"));
+        assert_eq!(cfg.ca.ca_validity_years, 5);
+        assert!(cfg.mtc.enabled);
+        assert_eq!(cfg.server.terms_of_service_url.as_deref(), Some("https://example.org/tos"));
+        assert_eq!(cfg.server.website_url.as_deref(), Some("https://example.org"));
+        assert_eq!(cfg.server.caa_identities, vec!["ca.example.org"]);
+        assert!(cfg.server.external_account_required);
+        assert_eq!(cfg.server.order_expiry_secs, 3600);
+        assert_eq!(cfg.server.authz_expiry_secs, 7200);
+        assert_eq!(cfg.server.max_body_bytes, 131072);
+    }
+
+    #[test]
+    fn from_file_missing_returns_error() {
+        let result = Config::from_file("/nonexistent/path/config.toml");
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("cannot read config file"), "msg: {msg}");
+    }
+
+    #[test]
+    fn from_file_invalid_toml_returns_error() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "this is not valid toml = = =").unwrap();
+        let result = Config::from_file(f.path().to_str().unwrap());
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("config parse error"), "msg: {msg}");
+    }
+
+    #[test]
+    fn from_file_valid_config() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "{}", minimal_toml()).unwrap();
+        let cfg = Config::from_file(f.path().to_str().unwrap()).unwrap();
+        assert_eq!(cfg.listen_addr, "127.0.0.1:8080");
+    }
+}
