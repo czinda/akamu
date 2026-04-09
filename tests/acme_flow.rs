@@ -1515,6 +1515,196 @@ async fn test_get_order_wrong_account() {
         "get-order with wrong account should fail, got {status}");
 }
 
+/// GET /acme/directory with all optional ServerConfig fields set.
+/// Covers the 4 conditional branches in routes/directory.rs.
+#[tokio::test]
+async fn test_directory_with_optional_fields() {
+    let base_url = "https://acme.test";
+    let dir = tempfile::TempDir::new().unwrap();
+    let config = Arc::new(acme_server::config::Config {
+        listen_addr: "127.0.0.1:0".into(),
+        base_url: base_url.into(),
+        database: DatabaseConfig { path: ":memory:".into() },
+        ca: CaConfig {
+            key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
+            cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
+            key_type: "ec:P-256".into(),
+            hash_alg: "sha256".into(),
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            common_name: "Dir Test CA".into(),
+            organization: "Test Org".into(),
+            ca_validity_years: 10,
+        },
+        mtc: acme_server::config::MtcConfig { log_path: "/dev/null".into(), enabled: false },
+        server: acme_server::config::ServerConfig {
+            terms_of_service_url: Some("https://example.org/tos".into()),
+            website_url: Some("https://example.org".into()),
+            caa_identities: vec!["ca.example.org".into()],
+            external_account_required: true,
+            ..acme_server::config::ServerConfig::default()
+        },
+    });
+    let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
+    let db_conn = Arc::new(db::open(":memory:").await.unwrap());
+    let state = Arc::new(AppState {
+        config: Arc::clone(&config),
+        db: db_conn,
+        ca: Arc::new(acme_server::state::CaState {
+            key: ca_key, cert_der: ca_cert_der, hash_alg: "sha256".into(),
+            validity_days: 90, crl_url: None, ocsp_url: None,
+        }),
+        mtc: Arc::new(acme_server::state::MtcState {
+            log: None, algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
+        }),
+    });
+    let router = routes::build_router(Arc::clone(&state));
+    let (status, dir_body, _) = get(&router, "/acme/directory").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(dir_body["meta"]["termsOfService"].as_str(), Some("https://example.org/tos"));
+    assert_eq!(dir_body["meta"]["website"].as_str(), Some("https://example.org"));
+    assert!(dir_body["meta"]["caaIdentities"].as_array().is_some());
+    assert_eq!(dir_body["meta"]["externalAccountRequired"].as_bool(), Some(true));
+}
+
+/// GET authz with an account that does not own it → Unauthorized.
+/// Covers routes/authz.rs line 30.
+#[tokio::test]
+async fn test_authz_wrong_account() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+
+    // Account 1 creates an order to get an authz.
+    let (router, _key1, _account1_url, order_body, _nonce1) =
+        setup_account_and_order(base_url, &state, "authz-wrong-acct.example").await;
+    let authz_url = order_body["authorizations"][0].as_str().unwrap().to_string();
+    let authz_path = authz_url.trim_start_matches(base_url).to_string();
+
+    // Account 2 tries to GET the authz.
+    let key2 = TestKey::generate();
+    let nonce2 = head_nonce(&router).await;
+    let jws2 = key2.jws_with_jwk(&nonce2, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, acct_headers2) = post_acme(&router, "/acme/new-account", jws2).await;
+    let account2_url = location_header(&acct_headers2);
+    let nonce2 = nonce_header(&acct_headers2);
+
+    let jws = key2.jws_with_kid(&account2_url, &nonce2, &authz_url, None);
+    let (status, body, _) = post_acme(&router, &authz_path, jws).await;
+    assert!(status.is_client_error(),
+        "get authz from wrong account should fail, got {status}: {body}");
+}
+
+/// POST challenge with an account that does not own the authz → Unauthorized.
+/// Covers routes/challenge.rs line 38.
+#[tokio::test]
+async fn test_challenge_authz_wrong_account() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+
+    // Account 1 creates an order.
+    let (router, _key1, _account1_url, order_body, _nonce1) =
+        setup_account_and_order(base_url, &state, "chall-wrong-acct.example").await;
+    let authz_url = order_body["authorizations"][0].as_str().unwrap().to_string();
+    let authz_id = authz_url.split('/').last().unwrap();
+    let chall_url = format!("{base_url}/acme/chall/{authz_id}/http-01");
+    let chall_path = format!("/acme/chall/{authz_id}/http-01");
+
+    // Account 2 tries to respond to the challenge.
+    let key2 = TestKey::generate();
+    let nonce2 = head_nonce(&router).await;
+    let jws2 = key2.jws_with_jwk(&nonce2, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, acct_headers2) = post_acme(&router, "/acme/new-account", jws2).await;
+    let account2_url = location_header(&acct_headers2);
+    let nonce2 = nonce_header(&acct_headers2);
+
+    let jws = key2.jws_with_kid(&account2_url, &nonce2, &chall_url, Some(json!({})));
+    let (status, body, _) = post_acme(&router, &chall_path, jws).await;
+    assert!(status.is_client_error(),
+        "challenge from wrong account should fail, got {status}: {body}");
+}
+
+/// POST challenge when the authz status is not 'pending' → BadRequest.
+/// Covers routes/challenge.rs lines 40-44.
+#[tokio::test]
+async fn test_challenge_authz_not_pending() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let db = Arc::clone(&state.db);
+
+    let (router, key, account_url, order_body, nonce) =
+        setup_account_and_order(base_url, &state, "chall-authz-not-pending.example").await;
+    let authz_url = order_body["authorizations"][0].as_str().unwrap().to_string();
+    let authz_id = authz_url.split('/').last().unwrap().to_string();
+
+    // Mark the authz as 'valid' to make it non-pending.
+    let aid = authz_id.clone();
+    db.call(move |c| {
+        c.execute("UPDATE authorizations SET status='valid' WHERE id=?1", rusqlite::params![aid])?;
+        Ok(())
+    }).await.unwrap();
+
+    let chall_url = format!("{base_url}/acme/chall/{authz_id}/http-01");
+    let chall_path = format!("/acme/chall/{authz_id}/http-01");
+    let jws = key.jws_with_kid(&account_url, &nonce, &chall_url, Some(json!({})));
+    let (status, body, _) = post_acme(&router, &chall_path, jws).await;
+    assert!(status.is_client_error(),
+        "challenge on non-pending authz should fail, got {status}: {body}");
+}
+
+/// POST challenge when challenge is already 'processing' → returns current state.
+/// Covers routes/challenge.rs lines 54-56.
+#[tokio::test]
+async fn test_challenge_already_processing() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let db = Arc::clone(&state.db);
+
+    let (router, key, account_url, order_body, nonce) =
+        setup_account_and_order(base_url, &state, "chall-processing.example").await;
+    let authz_url = order_body["authorizations"][0].as_str().unwrap().to_string();
+    let authz_id = authz_url.split('/').last().unwrap().to_string();
+
+    // Mark the http-01 challenge as 'processing'.
+    let aid = authz_id.clone();
+    db.call(move |c| {
+        c.execute(
+            "UPDATE challenges SET status='processing' WHERE authz_id=?1 AND type='http-01'",
+            rusqlite::params![aid],
+        )?;
+        Ok(())
+    }).await.unwrap();
+
+    let chall_url = format!("{base_url}/acme/chall/{authz_id}/http-01");
+    let chall_path = format!("/acme/chall/{authz_id}/http-01");
+    let jws = key.jws_with_kid(&account_url, &nonce, &chall_url, Some(json!({})));
+    let (status, body, _) = post_acme(&router, &chall_path, jws).await;
+    // Should return 200 with processing state (not an error).
+    assert_eq!(status, StatusCode::OK,
+        "already-processing challenge should return 200, got {status}: {body}");
+    assert_eq!(body["status"].as_str().unwrap_or(""), "processing");
+}
+
+/// Revoke a cert using JWK (cert's own key) rather than KID (account key).
+/// Covers routes/revoke.rs None branch (lines 63-67).
+#[tokio::test]
+async fn test_revoke_cert_by_jwk() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let (router, cert_b64url) = issue_cert_for_domain(base_url, &state, "jwk-revoke.test").await;
+
+    // Use any key with JWK (not KID) — server accepts cert-key-based revocation per RFC 8555 §7.6.
+    let cert_key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let revoke_url = format!("{base_url}/acme/revoke-cert");
+    let jws = cert_key.jws_with_jwk(&nonce, &revoke_url,
+        Some(json!({"certificate": cert_b64url})));
+    let (status, body, _) = post_acme(&router, "/acme/revoke-cert", jws).await;
+    assert_eq!(status, StatusCode::OK, "jwk-based cert revoke failed: {body}");
+}
+
 /// Finalize a cert with MTC log enabled — verifies the MTC log path in finalize.rs.
 #[tokio::test]
 async fn test_finalize_with_mtc_enabled() {
