@@ -1,0 +1,76 @@
+[package]
+name = "acme-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP server
+axum = { version = "0.8", features = ["http1", "http2"] }
+tower-http = { version = "0.6", features = ["trace"] }
+
+# Database (synchronous SQLite + async wrapper via background thread)
+rusqlite = { version = "0.31", features = ["bundled"] }
+tokio-rusqlite = "0.5"
+rusqlite_migration = "1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Configuration
+toml = "0.8"
+
+# Identifiers
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Base64url (JWS encoding — no padding)
+base64 = "0.22"
+
+# SHA-256 for JWK thumbprint (also transitive via synta-mtc)
+sha2 = { version = "0.10", features = ["oid"] }
+
+# DNS resolution for dns-01 challenge validation
+hickory-resolver = { version = "0.24", features = ["tokio-runtime"] }
+
+# TLS client for tls-alpn-01 challenge validation
+# TLS 1.2 enabled for compatibility with applicant servers not yet on TLS 1.3
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+tokio-rustls = "0.26"
+rustls-pki-types = "1"
+
+# HTTP client for http-01 challenge validation (hyper is already pulled by axum)
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "client-legacy"] }
+http-body-util = "0.1"
+
+# Error handling
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Cryptographically random nonces/tokens
+getrandom = "0.2"
+
+# Base ASN.1 library (needed for Decoder/Encoder and Integer type)
+synta = { path = "/home/abokovoy/src/upstream/synta", features = ["std", "derive"] }
+
+# Synta crates for all X.509 / MTC operations
+synta-certificate = { path = "/home/abokovoy/src/upstream/synta/synta-certificate" }
+synta-x509-verification = { path = "/home/abokovoy/src/upstream/synta/synta-x509-verification" }
+synta-mtc = { path = "/home/abokovoy/src/upstream/synta/synta-mtc", features = ["std"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+
+[patch.crates-io]
+# Use the same rust-openssl fork as synta-certificate so that both crates see
+# consistent OpenSSL bindings (including ML-DSA / ML-KEM / PQC support).
+openssl-sys = { git = "https://github.com/abbra/rust-openssl.git", branch = "pqc-prs" }
+openssl     = { git = "https://github.com/abbra/rust-openssl.git", branch = "pqc-prs" }
