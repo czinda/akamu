@@ -122,3 +122,103 @@ fn unix_now() -> i64 {
         .unwrap_or_default()
         .as_secs() as i64
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use synta_certificate::BackendPrivateKey;
+
+    use crate::ca::init;
+
+    fn make_ca() -> (synta_certificate::BackendPrivateKey, Vec<u8>) {
+        let config = crate::config::CaConfig {
+            key_file: "/tmp/test-ca.key".into(),
+            cert_file: "/tmp/test-ca.crt".into(),
+            key_type: "ec:P-256".into(),
+            hash_alg: "sha256".into(),
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            common_name: "Test CA".into(),
+            organization: "Test".into(),
+            ca_validity_years: 10,
+        };
+        init::load_or_generate(&config).unwrap()
+    }
+
+    #[test]
+    fn encode_integer_der_small_values() {
+        // 0 → 02 01 00
+        let enc = encode_integer_der(0);
+        assert_eq!(enc, vec![0x02, 0x01, 0x00]);
+
+        // 1 → 02 01 01
+        let enc = encode_integer_der(1);
+        assert_eq!(enc, vec![0x02, 0x01, 0x01]);
+
+        // 127 → 02 01 7f
+        let enc = encode_integer_der(127);
+        assert_eq!(enc, vec![0x02, 0x01, 0x7f]);
+
+        // 128 → 02 02 00 80 (needs zero-pad because high bit is set)
+        let enc = encode_integer_der(128);
+        assert_eq!(enc, vec![0x02, 0x02, 0x00, 0x80]);
+
+        // 255 → 02 02 00 ff
+        let enc = encode_integer_der(255);
+        assert_eq!(enc, vec![0x02, 0x02, 0x00, 0xff]);
+
+        // 256 → 02 02 01 00
+        let enc = encode_integer_der(256);
+        assert_eq!(enc, vec![0x02, 0x02, 0x01, 0x00]);
+    }
+
+    #[test]
+    fn build_crl_empty_revoked() {
+        let (ca_key, ca_cert_der) = make_ca();
+        let (crl_der, crl_pem) = build_crl(&ca_key, &ca_cert_der, "sha256", &[], 86400).unwrap();
+        assert!(!crl_der.is_empty(), "CRL DER should not be empty");
+        assert!(crl_pem.contains("-----BEGIN X509 CRL-----"), "CRL PEM missing header");
+        assert!(crl_pem.contains("-----END X509 CRL-----"), "CRL PEM missing footer");
+    }
+
+    #[test]
+    fn build_crl_with_revoked_entries() {
+        let (ca_key, ca_cert_der) = make_ca();
+        let entries = vec![
+            RevokedEntry {
+                serial_bytes: vec![0x01],
+                revoked_at: 1_700_000_000,
+                reason: None,
+            },
+            RevokedEntry {
+                serial_bytes: vec![0x00, 0x80], // needs zero-pad in DER
+                revoked_at: 1_700_100_000,
+                reason: Some(1), // keyCompromise
+            },
+        ];
+        let (crl_der, crl_pem) = build_crl(&ca_key, &ca_cert_der, "sha256", &entries, 86400).unwrap();
+        assert!(!crl_der.is_empty());
+        assert!(crl_pem.contains("-----BEGIN X509 CRL-----"));
+    }
+
+    #[test]
+    fn extract_ca_subject_der_valid() {
+        let (_ca_key, ca_cert_der) = make_ca();
+        let subject = extract_ca_subject_der(&ca_cert_der).unwrap();
+        assert!(!subject.is_empty(), "subject DER should not be empty");
+    }
+
+    #[test]
+    fn extract_ca_subject_der_invalid_input() {
+        let result = extract_ca_subject_der(b"not a certificate");
+        assert!(result.is_err(), "should fail on invalid DER");
+    }
+
+    #[test]
+    fn build_crl_invalid_ca_cert() {
+        let (ca_key, _) = make_ca();
+        let result = build_crl(&ca_key, b"bad cert der", "sha256", &[], 86400);
+        assert!(result.is_err(), "should fail with invalid CA cert");
+    }
+}
