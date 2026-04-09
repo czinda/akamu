@@ -191,3 +191,99 @@ impl IntoResponse for AcmeError {
         resp
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::StatusCode;
+
+    #[test]
+    fn acme_type_strings() {
+        assert_eq!(AcmeError::BadNonce.acme_type(), "urn:ietf:params:acme:error:badNonce");
+        assert_eq!(AcmeError::BadSignatureAlgorithm("x".into()).acme_type(), "urn:ietf:params:acme:error:badSignatureAlgorithm");
+        assert_eq!(AcmeError::Unauthorized("x".into()).acme_type(), "urn:ietf:params:acme:error:unauthorized");
+        assert_eq!(AcmeError::AccountDoesNotExist.acme_type(), "urn:ietf:params:acme:error:accountDoesNotExist");
+        assert_eq!(AcmeError::AccountAlreadyExists.acme_type(), "urn:ietf:params:acme:error:accountAlreadyExists");
+        assert_eq!(AcmeError::InvalidContact("x".into()).acme_type(), "urn:ietf:params:acme:error:invalidContact");
+        assert_eq!(AcmeError::UnsupportedContact.acme_type(), "urn:ietf:params:acme:error:unsupportedContact");
+        assert_eq!(AcmeError::UserActionRequired("x".into()).acme_type(), "urn:ietf:params:acme:error:userActionRequired");
+        assert_eq!(AcmeError::RejectedIdentifier("x".into()).acme_type(), "urn:ietf:params:acme:error:rejectedIdentifier");
+        assert_eq!(AcmeError::UnsupportedIdentifier("x".into()).acme_type(), "urn:ietf:params:acme:error:unsupportedIdentifier");
+        assert_eq!(AcmeError::OrderNotReady.acme_type(), "urn:ietf:params:acme:error:orderNotReady");
+        assert_eq!(AcmeError::BadCsr("x".into()).acme_type(), "urn:ietf:params:acme:error:badCSR");
+        assert_eq!(AcmeError::BadRevocationReason.acme_type(), "urn:ietf:params:acme:error:badRevocationReason");
+        assert_eq!(AcmeError::AlreadyRevoked.acme_type(), "urn:ietf:params:acme:error:alreadyRevoked");
+        assert_eq!(AcmeError::Caa("x".into()).acme_type(), "urn:ietf:params:acme:error:caa");
+        assert_eq!(AcmeError::Connection("x".into()).acme_type(), "urn:ietf:params:acme:error:connection");
+        assert_eq!(AcmeError::Dns("x".into()).acme_type(), "urn:ietf:params:acme:error:dns");
+        assert_eq!(AcmeError::IncorrectResponse("x".into()).acme_type(), "urn:ietf:params:acme:error:incorrectResponse");
+        assert_eq!(AcmeError::Tls("x".into()).acme_type(), "urn:ietf:params:acme:error:tls");
+        // Internal/generic errors fall through to serverInternal
+        assert_eq!(AcmeError::NotFound.acme_type(), "urn:ietf:params:acme:error:serverInternal");
+        assert_eq!(AcmeError::Internal("x".into()).acme_type(), "urn:ietf:params:acme:error:serverInternal");
+        assert_eq!(AcmeError::Database("x".into()).acme_type(), "urn:ietf:params:acme:error:serverInternal");
+    }
+
+    #[test]
+    fn http_status_codes() {
+        assert_eq!(AcmeError::BadNonce.http_status(), StatusCode::BAD_REQUEST);
+        assert_eq!(AcmeError::BadSignatureAlgorithm("x".into()).http_status(), StatusCode::BAD_REQUEST);
+        assert_eq!(AcmeError::Unauthorized("x".into()).http_status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(AcmeError::AccountDoesNotExist.http_status(), StatusCode::BAD_REQUEST);
+        assert_eq!(AcmeError::AccountAlreadyExists.http_status(), StatusCode::CONFLICT);
+        assert_eq!(AcmeError::InvalidContact("x".into()).http_status(), StatusCode::BAD_REQUEST);
+        assert_eq!(AcmeError::UnsupportedContact.http_status(), StatusCode::BAD_REQUEST);
+        assert_eq!(AcmeError::UserActionRequired("x".into()).http_status(), StatusCode::FORBIDDEN);
+        assert_eq!(AcmeError::RejectedIdentifier("x".into()).http_status(), StatusCode::BAD_REQUEST);
+        assert_eq!(AcmeError::UnsupportedIdentifier("x".into()).http_status(), StatusCode::BAD_REQUEST);
+        assert_eq!(AcmeError::OrderNotReady.http_status(), StatusCode::FORBIDDEN);
+        assert_eq!(AcmeError::BadCsr("x".into()).http_status(), StatusCode::BAD_REQUEST);
+        assert_eq!(AcmeError::BadRevocationReason.http_status(), StatusCode::BAD_REQUEST);
+        assert_eq!(AcmeError::AlreadyRevoked.http_status(), StatusCode::BAD_REQUEST);
+        assert_eq!(AcmeError::Caa("x".into()).http_status(), StatusCode::FORBIDDEN);
+        assert_eq!(AcmeError::Connection("x".into()).http_status(), StatusCode::BAD_REQUEST);
+        assert_eq!(AcmeError::Dns("x".into()).http_status(), StatusCode::BAD_REQUEST);
+        assert_eq!(AcmeError::IncorrectResponse("x".into()).http_status(), StatusCode::BAD_REQUEST);
+        assert_eq!(AcmeError::Tls("x".into()).http_status(), StatusCode::BAD_REQUEST);
+        assert_eq!(AcmeError::NotFound.http_status(), StatusCode::NOT_FOUND);
+        assert_eq!(AcmeError::MethodNotAllowed.http_status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(AcmeError::Conflict("x".into()).http_status(), StatusCode::CONFLICT);
+        assert_eq!(AcmeError::UnsupportedMediaType.http_status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert_eq!(AcmeError::PayloadTooLarge.http_status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(AcmeError::BadRequest("x".into()).http_status(), StatusCode::BAD_REQUEST);
+        assert_eq!(AcmeError::Internal("x".into()).http_status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(AcmeError::Database("x".into()).http_status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(AcmeError::Crypto("x".into()).http_status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(AcmeError::Builder("x".into()).http_status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(AcmeError::Mtc("x".into()).http_status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn display_messages() {
+        assert_eq!(AcmeError::BadNonce.to_string(), "bad nonce");
+        assert_eq!(AcmeError::NotFound.to_string(), "not found");
+        assert_eq!(AcmeError::BadCsr("malformed".into()).to_string(), "bad CSR: malformed");
+        assert_eq!(AcmeError::Database("conn failed".into()).to_string(), "database error: conn failed");
+    }
+
+    #[test]
+    fn from_tokio_rusqlite_error() {
+        // tokio_rusqlite::Error wraps rusqlite::Error; verify the From impl exists
+        let rusqlite_err = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error { code: rusqlite::ffi::ErrorCode::InternalMalfunction, extended_code: 0 },
+            None,
+        );
+        let acme_err = AcmeError::from(rusqlite_err);
+        assert!(matches!(acme_err, AcmeError::Database(_)));
+    }
+
+    #[test]
+    fn into_response_has_problem_json_content_type() {
+        let resp = AcmeError::BadNonce.into_response();
+        assert_eq!(
+            resp.headers().get(axum::http::header::CONTENT_TYPE).unwrap(),
+            "application/problem+json"
+        );
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+}
