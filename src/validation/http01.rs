@@ -68,3 +68,19 @@ pub async fn validate(domain: &str, token: &str, key_auth: &str) -> Result<(), A
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn validate_fails_for_unreachable_domain() {
+        // Port 80 on localhost:0 or a guaranteed-unreachable host should fail with Connection error.
+        let result = validate("acme-test-nonexistent-host.invalid", "token", "key.auth").await;
+        assert!(result.is_err(), "expected connection error");
+        match result.unwrap_err() {
+            AcmeError::Connection(_) => {}
+            other => panic!("expected Connection error, got: {other:?}"),
+        }
+    }
+}

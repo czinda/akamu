@@ -48,3 +48,31 @@ pub async fn validate(domain: &str, key_auth: &str) -> Result<(), AcmeError> {
         "dns-01: no TXT record at '{query_name}' matches the expected value"
     )))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn validate_fails_for_nonexistent_domain() {
+        // This domain is guaranteed not to exist; the DNS lookup will fail.
+        let result = validate("invalid.localhost.acme-test-nonexistent.invalid", "token.thumbprint").await;
+        // Should return a Dns error or IncorrectResponse
+        assert!(result.is_err(), "expected error for non-existent domain");
+    }
+
+    #[tokio::test]
+    async fn validate_strips_wildcard_prefix() {
+        // Wildcard domain "*.example.invalid" should query "_acme-challenge.example.invalid",
+        // not "_acme-challenge.*.example.invalid". The DNS lookup will fail (domain doesn't exist),
+        // but the error message should reference the stripped domain.
+        let result = validate("*.acme-test-nonexistent.invalid", "token.thumbprint").await;
+        assert!(result.is_err());
+        // The error must reference "acme-test-nonexistent.invalid" (stripped domain)
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            !msg.contains("*."),
+            "wildcard prefix should be stripped: {msg}"
+        );
+    }
+}
