@@ -432,3 +432,206 @@ async fn full_acme_flow() {
     let cert_count = pem.matches("-----BEGIN CERTIFICATE-----").count();
     assert!(cert_count >= 2, "PEM bundle should contain leaf + CA (got {cert_count})");
 }
+
+// ── Helper: create account + order, return (account_url, order_body, nonce, router) ──
+
+async fn setup_account_and_order(
+    base_url: &str,
+    state: &Arc<AppState>,
+    domain: &str,
+) -> (axum::Router, TestKey, String, Value, String) {
+    let router = routes::build_router(Arc::clone(state));
+    let key = TestKey::generate();
+
+    // Account
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
+    let (status, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    // Order
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": domain}]})),
+    );
+    let (status, order_body, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
+    assert_eq!(status, StatusCode::CREATED, "new-order failed: {order_body}");
+    let nonce = nonce_header(&order_headers);
+
+    (router, key, account_url, order_body, nonce)
+}
+
+// ── Tests for authz route ─────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_get_authz() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+
+    let (router, key, account_url, order_body, nonce) =
+        setup_account_and_order(base_url, &state, "authz-test.example").await;
+
+    let authz_url = order_body["authorizations"][0].as_str().unwrap().to_string();
+    let authz_path = authz_url.trim_start_matches(base_url).to_string();
+
+    // POST-as-GET (empty payload string "")
+    let jws = key.jws_with_kid(&account_url, &nonce, &authz_url, None);
+    let (status, authz_body, _) = post_acme(&router, &authz_path, jws).await;
+    assert_eq!(status, StatusCode::OK, "get_authz failed: {authz_body}");
+    assert_eq!(authz_body["status"].as_str().unwrap(), "pending");
+    assert!(authz_body["identifier"]["value"].as_str().is_some());
+    let challenges = authz_body["challenges"].as_array().unwrap();
+    assert!(!challenges.is_empty(), "authz must have at least one challenge");
+}
+
+#[tokio::test]
+async fn test_get_authz_not_found() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+
+    let (router, key, account_url, _, nonce) =
+        setup_account_and_order(base_url, &state, "authz-notfound.example").await;
+
+    // Try to fetch a non-existent authz
+    let bogus_url = format!("{base_url}/acme/authz/nonexistent-id");
+    let jws = key.jws_with_kid(&account_url, &nonce, &bogus_url, None);
+    let (status, body, _) = post_acme(&router, "/acme/authz/nonexistent-id", jws).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "expected 404: {body}");
+}
+
+// ── Tests for challenge route ─────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_respond_challenge_triggers_validation() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+
+    let (router, key, account_url, order_body, nonce) =
+        setup_account_and_order(base_url, &state, "chall-test.example").await;
+
+    // Fetch the authz to get challenge info
+    let authz_url = order_body["authorizations"][0].as_str().unwrap().to_string();
+    let authz_path = authz_url.trim_start_matches(base_url).to_string();
+    let jws = key.jws_with_kid(&account_url, &nonce, &authz_url, None);
+    let (_, authz_body, authz_headers) = post_acme(&router, &authz_path, jws).await;
+    let nonce = nonce_header(&authz_headers);
+
+    let challenges = authz_body["challenges"].as_array().unwrap();
+    // Find the http-01 challenge
+    let http_chall = challenges.iter().find(|c| c["type"].as_str() == Some("http-01")).unwrap();
+    let chall_url = http_chall["url"].as_str().unwrap().to_string();
+    let chall_path = chall_url.trim_start_matches(base_url).to_string();
+
+    // Respond to the challenge (triggers background validation — will fail due to no network)
+    let jws = key.jws_with_kid(&account_url, &nonce, &chall_url, Some(json!({})));
+    let (status, chall_body, _) = post_acme(&router, &chall_path, jws).await;
+    // Expect 200 with "processing" status (background task has been spawned)
+    assert_eq!(status, StatusCode::OK, "challenge response failed: {chall_body}");
+    let chall_status = chall_body["status"].as_str().unwrap();
+    assert!(
+        chall_status == "processing" || chall_status == "pending",
+        "unexpected challenge status: {chall_status}"
+    );
+}
+
+#[tokio::test]
+async fn test_challenge_not_found() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+
+    let (router, key, account_url, order_body, nonce) =
+        setup_account_and_order(base_url, &state, "chall-notfound.example").await;
+
+    // Get valid authz_id for the URL structure, but use bogus challenge type
+    let authz_url = order_body["authorizations"][0].as_str().unwrap().to_string();
+    let authz_id = authz_url.split('/').last().unwrap();
+    let bogus_chall_url = format!("{base_url}/acme/chall/{authz_id}/bogus-type");
+    let bogus_chall_path = format!("/acme/chall/{authz_id}/bogus-type");
+
+    let jws = key.jws_with_kid(&account_url, &nonce, &bogus_chall_url, Some(json!({})));
+    let (status, body, _) = post_acme(&router, &bogus_chall_path, jws).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "expected 404: {body}");
+}
+
+// ── Tests for renewal_info route ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_renewal_info() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let db = Arc::clone(&state.db);
+    let router = routes::build_router(Arc::clone(&state));
+    let domain = "ari-test.example";
+
+    // Create account
+    let key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    // Create order
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": domain}]})),
+    );
+    let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
+    let nonce = nonce_header(&order_headers);
+
+    // Get order_id from DB
+    let order_id: String = db.call(|conn| {
+        Ok(conn.query_row("SELECT id FROM orders ORDER BY created DESC LIMIT 1", [], |r| r.get(0))?)
+    }).await.unwrap();
+
+    mark_order_ready(&db, &order_id).await;
+
+    // Finalize
+    let csr_der = make_csr_der(domain);
+    let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
+    let finalize_url = format!("{base_url}/acme/order/{order_id}/finalize");
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &finalize_url,
+        Some(json!({"csr": csr_b64})),
+    );
+    let (status, final_body, _) =
+        post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
+    assert_eq!(status, StatusCode::OK, "finalize failed: {final_body}");
+
+    // Get cert_id from DB
+    let cert_id: String = db.call(|conn| {
+        Ok(conn.query_row("SELECT id FROM certificates ORDER BY created DESC LIMIT 1", [], |r| r.get(0))?)
+    }).await.unwrap();
+
+    // GET /acme/renewal-info/{cert_id}
+    let (status, ari_body, _) = get(&router, &format!("/acme/renewal-info/{cert_id}")).await;
+    assert_eq!(status, StatusCode::OK, "renewal-info failed: {ari_body}");
+    assert!(ari_body["suggestedWindow"]["start"].as_str().is_some());
+    assert!(ari_body["suggestedWindow"]["end"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn test_renewal_info_not_found() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let router = routes::build_router(Arc::clone(&state));
+
+    let (status, body, _) = get(&router, "/acme/renewal-info/nonexistent-cert").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "expected 404: {body}");
+}
