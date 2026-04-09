@@ -303,6 +303,336 @@ fn find_extension_value<'a>(
     Ok(None)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── decode_length ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn decode_length_short_form() {
+        assert_eq!(decode_length(&[0x00]), Some((0, 1)));
+        assert_eq!(decode_length(&[0x01]), Some((1, 1)));
+        assert_eq!(decode_length(&[0x7f]), Some((127, 1)));
+    }
+
+    #[test]
+    fn decode_length_long_form_one_byte() {
+        // 0x81 0x80 = 128
+        assert_eq!(decode_length(&[0x81, 0x80]), Some((128, 2)));
+        // 0x81 0xff = 255
+        assert_eq!(decode_length(&[0x81, 0xff]), Some((255, 2)));
+    }
+
+    #[test]
+    fn decode_length_long_form_two_bytes() {
+        // 0x82 0x01 0x00 = 256
+        assert_eq!(decode_length(&[0x82, 0x01, 0x00]), Some((256, 3)));
+    }
+
+    #[test]
+    fn decode_length_empty_returns_none() {
+        assert_eq!(decode_length(&[]), None);
+    }
+
+    #[test]
+    fn decode_length_truncated_long_form_returns_none() {
+        // 0x81 without a second byte
+        assert_eq!(decode_length(&[0x81]), None);
+    }
+
+    #[test]
+    fn decode_length_indefinite_form_returns_none() {
+        // 0x80 = indefinite form (not supported)
+        assert_eq!(decode_length(&[0x80]), None);
+    }
+
+    // ── read_tlv ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn read_tlv_simple_octet_string() {
+        // 04 03 01 02 03 = OCTET STRING { 01 02 03 }
+        let der = [0x04, 0x03, 0x01, 0x02, 0x03];
+        let (tag, rest, content) = read_tlv(&der).unwrap();
+        assert_eq!(tag, 0x04);
+        assert!(rest.is_empty());
+        assert_eq!(content, &[0x01, 0x02, 0x03]);
+    }
+
+    #[test]
+    fn read_tlv_with_trailing_bytes() {
+        let der = [0x02, 0x01, 0x42, 0xff]; // INTEGER { 0x42 } + trailing 0xff
+        let (tag, rest, content) = read_tlv(&der).unwrap();
+        assert_eq!(tag, 0x02);
+        assert_eq!(rest, &[0xff]);
+        assert_eq!(content, &[0x42]);
+    }
+
+    #[test]
+    fn read_tlv_empty_returns_error() {
+        assert!(read_tlv(&[]).is_err());
+    }
+
+    #[test]
+    fn read_tlv_truncated_value_returns_error() {
+        // 02 03 01 02 — says length 3, only 2 bytes of value
+        assert!(read_tlv(&[0x02, 0x03, 0x01, 0x02]).is_err());
+    }
+
+    // ── strip_sequence / strip_octet_string / skip_tlv ────────────────────────
+
+    #[test]
+    fn strip_sequence_ok() {
+        // 30 02 01 02 = SEQUENCE { 01 02 }
+        let der = [0x30, 0x02, 0x01, 0x02];
+        let content = strip_sequence(&der).unwrap();
+        assert_eq!(content, &[0x01, 0x02]);
+    }
+
+    #[test]
+    fn strip_sequence_wrong_tag_returns_error() {
+        let der = [0x04, 0x01, 0xff];
+        assert!(strip_sequence(&der).is_err());
+    }
+
+    #[test]
+    fn strip_octet_string_ok() {
+        let der = [0x04, 0x02, 0xde, 0xad];
+        let content = strip_octet_string(&der).unwrap();
+        assert_eq!(content, &[0xde, 0xad]);
+    }
+
+    #[test]
+    fn strip_octet_string_wrong_tag_returns_error() {
+        let der = [0x02, 0x01, 0x00];
+        assert!(strip_octet_string(&der).is_err());
+    }
+
+    #[test]
+    fn skip_tlv_advances_past_element() {
+        // 02 01 42 03 01 FF = INTEGER { 0x42 }, then bogus
+        let der = [0x02, 0x01, 0x42, 0x03, 0x01, 0xff];
+        let rest = skip_tlv(&der).unwrap();
+        assert_eq!(rest, &[0x03, 0x01, 0xff]);
+    }
+
+    // ── starts_with_oid ───────────────────────────────────────────────────────
+
+    #[test]
+    fn starts_with_oid_matching() {
+        let needle = &[0x06, 0x03, 0x55, 0x04, 0x03];
+        let haystack = &[0x06, 0x03, 0x55, 0x04, 0x03, 0xff];
+        assert!(starts_with_oid(haystack, needle));
+    }
+
+    #[test]
+    fn starts_with_oid_not_matching() {
+        let needle = &[0x06, 0x03, 0x55, 0x04, 0x03];
+        let haystack = &[0x06, 0x03, 0x55, 0x04, 0x06];
+        assert!(!starts_with_oid(haystack, needle));
+    }
+
+    #[test]
+    fn starts_with_oid_too_short() {
+        let needle = &[0x06, 0x03, 0x55, 0x04, 0x03];
+        let haystack = &[0x06, 0x03];
+        assert!(!starts_with_oid(haystack, needle));
+    }
+
+    // ── find_extension_value / verify_acme_cert ───────────────────────────────
+
+    #[test]
+    fn find_extension_value_invalid_cert_returns_error() {
+        let oid_der = &[0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x01, 0x1f];
+        assert!(find_extension_value(b"bad DER", oid_der).is_err());
+    }
+
+    #[test]
+    fn verify_acme_cert_invalid_der_returns_error() {
+        let result = verify_acme_cert("example.com", b"bad cert", &[0u8; 32]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn verify_acme_cert_correct_extension_succeeds() {
+        // Build a minimal fake certificate DER with the id-pe-acmeIdentifier extension.
+        // This is a hand-crafted DER structure; real certs use synta_certificate.
+        // hash = SHA-256 of "test-key-auth"
+        let key_auth = "test-key-auth";
+        let expected_hash: [u8; 32] = sha2::Sha256::digest(key_auth.as_bytes()).into();
+
+        // Build the extension value: OCTET STRING { <hash> }
+        let mut ext_value = vec![0x04, 0x20]; // OCTET STRING, length 32
+        ext_value.extend_from_slice(&expected_hash);
+
+        // Extension SEQUENCE: OID + critical TRUE + OCTET STRING { ext_value }
+        // OID: 1.3.6.1.5.5.7.1.31 = 06 08 2b 06 01 05 05 07 01 1f
+        let oid_bytes: &[u8] = &[0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x01, 0x1f];
+        let critical_bytes: &[u8] = &[0x01, 0x01, 0xff]; // BOOLEAN TRUE
+        // Wrap ext_value in OCTET STRING wrapper
+        let mut ext_val_wrapper = vec![0x04u8, ext_value.len() as u8];
+        ext_val_wrapper.extend_from_slice(&ext_value);
+        let ext_inner_len = oid_bytes.len() + critical_bytes.len() + ext_val_wrapper.len();
+        let mut ext_seq = vec![0x30, ext_inner_len as u8];
+        ext_seq.extend_from_slice(oid_bytes);
+        ext_seq.extend_from_slice(critical_bytes);
+        ext_seq.extend_from_slice(&ext_val_wrapper);
+
+        // Extensions SEQUENCE OF (contains our one extension)
+        let mut exts_seq = vec![0x30, ext_seq.len() as u8];
+        exts_seq.extend_from_slice(&ext_seq);
+
+        // Extensions [3] EXPLICIT
+        let mut exts_a3 = vec![0xa3, exts_seq.len() as u8];
+        exts_a3.extend_from_slice(&exts_seq);
+
+        // Minimal fields for TBSCertificate (some are required):
+        // version [0], serial, sig alg, issuer, validity, subject, SPKI, extensions
+        // We use minimal/dummy placeholders since we only care about extension parsing.
+        let version_a0: &[u8] = &[0xa0, 0x03, 0x02, 0x01, 0x02]; // version v3
+        let serial: &[u8] = &[0x02, 0x01, 0x01]; // INTEGER { 1 }
+        let sig_alg: &[u8] = &[0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02]; // ecdsaWithSHA256
+        let issuer: &[u8] = &[0x30, 0x00]; // empty SEQUENCE
+        let validity: &[u8] = &[0x30, 0x00]; // empty SEQUENCE
+        let subject: &[u8] = &[0x30, 0x00]; // empty SEQUENCE
+        let spki: &[u8] = &[0x30, 0x00]; // empty SEQUENCE
+
+        let tbs_len = version_a0.len() + serial.len() + sig_alg.len() + issuer.len()
+            + validity.len() + subject.len() + spki.len() + exts_a3.len();
+        let mut tbs = vec![0x30, tbs_len as u8];
+        tbs.extend_from_slice(version_a0);
+        tbs.extend_from_slice(serial);
+        tbs.extend_from_slice(sig_alg);
+        tbs.extend_from_slice(issuer);
+        tbs.extend_from_slice(validity);
+        tbs.extend_from_slice(subject);
+        tbs.extend_from_slice(spki);
+        tbs.extend_from_slice(&exts_a3);
+
+        // Outer Certificate SEQUENCE: TBS + signature alg + BIT STRING
+        let sig_alg2: &[u8] = &[0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02];
+        let bit_string: &[u8] = &[0x03, 0x01, 0x00]; // BIT STRING with 0 unused bits, empty
+
+        let cert_inner_len = tbs.len() + sig_alg2.len() + bit_string.len();
+        let mut cert_der = vec![0x30, cert_inner_len as u8];
+        cert_der.extend_from_slice(&tbs);
+        cert_der.extend_from_slice(sig_alg2);
+        cert_der.extend_from_slice(bit_string);
+
+        let result = verify_acme_cert("example.com", &cert_der, &expected_hash);
+        assert!(result.is_ok(), "verify_acme_cert should succeed: {result:?}");
+    }
+
+    #[test]
+    fn verify_acme_cert_wrong_hash_returns_error() {
+        let key_auth = "test-key-auth";
+        let correct_hash: [u8; 32] = sha2::Sha256::digest(key_auth.as_bytes()).into();
+        let wrong_hash = [0u8; 32];
+
+        // Re-use the same cert construction with correct_hash in the extension
+        let mut ext_value = vec![0x04, 0x20];
+        ext_value.extend_from_slice(&correct_hash);
+        let oid_bytes: &[u8] = &[0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x01, 0x1f];
+        let critical_bytes: &[u8] = &[0x01, 0x01, 0xff];
+        let mut ext_val_wrapper = vec![0x04u8, ext_value.len() as u8];
+        ext_val_wrapper.extend_from_slice(&ext_value);
+        let ext_inner_len = oid_bytes.len() + critical_bytes.len() + ext_val_wrapper.len();
+        let mut ext_seq = vec![0x30, ext_inner_len as u8];
+        ext_seq.extend_from_slice(oid_bytes);
+        ext_seq.extend_from_slice(critical_bytes);
+        ext_seq.extend_from_slice(&ext_val_wrapper);
+        let mut exts_seq = vec![0x30, ext_seq.len() as u8];
+        exts_seq.extend_from_slice(&ext_seq);
+        let mut exts_a3 = vec![0xa3, exts_seq.len() as u8];
+        exts_a3.extend_from_slice(&exts_seq);
+        let version_a0: &[u8] = &[0xa0, 0x03, 0x02, 0x01, 0x02];
+        let serial: &[u8] = &[0x02, 0x01, 0x01];
+        let sig_alg: &[u8] = &[0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02];
+        let empty_seq: &[u8] = &[0x30, 0x00];
+        let tbs_len = version_a0.len() + serial.len() + sig_alg.len() + 4 * empty_seq.len() + exts_a3.len();
+        let mut tbs = vec![0x30, tbs_len as u8];
+        tbs.extend_from_slice(version_a0); tbs.extend_from_slice(serial); tbs.extend_from_slice(sig_alg);
+        for _ in 0..4 { tbs.extend_from_slice(empty_seq); }
+        tbs.extend_from_slice(&exts_a3);
+        let sig_alg2: &[u8] = &[0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02];
+        let bit_string: &[u8] = &[0x03, 0x01, 0x00];
+        let cert_inner_len = tbs.len() + sig_alg2.len() + bit_string.len();
+        let mut cert_der = vec![0x30, cert_inner_len as u8];
+        cert_der.extend_from_slice(&tbs); cert_der.extend_from_slice(sig_alg2); cert_der.extend_from_slice(bit_string);
+
+        // Verify with wrong_hash — should fail
+        let result = verify_acme_cert("example.com", &cert_der, &wrong_hash);
+        assert!(result.is_err(), "should fail with wrong hash");
+    }
+
+    #[test]
+    fn verify_acme_cert_missing_extension_returns_error() {
+        // Cert with no extensions
+        let version_a0: &[u8] = &[0xa0, 0x03, 0x02, 0x01, 0x02];
+        let serial: &[u8] = &[0x02, 0x01, 0x01];
+        let sig_alg: &[u8] = &[0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02];
+        let empty_seq: &[u8] = &[0x30, 0x00];
+        let tbs_len = version_a0.len() + serial.len() + sig_alg.len() + 4 * empty_seq.len();
+        let mut tbs = vec![0x30, tbs_len as u8];
+        tbs.extend_from_slice(version_a0); tbs.extend_from_slice(serial); tbs.extend_from_slice(sig_alg);
+        for _ in 0..4 { tbs.extend_from_slice(empty_seq); }
+        let sig_alg2: &[u8] = &[0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02];
+        let bit_string: &[u8] = &[0x03, 0x01, 0x00];
+        let cert_inner_len = tbs.len() + sig_alg2.len() + bit_string.len();
+        let mut cert_der = vec![0x30, cert_inner_len as u8];
+        cert_der.extend_from_slice(&tbs); cert_der.extend_from_slice(sig_alg2); cert_der.extend_from_slice(bit_string);
+
+        let result = verify_acme_cert("example.com", &cert_der, &[0u8; 32]);
+        assert!(result.is_err(), "should fail when extension is missing");
+    }
+
+    #[test]
+    fn verify_acme_cert_non_critical_extension_returns_error() {
+        // Same as correct cert but without the critical BOOLEAN
+        let expected_hash = [0u8; 32];
+        let mut ext_value = vec![0x04, 0x20];
+        ext_value.extend_from_slice(&expected_hash);
+        let oid_bytes: &[u8] = &[0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x01, 0x1f];
+        let mut ext_val_wrapper = vec![0x04u8, ext_value.len() as u8];
+        ext_val_wrapper.extend_from_slice(&ext_value);
+        // No critical field this time
+        let ext_inner_len = oid_bytes.len() + ext_val_wrapper.len();
+        let mut ext_seq = vec![0x30, ext_inner_len as u8];
+        ext_seq.extend_from_slice(oid_bytes);
+        ext_seq.extend_from_slice(&ext_val_wrapper);
+        let mut exts_seq = vec![0x30, ext_seq.len() as u8];
+        exts_seq.extend_from_slice(&ext_seq);
+        let mut exts_a3 = vec![0xa3, exts_seq.len() as u8];
+        exts_a3.extend_from_slice(&exts_seq);
+        let version_a0: &[u8] = &[0xa0, 0x03, 0x02, 0x01, 0x02];
+        let serial: &[u8] = &[0x02, 0x01, 0x01];
+        let sig_alg: &[u8] = &[0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02];
+        let empty_seq: &[u8] = &[0x30, 0x00];
+        let tbs_len = version_a0.len() + serial.len() + sig_alg.len() + 4 * empty_seq.len() + exts_a3.len();
+        let mut tbs = vec![0x30, tbs_len as u8];
+        tbs.extend_from_slice(version_a0); tbs.extend_from_slice(serial); tbs.extend_from_slice(sig_alg);
+        for _ in 0..4 { tbs.extend_from_slice(empty_seq); }
+        tbs.extend_from_slice(&exts_a3);
+        let sig_alg2: &[u8] = &[0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02];
+        let bit_string: &[u8] = &[0x03, 0x01, 0x00];
+        let cert_inner_len = tbs.len() + sig_alg2.len() + bit_string.len();
+        let mut cert_der = vec![0x30, cert_inner_len as u8];
+        cert_der.extend_from_slice(&tbs); cert_der.extend_from_slice(sig_alg2); cert_der.extend_from_slice(bit_string);
+
+        let result = verify_acme_cert("example.com", &cert_der, &expected_hash);
+        assert!(result.is_err(), "should fail when extension is not critical");
+    }
+
+    // ── AcceptAnyCert ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn accept_any_cert_supported_schemes_not_empty() {
+        let verifier = AcceptAnyCert;
+        let schemes = verifier.supported_verify_schemes();
+        assert!(!schemes.is_empty());
+    }
+}
+
 // ── Custom ServerCertVerifier that accepts any certificate ────────────────────
 //
 // We perform our own extension-level verification; rustls's PKI verification
