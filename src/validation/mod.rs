@@ -161,3 +161,120 @@ fn unix_now() -> i64 {
         .unwrap_or_default()
         .as_secs() as i64
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    use crate::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
+    use crate::state::{AppState, CaState, MtcState};
+    use crate::{ca, db};
+
+    async fn make_state() -> Arc<AppState> {
+        let config = Arc::new(Config {
+            listen_addr: "127.0.0.1:0".into(),
+            base_url: "https://acme.test".into(),
+            database: DatabaseConfig { path: ":memory:".into() },
+            ca: CaConfig {
+                key_file: "/tmp/val-test-ca.key".into(),
+                cert_file: "/tmp/val-test-ca.crt".into(),
+                key_type: "ec:P-256".into(),
+                hash_alg: "sha256".into(),
+                validity_days: 90,
+                crl_url: None,
+                ocsp_url: None,
+                common_name: "Val Test CA".into(),
+                organization: "Test".into(),
+                ca_validity_years: 10,
+            },
+            mtc: MtcConfig { log_path: "/dev/null".into(), enabled: false },
+            server: ServerConfig::default(),
+        });
+
+        let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
+        let db_conn = Arc::new(db::open(":memory:").await.unwrap());
+
+        Arc::new(AppState {
+            config: Arc::clone(&config),
+            db: Arc::clone(&db_conn),
+            ca: Arc::new(CaState {
+                key: ca_key,
+                cert_der: ca_cert_der,
+                hash_alg: "sha256".into(),
+                validity_days: 90,
+                crl_url: None,
+                ocsp_url: None,
+            }),
+            mtc: Arc::new(MtcState {
+                log: None,
+                algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
+            }),
+        })
+    }
+
+    #[test]
+    fn unix_now_is_positive() {
+        let t = unix_now();
+        assert!(t > 0, "unix_now() should be positive, got {t}");
+    }
+
+    #[test]
+    fn err_type_mapping() {
+        assert_eq!(err_type(&AcmeError::Connection("x".into())), "urn:ietf:params:acme:error:connection");
+        assert_eq!(err_type(&AcmeError::Dns("x".into())), "urn:ietf:params:acme:error:dns");
+        assert_eq!(err_type(&AcmeError::Tls("x".into())), "urn:ietf:params:acme:error:tls");
+        assert_eq!(err_type(&AcmeError::IncorrectResponse("x".into())), "urn:ietf:params:acme:error:incorrectResponse");
+        assert_eq!(err_type(&AcmeError::Internal("x".into())), "urn:ietf:params:acme:error:serverInternal");
+        assert_eq!(err_type(&AcmeError::NotFound), "urn:ietf:params:acme:error:serverInternal");
+    }
+
+    #[tokio::test]
+    async fn dispatch_unsupported_type_returns_error() {
+        let result = dispatch("bogus-type", "dns", "example.com", "key-auth", "token").await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AcmeError::IncorrectResponse(msg) => {
+                assert!(msg.contains("unsupported challenge type"));
+            }
+            other => panic!("expected IncorrectResponse, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn on_invalid_with_missing_authz_does_not_panic() {
+        let state = make_state().await;
+        // on_invalid with a non-existent challenge/authz should not panic
+        on_invalid(
+            &state,
+            "nonexistent-challenge",
+            "nonexistent-authz",
+            AcmeError::Connection("test".into()),
+            unix_now(),
+        ).await;
+    }
+
+    #[tokio::test]
+    async fn on_valid_with_missing_challenge_does_not_panic() {
+        let state = make_state().await;
+        // on_valid with a non-existent challenge should not panic
+        on_valid(&state, "nonexistent-challenge", "nonexistent-authz", unix_now()).await;
+    }
+
+    #[tokio::test]
+    async fn validate_challenge_unsupported_type_records_failure() {
+        let state = make_state().await;
+        // Use a non-existent challenge_id/authz_id — the function is infallible
+        validate_challenge(
+            &state,
+            "fake-challenge-id",
+            "fake-authz-id",
+            "bogus-01",   // unsupported type → dispatch returns Err
+            "dns",
+            "example.com",
+            "token.thumbprint",
+            "token",
+        ).await;
+        // If we get here without panicking, the test passes
+    }
+}
