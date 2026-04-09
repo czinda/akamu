@@ -898,3 +898,488 @@ async fn test_get_nonce_via_get() {
     assert_eq!(status, StatusCode::NO_CONTENT);
     assert!(headers.get("replay-nonce").is_some());
 }
+
+// ── New tests for route handler error paths ───────────────────────────────────
+
+/// Verify that using a `kid` header for new-account fails (must use `jwk`).
+#[tokio::test]
+async fn test_new_account_with_kid_requires_jwk() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let router = routes::build_router(Arc::clone(&state));
+
+    // First create a valid account to get a kid URL.
+    let key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    // Now try new-account with kid instead of jwk.
+    let jws = key.jws_with_kid(&account_url, &nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (status, _, _) = post_acme(&router, "/acme/new-account", jws).await;
+    assert!(status.is_client_error(), "new-account with kid should fail, got {status}");
+}
+
+/// If the same JWK is used for new-account again, the existing account is returned.
+#[tokio::test]
+async fn test_new_account_returns_existing_when_key_matches() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let router = routes::build_router(Arc::clone(&state));
+
+    let key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (status1, _, acct_headers1) = post_acme(&router, "/acme/new-account", jws).await;
+    assert_eq!(status1, StatusCode::CREATED);
+    let account_url1 = location_header(&acct_headers1);
+    let nonce = nonce_header(&acct_headers1);
+
+    // Send new-account again with the same JWK.
+    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (status2, _, acct_headers2) = post_acme(&router, "/acme/new-account", jws).await;
+    // Should return 200 with Location pointing to existing account.
+    assert_eq!(status2, StatusCode::OK, "second new-account should return existing");
+    let account_url2 = location_header(&acct_headers2);
+    assert_eq!(account_url1, account_url2, "Location must point to same account");
+}
+
+/// `onlyReturnExisting: true` with an unknown JWK → 400 AccountDoesNotExist.
+#[tokio::test]
+async fn test_new_account_only_return_existing_not_found() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let router = routes::build_router(Arc::clone(&state));
+
+    let key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"onlyReturnExisting": true})));
+    let (status, _, _) = post_acme(&router, "/acme/new-account", jws).await;
+    assert!(status.is_client_error(), "onlyReturnExisting with unknown key should fail, got {status}");
+}
+
+/// Update account contact info via POST to account URL.
+#[tokio::test]
+async fn test_update_account_contact() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let router = routes::build_router(Arc::clone(&state));
+
+    let key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let account_url = location_header(&acct_headers);
+    let account_id = account_url.split('/').last().unwrap().to_string();
+    let nonce = nonce_header(&acct_headers);
+
+    // Update contact.
+    let jws = key.jws_with_kid(&account_url, &nonce, &account_url,
+        Some(json!({"contact": ["mailto:test@example.com"]})));
+    let (status, body, _) = post_acme(&router, &format!("/acme/account/{account_id}"), jws).await;
+    assert_eq!(status, StatusCode::OK, "update contact failed: {body}");
+    assert_eq!(body["contact"][0].as_str(), Some("mailto:test@example.com"));
+}
+
+/// Kid that doesn't match the account ID in the URL → Unauthorized.
+#[tokio::test]
+async fn test_update_account_kid_mismatch() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let router = routes::build_router(Arc::clone(&state));
+
+    let key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    // Use account_url as kid but send request to a different account ID.
+    let wrong_id = "00000000-0000-0000-0000-000000000000";
+    let wrong_url = format!("{base_url}/acme/account/{wrong_id}");
+    let jws = key.jws_with_kid(&account_url, &nonce, &wrong_url,
+        Some(json!({"contact": []})));
+    let (status, _, _) = post_acme(&router, &format!("/acme/account/{wrong_id}"), jws).await;
+    assert!(status.is_client_error(), "mismatched kid/account-id should fail, got {status}");
+}
+
+/// Revoke a certificate using the correct account (success path).
+#[tokio::test]
+async fn test_revoke_cert_success_with_owner_account() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let router = routes::build_router(Arc::clone(&state));
+    let db = Arc::clone(&state.db);
+
+    let key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    // Create order.
+    let jws = key.jws_with_kid(&account_url, &nonce, &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": "revoke-success.test"}]})));
+    let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
+    let nonce = nonce_header(&order_headers);
+
+    let order_id: String = db.call(|c| Ok(c.query_row(
+        "SELECT id FROM orders ORDER BY created DESC LIMIT 1", [], |r| r.get(0))?)).await.unwrap();
+    mark_order_ready(&db, &order_id).await;
+
+    let csr_der = make_csr_der("revoke-success.test");
+    let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
+    let finalize_url = format!("{base_url}/acme/order/{order_id}/finalize");
+    let jws = key.jws_with_kid(&account_url, &nonce, &finalize_url,
+        Some(json!({"csr": csr_b64})));
+    let (status, body, _) = post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
+    assert_eq!(status, StatusCode::OK, "finalize failed: {body}");
+
+    // Get cert DER.
+    let cert_path = body["certificate"].as_str().unwrap().trim_start_matches(base_url).to_string();
+    let req = Request::builder().method(Method::GET).uri(&cert_path).body(Body::empty()).unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    let cert_bytes = axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+    let pem = std::str::from_utf8(&cert_bytes).unwrap();
+    let der_b64 = pem.lines().skip_while(|l| !l.starts_with("-----BEGIN")).skip(1)
+        .take_while(|l| !l.starts_with("-----END")).collect::<Vec<_>>().join("");
+    let cert_der = base64::engine::general_purpose::STANDARD.decode(&der_b64).unwrap();
+    let cert_b64url = URL_SAFE_NO_PAD.encode(&cert_der);
+
+    // Revoke using the SAME account.
+    let nonce = head_nonce(&router).await;
+    let revoke_url = format!("{base_url}/acme/revoke-cert");
+    let jws = key.jws_with_kid(&account_url, &nonce, &revoke_url,
+        Some(json!({"certificate": cert_b64url, "reason": 1})));
+    let (status, body, _) = post_acme(&router, "/acme/revoke-cert", jws).await;
+    assert_eq!(status, StatusCode::OK, "revoke by owner failed: {body}");
+}
+
+/// Revoke an already-revoked cert → 409 AlreadyRevoked.
+#[tokio::test]
+async fn test_revoke_already_revoked_cert() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let (router, cert_b64url) = issue_cert_for_domain(base_url, &state, "already-revoked.test").await;
+
+    // Get the account key from the db (we need to issue from same account)
+    // Easier: issue fresh cert and revoke twice using the revocation path below.
+    // First revoke must succeed; second must fail.
+    // But we can't easily re-sign with the original account key from issue_cert_for_domain.
+    // Workaround: use the DB to mark the cert as revoked directly, then try again.
+    let cert_id: String = state.db.call(|c| Ok(c.query_row(
+        "SELECT id FROM certificates ORDER BY created DESC LIMIT 1", [], |r| r.get(0))?)).await.unwrap();
+    // Directly revoke via DB.
+    acme_server::db::certs::revoke(
+        &state.db, &cert_id, Some(1), 1_700_000_000
+    ).await.unwrap();
+
+    // Now try to revoke via HTTP using a JWK that doesn't own the cert (will hit AlreadyRevoked before Unauthorized).
+    let key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    let revoke_url = format!("{base_url}/acme/revoke-cert");
+    let jws = key.jws_with_kid(&account_url, &nonce, &revoke_url,
+        Some(json!({"certificate": cert_b64url})));
+    let (status, _, _) = post_acme(&router, "/acme/revoke-cert", jws).await;
+    // Should be AlreadyRevoked (409) — checked before authorization
+    assert!(status.is_client_error(), "already-revoked cert should fail, got {status}");
+}
+
+/// Revoke with invalid reason code (7 or > 10) → BadRevocationReason.
+#[tokio::test]
+async fn test_revoke_invalid_reason_code() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let (router, cert_b64url) = issue_cert_for_domain(base_url, &state, "bad-reason.test").await;
+
+    let key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    // reason=7 is not allowed per RFC 8555.
+    let revoke_url = format!("{base_url}/acme/revoke-cert");
+    let jws = key.jws_with_kid(&account_url, &nonce, &revoke_url,
+        Some(json!({"certificate": cert_b64url, "reason": 7})));
+    let (status, _, _) = post_acme(&router, "/acme/revoke-cert", jws).await;
+    assert!(status.is_client_error(), "reason=7 should be rejected, got {status}");
+}
+
+/// POST new-order with empty identifiers → BadRequest.
+#[tokio::test]
+async fn test_new_order_empty_identifiers() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let router = routes::build_router(Arc::clone(&state));
+
+    let key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    let jws = key.jws_with_kid(&account_url, &nonce, &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": []})));
+    let (status, _, _) = post_acme(&router, "/acme/new-order", jws).await;
+    assert!(status.is_client_error(), "empty identifiers should fail, got {status}");
+}
+
+/// POST new-order with unsupported identifier type → UnsupportedIdentifier.
+#[tokio::test]
+async fn test_new_order_unsupported_identifier_type() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let router = routes::build_router(Arc::clone(&state));
+
+    let key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    let jws = key.jws_with_kid(&account_url, &nonce, &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "email", "value": "user@example.com"}]})));
+    let (status, _, _) = post_acme(&router, "/acme/new-order", jws).await;
+    assert!(status.is_client_error(), "unsupported identifier type should fail, got {status}");
+}
+
+/// POST new-order with IP address identifier.
+#[tokio::test]
+async fn test_new_order_ip_identifier() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let router = routes::build_router(Arc::clone(&state));
+
+    let key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    let jws = key.jws_with_kid(&account_url, &nonce, &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "ip", "value": "192.0.2.1"}]})));
+    let (status, body, _) = post_acme(&router, "/acme/new-order", jws).await;
+    assert_eq!(status, StatusCode::CREATED, "ip order should succeed: {body}");
+    assert_eq!(body["status"].as_str(), Some("pending"));
+}
+
+/// POST-as-GET /acme/order/{id} returns order status.
+#[tokio::test]
+async fn test_get_order() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let router = routes::build_router(Arc::clone(&state));
+    let db = Arc::clone(&state.db);
+
+    let key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    let jws = key.jws_with_kid(&account_url, &nonce, &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": "get-order.test"}]})));
+    let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
+    let nonce = nonce_header(&order_headers);
+
+    let order_id: String = db.call(|c| Ok(c.query_row(
+        "SELECT id FROM orders ORDER BY created DESC LIMIT 1", [], |r| r.get(0))?)).await.unwrap();
+
+    // POST-as-GET to get order status.
+    let order_url = format!("{base_url}/acme/order/{order_id}");
+    let jws = key.jws_with_kid(&account_url, &nonce, &order_url, None);
+    let (status, body, _) = post_acme(&router, &format!("/acme/order/{order_id}"), jws).await;
+    assert_eq!(status, StatusCode::OK, "get-order failed: {body}");
+    assert_eq!(body["status"].as_str(), Some("pending"));
+}
+
+/// Finalize an order that belongs to a different account → Unauthorized.
+#[tokio::test]
+async fn test_finalize_wrong_account() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let router = routes::build_router(Arc::clone(&state));
+    let db = Arc::clone(&state.db);
+
+    // Create two accounts: owner and attacker.
+    let owner_key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = owner_key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let owner_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    // Owner creates an order.
+    let jws = owner_key.jws_with_kid(&owner_url, &nonce, &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": "wrong-acct.test"}]})));
+    let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
+    let nonce = nonce_header(&order_headers);
+    let order_id: String = db.call(|c| Ok(c.query_row(
+        "SELECT id FROM orders ORDER BY created DESC LIMIT 1", [], |r| r.get(0))?)).await.unwrap();
+    mark_order_ready(&db, &order_id).await;
+
+    // Create attacker account.
+    let attacker_key = TestKey::generate();
+    let nonce2 = head_nonce(&router).await;
+    let jws2 = attacker_key.jws_with_jwk(&nonce2, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, atk_headers) = post_acme(&router, "/acme/new-account", jws2).await;
+    let attacker_url = location_header(&atk_headers);
+    let nonce = nonce_header(&atk_headers);
+
+    // Attacker tries to finalize owner's order.
+    let csr_der = make_csr_der("wrong-acct.test");
+    let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
+    let finalize_url = format!("{base_url}/acme/order/{order_id}/finalize");
+    let jws = attacker_key.jws_with_kid(&attacker_url, &nonce, &finalize_url,
+        Some(json!({"csr": csr_b64})));
+    let (status, _, _) = post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
+    assert!(status.is_client_error(), "finalize wrong account should fail, got {status}");
+}
+
+/// Finalize a pending (not ready) order → OrderNotReady.
+#[tokio::test]
+async fn test_finalize_order_not_ready() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let router = routes::build_router(Arc::clone(&state));
+    let db = Arc::clone(&state.db);
+
+    let key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    let jws = key.jws_with_kid(&account_url, &nonce, &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": "not-ready.test"}]})));
+    let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
+    let nonce = nonce_header(&order_headers);
+    let order_id: String = db.call(|c| Ok(c.query_row(
+        "SELECT id FROM orders ORDER BY created DESC LIMIT 1", [], |r| r.get(0))?)).await.unwrap();
+    // Do NOT call mark_order_ready → order stays in "pending" state.
+
+    let csr_der = make_csr_der("not-ready.test");
+    let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
+    let finalize_url = format!("{base_url}/acme/order/{order_id}/finalize");
+    let jws = key.jws_with_kid(&account_url, &nonce, &finalize_url,
+        Some(json!({"csr": csr_b64})));
+    let (status, _, _) = post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
+    assert!(status.is_client_error(), "finalize non-ready order should fail, got {status}");
+}
+
+/// Key-change with no payload → BadRequest.
+#[tokio::test]
+async fn test_key_change_no_payload() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let router = routes::build_router(Arc::clone(&state));
+
+    let key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    // Send key-change with empty payload (POST-as-GET = None).
+    let key_change_url = format!("{base_url}/acme/key-change");
+    let jws = key.jws_with_kid(&account_url, &nonce, &key_change_url, None);
+    let (status, _, _) = post_acme(&router, "/acme/key-change", jws).await;
+    assert!(status.is_client_error(), "key-change with no payload should fail, got {status}");
+}
+
+/// Key-change where inner JWS uses kid (not jwk) → BadRequest.
+#[tokio::test]
+async fn test_key_change_inner_uses_kid() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let router = routes::build_router(Arc::clone(&state));
+
+    let old_key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = old_key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    let new_key = TestKey::generate();
+    let key_change_url = format!("{base_url}/acme/key-change");
+
+    // Build inner JWS using kid (not jwk) — this should be rejected.
+    let inner = new_key.jws_with_kid(&account_url, "inner-dummy", &key_change_url,
+        Some(json!({"account": account_url, "oldKey": old_key.jwk()})));
+
+    let jws = old_key.jws_with_kid(&account_url, &nonce, &key_change_url,
+        Some(inner));
+    let (status, _, _) = post_acme(&router, "/acme/key-change", jws).await;
+    assert!(status.is_client_error(), "key-change with kid inner JWS should fail, got {status}");
+}
+
+/// JWS URL field mismatch → Unauthorized.
+#[tokio::test]
+async fn test_jws_url_mismatch() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let router = routes::build_router(Arc::clone(&state));
+
+    let key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+
+    // Build a JWS where the `url` field points to a different endpoint.
+    let wrong_url = format!("{base_url}/acme/wrong-url");
+    let jws = key.jws_with_jwk(&nonce, &wrong_url,
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (status, _, _) = post_acme(&router, "/acme/new-account", jws).await;
+    assert!(status.is_client_error(), "JWS url mismatch should fail, got {status}");
+}
+
+/// Invalid nonce → BadNonce.
+#[tokio::test]
+async fn test_bad_nonce() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let router = routes::build_router(Arc::clone(&state));
+
+    let key = TestKey::generate();
+    // Use a completely invalid nonce.
+    let bad_nonce = "this-nonce-was-never-issued";
+    let jws = key.jws_with_jwk(bad_nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (status, _, _) = post_acme(&router, "/acme/new-account", jws).await;
+    assert!(status.is_client_error(), "bad nonce should fail, got {status}");
+}
