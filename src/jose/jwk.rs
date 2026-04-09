@@ -229,6 +229,7 @@ fn build_okp_spki(x_bytes: &[u8], prefix: &[u8]) -> Result<Vec<u8>, AcmeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synta_certificate::{BackendPrivateKey, PrivateKey as _};
 
     /// RFC 7638 §3.1 example thumbprint
     #[test]
@@ -248,5 +249,247 @@ mod tests {
         };
         let thumb = jwk.thumbprint().unwrap();
         assert_eq!(thumb, "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs");
+    }
+
+    #[test]
+    fn ec_p256_thumbprint_roundtrip() {
+        let key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let pub_key = key.public_key().unwrap();
+        let (x_bytes, y_bytes) = pub_key.ec_affine_coordinates().unwrap().unwrap();
+        let pad = |v: &[u8], len: usize| {
+            let mut out = vec![0u8; len];
+            let start = len.saturating_sub(v.len());
+            out[start..].copy_from_slice(&v[v.len().saturating_sub(len)..]);
+            URL_SAFE_NO_PAD.encode(&out)
+        };
+        let jwk = JwkPublic {
+            kty: "EC".to_string(),
+            crv: Some("P-256".to_string()),
+            x: Some(pad(&x_bytes, 32)),
+            y: Some(pad(&y_bytes, 32)),
+            n: None,
+            e: None,
+        };
+        // thumbprint should succeed
+        let thumb = jwk.thumbprint().unwrap();
+        assert!(!thumb.is_empty());
+        // to_spki_der should succeed and return a non-empty DER
+        let spki = jwk.to_spki_der().unwrap();
+        assert!(!spki.is_empty());
+    }
+
+    #[test]
+    fn ec_p384_thumbprint_and_spki() {
+        let key = BackendPrivateKey::generate_ec("P-384").unwrap();
+        let pub_key = key.public_key().unwrap();
+        let (x_bytes, y_bytes) = pub_key.ec_affine_coordinates().unwrap().unwrap();
+        let pad = |v: &[u8], len: usize| {
+            let mut out = vec![0u8; len];
+            let start = len.saturating_sub(v.len());
+            out[start..].copy_from_slice(&v[v.len().saturating_sub(len)..]);
+            URL_SAFE_NO_PAD.encode(&out)
+        };
+        let jwk = JwkPublic {
+            kty: "EC".to_string(),
+            crv: Some("P-384".to_string()),
+            x: Some(pad(&x_bytes, 48)),
+            y: Some(pad(&y_bytes, 48)),
+            n: None,
+            e: None,
+        };
+        let thumb = jwk.thumbprint().unwrap();
+        assert!(!thumb.is_empty());
+        let spki = jwk.to_spki_der().unwrap();
+        assert!(!spki.is_empty());
+    }
+
+    #[test]
+    fn ec_p521_spki() {
+        let key = BackendPrivateKey::generate_ec("P-521").unwrap();
+        let pub_key = key.public_key().unwrap();
+        let (x_bytes, y_bytes) = pub_key.ec_affine_coordinates().unwrap().unwrap();
+        let pad = |v: &[u8], len: usize| {
+            let mut out = vec![0u8; len];
+            let start = len.saturating_sub(v.len());
+            out[start..].copy_from_slice(&v[v.len().saturating_sub(len)..]);
+            URL_SAFE_NO_PAD.encode(&out)
+        };
+        let jwk = JwkPublic {
+            kty: "EC".to_string(),
+            crv: Some("P-521".to_string()),
+            x: Some(pad(&x_bytes, 66)),
+            y: Some(pad(&y_bytes, 66)),
+            n: None,
+            e: None,
+        };
+        let spki = jwk.to_spki_der().unwrap();
+        assert!(!spki.is_empty());
+    }
+
+    #[test]
+    fn okp_ed25519_thumbprint_and_spki() {
+        // Ed25519 public key is 32 bytes
+        let x_bytes = vec![0x42u8; 32];
+        let jwk = JwkPublic {
+            kty: "OKP".to_string(),
+            crv: Some("Ed25519".to_string()),
+            x: Some(URL_SAFE_NO_PAD.encode(&x_bytes)),
+            y: None,
+            n: None,
+            e: None,
+        };
+        let thumb = jwk.thumbprint().unwrap();
+        assert!(!thumb.is_empty());
+        let spki = jwk.to_spki_der().unwrap();
+        // Should be prefix (13 bytes) + key (32 bytes) = 45 bytes
+        assert_eq!(spki.len(), OKP_ED25519_SPKI_PREFIX.len() + 32);
+    }
+
+    #[test]
+    fn okp_ed448_spki() {
+        // Ed448 public key is 57 bytes
+        let x_bytes = vec![0x13u8; 57];
+        let jwk = JwkPublic {
+            kty: "OKP".to_string(),
+            crv: Some("Ed448".to_string()),
+            x: Some(URL_SAFE_NO_PAD.encode(&x_bytes)),
+            y: None,
+            n: None,
+            e: None,
+        };
+        let spki = jwk.to_spki_der().unwrap();
+        assert_eq!(spki.len(), OKP_ED448_SPKI_PREFIX.len() + 57);
+    }
+
+    #[test]
+    fn okp_wrong_key_length_returns_error() {
+        // Ed25519 expects 32 bytes; give it 31
+        let x_bytes = vec![0x42u8; 31];
+        let jwk = JwkPublic {
+            kty: "OKP".to_string(),
+            crv: Some("Ed25519".to_string()),
+            x: Some(URL_SAFE_NO_PAD.encode(&x_bytes)),
+            y: None,
+            n: None,
+            e: None,
+        };
+        assert!(jwk.to_spki_der().is_err());
+    }
+
+    #[test]
+    fn okp_unsupported_curve_returns_error() {
+        // X25519 is a valid OKP curve but not supported for SPKI construction
+        let jwk = JwkPublic {
+            kty: "OKP".to_string(),
+            crv: Some("X25519".to_string()),
+            x: Some(URL_SAFE_NO_PAD.encode(&[0u8; 32])),
+            y: None,
+            n: None,
+            e: None,
+        };
+        // thumbprint for OKP doesn't validate curve, so it succeeds
+        assert!(jwk.thumbprint().is_ok(), "OKP thumbprint should succeed for any curve");
+        // to_spki_der only supports Ed25519/Ed448
+        assert!(jwk.to_spki_der().is_err());
+    }
+
+    #[test]
+    fn unsupported_key_type_returns_error() {
+        let jwk = JwkPublic {
+            kty: "DH".to_string(),
+            crv: None,
+            x: None,
+            y: None,
+            n: None,
+            e: None,
+        };
+        assert!(jwk.thumbprint().is_err());
+        assert!(jwk.to_spki_der().is_err());
+    }
+
+    #[test]
+    fn ec_missing_crv_returns_error() {
+        let jwk = JwkPublic {
+            kty: "EC".to_string(),
+            crv: None,
+            x: Some("AAAA".to_string()),
+            y: Some("AAAA".to_string()),
+            n: None,
+            e: None,
+        };
+        assert!(jwk.thumbprint().is_err());
+        assert!(jwk.to_spki_der().is_err());
+    }
+
+    #[test]
+    fn ec_unsupported_curve_returns_error() {
+        let jwk = JwkPublic {
+            kty: "EC".to_string(),
+            crv: Some("secp256k1".to_string()),
+            x: Some(URL_SAFE_NO_PAD.encode(&[0u8; 32])),
+            y: Some(URL_SAFE_NO_PAD.encode(&[0u8; 32])),
+            n: None,
+            e: None,
+        };
+        assert!(jwk.to_spki_der().is_err());
+    }
+
+    #[test]
+    fn rsa_thumbprint_and_spki() {
+        let jwk = JwkPublic {
+            kty: "RSA".to_string(),
+            crv: None,
+            x: None,
+            y: None,
+            n: Some("0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4cbbfAAtVT86zwu1RK7aPFFxuhDR1L6tSoc_BJECPebWKRXjBZCiFV4n3oknjhMstn64tZ_2W-5JsGY4Hc5n9yBXArwl93lqt7_RN5w6Cf0h4QyQ5v-65YGjQR0_FDW2QvzqY368QQMicAtaSqzs8KJZgnYb9c7d0zgdAZHzu6qMQvRL5hajrn1n91CbOpbISD08qNLyrdkt-bFTWhAI4vMQFh6WeZu0fM4lFd2NcRwr3XPksINHaQ-G_xBniIqbw0Ls1jF44-csFCur-kEgU8awapJzKnqDKgw".to_string()),
+            e: Some("AQAB".to_string()),
+        };
+        let thumb = jwk.thumbprint().unwrap();
+        assert_eq!(thumb, "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs");
+        // to_spki_der should succeed with valid RSA key components
+        let spki = jwk.to_spki_der().unwrap();
+        assert!(!spki.is_empty());
+    }
+
+    #[test]
+    fn rsa_missing_n_returns_error() {
+        let jwk = JwkPublic {
+            kty: "RSA".to_string(),
+            crv: None,
+            x: None,
+            y: None,
+            n: None,
+            e: Some("AQAB".to_string()),
+        };
+        assert!(jwk.thumbprint().is_err());
+        assert!(jwk.to_spki_der().is_err());
+    }
+
+    #[test]
+    fn rsa_missing_e_returns_error() {
+        let jwk = JwkPublic {
+            kty: "RSA".to_string(),
+            crv: None,
+            x: None,
+            y: None,
+            n: Some("AAAA".to_string()),
+            e: None,
+        };
+        assert!(jwk.thumbprint().is_err());
+        assert!(jwk.to_spki_der().is_err());
+    }
+
+    #[test]
+    fn okp_missing_x_returns_error() {
+        let jwk = JwkPublic {
+            kty: "OKP".to_string(),
+            crv: Some("Ed25519".to_string()),
+            x: None,
+            y: None,
+            n: None,
+            e: None,
+        };
+        assert!(jwk.thumbprint().is_err());
+        assert!(jwk.to_spki_der().is_err());
     }
 }
