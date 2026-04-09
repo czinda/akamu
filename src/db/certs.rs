@@ -197,3 +197,264 @@ pub async fn list_valid_for_account(
     .await
     .map_err(AcmeError::from)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    use crate::db::schema::{AccountRow, OrderRow};
+
+    async fn open_db() -> Arc<Connection> {
+        Arc::new(crate::db::open(":memory:").await.unwrap())
+    }
+
+    /// Insert a minimal account + order so that foreign-key constraints pass.
+    async fn insert_parent_rows(db: &Connection, account_id: &str, order_id: &str) {
+        let acct = AccountRow {
+            id: account_id.to_string(),
+            status: "valid".to_string(),
+            contact: None,
+            public_key: vec![0u8; 4],
+            jwk_thumbprint: format!("thumb-{account_id}"),
+            created: 1_700_000_000,
+            updated: 1_700_000_000,
+        };
+        crate::db::accounts::insert(db, acct).await.unwrap();
+
+        let order = OrderRow {
+            id: order_id.to_string(),
+            account_id: account_id.to_string(),
+            status: "valid".to_string(),
+            expires: None,
+            identifiers: "[]".to_string(),
+            not_before: None,
+            not_after: None,
+            error: None,
+            certificate_id: None,
+            created: 1_700_000_000,
+            updated: 1_700_000_000,
+        };
+        crate::db::orders::insert(db, order).await.unwrap();
+    }
+
+    fn sample_cert(id: &str, account_id: &str, status: &str, not_after: i64) -> CertificateRow {
+        CertificateRow {
+            id: id.to_string(),
+            order_id: format!("order-{id}"),
+            account_id: account_id.to_string(),
+            serial_number: format!("serial-{id}"),
+            status: status.to_string(),
+            der: vec![0x30, 0x00],
+            pem: "-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n".to_string(),
+            not_before: 1_700_000_000,
+            not_after,
+            revoked_at: None,
+            revocation_reason: None,
+            mtc_log_index: None,
+            created: 1_700_000_000,
+            suggested_window_start: None,
+            suggested_window_end: None,
+        }
+    }
+
+    /// Helper: insert parent rows + cert together.
+    async fn insert_cert(db: &Connection, id: &str, account_id: &str, status: &str, not_after: i64) {
+        insert_parent_rows(db, account_id, &format!("order-{id}")).await;
+        insert(db, sample_cert(id, account_id, status, not_after)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn insert_and_get_by_id() {
+        let db = open_db().await;
+        insert_cert(&db, "cert-1", "acct-1", "valid", 1_800_000_000).await;
+
+        let result = get_by_id(&db, "cert-1").await.unwrap();
+        assert!(result.is_some());
+        let row = result.unwrap();
+        assert_eq!(row.id, "cert-1");
+        assert_eq!(row.account_id, "acct-1");
+        assert_eq!(row.status, "valid");
+    }
+
+    #[tokio::test]
+    async fn get_by_id_missing_returns_none() {
+        let db = open_db().await;
+        let result = get_by_id(&db, "nonexistent").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_by_serial_finds_cert() {
+        let db = open_db().await;
+        insert_cert(&db, "cert-2", "acct-2", "valid", 1_800_000_000).await;
+
+        let result = get_by_serial(&db, "serial-cert-2").await.unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().id, "cert-2");
+    }
+
+    #[tokio::test]
+    async fn get_by_serial_missing_returns_none() {
+        let db = open_db().await;
+        let result = get_by_serial(&db, "nonexistent-serial").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn revoke_valid_cert_returns_true() {
+        let db = open_db().await;
+        insert_cert(&db, "cert-3", "acct-3", "valid", 1_800_000_000).await;
+
+        let changed = revoke(&db, "cert-3", Some(1), 1_700_500_000).await.unwrap();
+        assert!(changed, "revoke should return true when cert was valid");
+
+        let row = get_by_id(&db, "cert-3").await.unwrap().unwrap();
+        assert_eq!(row.status, "revoked");
+        assert_eq!(row.revoked_at, Some(1_700_500_000));
+        assert_eq!(row.revocation_reason, Some(1));
+    }
+
+    #[tokio::test]
+    async fn revoke_already_revoked_returns_false() {
+        let db = open_db().await;
+        insert_cert(&db, "cert-4", "acct-4", "valid", 1_800_000_000).await;
+
+        // First revocation succeeds.
+        revoke(&db, "cert-4", None, 1_700_500_000).await.unwrap();
+        // Second revocation returns false (already revoked, status != 'valid').
+        let changed = revoke(&db, "cert-4", None, 1_700_600_000).await.unwrap();
+        assert!(!changed, "revoke should return false when cert is already revoked");
+    }
+
+    #[tokio::test]
+    async fn revoke_nonexistent_returns_false() {
+        let db = open_db().await;
+        let changed = revoke(&db, "nonexistent-cert", None, 1_700_500_000).await.unwrap();
+        assert!(!changed, "revoke should return false for nonexistent cert");
+    }
+
+    #[tokio::test]
+    async fn revoke_without_reason() {
+        let db = open_db().await;
+        insert_cert(&db, "cert-5", "acct-5", "valid", 1_800_000_000).await;
+
+        let changed = revoke(&db, "cert-5", None, 1_700_500_000).await.unwrap();
+        assert!(changed);
+
+        let row = get_by_id(&db, "cert-5").await.unwrap().unwrap();
+        assert_eq!(row.revocation_reason, None);
+    }
+
+    #[tokio::test]
+    async fn set_mtc_log_index_updates_cert() {
+        let db = open_db().await;
+        insert_cert(&db, "cert-6", "acct-6", "valid", 1_800_000_000).await;
+
+        assert!(get_by_id(&db, "cert-6").await.unwrap().unwrap().mtc_log_index.is_none());
+
+        set_mtc_log_index(&db, "cert-6", 42).await.unwrap();
+
+        let row = get_by_id(&db, "cert-6").await.unwrap().unwrap();
+        assert_eq!(row.mtc_log_index, Some(42));
+    }
+
+    #[tokio::test]
+    async fn set_mtc_log_index_nonexistent_is_ok() {
+        // Should not error even if no row is updated.
+        let db = open_db().await;
+        set_mtc_log_index(&db, "nonexistent", 99).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn set_renewal_window_updates_cert() {
+        let db = open_db().await;
+        insert_cert(&db, "cert-7", "acct-7", "valid", 1_800_000_000).await;
+
+        set_renewal_window(&db, "cert-7", 1_750_000_000, 1_760_000_000).await.unwrap();
+
+        let row = get_by_id(&db, "cert-7").await.unwrap().unwrap();
+        assert_eq!(row.suggested_window_start, Some(1_750_000_000));
+        assert_eq!(row.suggested_window_end, Some(1_760_000_000));
+    }
+
+    #[tokio::test]
+    async fn set_renewal_window_nonexistent_is_ok() {
+        let db = open_db().await;
+        set_renewal_window(&db, "nonexistent", 100, 200).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_revoked_returns_only_revoked() {
+        let db = open_db().await;
+        insert_cert(&db, "cert-8", "acct-8a", "valid", 1_800_000_000).await;
+        insert_cert(&db, "cert-9", "acct-8b", "valid", 1_800_000_000).await;
+
+        revoke(&db, "cert-9", Some(4), 1_700_500_000).await.unwrap();
+
+        let revoked = list_revoked(&db).await.unwrap();
+        assert_eq!(revoked.len(), 1);
+        assert_eq!(revoked[0].id, "cert-9");
+        assert_eq!(revoked[0].status, "revoked");
+    }
+
+    #[tokio::test]
+    async fn list_revoked_empty_when_none_revoked() {
+        let db = open_db().await;
+        insert_cert(&db, "cert-10", "acct-10", "valid", 1_800_000_000).await;
+
+        let revoked = list_revoked(&db).await.unwrap();
+        assert!(revoked.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_valid_for_account_filters_correctly() {
+        let db = open_db().await;
+        let now = 1_700_000_000i64;
+
+        // Valid, not expired, correct account → should appear.
+        insert_cert(&db, "cert-a", "acct-xa", "valid", now + 10_000).await;
+        // Valid but expired → should NOT appear.
+        insert_cert(&db, "cert-b", "acct-xb", "valid", now - 1).await;
+        // Valid, not expired, different account → should NOT appear.
+        insert_cert(&db, "cert-c", "acct-y", "valid", now + 10_000).await;
+
+        // Move cert-b to same account as cert-a by using same account_id in insert:
+        // Actually we can't reuse account_id easily (FK requires unique account per insert_parent).
+        // Instead, let's insert cert-b directly with acct-xa.
+        insert_parent_rows(&db, "acct-xa-extra", &format!("order-cert-b2")).await;
+        insert(&db, CertificateRow {
+            id: "cert-b2".to_string(),
+            order_id: "order-cert-b2".to_string(),
+            account_id: "acct-xa".to_string(),
+            serial_number: "serial-cert-b2".to_string(),
+            status: "valid".to_string(),
+            der: vec![0x30, 0x00],
+            pem: "-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n".to_string(),
+            not_before: 1_700_000_000,
+            not_after: now - 1, // expired
+            revoked_at: None,
+            revocation_reason: None,
+            mtc_log_index: None,
+            created: 1_700_000_000,
+            suggested_window_start: None,
+            suggested_window_end: None,
+        }).await.unwrap();
+
+        let results = list_valid_for_account(&db, "acct-xa", now).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "cert-a");
+    }
+
+    #[tokio::test]
+    async fn list_valid_for_account_excludes_revoked() {
+        let db = open_db().await;
+        let now = 1_700_000_000i64;
+
+        insert_cert(&db, "cert-rev", "acct-z", "valid", now + 10_000).await;
+        revoke(&db, "cert-rev", None, now).await.unwrap();
+
+        let results = list_valid_for_account(&db, "acct-z", now).await.unwrap();
+        assert!(results.is_empty(), "revoked cert should not appear in valid list");
+    }
+}
