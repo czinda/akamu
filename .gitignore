@@ -1,0 +1,4 @@
+autoresearch-results.tsv
+measure_coverage.sh
+/target/
+*.prof*
