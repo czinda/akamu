@@ -631,6 +631,51 @@ mod tests {
         let schemes = verifier.supported_verify_schemes();
         assert!(!schemes.is_empty());
     }
+
+    /// AcceptAnyCert::verify_server_cert always returns Ok.
+    /// Covers tls_alpn01.rs lines 646-655.
+    #[test]
+    fn accept_any_cert_verify_server_cert_returns_ok() {
+        use rustls::pki_types::UnixTime;
+        let verifier = AcceptAnyCert;
+        let dummy_cert = CertificateDer::from(vec![0u8; 4]);
+        let server_name = ServerName::try_from("example.com").unwrap();
+        let result = verifier.verify_server_cert(
+            &dummy_cert,
+            &[],
+            &server_name,
+            &[],
+            UnixTime::now(),
+        );
+        assert!(result.is_ok(), "verify_server_cert should always return Ok");
+    }
+
+    /// validate() fails with Tls error when given an invalid server name.
+    /// Covers tls_alpn01.rs lines 43-44 (ServerName::try_from error path).
+    #[tokio::test]
+    async fn validate_invalid_server_name_returns_error() {
+        // An empty string is not a valid DNS name or IP address.
+        let result = validate("", "token.thumbprint").await;
+        assert!(result.is_err(), "expected error for invalid server name");
+        match result.unwrap_err() {
+            crate::error::AcmeError::Tls(_) => {}
+            other => panic!("expected Tls error, got {other:?}"),
+        }
+    }
+
+    /// validate() fails with Connection error when domain is unreachable.
+    /// Covers tls_alpn01.rs lines 47-49 (TCP connect error path).
+    #[tokio::test]
+    async fn validate_connection_refused_returns_error() {
+        // 127.0.0.1:443 will be immediately refused on a test machine (no TLS server).
+        let result = validate("127.0.0.1", "token.thumbprint").await;
+        assert!(result.is_err(), "expected connection error for unreachable host");
+        // Should be either Connection or Tls error.
+        match result.unwrap_err() {
+            crate::error::AcmeError::Connection(_) | crate::error::AcmeError::Tls(_) => {}
+            other => panic!("expected Connection or Tls error, got {other:?}"),
+        }
+    }
 }
 
 // ── Custom ServerCertVerifier that accepts any certificate ────────────────────
