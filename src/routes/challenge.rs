@@ -71,14 +71,16 @@ pub async fn respond_challenge(
     let jwk_thumbprint = account.jwk_thumbprint.clone();
     let key_auth = format!("{}.{}", challenge.token, jwk_thumbprint);
 
-    // Spawn background validation task.
+    // Spawn background validation task. The JoinHandle is observed so that a
+    // panic inside the task is logged rather than silently swallowed.
     let state_clone = Arc::clone(&state);
     let challenge_id = challenge.id.clone();
     let token = challenge.token.clone();
     let chall_type_clone = chall_type.clone();
     let authz_id_clone = authz_id.clone();
+    let challenge_id_for_log = challenge.id.clone();
 
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         validation::validate_challenge(
             &state_clone,
             &challenge_id,
@@ -90,6 +92,15 @@ pub async fn respond_challenge(
             &token,
         )
         .await;
+    });
+
+    // Detach but watch for panics: spawn a lightweight observer task.
+    tokio::spawn(async move {
+        if let Err(e) = handle.await {
+            tracing::error!(
+                "challenge {challenge_id_for_log}: validation task panicked: {e:?}"
+            );
+        }
     });
 
     // Return immediately with processing state.
