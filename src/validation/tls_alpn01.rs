@@ -790,6 +790,84 @@ mod tests {
             other => panic!("expected Connection or Tls error, got {other:?}"),
         }
     }
+
+    /// Covers tls_alpn01.rs line 267 — `return Err("expected Extension SEQUENCE")`.
+    ///
+    /// The extensions SEQUENCE contains an INTEGER (tag 0x02) instead of a SEQUENCE
+    /// (tag 0x30).  Uses synta API to encode the search OID; the certificate bytes
+    /// are crafted only because no valid API produces malformed extension data.
+    #[test]
+    fn find_extension_value_non_sequence_in_extensions_returns_err() {
+        use synta::{Encode, Encoding, Encoder, ObjectIdentifier};
+        use synta_certificate::oids;
+
+        // Build a minimal fake DER structure:
+        //   SEQUENCE {                        -- outer Certificate
+        //     SEQUENCE {                      -- TBSCertificate
+        //       INTEGER 0  (×6 fake fields)   -- serial, sigAlg, issuer, validity, subject, spki
+        //       [3] {                         -- extensions [3] EXPLICIT
+        //         SEQUENCE {                  -- SEQUENCE OF Extension
+        //           INTEGER 0                 -- ← NOT a SEQUENCE → triggers line 267
+        //         }
+        //       }
+        //     }
+        //   }
+        let tbs_content: Vec<u8> = {
+            let mut v = Vec::new();
+            for _ in 0..6 {
+                v.extend_from_slice(&[0x02, 0x01, 0x00]); // INTEGER 0
+            }
+            v.extend_from_slice(&[0xa3, 0x05, 0x30, 0x03, 0x02, 0x01, 0x00]);
+            v
+        };
+        let mut tbs = vec![0x30, tbs_content.len() as u8];
+        tbs.extend_from_slice(&tbs_content);
+        let mut cert = vec![0x30, tbs.len() as u8];
+        cert.extend_from_slice(&tbs);
+
+        // Use synta API to encode the OID passed to find_extension_value.
+        let acme_oid = ObjectIdentifier::new(oids::PE_ACME_IDENTIFIER).unwrap();
+        let mut enc = Encoder::new(Encoding::Der);
+        acme_oid.encode(&mut enc).unwrap();
+        let acme_oid_der = enc.finish().unwrap();
+
+        let result = find_extension_value(&cert, &acme_oid_der);
+        assert!(result.is_err(), "expected Err for non-SEQUENCE extension element: {result:?}");
+    }
+
+    /// Covers tls_alpn01.rs line 277 — `return Err("expected OID in extension")`.
+    ///
+    /// An extension SEQUENCE's first element is an INTEGER (tag 0x02) instead of an
+    /// OID (tag 0x06).  Uses synta API to encode the search OID.
+    #[test]
+    fn find_extension_value_non_oid_first_element_returns_err() {
+        use synta::{Encode, Encoding, Encoder, ObjectIdentifier};
+        use synta_certificate::oids;
+
+        // extensions content: SEQUENCE { SEQUENCE { INTEGER ... } }
+        //                                           ↑ first element is INTEGER, not OID
+        let tbs_content: Vec<u8> = {
+            let mut v = Vec::new();
+            for _ in 0..6 {
+                v.extend_from_slice(&[0x02, 0x01, 0x00]); // INTEGER 0
+            }
+            // [3] EXPLICIT { SEQUENCE { SEQUENCE { INTEGER(3 bytes) } } }
+            v.extend_from_slice(&[0xa3, 0x09, 0x30, 0x07, 0x30, 0x05, 0x02, 0x03, 0x00, 0x00, 0x00]);
+            v
+        };
+        let mut tbs = vec![0x30, tbs_content.len() as u8];
+        tbs.extend_from_slice(&tbs_content);
+        let mut cert = vec![0x30, tbs.len() as u8];
+        cert.extend_from_slice(&tbs);
+
+        let acme_oid = ObjectIdentifier::new(oids::PE_ACME_IDENTIFIER).unwrap();
+        let mut enc = Encoder::new(Encoding::Der);
+        acme_oid.encode(&mut enc).unwrap();
+        let acme_oid_der = enc.finish().unwrap();
+
+        let result = find_extension_value(&cert, &acme_oid_der);
+        assert!(result.is_err(), "expected Err for non-OID first element in extension: {result:?}");
+    }
 }
 
 // ── Custom ServerCertVerifier that accepts any certificate ────────────────────
