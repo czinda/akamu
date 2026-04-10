@@ -492,4 +492,112 @@ mod tests {
         assert!(jwk.thumbprint().is_err());
         assert!(jwk.to_spki_der().is_err());
     }
+
+    #[test]
+    fn ec_thumbprint_missing_x_returns_error() {
+        // crv present but x is None → covers EC thumbprint missing-x closure
+        let jwk = JwkPublic {
+            kty: "EC".to_string(),
+            crv: Some("P-256".to_string()),
+            x: None,
+            y: Some(URL_SAFE_NO_PAD.encode(&[0u8; 32])),
+            n: None,
+            e: None,
+        };
+        let err = jwk.thumbprint().unwrap_err();
+        match err {
+            AcmeError::BadRequest(msg) => assert!(msg.contains("EC JWK missing 'x'")),
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ec_thumbprint_missing_y_returns_error() {
+        // crv and x present but y is None → covers EC thumbprint missing-y closure
+        let jwk = JwkPublic {
+            kty: "EC".to_string(),
+            crv: Some("P-256".to_string()),
+            x: Some(URL_SAFE_NO_PAD.encode(&[0u8; 32])),
+            y: None,
+            n: None,
+            e: None,
+        };
+        let err = jwk.thumbprint().unwrap_err();
+        match err {
+            AcmeError::BadRequest(msg) => assert!(msg.contains("EC JWK missing 'y'")),
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn okp_thumbprint_missing_crv_returns_error() {
+        // kty=OKP but crv is None → covers OKP thumbprint missing-crv closure
+        let jwk = JwkPublic {
+            kty: "OKP".to_string(),
+            crv: None,
+            x: Some(URL_SAFE_NO_PAD.encode(&[0u8; 32])),
+            y: None,
+            n: None,
+            e: None,
+        };
+        let err = jwk.thumbprint().unwrap_err();
+        match err {
+            AcmeError::BadRequest(msg) => assert!(msg.contains("OKP JWK missing 'crv'")),
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ec_spki_missing_x_returns_error() {
+        // crv present but x is None → covers ec_to_spki_der missing-x closure
+        let jwk = JwkPublic {
+            kty: "EC".to_string(),
+            crv: Some("P-256".to_string()),
+            x: None,
+            y: Some(URL_SAFE_NO_PAD.encode(&[0u8; 32])),
+            n: None,
+            e: None,
+        };
+        let err = jwk.to_spki_der().unwrap_err();
+        match err {
+            AcmeError::BadRequest(msg) => assert!(msg.contains("EC JWK missing 'x'")),
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ec_spki_missing_y_returns_error() {
+        // crv and x present but y is None → covers ec_to_spki_der missing-y closure
+        let jwk = JwkPublic {
+            kty: "EC".to_string(),
+            crv: Some("P-256".to_string()),
+            x: Some(URL_SAFE_NO_PAD.encode(&[0u8; 32])),
+            y: None,
+            n: None,
+            e: None,
+        };
+        let err = jwk.to_spki_der().unwrap_err();
+        match err {
+            AcmeError::BadRequest(msg) => assert!(msg.contains("EC JWK missing 'y'")),
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn okp_spki_missing_crv_returns_error() {
+        // kty=OKP but crv is None → covers okp_to_spki_der missing-crv closure
+        let jwk = JwkPublic {
+            kty: "OKP".to_string(),
+            crv: None,
+            x: Some(URL_SAFE_NO_PAD.encode(&[0u8; 32])),
+            y: None,
+            n: None,
+            e: None,
+        };
+        let err = jwk.to_spki_der().unwrap_err();
+        match err {
+            AcmeError::BadRequest(msg) => assert!(msg.contains("OKP JWK missing 'crv'")),
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
 }
