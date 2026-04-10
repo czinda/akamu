@@ -1,6 +1,6 @@
 use tokio_rusqlite::Connection;
 
-use crate::db::schema::AuthorizationRow;
+use crate::db::schema::{AuthorizationRow, ChallengeRow};
 use crate::error::AcmeError;
 
 fn row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuthorizationRow> {
@@ -73,6 +73,44 @@ pub async fn list_by_order(
             .query_map(rusqlite::params![order_id], row_from)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
+    })
+    .await
+    .map_err(AcmeError::from)
+}
+
+/// Fetch an authorization and all its challenges in a single database call.
+///
+/// Returns `None` if no authorization with `authz_id` exists.
+pub async fn get_with_challenges(
+    db: &Connection,
+    authz_id: &str,
+) -> Result<Option<(AuthorizationRow, Vec<ChallengeRow>)>, AcmeError> {
+    let authz_id = authz_id.to_string();
+    db.call(move |conn| {
+        let authz = {
+            let mut stmt = conn.prepare_cached(
+                "SELECT id, order_id, account_id, status, identifier, expires, wildcard, created, updated
+                 FROM authorizations WHERE id = ?1",
+            )?;
+            let mut rows = stmt.query(rusqlite::params![authz_id])?;
+            if let Some(row) = rows.next()? {
+                row_from(row)?
+            } else {
+                return Ok(None);
+            }
+        };
+        let challenges = {
+            let mut stmt = conn.prepare_cached(
+                "SELECT id, authz_id, type, status, token, validated, error, created, updated
+                 FROM challenges WHERE authz_id = ?1",
+            )?;
+            let rows: Vec<ChallengeRow> = stmt
+                .query_map(rusqlite::params![authz_id], crate::db::challenges::row_from)?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(stmt);
+            rows
+        };
+        Ok(Some((authz, challenges)))
     })
     .await
     .map_err(AcmeError::from)

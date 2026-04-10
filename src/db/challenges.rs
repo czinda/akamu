@@ -3,7 +3,7 @@ use tokio_rusqlite::Connection;
 use crate::db::schema::ChallengeRow;
 use crate::error::AcmeError;
 
-fn row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChallengeRow> {
+pub(crate) fn row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChallengeRow> {
     Ok(ChallengeRow {
         id: row.get(0)?,
         authz_id: row.get(1)?,

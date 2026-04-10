@@ -30,8 +30,8 @@ pub async fn respond_challenge(
         .account_id
         .ok_or(AcmeError::Unauthorized("kid required".into()))?;
 
-    // Load the authorization.
-    let authz = db::authz::get_by_id(&state.db, &authz_id)
+    // Load the authorization and its challenges in one DB call.
+    let (authz, challenges) = db::authz::get_with_challenges(&state.db, &authz_id)
         .await?
         .ok_or(AcmeError::NotFound)?;
     if authz.account_id != account_id {
@@ -47,7 +47,6 @@ pub async fn respond_challenge(
     }
 
     // Find the specific challenge.
-    let challenges = db::challenges::list_by_authz(&state.db, &authz_id).await?;
     let challenge = challenges
         .into_iter()
         .find(|c| c.r#type == chall_type)

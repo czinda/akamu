@@ -26,7 +26,7 @@ pub async fn get_authz(
         .account_id
         .ok_or(AcmeError::Unauthorized("kid required".into()))?;
 
-    let authz = db::authz::get_by_id(&state.db, &id)
+    let (authz, challenges) = db::authz::get_with_challenges(&state.db, &id)
         .await?
         .ok_or(AcmeError::NotFound)?;
     if authz.account_id != account_id {
@@ -34,8 +34,6 @@ pub async fn get_authz(
             "authorization belongs to different account".into(),
         ));
     }
-
-    let challenges = db::challenges::list_by_authz(&state.db, &id).await?;
     let base = &state.config.base_url;
 
     let issuer_domain = state.config.dns_persist_issuer_domain();
