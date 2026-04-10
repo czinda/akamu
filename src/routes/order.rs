@@ -216,3 +216,74 @@ fn gen_token() -> String {
     use base64::Engine;
     URL_SAFE_NO_PAD.encode(bytes)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_order(status: &str, expires: Option<i64>, cert_id: Option<&str>, error: Option<&str>) -> OrderRow {
+        OrderRow {
+            id: "order-1".to_string(),
+            account_id: "acct-1".to_string(),
+            status: status.to_string(),
+            expires,
+            identifiers: "[{\"type\":\"dns\",\"value\":\"example.com\"}]".to_string(),
+            not_before: None,
+            not_after: None,
+            error: error.map(|s| s.to_string()),
+            certificate_id: cert_id.map(|s| s.to_string()),
+            created: 1_700_000_000,
+            updated: 1_700_000_000,
+        }
+    }
+
+    #[test]
+    fn order_json_pending_order() {
+        let order = make_order("pending", Some(1_700_100_000), None, None);
+        let json = order_json(&order, &["https://acme.test/acme/authz/a".to_string()], "https://acme.test");
+        assert_eq!(json["status"], "pending");
+        assert!(json["expires"].as_str().is_some());
+        assert!(json["certificate"].is_null() || json.get("certificate").is_none());
+        assert!(json["finalize"].as_str().unwrap().contains("order-1"));
+    }
+
+    #[test]
+    fn order_json_valid_order_includes_certificate() {
+        let order = make_order("valid", None, Some("cert-abc"), None);
+        let json = order_json(&order, &[], "https://acme.test");
+        assert_eq!(json["status"], "valid");
+        assert!(json["certificate"].as_str().unwrap().contains("cert-abc"));
+    }
+
+    #[test]
+    fn order_json_invalid_order_includes_error() {
+        let order = make_order("invalid", None, None, Some("{\"type\":\"urn:ietf:params:acme:error:connection\",\"detail\":\"failed\"}"));
+        let json = order_json(&order, &[], "https://acme.test");
+        assert_eq!(json["status"], "invalid");
+        assert_eq!(json["error"]["type"], "urn:ietf:params:acme:error:connection");
+    }
+
+    #[test]
+    fn order_json_no_expires_when_none() {
+        let order = make_order("ready", None, None, None);
+        let json = order_json(&order, &[], "https://acme.test");
+        assert!(json.get("expires").is_none() || json["expires"].is_null());
+    }
+
+    #[test]
+    fn order_json_valid_status_without_cert_no_certificate_field() {
+        // valid status but no certificate_id → no "certificate" field
+        let order = make_order("valid", None, None, None);
+        let json = order_json(&order, &[], "https://acme.test");
+        // either missing or null
+        assert!(json.get("certificate").map_or(true, |v| v.is_null()));
+    }
+
+    #[test]
+    fn gen_token_returns_non_empty_string() {
+        let t = gen_token();
+        assert!(!t.is_empty());
+        // Should be base64url without padding — only alphanumeric, '-', '_'
+        assert!(t.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_'));
+    }
+}

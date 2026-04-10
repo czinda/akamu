@@ -208,3 +208,69 @@ fn validate_contacts(contacts: &[String]) -> Result<(), AcmeError> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_contacts_accepts_mailto_urls() {
+        validate_contacts(&["mailto:user@example.com".to_string()]).unwrap();
+        validate_contacts(&[
+            "mailto:a@b.com".to_string(),
+            "mailto:c@d.org".to_string(),
+        ]).unwrap();
+    }
+
+    #[test]
+    fn validate_contacts_rejects_non_mailto() {
+        let result = validate_contacts(&["https://example.com".to_string()]);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AcmeError::UnsupportedContact => {}
+            other => panic!("expected UnsupportedContact, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_contacts_empty_slice_is_ok() {
+        validate_contacts(&[]).unwrap();
+    }
+
+    #[test]
+    fn parse_contacts_none_returns_empty_vec() {
+        let result = parse_contacts(&None);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_contacts_valid_json_array() {
+        let json = Some("[\"mailto:a@b.com\",\"mailto:c@d.org\"]".to_string());
+        let result = parse_contacts(&json);
+        assert_eq!(result, vec!["mailto:a@b.com", "mailto:c@d.org"]);
+    }
+
+    #[test]
+    fn parse_contacts_invalid_json_returns_empty() {
+        let json = Some("not-json".to_string());
+        let result = parse_contacts(&json);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn account_json_has_required_fields() {
+        let row = AccountRow {
+            id: "test-id".to_string(),
+            status: "valid".to_string(),
+            contact: None,
+            public_key: vec![],
+            jwk_thumbprint: "thumb".to_string(),
+            created: 0,
+            updated: 0,
+        };
+        let contacts = vec!["mailto:a@b.com".to_string()];
+        let json = account_json(&row, &contacts, "https://acme.test");
+        assert_eq!(json["status"], "valid");
+        assert!(json["orders"].as_str().unwrap().contains("test-id"));
+    }
+}
