@@ -38,16 +38,7 @@ pub async fn new_order(
         .account_id
         .ok_or(AcmeError::Unauthorized("kid required".into()))?;
 
-    // Verify account is valid.
-    let account = db::accounts::get_by_id(&state.db, &account_id)
-        .await?
-        .ok_or(AcmeError::Unauthorized("account not found".into()))?;
-    if account.status != "valid" {
-        return Err(AcmeError::Unauthorized(format!(
-            "account status: {}",
-            account.status
-        )));
-    }
+    // Account validity was already verified by parse_jws (SPKI cache or DB lookup).
 
     let payload: NewOrderPayload = require_payload(&ctx.payload, "new-order")?;
 

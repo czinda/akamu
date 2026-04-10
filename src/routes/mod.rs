@@ -15,8 +15,7 @@ use tower_http::trace::TraceLayer;
 use crate::db;
 use crate::error::AcmeError;
 use crate::jose::jws::{JwsFlattened, JwsKeyRef, JwsProtectedHeader};
-use crate::jose::kid::spki_for_kid;
-use crate::state::AppState;
+use crate::state::{AppState, CachedAccount};
 
 pub mod account;
 pub mod authz;
@@ -89,6 +88,8 @@ pub(crate) struct JwsContext {
     pub spki_der: Vec<u8>,
     /// Account ID from `kid`, or `None` for new-account with `jwk`.
     pub account_id: Option<String>,
+    /// JWK thumbprint for the signing account (`None` for `jwk`-based requests).
+    pub jwk_thumbprint: Option<String>,
 }
 
 /// Parse, verify nonce, and verify signature for an ACME POST request.
@@ -123,27 +124,47 @@ pub(crate) async fn parse_jws(
     }
 
     // Resolve the signing key and account ID.
-    let (spki_der, account_id) = match &header.key_ref {
+    let (spki_der, account_id, jwk_thumbprint) = match &header.key_ref {
         JwsKeyRef::Jwk { jwk } => {
             let spki = jwk.to_spki_der()?;
-            (spki, None)
+            (spki, None, None)
         }
         JwsKeyRef::Kid { kid } => {
             let id = crate::jose::kid::account_id_from_kid(&state.config.base_url, kid)?;
-            // Try the in-memory SPKI cache first to avoid a DB round-trip.
+            // Try the in-memory account cache first to avoid a DB round-trip.
             let cached = state.spki_cache.read().unwrap().get(&id).cloned();
-            let spki = if let Some(spki) = cached {
-                spki
+            let cached_account = if let Some(acc) = cached {
+                if acc.status != "valid" {
+                    return Err(AcmeError::Unauthorized(format!(
+                        "account status is '{}'",
+                        acc.status
+                    )));
+                }
+                acc
             } else {
-                let spki = spki_for_kid(&state.db, &state.config.base_url, kid).await?;
+                let account = db::accounts::get_by_id(&state.db, &id)
+                    .await?
+                    .ok_or_else(|| AcmeError::Unauthorized("account not found".into()))?;
+                if account.status != "valid" {
+                    return Err(AcmeError::Unauthorized(format!(
+                        "account status is '{}'",
+                        account.status
+                    )));
+                }
+                let entry = CachedAccount {
+                    spki_der: account.public_key,
+                    jwk_thumbprint: account.jwk_thumbprint,
+                    status: account.status,
+                };
                 state
                     .spki_cache
                     .write()
                     .unwrap()
-                    .insert(id.clone(), spki.clone());
-                spki
+                    .insert(id.clone(), entry.clone());
+                entry
             };
-            (spki, Some(id))
+            let thumb = cached_account.jwk_thumbprint.clone();
+            (cached_account.spki_der, Some(id), Some(thumb))
         }
     };
 
@@ -156,6 +177,7 @@ pub(crate) async fn parse_jws(
         payload,
         spki_der,
         account_id,
+        jwk_thumbprint,
     })
 }
 

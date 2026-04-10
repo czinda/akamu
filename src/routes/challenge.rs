@@ -67,12 +67,11 @@ pub async fn respond_challenge(
     let id_type = identifier["type"].as_str().unwrap_or("").to_string();
     let id_value = identifier["value"].as_str().unwrap_or("").to_string();
 
-    // Compute key authorization (token + "." + JWK thumbprint).
-    let account = db::accounts::get_by_id(&state.db, &account_id)
-        .await?
-        .ok_or(AcmeError::Unauthorized("account not found".into()))?;
-
-    let jwk_thumbprint = account.jwk_thumbprint.clone();
+    // JWK thumbprint was already loaded by parse_jws (SPKI cache or DB lookup).
+    let jwk_thumbprint = ctx
+        .jwk_thumbprint
+        .clone()
+        .expect("challenge handler always uses kid-authenticated requests");
     // dns-persist-01 is validated against the account URI stored as the key_auth;
     // all other challenge types use the standard token·thumbprint form.
     let key_auth = if chall_type == "dns-persist-01" {

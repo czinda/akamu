@@ -19,12 +19,13 @@ pub struct AppState {
     pub mtc: Arc<MtcState>,
     /// Present when `[tls]` is enabled and client auth is configured.
     pub tls: Option<Arc<TlsState>>,
-    /// In-memory cache of account SPKI DER bytes keyed by account ID.
+    /// In-memory cache of account key material keyed by account ID.
     ///
     /// Populated on first authenticated request per account; evicted when the
     /// account is deactivated or its key is rolled over. Eliminates one DB
-    /// round-trip per kid-authenticated POST after the first request.
-    pub spki_cache: Arc<RwLock<HashMap<String, Vec<u8>>>>,
+    /// round-trip per kid-authenticated POST after the first request, and lets
+    /// routes that need the JWK thumbprint avoid a second `get_by_id` call.
+    pub spki_cache: Arc<RwLock<HashMap<String, CachedAccount>>>,
 }
 
 /// TLS client-auth state available to handlers for introspection.
@@ -57,6 +58,14 @@ pub struct CaState {
     pub crl_url: Option<String>,
     /// Optional OCSP responder URL.
     pub ocsp_url: Option<String>,
+}
+
+/// Cached account key material stored in `AppState::spki_cache`.
+#[derive(Clone)]
+pub struct CachedAccount {
+    pub spki_der: Vec<u8>,
+    pub jwk_thumbprint: String,
+    pub status: String,
 }
 
 /// MTC transparency log state.
