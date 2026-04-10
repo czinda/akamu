@@ -71,7 +71,8 @@ struct Args {
     #[arg(long, default_value = "http-01")]
     challenge: String,
 
-    /// Key type for issued certificates: ec:P-256, ec:P-384, rsa:2048, rsa:4096, ed25519
+    /// Key type for issued certificates: ec:P-256, ec:P-384, rsa:2048, rsa:4096, ed25519,
+    /// ml-dsa-44, ml-dsa-65, ml-dsa-87  (PQ requires OpenSSL 3.5+)
     #[arg(long, default_value = "ec:P-256")]
     key_type: String,
 
@@ -264,18 +265,22 @@ fn decode_len(buf: &[u8]) -> Option<(usize, &[u8])> {
 // ── Key generation (mirrors ca::init::generate_backend_key, which is pub(crate)) ──
 
 fn generate_key(key_type: &str) -> Result<BackendPrivateKey, String> {
-    let result = match key_type {
-        "ec:P-256" | "P-256" => BackendPrivateKey::generate_ec("P-256"),
-        "ec:P-384" | "P-384" => BackendPrivateKey::generate_ec("P-384"),
-        "ec:P-521" | "P-521" => BackendPrivateKey::generate_ec("P-521"),
-        "rsa:2048" | "rsa2048" => BackendPrivateKey::generate_rsa(2048, 65537),
-        "rsa:3072" | "rsa3072" => BackendPrivateKey::generate_rsa(3072, 65537),
-        "rsa:4096" | "rsa4096" => BackendPrivateKey::generate_rsa(4096, 65537),
-        "ed25519" => BackendPrivateKey::generate_ed25519(),
-        "ed448" => BackendPrivateKey::generate_ed448(),
-        other => return Err(format!("unknown key type '{other}'; use ec:P-256, rsa:2048, ed25519, …")),
-    };
-    result.map_err(|e| format!("generate '{key_type}': {e}"))
+    let err = |e: &dyn std::fmt::Display| format!("generate '{key_type}': {e}");
+    match key_type {
+        "ec:P-256" | "P-256"   => BackendPrivateKey::generate_ec("P-256").map_err(|e| err(&e)),
+        "ec:P-384" | "P-384"   => BackendPrivateKey::generate_ec("P-384").map_err(|e| err(&e)),
+        "ec:P-521" | "P-521"   => BackendPrivateKey::generate_ec("P-521").map_err(|e| err(&e)),
+        "rsa:2048" | "rsa2048" => BackendPrivateKey::generate_rsa(2048, 65537).map_err(|e| err(&e)),
+        "rsa:3072" | "rsa3072" => BackendPrivateKey::generate_rsa(3072, 65537).map_err(|e| err(&e)),
+        "rsa:4096" | "rsa4096" => BackendPrivateKey::generate_rsa(4096, 65537).map_err(|e| err(&e)),
+        "ed25519"              => BackendPrivateKey::generate_ed25519().map_err(|e| err(&e)),
+        "ed448"                => BackendPrivateKey::generate_ed448().map_err(|e| err(&e)),
+        // Post-quantum signature keys (FIPS 204, requires OpenSSL 3.5+).
+        "ml-dsa-44" | "ML-DSA-44" => BackendPrivateKey::generate_ml_dsa("ML-DSA-44").map_err(|e| err(&e)),
+        "ml-dsa-65" | "ML-DSA-65" => BackendPrivateKey::generate_ml_dsa("ML-DSA-65").map_err(|e| err(&e)),
+        "ml-dsa-87" | "ML-DSA-87" => BackendPrivateKey::generate_ml_dsa("ML-DSA-87").map_err(|e| err(&e)),
+        other => Err(format!("unknown key type '{other}'; use ec:P-256, rsa:2048, ed25519, ml-dsa-44, …")),
+    }
 }
 
 // ── CSR builder ────────────────────────────────────────────────────────────────
@@ -451,6 +456,8 @@ async fn start_server(args: &Args) -> BenchServer {
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
             cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
             key_type: args.ca_key_type.clone(),
+            // ML-DSA is a pure lattice scheme; the hash_alg field is ignored for
+            // PQ keys. "sha256" is the correct default for EC/RSA/Ed keys.
             hash_alg: "sha256".into(),
             validity_days: 90,
             crl_url: None,

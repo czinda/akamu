@@ -137,23 +137,24 @@ fn generate(config: &CaConfig) -> Result<(BackendPrivateKey, Vec<u8>), AcmeError
 
 /// Generate a `BackendPrivateKey` using the synta-certificate crypto backend.
 pub(crate) fn generate_backend_key(key_type: &str) -> Result<BackendPrivateKey, AcmeError> {
-    let result = match key_type {
-        "ec:P-256" | "P-256" => BackendPrivateKey::generate_ec("P-256"),
-        "ec:P-384" | "P-384" => BackendPrivateKey::generate_ec("P-384"),
-        "ec:P-521" | "P-521" => BackendPrivateKey::generate_ec("P-521"),
-        "rsa:2048" | "rsa2048" => BackendPrivateKey::generate_rsa(2048, 65537),
-        "rsa:3072" | "rsa3072" => BackendPrivateKey::generate_rsa(3072, 65537),
-        "rsa:4096" | "rsa4096" => BackendPrivateKey::generate_rsa(4096, 65537),
-        "ed25519" => BackendPrivateKey::generate_ed25519(),
-        "ed448" => BackendPrivateKey::generate_ed448(),
-        other => {
-            return Err(AcmeError::Internal(format!(
-                "unknown key type '{}'; use 'ec:P-256', 'rsa:2048', 'ed25519', etc.",
-                other
-            )));
-        }
-    };
-    result.map_err(|e| AcmeError::Crypto(format!("generate {key_type}: {e}")))
+    let cry = |e: &dyn std::fmt::Display| AcmeError::Crypto(format!("generate {key_type}: {e}"));
+    match key_type {
+        "ec:P-256" | "P-256"   => BackendPrivateKey::generate_ec("P-256").map_err(|e| cry(&e)),
+        "ec:P-384" | "P-384"   => BackendPrivateKey::generate_ec("P-384").map_err(|e| cry(&e)),
+        "ec:P-521" | "P-521"   => BackendPrivateKey::generate_ec("P-521").map_err(|e| cry(&e)),
+        "rsa:2048" | "rsa2048" => BackendPrivateKey::generate_rsa(2048, 65537).map_err(|e| cry(&e)),
+        "rsa:3072" | "rsa3072" => BackendPrivateKey::generate_rsa(3072, 65537).map_err(|e| cry(&e)),
+        "rsa:4096" | "rsa4096" => BackendPrivateKey::generate_rsa(4096, 65537).map_err(|e| cry(&e)),
+        "ed25519"              => BackendPrivateKey::generate_ed25519().map_err(|e| cry(&e)),
+        "ed448"                => BackendPrivateKey::generate_ed448().map_err(|e| cry(&e)),
+        // Post-quantum signature keys (FIPS 204, requires OpenSSL 3.5+).
+        "ml-dsa-44" | "ML-DSA-44" => BackendPrivateKey::generate_ml_dsa("ML-DSA-44").map_err(|e| cry(&e)),
+        "ml-dsa-65" | "ML-DSA-65" => BackendPrivateKey::generate_ml_dsa("ML-DSA-65").map_err(|e| cry(&e)),
+        "ml-dsa-87" | "ML-DSA-87" => BackendPrivateKey::generate_ml_dsa("ML-DSA-87").map_err(|e| cry(&e)),
+        other => Err(AcmeError::Internal(format!(
+            "unknown key type '{other}'; use 'ec:P-256', 'rsa:2048', 'ed25519', 'ml-dsa-44', etc."
+        ))),
+    }
 }
 
 /// Format the current time as a GeneralizedTime string `YYYYMMDDHHmmssZ`.
