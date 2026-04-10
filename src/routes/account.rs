@@ -52,8 +52,8 @@ pub async fn new_account(
             &state,
             StatusCode::OK,
             account_json(&existing, &contacts, &state.config.base_url),
-        )
-        .await?;
+            &ctx.next_nonce,
+        )?;
         resp.headers_mut().insert(
             axum::http::header::LOCATION,
             HeaderValue::from_str(&account_url).unwrap(),
@@ -103,8 +103,8 @@ pub async fn new_account(
         &state,
         StatusCode::CREATED,
         account_json(&row, &contacts, &state.config.base_url),
-    )
-    .await?;
+        &ctx.next_nonce,
+    )?;
     resp.headers_mut().insert(
         axum::http::header::LOCATION,
         HeaderValue::from_str(&account_url).unwrap(),
@@ -141,8 +141,8 @@ pub async fn update_account(
             &state,
             StatusCode::OK,
             account_json(&account, &contacts, &state.config.base_url),
-        )
-        .await;
+            &ctx.next_nonce,
+        );
     }
 
     // Parse update payload.
@@ -165,8 +165,8 @@ pub async fn update_account(
             &state,
             StatusCode::OK,
             account_json(&deactivated, &contacts, &state.config.base_url),
-        )
-        .await;
+            &ctx.next_nonce,
+        );
     }
 
     // Update contact.
@@ -184,8 +184,8 @@ pub async fn update_account(
         &state,
         StatusCode::OK,
         account_json(&updated, &contacts, &state.config.base_url),
+        &ctx.next_nonce,
     )
-    .await
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

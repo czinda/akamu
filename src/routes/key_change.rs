@@ -107,6 +107,6 @@ pub async fn key_change(
             "contact": contacts,
             "orders": format!("{}/acme/orders/{}", state.config.base_url, account_id),
         }),
+        &ctx.next_nonce,
     )
-    .await
 }

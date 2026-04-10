@@ -76,5 +76,5 @@ pub async fn get_authz(
         obj["expires"] = json!(fmt_time(exp));
     }
 
-    json_response(&state, StatusCode::OK, obj).await
+    json_response(&state, StatusCode::OK, obj, &ctx.next_nonce)
 }

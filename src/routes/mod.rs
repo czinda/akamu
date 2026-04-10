@@ -90,6 +90,9 @@ pub(crate) struct JwsContext {
     pub account_id: Option<String>,
     /// JWK thumbprint for the signing account (`None` for `jwk`-based requests).
     pub jwk_thumbprint: Option<String>,
+    /// Fresh nonce to include in the response Replay-Nonce header.
+    /// Generated and stored atomically with the consumed incoming nonce.
+    pub next_nonce: String,
 }
 
 /// Parse, verify nonce, and verify signature for an ACME POST request.
@@ -115,8 +118,13 @@ pub(crate) async fn parse_jws(
         )));
     }
 
-    // Consume the nonce (replay protection).
-    let nonce_valid = db::nonces::consume(&state.db, &header.nonce)
+    // Generate the response nonce and consume the incoming nonce atomically in
+    // one DB call — saves one channel round-trip compared to separate consume + insert.
+    let mut nonce_bytes = [0u8; 16];
+    getrandom::getrandom(&mut nonce_bytes)
+        .map_err(|e| AcmeError::Internal(format!("nonce rng: {e}")))?;
+    let next_nonce = URL_SAFE_NO_PAD.encode(nonce_bytes);
+    let nonce_valid = db::nonces::consume_and_insert(&state.db, &header.nonce, &next_nonce)
         .await
         .map_err(|e| AcmeError::Internal(format!("nonce check: {e}")))?;
     if !nonce_valid {
@@ -178,6 +186,7 @@ pub(crate) async fn parse_jws(
         spki_der,
         account_id,
         jwk_thumbprint,
+        next_nonce,
     })
 }
 
@@ -192,29 +201,32 @@ pub(crate) async fn new_nonce(state: &AppState) -> Result<String, AcmeError> {
     Ok(nonce)
 }
 
-/// Build standard ACME response headers: Replay-Nonce, Link: directory.
-pub(crate) async fn acme_headers(state: &AppState) -> Result<HeaderMap, AcmeError> {
-    let nonce = new_nonce(state).await?;
+/// Build standard ACME response headers using a pre-generated nonce.
+///
+/// The nonce was already consumed and the new one inserted atomically in
+/// `parse_jws` via `db::nonces::consume_and_insert`, so no DB call is needed here.
+pub(crate) fn acme_headers(state: &AppState, nonce: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(
         HeaderName::from_static("replay-nonce"),
-        HeaderValue::from_str(&nonce).unwrap(),
+        HeaderValue::from_str(nonce).unwrap(),
     );
     // Use the precomputed Link header value — avoids format!() + from_str() per response.
-    headers.insert(
-        axum::http::header::LINK,
-        (*state.link_header).clone(),
-    );
-    Ok(headers)
+    headers.insert(axum::http::header::LINK, (*state.link_header).clone());
+    headers
 }
 
 /// Wrap a JSON response with ACME headers.
-pub(crate) async fn json_response(
+///
+/// `nonce` must be a fresh nonce already inserted into the DB (use `ctx.next_nonce`
+/// from `parse_jws`, or call `new_nonce` for endpoints that do not use `parse_jws`).
+pub(crate) fn json_response(
     state: &AppState,
     status: StatusCode,
     body: Value,
+    nonce: &str,
 ) -> Result<Response, AcmeError> {
-    let headers = acme_headers(state).await?;
+    let headers = acme_headers(state, nonce);
     let mut resp = (status, Json(body)).into_response();
     resp.headers_mut().extend(headers);
     resp.headers_mut().insert(

@@ -180,6 +180,6 @@ pub async fn finalize_order(
         &state,
         StatusCode::OK,
         order_json(&updated_order, &authz_urls, &state.config.base_url),
+        &ctx.next_nonce,
     )
-    .await
 }

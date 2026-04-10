@@ -80,7 +80,7 @@ pub async fn revoke_cert(
     }
 
     // Return 200 with empty body (RFC 8555 §7.6).
-    let headers = acme_headers(&state).await?;
+    let headers = acme_headers(&state, &ctx.next_nonce);
     let mut resp = StatusCode::OK.into_response();
     resp.headers_mut().extend(headers);
     Ok(resp)

@@ -29,6 +29,33 @@ pub async fn consume(db: &Connection, nonce: &str) -> Result<bool, AcmeError> {
     .map_err(AcmeError::from)
 }
 
+/// Consume an old nonce and atomically insert a new one in a single DB call.
+///
+/// Returns `true` if the old nonce was valid (deleted and replacement stored),
+/// `false` if the old nonce was not found (replay or unknown).
+pub async fn consume_and_insert(
+    db: &Connection,
+    old_nonce: &str,
+    new_nonce: &str,
+) -> Result<bool, AcmeError> {
+    let old = old_nonce.to_string();
+    let new = new_nonce.to_string();
+    let now = now_secs();
+    db.call(move |conn| {
+        let n = conn
+            .prepare_cached("DELETE FROM nonces WHERE nonce = ?1")?
+            .execute(rusqlite::params![old])?;
+        if n == 0 {
+            return Ok(false);
+        }
+        conn.prepare_cached("INSERT INTO nonces (nonce, created) VALUES (?1, ?2)")?
+            .execute(rusqlite::params![new, now])?;
+        Ok(true)
+    })
+    .await
+    .map_err(AcmeError::from)
+}
+
 /// Delete nonces older than `max_age_secs` seconds.
 pub async fn sweep_expired(db: &Connection, max_age_secs: i64) -> Result<u64, AcmeError> {
     let cutoff = now_secs().saturating_sub(max_age_secs);

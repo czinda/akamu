@@ -54,7 +54,7 @@ pub async fn respond_challenge(
 
     if challenge.status != "pending" {
         // Already processing or completed; just return current state.
-        return challenge_response(&state, &challenge).await;
+        return challenge_response(&state, &challenge, &ctx.next_nonce);
     }
 
     // Mark challenge as processing.
@@ -112,12 +112,13 @@ pub async fn respond_challenge(
     // Return immediately with processing state.
     let mut updated = challenge.clone();
     updated.status = "processing".into();
-    challenge_response(&state, &updated).await
+    challenge_response(&state, &updated, &ctx.next_nonce)
 }
 
-async fn challenge_response(
+fn challenge_response(
     state: &AppState,
     challenge: &crate::db::schema::ChallengeRow,
+    nonce: &str,
 ) -> Result<Response, AcmeError> {
     let base = &state.config.base_url;
     let mut obj = json!({
@@ -141,5 +142,5 @@ async fn challenge_response(
             obj["error"] = v;
         }
     }
-    json_response(state, StatusCode::OK, obj).await
+    json_response(state, StatusCode::OK, obj, nonce)
 }

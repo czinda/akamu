@@ -180,7 +180,7 @@ pub async fn new_order(
         "finalize": format!("{base}/acme/order/{order_id}/finalize"),
     });
 
-    let mut resp = json_response(&state, StatusCode::CREATED, order_json).await?;
+    let mut resp = json_response(&state, StatusCode::CREATED, order_json, &ctx.next_nonce)?;
     resp.headers_mut().insert(
         axum::http::header::LOCATION,
         format!("{base}/acme/order/{order_id}").parse().unwrap(),
@@ -219,8 +219,8 @@ pub async fn get_order(
         &state,
         StatusCode::OK,
         order_json(&order, &authz_urls, &state.config.base_url),
+        &ctx.next_nonce,
     )
-    .await
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
