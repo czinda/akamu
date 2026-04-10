@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+use axum::http::HeaderValue;
 use synta_certificate::BackendPrivateKey;
 use synta_mtc::crypto::HashAlgorithm;
 use tokio_rusqlite::Connection;
@@ -26,6 +27,11 @@ pub struct AppState {
     /// round-trip per kid-authenticated POST after the first request, and lets
     /// routes that need the JWK thumbprint avoid a second `get_by_id` call.
     pub spki_cache: Arc<RwLock<HashMap<String, CachedAccount>>>,
+    /// Precomputed `Link: <base_url>/acme/directory>;rel="index"` header value.
+    ///
+    /// Computed once at startup; reused on every ACME response to avoid
+    /// `format!()` + `HeaderValue::from_str()` allocations on the hot path.
+    pub link_header: Arc<HeaderValue>,
 }
 
 /// TLS client-auth state available to handlers for introspection.

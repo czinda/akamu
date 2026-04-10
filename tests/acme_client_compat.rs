@@ -162,6 +162,7 @@ async fn start_plain_server(http_validation_port: u16) -> PlainServer {
         }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        link_header: Arc::new(axum::http::HeaderValue::from_static("<https://acme.test/acme/directory>;rel=\"index\"")),
     });
 
     let router = routes::build_router(state);

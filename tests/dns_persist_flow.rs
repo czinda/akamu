@@ -193,6 +193,7 @@ async fn build_state(
         }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        link_header: Arc::new(axum::http::HeaderValue::from_static("<https://acme.test/acme/directory>;rel=\"index\"")),
     });
     (state, dir)
 }

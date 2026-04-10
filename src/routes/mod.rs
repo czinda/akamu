@@ -200,10 +200,10 @@ pub(crate) async fn acme_headers(state: &AppState) -> Result<HeaderMap, AcmeErro
         HeaderName::from_static("replay-nonce"),
         HeaderValue::from_str(&nonce).unwrap(),
     );
-    let link_val = format!("<{}/acme/directory>;rel=\"index\"", state.config.base_url);
+    // Use the precomputed Link header value — avoids format!() + from_str() per response.
     headers.insert(
         axum::http::header::LINK,
-        HeaderValue::from_str(&link_val).unwrap(),
+        (*state.link_header).clone(),
     );
     Ok(headers)
 }

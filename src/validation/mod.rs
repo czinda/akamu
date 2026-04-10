@@ -285,6 +285,7 @@ mod tests {
             }),
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+            link_header: Arc::new(axum::http::HeaderValue::from_static("<https://acme.test/acme/directory>;rel=\"index\"")),
         })
     }
 
@@ -677,6 +678,7 @@ mod tests {
             }),
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+            link_header: Arc::new(axum::http::HeaderValue::from_static("<https://acme.test/acme/directory>;rel=\"index\"")),
         });
 
         // The identifier is just the IP address — no port embedded.
@@ -825,6 +827,7 @@ mod tests {
             }),
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+            link_header: Arc::new(axum::http::HeaderValue::from_static("<https://acme.test/acme/directory>;rel=\"index\"")),
         });
         // on_valid tries set_valid first; fails on no-table DB → warn + return (lines 65-67).
         on_valid(&state, "fake-chall", "fake-authz", unix_now()).await;
@@ -883,6 +886,7 @@ mod tests {
             }),
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+            link_header: Arc::new(axum::http::HeaderValue::from_static("<https://acme.test/acme/directory>;rel=\"index\"")),
         });
         // on_invalid tries set_invalid first; fails on no-table DB → warn (lines 128-135).
         on_invalid(
@@ -975,6 +979,7 @@ mod tests {
             }),
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+            link_header: Arc::new(axum::http::HeaderValue::from_static("<https://acme.test/acme/directory>;rel=\"index\"")),
         });
 
         // set_valid succeeds (challenge row exists), then update_status(authz) fails
@@ -1030,6 +1035,7 @@ mod tests {
             }),
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+            link_header: Arc::new(axum::http::HeaderValue::from_static("<https://acme.test/acme/directory>;rel=\"index\"")),
         })
     }
 

@@ -705,6 +705,13 @@ async fn start_server(args: &Args) -> BenchServer {
         }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        link_header: Arc::new(
+            axum::http::HeaderValue::from_str(&format!(
+                "<{}/acme/directory>;rel=\"index\"",
+                base_url
+            ))
+            .expect("base_url produces a valid Link header value"),
+        ),
     });
 
     let router = routes::build_router(state);

@@ -104,6 +104,13 @@ async fn run() -> Result<(), String> {
         mtc,
         tls: tls_state,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        link_header: Arc::new(
+            axum::http::HeaderValue::from_str(&format!(
+                "<{}/acme/directory>;rel=\"index\"",
+                config.base_url
+            ))
+            .expect("base_url produces a valid Link header value"),
+        ),
     });
 
     // ── HTTP / TLS server ─────────────────────────────────────────────────────
