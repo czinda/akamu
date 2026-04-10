@@ -11,15 +11,11 @@ use crate::state::AppState;
 
 use super::new_nonce;
 
-pub async fn new_nonce_head(
-    State(state): State<Arc<AppState>>,
-) -> Result<Response, AcmeError> {
+pub async fn new_nonce_head(State(state): State<Arc<AppState>>) -> Result<Response, AcmeError> {
     nonce_response(&state, StatusCode::OK).await
 }
 
-pub async fn new_nonce_get(
-    State(state): State<Arc<AppState>>,
-) -> Result<Response, AcmeError> {
+pub async fn new_nonce_get(State(state): State<Arc<AppState>>) -> Result<Response, AcmeError> {
     nonce_response(&state, StatusCode::NO_CONTENT).await
 }
 

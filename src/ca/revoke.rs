@@ -7,7 +7,7 @@
 
 use synta::{Decoder, Encoding};
 use synta_certificate::{
-    Certificate, CertificateListBuilder, CertificateSigner, der_to_pem, oids, PrivateKey,
+    der_to_pem, oids, Certificate, CertificateListBuilder, CertificateSigner, PrivateKey,
 };
 
 use crate::error::AcmeError;
@@ -69,7 +69,9 @@ pub fn build_crl(
     let crl_number_der = encode_integer_der(now as u64);
     builder = builder.add_crl_extension(oids::CRL_NUMBER, false, &crl_number_der);
 
-    let tbs_der = builder.build().map_err(|e| AcmeError::Builder(format!("CRL TBS: {e}")))?;
+    let tbs_der = builder
+        .build()
+        .map_err(|e| AcmeError::Builder(format!("CRL TBS: {e}")))?;
 
     // Sign the TBS.
     let signature = signer
@@ -91,8 +93,9 @@ pub fn build_crl(
 /// Extract the DER-encoded subject Name from a DER-encoded certificate.
 fn extract_ca_subject_der(ca_cert_der: &[u8]) -> Result<Vec<u8>, AcmeError> {
     let mut dec = Decoder::new(ca_cert_der, Encoding::Der);
-    let cert: Certificate =
-        dec.decode().map_err(|e| AcmeError::Internal(format!("parse CA cert: {e}")))?;
+    let cert: Certificate = dec
+        .decode()
+        .map_err(|e| AcmeError::Internal(format!("parse CA cert: {e}")))?;
     Ok(cert.tbs_certificate.subject.0.to_vec())
 }
 
@@ -178,8 +181,14 @@ mod tests {
         let (ca_key, ca_cert_der) = make_ca();
         let (crl_der, crl_pem) = build_crl(&ca_key, &ca_cert_der, "sha256", &[], 86400).unwrap();
         assert!(!crl_der.is_empty(), "CRL DER should not be empty");
-        assert!(crl_pem.contains("-----BEGIN X509 CRL-----"), "CRL PEM missing header");
-        assert!(crl_pem.contains("-----END X509 CRL-----"), "CRL PEM missing footer");
+        assert!(
+            crl_pem.contains("-----BEGIN X509 CRL-----"),
+            "CRL PEM missing header"
+        );
+        assert!(
+            crl_pem.contains("-----END X509 CRL-----"),
+            "CRL PEM missing footer"
+        );
     }
 
     #[test]
@@ -197,7 +206,8 @@ mod tests {
                 reason: Some(1), // keyCompromise
             },
         ];
-        let (crl_der, crl_pem) = build_crl(&ca_key, &ca_cert_der, "sha256", &entries, 86400).unwrap();
+        let (crl_der, crl_pem) =
+            build_crl(&ca_key, &ca_cert_der, "sha256", &entries, 86400).unwrap();
         assert!(!crl_der.is_empty());
         assert!(crl_pem.contains("-----BEGIN X509 CRL-----"));
     }

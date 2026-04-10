@@ -22,17 +22,15 @@ use hyper_util::rt::TokioIo;
 use rustls::pki_types::{CertificateDer, ServerName};
 use serde_json::{json, Value};
 use synta::{Decoder, Encoding};
+use synta_certificate::BackendPrivateKey;
 use synta_certificate::{
     format_dn, pem_to_der, Certificate, CertificateSigner as _, CsrBuilder, NameBuilder,
     PrivateKey as _, SubjectAlternativeNameBuilder,
 };
-use synta_certificate::BackendPrivateKey;
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 
-use acme_server::config::{
-    CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig, TlsConfig,
-};
+use acme_server::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig, TlsConfig};
 use acme_server::state::{AppState, CaState, MtcState};
 use acme_server::{ca, db, routes, tls};
 
@@ -124,7 +122,9 @@ fn ecdsa_der_to_p1363(der: &[u8], half: usize) -> Option<Vec<u8>> {
     let inner = strip_tlv(der, 0x30)?;
     let (r, rest) = strip_integer(inner)?;
     let (s, _) = strip_integer(rest)?;
-    if r.len() > half || s.len() > half { return None; }
+    if r.len() > half || s.len() > half {
+        return None;
+    }
     let mut out = vec![0u8; half * 2];
     out[half - r.len()..half].copy_from_slice(r);
     out[half * 2 - s.len()..].copy_from_slice(s);
@@ -132,13 +132,17 @@ fn ecdsa_der_to_p1363(der: &[u8], half: usize) -> Option<Vec<u8>> {
 }
 
 fn strip_tlv<'a>(buf: &'a [u8], tag: u8) -> Option<&'a [u8]> {
-    if *buf.first()? != tag { return None; }
+    if *buf.first()? != tag {
+        return None;
+    }
     let (len, rest) = decode_der_len(&buf[1..])?;
     rest.get(..len)
 }
 
 fn strip_integer(buf: &[u8]) -> Option<(&[u8], &[u8])> {
-    if *buf.first()? != 0x02 { return None; }
+    if *buf.first()? != 0x02 {
+        return None;
+    }
     let (len, rest) = decode_der_len(&buf[1..])?;
     let val = rest.get(..len)?;
     let val = val.strip_prefix(&[0x00u8]).unwrap_or(val);
@@ -164,7 +168,7 @@ fn decode_der_len(buf: &[u8]) -> Option<(usize, &[u8])> {
 /// Format a `Time` (UTCTime or GeneralizedTime) for display.
 fn fmt_time(t: &synta_certificate::Time) -> String {
     match t {
-        synta_certificate::Time::UtcTime(u)    => format!("{u}"),
+        synta_certificate::Time::UtcTime(u) => format!("{u}"),
         synta_certificate::Time::GeneralTime(g) => format!("{g}"),
     }
 }
@@ -194,7 +198,7 @@ fn log_certificate_chain(label: &str, pem: &str) {
 
                 // Subject and issuer as RFC 4514 strings.
                 let subject = format_dn(tbs.subject.as_bytes());
-                let issuer  = format_dn(tbs.issuer.as_bytes());
+                let issuer = format_dn(tbs.issuer.as_bytes());
                 tracing::info!("│  [cert {}]  subject : {}", i, subject);
                 tracing::info!("│  [cert {}]  issuer  : {}", i, issuer);
 
@@ -224,20 +228,25 @@ fn log_certificate_chain(label: &str, pem: &str) {
                     for (tag, value) in &sans {
                         match tag {
                             2 => {
-                                let dns = std::str::from_utf8(value)
-                                    .unwrap_or("<invalid UTF-8>");
+                                let dns = std::str::from_utf8(value).unwrap_or("<invalid UTF-8>");
                                 tracing::info!("│  [cert {}]  SAN     : dNSName = {}", i, dns);
                             }
                             7 if value.len() == 4 => {
                                 tracing::info!(
                                     "│  [cert {}]  SAN     : iPAddress = {}.{}.{}.{}",
-                                    i, value[0], value[1], value[2], value[3]
+                                    i,
+                                    value[0],
+                                    value[1],
+                                    value[2],
+                                    value[3]
                                 );
                             }
                             _ => {
                                 tracing::info!(
                                     "│  [cert {}]  SAN     : tag={} bytes={}",
-                                    i, tag, value.len()
+                                    i,
+                                    tag,
+                                    value.len()
                                 );
                             }
                         }
@@ -287,9 +296,7 @@ async fn https(
     body: Option<String>,
     ca_der: &[u8],
 ) -> Response {
-    tracing::debug!(
-        "  → {} https://localhost:{}{}", method, addr.port(), path
-    );
+    tracing::debug!("  → {} https://localhost:{}{}", method, addr.port(), path);
 
     let connector = TlsConnector::from(Arc::new(client_tls_config(ca_der)));
     let stream = TcpStream::connect(addr).await.expect("TCP connect");
@@ -321,9 +328,7 @@ async fn https(
     if content_len > 0 {
         builder = builder.header(header::CONTENT_LENGTH, content_len);
     }
-    let req = builder
-        .body(http_body_util::Full::new(body_bytes))
-        .unwrap();
+    let req = builder.body(http_body_util::Full::new(body_bytes)).unwrap();
 
     let resp = sender.send_request(req).await.expect("send request");
     let status = resp.status().as_u16();
@@ -336,7 +341,11 @@ async fn https(
 
     tracing::debug!("  ← {} ({} bytes)", status, body.len());
 
-    Response { status, headers, body }
+    Response {
+        status,
+        headers,
+        body,
+    }
 }
 
 // ── TLS test server ───────────────────────────────────────────────────────────
@@ -378,12 +387,14 @@ async fn start_tls_server() -> TlsTestServer {
     let base_url = format!("https://localhost:{}", addr.port());
 
     let cert_file = dir.path().join("server.crt").to_string_lossy().into_owned();
-    let key_file  = dir.path().join("server.key").to_string_lossy().into_owned();
+    let key_file = dir.path().join("server.key").to_string_lossy().into_owned();
 
     let config = Arc::new(Config {
         listen_addr: format!("127.0.0.1:{}", addr.port()),
         base_url: base_url.clone(),
-        database: DatabaseConfig { path: ":memory:".into() },
+        database: DatabaseConfig {
+            path: ":memory:".into(),
+        },
         ca: CaConfig {
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
             cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
@@ -396,7 +407,10 @@ async fn start_tls_server() -> TlsTestServer {
             organization: "Akāmu Tests".into(),
             ca_validity_years: 10,
         },
-        mtc: MtcConfig { log_path: "/dev/null".into(), enabled: false },
+        mtc: MtcConfig {
+            log_path: "/dev/null".into(),
+            enabled: false,
+        },
         server: ServerConfig::default(),
         tls: TlsConfig {
             enabled: true,
@@ -457,9 +471,7 @@ async fn start_tls_server() -> TlsTestServer {
     let handle = tokio::spawn(async move {
         axum_server::from_tcp_rustls(listener, rustls_cfg)
             .expect("bind TLS listener")
-            .serve(
-                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-            )
+            .serve(router.into_make_service_with_connect_info::<std::net::SocketAddr>())
             .await
             .unwrap();
     });
@@ -486,8 +498,7 @@ async fn mark_order_ready(db: &tokio_rusqlite::Connection, order_id: &str) {
     let order_id = order_id.to_string();
     db.call(move |conn| {
         let authz_ids: Vec<String> = {
-            let mut stmt =
-                conn.prepare("SELECT id FROM authorizations WHERE order_id = ?1")?;
+            let mut stmt = conn.prepare("SELECT id FROM authorizations WHERE order_id = ?1")?;
             let ids = stmt
                 .query_map(rusqlite::params![order_id], |r| r.get(0))?
                 .collect::<Result<_, _>>()?;
@@ -518,10 +529,13 @@ async fn mark_order_ready(db: &tokio_rusqlite::Connection, order_id: &str) {
 /// Build a minimal P-256 CSR for `domain` with a dNSName SAN.
 fn make_csr_der(domain: &str) -> Vec<u8> {
     let backend_key = BackendPrivateKey::generate_ec("P-256").unwrap();
-    let spki_der    = backend_key.public_key().unwrap().spki_der().to_vec();
-    let name_der    = NameBuilder::new().common_name(domain).build().unwrap();
-    let san_der     = SubjectAlternativeNameBuilder::new().dns_name(domain).build().unwrap();
-    let signer      = backend_key.as_signer("sha256");
+    let spki_der = backend_key.public_key().unwrap().spki_der().to_vec();
+    let name_der = NameBuilder::new().common_name(domain).build().unwrap();
+    let san_der = SubjectAlternativeNameBuilder::new()
+        .dns_name(domain)
+        .build()
+        .unwrap();
+    let signer = backend_key.as_signer("sha256");
     CsrBuilder::new()
         .subject_name(&name_der)
         .public_key_der(&spki_der)
@@ -538,9 +552,21 @@ async fn test_tls_directory() {
     let server = start_tls_server().await;
 
     tracing::info!("── test_tls_directory ──────────────────────────────────────");
-    let r = https(server.addr, "GET", "/acme/directory", &[], None, &server.ca_der).await;
+    let r = https(
+        server.addr,
+        "GET",
+        "/acme/directory",
+        &[],
+        None,
+        &server.ca_der,
+    )
+    .await;
 
-    assert_eq!(r.status, 200, "directory: expected 200, got {}: {}", r.status, r.body);
+    assert_eq!(
+        r.status, 200,
+        "directory: expected 200, got {}: {}",
+        r.status, r.body
+    );
     assert!(
         r.headers
             .get(header::CONTENT_TYPE)
@@ -555,9 +581,12 @@ async fn test_tls_directory() {
     tracing::info!("directory.newNonce   : {}", dir["newNonce"]);
     tracing::info!("directory.newOrder   : {}", dir["newOrder"]);
 
-    assert!(dir["newAccount"].is_string(), "directory missing newAccount");
-    assert!(dir["newNonce"].is_string(),   "directory missing newNonce");
-    assert!(dir["newOrder"].is_string(),   "directory missing newOrder");
+    assert!(
+        dir["newAccount"].is_string(),
+        "directory missing newAccount"
+    );
+    assert!(dir["newNonce"].is_string(), "directory missing newNonce");
+    assert!(dir["newOrder"].is_string(), "directory missing newOrder");
 }
 
 /// HEAD /acme/new-nonce returns 200 with a Replay-Nonce header.
@@ -566,10 +595,19 @@ async fn test_tls_new_nonce() {
     let server = start_tls_server().await;
 
     tracing::info!("── test_tls_new_nonce ──────────────────────────────────────");
-    let r = https(server.addr, "HEAD", "/acme/new-nonce", &[], None, &server.ca_der).await;
+    let r = https(
+        server.addr,
+        "HEAD",
+        "/acme/new-nonce",
+        &[],
+        None,
+        &server.ca_der,
+    )
+    .await;
 
     assert_eq!(r.status, 200, "new-nonce: expected 200, got {}", r.status);
-    let nonce = r.headers
+    let nonce = r
+        .headers
         .get("replay-nonce")
         .expect("missing Replay-Nonce header")
         .to_str()
@@ -588,9 +626,20 @@ async fn test_tls_new_account() {
 
     // Step 1: fetch a nonce.
     tracing::info!("Step 1: HEAD /acme/new-nonce");
-    let nonce_r = https(server.addr, "HEAD", "/acme/new-nonce", &[], None, &server.ca_der).await;
+    let nonce_r = https(
+        server.addr,
+        "HEAD",
+        "/acme/new-nonce",
+        &[],
+        None,
+        &server.ca_der,
+    )
+    .await;
     assert_eq!(nonce_r.status, 200);
-    let nonce = nonce_r.headers["replay-nonce"].to_str().unwrap().to_string();
+    let nonce = nonce_r.headers["replay-nonce"]
+        .to_str()
+        .unwrap()
+        .to_string();
     tracing::info!("  nonce = {}", nonce);
 
     // Step 2: POST new-account.
@@ -639,7 +688,15 @@ async fn test_tls_full_acme_flow() {
 
     // ── Step 1: GET /acme/directory ──────────────────────────────────────────
     tracing::info!("Step 1: GET /acme/directory");
-    let r = https(server.addr, "GET", "/acme/directory", &[], None, &server.ca_der).await;
+    let r = https(
+        server.addr,
+        "GET",
+        "/acme/directory",
+        &[],
+        None,
+        &server.ca_der,
+    )
+    .await;
     assert_eq!(r.status, 200);
     let dir: Value = serde_json::from_str(&r.body).unwrap();
     tracing::info!("  newAccount : {}", dir["newAccount"]);
@@ -648,7 +705,15 @@ async fn test_tls_full_acme_flow() {
 
     // ── Step 2: HEAD /acme/new-nonce ─────────────────────────────────────────
     tracing::info!("Step 2: HEAD /acme/new-nonce");
-    let nr = https(server.addr, "HEAD", "/acme/new-nonce", &[], None, &server.ca_der).await;
+    let nr = https(
+        server.addr,
+        "HEAD",
+        "/acme/new-nonce",
+        &[],
+        None,
+        &server.ca_der,
+    )
+    .await;
     assert_eq!(nr.status, 200);
     let nonce = nr.headers["replay-nonce"].to_str().unwrap().to_string();
     tracing::info!("  Replay-Nonce = {}", nonce);
@@ -736,7 +801,10 @@ async fn test_tls_full_acme_flow() {
         .to_string();
     tracing::info!("  finalize status = {}", final_body["status"]);
     tracing::info!("  certificate URL = {}", cert_url);
-    assert_eq!(final_body["status"], "valid", "expected order status=valid after finalize");
+    assert_eq!(
+        final_body["status"], "valid",
+        "expected order status=valid after finalize"
+    );
 
     // ── Step 7: GET /acme/cert/{id} ──────────────────────────────────────────
     let cert_path = cert_url
@@ -751,8 +819,14 @@ async fn test_tls_full_acme_flow() {
         "certificate endpoint should return PEM"
     );
     let cert_count = r.body.matches("-----BEGIN CERTIFICATE-----").count();
-    assert!(cert_count >= 2, "PEM bundle should contain leaf + CA (got {cert_count})");
-    tracing::info!("  response contains {} PEM certificate block(s)", cert_count);
+    assert!(
+        cert_count >= 2,
+        "PEM bundle should contain leaf + CA (got {cert_count})"
+    );
+    tracing::info!(
+        "  response contains {} PEM certificate block(s)",
+        cert_count
+    );
 
     // ── Certificate chain inspection ──────────────────────────────────────────
     log_certificate_chain("ACME-issued certificate chain", &r.body);
@@ -786,8 +860,16 @@ async fn test_tls_untrusted_ca_rejected() {
     // Generate a fresh unrelated CA.
     let dir = tempfile::TempDir::new().unwrap();
     let unrelated_ca_cfg = CaConfig {
-        key_file:  dir.path().join("other-ca.key").to_string_lossy().into_owned(),
-        cert_file: dir.path().join("other-ca.crt").to_string_lossy().into_owned(),
+        key_file: dir
+            .path()
+            .join("other-ca.key")
+            .to_string_lossy()
+            .into_owned(),
+        cert_file: dir
+            .path()
+            .join("other-ca.crt")
+            .to_string_lossy()
+            .into_owned(),
         key_type: "ec:P-256".into(),
         hash_alg: "sha256".into(),
         validity_days: 90,
@@ -809,8 +891,5 @@ async fn test_tls_untrusted_ca_rejected() {
         result.is_err(),
         "TLS handshake must fail when client trusts an unrelated CA"
     );
-    tracing::info!(
-        "✓ handshake rejected as expected: {}",
-        result.unwrap_err()
-    );
+    tracing::info!("✓ handshake rejected as expected: {}", result.unwrap_err());
 }

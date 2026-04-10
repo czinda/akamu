@@ -58,7 +58,11 @@ async fn validate_with_resolver(
     let now = unix_now();
 
     tracing::debug!(
-        domain, query_name, issuer_domain, account_uri, is_wildcard,
+        domain,
+        query_name,
+        issuer_domain,
+        account_uri,
+        is_wildcard,
         "dns-persist-01: querying TXT records"
     );
 
@@ -69,7 +73,11 @@ async fn validate_with_resolver(
 
     let records: Vec<String> = lookup
         .iter()
-        .map(|r| r.iter().map(|s| String::from_utf8_lossy(s).into_owned()).collect())
+        .map(|r| {
+            r.iter()
+                .map(|s| String::from_utf8_lossy(s).into_owned())
+                .collect()
+        })
         .collect();
 
     tracing::debug!(
@@ -88,7 +96,8 @@ async fn validate_with_resolver(
         );
         if matched {
             tracing::info!(
-                domain, query_name,
+                domain,
+                query_name,
                 "dns-persist-01: TXT record validated successfully"
             );
             return Ok(());
@@ -175,8 +184,11 @@ fn parse_persist_until(s: &str) -> Option<i64> {
         return None;
     }
     // Validate separators.
-    if &s[4..5] != "-" || &s[7..8] != "-" || &s[10..11] != "T"
-        || &s[13..14] != ":" || &s[16..17] != ":"
+    if &s[4..5] != "-"
+        || &s[7..8] != "-"
+        || &s[10..11] != "T"
+        || &s[13..14] != ":"
+        || &s[16..17] != ":"
     {
         return None;
     }
@@ -187,8 +199,8 @@ fn parse_persist_until(s: &str) -> Option<i64> {
     let minute: i64 = s[14..16].parse().ok()?;
     let second: i64 = s[17..19].parse().ok()?;
 
-    if month < 1 || month > 12 || day < 1 || day > 31
-        || hour > 23 || minute > 59 || second > 60  // 60 for leap seconds
+    if month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 60
+    // 60 for leap seconds
     {
         return None;
     }
@@ -200,9 +212,7 @@ fn parse_persist_until(s: &str) -> Option<i64> {
         y / 4 - y / 100 + y / 400
     }
 
-    let days_to_year = (year - 1970) * 365
-        + leap_years_before(year)
-        - leap_years_before(1970);
+    let days_to_year = (year - 1970) * 365 + leap_years_before(year) - leap_years_before(1970);
 
     let is_leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
     let days_in_months: [i64; 13] = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
@@ -243,7 +253,10 @@ mod tests {
     #[test]
     fn parse_known_timestamp() {
         // 2024-01-01T00:00:00Z = 1704067200
-        assert_eq!(parse_persist_until("2024-01-01T00:00:00Z"), Some(1_704_067_200));
+        assert_eq!(
+            parse_persist_until("2024-01-01T00:00:00Z"),
+            Some(1_704_067_200)
+        );
     }
 
     #[test]
@@ -353,7 +366,7 @@ mod tests {
             "acme.example.com; accounturi=https://acme.example.com/acme/account/1; policy=wildcard",
             "acme.example.com",
             "https://acme.example.com/acme/account/1",
-            true,  // require wildcard policy
+            true, // require wildcard policy
             NOW,
         ));
     }
@@ -364,7 +377,7 @@ mod tests {
             "acme.example.com; accounturi=https://acme.example.com/acme/account/1",
             "acme.example.com",
             "https://acme.example.com/acme/account/1",
-            true,  // require wildcard policy
+            true, // require wildcard policy
             NOW,
         ));
     }
@@ -489,10 +502,7 @@ mod tests {
 
     fn local_resolver(port: u16) -> (hickory_resolver::config::ResolverConfig, ResolverOpts) {
         let mut config = hickory_resolver::config::ResolverConfig::new();
-        let ns = NameServerConfig::new(
-            format!("127.0.0.1:{port}").parse().unwrap(),
-            Protocol::Udp,
-        );
+        let ns = NameServerConfig::new(format!("127.0.0.1:{port}").parse().unwrap(), Protocol::Udp);
         config.add_name_server(ns);
         (config, ResolverOpts::default())
     }
@@ -509,7 +519,10 @@ mod tests {
         let resolver = TokioAsyncResolver::tokio(config, opts);
 
         let result = validate_with_resolver("example.test", account_uri, issuer, resolver).await;
-        assert!(result.is_ok(), "expected Ok for matching record: {result:?}");
+        assert!(
+            result.is_ok(),
+            "expected Ok for matching record: {result:?}"
+        );
     }
 
     #[tokio::test]
@@ -521,8 +534,7 @@ mod tests {
         let resolver = TokioAsyncResolver::tokio(config, opts);
 
         let result =
-            validate_with_resolver("example.test", account_uri, "acme.example.com", resolver)
-                .await;
+            validate_with_resolver("example.test", account_uri, "acme.example.com", resolver).await;
         assert!(
             matches!(result, Err(AcmeError::IncorrectResponse(_))),
             "expected IncorrectResponse: {result:?}"
@@ -539,9 +551,11 @@ mod tests {
         let (config, opts) = local_resolver(port);
         let resolver = TokioAsyncResolver::tokio(config, opts);
 
-        let result =
-            validate_with_resolver("*.example.test", account_uri, issuer, resolver).await;
-        assert!(result.is_ok(), "wildcard validation should succeed: {result:?}");
+        let result = validate_with_resolver("*.example.test", account_uri, issuer, resolver).await;
+        assert!(
+            result.is_ok(),
+            "wildcard validation should succeed: {result:?}"
+        );
     }
 
     #[tokio::test]
@@ -554,8 +568,7 @@ mod tests {
         let (config, opts) = local_resolver(port);
         let resolver = TokioAsyncResolver::tokio(config, opts);
 
-        let result =
-            validate_with_resolver("*.example.test", account_uri, issuer, resolver).await;
+        let result = validate_with_resolver("*.example.test", account_uri, issuer, resolver).await;
         assert!(
             matches!(result, Err(AcmeError::IncorrectResponse(_))),
             "expected IncorrectResponse for missing wildcard policy: {result:?}"
@@ -564,8 +577,13 @@ mod tests {
 
     #[tokio::test]
     async fn validate_nonexistent_domain_returns_dns_error() {
-        let result =
-            validate("nonexistent.acme-test-invalid.invalid", "uri", "issuer", None).await;
+        let result = validate(
+            "nonexistent.acme-test-invalid.invalid",
+            "uri",
+            "issuer",
+            None,
+        )
+        .await;
         assert!(result.is_err());
     }
 }

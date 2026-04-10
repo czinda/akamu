@@ -109,29 +109,39 @@ mod tests {
     }
 
     async fn insert_parents(db: &Connection, account_id: &str, order_id: &str) {
-        crate::db::accounts::insert(db, AccountRow {
-            id: account_id.to_string(),
-            status: "valid".to_string(),
-            contact: None,
-            public_key: vec![0u8; 4],
-            jwk_thumbprint: format!("thumb-{account_id}"),
-            created: 1_700_000_000,
-            updated: 1_700_000_000,
-        }).await.unwrap();
+        crate::db::accounts::insert(
+            db,
+            AccountRow {
+                id: account_id.to_string(),
+                status: "valid".to_string(),
+                contact: None,
+                public_key: vec![0u8; 4],
+                jwk_thumbprint: format!("thumb-{account_id}"),
+                created: 1_700_000_000,
+                updated: 1_700_000_000,
+            },
+        )
+        .await
+        .unwrap();
 
-        crate::db::orders::insert(db, OrderRow {
-            id: order_id.to_string(),
-            account_id: account_id.to_string(),
-            status: "pending".to_string(),
-            expires: None,
-            identifiers: "[]".to_string(),
-            not_before: None,
-            not_after: None,
-            error: None,
-            certificate_id: None,
-            created: 1_700_000_000,
-            updated: 1_700_000_000,
-        }).await.unwrap();
+        crate::db::orders::insert(
+            db,
+            OrderRow {
+                id: order_id.to_string(),
+                account_id: account_id.to_string(),
+                status: "pending".to_string(),
+                expires: None,
+                identifiers: "[]".to_string(),
+                not_before: None,
+                not_after: None,
+                error: None,
+                certificate_id: None,
+                created: 1_700_000_000,
+                updated: 1_700_000_000,
+            },
+        )
+        .await
+        .unwrap();
     }
 
     fn sample_authz(id: &str, order_id: &str, account_id: &str) -> AuthorizationRow {
@@ -152,7 +162,9 @@ mod tests {
     async fn insert_and_get_by_id() {
         let db = open_db().await;
         insert_parents(&db, "acct-1", "order-1").await;
-        insert(&db, sample_authz("authz-1", "order-1", "acct-1")).await.unwrap();
+        insert(&db, sample_authz("authz-1", "order-1", "acct-1"))
+            .await
+            .unwrap();
 
         let row = get_by_id(&db, "authz-1").await.unwrap().unwrap();
         assert_eq!(row.id, "authz-1");
@@ -171,18 +183,25 @@ mod tests {
     async fn list_by_order_returns_authzs() {
         let db = open_db().await;
         insert_parents(&db, "acct-2", "order-2").await;
-        insert(&db, sample_authz("authz-2a", "order-2", "acct-2")).await.unwrap();
-        insert(&db, AuthorizationRow {
-            id: "authz-2b".to_string(),
-            order_id: "order-2".to_string(),
-            account_id: "acct-2".to_string(),
-            status: "valid".to_string(),
-            identifier: "{\"type\":\"dns\",\"value\":\"other.com\"}".to_string(),
-            expires: None,
-            wildcard: true,
-            created: 1_700_000_000,
-            updated: 1_700_000_000,
-        }).await.unwrap();
+        insert(&db, sample_authz("authz-2a", "order-2", "acct-2"))
+            .await
+            .unwrap();
+        insert(
+            &db,
+            AuthorizationRow {
+                id: "authz-2b".to_string(),
+                order_id: "order-2".to_string(),
+                account_id: "acct-2".to_string(),
+                status: "valid".to_string(),
+                identifier: "{\"type\":\"dns\",\"value\":\"other.com\"}".to_string(),
+                expires: None,
+                wildcard: true,
+                created: 1_700_000_000,
+                updated: 1_700_000_000,
+            },
+        )
+        .await
+        .unwrap();
 
         let authzs = list_by_order(&db, "order-2").await.unwrap();
         assert_eq!(authzs.len(), 2);
@@ -204,9 +223,13 @@ mod tests {
     async fn update_status_changes_status() {
         let db = open_db().await;
         insert_parents(&db, "acct-4", "order-4").await;
-        insert(&db, sample_authz("authz-4", "order-4", "acct-4")).await.unwrap();
+        insert(&db, sample_authz("authz-4", "order-4", "acct-4"))
+            .await
+            .unwrap();
 
-        update_status(&db, "authz-4", "valid", 1_700_000_001).await.unwrap();
+        update_status(&db, "authz-4", "valid", 1_700_000_001)
+            .await
+            .unwrap();
 
         let row = get_by_id(&db, "authz-4").await.unwrap().unwrap();
         assert_eq!(row.status, "valid");

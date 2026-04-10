@@ -18,9 +18,9 @@ use synta_certificate::{Certificate, OpensslSignatureVerifier};
 use synta_x509_verification::{
     ops::VerificationCertificate,
     policy::{PolicyDefinition, ValidationProfile},
-    OwnedStore, RevocationChecks,
-    WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS, WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS_WITH_PQ,
-    WEBPKI_PERMITTED_SPKI_ALGORITHMS, WEBPKI_PERMITTED_SPKI_ALGORITHMS_WITH_PQ,
+    OwnedStore, RevocationChecks, WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS,
+    WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS_WITH_PQ, WEBPKI_PERMITTED_SPKI_ALGORITHMS,
+    WEBPKI_PERMITTED_SPKI_ALGORITHMS_WITH_PQ,
 };
 
 use crate::config::ClientAuthConfig;
@@ -107,8 +107,7 @@ impl ClientCertVerifier for SyntaClientCertVerifier {
     ) -> Result<ClientCertVerified, TlsError> {
         // Clone DER into owned buffers: CertificateDer borrows are short-lived.
         let leaf_der: Vec<u8> = end_entity.as_ref().to_vec();
-        let inter_ders: Vec<Vec<u8>> =
-            intermediates.iter().map(|c| c.as_ref().to_vec()).collect();
+        let inter_ders: Vec<Vec<u8>> = intermediates.iter().map(|c| c.as_ref().to_vec()).collect();
         let validation_time = now.as_secs() as i64;
 
         // Parse leaf (borrows from leaf_der on the stack).
@@ -140,8 +139,7 @@ impl ClientCertVerifier for SyntaClientCertVerifier {
                 WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS,
             )
         };
-        let mut policy =
-            PolicyDefinition::new_client(OpensslSignatureVerifier, validation_time);
+        let mut policy = PolicyDefinition::new_client(OpensslSignatureVerifier, validation_time);
         policy.profile = self.profile;
         policy.max_chain_depth = self.max_chain_depth;
         policy.minimum_rsa_modulus = self.minimum_rsa_modulus;
@@ -277,21 +275,21 @@ fn verify_composite_via_openssl(
 
 /// Select the message digest for a composite ML-DSA TLS scheme.
 fn composite_digest(scheme: SignatureScheme) -> Result<openssl::hash::MessageDigest, String> {
-    use openssl::hash::MessageDigest;
     use crate::tls::schemes::*;
+    use openssl::hash::MessageDigest;
     match scheme {
-        SignatureScheme::Unknown(MLDSA44_ECDSA_P256_SHA256)     => Ok(MessageDigest::sha256()),
+        SignatureScheme::Unknown(MLDSA44_ECDSA_P256_SHA256) => Ok(MessageDigest::sha256()),
         SignatureScheme::Unknown(MLDSA44_RSA2048_PKCS15_SHA256) => Ok(MessageDigest::sha256()),
-        SignatureScheme::Unknown(MLDSA44_RSA2048_PSS_SHA256)    => Ok(MessageDigest::sha256()),
-        SignatureScheme::Unknown(MLDSA44_ED25519_SHA512)        => Ok(MessageDigest::sha512()),
-        SignatureScheme::Unknown(MLDSA65_ECDSA_P256_SHA512)     => Ok(MessageDigest::sha512()),
-        SignatureScheme::Unknown(MLDSA65_ECDSA_P384_SHA512)     => Ok(MessageDigest::sha512()),
+        SignatureScheme::Unknown(MLDSA44_RSA2048_PSS_SHA256) => Ok(MessageDigest::sha256()),
+        SignatureScheme::Unknown(MLDSA44_ED25519_SHA512) => Ok(MessageDigest::sha512()),
+        SignatureScheme::Unknown(MLDSA65_ECDSA_P256_SHA512) => Ok(MessageDigest::sha512()),
+        SignatureScheme::Unknown(MLDSA65_ECDSA_P384_SHA512) => Ok(MessageDigest::sha512()),
         SignatureScheme::Unknown(MLDSA65_RSA3072_PKCS15_SHA384) => Ok(MessageDigest::sha384()),
-        SignatureScheme::Unknown(MLDSA65_RSA3072_PSS_SHA384)    => Ok(MessageDigest::sha384()),
-        SignatureScheme::Unknown(MLDSA65_ED25519_SHA512)        => Ok(MessageDigest::sha512()),
-        SignatureScheme::Unknown(MLDSA87_ECDSA_P384_SHA512)     => Ok(MessageDigest::sha512()),
-        SignatureScheme::Unknown(MLDSA87_ECDSA_P521_SHA512)     => Ok(MessageDigest::sha512()),
-        SignatureScheme::Unknown(MLDSA87_ED448_SHA512)          => Ok(MessageDigest::sha512()),
+        SignatureScheme::Unknown(MLDSA65_RSA3072_PSS_SHA384) => Ok(MessageDigest::sha384()),
+        SignatureScheme::Unknown(MLDSA65_ED25519_SHA512) => Ok(MessageDigest::sha512()),
+        SignatureScheme::Unknown(MLDSA87_ECDSA_P384_SHA512) => Ok(MessageDigest::sha512()),
+        SignatureScheme::Unknown(MLDSA87_ECDSA_P521_SHA512) => Ok(MessageDigest::sha512()),
+        SignatureScheme::Unknown(MLDSA87_ED448_SHA512) => Ok(MessageDigest::sha512()),
         other => Err(format!("unknown composite scheme {other:?}")),
     }
 }

@@ -10,18 +10,18 @@
 
 use rustls::SignatureScheme;
 
-pub const MLDSA44_ECDSA_P256_SHA256:     u16 = 0x0901;
+pub const MLDSA44_ECDSA_P256_SHA256: u16 = 0x0901;
 pub const MLDSA44_RSA2048_PKCS15_SHA256: u16 = 0x0902;
-pub const MLDSA44_RSA2048_PSS_SHA256:    u16 = 0x0903;
-pub const MLDSA44_ED25519_SHA512:        u16 = 0x0904;
-pub const MLDSA65_ECDSA_P256_SHA512:     u16 = 0x0905;
-pub const MLDSA65_ECDSA_P384_SHA512:     u16 = 0x0906;
+pub const MLDSA44_RSA2048_PSS_SHA256: u16 = 0x0903;
+pub const MLDSA44_ED25519_SHA512: u16 = 0x0904;
+pub const MLDSA65_ECDSA_P256_SHA512: u16 = 0x0905;
+pub const MLDSA65_ECDSA_P384_SHA512: u16 = 0x0906;
 pub const MLDSA65_RSA3072_PKCS15_SHA384: u16 = 0x0907;
-pub const MLDSA65_RSA3072_PSS_SHA384:    u16 = 0x0908;
-pub const MLDSA65_ED25519_SHA512:        u16 = 0x0909;
-pub const MLDSA87_ECDSA_P384_SHA512:     u16 = 0x090A;
-pub const MLDSA87_ECDSA_P521_SHA512:     u16 = 0x090B;
-pub const MLDSA87_ED448_SHA512:          u16 = 0x090C;
+pub const MLDSA65_RSA3072_PSS_SHA384: u16 = 0x0908;
+pub const MLDSA65_ED25519_SHA512: u16 = 0x0909;
+pub const MLDSA87_ECDSA_P384_SHA512: u16 = 0x090A;
+pub const MLDSA87_ECDSA_P521_SHA512: u16 = 0x090B;
+pub const MLDSA87_ED448_SHA512: u16 = 0x090C;
 
 /// All composite ML-DSA schemes as `SignatureScheme::Unknown` values.
 pub static COMPOSITE_SCHEMES: &[SignatureScheme] = &[

@@ -45,8 +45,9 @@ pub fn validate_csr(
 ) -> Result<ValidatedCsr, AcmeError> {
     // 1. Parse the CSR.
     let mut decoder = Decoder::new(csr_der, Encoding::Der);
-    let csr: CertificationRequest =
-        decoder.decode().map_err(|e| AcmeError::BadCsr(format!("parse: {e}")))?;
+    let csr: CertificationRequest = decoder
+        .decode()
+        .map_err(|e| AcmeError::BadCsr(format!("parse: {e}")))?;
 
     // 2. Re-encode CertificationRequestInfo → TBS bytes.
     let mut enc = Encoder::new(Encoding::Der);
@@ -92,7 +93,9 @@ pub fn validate_csr(
         let mut bc_dec = Decoder::new(&bc_bytes, Encoding::Der);
         if let Ok(bc) = bc_dec.decode::<BasicConstraints>() {
             if bc.c_a.map(|b| b.0).unwrap_or(false) {
-                return Err(AcmeError::BadCsr("cA=TRUE not allowed in end-entity CSR".into()));
+                return Err(AcmeError::BadCsr(
+                    "cA=TRUE not allowed in end-entity CSR".into(),
+                ));
             }
         }
     }
@@ -105,12 +108,18 @@ pub fn validate_csr(
                 general_name::DNS_NAME => {
                     let name = String::from_utf8(content)
                         .map_err(|_| AcmeError::BadCsr("SAN dNSName is not valid UTF-8".into()))?;
-                    sans.push(SanEntry { san_type: "dns".into(), value: name });
+                    sans.push(SanEntry {
+                        san_type: "dns".into(),
+                        value: name,
+                    });
                 }
                 general_name::IP_ADDRESS => {
                     let ip = bytes_to_ip_string(&content)
                         .ok_or_else(|| AcmeError::BadCsr("SAN iPAddress invalid length".into()))?;
-                    sans.push(SanEntry { san_type: "ip".into(), value: ip });
+                    sans.push(SanEntry {
+                        san_type: "ip".into(),
+                        value: ip,
+                    });
                 }
                 _ => {} // rfc822Name, URI, etc. — ignored for ACME
             }
@@ -147,7 +156,11 @@ pub fn validate_csr(
         .finish()
         .map_err(|e| AcmeError::BadCsr(format!("subject finish: {e}")))?;
 
-    Ok(ValidatedCsr { spki_der, subject_der, sans })
+    Ok(ValidatedCsr {
+        spki_der,
+        subject_der,
+        sans,
+    })
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -178,15 +191,18 @@ fn extract_csr_extensions<'a>(csr: &CertificationRequest<'a>) -> Result<Vec<CsrE
 
 /// Decode a DER-encoded `SEQUENCE OF Extension` into `CsrExt` pairs.
 fn decode_extension_sequence(seq_der: &[u8]) -> Result<Vec<CsrExt>, AcmeError> {
-    let content = strip_sequence(seq_der)
-        .ok_or_else(|| AcmeError::BadCsr("extensionRequest value is not a valid SEQUENCE".into()))?;
+    let content = strip_sequence(seq_der).ok_or_else(|| {
+        AcmeError::BadCsr("extensionRequest value is not a valid SEQUENCE".into())
+    })?;
     let mut pos = 0;
     let mut result = Vec::new();
     while pos < content.len() {
         let (hlen, vlen) = tlv_header(content, pos)
             .ok_or_else(|| AcmeError::BadCsr("truncated Extension TLV in CSR".into()))?;
         if pos + hlen + vlen > content.len() {
-            return Err(AcmeError::BadCsr("Extension TLV value truncated in CSR".into()));
+            return Err(AcmeError::BadCsr(
+                "Extension TLV value truncated in CSR".into(),
+            ));
         }
         let ext_der = &content[pos..pos + hlen + vlen];
         pos += hlen + vlen;
@@ -249,7 +265,10 @@ fn tlv_header(der: &[u8], pos: usize) -> Option<(usize, usize)> {
 /// Convert 4 (IPv4) or 16 (IPv6) raw bytes to a string.
 fn bytes_to_ip_string(bytes: &[u8]) -> Option<String> {
     match bytes.len() {
-        4 => Some(format!("{}.{}.{}.{}", bytes[0], bytes[1], bytes[2], bytes[3])),
+        4 => Some(format!(
+            "{}.{}.{}.{}",
+            bytes[0], bytes[1], bytes[2], bytes[3]
+        )),
         16 => {
             let mut octets = [0u8; 16];
             octets.copy_from_slice(bytes);
@@ -262,12 +281,14 @@ fn bytes_to_ip_string(bytes: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synta_certificate::{BackendPrivateKey, CsrBuilder, NameBuilder, PrivateKey as _,
-        SubjectAlternativeNameBuilder, BasicConstraints};
+    use synta::traits::Encode;
+    use synta::{Decoder, Encoder, Encoding};
     use synta_certificate::csr::CertificationRequest;
     use synta_certificate::oids;
-    use synta::{Decoder, Encoder, Encoding};
-    use synta::traits::Encode;
+    use synta_certificate::{
+        BackendPrivateKey, BasicConstraints, CsrBuilder, NameBuilder, PrivateKey as _,
+        SubjectAlternativeNameBuilder,
+    };
 
     fn make_csr_der(key: &BackendPrivateKey, domain: &str, include_bc_ca_true: bool) -> Vec<u8> {
         let spki_der = key.public_key().unwrap().spki_der().to_vec();
@@ -293,7 +314,10 @@ mod tests {
 
     fn make_ip_csr_der(key: &BackendPrivateKey, ip_bytes: &[u8]) -> Vec<u8> {
         let spki_der = key.public_key().unwrap().spki_der().to_vec();
-        let name_der = NameBuilder::new().common_name("ip-san-test").build().unwrap();
+        let name_der = NameBuilder::new()
+            .common_name("ip-san-test")
+            .build()
+            .unwrap();
         let san_der = SubjectAlternativeNameBuilder::new()
             .ip_address(ip_bytes)
             .build()
@@ -468,7 +492,10 @@ mod tests {
             .unwrap();
         // No SANs in CSR and no required identifiers → should pass validation.
         let result = validate_csr(&csr_der, &[]);
-        assert!(result.is_ok(), "CSR with no SAN should validate against empty identifiers: {result:?}");
+        assert!(
+            result.is_ok(),
+            "CSR with no SAN should validate against empty identifiers: {result:?}"
+        );
         let validated = result.unwrap();
         assert!(validated.sans.is_empty());
     }
@@ -486,10 +513,10 @@ mod tests {
         // DER: SEQUENCE { [1] IA5String "a@b.com" }
         let email = b"a@b.com";
         let mut san_der = vec![
-            0x30,                          // SEQUENCE
-            (email.len() + 2) as u8,       // length
-            0x81,                          // [1] IMPLICIT (rfc822Name)
-            email.len() as u8,             // length of email
+            0x30,                    // SEQUENCE
+            (email.len() + 2) as u8, // length
+            0x81,                    // [1] IMPLICIT (rfc822Name)
+            email.len() as u8,       // length of email
         ];
         san_der.extend_from_slice(email);
 
@@ -503,9 +530,15 @@ mod tests {
 
         // rfc822Name SAN is ignored → sans is empty → validates OK against empty identifiers
         let result = validate_csr(&csr_der, &[]);
-        assert!(result.is_ok(), "rfc822Name SAN should be silently ignored: {result:?}");
+        assert!(
+            result.is_ok(),
+            "rfc822Name SAN should be silently ignored: {result:?}"
+        );
         let validated = result.unwrap();
-        assert!(validated.sans.is_empty(), "email SAN should be excluded from parsed SANs");
+        assert!(
+            validated.sans.is_empty(),
+            "email SAN should be excluded from parsed SANs"
+        );
     }
 
     /// Covers lines 173-176: extract_csr_extensions when CSR has attributes but
@@ -520,9 +553,14 @@ mod tests {
         // extensionRequest OID in DER: 06 09 2A 86 48 86 F7 0D 01 09 0E
         // Change the last byte (0x0E = extensionRequest) to 0x07 (challengePassword).
         // Both OIDs have the same DER encoding length, so structure stays valid.
-        let ext_req_oid: &[u8] = &[0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x09, 0x0E];
+        let ext_req_oid: &[u8] = &[
+            0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x09, 0x0E,
+        ];
         let mut modified_der = csr_der.clone();
-        if let Some(pos) = modified_der.windows(ext_req_oid.len()).position(|w| w == ext_req_oid) {
+        if let Some(pos) = modified_der
+            .windows(ext_req_oid.len())
+            .position(|w| w == ext_req_oid)
+        {
             modified_der[pos + ext_req_oid.len() - 1] = 0x07; // change to challengePassword OID
         } else {
             panic!("extensionRequest OID not found in CSR DER — test needs updating");
@@ -531,7 +569,9 @@ mod tests {
         // Parse the modified DER. Signature will be invalid because CRI bytes changed,
         // but extract_csr_extensions does not check signatures.
         let mut decoder = Decoder::new(&modified_der, Encoding::Der);
-        let csr: CertificationRequest = decoder.decode().expect("modified CSR DER should still parse");
+        let csr: CertificationRequest = decoder
+            .decode()
+            .expect("modified CSR DER should still parse");
 
         // Call the private function directly — accessible from child test module.
         let result = super::extract_csr_extensions(&csr);
@@ -550,7 +590,10 @@ mod tests {
         use synta_certificate::encode_basic_constraints;
         let key = BackendPrivateKey::generate_ec("P-256").unwrap();
         let spki_der = key.public_key().unwrap().spki_der().to_vec();
-        let name_der = NameBuilder::new().common_name("example.com").build().unwrap();
+        let name_der = NameBuilder::new()
+            .common_name("example.com")
+            .build()
+            .unwrap();
         let san_der = SubjectAlternativeNameBuilder::new()
             .dns_name("example.com")
             .build()
@@ -565,6 +608,9 @@ mod tests {
             .sign(&signer)
             .unwrap();
         let result = validate_csr(&csr_der, &[("dns", "example.com")]);
-        assert!(result.is_ok(), "CSR with cA=FALSE BasicConstraints should be accepted: {result:?}");
+        assert!(
+            result.is_ok(),
+            "CSR with cA=FALSE BasicConstraints should be accepted: {result:?}"
+        );
     }
 }

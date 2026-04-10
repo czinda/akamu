@@ -42,38 +42,42 @@ impl JwkPublic {
         // RFC 7638 §3.2: required members, lexicographically sorted, no whitespace
         let canonical = match self.kty.as_str() {
             "RSA" => {
-                let n = self.n.as_deref().ok_or_else(|| {
-                    AcmeError::BadRequest("RSA JWK missing 'n'".into())
-                })?;
-                let e = self.e.as_deref().ok_or_else(|| {
-                    AcmeError::BadRequest("RSA JWK missing 'e'".into())
-                })?;
+                let n = self
+                    .n
+                    .as_deref()
+                    .ok_or_else(|| AcmeError::BadRequest("RSA JWK missing 'n'".into()))?;
+                let e = self
+                    .e
+                    .as_deref()
+                    .ok_or_else(|| AcmeError::BadRequest("RSA JWK missing 'e'".into()))?;
                 // Required members for RSA: e, kty, n (alphabetical order)
                 format!(r#"{{"e":"{}","kty":"RSA","n":"{}"}}"#, e, n)
             }
             "EC" => {
-                let crv = self.crv.as_deref().ok_or_else(|| {
-                    AcmeError::BadRequest("EC JWK missing 'crv'".into())
-                })?;
-                let x = self.x.as_deref().ok_or_else(|| {
-                    AcmeError::BadRequest("EC JWK missing 'x'".into())
-                })?;
-                let y = self.y.as_deref().ok_or_else(|| {
-                    AcmeError::BadRequest("EC JWK missing 'y'".into())
-                })?;
+                let crv = self
+                    .crv
+                    .as_deref()
+                    .ok_or_else(|| AcmeError::BadRequest("EC JWK missing 'crv'".into()))?;
+                let x = self
+                    .x
+                    .as_deref()
+                    .ok_or_else(|| AcmeError::BadRequest("EC JWK missing 'x'".into()))?;
+                let y = self
+                    .y
+                    .as_deref()
+                    .ok_or_else(|| AcmeError::BadRequest("EC JWK missing 'y'".into()))?;
                 // Required members for EC: crv, kty, x, y (alphabetical order)
-                format!(
-                    r#"{{"crv":"{}","kty":"EC","x":"{}","y":"{}"}}"#,
-                    crv, x, y
-                )
+                format!(r#"{{"crv":"{}","kty":"EC","x":"{}","y":"{}"}}"#, crv, x, y)
             }
             "OKP" => {
-                let crv = self.crv.as_deref().ok_or_else(|| {
-                    AcmeError::BadRequest("OKP JWK missing 'crv'".into())
-                })?;
-                let x = self.x.as_deref().ok_or_else(|| {
-                    AcmeError::BadRequest("OKP JWK missing 'x'".into())
-                })?;
+                let crv = self
+                    .crv
+                    .as_deref()
+                    .ok_or_else(|| AcmeError::BadRequest("OKP JWK missing 'crv'".into()))?;
+                let x = self
+                    .x
+                    .as_deref()
+                    .ok_or_else(|| AcmeError::BadRequest("OKP JWK missing 'x'".into()))?;
                 // Required members for OKP: crv, kty, x (alphabetical order)
                 format!(r#"{{"crv":"{}","kty":"OKP","x":"{}"}}"#, crv, x)
             }
@@ -106,12 +110,14 @@ impl JwkPublic {
     }
 
     fn rsa_to_spki_der(&self) -> Result<Vec<u8>, AcmeError> {
-        let n_b64 = self.n.as_deref().ok_or_else(|| {
-            AcmeError::BadRequest("RSA JWK missing 'n'".into())
-        })?;
-        let e_b64 = self.e.as_deref().ok_or_else(|| {
-            AcmeError::BadRequest("RSA JWK missing 'e'".into())
-        })?;
+        let n_b64 = self
+            .n
+            .as_deref()
+            .ok_or_else(|| AcmeError::BadRequest("RSA JWK missing 'n'".into()))?;
+        let e_b64 = self
+            .e
+            .as_deref()
+            .ok_or_else(|| AcmeError::BadRequest("RSA JWK missing 'e'".into()))?;
 
         let n = URL_SAFE_NO_PAD
             .decode(n_b64)
@@ -126,15 +132,18 @@ impl JwkPublic {
     }
 
     fn ec_to_spki_der(&self) -> Result<Vec<u8>, AcmeError> {
-        let crv = self.crv.as_deref().ok_or_else(|| {
-            AcmeError::BadRequest("EC JWK missing 'crv'".into())
-        })?;
-        let x_b64 = self.x.as_deref().ok_or_else(|| {
-            AcmeError::BadRequest("EC JWK missing 'x'".into())
-        })?;
-        let y_b64 = self.y.as_deref().ok_or_else(|| {
-            AcmeError::BadRequest("EC JWK missing 'y'".into())
-        })?;
+        let crv = self
+            .crv
+            .as_deref()
+            .ok_or_else(|| AcmeError::BadRequest("EC JWK missing 'crv'".into()))?;
+        let x_b64 = self
+            .x
+            .as_deref()
+            .ok_or_else(|| AcmeError::BadRequest("EC JWK missing 'x'".into()))?;
+        let y_b64 = self
+            .y
+            .as_deref()
+            .ok_or_else(|| AcmeError::BadRequest("EC JWK missing 'y'".into()))?;
 
         let x = URL_SAFE_NO_PAD
             .decode(x_b64)
@@ -162,12 +171,14 @@ impl JwkPublic {
     }
 
     fn okp_to_spki_der(&self) -> Result<Vec<u8>, AcmeError> {
-        let crv = self.crv.as_deref().ok_or_else(|| {
-            AcmeError::BadRequest("OKP JWK missing 'crv'".into())
-        })?;
-        let x_b64 = self.x.as_deref().ok_or_else(|| {
-            AcmeError::BadRequest("OKP JWK missing 'x'".into())
-        })?;
+        let crv = self
+            .crv
+            .as_deref()
+            .ok_or_else(|| AcmeError::BadRequest("OKP JWK missing 'crv'".into()))?;
+        let x_b64 = self
+            .x
+            .as_deref()
+            .ok_or_else(|| AcmeError::BadRequest("OKP JWK missing 'x'".into()))?;
 
         let x_bytes = URL_SAFE_NO_PAD
             .decode(x_b64)
@@ -239,12 +250,15 @@ mod tests {
             crv: None,
             x: None,
             y: None,
-            n: Some("0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4cbbfAAt\
+            n: Some(
+                "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4cbbfAAt\
                 VT86zwu1RK7aPFFxuhDR1L6tSoc_BJECPebWKRXjBZCiFV4n3oknjhMstn6\
                 4tZ_2W-5JsGY4Hc5n9yBXArwl93lqt7_RN5w6Cf0h4QyQ5v-65YGjQR0_F\
                 DW2QvzqY368QQMicAtaSqzs8KJZgnYb9c7d0zgdAZHzu6qMQvRL5hajrn1n9\
                 1CbOpbISD08qNLyrdkt-bFTWhAI4vMQFh6WeZu0fM4lFd2NcRwr3XPksINH\
-                aQ-G_xBniIqbw0Ls1jF44-csFCur-kEgU8awapJzKnqDKgw".to_string()),
+                aQ-G_xBniIqbw0Ls1jF44-csFCur-kEgU8awapJzKnqDKgw"
+                    .to_string(),
+            ),
             e: Some("AQAB".to_string()),
         };
         let thumb = jwk.thumbprint().unwrap();
@@ -388,7 +402,10 @@ mod tests {
             e: None,
         };
         // thumbprint for OKP doesn't validate curve, so it succeeds
-        assert!(jwk.thumbprint().is_ok(), "OKP thumbprint should succeed for any curve");
+        assert!(
+            jwk.thumbprint().is_ok(),
+            "OKP thumbprint should succeed for any curve"
+        );
         // to_spki_der only supports Ed25519/Ed448
         assert!(jwk.to_spki_der().is_err());
     }

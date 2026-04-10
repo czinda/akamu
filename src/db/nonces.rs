@@ -22,7 +22,10 @@ pub async fn insert(db: &Connection, nonce: &str) -> Result<(), AcmeError> {
 pub async fn consume(db: &Connection, nonce: &str) -> Result<bool, AcmeError> {
     let nonce = nonce.to_string();
     db.call(move |conn| {
-        let n = conn.execute("DELETE FROM nonces WHERE nonce = ?1", rusqlite::params![nonce])?;
+        let n = conn.execute(
+            "DELETE FROM nonces WHERE nonce = ?1",
+            rusqlite::params![nonce],
+        )?;
         Ok(n > 0)
     })
     .await

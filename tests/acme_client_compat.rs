@@ -16,20 +16,24 @@
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use axum::{
-    Router,
     extract::{Path, State},
     routing::get,
+    Router,
 };
 use instant_acme::{
     Account, ChallengeType, ExternalAccountKey, Identifier, NewAccount, NewOrder, OrderStatus,
 };
 use synta::{Decoder, Encoding};
-use synta_certificate::{format_dn, pem_to_der, BackendPrivateKey, Certificate, CsrBuilder, NameBuilder, SubjectAlternativeNameBuilder, PrivateKey as _};
+use synta_certificate::{
+    format_dn, pem_to_der, BackendPrivateKey, Certificate, CsrBuilder, NameBuilder,
+    PrivateKey as _, SubjectAlternativeNameBuilder,
+};
 use tokio::{net::TcpListener, sync::RwLock};
 
 use acme_server::{
-    ca, db, routes,
+    ca,
     config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig},
+    db, routes,
     state::{AppState, CaState, MtcState},
 };
 
@@ -98,7 +102,9 @@ async fn start_plain_server(http_validation_port: u16) -> PlainServer {
     let config = Arc::new(Config {
         listen_addr: addr.to_string(),
         base_url: base_url.clone(),
-        database: DatabaseConfig { path: ":memory:".into() },
+        database: DatabaseConfig {
+            path: ":memory:".into(),
+        },
         ca: CaConfig {
             key_file: ca_key_path,
             cert_file: ca_cert_path,
@@ -111,7 +117,10 @@ async fn start_plain_server(http_validation_port: u16) -> PlainServer {
             organization: "Test".into(),
             ca_validity_years: 10,
         },
-        mtc: MtcConfig { log_path: "/dev/null".into(), enabled: false },
+        mtc: MtcConfig {
+            log_path: "/dev/null".into(),
+            enabled: false,
+        },
         server: ServerConfig {
             http_validation_port,
             ..ServerConfig::default()
@@ -171,7 +180,10 @@ fn make_csr_der(domain: &str) -> Vec<u8> {
     let backend_key = BackendPrivateKey::generate_ec("P-256").unwrap();
     let spki_der = backend_key.public_key().unwrap().spki_der().to_vec();
     let name_der = NameBuilder::new().common_name(domain).build().unwrap();
-    let san_der = SubjectAlternativeNameBuilder::new().dns_name(domain).build().unwrap();
+    let san_der = SubjectAlternativeNameBuilder::new()
+        .dns_name(domain)
+        .build()
+        .unwrap();
     let signer = backend_key.as_signer("sha256");
     CsrBuilder::new()
         .subject_name(&name_der)
@@ -206,8 +218,18 @@ fn log_certificate_chain(label: &str, pem: &str) {
             .iter()
             .map(|(tag, val)| match tag {
                 2 => format!("DNS:{}", String::from_utf8_lossy(val)),
-                7 => format!("IP:{}", val.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(".")),
-                _ => format!("tag{}:{}", tag, val.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+                7 => format!(
+                    "IP:{}",
+                    val.iter()
+                        .map(|b| b.to_string())
+                        .collect::<Vec<_>>()
+                        .join(".")
+                ),
+                _ => format!(
+                    "tag{}:{}",
+                    tag,
+                    val.iter().map(|b| format!("{b:02x}")).collect::<String>()
+                ),
             })
             .collect();
         tracing::info!(
@@ -276,7 +298,10 @@ async fn test_instant_acme_http01_flow() {
     // 5–7. Handle authorizations.
     let authorizations = order.authorizations().await.expect("authorizations");
     for authz in &authorizations {
-        let Some(challenge) = authz.challenges.iter().find(|c| c.r#type == ChallengeType::Http01)
+        let Some(challenge) = authz
+            .challenges
+            .iter()
+            .find(|c| c.r#type == ChallengeType::Http01)
         else {
             panic!("no http-01 challenge in authorization");
         };
@@ -299,7 +324,10 @@ async fn test_instant_acme_http01_flow() {
             .set_challenge_ready(&challenge.url)
             .await
             .expect("set challenge ready");
-        tracing::info!("challenge marked ready, Akāmu will validate against port {}", responder_addr.port());
+        tracing::info!(
+            "challenge marked ready, Akāmu will validate against port {}",
+            responder_addr.port()
+        );
     }
 
     // 8. Poll until order is ready (Akāmu validates http-01 asynchronously).

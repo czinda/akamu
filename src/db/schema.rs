@@ -5,8 +5,8 @@
 pub struct AccountRow {
     pub id: String,
     pub status: String,
-    pub contact: Option<String>,    // JSON array string
-    pub public_key: Vec<u8>,        // DER-encoded SPKI
+    pub contact: Option<String>, // JSON array string
+    pub public_key: Vec<u8>,     // DER-encoded SPKI
     pub jwk_thumbprint: String,
     pub created: i64,
     pub updated: i64,
@@ -18,7 +18,7 @@ pub struct OrderRow {
     pub account_id: String,
     pub status: String,
     pub expires: Option<i64>,
-    pub identifiers: String,        // JSON [{type,value}]
+    pub identifiers: String, // JSON [{type,value}]
     pub not_before: Option<i64>,
     pub not_after: Option<i64>,
     pub error: Option<String>,
@@ -33,7 +33,7 @@ pub struct AuthorizationRow {
     pub order_id: String,
     pub account_id: String,
     pub status: String,
-    pub identifier: String,         // JSON {"type":..,"value":..}
+    pub identifier: String, // JSON {"type":..,"value":..}
     pub expires: Option<i64>,
     pub wildcard: bool,
     pub created: i64,

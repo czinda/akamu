@@ -26,14 +26,18 @@ pub async fn respond_challenge(
     );
     let ctx = parse_jws(&state, body, &url).await?;
 
-    let account_id = ctx.account_id.ok_or(AcmeError::Unauthorized("kid required".into()))?;
+    let account_id = ctx
+        .account_id
+        .ok_or(AcmeError::Unauthorized("kid required".into()))?;
 
     // Load the authorization.
     let authz = db::authz::get_by_id(&state.db, &authz_id)
         .await?
         .ok_or(AcmeError::NotFound)?;
     if authz.account_id != account_id {
-        return Err(AcmeError::Unauthorized("authorization belongs to different account".into()));
+        return Err(AcmeError::Unauthorized(
+            "authorization belongs to different account".into(),
+        ));
     }
     if authz.status != "pending" {
         return Err(AcmeError::BadRequest(format!(
@@ -103,9 +107,7 @@ pub async fn respond_challenge(
     // Detach but watch for panics: spawn a lightweight observer task.
     tokio::spawn(async move {
         if let Err(e) = handle.await {
-            tracing::error!(
-                "challenge {challenge_id_for_log}: validation task panicked: {e:?}"
-            );
+            tracing::error!("challenge {challenge_id_for_log}: validation task panicked: {e:?}");
         }
     });
 

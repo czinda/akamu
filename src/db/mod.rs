@@ -31,12 +31,12 @@ pub async fn open(path: &str) -> Result<Connection, AcmeError> {
             M::up(include_str!("../../migrations/002_renewal_info.sql")),
             M::up(include_str!("../../migrations/003_indexes.sql")),
         ]);
-        migrations
-            .to_latest(conn)
-            .map_err(|e| rusqlite::Error::SqliteFailure(
+        migrations.to_latest(conn).map_err(|e| {
+            rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
                 Some(e.to_string()),
-            ))?;
+            )
+        })?;
         // Enable WAL mode for this connection (after migrations complete).
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
         Ok(())

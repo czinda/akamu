@@ -72,13 +72,8 @@ pub async fn revoke_cert(
     }
 
     let now = unix_now();
-    let revoked = db::certs::revoke(
-        &state.db,
-        &cert.id,
-        payload.reason.map(|r| r as i64),
-        now,
-    )
-    .await?;
+    let revoked =
+        db::certs::revoke(&state.db, &cert.id, payload.reason.map(|r| r as i64), now).await?;
 
     if !revoked {
         return Err(AcmeError::AlreadyRevoked);
@@ -97,8 +92,9 @@ fn extract_serial_hex(cert_der: &[u8]) -> Result<String, AcmeError> {
     use synta_certificate::Certificate;
 
     let mut dec = Decoder::new(cert_der, Encoding::Der);
-    let cert: Certificate =
-        dec.decode().map_err(|e| AcmeError::BadRequest(format!("certificate parse: {e}")))?;
+    let cert: Certificate = dec
+        .decode()
+        .map_err(|e| AcmeError::BadRequest(format!("certificate parse: {e}")))?;
 
     let serial_bytes = cert.tbs_certificate.serial_number.as_bytes();
     let hex: String = serial_bytes.iter().map(|b| format!("{b:02x}")).collect();
@@ -108,13 +104,15 @@ fn extract_serial_hex(cert_der: &[u8]) -> Result<String, AcmeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synta_certificate::{BackendPrivateKey, CertificateBuilder, NameBuilder, PrivateKey as _,
-        SubjectAlternativeNameBuilder, encode_basic_constraints, encode_key_usage,
-        encode_subject_key_identifier, encode_authority_key_identifier, KeyIdMethod,
-        default_key_id_hasher, KEY_USAGE_DIGITAL_SIGNATURE, oids, parse_time};
-    use synta_certificate::ExtendedKeyUsageBuilder;
-    use synta::Integer;
     use crate::ca::init::unix_to_generalized_time;
+    use synta::Integer;
+    use synta_certificate::ExtendedKeyUsageBuilder;
+    use synta_certificate::{
+        default_key_id_hasher, encode_authority_key_identifier, encode_basic_constraints,
+        encode_key_usage, encode_subject_key_identifier, oids, parse_time, BackendPrivateKey,
+        CertificateBuilder, KeyIdMethod, NameBuilder, PrivateKey as _,
+        SubjectAlternativeNameBuilder, KEY_USAGE_DIGITAL_SIGNATURE,
+    };
 
     fn make_cert_der() -> Vec<u8> {
         let ca_key = BackendPrivateKey::generate_ec("P-256").unwrap();
@@ -122,15 +120,25 @@ mod tests {
         let name_der = NameBuilder::new().common_name("Test").build().unwrap();
         let hasher = default_key_id_hasher();
         let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
         let not_before = parse_time(&unix_to_generalized_time(now)).unwrap();
         let not_after = parse_time(&unix_to_generalized_time(now + 86400)).unwrap();
         let bc = encode_basic_constraints(false, None).unwrap();
         let ku = encode_key_usage(1u16 << KEY_USAGE_DIGITAL_SIGNATURE).unwrap();
-        let eku = ExtendedKeyUsageBuilder::new().server_auth().build().unwrap();
-        let ski = encode_subject_key_identifier(&ca_spki, KeyIdMethod::Rfc5280Sha1, &hasher).unwrap();
-        let aki = encode_authority_key_identifier(&ca_spki, KeyIdMethod::Rfc5280Sha1, &hasher).unwrap();
-        let san_der = SubjectAlternativeNameBuilder::new().dns_name("test.example.com").build().unwrap();
+        let eku = ExtendedKeyUsageBuilder::new()
+            .server_auth()
+            .build()
+            .unwrap();
+        let ski =
+            encode_subject_key_identifier(&ca_spki, KeyIdMethod::Rfc5280Sha1, &hasher).unwrap();
+        let aki =
+            encode_authority_key_identifier(&ca_spki, KeyIdMethod::Rfc5280Sha1, &hasher).unwrap();
+        let san_der = SubjectAlternativeNameBuilder::new()
+            .dns_name("test.example.com")
+            .build()
+            .unwrap();
         let signer = ca_key.as_signer("sha256");
         CertificateBuilder::new()
             .issuer_name(&name_der)

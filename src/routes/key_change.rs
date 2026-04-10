@@ -23,11 +23,15 @@ pub async fn key_change(
     let url = format!("{}/acme/key-change", state.config.base_url);
     let ctx = parse_jws(&state, body, &url).await?;
 
-    let account_id = ctx.account_id.ok_or(AcmeError::Unauthorized("kid required".into()))?;
+    let account_id = ctx
+        .account_id
+        .ok_or(AcmeError::Unauthorized("kid required".into()))?;
 
     // The payload is itself an inner JWS signed with the new key.
     if ctx.payload.is_empty() {
-        return Err(AcmeError::BadRequest("key-change payload is required".into()));
+        return Err(AcmeError::BadRequest(
+            "key-change payload is required".into(),
+        ));
     }
 
     // Parse the inner JWS.
@@ -74,7 +78,9 @@ pub async fn key_change(
         .await?
         .is_some()
     {
-        return Err(AcmeError::Conflict("new key already in use by another account".into()));
+        return Err(AcmeError::Conflict(
+            "new key already in use by another account".into(),
+        ));
     }
 
     // Update the account key.

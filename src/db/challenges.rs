@@ -133,41 +133,56 @@ mod tests {
     }
 
     async fn insert_parents(db: &Connection, account_id: &str, order_id: &str, authz_id: &str) {
-        crate::db::accounts::insert(db, AccountRow {
-            id: account_id.to_string(),
-            status: "valid".to_string(),
-            contact: None,
-            public_key: vec![0u8; 4],
-            jwk_thumbprint: format!("thumb-{account_id}"),
-            created: 1_700_000_000,
-            updated: 1_700_000_000,
-        }).await.unwrap();
+        crate::db::accounts::insert(
+            db,
+            AccountRow {
+                id: account_id.to_string(),
+                status: "valid".to_string(),
+                contact: None,
+                public_key: vec![0u8; 4],
+                jwk_thumbprint: format!("thumb-{account_id}"),
+                created: 1_700_000_000,
+                updated: 1_700_000_000,
+            },
+        )
+        .await
+        .unwrap();
 
-        crate::db::orders::insert(db, OrderRow {
-            id: order_id.to_string(),
-            account_id: account_id.to_string(),
-            status: "pending".to_string(),
-            expires: None,
-            identifiers: "[]".to_string(),
-            not_before: None,
-            not_after: None,
-            error: None,
-            certificate_id: None,
-            created: 1_700_000_000,
-            updated: 1_700_000_000,
-        }).await.unwrap();
+        crate::db::orders::insert(
+            db,
+            OrderRow {
+                id: order_id.to_string(),
+                account_id: account_id.to_string(),
+                status: "pending".to_string(),
+                expires: None,
+                identifiers: "[]".to_string(),
+                not_before: None,
+                not_after: None,
+                error: None,
+                certificate_id: None,
+                created: 1_700_000_000,
+                updated: 1_700_000_000,
+            },
+        )
+        .await
+        .unwrap();
 
-        crate::db::authz::insert(db, AuthorizationRow {
-            id: authz_id.to_string(),
-            order_id: order_id.to_string(),
-            account_id: account_id.to_string(),
-            status: "pending".to_string(),
-            identifier: "{\"type\":\"dns\",\"value\":\"example.com\"}".to_string(),
-            expires: None,
-            wildcard: false,
-            created: 1_700_000_000,
-            updated: 1_700_000_000,
-        }).await.unwrap();
+        crate::db::authz::insert(
+            db,
+            AuthorizationRow {
+                id: authz_id.to_string(),
+                order_id: order_id.to_string(),
+                account_id: account_id.to_string(),
+                status: "pending".to_string(),
+                identifier: "{\"type\":\"dns\",\"value\":\"example.com\"}".to_string(),
+                expires: None,
+                wildcard: false,
+                created: 1_700_000_000,
+                updated: 1_700_000_000,
+            },
+        )
+        .await
+        .unwrap();
     }
 
     fn sample_challenge(id: &str, authz_id: &str) -> ChallengeRow {
@@ -184,7 +199,13 @@ mod tests {
         }
     }
 
-    async fn insert_challenge(db: &Connection, id: &str, account_id: &str, order_id: &str, authz_id: &str) {
+    async fn insert_challenge(
+        db: &Connection,
+        id: &str,
+        account_id: &str,
+        order_id: &str,
+        authz_id: &str,
+    ) {
         insert_parents(db, account_id, order_id, authz_id).await;
         insert(db, sample_challenge(id, authz_id)).await.unwrap();
     }
@@ -211,18 +232,25 @@ mod tests {
     async fn list_by_authz_returns_challenges() {
         let db = open_db().await;
         insert_parents(&db, "acct-2", "order-2", "authz-2").await;
-        insert(&db, sample_challenge("chall-2a", "authz-2")).await.unwrap();
-        insert(&db, ChallengeRow {
-            id: "chall-2b".to_string(),
-            authz_id: "authz-2".to_string(),
-            r#type: "dns-01".to_string(),
-            status: "pending".to_string(),
-            token: "token-2b".to_string(),
-            validated: None,
-            error: None,
-            created: 1_700_000_000,
-            updated: 1_700_000_000,
-        }).await.unwrap();
+        insert(&db, sample_challenge("chall-2a", "authz-2"))
+            .await
+            .unwrap();
+        insert(
+            &db,
+            ChallengeRow {
+                id: "chall-2b".to_string(),
+                authz_id: "authz-2".to_string(),
+                r#type: "dns-01".to_string(),
+                status: "pending".to_string(),
+                token: "token-2b".to_string(),
+                validated: None,
+                error: None,
+                created: 1_700_000_000,
+                updated: 1_700_000_000,
+            },
+        )
+        .await
+        .unwrap();
 
         let challenges = list_by_authz(&db, "authz-2").await.unwrap();
         assert_eq!(challenges.len(), 2);
@@ -269,7 +297,14 @@ mod tests {
         let db = open_db().await;
         insert_challenge(&db, "chall-6", "acct-6", "order-6", "authz-6").await;
 
-        set_invalid(&db, "chall-6", "{\"type\":\"connection\"}".into(), 1_700_000_003).await.unwrap();
+        set_invalid(
+            &db,
+            "chall-6",
+            "{\"type\":\"connection\"}".into(),
+            1_700_000_003,
+        )
+        .await
+        .unwrap();
 
         let row = get_by_id(&db, "chall-6").await.unwrap().unwrap();
         assert_eq!(row.status, "invalid");
@@ -279,7 +314,9 @@ mod tests {
     #[tokio::test]
     async fn db_error_paths_no_table() {
         let raw = Arc::new(tokio_rusqlite::Connection::open_in_memory().await.unwrap());
-        assert!(insert(&raw, sample_challenge("err-chall", "err-authz")).await.is_err());
+        assert!(insert(&raw, sample_challenge("err-chall", "err-authz"))
+            .await
+            .is_err());
         assert!(get_by_id(&raw, "any").await.is_err());
         assert!(list_by_authz(&raw, "any").await.is_err());
         assert!(set_processing(&raw, "any", 0).await.is_err());

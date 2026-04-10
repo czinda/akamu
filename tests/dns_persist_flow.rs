@@ -119,19 +119,19 @@ fn build_txt_response(query: &[u8], txt_value: &str) -> Vec<u8> {
     let rdlength = (txt_bytes.len() + 1) as u16;
 
     let mut resp = Vec::with_capacity(question_end + 16 + txt_bytes.len());
-    resp.extend_from_slice(&query[..2]);          // Transaction ID (echo)
-    resp.extend_from_slice(&[0x81, 0x80]);        // QR=1 RD=1 RA=1
-    resp.extend_from_slice(&[0x00, 0x01]);        // QDCOUNT=1
-    resp.extend_from_slice(&[0x00, 0x01]);        // ANCOUNT=1
-    resp.extend_from_slice(&[0x00, 0x00]);        // NSCOUNT=0
-    resp.extend_from_slice(&[0x00, 0x00]);        // ARCOUNT=0
+    resp.extend_from_slice(&query[..2]); // Transaction ID (echo)
+    resp.extend_from_slice(&[0x81, 0x80]); // QR=1 RD=1 RA=1
+    resp.extend_from_slice(&[0x00, 0x01]); // QDCOUNT=1
+    resp.extend_from_slice(&[0x00, 0x01]); // ANCOUNT=1
+    resp.extend_from_slice(&[0x00, 0x00]); // NSCOUNT=0
+    resp.extend_from_slice(&[0x00, 0x00]); // ARCOUNT=0
     resp.extend_from_slice(&query[12..question_end]); // question section
-    resp.extend_from_slice(&[0xC0, 0x0C]);        // name pointer → offset 12
-    resp.extend_from_slice(&[0x00, 0x10]);        // TYPE=TXT
-    resp.extend_from_slice(&[0x00, 0x01]);        // CLASS=IN
+    resp.extend_from_slice(&[0xC0, 0x0C]); // name pointer → offset 12
+    resp.extend_from_slice(&[0x00, 0x10]); // TYPE=TXT
+    resp.extend_from_slice(&[0x00, 0x01]); // CLASS=IN
     resp.extend_from_slice(&[0x00, 0x00, 0x00, 0x3C]); // TTL=60
     resp.extend_from_slice(&rdlength.to_be_bytes());
-    resp.push(txt_bytes.len() as u8);             // TXT length prefix
+    resp.push(txt_bytes.len() as u8); // TXT length prefix
     resp.extend_from_slice(txt_bytes);
     resp
 }
@@ -147,7 +147,9 @@ async fn build_state(
     let config = Arc::new(Config {
         listen_addr: "127.0.0.1:0".into(),
         base_url: base_url.into(),
-        database: DatabaseConfig { path: ":memory:".into() },
+        database: DatabaseConfig {
+            path: ":memory:".into(),
+        },
         ca: CaConfig {
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
             cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
@@ -160,7 +162,10 @@ async fn build_state(
             organization: "Test".into(),
             ca_validity_years: 10,
         },
-        mtc: MtcConfig { log_path: "/dev/null".into(), enabled: false },
+        mtc: MtcConfig {
+            log_path: "/dev/null".into(),
+            enabled: false,
+        },
         server: ServerConfig {
             dns_persist_issuer_domain: Some(issuer_domain.into()),
             dns_resolver_addr: Some(dns_resolver_addr.into()),
@@ -252,7 +257,9 @@ fn ecdsa_der_to_p1363(der: &[u8], half: usize) -> Option<Vec<u8>> {
     let inner = strip_tlv(der, 0x30)?;
     let (r, rest) = strip_int(inner)?;
     let (s, _) = strip_int(rest)?;
-    if r.len() > half || s.len() > half { return None; }
+    if r.len() > half || s.len() > half {
+        return None;
+    }
     let mut out = vec![0u8; half * 2];
     out[half - r.len()..half].copy_from_slice(r);
     out[half * 2 - s.len()..].copy_from_slice(s);
@@ -260,49 +267,83 @@ fn ecdsa_der_to_p1363(der: &[u8], half: usize) -> Option<Vec<u8>> {
 }
 
 fn strip_tlv<'a>(buf: &'a [u8], tag: u8) -> Option<&'a [u8]> {
-    if *buf.first()? != tag { return None; }
+    if *buf.first()? != tag {
+        return None;
+    }
     let (len, rest) = decode_len(&buf[1..])?;
     rest.get(..len)
 }
 
 fn strip_int(buf: &[u8]) -> Option<(&[u8], &[u8])> {
-    if *buf.first()? != 0x02 { return None; }
+    if *buf.first()? != 0x02 {
+        return None;
+    }
     let (len, rest) = decode_len(&buf[1..])?;
-    let val = rest.get(..len)?.strip_prefix(&[0x00u8]).unwrap_or(rest.get(..len)?);
+    let val = rest
+        .get(..len)?
+        .strip_prefix(&[0x00u8])
+        .unwrap_or(rest.get(..len)?);
     Some((val, &rest[len..]))
 }
 
 fn decode_len(buf: &[u8]) -> Option<(usize, &[u8])> {
     let first = *buf.first()?;
-    if first < 0x80 { Some((first as usize, &buf[1..])) }
-    else if first == 0x81 { Some((*buf.get(1)? as usize, &buf[2..])) }
-    else if first == 0x82 {
-        Some((((*buf.get(1)? as usize) << 8 | *buf.get(2)? as usize), &buf[3..]))
-    } else { None }
+    if first < 0x80 {
+        Some((first as usize, &buf[1..]))
+    } else if first == 0x81 {
+        Some((*buf.get(1)? as usize, &buf[2..]))
+    } else if first == 0x82 {
+        Some((
+            ((*buf.get(1)? as usize) << 8 | *buf.get(2)? as usize),
+            &buf[3..],
+        ))
+    } else {
+        None
+    }
 }
 
 // ── HTTP oneshot helpers ──────────────────────────────────────────────────────
 
-async fn send(router: &axum::Router, req: Request<Body>) -> (StatusCode, Value, axum::http::HeaderMap) {
+async fn send(
+    router: &axum::Router,
+    req: Request<Body>,
+) -> (StatusCode, Value, axum::http::HeaderMap) {
     let resp = router.clone().oneshot(req).await.unwrap();
     let status = resp.status();
     let headers = resp.headers().clone();
-    let body = axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
     let json = serde_json::from_slice(&body).unwrap_or(Value::Null);
     (status, json, headers)
 }
 
 async fn head_nonce(router: &axum::Router) -> String {
-    let req = Request::builder().method(Method::HEAD).uri("/acme/new-nonce")
-        .body(Body::empty()).unwrap();
+    let req = Request::builder()
+        .method(Method::HEAD)
+        .uri("/acme/new-nonce")
+        .body(Body::empty())
+        .unwrap();
     let resp = router.clone().oneshot(req).await.unwrap();
-    resp.headers().get("replay-nonce").unwrap().to_str().unwrap().to_string()
+    resp.headers()
+        .get("replay-nonce")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string()
 }
 
-async fn post_acme(router: &axum::Router, path: &str, jws: Value) -> (StatusCode, Value, axum::http::HeaderMap) {
-    let req = Request::builder().method(Method::POST).uri(path)
+async fn post_acme(
+    router: &axum::Router,
+    path: &str,
+    jws: Value,
+) -> (StatusCode, Value, axum::http::HeaderMap) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(path)
         .header(header::CONTENT_TYPE, "application/jose+json")
-        .body(Body::from(jws.to_string())).unwrap();
+        .body(Body::from(jws.to_string()))
+        .unwrap();
     send(router, req).await
 }
 
@@ -311,7 +352,11 @@ fn nonce_hdr(h: &axum::http::HeaderMap) -> String {
 }
 
 fn location_hdr(h: &axum::http::HeaderMap) -> String {
-    h.get(header::LOCATION).unwrap().to_str().unwrap().to_string()
+    h.get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string()
 }
 
 // ── CSR builder ───────────────────────────────────────────────────────────────
@@ -323,7 +368,10 @@ fn make_csr(domain: &str) -> Vec<u8> {
     // Use the domain as-is (including any leading "*.") for the SAN dNSName.
     // Wildcard labels are valid in dNSName SANs per RFC 5280 §4.2.1.6, and the
     // CA's CSR validator expects the SAN to match the order identifier exactly.
-    let san = SubjectAlternativeNameBuilder::new().dns_name(domain).build().unwrap();
+    let san = SubjectAlternativeNameBuilder::new()
+        .dns_name(domain)
+        .build()
+        .unwrap();
     let signer = k.as_signer("sha256");
     CsrBuilder::new()
         .subject_name(&name)
@@ -384,8 +432,11 @@ async fn dns_persist_01_non_wildcard_flow() {
     // 2. Create ACME account.
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = key.jws_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key.jws_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (status, _, acct_hdrs) = post_acme(&router, "/acme/new-account", jws).await;
     assert_eq!(status, StatusCode::CREATED);
     let account_url = location_hdr(&acct_hdrs);
@@ -399,8 +450,12 @@ async fn dns_persist_01_non_wildcard_flow() {
     tracing::info!("TXT record registered: {txt_record}");
 
     // 4. Create order.
-    let jws = key.jws_kid(&account_url, &nonce, &format!("{base_url}/acme/new-order"),
-        Some(json!({"identifiers": [{"type": "dns", "value": domain}]})));
+    let jws = key.jws_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": domain}]})),
+    );
     let (status, order_body, order_hdrs) = post_acme(&router, "/acme/new-order", jws).await;
     assert_eq!(status, StatusCode::CREATED, "new-order: {order_body}");
     let order_url = location_hdr(&order_hdrs);
@@ -408,7 +463,10 @@ async fn dns_persist_01_non_wildcard_flow() {
     tracing::info!("order URL: {order_url}");
 
     // 5. Fetch authorization — verify dns-persist-01 challenge shape.
-    let authz_url = order_body["authorizations"][0].as_str().unwrap().to_string();
+    let authz_url = order_body["authorizations"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
     let authz_path = authz_url.trim_start_matches(base_url);
     let jws = key.jws_kid(&account_url, &nonce, &authz_url, None); // POST-as-GET
     let (status, authz_body, authz_hdrs) = post_acme(&router, authz_path, jws).await;
@@ -416,18 +474,22 @@ async fn dns_persist_01_non_wildcard_flow() {
     let nonce = nonce_hdr(&authz_hdrs);
 
     let challenges = authz_body["challenges"].as_array().unwrap();
-    let dp01 = challenges.iter()
+    let dp01 = challenges
+        .iter()
         .find(|c| c["type"] == "dns-persist-01")
         .expect("dns-persist-01 challenge must be present");
     tracing::info!("dns-persist-01 challenge: {dp01}");
 
     // The challenge must have issuer-domain-names, not token.
     assert_eq!(
-        dp01["issuer-domain-names"][0].as_str().unwrap(), issuer,
+        dp01["issuer-domain-names"][0].as_str().unwrap(),
+        issuer,
         "issuer-domain-names must match configured issuer"
     );
-    assert!(dp01.get("token").is_none() || dp01["token"].is_null(),
-        "dns-persist-01 must not include a token field");
+    assert!(
+        dp01.get("token").is_none() || dp01["token"].is_null(),
+        "dns-persist-01 must not include a token field"
+    );
 
     let chall_url = dp01["url"].as_str().unwrap().to_string();
     let chall_path = chall_url.trim_start_matches(base_url).to_string();
@@ -438,15 +500,15 @@ async fn dns_persist_01_non_wildcard_flow() {
     assert_eq!(status, StatusCode::OK, "respond-challenge: {chall_body}");
     assert!(
         chall_body["status"] == "processing" || chall_body["status"] == "valid",
-        "challenge status after POST: {}", chall_body["status"]
+        "challenge status after POST: {}",
+        chall_body["status"]
     );
     tracing::info!("challenge response: {chall_body}");
     let _nonce = nonce_hdr(&chall_hdrs);
 
     // 7. Poll until order is ready.
-    let order_body = poll_order_status(
-        &router, &key, &account_url, &order_url, base_url, "ready",
-    ).await;
+    let order_body =
+        poll_order_status(&router, &key, &account_url, &order_url, base_url, "ready").await;
     tracing::info!("order reached 'ready'");
 
     // Confirm the authorization is now valid.
@@ -454,8 +516,11 @@ async fn dns_persist_01_non_wildcard_flow() {
     let nonce = head_nonce(&router).await;
     let jws = key.jws_kid(&account_url, &nonce, &authz_url, None);
     let (_, authz_final, _) = post_acme(&router, authz_path, jws).await;
-    assert_eq!(authz_final["status"].as_str().unwrap(), "valid",
-        "authorization must be valid after challenge passes");
+    assert_eq!(
+        authz_final["status"].as_str().unwrap(),
+        "valid",
+        "authorization must be valid after challenge passes"
+    );
 
     // 8. Finalize.
     let csr = make_csr(domain);
@@ -463,32 +528,48 @@ async fn dns_persist_01_non_wildcard_flow() {
     let finalize_url = order_body["finalize"].as_str().unwrap().to_string();
     let finalize_path = finalize_url.trim_start_matches(base_url).to_string();
     let nonce = head_nonce(&router).await;
-    let jws = key.jws_kid(&account_url, &nonce, &finalize_url, Some(json!({"csr": csr_b64})));
+    let jws = key.jws_kid(
+        &account_url,
+        &nonce,
+        &finalize_url,
+        Some(json!({"csr": csr_b64})),
+    );
     let (status, final_body, _) = post_acme(&router, &finalize_path, jws).await;
     assert_eq!(status, StatusCode::OK, "finalize: {final_body}");
     assert_eq!(final_body["status"].as_str().unwrap(), "valid");
 
     // 9. Download certificate.
-    let cert_url = final_body["certificate"].as_str()
+    let cert_url = final_body["certificate"]
+        .as_str()
         .expect("finalize must return certificate URL");
     let cert_path = cert_url.trim_start_matches(base_url);
-    let req = Request::builder().method(Method::GET).uri(cert_path)
-        .body(Body::empty()).unwrap();
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(cert_path)
+        .body(Body::empty())
+        .unwrap();
     let resp = router.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let cert_bytes = axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+    let cert_bytes = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
     let pem = std::str::from_utf8(&cert_bytes).expect("cert must be UTF-8");
-    tracing::info!("certificate downloaded ({} bytes, {} certs)",
-        pem.len(), pem.matches("BEGIN CERTIFICATE").count());
+    tracing::info!(
+        "certificate downloaded ({} bytes, {} certs)",
+        pem.len(),
+        pem.matches("BEGIN CERTIFICATE").count()
+    );
 
     // Verify leaf cert contains the expected SAN.
     let ders = synta_certificate::pem_to_der(pem.as_bytes());
     assert!(!ders.is_empty());
-    let leaf: synta_certificate::Certificate =
-        synta::Decoder::new(&ders[0], synta::Encoding::Der).decode().unwrap();
-    let san_ok = leaf.subject_alt_names().iter().any(|(tag, val)|
-        *tag == 2 && std::str::from_utf8(val).ok() == Some(domain)
-    );
+    let leaf: synta_certificate::Certificate = synta::Decoder::new(&ders[0], synta::Encoding::Der)
+        .decode()
+        .unwrap();
+    let san_ok = leaf
+        .subject_alt_names()
+        .iter()
+        .any(|(tag, val)| *tag == 2 && std::str::from_utf8(val).ok() == Some(domain));
     assert!(san_ok, "leaf cert must have dNSName={domain}");
     tracing::info!("✓ SAN verified: certificate contains dNSName={domain}");
 }
@@ -511,8 +592,11 @@ async fn dns_persist_01_wildcard_flow() {
     // Create account.
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = key.jws_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key.jws_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, acct_hdrs) = post_acme(&router, "/acme/new-account", jws).await;
     let account_url = location_hdr(&acct_hdrs);
     let nonce = nonce_hdr(&acct_hdrs);
@@ -523,8 +607,12 @@ async fn dns_persist_01_wildcard_flow() {
     tracing::info!("wildcard TXT record: {txt_record}");
 
     // Create order for wildcard domain.
-    let jws = key.jws_kid(&account_url, &nonce, &format!("{base_url}/acme/new-order"),
-        Some(json!({"identifiers": [{"type": "dns", "value": domain}]})));
+    let jws = key.jws_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": domain}]})),
+    );
     let (status, order_body, order_hdrs) = post_acme(&router, "/acme/new-order", jws).await;
     assert_eq!(status, StatusCode::CREATED, "new-order: {order_body}");
     let order_url = location_hdr(&order_hdrs);
@@ -532,13 +620,18 @@ async fn dns_persist_01_wildcard_flow() {
     tracing::info!("wildcard order URL: {order_url}");
 
     // Fetch authorization — find dns-persist-01 challenge.
-    let authz_url = order_body["authorizations"][0].as_str().unwrap().to_string();
+    let authz_url = order_body["authorizations"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
     let authz_path = authz_url.trim_start_matches(base_url);
     let jws = key.jws_kid(&account_url, &nonce, &authz_url, None);
     let (_, authz_body, authz_hdrs) = post_acme(&router, authz_path, jws).await;
     let nonce = nonce_hdr(&authz_hdrs);
 
-    let dp01 = authz_body["challenges"].as_array().unwrap()
+    let dp01 = authz_body["challenges"]
+        .as_array()
+        .unwrap()
         .iter()
         .find(|c| c["type"] == "dns-persist-01")
         .expect("dns-persist-01 must be in wildcard order challenges");
@@ -551,9 +644,8 @@ async fn dns_persist_01_wildcard_flow() {
     assert_eq!(status, StatusCode::OK);
 
     // Poll until ready.
-    let order_body = poll_order_status(
-        &router, &key, &account_url, &order_url, base_url, "ready",
-    ).await;
+    let order_body =
+        poll_order_status(&router, &key, &account_url, &order_url, base_url, "ready").await;
     tracing::info!("wildcard order reached 'ready'");
 
     // Finalize with a wildcard CSR.
@@ -562,7 +654,12 @@ async fn dns_persist_01_wildcard_flow() {
     let finalize_url = order_body["finalize"].as_str().unwrap().to_string();
     let finalize_path = finalize_url.trim_start_matches(base_url).to_string();
     let nonce = head_nonce(&router).await;
-    let jws = key.jws_kid(&account_url, &nonce, &finalize_url, Some(json!({"csr": csr_b64})));
+    let jws = key.jws_kid(
+        &account_url,
+        &nonce,
+        &finalize_url,
+        Some(json!({"csr": csr_b64})),
+    );
     let (status, final_body, _) = post_acme(&router, &finalize_path, jws).await;
     assert_eq!(status, StatusCode::OK, "wildcard finalize: {final_body}");
     assert_eq!(final_body["status"].as_str().unwrap(), "valid");
@@ -586,8 +683,11 @@ async fn dns_persist_01_wildcard_missing_policy_fails() {
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = key.jws_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key.jws_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, acct_hdrs) = post_acme(&router, "/acme/new-account", jws).await;
     let account_url = location_hdr(&acct_hdrs);
     let nonce = nonce_hdr(&acct_hdrs);
@@ -596,20 +696,31 @@ async fn dns_persist_01_wildcard_missing_policy_fails() {
     let txt_record = format!("{issuer}; accounturi={account_url}");
     mock_dns.set_record(&txt_record).await;
 
-    let jws = key.jws_kid(&account_url, &nonce, &format!("{base_url}/acme/new-order"),
-        Some(json!({"identifiers": [{"type": "dns", "value": domain}]})));
+    let jws = key.jws_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": domain}]})),
+    );
     let (_, order_body, order_hdrs) = post_acme(&router, "/acme/new-order", jws).await;
     let order_url = location_hdr(&order_hdrs);
     let nonce = nonce_hdr(&order_hdrs);
 
-    let authz_url = order_body["authorizations"][0].as_str().unwrap().to_string();
+    let authz_url = order_body["authorizations"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
     let authz_path = authz_url.trim_start_matches(base_url);
     let jws = key.jws_kid(&account_url, &nonce, &authz_url, None);
     let (_, authz_body, authz_hdrs) = post_acme(&router, authz_path, jws).await;
     let nonce = nonce_hdr(&authz_hdrs);
 
-    let dp01 = authz_body["challenges"].as_array().unwrap()
-        .iter().find(|c| c["type"] == "dns-persist-01").unwrap();
+    let dp01 = authz_body["challenges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["type"] == "dns-persist-01")
+        .unwrap();
     let chall_url = dp01["url"].as_str().unwrap().to_string();
     let chall_path = chall_url.trim_start_matches(base_url).to_string();
 
@@ -626,12 +737,16 @@ async fn dns_persist_01_wildcard_missing_policy_fails() {
         let jws = key.jws_kid(&account_url, &nonce, &order_url, None);
         let (_, body, _) = post_acme(&router, order_path, jws).await;
         let s = body["status"].as_str().unwrap_or("").to_string();
-        if s == "invalid" || s == "ready" { break s; }
+        if s == "invalid" || s == "ready" {
+            break s;
+        }
         if std::time::Instant::now() > deadline {
             panic!("timed out waiting for order to settle: {body}");
         }
     };
-    assert_eq!(final_status, "invalid",
-        "order must be invalid when policy=wildcard is missing from TXT record");
+    assert_eq!(
+        final_status, "invalid",
+        "order must be invalid when policy=wildcard is missing from TXT record"
+    );
     tracing::info!("✓ wildcard order correctly rejected without policy=wildcard");
 }

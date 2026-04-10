@@ -134,12 +134,11 @@ fn verify_acme_cert(
             ))
         })?;
 
-    verify_san_contains_domain(domain, san_value)
-        .map_err(|reason| {
-            AcmeError::IncorrectResponse(format!(
-                "tls-alpn-01: certificate SAN does not match '{domain}': {reason}"
-            ))
-        })?;
+    verify_san_contains_domain(domain, san_value).map_err(|reason| {
+        AcmeError::IncorrectResponse(format!(
+            "tls-alpn-01: certificate SAN does not match '{domain}': {reason}"
+        ))
+    })?;
 
     Ok(())
 }
@@ -522,7 +521,7 @@ mod tests {
         // OID: 1.3.6.1.5.5.7.1.31 = 06 08 2b 06 01 05 05 07 01 1f
         let oid_bytes: &[u8] = &[0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x01, 0x1f];
         let critical_bytes: &[u8] = &[0x01, 0x01, 0xff]; // BOOLEAN TRUE
-        // Wrap ext_value in OCTET STRING wrapper
+                                                         // Wrap ext_value in OCTET STRING wrapper
         let mut ext_val_wrapper = vec![0x04u8, ext_value.len() as u8];
         ext_val_wrapper.extend_from_slice(&ext_value);
         let ext_inner_len = oid_bytes.len() + critical_bytes.len() + ext_val_wrapper.len();
@@ -565,14 +564,22 @@ mod tests {
         // We use minimal/dummy placeholders since we only care about extension parsing.
         let version_a0: &[u8] = &[0xa0, 0x03, 0x02, 0x01, 0x02]; // version v3
         let serial: &[u8] = &[0x02, 0x01, 0x01]; // INTEGER { 1 }
-        let sig_alg: &[u8] = &[0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02]; // ecdsaWithSHA256
+        let sig_alg: &[u8] = &[
+            0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02,
+        ]; // ecdsaWithSHA256
         let issuer: &[u8] = &[0x30, 0x00]; // empty SEQUENCE
         let validity: &[u8] = &[0x30, 0x00]; // empty SEQUENCE
         let subject: &[u8] = &[0x30, 0x00]; // empty SEQUENCE
         let spki: &[u8] = &[0x30, 0x00]; // empty SEQUENCE
 
-        let tbs_len = version_a0.len() + serial.len() + sig_alg.len() + issuer.len()
-            + validity.len() + subject.len() + spki.len() + exts_a3.len();
+        let tbs_len = version_a0.len()
+            + serial.len()
+            + sig_alg.len()
+            + issuer.len()
+            + validity.len()
+            + subject.len()
+            + spki.len()
+            + exts_a3.len();
         let mut tbs = vec![0x30, tbs_len as u8];
         tbs.extend_from_slice(version_a0);
         tbs.extend_from_slice(serial);
@@ -584,7 +591,9 @@ mod tests {
         tbs.extend_from_slice(&exts_a3);
 
         // Outer Certificate SEQUENCE: TBS + signature alg + BIT STRING
-        let sig_alg2: &[u8] = &[0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02];
+        let sig_alg2: &[u8] = &[
+            0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02,
+        ];
         let bit_string: &[u8] = &[0x03, 0x01, 0x00]; // BIT STRING with 0 unused bits, empty
 
         let cert_inner_len = tbs.len() + sig_alg2.len() + bit_string.len();
@@ -594,7 +603,10 @@ mod tests {
         cert_der.extend_from_slice(bit_string);
 
         let result = verify_acme_cert("example.com", &cert_der, &expected_hash);
-        assert!(result.is_ok(), "verify_acme_cert should succeed: {result:?}");
+        assert!(
+            result.is_ok(),
+            "verify_acme_cert should succeed: {result:?}"
+        );
     }
 
     #[test]
@@ -621,18 +633,29 @@ mod tests {
         exts_a3.extend_from_slice(&exts_seq);
         let version_a0: &[u8] = &[0xa0, 0x03, 0x02, 0x01, 0x02];
         let serial: &[u8] = &[0x02, 0x01, 0x01];
-        let sig_alg: &[u8] = &[0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02];
+        let sig_alg: &[u8] = &[
+            0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02,
+        ];
         let empty_seq: &[u8] = &[0x30, 0x00];
-        let tbs_len = version_a0.len() + serial.len() + sig_alg.len() + 4 * empty_seq.len() + exts_a3.len();
+        let tbs_len =
+            version_a0.len() + serial.len() + sig_alg.len() + 4 * empty_seq.len() + exts_a3.len();
         let mut tbs = vec![0x30, tbs_len as u8];
-        tbs.extend_from_slice(version_a0); tbs.extend_from_slice(serial); tbs.extend_from_slice(sig_alg);
-        for _ in 0..4 { tbs.extend_from_slice(empty_seq); }
+        tbs.extend_from_slice(version_a0);
+        tbs.extend_from_slice(serial);
+        tbs.extend_from_slice(sig_alg);
+        for _ in 0..4 {
+            tbs.extend_from_slice(empty_seq);
+        }
         tbs.extend_from_slice(&exts_a3);
-        let sig_alg2: &[u8] = &[0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02];
+        let sig_alg2: &[u8] = &[
+            0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02,
+        ];
         let bit_string: &[u8] = &[0x03, 0x01, 0x00];
         let cert_inner_len = tbs.len() + sig_alg2.len() + bit_string.len();
         let mut cert_der = vec![0x30, cert_inner_len as u8];
-        cert_der.extend_from_slice(&tbs); cert_der.extend_from_slice(sig_alg2); cert_der.extend_from_slice(bit_string);
+        cert_der.extend_from_slice(&tbs);
+        cert_der.extend_from_slice(sig_alg2);
+        cert_der.extend_from_slice(bit_string);
 
         // Verify with wrong_hash — should fail
         let result = verify_acme_cert("example.com", &cert_der, &wrong_hash);
@@ -644,17 +667,27 @@ mod tests {
         // Cert with no extensions
         let version_a0: &[u8] = &[0xa0, 0x03, 0x02, 0x01, 0x02];
         let serial: &[u8] = &[0x02, 0x01, 0x01];
-        let sig_alg: &[u8] = &[0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02];
+        let sig_alg: &[u8] = &[
+            0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02,
+        ];
         let empty_seq: &[u8] = &[0x30, 0x00];
         let tbs_len = version_a0.len() + serial.len() + sig_alg.len() + 4 * empty_seq.len();
         let mut tbs = vec![0x30, tbs_len as u8];
-        tbs.extend_from_slice(version_a0); tbs.extend_from_slice(serial); tbs.extend_from_slice(sig_alg);
-        for _ in 0..4 { tbs.extend_from_slice(empty_seq); }
-        let sig_alg2: &[u8] = &[0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02];
+        tbs.extend_from_slice(version_a0);
+        tbs.extend_from_slice(serial);
+        tbs.extend_from_slice(sig_alg);
+        for _ in 0..4 {
+            tbs.extend_from_slice(empty_seq);
+        }
+        let sig_alg2: &[u8] = &[
+            0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02,
+        ];
         let bit_string: &[u8] = &[0x03, 0x01, 0x00];
         let cert_inner_len = tbs.len() + sig_alg2.len() + bit_string.len();
         let mut cert_der = vec![0x30, cert_inner_len as u8];
-        cert_der.extend_from_slice(&tbs); cert_der.extend_from_slice(sig_alg2); cert_der.extend_from_slice(bit_string);
+        cert_der.extend_from_slice(&tbs);
+        cert_der.extend_from_slice(sig_alg2);
+        cert_der.extend_from_slice(bit_string);
 
         let result = verify_acme_cert("example.com", &cert_der, &[0u8; 32]);
         assert!(result.is_err(), "should fail when extension is missing");
@@ -680,21 +713,35 @@ mod tests {
         exts_a3.extend_from_slice(&exts_seq);
         let version_a0: &[u8] = &[0xa0, 0x03, 0x02, 0x01, 0x02];
         let serial: &[u8] = &[0x02, 0x01, 0x01];
-        let sig_alg: &[u8] = &[0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02];
+        let sig_alg: &[u8] = &[
+            0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02,
+        ];
         let empty_seq: &[u8] = &[0x30, 0x00];
-        let tbs_len = version_a0.len() + serial.len() + sig_alg.len() + 4 * empty_seq.len() + exts_a3.len();
+        let tbs_len =
+            version_a0.len() + serial.len() + sig_alg.len() + 4 * empty_seq.len() + exts_a3.len();
         let mut tbs = vec![0x30, tbs_len as u8];
-        tbs.extend_from_slice(version_a0); tbs.extend_from_slice(serial); tbs.extend_from_slice(sig_alg);
-        for _ in 0..4 { tbs.extend_from_slice(empty_seq); }
+        tbs.extend_from_slice(version_a0);
+        tbs.extend_from_slice(serial);
+        tbs.extend_from_slice(sig_alg);
+        for _ in 0..4 {
+            tbs.extend_from_slice(empty_seq);
+        }
         tbs.extend_from_slice(&exts_a3);
-        let sig_alg2: &[u8] = &[0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02];
+        let sig_alg2: &[u8] = &[
+            0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02,
+        ];
         let bit_string: &[u8] = &[0x03, 0x01, 0x00];
         let cert_inner_len = tbs.len() + sig_alg2.len() + bit_string.len();
         let mut cert_der = vec![0x30, cert_inner_len as u8];
-        cert_der.extend_from_slice(&tbs); cert_der.extend_from_slice(sig_alg2); cert_der.extend_from_slice(bit_string);
+        cert_der.extend_from_slice(&tbs);
+        cert_der.extend_from_slice(sig_alg2);
+        cert_der.extend_from_slice(bit_string);
 
         let result = verify_acme_cert("example.com", &cert_der, &expected_hash);
-        assert!(result.is_err(), "should fail when extension is not critical");
+        assert!(
+            result.is_err(),
+            "should fail when extension is not critical"
+        );
     }
 
     /// Covers find_extension_value line 286 (`continue; // wrong OID`).
@@ -704,26 +751,28 @@ mod tests {
     /// skip the first extension via `continue` and return the second.
     #[test]
     fn find_extension_value_skips_non_matching_oid() {
-        use synta::{Encode, Encoding, Encoder, ObjectIdentifier, OctetString};
+        use synta::{Encode, Encoder, Encoding, ObjectIdentifier, OctetString};
         use synta_certificate::{
-            BackendPrivateKey, CertificateBuilder, NameBuilder, PrivateKey as _,
-            encode_basic_constraints, acme_types::Authorization,
+            acme_types::Authorization, encode_basic_constraints, BackendPrivateKey,
+            CertificateBuilder, NameBuilder, PrivateKey as _,
         };
 
         let key = BackendPrivateKey::generate_ec("P-256").unwrap();
         let spki = key.public_key().unwrap().spki_der().to_vec();
-        let name_der = NameBuilder::new().common_name("example.com").build().unwrap();
+        let name_der = NameBuilder::new()
+            .common_name("example.com")
+            .build()
+            .unwrap();
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
-        let not_before = synta_certificate::parse_time(
-            &crate::ca::init::unix_to_generalized_time(now_secs),
-        )
-        .unwrap();
-        let not_after = synta_certificate::parse_time(
-            &crate::ca::init::unix_to_generalized_time(now_secs + 86400),
-        )
+        let not_before =
+            synta_certificate::parse_time(&crate::ca::init::unix_to_generalized_time(now_secs))
+                .unwrap();
+        let not_after = synta_certificate::parse_time(&crate::ca::init::unix_to_generalized_time(
+            now_secs + 86400,
+        ))
         .unwrap();
 
         // BasicConstraints extension (wrong OID — must be skipped via `continue`)
@@ -755,7 +804,10 @@ mod tests {
 
         let result = find_extension_value(&cert_der, &acme_oid_der);
         assert!(result.is_ok(), "expected Ok, got: {result:?}");
-        assert!(result.unwrap().is_some(), "expected Some for the ACME extension");
+        assert!(
+            result.unwrap().is_some(),
+            "expected Some for the ACME extension"
+        );
     }
 
     /// Covers find_extension_value line 303 (`Ok(None)`).
@@ -764,26 +816,28 @@ mod tests {
     /// find_extension_value iterates all extensions, finds no match, and returns Ok(None).
     #[test]
     fn find_extension_value_no_matching_oid_returns_none() {
-        use synta::{Encode, Encoding, Encoder, ObjectIdentifier};
+        use synta::{Encode, Encoder, Encoding, ObjectIdentifier};
         use synta_certificate::{
-            BackendPrivateKey, CertificateBuilder, NameBuilder, PrivateKey as _,
-            encode_basic_constraints,
+            encode_basic_constraints, BackendPrivateKey, CertificateBuilder, NameBuilder,
+            PrivateKey as _,
         };
 
         let key = BackendPrivateKey::generate_ec("P-256").unwrap();
         let spki = key.public_key().unwrap().spki_der().to_vec();
-        let name_der = NameBuilder::new().common_name("example.com").build().unwrap();
+        let name_der = NameBuilder::new()
+            .common_name("example.com")
+            .build()
+            .unwrap();
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
-        let not_before = synta_certificate::parse_time(
-            &crate::ca::init::unix_to_generalized_time(now_secs),
-        )
-        .unwrap();
-        let not_after = synta_certificate::parse_time(
-            &crate::ca::init::unix_to_generalized_time(now_secs + 86400),
-        )
+        let not_before =
+            synta_certificate::parse_time(&crate::ca::init::unix_to_generalized_time(now_secs))
+                .unwrap();
+        let not_after = synta_certificate::parse_time(&crate::ca::init::unix_to_generalized_time(
+            now_secs + 86400,
+        ))
         .unwrap();
 
         // Only BasicConstraints — no ACME extension
@@ -808,7 +862,10 @@ mod tests {
 
         let result = find_extension_value(&cert_der, &acme_oid_der);
         assert!(result.is_ok(), "should not error: {result:?}");
-        assert!(result.unwrap().is_none(), "should return None when ACME extension is absent");
+        assert!(
+            result.unwrap().is_none(),
+            "should return None when ACME extension is absent"
+        );
     }
 
     // ── AcceptAnyCert ─────────────────────────────────────────────────────────
@@ -828,13 +885,8 @@ mod tests {
         let verifier = AcceptAnyCert;
         let dummy_cert = CertificateDer::from(vec![0u8; 4]);
         let server_name = ServerName::try_from("example.com").unwrap();
-        let result = verifier.verify_server_cert(
-            &dummy_cert,
-            &[],
-            &server_name,
-            &[],
-            UnixTime::now(),
-        );
+        let result =
+            verifier.verify_server_cert(&dummy_cert, &[], &server_name, &[], UnixTime::now());
         assert!(result.is_ok(), "verify_server_cert should always return Ok");
     }
 
@@ -857,7 +909,10 @@ mod tests {
     async fn validate_connection_refused_returns_error() {
         // 127.0.0.1:443 will be immediately refused on a test machine (no TLS server).
         let result = validate("127.0.0.1", "token.thumbprint").await;
-        assert!(result.is_err(), "expected connection error for unreachable host");
+        assert!(
+            result.is_err(),
+            "expected connection error for unreachable host"
+        );
         // Should be either Connection or Tls error.
         match result.unwrap_err() {
             crate::error::AcmeError::Connection(_) | crate::error::AcmeError::Tls(_) => {}
@@ -872,7 +927,7 @@ mod tests {
     /// so raw bytes are used.  The OID is encoded via synta API.
     #[test]
     fn find_extension_value_skips_issuer_unique_id() {
-        use synta::{Encode, Encoding, Encoder, ObjectIdentifier};
+        use synta::{Encode, Encoder, Encoding, ObjectIdentifier};
         use synta_certificate::oids;
 
         // TBSCertificate fields (6 mandatory skipped as INTEGER 0):
@@ -882,8 +937,9 @@ mod tests {
             0x02, 0x01, 0x00, // signature
             0x02, 0x01, 0x00, // issuer
             0x02, 0x01, 0x00, // validity
-            0x02, 0x01, 0x00, // subject
-            // subjectPublicKeyInfo (6th mandatory skip)
+            0x02, 0x01,
+            0x00, // subject
+                  // subjectPublicKeyInfo (6th mandatory skip)
         ];
         // issuerUniqueID [1] IMPLICIT { 0xFF } — tag 0x81, length 1
         let issuer_uid: &[u8] = &[0x81, 0x01, 0xff];
@@ -906,8 +962,14 @@ mod tests {
 
         // Should not error — returns Ok(None) because extensions list is empty.
         let result = find_extension_value(&cert, &acme_oid_der);
-        assert!(result.is_ok(), "expected Ok for cert with issuerUniqueID: {result:?}");
-        assert!(result.unwrap().is_none(), "expected None — no matching extension");
+        assert!(
+            result.is_ok(),
+            "expected Ok for cert with issuerUniqueID: {result:?}"
+        );
+        assert!(
+            result.unwrap().is_none(),
+            "expected None — no matching extension"
+        );
     }
 
     /// Covers tls_alpn01.rs line 252 — `tbs = skip_tlv(tbs)?` for subjectUniqueID [2].
@@ -915,16 +977,12 @@ mod tests {
     /// Same structure but uses tag 0x82 for subjectUniqueID.
     #[test]
     fn find_extension_value_skips_subject_unique_id() {
-        use synta::{Encode, Encoding, Encoder, ObjectIdentifier};
+        use synta::{Encode, Encoder, Encoding, ObjectIdentifier};
         use synta_certificate::oids;
 
         let mandatory: &[u8] = &[
-            0x02, 0x01, 0x00,
-            0x02, 0x01, 0x00,
-            0x02, 0x01, 0x00,
-            0x02, 0x01, 0x00,
-            0x02, 0x01, 0x00,
-            0x02, 0x01, 0x00,
+            0x02, 0x01, 0x00, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00, 0x02, 0x01,
+            0x00, 0x02, 0x01, 0x00,
         ];
         // subjectUniqueID [2] IMPLICIT { 0xFF } — tag 0x82, length 1
         let subject_uid: &[u8] = &[0x82, 0x01, 0xff];
@@ -945,8 +1003,14 @@ mod tests {
         let acme_oid_der = enc.finish().unwrap();
 
         let result = find_extension_value(&cert, &acme_oid_der);
-        assert!(result.is_ok(), "expected Ok for cert with subjectUniqueID: {result:?}");
-        assert!(result.unwrap().is_none(), "expected None — no matching extension");
+        assert!(
+            result.is_ok(),
+            "expected Ok for cert with subjectUniqueID: {result:?}"
+        );
+        assert!(
+            result.unwrap().is_none(),
+            "expected None — no matching extension"
+        );
     }
 
     /// Covers tls_alpn01.rs line 267 — `return Err("expected Extension SEQUENCE")`.
@@ -956,7 +1020,7 @@ mod tests {
     /// are crafted only because no valid API produces malformed extension data.
     #[test]
     fn find_extension_value_non_sequence_in_extensions_returns_err() {
-        use synta::{Encode, Encoding, Encoder, ObjectIdentifier};
+        use synta::{Encode, Encoder, Encoding, ObjectIdentifier};
         use synta_certificate::oids;
 
         // Build a minimal fake DER structure:
@@ -990,7 +1054,10 @@ mod tests {
         let acme_oid_der = enc.finish().unwrap();
 
         let result = find_extension_value(&cert, &acme_oid_der);
-        assert!(result.is_err(), "expected Err for non-SEQUENCE extension element: {result:?}");
+        assert!(
+            result.is_err(),
+            "expected Err for non-SEQUENCE extension element: {result:?}"
+        );
     }
 
     /// Covers tls_alpn01.rs line 277 — `return Err("expected OID in extension")`.
@@ -999,7 +1066,7 @@ mod tests {
     /// OID (tag 0x06).  Uses synta API to encode the search OID.
     #[test]
     fn find_extension_value_non_oid_first_element_returns_err() {
-        use synta::{Encode, Encoding, Encoder, ObjectIdentifier};
+        use synta::{Encode, Encoder, Encoding, ObjectIdentifier};
         use synta_certificate::oids;
 
         // extensions content: SEQUENCE { SEQUENCE { INTEGER ... } }
@@ -1010,7 +1077,9 @@ mod tests {
                 v.extend_from_slice(&[0x02, 0x01, 0x00]); // INTEGER 0
             }
             // [3] EXPLICIT { SEQUENCE { SEQUENCE { INTEGER(3 bytes) } } }
-            v.extend_from_slice(&[0xa3, 0x09, 0x30, 0x07, 0x30, 0x05, 0x02, 0x03, 0x00, 0x00, 0x00]);
+            v.extend_from_slice(&[
+                0xa3, 0x09, 0x30, 0x07, 0x30, 0x05, 0x02, 0x03, 0x00, 0x00, 0x00,
+            ]);
             v
         };
         let mut tbs = vec![0x30, tbs_content.len() as u8];
@@ -1024,7 +1093,10 @@ mod tests {
         let acme_oid_der = enc.finish().unwrap();
 
         let result = find_extension_value(&cert, &acme_oid_der);
-        assert!(result.is_err(), "expected Err for non-OID first element in extension: {result:?}");
+        assert!(
+            result.is_err(),
+            "expected Err for non-OID first element in extension: {result:?}"
+        );
     }
 
     // ── TLS server helpers for validate_inner integration tests ───────────────
@@ -1040,13 +1112,12 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
-        let not_before = synta_certificate::parse_time(
-            &crate::ca::init::unix_to_generalized_time(now_secs),
-        )
-        .unwrap();
-        let not_after = synta_certificate::parse_time(
-            &crate::ca::init::unix_to_generalized_time(now_secs + 86400),
-        )
+        let not_before =
+            synta_certificate::parse_time(&crate::ca::init::unix_to_generalized_time(now_secs))
+                .unwrap();
+        let not_after = synta_certificate::parse_time(&crate::ca::init::unix_to_generalized_time(
+            now_secs + 86400,
+        ))
         .unwrap();
         let signer = key.as_signer("sha256");
         CertificateBuilder::new()
@@ -1072,12 +1143,13 @@ mod tests {
         use tokio_rustls::TlsAcceptor;
 
         let pkcs8_der = key.to_der().unwrap();
-        let private_key = rustls::pki_types::PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(pkcs8_der));
+        let private_key =
+            rustls::pki_types::PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(pkcs8_der));
         let cert = CertificateDer::from(cert_der);
 
-        let mut server_config = rustls::ServerConfig::builder_with_provider(
-            Arc::new(rustls::crypto::ring::default_provider()),
-        )
+        let mut server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
         .with_safe_default_protocol_versions()
         .unwrap()
         .with_no_client_auth()
@@ -1108,12 +1180,13 @@ mod tests {
         use tokio_rustls::TlsAcceptor;
 
         let pkcs8_der = key.to_der().unwrap();
-        let private_key = rustls::pki_types::PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(pkcs8_der));
+        let private_key =
+            rustls::pki_types::PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(pkcs8_der));
         let cert = CertificateDer::from(cert_der);
 
-        let mut server_config = rustls::ServerConfig::builder_with_provider(
-            Arc::new(rustls::crypto::ring::default_provider()),
-        )
+        let mut server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
         .with_protocol_versions(&[&rustls::version::TLS12])
         .unwrap()
         .with_no_client_auth()
@@ -1148,8 +1221,11 @@ mod tests {
         // verify_acme_cert returns IncorrectResponse because there is no ACME extension.
         let result = validate_inner("127.0.0.1", "token.thumbprint", port).await;
         assert!(
-            matches!(result, Err(crate::error::AcmeError::IncorrectResponse(_))
-                | Err(crate::error::AcmeError::Tls(_))),
+            matches!(
+                result,
+                Err(crate::error::AcmeError::IncorrectResponse(_))
+                    | Err(crate::error::AcmeError::Tls(_))
+            ),
             "expected IncorrectResponse or Tls error after TLS handshake: {result:?}"
         );
     }
@@ -1168,8 +1244,11 @@ mod tests {
         // TLS 1.2 handshake: verify_tls12_signature is called (lines 894-901 covered).
         let result = validate_inner("127.0.0.1", "token.thumbprint", port).await;
         assert!(
-            matches!(result, Err(crate::error::AcmeError::IncorrectResponse(_))
-                | Err(crate::error::AcmeError::Tls(_))),
+            matches!(
+                result,
+                Err(crate::error::AcmeError::IncorrectResponse(_))
+                    | Err(crate::error::AcmeError::Tls(_))
+            ),
             "expected IncorrectResponse or Tls error after TLS 1.2 handshake: {result:?}"
         );
     }

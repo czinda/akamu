@@ -4,11 +4,11 @@
 
 use synta::{Decoder, Encoding};
 use synta_certificate::{
-    default_key_id_hasher, der_to_pem, encode_authority_key_identifier,
-    encode_basic_constraints, encode_key_usage, encode_subject_key_identifier,
-    AuthorityInformationAccessBuilder, CRLDistributionPointsBuilder, Certificate,
-    CertificateBuilder, ExtendedKeyUsageBuilder, KeyIdMethod, NameBuilder, PrivateKey,
-    SubjectAlternativeNameBuilder, KEY_USAGE_DIGITAL_SIGNATURE, oids,
+    default_key_id_hasher, der_to_pem, encode_authority_key_identifier, encode_basic_constraints,
+    encode_key_usage, encode_subject_key_identifier, oids, AuthorityInformationAccessBuilder,
+    CRLDistributionPointsBuilder, Certificate, CertificateBuilder, ExtendedKeyUsageBuilder,
+    KeyIdMethod, NameBuilder, PrivateKey, SubjectAlternativeNameBuilder,
+    KEY_USAGE_DIGITAL_SIGNATURE,
 };
 
 use crate::error::AcmeError;
@@ -100,14 +100,12 @@ pub fn issue_certificate(
         .map_err(|e| AcmeError::Builder(format!("EKU: {e}")))?;
 
     // SubjectKeyIdentifier (from the end-entity public key in the CSR).
-    let ski_der =
-        encode_subject_key_identifier(&csr.spki_der, KeyIdMethod::Rfc5280Sha1, &hasher)
-            .ok_or_else(|| AcmeError::Builder("SKI encode".into()))?;
+    let ski_der = encode_subject_key_identifier(&csr.spki_der, KeyIdMethod::Rfc5280Sha1, &hasher)
+        .ok_or_else(|| AcmeError::Builder("SKI encode".into()))?;
 
     // AuthorityKeyIdentifier (from the CA's public key).
-    let aki_der =
-        encode_authority_key_identifier(&ca_spki_der, KeyIdMethod::Rfc5280Sha1, &hasher)
-            .ok_or_else(|| AcmeError::Builder("AKI encode".into()))?;
+    let aki_der = encode_authority_key_identifier(&ca_spki_der, KeyIdMethod::Rfc5280Sha1, &hasher)
+        .ok_or_else(|| AcmeError::Builder("AKI encode".into()))?;
 
     // SubjectAlternativeName: rebuild from the validated SANs.
     let mut san_builder = SubjectAlternativeNameBuilder::new();
@@ -117,9 +115,8 @@ pub fn issue_certificate(
                 san_builder = san_builder.dns_name(&san.value);
             }
             "ip" => {
-                let ip_bytes = ip_string_to_bytes(&san.value).ok_or_else(|| {
-                    AcmeError::Builder(format!("invalid IP SAN: {}", san.value))
-                })?;
+                let ip_bytes = ip_string_to_bytes(&san.value)
+                    .ok_or_else(|| AcmeError::Builder(format!("invalid IP SAN: {}", san.value)))?;
                 san_builder = san_builder.ip_address(&ip_bytes);
             }
             other => {
@@ -130,7 +127,9 @@ pub fn issue_certificate(
             }
         }
     }
-    let san_der = san_builder.build().map_err(|e| AcmeError::Builder(format!("SAN: {e}")))?;
+    let san_der = san_builder
+        .build()
+        .map_err(|e| AcmeError::Builder(format!("SAN: {e}")))?;
 
     // ── Assemble the certificate ──────────────────────────────────────────────
     let signer = ca_key.as_signer(hash_alg);
@@ -192,8 +191,9 @@ pub fn issue_certificate(
 /// Extract the DER-encoded subject Name from a DER-encoded certificate.
 fn extract_ca_subject_der(ca_cert_der: &[u8]) -> Result<Vec<u8>, AcmeError> {
     let mut dec = Decoder::new(ca_cert_der, Encoding::Der);
-    let cert: Certificate =
-        dec.decode().map_err(|e| AcmeError::Internal(format!("parse CA cert: {e}")))?;
+    let cert: Certificate = dec
+        .decode()
+        .map_err(|e| AcmeError::Internal(format!("parse CA cert: {e}")))?;
     Ok(cert.tbs_certificate.subject.0.to_vec())
 }
 
@@ -244,7 +244,8 @@ pub fn sign_server_cert(
         .to_vec();
 
     // CA public key for AKI.
-    let ca_spki_der = ca.key
+    let ca_spki_der = ca
+        .key
         .public_key()
         .map_err(|e| AcmeError::Crypto(format!("CA public key for AKI: {e}")))?
         .spki_der()
@@ -286,13 +287,11 @@ pub fn sign_server_cert(
         .build()
         .map_err(|e| AcmeError::Builder(format!("EKU: {e}")))?;
 
-    let ski_der =
-        encode_subject_key_identifier(&spki_der, KeyIdMethod::Rfc5280Sha1, &hasher)
-            .ok_or_else(|| AcmeError::Builder("SKI".into()))?;
+    let ski_der = encode_subject_key_identifier(&spki_der, KeyIdMethod::Rfc5280Sha1, &hasher)
+        .ok_or_else(|| AcmeError::Builder("SKI".into()))?;
 
-    let aki_der =
-        encode_authority_key_identifier(&ca_spki_der, KeyIdMethod::Rfc5280Sha1, &hasher)
-            .ok_or_else(|| AcmeError::Builder("AKI".into()))?;
+    let aki_der = encode_authority_key_identifier(&ca_spki_der, KeyIdMethod::Rfc5280Sha1, &hasher)
+        .ok_or_else(|| AcmeError::Builder("AKI".into()))?;
 
     let san_der = SubjectAlternativeNameBuilder::new()
         .dns_name(server_name)
@@ -323,12 +322,12 @@ pub fn sign_server_cert(
 #[cfg(test)]
 mod tests {
     use synta::{Decoder, Encoding};
+    use synta_certificate::OpensslSignatureVerifier;
     use synta_certificate::{
-        BackendPrivateKey, Certificate, CertificateBuilder, CsrBuilder, KeyIdMethod, NameBuilder,
-        PrivateKey as _, default_key_id_hasher, encode_basic_constraints, encode_key_usage,
-        encode_subject_key_identifier, encode_authority_key_identifier,
-        KEY_USAGE_C_RLSIGN, KEY_USAGE_KEY_CERT_SIGN,
-        SubjectAlternativeNameBuilder,
+        default_key_id_hasher, encode_authority_key_identifier, encode_basic_constraints,
+        encode_key_usage, encode_subject_key_identifier, BackendPrivateKey, Certificate,
+        CertificateBuilder, CsrBuilder, KeyIdMethod, NameBuilder, PrivateKey as _,
+        SubjectAlternativeNameBuilder, KEY_USAGE_C_RLSIGN, KEY_USAGE_KEY_CERT_SIGN,
     };
     use synta_x509_verification::{
         ops::VerificationCertificate,
@@ -337,10 +336,9 @@ mod tests {
         types::DNSName,
         verify, RevocationChecks,
     };
-    use synta_certificate::OpensslSignatureVerifier;
 
-    use crate::ca::csr::{SanEntry, validate_csr, ValidatedCsr};
-    use super::{issue_certificate, ip_string_to_bytes, hex_encode};
+    use super::{hex_encode, ip_string_to_bytes, issue_certificate};
+    use crate::ca::csr::{validate_csr, SanEntry, ValidatedCsr};
 
     /// Build a minimal self-signed CA certificate DER for testing.
     fn make_test_ca() -> (BackendPrivateKey, Vec<u8>) {
@@ -365,9 +363,8 @@ mod tests {
         let not_before = parse_time(&now).unwrap();
         let not_after = parse_time(&exp).unwrap();
         let bc = encode_basic_constraints(true, None).unwrap();
-        let ku = encode_key_usage(
-            (1u16 << KEY_USAGE_KEY_CERT_SIGN) | (1u16 << KEY_USAGE_C_RLSIGN),
-        ).unwrap();
+        let ku = encode_key_usage((1u16 << KEY_USAGE_KEY_CERT_SIGN) | (1u16 << KEY_USAGE_C_RLSIGN))
+            .unwrap();
         let ski = encode_subject_key_identifier(&spki, KeyIdMethod::Rfc5280Sha1, &hasher).unwrap();
         let aki =
             encode_authority_key_identifier(&spki, KeyIdMethod::Rfc5280Sha1, &hasher).unwrap();
@@ -382,7 +379,11 @@ mod tests {
             .add_extension_oid(synta_certificate::oids::BASIC_CONSTRAINTS, true, &bc)
             .add_extension_oid(synta_certificate::oids::KEY_USAGE, true, &ku)
             .add_extension_oid(synta_certificate::oids::SUBJECT_KEY_IDENTIFIER, false, &ski)
-            .add_extension_oid(synta_certificate::oids::AUTHORITY_KEY_IDENTIFIER, false, &aki)
+            .add_extension_oid(
+                synta_certificate::oids::AUTHORITY_KEY_IDENTIFIER,
+                false,
+                &aki,
+            )
             .sign(&signer)
             .unwrap();
         (key, cert_der)
@@ -448,7 +449,10 @@ mod tests {
 
         // PEM bundle should contain two certificates.
         assert!(issued.cert_pem.contains("-----BEGIN CERTIFICATE-----"));
-        let count = issued.cert_pem.matches("-----BEGIN CERTIFICATE-----").count();
+        let count = issued
+            .cert_pem
+            .matches("-----BEGIN CERTIFICATE-----")
+            .count();
         assert_eq!(count, 2, "PEM bundle must contain leaf + CA");
 
         // Chain verification with synta-x509-verification.
@@ -457,13 +461,13 @@ mod tests {
             .unwrap()
             .as_secs() as i64;
 
-        let ca_parsed: Certificate =
-            Decoder::new(&ca_cert_der, Encoding::Der).decode().unwrap();
+        let ca_parsed: Certificate = Decoder::new(&ca_cert_der, Encoding::Der).decode().unwrap();
         let ca_vcert = VerificationCertificate::new(ca_parsed, &ca_cert_der);
         let store = Store::new(vec![ca_vcert]);
 
-        let leaf_parsed: Certificate =
-            Decoder::new(&issued.cert_der, Encoding::Der).decode().unwrap();
+        let leaf_parsed: Certificate = Decoder::new(&issued.cert_der, Encoding::Der)
+            .decode()
+            .unwrap();
         let leaf_vcert = VerificationCertificate::new(leaf_parsed, &issued.cert_der);
 
         let dns_name = DNSName::new(domain).unwrap();
@@ -473,8 +477,14 @@ mod tests {
             now_unix,
         );
 
-        verify(&leaf_vcert, &[], &policy, &store, RevocationChecks::default())
-            .expect("certificate chain verification failed");
+        verify(
+            &leaf_vcert,
+            &[],
+            &policy,
+            &store,
+            RevocationChecks::default(),
+        )
+        .expect("certificate chain verification failed");
     }
 
     #[test]
@@ -520,16 +530,8 @@ mod tests {
 
         let validated = validate_csr(&csr_der, &[("ip", "127.0.0.1")]).unwrap();
 
-        let issued = issue_certificate(
-            &ca_key,
-            &ca_cert_der,
-            "sha256",
-            90,
-            None,
-            None,
-            &validated,
-        )
-        .unwrap();
+        let issued =
+            issue_certificate(&ca_key, &ca_cert_der, "sha256", 90, None, None, &validated).unwrap();
 
         assert!(!issued.cert_der.is_empty());
         assert!(issued.cert_pem.contains("-----BEGIN CERTIFICATE-----"));
@@ -574,11 +576,27 @@ mod tests {
         let validated_csr = ValidatedCsr {
             spki_der,
             subject_der: name_der,
-            sans: vec![SanEntry { san_type: "ip".into(), value: "not-an-ip".into() }],
+            sans: vec![SanEntry {
+                san_type: "ip".into(),
+                value: "not-an-ip".into(),
+            }],
         };
-        let result = issue_certificate(&ca_key, &ca_cert_der, "sha256", 90, None, None, &validated_csr);
-        let Err(err) = result else { panic!("expected Builder error for invalid IP SAN") };
-        assert!(matches!(err, crate::error::AcmeError::Builder(_)), "unexpected error: {err}");
+        let result = issue_certificate(
+            &ca_key,
+            &ca_cert_der,
+            "sha256",
+            90,
+            None,
+            None,
+            &validated_csr,
+        );
+        let Err(err) = result else {
+            panic!("expected Builder error for invalid IP SAN")
+        };
+        assert!(
+            matches!(err, crate::error::AcmeError::Builder(_)),
+            "unexpected error: {err}"
+        );
     }
 
     /// Construct a ValidatedCsr with an "email" SAN (unsupported type).
@@ -592,10 +610,24 @@ mod tests {
         let validated_csr = ValidatedCsr {
             spki_der,
             subject_der: name_der,
-            sans: vec![SanEntry { san_type: "email".into(), value: "user@example.com".into() }],
+            sans: vec![SanEntry {
+                san_type: "email".into(),
+                value: "user@example.com".into(),
+            }],
         };
         // The "email" type hits `_ => {}` (line 123) — SAN is ignored, cert issued with no SAN.
-        let result = issue_certificate(&ca_key, &ca_cert_der, "sha256", 90, None, None, &validated_csr);
-        assert!(result.is_ok(), "unknown SAN type should be skipped silently");
+        let result = issue_certificate(
+            &ca_key,
+            &ca_cert_der,
+            "sha256",
+            90,
+            None,
+            None,
+            &validated_csr,
+        );
+        assert!(
+            result.is_ok(),
+            "unknown SAN type should be skipped silently"
+        );
     }
 }

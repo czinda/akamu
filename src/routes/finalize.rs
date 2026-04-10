@@ -15,8 +15,8 @@ use crate::db;
 use crate::error::AcmeError;
 use crate::state::AppState;
 
-use super::{json_response, parse_jws, require_payload, unix_now};
 use super::order::order_json;
+use super::{json_response, parse_jws, require_payload, unix_now};
 
 #[derive(Deserialize)]
 struct FinalizePayload {
@@ -31,14 +31,18 @@ pub async fn finalize_order(
     let url = format!("{}/acme/order/{}/finalize", state.config.base_url, id);
     let ctx = parse_jws(&state, body, &url).await?;
 
-    let account_id = ctx.account_id.ok_or(AcmeError::Unauthorized("kid required".into()))?;
+    let account_id = ctx
+        .account_id
+        .ok_or(AcmeError::Unauthorized("kid required".into()))?;
 
     let order = db::orders::get_by_id(&state.db, &id)
         .await?
         .ok_or(AcmeError::NotFound)?;
 
     if order.account_id != account_id {
-        return Err(AcmeError::Unauthorized("order belongs to different account".into()));
+        return Err(AcmeError::Unauthorized(
+            "order belongs to different account".into(),
+        ));
     }
     if order.status != "ready" {
         return Err(AcmeError::OrderNotReady);
@@ -102,8 +106,15 @@ pub async fn finalize_order(
                      VALUES (?1, ?2, ?3, ?4, 'valid', ?5, ?6, ?7, ?8,
                              NULL, NULL, NULL, ?9, NULL, NULL)",
                     rusqlite::params![
-                        cert_id, order_id_clone, acct_id, serial,
-                        cert_der, cert_pem, not_before, not_after, now,
+                        cert_id,
+                        order_id_clone,
+                        acct_id,
+                        serial,
+                        cert_der,
+                        cert_pem,
+                        not_before,
+                        not_after,
+                        now,
                     ],
                 )?;
                 tx.execute(

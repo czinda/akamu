@@ -225,7 +225,8 @@ impl Config {
             return d.clone();
         }
         // Extract host from base_url: strip scheme, then take up to first '/' or ':'
-        let without_scheme = self.base_url
+        let without_scheme = self
+            .base_url
             .strip_prefix("https://")
             .or_else(|| self.base_url.strip_prefix("http://"))
             .unwrap_or(&self.base_url);
@@ -301,7 +302,10 @@ enabled = false
 
     #[test]
     fn dns_persist_issuer_domain_uses_explicit_field() {
-        let toml = format!("{}\n[server]\ndns_persist_issuer_domain = \"ca.example.org\"\n", minimal_toml());
+        let toml = format!(
+            "{}\n[server]\ndns_persist_issuer_domain = \"ca.example.org\"\n",
+            minimal_toml()
+        );
         let cfg: Config = toml::from_str(&toml).unwrap();
         assert_eq!(cfg.dns_persist_issuer_domain(), "ca.example.org");
     }
@@ -369,12 +373,21 @@ max_body_bytes = 131072
         assert_eq!(cfg.ca.key_type, "rsa:4096");
         assert_eq!(cfg.ca.hash_alg, "sha512");
         assert_eq!(cfg.ca.validity_days, 365);
-        assert_eq!(cfg.ca.crl_url.as_deref(), Some("http://crl.example.org/ca.crl"));
+        assert_eq!(
+            cfg.ca.crl_url.as_deref(),
+            Some("http://crl.example.org/ca.crl")
+        );
         assert_eq!(cfg.ca.ocsp_url.as_deref(), Some("http://ocsp.example.org"));
         assert_eq!(cfg.ca.ca_validity_years, 5);
         assert!(cfg.mtc.enabled);
-        assert_eq!(cfg.server.terms_of_service_url.as_deref(), Some("https://example.org/tos"));
-        assert_eq!(cfg.server.website_url.as_deref(), Some("https://example.org"));
+        assert_eq!(
+            cfg.server.terms_of_service_url.as_deref(),
+            Some("https://example.org/tos")
+        );
+        assert_eq!(
+            cfg.server.website_url.as_deref(),
+            Some("https://example.org")
+        );
         assert_eq!(cfg.server.caa_identities, vec!["ca.example.org"]);
         assert!(cfg.server.external_account_required);
         assert_eq!(cfg.server.order_expiry_secs, 3600);

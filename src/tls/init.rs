@@ -53,10 +53,8 @@ pub fn load_or_generate(tls: &TlsConfig, ca: &CaState) -> Result<(), String> {
     })?;
 
     // Build a CA-signed server certificate.
-    let cert_der =
-        sign_server_cert(&tls.server_name, &server_key, ca).map_err(|e| {
-            format!("sign TLS server cert: {e}")
-        })?;
+    let cert_der = sign_server_cert(&tls.server_name, &server_key, ca)
+        .map_err(|e| format!("sign TLS server cert: {e}"))?;
 
     // Write private key PEM.
     let key_pem = server_key

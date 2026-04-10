@@ -34,21 +34,28 @@ pub async fn new_order(
     let url = format!("{}/acme/new-order", state.config.base_url);
     let ctx = parse_jws(&state, body, &url).await?;
 
-    let account_id = ctx.account_id.ok_or(AcmeError::Unauthorized("kid required".into()))?;
+    let account_id = ctx
+        .account_id
+        .ok_or(AcmeError::Unauthorized("kid required".into()))?;
 
     // Verify account is valid.
     let account = db::accounts::get_by_id(&state.db, &account_id)
         .await?
         .ok_or(AcmeError::Unauthorized("account not found".into()))?;
     if account.status != "valid" {
-        return Err(AcmeError::Unauthorized(format!("account status: {}", account.status)));
+        return Err(AcmeError::Unauthorized(format!(
+            "account status: {}",
+            account.status
+        )));
     }
 
     let payload: NewOrderPayload = require_payload(&ctx.payload, "new-order")?;
 
     // Validate identifiers.
     if payload.identifiers.is_empty() {
-        return Err(AcmeError::BadRequest("identifiers must not be empty".into()));
+        return Err(AcmeError::BadRequest(
+            "identifiers must not be empty".into(),
+        ));
     }
     for id in &payload.identifiers {
         match id.r#type.as_str() {
@@ -62,9 +69,14 @@ pub async fn new_order(
     let authz_expiry = now + state.config.server.authz_expiry_secs as i64;
 
     let order_id = uuid::Uuid::new_v4().to_string();
-    let identifiers_json = serde_json::to_string(&payload.identifiers.iter().map(|id| {
-        json!({"type": id.r#type, "value": id.value})
-    }).collect::<Vec<_>>()).unwrap();
+    let identifiers_json = serde_json::to_string(
+        &payload
+            .identifiers
+            .iter()
+            .map(|id| json!({"type": id.r#type, "value": id.value}))
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
 
     // Build all the rows before entering the DB call so we don't need to
     // cross an await boundary inside the transaction closure.
@@ -126,7 +138,11 @@ pub async fn new_order(
                       not_before, not_after, error, certificate_id, created, updated)
                      VALUES (?1, ?2, 'pending', ?3, ?4, NULL, NULL, NULL, NULL, ?5, ?5)",
                     rusqlite::params![
-                        order_id_clone, account_id_clone, expiry, identifiers_json, now
+                        order_id_clone,
+                        account_id_clone,
+                        expiry,
+                        identifiers_json,
+                        now
                     ],
                 )?;
                 for plan in &authz_plans {
@@ -136,8 +152,13 @@ pub async fn new_order(
                           wildcard, created, updated)
                          VALUES (?1, ?2, ?3, 'pending', ?4, ?5, ?6, ?7, ?7)",
                         rusqlite::params![
-                            plan.authz_id, order_id_clone, account_id_clone,
-                            plan.identifier_json, authz_expiry, plan.wildcard as i64, now
+                            plan.authz_id,
+                            order_id_clone,
+                            account_id_clone,
+                            plan.identifier_json,
+                            authz_expiry,
+                            plan.wildcard as i64,
+                            now
                         ],
                     )?;
                     for (chall_id, chall_type) in &plan.challenges {
@@ -146,9 +167,7 @@ pub async fn new_order(
                              (id, authz_id, type, status, token, validated,
                               error, created, updated)
                              VALUES (?1, ?2, ?3, 'pending', ?4, NULL, NULL, ?5, ?5)",
-                            rusqlite::params![
-                                chall_id, plan.authz_id, chall_type, plan.token, now
-                            ],
+                            rusqlite::params![chall_id, plan.authz_id, chall_type, plan.token, now],
                         )?;
                     }
                 }
@@ -186,13 +205,17 @@ pub async fn get_order(
     let url = format!("{}/acme/order/{}", state.config.base_url, id);
     let ctx = parse_jws(&state, body, &url).await?;
 
-    let account_id = ctx.account_id.ok_or(AcmeError::Unauthorized("kid required".into()))?;
+    let account_id = ctx
+        .account_id
+        .ok_or(AcmeError::Unauthorized("kid required".into()))?;
 
     let order = db::orders::get_by_id(&state.db, &id)
         .await?
         .ok_or(AcmeError::NotFound)?;
     if order.account_id != account_id {
-        return Err(AcmeError::Unauthorized("order belongs to different account".into()));
+        return Err(AcmeError::Unauthorized(
+            "order belongs to different account".into(),
+        ));
     }
 
     let authz_ids = db::orders::list_authz_ids(&state.db, &id).await?;
@@ -201,13 +224,21 @@ pub async fn get_order(
         .map(|aid| format!("{}/acme/authz/{}", state.config.base_url, aid))
         .collect();
 
-    json_response(&state, StatusCode::OK, order_json(&order, &authz_urls, &state.config.base_url))
-        .await
+    json_response(
+        &state,
+        StatusCode::OK,
+        order_json(&order, &authz_urls, &state.config.base_url),
+    )
+    .await
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-pub(crate) fn order_json(order: &OrderRow, authz_urls: &[String], base_url: &str) -> serde_json::Value {
+pub(crate) fn order_json(
+    order: &OrderRow,
+    authz_urls: &[String],
+    base_url: &str,
+) -> serde_json::Value {
     let identifiers: Vec<serde_json::Value> =
         serde_json::from_str(&order.identifiers).unwrap_or_default();
     let mut obj = json!({
@@ -244,7 +275,12 @@ fn gen_token() -> String {
 mod tests {
     use super::*;
 
-    fn make_order(status: &str, expires: Option<i64>, cert_id: Option<&str>, error: Option<&str>) -> OrderRow {
+    fn make_order(
+        status: &str,
+        expires: Option<i64>,
+        cert_id: Option<&str>,
+        error: Option<&str>,
+    ) -> OrderRow {
         OrderRow {
             id: "order-1".to_string(),
             account_id: "acct-1".to_string(),
@@ -263,7 +299,11 @@ mod tests {
     #[test]
     fn order_json_pending_order() {
         let order = make_order("pending", Some(1_700_100_000), None, None);
-        let json = order_json(&order, &["https://acme.test/acme/authz/a".to_string()], "https://acme.test");
+        let json = order_json(
+            &order,
+            &["https://acme.test/acme/authz/a".to_string()],
+            "https://acme.test",
+        );
         assert_eq!(json["status"], "pending");
         assert!(json["expires"].as_str().is_some());
         assert!(json["certificate"].is_null() || json.get("certificate").is_none());
@@ -280,10 +320,18 @@ mod tests {
 
     #[test]
     fn order_json_invalid_order_includes_error() {
-        let order = make_order("invalid", None, None, Some("{\"type\":\"urn:ietf:params:acme:error:connection\",\"detail\":\"failed\"}"));
+        let order = make_order(
+            "invalid",
+            None,
+            None,
+            Some("{\"type\":\"urn:ietf:params:acme:error:connection\",\"detail\":\"failed\"}"),
+        );
         let json = order_json(&order, &[], "https://acme.test");
         assert_eq!(json["status"], "invalid");
-        assert_eq!(json["error"]["type"], "urn:ietf:params:acme:error:connection");
+        assert_eq!(
+            json["error"]["type"],
+            "urn:ietf:params:acme:error:connection"
+        );
     }
 
     #[test]
@@ -307,6 +355,8 @@ mod tests {
         let t = gen_token();
         assert!(!t.is_empty());
         // Should be base64url without padding — only alphanumeric, '-', '_'
-        assert!(t.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_'));
+        assert!(t
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_'));
     }
 }

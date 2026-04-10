@@ -7,10 +7,10 @@
 use std::path::Path;
 
 use synta_certificate::{
-    BackendPrivateKey, CertificateBuilder, KeyIdMethod, NameBuilder, PrivateKey,
-    default_key_id_hasher, der_to_pem, encode_authority_key_identifier,
-    encode_basic_constraints, encode_key_usage, encode_subject_key_identifier,
-    KEY_USAGE_C_RLSIGN, KEY_USAGE_KEY_CERT_SIGN, oids, parse_time,
+    default_key_id_hasher, der_to_pem, encode_authority_key_identifier, encode_basic_constraints,
+    encode_key_usage, encode_subject_key_identifier, oids, parse_time, BackendPrivateKey,
+    CertificateBuilder, KeyIdMethod, NameBuilder, PrivateKey, KEY_USAGE_C_RLSIGN,
+    KEY_USAGE_KEY_CERT_SIGN,
 };
 
 use crate::config::CaConfig;
@@ -139,18 +139,24 @@ fn generate(config: &CaConfig) -> Result<(BackendPrivateKey, Vec<u8>), AcmeError
 pub(crate) fn generate_backend_key(key_type: &str) -> Result<BackendPrivateKey, AcmeError> {
     let cry = |e: &dyn std::fmt::Display| AcmeError::Crypto(format!("generate {key_type}: {e}"));
     match key_type {
-        "ec:P-256" | "P-256"   => BackendPrivateKey::generate_ec("P-256").map_err(|e| cry(&e)),
-        "ec:P-384" | "P-384"   => BackendPrivateKey::generate_ec("P-384").map_err(|e| cry(&e)),
-        "ec:P-521" | "P-521"   => BackendPrivateKey::generate_ec("P-521").map_err(|e| cry(&e)),
+        "ec:P-256" | "P-256" => BackendPrivateKey::generate_ec("P-256").map_err(|e| cry(&e)),
+        "ec:P-384" | "P-384" => BackendPrivateKey::generate_ec("P-384").map_err(|e| cry(&e)),
+        "ec:P-521" | "P-521" => BackendPrivateKey::generate_ec("P-521").map_err(|e| cry(&e)),
         "rsa:2048" | "rsa2048" => BackendPrivateKey::generate_rsa(2048, 65537).map_err(|e| cry(&e)),
         "rsa:3072" | "rsa3072" => BackendPrivateKey::generate_rsa(3072, 65537).map_err(|e| cry(&e)),
         "rsa:4096" | "rsa4096" => BackendPrivateKey::generate_rsa(4096, 65537).map_err(|e| cry(&e)),
-        "ed25519"              => BackendPrivateKey::generate_ed25519().map_err(|e| cry(&e)),
-        "ed448"                => BackendPrivateKey::generate_ed448().map_err(|e| cry(&e)),
+        "ed25519" => BackendPrivateKey::generate_ed25519().map_err(|e| cry(&e)),
+        "ed448" => BackendPrivateKey::generate_ed448().map_err(|e| cry(&e)),
         // Post-quantum signature keys (FIPS 204, requires OpenSSL 3.5+).
-        "ml-dsa-44" | "ML-DSA-44" => BackendPrivateKey::generate_ml_dsa("ML-DSA-44").map_err(|e| cry(&e)),
-        "ml-dsa-65" | "ML-DSA-65" => BackendPrivateKey::generate_ml_dsa("ML-DSA-65").map_err(|e| cry(&e)),
-        "ml-dsa-87" | "ML-DSA-87" => BackendPrivateKey::generate_ml_dsa("ML-DSA-87").map_err(|e| cry(&e)),
+        "ml-dsa-44" | "ML-DSA-44" => {
+            BackendPrivateKey::generate_ml_dsa("ML-DSA-44").map_err(|e| cry(&e))
+        }
+        "ml-dsa-65" | "ML-DSA-65" => {
+            BackendPrivateKey::generate_ml_dsa("ML-DSA-65").map_err(|e| cry(&e))
+        }
+        "ml-dsa-87" | "ML-DSA-87" => {
+            BackendPrivateKey::generate_ml_dsa("ML-DSA-87").map_err(|e| cry(&e))
+        }
         other => Err(AcmeError::Internal(format!(
             "unknown key type '{other}'; use 'ec:P-256', 'rsa:2048', 'ed25519', 'ml-dsa-44', etc."
         ))),
@@ -272,7 +278,10 @@ mod tests {
 
         // Both files now exist — should load.
         let (key2, cert_der2) = load_or_generate(&config).unwrap();
-        assert_eq!(cert_der, cert_der2, "loaded cert should match generated cert");
+        assert_eq!(
+            cert_der, cert_der2,
+            "loaded cert should match generated cert"
+        );
     }
 
     #[test]

@@ -107,8 +107,7 @@ pub async fn set_certificate(
 pub async fn list_authz_ids(db: &Connection, order_id: &str) -> Result<Vec<String>, AcmeError> {
     let order_id = order_id.to_string();
     db.call(move |conn| {
-        let mut stmt =
-            conn.prepare("SELECT id FROM authorizations WHERE order_id = ?1")?;
+        let mut stmt = conn.prepare("SELECT id FROM authorizations WHERE order_id = ?1")?;
         let ids = stmt
             .query_map(rusqlite::params![order_id], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -130,15 +129,20 @@ mod tests {
     }
 
     async fn insert_account(db: &Connection, account_id: &str) {
-        crate::db::accounts::insert(db, AccountRow {
-            id: account_id.to_string(),
-            status: "valid".to_string(),
-            contact: None,
-            public_key: vec![0u8; 4],
-            jwk_thumbprint: format!("thumb-{account_id}"),
-            created: 1_700_000_000,
-            updated: 1_700_000_000,
-        }).await.unwrap();
+        crate::db::accounts::insert(
+            db,
+            AccountRow {
+                id: account_id.to_string(),
+                status: "valid".to_string(),
+                contact: None,
+                public_key: vec![0u8; 4],
+                jwk_thumbprint: format!("thumb-{account_id}"),
+                created: 1_700_000_000,
+                updated: 1_700_000_000,
+            },
+        )
+        .await
+        .unwrap();
     }
 
     fn sample_order(id: &str, account_id: &str) -> OrderRow {
@@ -161,7 +165,9 @@ mod tests {
     async fn insert_and_get_by_id() {
         let db = open_db().await;
         insert_account(&db, "acct-1").await;
-        insert(&db, sample_order("order-1", "acct-1")).await.unwrap();
+        insert(&db, sample_order("order-1", "acct-1"))
+            .await
+            .unwrap();
 
         let row = get_by_id(&db, "order-1").await.unwrap().unwrap();
         assert_eq!(row.id, "order-1");
@@ -179,9 +185,13 @@ mod tests {
     async fn update_status_changes_status() {
         let db = open_db().await;
         insert_account(&db, "acct-2").await;
-        insert(&db, sample_order("order-2", "acct-2")).await.unwrap();
+        insert(&db, sample_order("order-2", "acct-2"))
+            .await
+            .unwrap();
 
-        update_status(&db, "order-2", "ready", None, 1_700_000_001).await.unwrap();
+        update_status(&db, "order-2", "ready", None, 1_700_000_001)
+            .await
+            .unwrap();
 
         let row = get_by_id(&db, "order-2").await.unwrap().unwrap();
         assert_eq!(row.status, "ready");
@@ -192,9 +202,19 @@ mod tests {
     async fn update_status_with_error() {
         let db = open_db().await;
         insert_account(&db, "acct-3").await;
-        insert(&db, sample_order("order-3", "acct-3")).await.unwrap();
+        insert(&db, sample_order("order-3", "acct-3"))
+            .await
+            .unwrap();
 
-        update_status(&db, "order-3", "invalid", Some("{\"type\":\"error\"}".to_string()), 1_700_000_001).await.unwrap();
+        update_status(
+            &db,
+            "order-3",
+            "invalid",
+            Some("{\"type\":\"error\"}".to_string()),
+            1_700_000_001,
+        )
+        .await
+        .unwrap();
 
         let row = get_by_id(&db, "order-3").await.unwrap().unwrap();
         assert_eq!(row.status, "invalid");
@@ -205,9 +225,13 @@ mod tests {
     async fn set_certificate_marks_valid() {
         let db = open_db().await;
         insert_account(&db, "acct-4").await;
-        insert(&db, sample_order("order-4", "acct-4")).await.unwrap();
+        insert(&db, sample_order("order-4", "acct-4"))
+            .await
+            .unwrap();
 
-        set_certificate(&db, "order-4", "cert-xyz", 1_700_000_001).await.unwrap();
+        set_certificate(&db, "order-4", "cert-xyz", 1_700_000_001)
+            .await
+            .unwrap();
 
         let row = get_by_id(&db, "order-4").await.unwrap().unwrap();
         assert_eq!(row.status, "valid");
@@ -218,7 +242,9 @@ mod tests {
     async fn list_authz_ids_empty_for_no_authzs() {
         let db = open_db().await;
         insert_account(&db, "acct-5").await;
-        insert(&db, sample_order("order-5", "acct-5")).await.unwrap();
+        insert(&db, sample_order("order-5", "acct-5"))
+            .await
+            .unwrap();
 
         let ids = list_authz_ids(&db, "order-5").await.unwrap();
         assert!(ids.is_empty());
@@ -230,19 +256,26 @@ mod tests {
 
         let db = open_db().await;
         insert_account(&db, "acct-6").await;
-        insert(&db, sample_order("order-6", "acct-6")).await.unwrap();
+        insert(&db, sample_order("order-6", "acct-6"))
+            .await
+            .unwrap();
 
-        crate::db::authz::insert(&db, AuthorizationRow {
-            id: "authz-a".to_string(),
-            order_id: "order-6".to_string(),
-            account_id: "acct-6".to_string(),
-            status: "pending".to_string(),
-            identifier: "{\"type\":\"dns\",\"value\":\"example.com\"}".to_string(),
-            expires: None,
-            wildcard: false,
-            created: 1_700_000_000,
-            updated: 1_700_000_000,
-        }).await.unwrap();
+        crate::db::authz::insert(
+            &db,
+            AuthorizationRow {
+                id: "authz-a".to_string(),
+                order_id: "order-6".to_string(),
+                account_id: "acct-6".to_string(),
+                status: "pending".to_string(),
+                identifier: "{\"type\":\"dns\",\"value\":\"example.com\"}".to_string(),
+                expires: None,
+                wildcard: false,
+                created: 1_700_000_000,
+                updated: 1_700_000_000,
+            },
+        )
+        .await
+        .unwrap();
 
         let ids = list_authz_ids(&db, "order-6").await.unwrap();
         assert_eq!(ids, vec!["authz-a"]);
@@ -251,9 +284,13 @@ mod tests {
     #[tokio::test]
     async fn db_error_paths_no_table() {
         let raw = Arc::new(tokio_rusqlite::Connection::open_in_memory().await.unwrap());
-        assert!(insert(&raw, sample_order("err-order", "err-acct")).await.is_err());
+        assert!(insert(&raw, sample_order("err-order", "err-acct"))
+            .await
+            .is_err());
         assert!(get_by_id(&raw, "any").await.is_err());
-        assert!(update_status(&raw, "any", "invalid", None, 0).await.is_err());
+        assert!(update_status(&raw, "any", "invalid", None, 0)
+            .await
+            .is_err());
         assert!(set_certificate(&raw, "any", "cert-id", 0).await.is_err());
         assert!(list_authz_ids(&raw, "any").await.is_err());
     }

@@ -22,13 +22,17 @@ pub async fn get_authz(
     let url = format!("{}/acme/authz/{}", state.config.base_url, id);
     let ctx = parse_jws(&state, body, &url).await?;
 
-    let account_id = ctx.account_id.ok_or(AcmeError::Unauthorized("kid required".into()))?;
+    let account_id = ctx
+        .account_id
+        .ok_or(AcmeError::Unauthorized("kid required".into()))?;
 
     let authz = db::authz::get_by_id(&state.db, &id)
         .await?
         .ok_or(AcmeError::NotFound)?;
     if authz.account_id != account_id {
-        return Err(AcmeError::Unauthorized("authorization belongs to different account".into()));
+        return Err(AcmeError::Unauthorized(
+            "authorization belongs to different account".into(),
+        ));
     }
 
     let challenges = db::challenges::list_by_authz(&state.db, &id).await?;

@@ -25,18 +25,21 @@
 use std::{
     collections::HashMap,
     sync::{
-        Arc,
         atomic::{AtomicU64, Ordering},
+        Arc,
     },
     time::Instant,
 };
 
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use clap::Parser;
 use http_body_util::{BodyExt, Full};
-use hyper::{HeaderMap, body::Bytes};
-use hyper_util::{client::legacy::{Client, connect::HttpConnector}, rt::TokioExecutor};
-use serde_json::{Value, json};
+use hyper::{body::Bytes, HeaderMap};
+use hyper_util::{
+    client::legacy::{connect::HttpConnector, Client},
+    rt::TokioExecutor,
+};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use synta_certificate::{
     BackendPrivateKey, CertificateSigner as _, CsrBuilder, NameBuilder, PrivateKey as _,
@@ -45,8 +48,9 @@ use synta_certificate::{
 use tokio::{net::UdpSocket, sync::RwLock};
 
 use acme_server::{
-    ca, db, routes,
+    ca,
     config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig},
+    db, routes,
     state::{AppState, CaState, MtcState},
 };
 
@@ -111,10 +115,19 @@ async fn http_get(client: &HyperClient, url: &str) -> Result<(u16, Vec<u8>, Head
         .uri(url)
         .body(Full::new(Bytes::new()))
         .map_err(|e| e.to_string())?;
-    let resp = client.request(req).await.map_err(|e| format!("GET {url}: {e}"))?;
+    let resp = client
+        .request(req)
+        .await
+        .map_err(|e| format!("GET {url}: {e}"))?;
     let status = resp.status().as_u16();
     let headers = resp.headers().clone();
-    let bytes = resp.into_body().collect().await.map_err(|e| e.to_string())?.to_bytes().to_vec();
+    let bytes = resp
+        .into_body()
+        .collect()
+        .await
+        .map_err(|e| e.to_string())?
+        .to_bytes()
+        .to_vec();
     Ok((status, bytes, headers))
 }
 
@@ -124,21 +137,36 @@ async fn http_head(client: &HyperClient, url: &str) -> Result<HeaderMap, String>
         .uri(url)
         .body(Full::new(Bytes::new()))
         .map_err(|e| e.to_string())?;
-    let resp = client.request(req).await.map_err(|e| format!("HEAD {url}: {e}"))?;
+    let resp = client
+        .request(req)
+        .await
+        .map_err(|e| format!("HEAD {url}: {e}"))?;
     Ok(resp.headers().clone())
 }
 
-async fn http_post_jws(client: &HyperClient, url: &str, jws: &Value) -> Result<(u16, Value, HeaderMap), String> {
+async fn http_post_jws(
+    client: &HyperClient,
+    url: &str,
+    jws: &Value,
+) -> Result<(u16, Value, HeaderMap), String> {
     let req = hyper::Request::builder()
         .method("POST")
         .uri(url)
         .header("content-type", "application/jose+json")
         .body(Full::new(Bytes::from(jws.to_string())))
         .map_err(|e| e.to_string())?;
-    let resp = client.request(req).await.map_err(|e| format!("POST {url}: {e}"))?;
+    let resp = client
+        .request(req)
+        .await
+        .map_err(|e| format!("POST {url}: {e}"))?;
     let status = resp.status().as_u16();
     let headers = resp.headers().clone();
-    let bytes = resp.into_body().collect().await.map_err(|e| e.to_string())?.to_bytes();
+    let bytes = resp
+        .into_body()
+        .collect()
+        .await
+        .map_err(|e| e.to_string())?
+        .to_bytes();
     let json = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     Ok((status, json, headers))
 }
@@ -180,7 +208,12 @@ impl AccountKey {
         let x_b64 = encode_coord(&x_bytes, 32);
         let y_b64 = encode_coord(&y_bytes, 32);
         let thumbprint = jwk_thumbprint(&x_b64, &y_b64);
-        AccountKey { key, x_b64, y_b64, thumbprint }
+        AccountKey {
+            key,
+            x_b64,
+            y_b64,
+            thumbprint,
+        }
     }
 
     fn jwk(&self) -> Value {
@@ -233,7 +266,9 @@ fn ecdsa_der_to_p1363(der: &[u8], half: usize) -> Option<Vec<u8>> {
     let inner = strip_tlv(der, 0x30)?;
     let (r, rest) = strip_int(inner)?;
     let (s, _) = strip_int(rest)?;
-    if r.len() > half || s.len() > half { return None; }
+    if r.len() > half || s.len() > half {
+        return None;
+    }
     let mut out = vec![0u8; half * 2];
     out[half - r.len()..half].copy_from_slice(r);
     out[half * 2 - s.len()..].copy_from_slice(s);
@@ -241,25 +276,39 @@ fn ecdsa_der_to_p1363(der: &[u8], half: usize) -> Option<Vec<u8>> {
 }
 
 fn strip_tlv<'a>(buf: &'a [u8], tag: u8) -> Option<&'a [u8]> {
-    if *buf.first()? != tag { return None; }
+    if *buf.first()? != tag {
+        return None;
+    }
     let (len, rest) = decode_len(&buf[1..])?;
     rest.get(..len)
 }
 
 fn strip_int(buf: &[u8]) -> Option<(&[u8], &[u8])> {
-    if *buf.first()? != 0x02 { return None; }
+    if *buf.first()? != 0x02 {
+        return None;
+    }
     let (len, rest) = decode_len(&buf[1..])?;
-    let val = rest.get(..len)?.strip_prefix(&[0x00u8]).unwrap_or(rest.get(..len)?);
+    let val = rest
+        .get(..len)?
+        .strip_prefix(&[0x00u8])
+        .unwrap_or(rest.get(..len)?);
     Some((val, &rest[len..]))
 }
 
 fn decode_len(buf: &[u8]) -> Option<(usize, &[u8])> {
     let first = *buf.first()?;
-    if first < 0x80 { Some((first as usize, &buf[1..])) }
-    else if first == 0x81 { Some((*buf.get(1)? as usize, &buf[2..])) }
-    else if first == 0x82 {
-        Some((((*buf.get(1)? as usize) << 8 | *buf.get(2)? as usize), &buf[3..]))
-    } else { None }
+    if first < 0x80 {
+        Some((first as usize, &buf[1..]))
+    } else if first == 0x81 {
+        Some((*buf.get(1)? as usize, &buf[2..]))
+    } else if first == 0x82 {
+        Some((
+            ((*buf.get(1)? as usize) << 8 | *buf.get(2)? as usize),
+            &buf[3..],
+        ))
+    } else {
+        None
+    }
 }
 
 // ── Key generation (mirrors ca::init::generate_backend_key, which is pub(crate)) ──
@@ -267,19 +316,27 @@ fn decode_len(buf: &[u8]) -> Option<(usize, &[u8])> {
 fn generate_key(key_type: &str) -> Result<BackendPrivateKey, String> {
     let err = |e: &dyn std::fmt::Display| format!("generate '{key_type}': {e}");
     match key_type {
-        "ec:P-256" | "P-256"   => BackendPrivateKey::generate_ec("P-256").map_err(|e| err(&e)),
-        "ec:P-384" | "P-384"   => BackendPrivateKey::generate_ec("P-384").map_err(|e| err(&e)),
-        "ec:P-521" | "P-521"   => BackendPrivateKey::generate_ec("P-521").map_err(|e| err(&e)),
+        "ec:P-256" | "P-256" => BackendPrivateKey::generate_ec("P-256").map_err(|e| err(&e)),
+        "ec:P-384" | "P-384" => BackendPrivateKey::generate_ec("P-384").map_err(|e| err(&e)),
+        "ec:P-521" | "P-521" => BackendPrivateKey::generate_ec("P-521").map_err(|e| err(&e)),
         "rsa:2048" | "rsa2048" => BackendPrivateKey::generate_rsa(2048, 65537).map_err(|e| err(&e)),
         "rsa:3072" | "rsa3072" => BackendPrivateKey::generate_rsa(3072, 65537).map_err(|e| err(&e)),
         "rsa:4096" | "rsa4096" => BackendPrivateKey::generate_rsa(4096, 65537).map_err(|e| err(&e)),
-        "ed25519"              => BackendPrivateKey::generate_ed25519().map_err(|e| err(&e)),
-        "ed448"                => BackendPrivateKey::generate_ed448().map_err(|e| err(&e)),
+        "ed25519" => BackendPrivateKey::generate_ed25519().map_err(|e| err(&e)),
+        "ed448" => BackendPrivateKey::generate_ed448().map_err(|e| err(&e)),
         // Post-quantum signature keys (FIPS 204, requires OpenSSL 3.5+).
-        "ml-dsa-44" | "ML-DSA-44" => BackendPrivateKey::generate_ml_dsa("ML-DSA-44").map_err(|e| err(&e)),
-        "ml-dsa-65" | "ML-DSA-65" => BackendPrivateKey::generate_ml_dsa("ML-DSA-65").map_err(|e| err(&e)),
-        "ml-dsa-87" | "ML-DSA-87" => BackendPrivateKey::generate_ml_dsa("ML-DSA-87").map_err(|e| err(&e)),
-        other => Err(format!("unknown key type '{other}'; use ec:P-256, rsa:2048, ed25519, ml-dsa-44, …")),
+        "ml-dsa-44" | "ML-DSA-44" => {
+            BackendPrivateKey::generate_ml_dsa("ML-DSA-44").map_err(|e| err(&e))
+        }
+        "ml-dsa-65" | "ML-DSA-65" => {
+            BackendPrivateKey::generate_ml_dsa("ML-DSA-65").map_err(|e| err(&e))
+        }
+        "ml-dsa-87" | "ML-DSA-87" => {
+            BackendPrivateKey::generate_ml_dsa("ML-DSA-87").map_err(|e| err(&e))
+        }
+        other => Err(format!(
+            "unknown key type '{other}'; use ec:P-256, rsa:2048, ed25519, ml-dsa-44, …"
+        )),
     }
 }
 
@@ -287,12 +344,20 @@ fn generate_key(key_type: &str) -> Result<BackendPrivateKey, String> {
 
 fn make_csr(domain: &str, key_type: &str) -> Result<Vec<u8>, String> {
     let k = generate_key(key_type)?;
-    let spki = k.public_key().map_err(|e| e.to_string())?.spki_der().to_vec();
-    let name = NameBuilder::new().common_name(domain).build()
+    let spki = k
+        .public_key()
+        .map_err(|e| e.to_string())?
+        .spki_der()
+        .to_vec();
+    let name = NameBuilder::new()
+        .common_name(domain)
+        .build()
         .map_err(|e| format!("CSR name: {e}"))?;
     // Use domain as-is (including "*.") — wildcard labels are valid in dNSName SANs
     // (RFC 5280 §4.2.1.6) and must match the order identifier exactly.
-    let san = SubjectAlternativeNameBuilder::new().dns_name(domain).build()
+    let san = SubjectAlternativeNameBuilder::new()
+        .dns_name(domain)
+        .build()
         .map_err(|e| format!("CSR SAN: {e}"))?;
     let signer = k.as_signer("sha256");
     CsrBuilder::new()
@@ -308,14 +373,20 @@ fn make_csr(domain: &str, key_type: &str) -> Result<Vec<u8>, String> {
 type ChallengeStore = Arc<RwLock<HashMap<String, String>>>; // token → key_auth
 
 async fn start_challenge_responder() -> (u16, ChallengeStore) {
-    use axum::{Router, extract::{Path, State}, routing::get};
+    use axum::{
+        extract::{Path, State},
+        routing::get,
+        Router,
+    };
     let store: ChallengeStore = Arc::new(RwLock::new(HashMap::new()));
     let router = Router::new()
         .route(
             "/.well-known/acme-challenge/{token}",
-            get(|State(s): State<ChallengeStore>, Path(token): Path<String>| async move {
-                s.read().await.get(&token).cloned().unwrap_or_default()
-            }),
+            get(
+                |State(s): State<ChallengeStore>, Path(token): Path<String>| async move {
+                    s.read().await.get(&token).cloned().unwrap_or_default()
+                },
+            ),
         )
         .with_state(store.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -346,7 +417,9 @@ impl MultiDns {
         tokio::spawn(async move {
             let mut buf = [0u8; 512];
             loop {
-                let Ok((n, addr)) = socket.recv_from(&mut buf).await else { break; };
+                let Ok((n, addr)) = socket.recv_from(&mut buf).await else {
+                    break;
+                };
                 let query = buf[..n].to_vec();
                 let qname = parse_qname(&query);
                 let store = records_clone.read().await;
@@ -361,7 +434,10 @@ impl MultiDns {
     }
 
     async fn set_record(&self, qname: &str, txt: &str) {
-        self.records.write().await.insert(qname.to_string(), txt.to_string());
+        self.records
+            .write()
+            .await
+            .insert(qname.to_string(), txt.to_string());
     }
 }
 
@@ -373,14 +449,20 @@ fn parse_qname(query: &[u8]) -> String {
     while pos < query.len() {
         let len = query[pos] as usize;
         pos += 1;
-        if len == 0 { break; }
-        if pos + len > query.len() { break; }
+        if len == 0 {
+            break;
+        }
+        if pos + len > query.len() {
+            break;
+        }
         if let Ok(s) = std::str::from_utf8(&query[pos..pos + len]) {
             labels.push(s.to_lowercase());
         }
         pos += len;
     }
-    if labels.is_empty() { return ".".to_string(); }
+    if labels.is_empty() {
+        return ".".to_string();
+    }
     format!("{}.", labels.join("."))
 }
 
@@ -390,7 +472,9 @@ fn build_txt_response(query: &[u8], txt_value: &str) -> Vec<u8> {
     while pos < query.len() {
         let llen = query[pos] as usize;
         pos += 1;
-        if llen == 0 { break; }
+        if llen == 0 {
+            break;
+        }
         pos += llen;
     }
     pos += 4; // skip QTYPE + QCLASS
@@ -398,18 +482,18 @@ fn build_txt_response(query: &[u8], txt_value: &str) -> Vec<u8> {
     let txt_bytes = txt_value.as_bytes();
     let rdlength = (txt_bytes.len() + 1) as u16;
     let mut resp = Vec::with_capacity(question_end + 16 + txt_bytes.len());
-    resp.extend_from_slice(&query[..2]);               // transaction ID (echo)
-    resp.extend_from_slice(&[0x81, 0x80]);             // QR=1 RD=1 RA=1
-    resp.extend_from_slice(&[0x00, 0x01]);             // QDCOUNT=1
-    resp.extend_from_slice(&[0x00, 0x01]);             // ANCOUNT=1
+    resp.extend_from_slice(&query[..2]); // transaction ID (echo)
+    resp.extend_from_slice(&[0x81, 0x80]); // QR=1 RD=1 RA=1
+    resp.extend_from_slice(&[0x00, 0x01]); // QDCOUNT=1
+    resp.extend_from_slice(&[0x00, 0x01]); // ANCOUNT=1
     resp.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // NSCOUNT=0 ARCOUNT=0
-    resp.extend_from_slice(&query[12..question_end]);  // question section (echo)
-    resp.extend_from_slice(&[0xC0, 0x0C]);             // name pointer → offset 12
-    resp.extend_from_slice(&[0x00, 0x10]);             // TYPE=TXT
-    resp.extend_from_slice(&[0x00, 0x01]);             // CLASS=IN
+    resp.extend_from_slice(&query[12..question_end]); // question section (echo)
+    resp.extend_from_slice(&[0xC0, 0x0C]); // name pointer → offset 12
+    resp.extend_from_slice(&[0x00, 0x10]); // TYPE=TXT
+    resp.extend_from_slice(&[0x00, 0x01]); // CLASS=IN
     resp.extend_from_slice(&[0x00, 0x00, 0x00, 0x3C]); // TTL=60
     resp.extend_from_slice(&rdlength.to_be_bytes());
-    resp.push(txt_bytes.len() as u8);                 // TXT char-string length prefix
+    resp.push(txt_bytes.len() as u8); // TXT char-string length prefix
     resp.extend_from_slice(txt_bytes);
     resp
 }
@@ -430,8 +514,7 @@ async fn start_server(args: &Args) -> BenchServer {
     let dir = tempfile::TempDir::new().unwrap();
 
     // Challenge infrastructure depends on the chosen challenge type.
-    let (challenge_store, dns, http_validation_port, dns_resolver_addr, issuer_domain) =
-        match args.challenge.as_str() {
+    let (challenge_store, dns, http_validation_port, dns_resolver_addr, issuer_domain) = match args.challenge.as_str() {
             "dns-persist-01" => {
                 let dns = Arc::new(MultiDns::start().await);
                 let resolver = format!("127.0.0.1:{}", dns.port);
@@ -451,7 +534,9 @@ async fn start_server(args: &Args) -> BenchServer {
     let config = Arc::new(Config {
         listen_addr: addr.to_string(),
         base_url: base_url.clone(),
-        database: DatabaseConfig { path: args.db.clone() },
+        database: DatabaseConfig {
+            path: args.db.clone(),
+        },
         ca: CaConfig {
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
             cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
@@ -466,7 +551,10 @@ async fn start_server(args: &Args) -> BenchServer {
             organization: "Bench".into(),
             ca_validity_years: 10,
         },
-        mtc: MtcConfig { log_path: "/dev/null".into(), enabled: false },
+        mtc: MtcConfig {
+            log_path: "/dev/null".into(),
+            enabled: false,
+        },
         server: ServerConfig {
             http_validation_port,
             dns_persist_issuer_domain: issuer_domain,
@@ -504,34 +592,47 @@ async fn start_server(args: &Args) -> BenchServer {
     // Allow the server to finish binding before workers start.
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
 
-    BenchServer { base_url, challenge_store, dns, _dir: dir }
+    BenchServer {
+        base_url,
+        challenge_store,
+        dns,
+        _dir: dir,
+    }
 }
 
 // ── Per-issuance timing record ─────────────────────────────────────────────────
 
 #[derive(Clone)]
 struct IssuanceTiming {
-    worker_id:    usize,
-    request_id:   usize,
-    success:      bool,
-    error:        Option<String>,
+    worker_id: usize,
+    request_id: usize,
+    success: bool,
+    error: Option<String>,
     /// 0 when the account was reused from a previous issuance by this worker.
-    account_us:   u64,
-    order_us:     u64,
-    authz_us:     u64,
+    account_us: u64,
+    order_us: u64,
+    authz_us: u64,
     challenge_us: u64,
-    finalize_us:  u64,
-    download_us:  u64,
+    finalize_us: u64,
+    download_us: u64,
     /// Wall time from start-of-order to cert-download-complete (account excluded).
-    total_us:     u64,
+    total_us: u64,
 }
 
 impl IssuanceTiming {
     fn failed(worker_id: usize, request_id: usize, msg: String) -> Self {
         IssuanceTiming {
-            worker_id, request_id, success: false, error: Some(msg),
-            account_us: 0, order_us: 0, authz_us: 0,
-            challenge_us: 0, finalize_us: 0, download_us: 0, total_us: 0,
+            worker_id,
+            request_id,
+            success: false,
+            error: Some(msg),
+            account_us: 0,
+            order_us: 0,
+            authz_us: 0,
+            challenge_us: 0,
+            finalize_us: 0,
+            download_us: 0,
+            total_us: 0,
         }
     }
 }
@@ -551,12 +652,21 @@ impl WorkerState {
         let domain = match args.challenge.as_str() {
             "dns-persist-01" => {
                 let base = format!("bench-{id}.acme-bench.test");
-                if args.wildcard { format!("*.{base}") } else { base }
+                if args.wildcard {
+                    format!("*.{base}")
+                } else {
+                    base
+                }
             }
             // http-01: all workers order a cert for "localhost" (resolves to 127.0.0.1).
             _ => "localhost".to_string(),
         };
-        WorkerState { id, key: AccountKey::generate(), account_url: None, domain }
+        WorkerState {
+            id,
+            key: AccountKey::generate(),
+            account_url: None,
+            domain,
+        }
     }
 }
 
@@ -573,11 +683,17 @@ async fn create_account(
     client: &HyperClient,
 ) -> Result<String, String> {
     let nonce_url = format!("{}/acme/new-nonce", server.base_url);
-    let acct_url  = format!("{}/acme/new-account", server.base_url);
+    let acct_url = format!("{}/acme/new-account", server.base_url);
     let nonce = fetch_nonce(client, &nonce_url).await?;
-    let jws = worker.key.jws_jwk(&nonce, &acct_url, Some(json!({"termsOfServiceAgreed": true})));
+    let jws = worker.key.jws_jwk(
+        &nonce,
+        &acct_url,
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (status, body, headers) = http_post_jws(client, &acct_url, &jws).await?;
-    if status != 201 { return Err(format!("new-account {status}: {body}")); }
+    if status != 201 {
+        return Err(format!("new-account {status}: {body}"));
+    }
     location_hdr(&headers)
 }
 
@@ -587,18 +703,26 @@ async fn new_order(
     client: &HyperClient,
     account_url: &str,
 ) -> Result<(String, String, String), String> {
-    let nonce_url  = format!("{}/acme/new-nonce", server.base_url);
-    let order_url  = format!("{}/acme/new-order", server.base_url);
+    let nonce_url = format!("{}/acme/new-nonce", server.base_url);
+    let order_url = format!("{}/acme/new-order", server.base_url);
     let nonce = fetch_nonce(client, &nonce_url).await?;
     let payload = json!({"identifiers": [{"type": "dns", "value": worker.domain}]});
-    let jws = worker.key.jws_kid(account_url, &nonce, &order_url, Some(payload));
+    let jws = worker
+        .key
+        .jws_kid(account_url, &nonce, &order_url, Some(payload));
     let (status, body, headers) = http_post_jws(client, &order_url, &jws).await?;
-    if status != 201 { return Err(format!("new-order {status}: {body}")); }
+    if status != 201 {
+        return Err(format!("new-order {status}: {body}"));
+    }
     let loc = location_hdr(&headers)?;
-    let authz_url = body["authorizations"][0].as_str()
-        .ok_or("missing authorizations[0]")?.to_string();
-    let fin_url = body["finalize"].as_str()
-        .ok_or("missing finalize URL")?.to_string();
+    let authz_url = body["authorizations"][0]
+        .as_str()
+        .ok_or("missing authorizations[0]")?
+        .to_string();
+    let fin_url = body["finalize"]
+        .as_str()
+        .ok_or("missing finalize URL")?
+        .to_string();
     Ok((loc, authz_url, fin_url))
 }
 
@@ -616,12 +740,14 @@ async fn get_authz(
     // authz_url is a full URL; the server expects the full URL in the JWS header.
     let path = authz_url.trim_start_matches(&server.base_url);
     let jws = worker.key.jws_kid(account_url, &nonce, authz_url, None);
-    let (status, body, _) = http_post_jws(
-        client, &format!("{}{path}", server.base_url), &jws,
-    ).await?;
-    if status != 200 { return Err(format!("authz {status}: {body}")); }
+    let (status, body, _) =
+        http_post_jws(client, &format!("{}{path}", server.base_url), &jws).await?;
+    if status != 200 {
+        return Err(format!("authz {status}: {body}"));
+    }
     let challenges = body["challenges"].as_array().ok_or("no challenges")?;
-    let chall = challenges.iter()
+    let chall = challenges
+        .iter()
         .find(|c| c["type"].as_str() == Some(challenge_type))
         .ok_or_else(|| format!("no {challenge_type} challenge"))?;
     let chall_url = chall["url"].as_str().ok_or("no challenge url")?.to_string();
@@ -641,11 +767,14 @@ async fn respond_and_poll(
     let nonce_url = format!("{}/acme/new-nonce", server.base_url);
     let nonce = fetch_nonce(client, &nonce_url).await?;
     let chall_path = chall_url.trim_start_matches(&server.base_url);
-    let jws = worker.key.jws_kid(account_url, &nonce, chall_url, Some(json!({})));
-    let (status, body, _) = http_post_jws(
-        client, &format!("{}{chall_path}", server.base_url), &jws,
-    ).await?;
-    if status != 200 { return Err(format!("challenge respond {status}: {body}")); }
+    let jws = worker
+        .key
+        .jws_kid(account_url, &nonce, chall_url, Some(json!({})));
+    let (status, body, _) =
+        http_post_jws(client, &format!("{}{chall_path}", server.base_url), &jws).await?;
+    if status != 200 {
+        return Err(format!("challenge respond {status}: {body}"));
+    }
 
     let order_path = order_url.trim_start_matches(&server.base_url);
     let deadline = Instant::now() + std::time::Duration::from_secs(30);
@@ -656,9 +785,8 @@ async fn respond_and_poll(
         }
         let nonce = fetch_nonce(client, &nonce_url).await?;
         let jws = worker.key.jws_kid(account_url, &nonce, order_url, None);
-        let (_, body, _) = http_post_jws(
-            client, &format!("{}{order_path}", server.base_url), &jws,
-        ).await?;
+        let (_, body, _) =
+            http_post_jws(client, &format!("{}{order_path}", server.base_url), &jws).await?;
         match body["status"].as_str() {
             Some("ready") | Some("valid") => return Ok(()),
             Some("invalid") => return Err(format!("order invalid: {}", body["error"])),
@@ -683,12 +811,16 @@ async fn finalize_and_poll(
     let nonce = fetch_nonce(client, &nonce_url).await?;
     let fin_path = finalize_url.trim_start_matches(&server.base_url);
     let jws = worker.key.jws_kid(
-        account_url, &nonce, finalize_url, Some(json!({"csr": csr_b64})),
+        account_url,
+        &nonce,
+        finalize_url,
+        Some(json!({"csr": csr_b64})),
     );
-    let (status, body, _) = http_post_jws(
-        client, &format!("{}{fin_path}", server.base_url), &jws,
-    ).await?;
-    if status != 200 { return Err(format!("finalize {status}: {body}")); }
+    let (status, body, _) =
+        http_post_jws(client, &format!("{}{fin_path}", server.base_url), &jws).await?;
+    if status != 200 {
+        return Err(format!("finalize {status}: {body}"));
+    }
 
     let order_path = order_url.trim_start_matches(&server.base_url);
     let deadline = Instant::now() + std::time::Duration::from_secs(30);
@@ -699,16 +831,18 @@ async fn finalize_and_poll(
         }
         let nonce = fetch_nonce(client, &nonce_url).await?;
         let jws = worker.key.jws_kid(account_url, &nonce, order_url, None);
-        let (_, body, _) = http_post_jws(
-            client, &format!("{}{order_path}", server.base_url), &jws,
-        ).await?;
+        let (_, body, _) =
+            http_post_jws(client, &format!("{}{order_path}", server.base_url), &jws).await?;
         match body["status"].as_str() {
             Some("valid") => {
-                return body["certificate"].as_str()
+                return body["certificate"]
+                    .as_str()
                     .ok_or_else(|| "no certificate URL in valid order".to_string())
                     .map(|s| s.to_string());
             }
-            Some("invalid") => return Err(format!("order invalid after finalize: {}", body["error"])),
+            Some("invalid") => {
+                return Err(format!("order invalid after finalize: {}", body["error"]))
+            }
             _ => continue,
         }
     }
@@ -720,11 +854,17 @@ fn verify_cert_san(pem: &str, domain: &str) -> Result<(), String> {
     let ders = synta_certificate::pem_to_der(pem.as_bytes());
     let leaf = ders.first().ok_or("no cert in PEM")?;
     let cert: Certificate = Decoder::new(leaf, Encoding::Der)
-        .decode().map_err(|e| format!("parse cert: {e}"))?;
-    let found = cert.subject_alt_names().iter().any(|(tag, val)| {
-        *tag == 2 && String::from_utf8_lossy(val) == domain
-    });
-    if found { Ok(()) } else { Err(format!("SAN '{domain}' not in cert")) }
+        .decode()
+        .map_err(|e| format!("parse cert: {e}"))?;
+    let found = cert
+        .subject_alt_names()
+        .iter()
+        .any(|(tag, val)| *tag == 2 && String::from_utf8_lossy(val) == domain);
+    if found {
+        Ok(())
+    } else {
+        Err(format!("SAN '{domain}' not in cert"))
+    }
 }
 
 // ── Full issuance flow ─────────────────────────────────────────────────────────
@@ -778,11 +918,19 @@ async fn run_issuance(
 
     // ── Get authorization ──────────────────────────────────────────────────────
     let t = Instant::now();
-    let (chall_url, token) =
-        match get_authz(worker, server, client, &account_url, &authz_url, &args.challenge).await {
-            Ok(v) => v,
-            Err(e) => return IssuanceTiming::failed(wid, request_id, format!("authz: {e}")),
-        };
+    let (chall_url, token) = match get_authz(
+        worker,
+        server,
+        client,
+        &account_url,
+        &authz_url,
+        &args.challenge,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => return IssuanceTiming::failed(wid, request_id, format!("authz: {e}")),
+    };
     let authz_us = t.elapsed().as_micros() as u64;
 
     // ── Register http-01 challenge response ────────────────────────────────────
@@ -796,18 +944,29 @@ async fn run_issuance(
 
     // ── Trigger challenge → poll until ready ───────────────────────────────────
     let t = Instant::now();
-    if let Err(e) = respond_and_poll(worker, server, client, &account_url, &chall_url, &order_url).await {
+    if let Err(e) =
+        respond_and_poll(worker, server, client, &account_url, &chall_url, &order_url).await
+    {
         return IssuanceTiming::failed(wid, request_id, format!("challenge: {e}"));
     }
     let challenge_us = t.elapsed().as_micros() as u64;
 
     // ── Finalize → poll until valid ────────────────────────────────────────────
     let t = Instant::now();
-    let cert_url =
-        match finalize_and_poll(worker, server, client, &account_url, &order_url, &fin_url, &args.key_type).await {
-            Ok(v) => v,
-            Err(e) => return IssuanceTiming::failed(wid, request_id, format!("finalize: {e}")),
-        };
+    let cert_url = match finalize_and_poll(
+        worker,
+        server,
+        client,
+        &account_url,
+        &order_url,
+        &fin_url,
+        &args.key_type,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => return IssuanceTiming::failed(wid, request_id, format!("finalize: {e}")),
+    };
     let finalize_us = t.elapsed().as_micros() as u64;
 
     // ── Download certificate ───────────────────────────────────────────────────
@@ -837,8 +996,17 @@ async fn run_issuance(
 
     let total_us = t_total.elapsed().as_micros() as u64;
     IssuanceTiming {
-        worker_id: wid, request_id, success: true, error: None,
-        account_us, order_us, authz_us, challenge_us, finalize_us, download_us, total_us,
+        worker_id: wid,
+        request_id,
+        success: true,
+        error: None,
+        account_us,
+        order_us,
+        authz_us,
+        challenge_us,
+        finalize_us,
+        download_us,
+        total_us,
     }
 }
 
@@ -846,56 +1014,85 @@ async fn run_issuance(
 
 /// p-th percentile of a pre-sorted slice, returned in milliseconds.
 fn pct_ms(sorted: &[u64], p: f64) -> f64 {
-    if sorted.is_empty() { return 0.0; }
+    if sorted.is_empty() {
+        return 0.0;
+    }
     let idx = ((sorted.len() as f64 * p / 100.0).ceil() as usize).saturating_sub(1);
     sorted[idx.min(sorted.len() - 1)] as f64 / 1000.0
 }
 
 fn mean_ms(v: &[u64]) -> f64 {
-    if v.is_empty() { return 0.0; }
+    if v.is_empty() {
+        return 0.0;
+    }
     v.iter().sum::<u64>() as f64 / v.len() as f64 / 1000.0
 }
 
-fn min_ms(v: &[u64]) -> f64 { v.iter().min().copied().unwrap_or(0) as f64 / 1000.0 }
-fn max_ms(v: &[u64]) -> f64 { v.iter().max().copied().unwrap_or(0) as f64 / 1000.0 }
+fn min_ms(v: &[u64]) -> f64 {
+    v.iter().min().copied().unwrap_or(0) as f64 / 1000.0
+}
+fn max_ms(v: &[u64]) -> f64 {
+    v.iter().max().copied().unwrap_or(0) as f64 / 1000.0
+}
 
 // ── Report output ──────────────────────────────────────────────────────────────
 
 fn text_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64) {
-    let ok:  Vec<&IssuanceTiming> = timings.iter().filter(|t|  t.success).collect();
+    let ok: Vec<&IssuanceTiming> = timings.iter().filter(|t| t.success).collect();
     let err: Vec<&IssuanceTiming> = timings.iter().filter(|t| !t.success).collect();
     let n_ok = ok.len();
     let n_err = err.len();
-    let tput = if bench_wall > 0.0 { n_ok as f64 / bench_wall } else { 0.0 };
+    let tput = if bench_wall > 0.0 {
+        n_ok as f64 / bench_wall
+    } else {
+        0.0
+    };
 
     println!("\nACME Benchmark");
-    println!("  challenge={}  clients={}  requests={}  key={}  ca={}  db={}{}",
-        args.challenge, args.clients, args.requests,
-        args.key_type, args.ca_key_type, args.db,
+    println!(
+        "  challenge={}  clients={}  requests={}  key={}  ca={}  db={}{}",
+        args.challenge,
+        args.clients,
+        args.requests,
+        args.key_type,
+        args.ca_key_type,
+        args.db,
         if args.wildcard { "  wildcard=true" } else { "" },
     );
     if args.warmup > 0 {
         println!("  Warmup: {} issuances discarded", args.warmup);
     }
 
-    println!("\nResults  ({n_ok} ok / {n_err} err out of {}):", n_ok + n_err);
+    println!(
+        "\nResults  ({n_ok} ok / {n_err} err out of {}):",
+        n_ok + n_err
+    );
     println!("  Throughput:  {tput:.1} issuances/sec   wall: {bench_wall:.3} s");
 
     if n_ok > 0 {
         let mut totals: Vec<u64> = ok.iter().map(|t| t.total_us).collect();
         totals.sort_unstable();
         println!("\n  End-to-end latency, ms  (account creation not included in total):");
-        println!("    mean={:.1}   p50={:.1}   p95={:.1}   p99={:.1}   max={:.1}   min={:.1}",
-            mean_ms(&totals), pct_ms(&totals, 50.0), pct_ms(&totals, 95.0),
-            pct_ms(&totals, 99.0), max_ms(&totals), min_ms(&totals),
+        println!(
+            "    mean={:.1}   p50={:.1}   p95={:.1}   p99={:.1}   max={:.1}   min={:.1}",
+            mean_ms(&totals),
+            pct_ms(&totals, 50.0),
+            pct_ms(&totals, 95.0),
+            pct_ms(&totals, 99.0),
+            max_ms(&totals),
+            min_ms(&totals),
         );
 
-        let acct_v: Vec<u64> = ok.iter().filter(|t| t.account_us > 0).map(|t| t.account_us).collect();
+        let acct_v: Vec<u64> = ok
+            .iter()
+            .filter(|t| t.account_us > 0)
+            .map(|t| t.account_us)
+            .collect();
         let order_v: Vec<u64> = ok.iter().map(|t| t.order_us).collect();
         let authz_v: Vec<u64> = ok.iter().map(|t| t.authz_us).collect();
         let chall_v: Vec<u64> = ok.iter().map(|t| t.challenge_us).collect();
-        let fin_v:   Vec<u64> = ok.iter().map(|t| t.finalize_us).collect();
-        let dl_v:    Vec<u64> = ok.iter().map(|t| t.download_us).collect();
+        let fin_v: Vec<u64> = ok.iter().map(|t| t.finalize_us).collect();
+        let dl_v: Vec<u64> = ok.iter().map(|t| t.download_us).collect();
 
         println!("\n  Phase breakdown, mean ms:");
         if !acct_v.is_empty() {
@@ -911,7 +1108,9 @@ fn text_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64) {
     if !err.is_empty() {
         let mut counts: HashMap<String, usize> = HashMap::new();
         for t in &err {
-            *counts.entry(t.error.clone().unwrap_or_default()).or_insert(0) += 1;
+            *counts
+                .entry(t.error.clone().unwrap_or_default())
+                .or_insert(0) += 1;
         }
         let mut sorted: Vec<_> = counts.into_iter().collect();
         sorted.sort_by(|a, b| b.1.cmp(&a.1));
@@ -924,10 +1123,14 @@ fn text_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64) {
 }
 
 fn json_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64) {
-    let ok:  Vec<&IssuanceTiming> = timings.iter().filter(|t|  t.success).collect();
-    let n_ok  = ok.len();
+    let ok: Vec<&IssuanceTiming> = timings.iter().filter(|t| t.success).collect();
+    let n_ok = ok.len();
     let n_err = timings.len() - n_ok;
-    let tput = if bench_wall > 0.0 { n_ok as f64 / bench_wall } else { 0.0 };
+    let tput = if bench_wall > 0.0 {
+        n_ok as f64 / bench_wall
+    } else {
+        0.0
+    };
     let mut totals: Vec<u64> = ok.iter().map(|t| t.total_us).collect();
     totals.sort_unstable();
 
@@ -971,17 +1174,13 @@ fn json_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64) {
 #[tokio::main]
 async fn main() {
     // `cargo bench` injects `--bench` into argv; strip it before clap sees it.
-    let raw: Vec<String> = std::env::args()
-        .filter(|a| a != "--bench")
-        .collect();
+    let raw: Vec<String> = std::env::args().filter(|a| a != "--bench").collect();
     let args = Args::parse_from(raw);
 
     // Suppress server tracing so the benchmark output is clean.
     // Set RUST_LOG=debug to see request traces.
     let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "error".to_string()),
-        )
+        .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "error".to_string()))
         .try_init();
 
     // Validate arguments.
@@ -1001,7 +1200,10 @@ async fn main() {
         std::process::exit(1);
     }
 
-    eprintln!("Starting server (ca-key={}, db={})…", args.ca_key_type, args.db);
+    eprintln!(
+        "Starting server (ca-key={}, db={})…",
+        args.ca_key_type, args.db
+    );
     let server = Arc::new(start_server(&args).await);
     eprintln!("Server ready at {}", server.base_url);
 
@@ -1014,7 +1216,9 @@ async fn main() {
     // Work-queue model: pre-fill a channel with `total` request IDs,
     // drain them with `clients` concurrent worker tasks.
     let (tx, rx) = tokio::sync::mpsc::channel::<usize>(total + 1);
-    for i in 0..total { tx.send(i).await.unwrap(); }
+    for i in 0..total {
+        tx.send(i).await.unwrap();
+    }
     drop(tx);
     let rx = Arc::new(tokio::sync::Mutex::new(rx));
 
@@ -1022,18 +1226,18 @@ async fn main() {
 
     // Atomics for measuring only the benchmark window (excluding warmup).
     let first_bench_us = Arc::new(AtomicU64::new(u64::MAX));
-    let last_bench_us  = Arc::new(AtomicU64::new(0));
+    let last_bench_us = Arc::new(AtomicU64::new(0));
     let t_epoch = Instant::now();
 
     let mut handles = Vec::new();
     for worker_id in 0..args.clients {
-        let args      = args.clone();
-        let server    = Arc::clone(&server);
-        let rx        = Arc::clone(&rx);
+        let args = args.clone();
+        let server = Arc::clone(&server);
+        let rx = Arc::clone(&rx);
         let result_tx = result_tx.clone();
-        let first_us  = Arc::clone(&first_bench_us);
-        let last_us   = Arc::clone(&last_bench_us);
-        let t_epoch   = t_epoch;
+        let first_us = Arc::clone(&first_bench_us);
+        let last_us = Arc::clone(&last_bench_us);
+        let t_epoch = t_epoch;
 
         handles.push(tokio::spawn(async move {
             let mut worker = WorkerState::new(worker_id, &args);
@@ -1041,7 +1245,10 @@ async fn main() {
             loop {
                 let request_id = {
                     let mut r = rx.lock().await;
-                    match r.recv().await { Some(id) => id, None => break }
+                    match r.recv().await {
+                        Some(id) => id,
+                        None => break,
+                    }
                 };
                 let is_warmup = request_id < args.warmup;
                 let t_start_us = t_epoch.elapsed().as_micros() as u64;
@@ -1059,21 +1266,30 @@ async fn main() {
     drop(result_tx);
 
     let mut all: Vec<IssuanceTiming> = Vec::with_capacity(total);
-    while let Some(t) = result_rx.recv().await { all.push(t); }
-    for h in handles { h.await.unwrap(); }
+    while let Some(t) = result_rx.recv().await {
+        all.push(t);
+    }
+    for h in handles {
+        h.await.unwrap();
+    }
 
     // Compute benchmark wall time from the first non-warmup start to the last end.
     let f = first_bench_us.load(Ordering::Relaxed);
     let l = last_bench_us.load(Ordering::Relaxed);
-    let bench_wall = if l > f { (l - f) as f64 / 1_000_000.0 } else { t_epoch.elapsed().as_secs_f64() };
+    let bench_wall = if l > f {
+        (l - f) as f64 / 1_000_000.0
+    } else {
+        t_epoch.elapsed().as_secs_f64()
+    };
 
     // Separate warmup results out; warmup IDs are 0..warmup-1.
-    let bench_timings: Vec<IssuanceTiming> = all.into_iter()
+    let bench_timings: Vec<IssuanceTiming> = all
+        .into_iter()
         .filter(|t| t.request_id >= args.warmup)
         .collect();
 
     match args.output.as_str() {
         "json" => json_report(&args, &bench_timings, bench_wall),
-        _      => text_report(&args, &bench_timings, bench_wall),
+        _ => text_report(&args, &bench_timings, bench_wall),
     }
 }

@@ -123,9 +123,7 @@ async fn run() -> Result<(), String> {
             .parse()
             .map_err(|e| format!("parse listen addr '{}': {e}", config.listen_addr))?;
         axum_server::bind_rustls(addr, rustls_config)
-            .serve(
-                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-            )
+            .serve(router.into_make_service_with_connect_info::<std::net::SocketAddr>())
             .await
             .map_err(|e| format!("server error: {e}"))?;
     } else {

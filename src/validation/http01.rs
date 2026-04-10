@@ -16,11 +16,19 @@ use crate::error::AcmeError;
 /// * `token`    — the challenge token stored in the database.
 /// * `key_auth` — `{token}.{jwk_thumbprint}` (expected response body).
 /// * `port`     — TCP port to connect to (RFC 8555 §8.3 requires 80; override for testing).
-pub async fn validate(domain: &str, token: &str, key_auth: &str, port: u16) -> Result<(), AcmeError> {
+pub async fn validate(
+    domain: &str,
+    token: &str,
+    key_auth: &str,
+    port: u16,
+) -> Result<(), AcmeError> {
     let url = if port == 80 {
         format!("http://{}/.well-known/acme-challenge/{}", domain, token)
     } else {
-        format!("http://{}:{}/.well-known/acme-challenge/{}", domain, port, token)
+        format!(
+            "http://{}:{}/.well-known/acme-challenge/{}",
+            domain, port, token
+        )
     };
     let uri: Uri = url
         .parse()
@@ -54,7 +62,8 @@ pub async fn validate(domain: &str, token: &str, key_auth: &str, port: u16) -> R
 
     if body_bytes.len() > MAX_BODY {
         return Err(AcmeError::IncorrectResponse(format!(
-            "http-01: response body too large ({} bytes)", body_bytes.len()
+            "http-01: response body too large ({} bytes)",
+            body_bytes.len()
         )));
     }
 
@@ -74,7 +83,7 @@ pub async fn validate(domain: &str, token: &str, key_auth: &str, port: u16) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{Router, routing::get, http::StatusCode};
+    use axum::{http::StatusCode, routing::get, Router};
     use tokio::net::TcpListener;
 
     /// Start a local HTTP server with the given router and return its address.
@@ -90,7 +99,13 @@ mod tests {
     #[tokio::test]
     async fn validate_fails_for_unreachable_domain() {
         // Port 80 on a guaranteed-unreachable host should fail with a Connection error.
-        let result = validate("acme-test-nonexistent-host.invalid", "token", "key.auth", 80).await;
+        let result = validate(
+            "acme-test-nonexistent-host.invalid",
+            "token",
+            "key.auth",
+            80,
+        )
+        .await;
         assert!(result.is_err(), "expected connection error");
         match result.unwrap_err() {
             AcmeError::Connection(_) => {}
@@ -103,7 +118,8 @@ mod tests {
         let addr = start_server(Router::new().route(
             "/.well-known/acme-challenge/mytoken",
             get(|| async { "mytoken.thumbprint" }),
-        )).await;
+        ))
+        .await;
         let result = validate("127.0.0.1", "mytoken", "mytoken.thumbprint", addr.port()).await;
         assert!(result.is_ok(), "expected Ok(()), got: {result:?}");
     }
@@ -113,10 +129,13 @@ mod tests {
         let addr = start_server(Router::new().route(
             "/.well-known/acme-challenge/token",
             get(|| async { StatusCode::NOT_FOUND }),
-        )).await;
+        ))
+        .await;
         let result = validate("127.0.0.1", "token", "expected", addr.port()).await;
-        assert!(matches!(result, Err(AcmeError::IncorrectResponse(_))),
-            "expected IncorrectResponse, got: {result:?}");
+        assert!(
+            matches!(result, Err(AcmeError::IncorrectResponse(_))),
+            "expected IncorrectResponse, got: {result:?}"
+        );
     }
 
     #[tokio::test]
@@ -124,10 +143,13 @@ mod tests {
         let addr = start_server(Router::new().route(
             "/.well-known/acme-challenge/token",
             get(|| async { "x".repeat(8193) }),
-        )).await;
+        ))
+        .await;
         let result = validate("127.0.0.1", "token", "expected", addr.port()).await;
-        assert!(matches!(result, Err(AcmeError::IncorrectResponse(_))),
-            "expected IncorrectResponse for oversized body, got: {result:?}");
+        assert!(
+            matches!(result, Err(AcmeError::IncorrectResponse(_))),
+            "expected IncorrectResponse for oversized body, got: {result:?}"
+        );
     }
 
     #[tokio::test]
@@ -135,9 +157,12 @@ mod tests {
         let addr = start_server(Router::new().route(
             "/.well-known/acme-challenge/token",
             get(|| async { "wrong-auth" }),
-        )).await;
+        ))
+        .await;
         let result = validate("127.0.0.1", "token", "correct-auth", addr.port()).await;
-        assert!(matches!(result, Err(AcmeError::IncorrectResponse(_))),
-            "expected IncorrectResponse for mismatch, got: {result:?}");
+        assert!(
+            matches!(result, Err(AcmeError::IncorrectResponse(_))),
+            "expected IncorrectResponse for mismatch, got: {result:?}"
+        );
     }
 }

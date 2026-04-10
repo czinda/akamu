@@ -24,7 +24,8 @@ pub async fn get_renewal_info(
     let now = unix_now();
 
     // Use explicitly set renewal window if available; otherwise compute a default.
-    let (window_start, window_end) = match (cert.suggested_window_start, cert.suggested_window_end) {
+    let (window_start, window_end) = match (cert.suggested_window_start, cert.suggested_window_end)
+    {
         (Some(s), Some(e)) => (s, e),
         _ => {
             // Default: suggest renewal in the last third of the certificate's validity.

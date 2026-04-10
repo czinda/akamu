@@ -46,7 +46,12 @@ impl TestKey {
         let y_b64 = encode_coord(&y_bytes, 32);
         let spki_der = pub_key.spki_der().to_vec();
 
-        TestKey { key, x_b64, y_b64, spki_der }
+        TestKey {
+            key,
+            x_b64,
+            y_b64,
+            spki_der,
+        }
     }
 
     fn jwk(&self) -> Value {
@@ -83,7 +88,12 @@ impl TestKey {
     /// Build the inner JWS for key-change (signed with this/new key, carries jwk).
     /// The inner JWS uses the key-change URL as `url` and includes a dummy nonce
     /// since JwsProtectedHeader requires the field but it is not validated here.
-    fn inner_key_change_jws(&self, key_change_url: &str, account_url: &str, old_jwk: &Value) -> Value {
+    fn inner_key_change_jws(
+        &self,
+        key_change_url: &str,
+        account_url: &str,
+        old_jwk: &Value,
+    ) -> Value {
         let header = json!({
             "alg": "ES256",
             "nonce": "inner-dummy",
@@ -183,7 +193,9 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
     let config = Arc::new(Config {
         listen_addr: "127.0.0.1:0".into(),
         base_url: base_url.into(),
-        database: DatabaseConfig { path: ":memory:".into() },
+        database: DatabaseConfig {
+            path: ":memory:".into(),
+        },
         ca: CaConfig {
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
             cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
@@ -196,7 +208,10 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             organization: "Test Org".into(),
             ca_validity_years: 10,
         },
-        mtc: MtcConfig { log_path: "/dev/null".into(), enabled: false },
+        mtc: MtcConfig {
+            log_path: "/dev/null".into(),
+            enabled: false,
+        },
         server: ServerConfig::default(),
         tls: Default::default(),
     });
@@ -234,7 +249,9 @@ async fn send(
     let resp = router.clone().oneshot(req).await.unwrap();
     let status = resp.status();
     let headers = resp.headers().clone();
-    let body = axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
     let json = serde_json::from_slice(&body).unwrap_or(Value::Null);
     (status, json, headers)
 }
@@ -304,8 +321,7 @@ async fn mark_order_ready(db: &tokio_rusqlite::Connection, order_id: &str) {
     db.call(move |conn| {
         // Collect authorization IDs for this order.
         let authz_ids: Vec<String> = {
-            let mut stmt =
-                conn.prepare("SELECT id FROM authorizations WHERE order_id = ?1")?;
+            let mut stmt = conn.prepare("SELECT id FROM authorizations WHERE order_id = ?1")?;
             let ids: Vec<String> = stmt
                 .query_map(rusqlite::params![order_id], |r| r.get(0))?
                 .collect::<Result<_, _>>()?;
@@ -345,7 +361,10 @@ fn make_csr_der(domain: &str) -> Vec<u8> {
     let spki_der = backend_key.public_key().unwrap().spki_der().to_vec();
 
     let name_der = NameBuilder::new().common_name(domain).build().unwrap();
-    let san_der = SubjectAlternativeNameBuilder::new().dns_name(domain).build().unwrap();
+    let san_der = SubjectAlternativeNameBuilder::new()
+        .dns_name(domain)
+        .build()
+        .unwrap();
     let signer = backend_key.as_signer("sha256");
 
     CsrBuilder::new()
@@ -367,7 +386,10 @@ fn make_ip_csr_der(ip_str: &str) -> Vec<u8> {
     let backend_key = BackendPrivateKey::generate_ec("P-256").unwrap();
     let spki_der = backend_key.public_key().unwrap().spki_der().to_vec();
     let name_der = NameBuilder::new().common_name(ip_str).build().unwrap();
-    let san_der = SubjectAlternativeNameBuilder::new().ip_address(&ip_bytes).build().unwrap();
+    let san_der = SubjectAlternativeNameBuilder::new()
+        .ip_address(&ip_bytes)
+        .build()
+        .unwrap();
     let signer = backend_key.as_signer("sha256");
     CsrBuilder::new()
         .subject_name(&name_der)
@@ -389,9 +411,18 @@ async fn full_acme_flow() {
     // ── Step 1: GET /acme/directory ───────────────────────────────────────────
     let (status, dir, _) = get(&router, "/acme/directory").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(dir["newAccount"].as_str().is_some(), "directory missing newAccount");
-    assert!(dir["newNonce"].as_str().is_some(), "directory missing newNonce");
-    assert!(dir["newOrder"].as_str().is_some(), "directory missing newOrder");
+    assert!(
+        dir["newAccount"].as_str().is_some(),
+        "directory missing newAccount"
+    );
+    assert!(
+        dir["newNonce"].as_str().is_some(),
+        "directory missing newNonce"
+    );
+    assert!(
+        dir["newOrder"].as_str().is_some(),
+        "directory missing newOrder"
+    );
 
     // ── Step 2: HEAD /acme/new-nonce ─────────────────────────────────────────
     let nonce = head_nonce(&router).await;
@@ -404,9 +435,12 @@ async fn full_acme_flow() {
         &format!("{}/acme/new-account", base_url),
         Some(json!({"termsOfServiceAgreed": true})),
     );
-    let (status, acct_body, acct_headers) =
-        post_acme(&router, "/acme/new-account", jws).await;
-    assert_eq!(status, StatusCode::CREATED, "new-account failed: {acct_body}");
+    let (status, acct_body, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "new-account failed: {acct_body}"
+    );
     assert_eq!(acct_body["status"].as_str().unwrap(), "valid");
 
     let account_url = location_header(&acct_headers);
@@ -420,9 +454,12 @@ async fn full_acme_flow() {
         &format!("{}/acme/new-order", base_url),
         Some(json!({"identifiers": [{"type": "dns", "value": domain}]})),
     );
-    let (status, order_body, order_headers) =
-        post_acme(&router, "/acme/new-order", jws).await;
-    assert_eq!(status, StatusCode::CREATED, "new-order failed: {order_body}");
+    let (status, order_body, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "new-order failed: {order_body}"
+    );
     assert_eq!(order_body["status"].as_str().unwrap(), "pending");
 
     let order_url = location_header(&order_headers);
@@ -463,14 +500,19 @@ async fn full_acme_flow() {
     let resp = router.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let cert_bytes = axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+    let cert_bytes = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
     let pem = std::str::from_utf8(&cert_bytes).expect("certificate must be UTF-8 PEM");
     assert!(
         pem.contains("-----BEGIN CERTIFICATE-----"),
         "certificate endpoint should return PEM"
     );
     let cert_count = pem.matches("-----BEGIN CERTIFICATE-----").count();
-    assert!(cert_count >= 2, "PEM bundle should contain leaf + CA (got {cert_count})");
+    assert!(
+        cert_count >= 2,
+        "PEM bundle should contain leaf + CA (got {cert_count})"
+    );
 }
 
 // ── Helper: create account + order, return (account_url, order_body, nonce, router) ──
@@ -503,7 +545,11 @@ async fn setup_account_and_order(
         Some(json!({"identifiers": [{"type": "dns", "value": domain}]})),
     );
     let (status, order_body, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
-    assert_eq!(status, StatusCode::CREATED, "new-order failed: {order_body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "new-order failed: {order_body}"
+    );
     let nonce = nonce_header(&order_headers);
 
     (router, key, account_url, order_body, nonce)
@@ -519,7 +565,10 @@ async fn test_get_authz() {
     let (router, key, account_url, order_body, nonce) =
         setup_account_and_order(base_url, &state, "authz-test.example").await;
 
-    let authz_url = order_body["authorizations"][0].as_str().unwrap().to_string();
+    let authz_url = order_body["authorizations"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
     let authz_path = authz_url.trim_start_matches(base_url).to_string();
 
     // POST-as-GET (empty payload string "")
@@ -529,7 +578,10 @@ async fn test_get_authz() {
     assert_eq!(authz_body["status"].as_str().unwrap(), "pending");
     assert!(authz_body["identifier"]["value"].as_str().is_some());
     let challenges = authz_body["challenges"].as_array().unwrap();
-    assert!(!challenges.is_empty(), "authz must have at least one challenge");
+    assert!(
+        !challenges.is_empty(),
+        "authz must have at least one challenge"
+    );
 }
 
 #[tokio::test]
@@ -558,7 +610,10 @@ async fn test_respond_challenge_triggers_validation() {
         setup_account_and_order(base_url, &state, "chall-test.example").await;
 
     // Fetch the authz to get challenge info
-    let authz_url = order_body["authorizations"][0].as_str().unwrap().to_string();
+    let authz_url = order_body["authorizations"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
     let authz_path = authz_url.trim_start_matches(base_url).to_string();
     let jws = key.jws_with_kid(&account_url, &nonce, &authz_url, None);
     let (_, authz_body, authz_headers) = post_acme(&router, &authz_path, jws).await;
@@ -566,7 +621,10 @@ async fn test_respond_challenge_triggers_validation() {
 
     let challenges = authz_body["challenges"].as_array().unwrap();
     // Find the http-01 challenge
-    let http_chall = challenges.iter().find(|c| c["type"].as_str() == Some("http-01")).unwrap();
+    let http_chall = challenges
+        .iter()
+        .find(|c| c["type"].as_str() == Some("http-01"))
+        .unwrap();
     let chall_url = http_chall["url"].as_str().unwrap().to_string();
     let chall_path = chall_url.trim_start_matches(base_url).to_string();
 
@@ -574,7 +632,11 @@ async fn test_respond_challenge_triggers_validation() {
     let jws = key.jws_with_kid(&account_url, &nonce, &chall_url, Some(json!({})));
     let (status, chall_body, _) = post_acme(&router, &chall_path, jws).await;
     // Expect 200 with "processing" status (background task has been spawned)
-    assert_eq!(status, StatusCode::OK, "challenge response failed: {chall_body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "challenge response failed: {chall_body}"
+    );
     let chall_status = chall_body["status"].as_str().unwrap();
     assert!(
         chall_status == "processing" || chall_status == "pending",
@@ -591,7 +653,10 @@ async fn test_challenge_not_found() {
         setup_account_and_order(base_url, &state, "chall-notfound.example").await;
 
     // Get valid authz_id for the URL structure, but use bogus challenge type
-    let authz_url = order_body["authorizations"][0].as_str().unwrap().to_string();
+    let authz_url = order_body["authorizations"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
     let authz_id = authz_url.split('/').last().unwrap();
     let bogus_chall_url = format!("{base_url}/acme/chall/{authz_id}/bogus-type");
     let bogus_chall_path = format!("/acme/chall/{authz_id}/bogus-type");
@@ -634,9 +699,16 @@ async fn test_renewal_info() {
     let nonce = nonce_header(&order_headers);
 
     // Get order_id from DB
-    let order_id: String = db.call(|conn| {
-        Ok(conn.query_row("SELECT id FROM orders ORDER BY created DESC LIMIT 1", [], |r| r.get(0))?)
-    }).await.unwrap();
+    let order_id: String = db
+        .call(|conn| {
+            Ok(conn.query_row(
+                "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
 
     mark_order_ready(&db, &order_id).await;
 
@@ -655,9 +727,16 @@ async fn test_renewal_info() {
     assert_eq!(status, StatusCode::OK, "finalize failed: {final_body}");
 
     // Get cert_id from DB
-    let cert_id: String = db.call(|conn| {
-        Ok(conn.query_row("SELECT id FROM certificates ORDER BY created DESC LIMIT 1", [], |r| r.get(0))?)
-    }).await.unwrap();
+    let cert_id: String = db
+        .call(|conn| {
+            Ok(conn.query_row(
+                "SELECT id FROM certificates ORDER BY created DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
 
     // GET /acme/renewal-info/{cert_id}
     let (status, ari_body, _) = get(&router, &format!("/acme/renewal-info/{cert_id}")).await;
@@ -681,23 +760,35 @@ async fn test_renewal_info_explicit_window() {
     // Create account
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
     let account_url = location_header(&acct_headers);
     let nonce = nonce_header(&acct_headers);
 
     // Create order
-    let jws = key.jws_with_kid(&account_url, &nonce, &format!("{base_url}/acme/new-order"),
-        Some(json!({"identifiers": [{"type": "dns", "value": domain}]})));
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": domain}]})),
+    );
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = db.call(|conn| {
-        Ok(conn.query_row(
-            "SELECT id FROM orders ORDER BY created DESC LIMIT 1", [], |r| r.get(0),
-        )?)
-    }).await.unwrap();
+    let order_id: String = db
+        .call(|conn| {
+            Ok(conn.query_row(
+                "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
 
     mark_order_ready(&db, &order_id).await;
 
@@ -705,22 +796,33 @@ async fn test_renewal_info_explicit_window() {
     let csr_der = make_csr_der(domain);
     let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
     let finalize_url = format!("{base_url}/acme/order/{order_id}/finalize");
-    let jws = key.jws_with_kid(&account_url, &nonce, &finalize_url,
-        Some(json!({"csr": csr_b64})));
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &finalize_url,
+        Some(json!({"csr": csr_b64})),
+    );
     let (status, final_body, _) =
         post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
     assert_eq!(status, StatusCode::OK, "finalize failed: {final_body}");
 
-    let cert_id: String = db.call(|conn| {
-        Ok(conn.query_row(
-            "SELECT id FROM certificates ORDER BY created DESC LIMIT 1", [], |r| r.get(0),
-        )?)
-    }).await.unwrap();
+    let cert_id: String = db
+        .call(|conn| {
+            Ok(conn.query_row(
+                "SELECT id FROM certificates ORDER BY created DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
 
     // Set an explicit renewal window on this certificate.
     let window_start: i64 = 1_800_000_000; // 2027-01-15
-    let window_end: i64 = 1_800_086_400;   // 2027-01-16
-    db::certs::set_renewal_window(&db, &cert_id, window_start, window_end).await.unwrap();
+    let window_end: i64 = 1_800_086_400; // 2027-01-16
+    db::certs::set_renewal_window(&db, &cert_id, window_start, window_end)
+        .await
+        .unwrap();
 
     // GET /acme/renewal-info/{cert_id} — must use the explicit window, not the computed default.
     let (status, ari_body, _) = get(&router, &format!("/acme/renewal-info/{cert_id}")).await;
@@ -729,8 +831,14 @@ async fn test_renewal_info_explicit_window() {
     let start_str = ari_body["suggestedWindow"]["start"].as_str().unwrap();
     let end_str = ari_body["suggestedWindow"]["end"].as_str().unwrap();
     // The explicit window timestamps encode to specific RFC 3339 strings.
-    assert!(start_str.starts_with("2027-"), "expected explicit 2027 start, got: {start_str}");
-    assert!(end_str.starts_with("2027-"), "expected explicit 2027 end, got: {end_str}");
+    assert!(
+        start_str.starts_with("2027-"),
+        "expected explicit 2027 start, got: {start_str}"
+    );
+    assert!(
+        end_str.starts_with("2027-"),
+        "expected explicit 2027 end, got: {end_str}"
+    );
 }
 
 #[tokio::test]
@@ -773,12 +881,7 @@ async fn test_key_change() {
     let inner_jws = new_key.inner_key_change_jws(&key_change_url, &account_url, &old_jwk);
 
     // Build outer JWS (signed with old key, payload = inner_jws)
-    let outer_jws = old_key.jws_with_kid(
-        &account_url,
-        &nonce,
-        &key_change_url,
-        Some(inner_jws),
-    );
+    let outer_jws = old_key.jws_with_kid(&account_url, &nonce, &key_change_url, Some(inner_jws));
 
     let (status, body, _) = post_acme(&router, "/acme/key-change", outer_jws).await;
     assert_eq!(status, StatusCode::OK, "key-change failed: {body}");
@@ -808,33 +911,53 @@ async fn issue_cert_for_domain(
     let nonce = nonce_header(&acct_headers);
 
     let jws = key.jws_with_kid(
-        &account_url, &nonce,
+        &account_url,
+        &nonce,
         &format!("{base_url}/acme/new-order"),
         Some(json!({"identifiers": [{"type": "dns", "value": domain}]})),
     );
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = db.call(|conn| {
-        Ok(conn.query_row("SELECT id FROM orders ORDER BY created DESC LIMIT 1", [], |r| r.get(0))?)
-    }).await.unwrap();
+    let order_id: String = db
+        .call(|conn| {
+            Ok(conn.query_row(
+                "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
     mark_order_ready(&db, &order_id).await;
 
     let csr_der = make_csr_der(domain);
     let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
     let finalize_url = format!("{base_url}/acme/order/{order_id}/finalize");
     let jws = key.jws_with_kid(
-        &account_url, &nonce, &finalize_url,
+        &account_url,
+        &nonce,
+        &finalize_url,
         Some(json!({"csr": csr_b64})),
     );
     let (status, final_body, _) =
         post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
     assert_eq!(status, StatusCode::OK, "finalize failed: {final_body}");
 
-    let cert_path = final_body["certificate"].as_str().unwrap().trim_start_matches(base_url).to_string();
-    let req = Request::builder().method(Method::GET).uri(&cert_path).body(Body::empty()).unwrap();
+    let cert_path = final_body["certificate"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches(base_url)
+        .to_string();
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(&cert_path)
+        .body(Body::empty())
+        .unwrap();
     let resp = router.clone().oneshot(req).await.unwrap();
-    let cert_bytes = axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+    let cert_bytes = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
     let pem = std::str::from_utf8(&cert_bytes).unwrap();
 
     // Extract the leaf cert DER (first PEM block)
@@ -845,7 +968,9 @@ async fn issue_cert_for_domain(
         .take_while(|l| !l.starts_with("-----END CERTIFICATE-----"))
         .collect::<Vec<_>>()
         .join("");
-    let cert_der = base64::engine::general_purpose::STANDARD.decode(&der_b64).unwrap();
+    let cert_der = base64::engine::general_purpose::STANDARD
+        .decode(&der_b64)
+        .unwrap();
     let cert_b64url = URL_SAFE_NO_PAD.encode(&cert_der);
 
     (router, cert_b64url)
@@ -856,7 +981,8 @@ async fn test_revoke_cert_by_account() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
 
-    let (router, cert_b64url) = issue_cert_for_domain(base_url, &state, "revoke-test.example").await;
+    let (router, cert_b64url) =
+        issue_cert_for_domain(base_url, &state, "revoke-test.example").await;
 
     // Create a new account (the cert-issuing account) and revoke
     // Actually the cert was issued by the last account - we need that account's key to revoke
@@ -874,7 +1000,9 @@ async fn test_revoke_cert_by_account() {
 
     let revoke_url = format!("{base_url}/acme/revoke-cert");
     let jws = revoke_key.jws_with_kid(
-        &revoke_account_url, &nonce, &revoke_url,
+        &revoke_account_url,
+        &nonce,
+        &revoke_url,
         Some(json!({"certificate": cert_b64url, "reason": 1})),
     );
     // This will fail with Unauthorized since the cert belongs to a different account,
@@ -910,7 +1038,9 @@ async fn test_revoke_cert_not_found() {
     let revoke_url = format!("{base_url}/acme/revoke-cert");
     let fake_cert_b64 = URL_SAFE_NO_PAD.encode(b"not a real certificate DER");
     let jws = key.jws_with_kid(
-        &account_url, &nonce, &revoke_url,
+        &account_url,
+        &nonce,
+        &revoke_url,
         Some(json!({"certificate": fake_cert_b64})),
     );
     let (status, body, _) = post_acme(&router, "/acme/revoke-cert", jws).await;
@@ -943,8 +1073,7 @@ async fn test_update_account_post_as_get() {
 
     // POST-as-GET
     let jws = key.jws_with_kid(&account_url, &nonce, &account_url, None);
-    let (status, body, _) =
-        post_acme(&router, &format!("/acme/account/{account_id}"), jws).await;
+    let (status, body, _) = post_acme(&router, &format!("/acme/account/{account_id}"), jws).await;
     assert_eq!(status, StatusCode::OK, "POST-as-GET account failed: {body}");
     assert_eq!(body["status"].as_str().unwrap(), "valid");
 }
@@ -968,11 +1097,12 @@ async fn test_update_account_deactivate() {
     let nonce = nonce_header(&acct_headers);
 
     let jws = key.jws_with_kid(
-        &account_url, &nonce, &account_url,
+        &account_url,
+        &nonce,
+        &account_url,
         Some(json!({"status": "deactivated"})),
     );
-    let (status, body, _) =
-        post_acme(&router, &format!("/acme/account/{account_id}"), jws).await;
+    let (status, body, _) = post_acme(&router, &format!("/acme/account/{account_id}"), jws).await;
     assert_eq!(status, StatusCode::OK, "deactivate failed: {body}");
     assert_eq!(body["status"].as_str().unwrap(), "deactivated");
 }
@@ -1001,17 +1131,27 @@ async fn test_new_account_with_kid_requires_jwk() {
     // First create a valid account to get a kid URL.
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
     let account_url = location_header(&acct_headers);
     let nonce = nonce_header(&acct_headers);
 
     // Now try new-account with kid instead of jwk.
-    let jws = key.jws_with_kid(&account_url, &nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (status, _, _) = post_acme(&router, "/acme/new-account", jws).await;
-    assert!(status.is_client_error(), "new-account with kid should fail, got {status}");
+    assert!(
+        status.is_client_error(),
+        "new-account with kid should fail, got {status}"
+    );
 }
 
 /// If the same JWK is used for new-account again, the existing account is returned.
@@ -1023,21 +1163,34 @@ async fn test_new_account_returns_existing_when_key_matches() {
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (status1, _, acct_headers1) = post_acme(&router, "/acme/new-account", jws).await;
     assert_eq!(status1, StatusCode::CREATED);
     let account_url1 = location_header(&acct_headers1);
     let nonce = nonce_header(&acct_headers1);
 
     // Send new-account again with the same JWK.
-    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (status2, _, acct_headers2) = post_acme(&router, "/acme/new-account", jws).await;
     // Should return 200 with Location pointing to existing account.
-    assert_eq!(status2, StatusCode::OK, "second new-account should return existing");
+    assert_eq!(
+        status2,
+        StatusCode::OK,
+        "second new-account should return existing"
+    );
     let account_url2 = location_header(&acct_headers2);
-    assert_eq!(account_url1, account_url2, "Location must point to same account");
+    assert_eq!(
+        account_url1, account_url2,
+        "Location must point to same account"
+    );
 }
 
 /// `onlyReturnExisting: true` with an unknown JWK → 400 AccountDoesNotExist.
@@ -1049,10 +1202,16 @@ async fn test_new_account_only_return_existing_not_found() {
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"onlyReturnExisting": true})));
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"onlyReturnExisting": true})),
+    );
     let (status, _, _) = post_acme(&router, "/acme/new-account", jws).await;
-    assert!(status.is_client_error(), "onlyReturnExisting with unknown key should fail, got {status}");
+    assert!(
+        status.is_client_error(),
+        "onlyReturnExisting with unknown key should fail, got {status}"
+    );
 }
 
 /// Update account contact info via POST to account URL.
@@ -1064,16 +1223,23 @@ async fn test_update_account_contact() {
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
     let account_url = location_header(&acct_headers);
     let account_id = account_url.split('/').last().unwrap().to_string();
     let nonce = nonce_header(&acct_headers);
 
     // Update contact.
-    let jws = key.jws_with_kid(&account_url, &nonce, &account_url,
-        Some(json!({"contact": ["mailto:test@example.com"]})));
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &account_url,
+        Some(json!({"contact": ["mailto:test@example.com"]})),
+    );
     let (status, body, _) = post_acme(&router, &format!("/acme/account/{account_id}"), jws).await;
     assert_eq!(status, StatusCode::OK, "update contact failed: {body}");
     assert_eq!(body["contact"][0].as_str(), Some("mailto:test@example.com"));
@@ -1088,8 +1254,11 @@ async fn test_update_account_kid_mismatch() {
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
     let account_url = location_header(&acct_headers);
     let nonce = nonce_header(&acct_headers);
@@ -1097,10 +1266,17 @@ async fn test_update_account_kid_mismatch() {
     // Use account_url as kid but send request to a different account ID.
     let wrong_id = "00000000-0000-0000-0000-000000000000";
     let wrong_url = format!("{base_url}/acme/account/{wrong_id}");
-    let jws = key.jws_with_kid(&account_url, &nonce, &wrong_url,
-        Some(json!({"contact": []})));
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &wrong_url,
+        Some(json!({"contact": []})),
+    );
     let (status, _, _) = post_acme(&router, &format!("/acme/account/{wrong_id}"), jws).await;
-    assert!(status.is_client_error(), "mismatched kid/account-id should fail, got {status}");
+    assert!(
+        status.is_client_error(),
+        "mismatched kid/account-id should fail, got {status}"
+    );
 }
 
 /// Revoke a certificate using the correct account (success path).
@@ -1113,46 +1289,87 @@ async fn test_revoke_cert_success_with_owner_account() {
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
     let account_url = location_header(&acct_headers);
     let nonce = nonce_header(&acct_headers);
 
     // Create order.
-    let jws = key.jws_with_kid(&account_url, &nonce, &format!("{base_url}/acme/new-order"),
-        Some(json!({"identifiers": [{"type": "dns", "value": "revoke-success.test"}]})));
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": "revoke-success.test"}]})),
+    );
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = db.call(|c| Ok(c.query_row(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1", [], |r| r.get(0))?)).await.unwrap();
+    let order_id: String = db
+        .call(|c| {
+            Ok(c.query_row(
+                "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
     mark_order_ready(&db, &order_id).await;
 
     let csr_der = make_csr_der("revoke-success.test");
     let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
     let finalize_url = format!("{base_url}/acme/order/{order_id}/finalize");
-    let jws = key.jws_with_kid(&account_url, &nonce, &finalize_url,
-        Some(json!({"csr": csr_b64})));
-    let (status, body, _) = post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &finalize_url,
+        Some(json!({"csr": csr_b64})),
+    );
+    let (status, body, _) =
+        post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
     assert_eq!(status, StatusCode::OK, "finalize failed: {body}");
 
     // Get cert DER.
-    let cert_path = body["certificate"].as_str().unwrap().trim_start_matches(base_url).to_string();
-    let req = Request::builder().method(Method::GET).uri(&cert_path).body(Body::empty()).unwrap();
+    let cert_path = body["certificate"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches(base_url)
+        .to_string();
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(&cert_path)
+        .body(Body::empty())
+        .unwrap();
     let resp = router.clone().oneshot(req).await.unwrap();
-    let cert_bytes = axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+    let cert_bytes = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
     let pem = std::str::from_utf8(&cert_bytes).unwrap();
-    let der_b64 = pem.lines().skip_while(|l| !l.starts_with("-----BEGIN")).skip(1)
-        .take_while(|l| !l.starts_with("-----END")).collect::<Vec<_>>().join("");
-    let cert_der = base64::engine::general_purpose::STANDARD.decode(&der_b64).unwrap();
+    let der_b64 = pem
+        .lines()
+        .skip_while(|l| !l.starts_with("-----BEGIN"))
+        .skip(1)
+        .take_while(|l| !l.starts_with("-----END"))
+        .collect::<Vec<_>>()
+        .join("");
+    let cert_der = base64::engine::general_purpose::STANDARD
+        .decode(&der_b64)
+        .unwrap();
     let cert_b64url = URL_SAFE_NO_PAD.encode(&cert_der);
 
     // Revoke using the SAME account.
     let nonce = head_nonce(&router).await;
     let revoke_url = format!("{base_url}/acme/revoke-cert");
-    let jws = key.jws_with_kid(&account_url, &nonce, &revoke_url,
-        Some(json!({"certificate": cert_b64url, "reason": 1})));
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &revoke_url,
+        Some(json!({"certificate": cert_b64url, "reason": 1})),
+    );
     let (status, body, _) = post_acme(&router, "/acme/revoke-cert", jws).await;
     assert_eq!(status, StatusCode::OK, "revoke by owner failed: {body}");
 }
@@ -1162,35 +1379,55 @@ async fn test_revoke_cert_success_with_owner_account() {
 async fn test_revoke_already_revoked_cert() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let (router, cert_b64url) = issue_cert_for_domain(base_url, &state, "already-revoked.test").await;
+    let (router, cert_b64url) =
+        issue_cert_for_domain(base_url, &state, "already-revoked.test").await;
 
     // Get the account key from the db (we need to issue from same account)
     // Easier: issue fresh cert and revoke twice using the revocation path below.
     // First revoke must succeed; second must fail.
     // But we can't easily re-sign with the original account key from issue_cert_for_domain.
     // Workaround: use the DB to mark the cert as revoked directly, then try again.
-    let cert_id: String = state.db.call(|c| Ok(c.query_row(
-        "SELECT id FROM certificates ORDER BY created DESC LIMIT 1", [], |r| r.get(0))?)).await.unwrap();
+    let cert_id: String = state
+        .db
+        .call(|c| {
+            Ok(c.query_row(
+                "SELECT id FROM certificates ORDER BY created DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
     // Directly revoke via DB.
-    acme_server::db::certs::revoke(
-        &state.db, &cert_id, Some(1), 1_700_000_000
-    ).await.unwrap();
+    acme_server::db::certs::revoke(&state.db, &cert_id, Some(1), 1_700_000_000)
+        .await
+        .unwrap();
 
     // Now try to revoke via HTTP using a JWK that doesn't own the cert (will hit AlreadyRevoked before Unauthorized).
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
     let account_url = location_header(&acct_headers);
     let nonce = nonce_header(&acct_headers);
 
     let revoke_url = format!("{base_url}/acme/revoke-cert");
-    let jws = key.jws_with_kid(&account_url, &nonce, &revoke_url,
-        Some(json!({"certificate": cert_b64url})));
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &revoke_url,
+        Some(json!({"certificate": cert_b64url})),
+    );
     let (status, _, _) = post_acme(&router, "/acme/revoke-cert", jws).await;
     // Should be AlreadyRevoked (409) — checked before authorization
-    assert!(status.is_client_error(), "already-revoked cert should fail, got {status}");
+    assert!(
+        status.is_client_error(),
+        "already-revoked cert should fail, got {status}"
+    );
 }
 
 /// Revoke with invalid reason code (7 or > 10) → BadRevocationReason.
@@ -1202,18 +1439,28 @@ async fn test_revoke_invalid_reason_code() {
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
     let account_url = location_header(&acct_headers);
     let nonce = nonce_header(&acct_headers);
 
     // reason=7 is not allowed per RFC 8555.
     let revoke_url = format!("{base_url}/acme/revoke-cert");
-    let jws = key.jws_with_kid(&account_url, &nonce, &revoke_url,
-        Some(json!({"certificate": cert_b64url, "reason": 7})));
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &revoke_url,
+        Some(json!({"certificate": cert_b64url, "reason": 7})),
+    );
     let (status, _, _) = post_acme(&router, "/acme/revoke-cert", jws).await;
-    assert!(status.is_client_error(), "reason=7 should be rejected, got {status}");
+    assert!(
+        status.is_client_error(),
+        "reason=7 should be rejected, got {status}"
+    );
 }
 
 /// POST new-order with empty identifiers → BadRequest.
@@ -1225,16 +1472,26 @@ async fn test_new_order_empty_identifiers() {
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
     let account_url = location_header(&acct_headers);
     let nonce = nonce_header(&acct_headers);
 
-    let jws = key.jws_with_kid(&account_url, &nonce, &format!("{base_url}/acme/new-order"),
-        Some(json!({"identifiers": []})));
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": []})),
+    );
     let (status, _, _) = post_acme(&router, "/acme/new-order", jws).await;
-    assert!(status.is_client_error(), "empty identifiers should fail, got {status}");
+    assert!(
+        status.is_client_error(),
+        "empty identifiers should fail, got {status}"
+    );
 }
 
 /// POST new-order with unsupported identifier type → UnsupportedIdentifier.
@@ -1246,16 +1503,26 @@ async fn test_new_order_unsupported_identifier_type() {
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
     let account_url = location_header(&acct_headers);
     let nonce = nonce_header(&acct_headers);
 
-    let jws = key.jws_with_kid(&account_url, &nonce, &format!("{base_url}/acme/new-order"),
-        Some(json!({"identifiers": [{"type": "email", "value": "user@example.com"}]})));
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "email", "value": "user@example.com"}]})),
+    );
     let (status, _, _) = post_acme(&router, "/acme/new-order", jws).await;
-    assert!(status.is_client_error(), "unsupported identifier type should fail, got {status}");
+    assert!(
+        status.is_client_error(),
+        "unsupported identifier type should fail, got {status}"
+    );
 }
 
 /// POST new-order with IP address identifier.
@@ -1267,16 +1534,27 @@ async fn test_new_order_ip_identifier() {
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
     let account_url = location_header(&acct_headers);
     let nonce = nonce_header(&acct_headers);
 
-    let jws = key.jws_with_kid(&account_url, &nonce, &format!("{base_url}/acme/new-order"),
-        Some(json!({"identifiers": [{"type": "ip", "value": "192.0.2.1"}]})));
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "ip", "value": "192.0.2.1"}]})),
+    );
     let (status, body, _) = post_acme(&router, "/acme/new-order", jws).await;
-    assert_eq!(status, StatusCode::CREATED, "ip order should succeed: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "ip order should succeed: {body}"
+    );
     assert_eq!(body["status"].as_str(), Some("pending"));
 }
 
@@ -1290,19 +1568,34 @@ async fn test_get_order() {
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
     let account_url = location_header(&acct_headers);
     let nonce = nonce_header(&acct_headers);
 
-    let jws = key.jws_with_kid(&account_url, &nonce, &format!("{base_url}/acme/new-order"),
-        Some(json!({"identifiers": [{"type": "dns", "value": "get-order.test"}]})));
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": "get-order.test"}]})),
+    );
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = db.call(|c| Ok(c.query_row(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1", [], |r| r.get(0))?)).await.unwrap();
+    let order_id: String = db
+        .call(|c| {
+            Ok(c.query_row(
+                "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
 
     // POST-as-GET to get order status.
     let order_url = format!("{base_url}/acme/order/{order_id}");
@@ -1323,26 +1616,44 @@ async fn test_finalize_wrong_account() {
     // Create two accounts: owner and attacker.
     let owner_key = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = owner_key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = owner_key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
     let owner_url = location_header(&acct_headers);
     let nonce = nonce_header(&acct_headers);
 
     // Owner creates an order.
-    let jws = owner_key.jws_with_kid(&owner_url, &nonce, &format!("{base_url}/acme/new-order"),
-        Some(json!({"identifiers": [{"type": "dns", "value": "wrong-acct.test"}]})));
+    let jws = owner_key.jws_with_kid(
+        &owner_url,
+        &nonce,
+        &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": "wrong-acct.test"}]})),
+    );
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
-    let order_id: String = db.call(|c| Ok(c.query_row(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1", [], |r| r.get(0))?)).await.unwrap();
+    let order_id: String = db
+        .call(|c| {
+            Ok(c.query_row(
+                "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
     mark_order_ready(&db, &order_id).await;
 
     // Create attacker account.
     let attacker_key = TestKey::generate();
     let nonce2 = head_nonce(&router).await;
-    let jws2 = attacker_key.jws_with_jwk(&nonce2, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws2 = attacker_key.jws_with_jwk(
+        &nonce2,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, atk_headers) = post_acme(&router, "/acme/new-account", jws2).await;
     let attacker_url = location_header(&atk_headers);
     let nonce = nonce_header(&atk_headers);
@@ -1351,10 +1662,17 @@ async fn test_finalize_wrong_account() {
     let csr_der = make_csr_der("wrong-acct.test");
     let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
     let finalize_url = format!("{base_url}/acme/order/{order_id}/finalize");
-    let jws = attacker_key.jws_with_kid(&attacker_url, &nonce, &finalize_url,
-        Some(json!({"csr": csr_b64})));
+    let jws = attacker_key.jws_with_kid(
+        &attacker_url,
+        &nonce,
+        &finalize_url,
+        Some(json!({"csr": csr_b64})),
+    );
     let (status, _, _) = post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
-    assert!(status.is_client_error(), "finalize wrong account should fail, got {status}");
+    assert!(
+        status.is_client_error(),
+        "finalize wrong account should fail, got {status}"
+    );
 }
 
 /// Finalize a pending (not ready) order → OrderNotReady.
@@ -1367,27 +1685,49 @@ async fn test_finalize_order_not_ready() {
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
     let account_url = location_header(&acct_headers);
     let nonce = nonce_header(&acct_headers);
 
-    let jws = key.jws_with_kid(&account_url, &nonce, &format!("{base_url}/acme/new-order"),
-        Some(json!({"identifiers": [{"type": "dns", "value": "not-ready.test"}]})));
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": "not-ready.test"}]})),
+    );
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
-    let order_id: String = db.call(|c| Ok(c.query_row(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1", [], |r| r.get(0))?)).await.unwrap();
+    let order_id: String = db
+        .call(|c| {
+            Ok(c.query_row(
+                "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
     // Do NOT call mark_order_ready → order stays in "pending" state.
 
     let csr_der = make_csr_der("not-ready.test");
     let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
     let finalize_url = format!("{base_url}/acme/order/{order_id}/finalize");
-    let jws = key.jws_with_kid(&account_url, &nonce, &finalize_url,
-        Some(json!({"csr": csr_b64})));
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &finalize_url,
+        Some(json!({"csr": csr_b64})),
+    );
     let (status, _, _) = post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
-    assert!(status.is_client_error(), "finalize non-ready order should fail, got {status}");
+    assert!(
+        status.is_client_error(),
+        "finalize non-ready order should fail, got {status}"
+    );
 }
 
 /// Key-change with no payload → BadRequest.
@@ -1399,8 +1739,11 @@ async fn test_key_change_no_payload() {
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
     let account_url = location_header(&acct_headers);
     let nonce = nonce_header(&acct_headers);
@@ -1409,7 +1752,10 @@ async fn test_key_change_no_payload() {
     let key_change_url = format!("{base_url}/acme/key-change");
     let jws = key.jws_with_kid(&account_url, &nonce, &key_change_url, None);
     let (status, _, _) = post_acme(&router, "/acme/key-change", jws).await;
-    assert!(status.is_client_error(), "key-change with no payload should fail, got {status}");
+    assert!(
+        status.is_client_error(),
+        "key-change with no payload should fail, got {status}"
+    );
 }
 
 /// Key-change where inner JWS uses kid (not jwk) → BadRequest.
@@ -1421,8 +1767,11 @@ async fn test_key_change_inner_uses_kid() {
 
     let old_key = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = old_key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = old_key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
     let account_url = location_header(&acct_headers);
     let nonce = nonce_header(&acct_headers);
@@ -1431,13 +1780,19 @@ async fn test_key_change_inner_uses_kid() {
     let key_change_url = format!("{base_url}/acme/key-change");
 
     // Build inner JWS using kid (not jwk) — this should be rejected.
-    let inner = new_key.jws_with_kid(&account_url, "inner-dummy", &key_change_url,
-        Some(json!({"account": account_url, "oldKey": old_key.jwk()})));
+    let inner = new_key.jws_with_kid(
+        &account_url,
+        "inner-dummy",
+        &key_change_url,
+        Some(json!({"account": account_url, "oldKey": old_key.jwk()})),
+    );
 
-    let jws = old_key.jws_with_kid(&account_url, &nonce, &key_change_url,
-        Some(inner));
+    let jws = old_key.jws_with_kid(&account_url, &nonce, &key_change_url, Some(inner));
     let (status, _, _) = post_acme(&router, "/acme/key-change", jws).await;
-    assert!(status.is_client_error(), "key-change with kid inner JWS should fail, got {status}");
+    assert!(
+        status.is_client_error(),
+        "key-change with kid inner JWS should fail, got {status}"
+    );
 }
 
 /// JWS URL field mismatch → Unauthorized.
@@ -1452,10 +1807,16 @@ async fn test_jws_url_mismatch() {
 
     // Build a JWS where the `url` field points to a different endpoint.
     let wrong_url = format!("{base_url}/acme/wrong-url");
-    let jws = key.jws_with_jwk(&nonce, &wrong_url,
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &wrong_url,
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (status, _, _) = post_acme(&router, "/acme/new-account", jws).await;
-    assert!(status.is_client_error(), "JWS url mismatch should fail, got {status}");
+    assert!(
+        status.is_client_error(),
+        "JWS url mismatch should fail, got {status}"
+    );
 }
 
 /// Invalid nonce → BadNonce.
@@ -1468,10 +1829,16 @@ async fn test_bad_nonce() {
     let key = TestKey::generate();
     // Use a completely invalid nonce.
     let bad_nonce = "this-nonce-was-never-issued";
-    let jws = key.jws_with_jwk(bad_nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key.jws_with_jwk(
+        bad_nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (status, _, _) = post_acme(&router, "/acme/new-account", jws).await;
-    assert!(status.is_client_error(), "bad nonce should fail, got {status}");
+    assert!(
+        status.is_client_error(),
+        "bad nonce should fail, got {status}"
+    );
 }
 
 /// Key-change where inner payload `account` field doesn't match the outer account URL.
@@ -1483,8 +1850,11 @@ async fn test_key_change_wrong_inner_account_url() {
 
     let old_key = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = old_key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = old_key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
     let account_url = location_header(&acct_headers);
     let nonce = nonce_header(&acct_headers);
@@ -1498,8 +1868,10 @@ async fn test_key_change_wrong_inner_account_url() {
 
     let jws = old_key.jws_with_kid(&account_url, &nonce, &key_change_url, Some(inner));
     let (status, _, _) = post_acme(&router, "/acme/key-change", jws).await;
-    assert!(status.is_client_error(),
-        "key-change with wrong inner account URL should fail, got {status}");
+    assert!(
+        status.is_client_error(),
+        "key-change with wrong inner account URL should fail, got {status}"
+    );
 }
 
 /// Key-change where new key is already registered to another account → Conflict.
@@ -1512,8 +1884,11 @@ async fn test_key_change_new_key_already_in_use() {
     // Create account A with key1.
     let key1 = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = key1.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key1.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, acct_headers1) = post_acme(&router, "/acme/new-account", jws).await;
     let account1_url = location_header(&acct_headers1);
     let nonce = nonce_header(&acct_headers1);
@@ -1521,8 +1896,11 @@ async fn test_key_change_new_key_already_in_use() {
     // Create account B with key2.
     let key2 = TestKey::generate();
     let nonce2 = head_nonce(&router).await;
-    let jws2 = key2.jws_with_jwk(&nonce2, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws2 = key2.jws_with_jwk(
+        &nonce2,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, _acct_headers2) = post_acme(&router, "/acme/new-account", jws2).await;
 
     // Try to change account A's key to key2 (already registered to account B).
@@ -1530,8 +1908,10 @@ async fn test_key_change_new_key_already_in_use() {
     let inner = key2.inner_key_change_jws(&key_change_url, &account1_url, &key1.jwk());
     let jws = key1.jws_with_kid(&account1_url, &nonce, &key_change_url, Some(inner));
     let (status, _, _) = post_acme(&router, "/acme/key-change", jws).await;
-    assert!(status.is_client_error(),
-        "key-change to already-registered key should fail, got {status}");
+    assert!(
+        status.is_client_error(),
+        "key-change to already-registered key should fail, got {status}"
+    );
 }
 
 /// Creating a new order with a deactivated account → Unauthorized.
@@ -1543,27 +1923,41 @@ async fn test_new_order_deactivated_account() {
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
     let account_url = location_header(&acct_headers);
     let account_id = account_url.split('/').last().unwrap().to_string();
     let nonce = nonce_header(&acct_headers);
 
     // Deactivate the account.
-    let jws = key.jws_with_kid(&account_url, &nonce, &account_url,
-        Some(json!({"status": "deactivated"})));
-    let (status, _, acct_resp_hdrs) = post_acme(&router, &format!("/acme/account/{account_id}"), jws).await;
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &account_url,
+        Some(json!({"status": "deactivated"})),
+    );
+    let (status, _, acct_resp_hdrs) =
+        post_acme(&router, &format!("/acme/account/{account_id}"), jws).await;
     assert_eq!(status, StatusCode::OK);
     let nonce = nonce_header(&acct_resp_hdrs);
 
     // Try to create an order.
     let order_url = format!("{base_url}/acme/new-order");
-    let jws = key.jws_with_kid(&account_url, &nonce, &order_url,
-        Some(json!({"identifiers": [{"type": "dns", "value": "deactivated.test"}]})));
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &order_url,
+        Some(json!({"identifiers": [{"type": "dns", "value": "deactivated.test"}]})),
+    );
     let (status, _, _) = post_acme(&router, "/acme/new-order", jws).await;
-    assert!(status.is_client_error(),
-        "deactivated account should not be able to create order, got {status}");
+    assert!(
+        status.is_client_error(),
+        "deactivated account should not be able to create order, got {status}"
+    );
 }
 
 /// GET order with an account that does not own that order → Unauthorized.
@@ -1577,23 +1971,41 @@ async fn test_get_order_wrong_account() {
     // Owner creates an order.
     let owner_key = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = owner_key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = owner_key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
     let owner_url = location_header(&acct_headers);
     let nonce = nonce_header(&acct_headers);
 
-    let jws = owner_key.jws_with_kid(&owner_url, &nonce, &format!("{base_url}/acme/new-order"),
-        Some(json!({"identifiers": [{"type": "dns", "value": "get-order-wrong.test"}]})));
+    let jws = owner_key.jws_with_kid(
+        &owner_url,
+        &nonce,
+        &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": "get-order-wrong.test"}]})),
+    );
     let (_, _, _) = post_acme(&router, "/acme/new-order", jws).await;
-    let order_id: String = db.call(|c| Ok(c.query_row(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1", [], |r| r.get(0))?)).await.unwrap();
+    let order_id: String = db
+        .call(|c| {
+            Ok(c.query_row(
+                "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
 
     // Attacker creates account and tries to GET the order.
     let attacker_key = TestKey::generate();
     let nonce2 = head_nonce(&router).await;
-    let jws2 = attacker_key.jws_with_jwk(&nonce2, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws2 = attacker_key.jws_with_jwk(
+        &nonce2,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, atk_headers) = post_acme(&router, "/acme/new-account", jws2).await;
     let attacker_url = location_header(&atk_headers);
     let nonce = nonce_header(&atk_headers);
@@ -1601,8 +2013,10 @@ async fn test_get_order_wrong_account() {
     let order_url = format!("{base_url}/acme/order/{order_id}");
     let jws = attacker_key.jws_with_kid(&attacker_url, &nonce, &order_url, None);
     let (status, _, _) = post_acme(&router, &format!("/acme/order/{order_id}"), jws).await;
-    assert!(status.is_client_error(),
-        "get-order with wrong account should fail, got {status}");
+    assert!(
+        status.is_client_error(),
+        "get-order with wrong account should fail, got {status}"
+    );
 }
 
 /// GET authz when a challenge has a `validated` timestamp set.
@@ -1615,7 +2029,10 @@ async fn test_authz_challenge_with_validated_timestamp() {
 
     let (router, key, account_url, order_body, nonce) =
         setup_account_and_order(base_url, &state, "authz-validated.example").await;
-    let authz_url = order_body["authorizations"][0].as_str().unwrap().to_string();
+    let authz_url = order_body["authorizations"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
     let authz_id = authz_url.split('/').last().unwrap().to_string();
 
     // Set challenge to 'valid' with a validated timestamp.
@@ -1632,10 +2049,20 @@ async fn test_authz_challenge_with_validated_timestamp() {
     let authz_path = authz_url.trim_start_matches(base_url).to_string();
     let jws = key.jws_with_kid(&account_url, &nonce, &authz_url, None);
     let (status, body, hdr) = post_acme(&router, &authz_path, jws).await;
-    assert_eq!(status, StatusCode::OK, "get authz with validated challenge failed: {body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "get authz with validated challenge failed: {body}"
+    );
     let challenges = body["challenges"].as_array().unwrap();
-    let valid_chall = challenges.iter().find(|c| c["status"].as_str() == Some("valid")).unwrap();
-    assert!(valid_chall["validated"].as_str().is_some(), "validated field missing");
+    let valid_chall = challenges
+        .iter()
+        .find(|c| c["status"].as_str() == Some("valid"))
+        .unwrap();
+    assert!(
+        valid_chall["validated"].as_str().is_some(),
+        "validated field missing"
+    );
 
     // Also POST directly to the challenge (status != pending → challenge_response with validated).
     let nonce2 = nonce_header(&hdr);
@@ -1643,8 +2070,15 @@ async fn test_authz_challenge_with_validated_timestamp() {
     let chall_path = format!("/acme/chall/{authz_id}/http-01");
     let jws = key.jws_with_kid(&account_url, &nonce2, &chall_url, Some(json!({})));
     let (status, body, _) = post_acme(&router, &chall_path, jws).await;
-    assert_eq!(status, StatusCode::OK, "POST valid challenge failed: {body}");
-    assert!(body["validated"].as_str().is_some(), "validated field missing in challenge response");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "POST valid challenge failed: {body}"
+    );
+    assert!(
+        body["validated"].as_str().is_some(),
+        "validated field missing in challenge response"
+    );
 }
 
 /// GET authz when a challenge has an `error` field set.
@@ -1657,7 +2091,10 @@ async fn test_authz_challenge_with_error_field() {
 
     let (router, key, account_url, order_body, nonce) =
         setup_account_and_order(base_url, &state, "authz-error.example").await;
-    let authz_url = order_body["authorizations"][0].as_str().unwrap().to_string();
+    let authz_url = order_body["authorizations"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
     let authz_id = authz_url.split('/').last().unwrap().to_string();
 
     // Set challenge to 'invalid' with a JSON error string.
@@ -1670,16 +2107,28 @@ async fn test_authz_challenge_with_error_field() {
             rusqlite::params![ej, aid],
         )?;
         Ok(())
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
 
     // GET the authz — response includes challenge error.
     let authz_path = authz_url.trim_start_matches(base_url).to_string();
     let jws = key.jws_with_kid(&account_url, &nonce, &authz_url, None);
     let (status, body, hdr) = post_acme(&router, &authz_path, jws).await;
-    assert_eq!(status, StatusCode::OK, "get authz with error challenge failed: {body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "get authz with error challenge failed: {body}"
+    );
     let challenges = body["challenges"].as_array().unwrap();
-    let inv_chall = challenges.iter().find(|c| c["status"].as_str() == Some("invalid")).unwrap();
-    assert!(inv_chall["error"].as_object().is_some(), "error field missing in authz response");
+    let inv_chall = challenges
+        .iter()
+        .find(|c| c["status"].as_str() == Some("invalid"))
+        .unwrap();
+    assert!(
+        inv_chall["error"].as_object().is_some(),
+        "error field missing in authz response"
+    );
 
     // Also POST directly to the challenge (status != pending → challenge_response with error).
     let nonce2 = nonce_header(&hdr);
@@ -1687,8 +2136,15 @@ async fn test_authz_challenge_with_error_field() {
     let chall_path = format!("/acme/chall/{authz_id}/http-01");
     let jws = key.jws_with_kid(&account_url, &nonce2, &chall_url, Some(json!({})));
     let (status, body, _) = post_acme(&router, &chall_path, jws).await;
-    assert_eq!(status, StatusCode::OK, "POST invalid challenge failed: {body}");
-    assert!(body["error"].as_object().is_some(), "error field missing in challenge response");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "POST invalid challenge failed: {body}"
+    );
+    assert!(
+        body["error"].as_object().is_some(),
+        "error field missing in challenge response"
+    );
 }
 
 /// GET /acme/directory with all optional ServerConfig fields set.
@@ -1700,7 +2156,9 @@ async fn test_directory_with_optional_fields() {
     let config = Arc::new(acme_server::config::Config {
         listen_addr: "127.0.0.1:0".into(),
         base_url: base_url.into(),
-        database: DatabaseConfig { path: ":memory:".into() },
+        database: DatabaseConfig {
+            path: ":memory:".into(),
+        },
         ca: CaConfig {
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
             cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
@@ -1713,7 +2171,10 @@ async fn test_directory_with_optional_fields() {
             organization: "Test Org".into(),
             ca_validity_years: 10,
         },
-        mtc: acme_server::config::MtcConfig { log_path: "/dev/null".into(), enabled: false },
+        mtc: acme_server::config::MtcConfig {
+            log_path: "/dev/null".into(),
+            enabled: false,
+        },
         server: acme_server::config::ServerConfig {
             terms_of_service_url: Some("https://example.org/tos".into()),
             website_url: Some("https://example.org".into()),
@@ -1729,21 +2190,35 @@ async fn test_directory_with_optional_fields() {
         config: Arc::clone(&config),
         db: db_conn,
         ca: Arc::new(acme_server::state::CaState {
-            key: ca_key, cert_der: ca_cert_der, hash_alg: "sha256".into(),
-            validity_days: 90, crl_url: None, ocsp_url: None,
+            key: ca_key,
+            cert_der: ca_cert_der,
+            hash_alg: "sha256".into(),
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
         }),
         mtc: Arc::new(acme_server::state::MtcState {
-            log: None, algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
+            log: None,
+            algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
         }),
         tls: None,
     });
     let router = routes::build_router(Arc::clone(&state));
     let (status, dir_body, _) = get(&router, "/acme/directory").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(dir_body["meta"]["termsOfService"].as_str(), Some("https://example.org/tos"));
-    assert_eq!(dir_body["meta"]["website"].as_str(), Some("https://example.org"));
+    assert_eq!(
+        dir_body["meta"]["termsOfService"].as_str(),
+        Some("https://example.org/tos")
+    );
+    assert_eq!(
+        dir_body["meta"]["website"].as_str(),
+        Some("https://example.org")
+    );
     assert!(dir_body["meta"]["caaIdentities"].as_array().is_some());
-    assert_eq!(dir_body["meta"]["externalAccountRequired"].as_bool(), Some(true));
+    assert_eq!(
+        dir_body["meta"]["externalAccountRequired"].as_bool(),
+        Some(true)
+    );
 }
 
 /// GET authz with an account that does not own it → Unauthorized.
@@ -1756,22 +2231,30 @@ async fn test_authz_wrong_account() {
     // Account 1 creates an order to get an authz.
     let (router, _key1, _account1_url, order_body, _nonce1) =
         setup_account_and_order(base_url, &state, "authz-wrong-acct.example").await;
-    let authz_url = order_body["authorizations"][0].as_str().unwrap().to_string();
+    let authz_url = order_body["authorizations"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
     let authz_path = authz_url.trim_start_matches(base_url).to_string();
 
     // Account 2 tries to GET the authz.
     let key2 = TestKey::generate();
     let nonce2 = head_nonce(&router).await;
-    let jws2 = key2.jws_with_jwk(&nonce2, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws2 = key2.jws_with_jwk(
+        &nonce2,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, acct_headers2) = post_acme(&router, "/acme/new-account", jws2).await;
     let account2_url = location_header(&acct_headers2);
     let nonce2 = nonce_header(&acct_headers2);
 
     let jws = key2.jws_with_kid(&account2_url, &nonce2, &authz_url, None);
     let (status, body, _) = post_acme(&router, &authz_path, jws).await;
-    assert!(status.is_client_error(),
-        "get authz from wrong account should fail, got {status}: {body}");
+    assert!(
+        status.is_client_error(),
+        "get authz from wrong account should fail, got {status}: {body}"
+    );
 }
 
 /// POST challenge with an account that does not own the authz → Unauthorized.
@@ -1784,7 +2267,10 @@ async fn test_challenge_authz_wrong_account() {
     // Account 1 creates an order.
     let (router, _key1, _account1_url, order_body, _nonce1) =
         setup_account_and_order(base_url, &state, "chall-wrong-acct.example").await;
-    let authz_url = order_body["authorizations"][0].as_str().unwrap().to_string();
+    let authz_url = order_body["authorizations"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
     let authz_id = authz_url.split('/').last().unwrap();
     let chall_url = format!("{base_url}/acme/chall/{authz_id}/http-01");
     let chall_path = format!("/acme/chall/{authz_id}/http-01");
@@ -1792,16 +2278,21 @@ async fn test_challenge_authz_wrong_account() {
     // Account 2 tries to respond to the challenge.
     let key2 = TestKey::generate();
     let nonce2 = head_nonce(&router).await;
-    let jws2 = key2.jws_with_jwk(&nonce2, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws2 = key2.jws_with_jwk(
+        &nonce2,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, acct_headers2) = post_acme(&router, "/acme/new-account", jws2).await;
     let account2_url = location_header(&acct_headers2);
     let nonce2 = nonce_header(&acct_headers2);
 
     let jws = key2.jws_with_kid(&account2_url, &nonce2, &chall_url, Some(json!({})));
     let (status, body, _) = post_acme(&router, &chall_path, jws).await;
-    assert!(status.is_client_error(),
-        "challenge from wrong account should fail, got {status}: {body}");
+    assert!(
+        status.is_client_error(),
+        "challenge from wrong account should fail, got {status}: {body}"
+    );
 }
 
 /// POST challenge when the authz status is not 'pending' → BadRequest.
@@ -1814,22 +2305,32 @@ async fn test_challenge_authz_not_pending() {
 
     let (router, key, account_url, order_body, nonce) =
         setup_account_and_order(base_url, &state, "chall-authz-not-pending.example").await;
-    let authz_url = order_body["authorizations"][0].as_str().unwrap().to_string();
+    let authz_url = order_body["authorizations"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
     let authz_id = authz_url.split('/').last().unwrap().to_string();
 
     // Mark the authz as 'valid' to make it non-pending.
     let aid = authz_id.clone();
     db.call(move |c| {
-        c.execute("UPDATE authorizations SET status='valid' WHERE id=?1", rusqlite::params![aid])?;
+        c.execute(
+            "UPDATE authorizations SET status='valid' WHERE id=?1",
+            rusqlite::params![aid],
+        )?;
         Ok(())
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
 
     let chall_url = format!("{base_url}/acme/chall/{authz_id}/http-01");
     let chall_path = format!("/acme/chall/{authz_id}/http-01");
     let jws = key.jws_with_kid(&account_url, &nonce, &chall_url, Some(json!({})));
     let (status, body, _) = post_acme(&router, &chall_path, jws).await;
-    assert!(status.is_client_error(),
-        "challenge on non-pending authz should fail, got {status}: {body}");
+    assert!(
+        status.is_client_error(),
+        "challenge on non-pending authz should fail, got {status}: {body}"
+    );
 }
 
 /// POST challenge when challenge is already 'processing' → returns current state.
@@ -1842,7 +2343,10 @@ async fn test_challenge_already_processing() {
 
     let (router, key, account_url, order_body, nonce) =
         setup_account_and_order(base_url, &state, "chall-processing.example").await;
-    let authz_url = order_body["authorizations"][0].as_str().unwrap().to_string();
+    let authz_url = order_body["authorizations"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
     let authz_id = authz_url.split('/').last().unwrap().to_string();
 
     // Mark the http-01 challenge as 'processing'.
@@ -1853,15 +2357,20 @@ async fn test_challenge_already_processing() {
             rusqlite::params![aid],
         )?;
         Ok(())
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
 
     let chall_url = format!("{base_url}/acme/chall/{authz_id}/http-01");
     let chall_path = format!("/acme/chall/{authz_id}/http-01");
     let jws = key.jws_with_kid(&account_url, &nonce, &chall_url, Some(json!({})));
     let (status, body, _) = post_acme(&router, &chall_path, jws).await;
     // Should return 200 with processing state (not an error).
-    assert_eq!(status, StatusCode::OK,
-        "already-processing challenge should return 200, got {status}: {body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "already-processing challenge should return 200, got {status}: {body}"
+    );
     assert_eq!(body["status"].as_str().unwrap_or(""), "processing");
 }
 
@@ -1877,10 +2386,17 @@ async fn test_revoke_cert_by_jwk() {
     let cert_key = TestKey::generate();
     let nonce = head_nonce(&router).await;
     let revoke_url = format!("{base_url}/acme/revoke-cert");
-    let jws = cert_key.jws_with_jwk(&nonce, &revoke_url,
-        Some(json!({"certificate": cert_b64url})));
+    let jws = cert_key.jws_with_jwk(
+        &nonce,
+        &revoke_url,
+        Some(json!({"certificate": cert_b64url})),
+    );
     let (status, body, _) = post_acme(&router, "/acme/revoke-cert", jws).await;
-    assert_eq!(status, StatusCode::OK, "jwk-based cert revoke failed: {body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "jwk-based cert revoke failed: {body}"
+    );
 }
 
 /// Finalize a cert with MTC log enabled — verifies the MTC log path in finalize.rs.
@@ -1897,7 +2413,9 @@ async fn test_finalize_with_mtc_enabled() {
     let config = Arc::new(acme_server::config::Config {
         listen_addr: "127.0.0.1:0".into(),
         base_url: base_url.into(),
-        database: DatabaseConfig { path: ":memory:".into() },
+        database: DatabaseConfig {
+            path: ":memory:".into(),
+        },
         ca: CaConfig {
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
             cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
@@ -1910,7 +2428,10 @@ async fn test_finalize_with_mtc_enabled() {
             organization: "Test Org".into(),
             ca_validity_years: 10,
         },
-        mtc: MtcConfig { log_path: log_path.clone(), enabled: true },
+        mtc: MtcConfig {
+            log_path: log_path.clone(),
+            enabled: true,
+        },
         server: acme_server::config::ServerConfig::default(),
         tls: Default::default(),
     });
@@ -1944,34 +2465,57 @@ async fn test_finalize_with_mtc_enabled() {
     // Run a full ACME flow to finalize a cert (triggers MTC log append).
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
     let account_url = location_header(&acct_headers);
     let nonce = nonce_header(&acct_headers);
 
-    let jws = key.jws_with_kid(&account_url, &nonce, &format!("{base_url}/acme/new-order"),
-        Some(json!({"identifiers": [{"type": "dns", "value": "mtc-test.example"}]})));
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": "mtc-test.example"}]})),
+    );
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = db_conn.call(|c| Ok(c.query_row(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1", [], |r| r.get(0))?)).await.unwrap();
+    let order_id: String = db_conn
+        .call(|c| {
+            Ok(c.query_row(
+                "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
     mark_order_ready(&db_conn, &order_id).await;
 
     let csr_der = make_csr_der("mtc-test.example");
     let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
     let finalize_url = format!("{base_url}/acme/order/{order_id}/finalize");
-    let jws = key.jws_with_kid(&account_url, &nonce, &finalize_url,
-        Some(json!({"csr": csr_b64})));
-    let (status, body, _) = post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &finalize_url,
+        Some(json!({"csr": csr_b64})),
+    );
+    let (status, body, _) =
+        post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
     assert_eq!(status, StatusCode::OK, "finalize with MTC failed: {body}");
 
     // Give the spawned MTC log task a moment to run.
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     // Verify something was logged to the MTC log.
     let tree_size = log::tree_size(&shared_log).await.unwrap();
-    assert!(tree_size >= 1, "MTC log should have at least 1 entry after finalize");
+    assert!(
+        tree_size >= 1,
+        "MTC log should have at least 1 entry after finalize"
+    );
 }
 
 /// Finalize an order with an IP SAN — covers ca/issue.rs IP SAN path (lines 117-121).
@@ -1984,29 +2528,57 @@ async fn test_finalize_ip_san() {
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
     let account_url = location_header(&acct_headers);
     let nonce = nonce_header(&acct_headers);
 
-    let jws = key.jws_with_kid(&account_url, &nonce, &format!("{base_url}/acme/new-order"),
-        Some(json!({"identifiers": [{"type": "ip", "value": "192.0.2.1"}]})));
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "ip", "value": "192.0.2.1"}]})),
+    );
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = db.call(|c| Ok(c.query_row(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1", [], |r| r.get(0))?)).await.unwrap();
+    let order_id: String = db
+        .call(|c| {
+            Ok(c.query_row(
+                "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
     mark_order_ready(&db, &order_id).await;
 
     let csr_der = make_ip_csr_der("192.0.2.1");
     let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
     let finalize_url = format!("{base_url}/acme/order/{order_id}/finalize");
-    let jws = key.jws_with_kid(&account_url, &nonce, &finalize_url,
-        Some(json!({"csr": csr_b64})));
-    let (status, body, _) = post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
-    assert_eq!(status, StatusCode::OK, "finalize with IP SAN failed: {body}");
-    assert_eq!(body["status"].as_str(), Some("valid"), "order should be valid after IP finalize");
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &finalize_url,
+        Some(json!({"csr": csr_b64})),
+    );
+    let (status, body, _) =
+        post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "finalize with IP SAN failed: {body}"
+    );
+    assert_eq!(
+        body["status"].as_str(),
+        Some("valid"),
+        "order should be valid after IP finalize"
+    );
 }
 
 /// Deactivating an account and then trying to create a new order — covers routes/order.rs:44.
@@ -2020,8 +2592,11 @@ async fn test_new_order_with_deactivated_account() {
 
     // Create the account.
     let nonce = head_nonce(&router).await;
-    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (status, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
     assert_eq!(status, StatusCode::CREATED);
     let account_url = location_header(&acct_headers);
@@ -2029,18 +2604,30 @@ async fn test_new_order_with_deactivated_account() {
 
     // Deactivate the account.
     let acct_path = account_url.strip_prefix(base_url).unwrap();
-    let jws = key.jws_with_kid(&account_url, &nonce, &account_url,
-        Some(json!({"status": "deactivated"})));
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &account_url,
+        Some(json!({"status": "deactivated"})),
+    );
     let (status, body, headers) = post_acme(&router, acct_path, jws).await;
     assert_eq!(status, StatusCode::OK, "deactivate failed: {body}");
     assert_eq!(body["status"].as_str(), Some("deactivated"));
     let nonce = nonce_header(&headers);
 
     // Attempt to create a new order — should be rejected because account is deactivated.
-    let jws = key.jws_with_kid(&account_url, &nonce, &format!("{base_url}/acme/new-order"),
-        Some(json!({"identifiers": [{"type": "dns", "value": "deactivated.test"}]})));
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": "deactivated.test"}]})),
+    );
     let (status, body, _) = post_acme(&router, "/acme/new-order", jws).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "expected 401 for deactivated account: {body}");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "expected 401 for deactivated account: {body}"
+    );
 }
 
 /// Finalize a certificate when OCSP and CRL URLs are configured — covers ca/issue.rs lines 145-158.
@@ -2051,7 +2638,9 @@ async fn test_finalize_with_aia_and_cdp() {
     let config = Arc::new(Config {
         listen_addr: "127.0.0.1:0".into(),
         base_url: base_url.into(),
-        database: DatabaseConfig { path: ":memory:".into() },
+        database: DatabaseConfig {
+            path: ":memory:".into(),
+        },
         ca: CaConfig {
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
             cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
@@ -2064,7 +2653,10 @@ async fn test_finalize_with_aia_and_cdp() {
             organization: "Test Org".into(),
             ca_validity_years: 10,
         },
-        mtc: MtcConfig { log_path: "/dev/null".into(), enabled: false },
+        mtc: MtcConfig {
+            log_path: "/dev/null".into(),
+            enabled: false,
+        },
         server: ServerConfig::default(),
         tls: Default::default(),
     });
@@ -2091,27 +2683,55 @@ async fn test_finalize_with_aia_and_cdp() {
     let router = routes::build_router(Arc::clone(&state));
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
-    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
-        Some(json!({"termsOfServiceAgreed": true})));
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
     let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
     let account_url = location_header(&acct_headers);
     let nonce = nonce_header(&acct_headers);
 
-    let jws = key.jws_with_kid(&account_url, &nonce, &format!("{base_url}/acme/new-order"),
-        Some(json!({"identifiers": [{"type": "dns", "value": "aia-cdp.test"}]})));
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": "aia-cdp.test"}]})),
+    );
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = db_conn.call(|c| Ok(c.query_row(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1", [], |r| r.get(0))?)).await.unwrap();
+    let order_id: String = db_conn
+        .call(|c| {
+            Ok(c.query_row(
+                "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
     mark_order_ready(&db_conn, &order_id).await;
 
     let csr_der = make_csr_der("aia-cdp.test");
     let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
     let finalize_url = format!("{base_url}/acme/order/{order_id}/finalize");
-    let jws = key.jws_with_kid(&account_url, &nonce, &finalize_url,
-        Some(json!({"csr": csr_b64})));
-    let (status, body, _) = post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
-    assert_eq!(status, StatusCode::OK, "finalize with AIA/CDP failed: {body}");
-    assert_eq!(body["status"].as_str(), Some("valid"), "order should be valid after AIA/CDP finalize");
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &finalize_url,
+        Some(json!({"csr": csr_b64})),
+    );
+    let (status, body, _) =
+        post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "finalize with AIA/CDP failed: {body}"
+    );
+    assert_eq!(
+        body["status"].as_str(),
+        Some("valid"),
+        "order should be valid after AIA/CDP finalize"
+    );
 }

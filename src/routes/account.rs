@@ -121,9 +121,13 @@ pub async fn update_account(
     let ctx = parse_jws(&state, body, &url).await?;
 
     // Must use kid pointing to this account.
-    let account_id = ctx.account_id.ok_or(AcmeError::Unauthorized("kid required".into()))?;
+    let account_id = ctx
+        .account_id
+        .ok_or(AcmeError::Unauthorized("kid required".into()))?;
     if account_id != id {
-        return Err(AcmeError::Unauthorized("kid does not match account ID".into()));
+        return Err(AcmeError::Unauthorized(
+            "kid does not match account ID".into(),
+        ));
     }
 
     let account = db::accounts::get_by_id(&state.db, &id)
@@ -216,10 +220,7 @@ mod tests {
     #[test]
     fn validate_contacts_accepts_mailto_urls() {
         validate_contacts(&["mailto:user@example.com".to_string()]).unwrap();
-        validate_contacts(&[
-            "mailto:a@b.com".to_string(),
-            "mailto:c@d.org".to_string(),
-        ]).unwrap();
+        validate_contacts(&["mailto:a@b.com".to_string(), "mailto:c@d.org".to_string()]).unwrap();
     }
 
     #[test]

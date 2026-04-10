@@ -119,11 +119,7 @@ pub async fn revoke(
 }
 
 /// Update the MTC log index after appending the certificate to the transparency log.
-pub async fn set_mtc_log_index(
-    db: &Connection,
-    id: &str,
-    index: i64,
-) -> Result<(), AcmeError> {
+pub async fn set_mtc_log_index(db: &Connection, id: &str, index: i64) -> Result<(), AcmeError> {
     let id = id.to_string();
     db.call(move |conn| {
         conn.execute(
@@ -266,9 +262,17 @@ mod tests {
     }
 
     /// Helper: insert parent rows + cert together.
-    async fn insert_cert(db: &Connection, id: &str, account_id: &str, status: &str, not_after: i64) {
+    async fn insert_cert(
+        db: &Connection,
+        id: &str,
+        account_id: &str,
+        status: &str,
+        not_after: i64,
+    ) {
         insert_parent_rows(db, account_id, &format!("order-{id}")).await;
-        insert(db, sample_cert(id, account_id, status, not_after)).await.unwrap();
+        insert(db, sample_cert(id, account_id, status, not_after))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -331,13 +335,18 @@ mod tests {
         revoke(&db, "cert-4", None, 1_700_500_000).await.unwrap();
         // Second revocation returns false (already revoked, status != 'valid').
         let changed = revoke(&db, "cert-4", None, 1_700_600_000).await.unwrap();
-        assert!(!changed, "revoke should return false when cert is already revoked");
+        assert!(
+            !changed,
+            "revoke should return false when cert is already revoked"
+        );
     }
 
     #[tokio::test]
     async fn revoke_nonexistent_returns_false() {
         let db = open_db().await;
-        let changed = revoke(&db, "nonexistent-cert", None, 1_700_500_000).await.unwrap();
+        let changed = revoke(&db, "nonexistent-cert", None, 1_700_500_000)
+            .await
+            .unwrap();
         assert!(!changed, "revoke should return false for nonexistent cert");
     }
 
@@ -358,7 +367,12 @@ mod tests {
         let db = open_db().await;
         insert_cert(&db, "cert-6", "acct-6", "valid", 1_800_000_000).await;
 
-        assert!(get_by_id(&db, "cert-6").await.unwrap().unwrap().mtc_log_index.is_none());
+        assert!(get_by_id(&db, "cert-6")
+            .await
+            .unwrap()
+            .unwrap()
+            .mtc_log_index
+            .is_none());
 
         set_mtc_log_index(&db, "cert-6", 42).await.unwrap();
 
@@ -378,7 +392,9 @@ mod tests {
         let db = open_db().await;
         insert_cert(&db, "cert-7", "acct-7", "valid", 1_800_000_000).await;
 
-        set_renewal_window(&db, "cert-7", 1_750_000_000, 1_760_000_000).await.unwrap();
+        set_renewal_window(&db, "cert-7", 1_750_000_000, 1_760_000_000)
+            .await
+            .unwrap();
 
         let row = get_by_id(&db, "cert-7").await.unwrap().unwrap();
         assert_eq!(row.suggested_window_start, Some(1_750_000_000));
@@ -388,7 +404,9 @@ mod tests {
     #[tokio::test]
     async fn set_renewal_window_nonexistent_is_ok() {
         let db = open_db().await;
-        set_renewal_window(&db, "nonexistent", 100, 200).await.unwrap();
+        set_renewal_window(&db, "nonexistent", 100, 200)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -430,23 +448,28 @@ mod tests {
         // Actually we can't reuse account_id easily (FK requires unique account per insert_parent).
         // Instead, let's insert cert-b directly with acct-xa.
         insert_parent_rows(&db, "acct-xa-extra", &format!("order-cert-b2")).await;
-        insert(&db, CertificateRow {
-            id: "cert-b2".to_string(),
-            order_id: "order-cert-b2".to_string(),
-            account_id: "acct-xa".to_string(),
-            serial_number: "serial-cert-b2".to_string(),
-            status: "valid".to_string(),
-            der: vec![0x30, 0x00],
-            pem: "-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n".to_string(),
-            not_before: 1_700_000_000,
-            not_after: now - 1, // expired
-            revoked_at: None,
-            revocation_reason: None,
-            mtc_log_index: None,
-            created: 1_700_000_000,
-            suggested_window_start: None,
-            suggested_window_end: None,
-        }).await.unwrap();
+        insert(
+            &db,
+            CertificateRow {
+                id: "cert-b2".to_string(),
+                order_id: "order-cert-b2".to_string(),
+                account_id: "acct-xa".to_string(),
+                serial_number: "serial-cert-b2".to_string(),
+                status: "valid".to_string(),
+                der: vec![0x30, 0x00],
+                pem: "-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n".to_string(),
+                not_before: 1_700_000_000,
+                not_after: now - 1, // expired
+                revoked_at: None,
+                revocation_reason: None,
+                mtc_log_index: None,
+                created: 1_700_000_000,
+                suggested_window_start: None,
+                suggested_window_end: None,
+            },
+        )
+        .await
+        .unwrap();
 
         let results = list_valid_for_account(&db, "acct-xa", now).await.unwrap();
         assert_eq!(results.len(), 1);
@@ -462,7 +485,10 @@ mod tests {
         revoke(&db, "cert-rev", None, now).await.unwrap();
 
         let results = list_valid_for_account(&db, "acct-z", now).await.unwrap();
-        assert!(results.is_empty(), "revoked cert should not appear in valid list");
+        assert!(
+            results.is_empty(),
+            "revoked cert should not appear in valid list"
+        );
     }
 
     #[tokio::test]
@@ -491,7 +517,9 @@ mod tests {
         assert!(get_by_serial(&raw, "any").await.is_err());
         assert!(revoke(&raw, "any", None, now).await.is_err());
         assert!(set_mtc_log_index(&raw, "any", 0).await.is_err());
-        assert!(set_renewal_window(&raw, "any", now, now + 86400).await.is_err());
+        assert!(set_renewal_window(&raw, "any", now, now + 86400)
+            .await
+            .is_err());
         assert!(list_revoked(&raw).await.is_err());
         assert!(list_valid_for_account(&raw, "any", now).await.is_err());
     }

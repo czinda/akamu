@@ -56,8 +56,9 @@ pub async fn append_cert_to_log(
     let leaf_hash = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, AcmeError> {
         // Parse the issued certificate.
         let mut dec = Decoder::new(&cert_der, Encoding::Der);
-        let cert: Certificate =
-            dec.decode().map_err(|e| AcmeError::Mtc(format!("parse cert for MTC: {e}")))?;
+        let cert: Certificate = dec
+            .decode()
+            .map_err(|e| AcmeError::Mtc(format!("parse cert for MTC: {e}")))?;
 
         // Build the log entry from the TBS certificate.
         let log_entry = tbs_certificate_to_log_entry(&cert.tbs_certificate, algorithm)
@@ -108,9 +109,9 @@ pub async fn compute_root(log: &SharedLog) -> Result<Vec<u8>, AcmeError> {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use synta_mtc::crypto::HashAlgorithm;
     use tempfile::TempDir;
     use tokio::sync::Mutex;
-    use synta_mtc::crypto::HashAlgorithm;
 
     use super::{append_cert_to_log, open_or_create, tree_size};
 
@@ -121,13 +122,12 @@ mod tests {
     /// need something that synta_certificate::Certificate can parse.
     fn test_cert_der() -> Vec<u8> {
         // Build a small in-memory cert using our own CA machinery.
-        use synta_certificate::{
-            CertificateBuilder, KeyIdMethod, NameBuilder, PrivateKey as _,
-            default_key_id_hasher, encode_basic_constraints,
-            encode_subject_key_identifier, parse_time,
-        };
         use crate::ca::init::unix_to_generalized_time;
         use synta_certificate::BackendPrivateKey;
+        use synta_certificate::{
+            default_key_id_hasher, encode_basic_constraints, encode_subject_key_identifier,
+            parse_time, CertificateBuilder, KeyIdMethod, NameBuilder, PrivateKey as _,
+        };
 
         let key = BackendPrivateKey::generate_ec("P-256").unwrap();
         let spki = key.public_key().unwrap().spki_der().to_vec();
@@ -142,12 +142,12 @@ mod tests {
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_secs() as i64 + 86400,
+                .as_secs() as i64
+                + 86400,
         );
         let hasher = default_key_id_hasher();
         let bc = encode_basic_constraints(false, None).unwrap();
-        let ski =
-            encode_subject_key_identifier(&spki, KeyIdMethod::Rfc5280Sha1, &hasher).unwrap();
+        let ski = encode_subject_key_identifier(&spki, KeyIdMethod::Rfc5280Sha1, &hasher).unwrap();
         let signer = key.as_signer("sha256");
         CertificateBuilder::new()
             .issuer_name(&name_der)
@@ -199,7 +199,9 @@ mod tests {
             let log = open_or_create(&path, algorithm).unwrap();
             let shared = Arc::new(Mutex::new(log));
             let cert_der = test_cert_der();
-            append_cert_to_log(&shared, cert_der, algorithm).await.unwrap();
+            append_cert_to_log(&shared, cert_der, algorithm)
+                .await
+                .unwrap();
         }
 
         // Re-open the existing file (covers the `DiskBackedLog::open` branch).
@@ -219,7 +221,9 @@ mod tests {
 
         // Append a leaf so the tree is non-empty.
         let cert_der = test_cert_der();
-        append_cert_to_log(&shared, cert_der, algorithm).await.unwrap();
+        append_cert_to_log(&shared, cert_der, algorithm)
+            .await
+            .unwrap();
 
         let root = super::compute_root(&shared).await.unwrap();
         assert!(!root.is_empty(), "root hash should be non-empty");

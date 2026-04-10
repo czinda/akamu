@@ -14,7 +14,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::db;
 use crate::error::AcmeError;
-use crate::jose::jws::{JwsFlattened, JwsProtectedHeader, JwsKeyRef};
+use crate::jose::jws::{JwsFlattened, JwsKeyRef, JwsProtectedHeader};
 use crate::jose::kid::spki_for_kid;
 use crate::state::AppState;
 
@@ -48,15 +48,24 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // Authorizations
         .route("/acme/authz/{id}", post(authz::get_authz))
         // Challenges
-        .route("/acme/chall/{authz_id}/{type}", post(challenge::respond_challenge))
+        .route(
+            "/acme/chall/{authz_id}/{type}",
+            post(challenge::respond_challenge),
+        )
         // Certificates — GET for plain clients; POST for RFC 8555 POST-as-GET clients
-        .route("/acme/cert/{id}", get(certificate::download_cert).post(certificate::download_cert_post))
+        .route(
+            "/acme/cert/{id}",
+            get(certificate::download_cert).post(certificate::download_cert_post),
+        )
         // Revocation
         .route("/acme/revoke-cert", post(revoke::revoke_cert))
         // Key change
         .route("/acme/key-change", post(key_change::key_change))
         // Renewal Info (RFC 9773 ARI)
-        .route("/acme/renewal-info/{cert_id}", get(renewal_info::get_renewal_info))
+        .route(
+            "/acme/renewal-info/{cert_id}",
+            get(renewal_info::get_renewal_info),
+        )
         .layer(
             TraceLayer::new_for_http()
                 // Suppress "started processing request" — the response line already
@@ -130,7 +139,12 @@ pub(crate) async fn parse_jws(
     jws.verify(&spki_der)?;
 
     let payload = jws.decode_payload()?;
-    Ok(JwsContext { header, payload, spki_der, account_id })
+    Ok(JwsContext {
+        header,
+        payload,
+        spki_der,
+        account_id,
+    })
 }
 
 // ── Response helpers ──────────────────────────────────────────────────────────
@@ -138,8 +152,7 @@ pub(crate) async fn parse_jws(
 /// Generate a fresh anti-replay nonce, store it in the DB, and return it.
 pub(crate) async fn new_nonce(state: &AppState) -> Result<String, AcmeError> {
     let mut bytes = [0u8; 16];
-    getrandom::getrandom(&mut bytes)
-        .map_err(|e| AcmeError::Internal(format!("nonce rng: {e}")))?;
+    getrandom::getrandom(&mut bytes).map_err(|e| AcmeError::Internal(format!("nonce rng: {e}")))?;
     let nonce = URL_SAFE_NO_PAD.encode(bytes);
     db::nonces::insert(&state.db, &nonce).await?;
     Ok(nonce)
@@ -184,10 +197,11 @@ pub(crate) fn require_payload<T: serde::de::DeserializeOwned>(
     ctx: &str,
 ) -> Result<T, AcmeError> {
     if payload.is_empty() {
-        return Err(AcmeError::BadRequest(format!("{ctx}: payload is required (not POST-as-GET)")));
+        return Err(AcmeError::BadRequest(format!(
+            "{ctx}: payload is required (not POST-as-GET)"
+        )));
     }
-    serde_json::from_slice(payload)
-        .map_err(|e| AcmeError::BadRequest(format!("{ctx} JSON: {e}")))
+    serde_json::from_slice(payload).map_err(|e| AcmeError::BadRequest(format!("{ctx} JSON: {e}")))
 }
 
 /// Return the current Unix timestamp in seconds.
@@ -257,7 +271,8 @@ mod tests {
 
     #[test]
     fn require_payload_valid_json() {
-        let result: Result<serde_json::Value, _> = require_payload(b"{\"key\":\"value\"}", "test-ctx");
+        let result: Result<serde_json::Value, _> =
+            require_payload(b"{\"key\":\"value\"}", "test-ctx");
         assert!(result.is_ok());
     }
 }

@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use synta_mtc::crypto::HashAlgorithm;
 use synta_certificate::BackendPrivateKey;
+use synta_mtc::crypto::HashAlgorithm;
 use tokio_rusqlite::Connection;
 
 use crate::config::Config;

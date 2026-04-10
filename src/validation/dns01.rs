@@ -83,20 +83,20 @@ mod tests {
         let rdlength = (txt_bytes.len() + 1) as u16; // +1 for the length-prefix octet
 
         let mut resp = Vec::with_capacity(question_end + 16 + txt_bytes.len());
-        resp.extend_from_slice(&query[..2]);          // Transaction ID (echo)
-        resp.extend_from_slice(&[0x81, 0x80]);        // Flags: QR=1, RD=1, RA=1
-        resp.extend_from_slice(&[0x00, 0x01]);        // QDCOUNT = 1
-        resp.extend_from_slice(&[0x00, 0x01]);        // ANCOUNT = 1
-        resp.extend_from_slice(&[0x00, 0x00]);        // NSCOUNT = 0
-        resp.extend_from_slice(&[0x00, 0x00]);        // ARCOUNT = 0
+        resp.extend_from_slice(&query[..2]); // Transaction ID (echo)
+        resp.extend_from_slice(&[0x81, 0x80]); // Flags: QR=1, RD=1, RA=1
+        resp.extend_from_slice(&[0x00, 0x01]); // QDCOUNT = 1
+        resp.extend_from_slice(&[0x00, 0x01]); // ANCOUNT = 1
+        resp.extend_from_slice(&[0x00, 0x00]); // NSCOUNT = 0
+        resp.extend_from_slice(&[0x00, 0x00]); // ARCOUNT = 0
         resp.extend_from_slice(&query[12..question_end]); // Echo question section
-        resp.extend_from_slice(&[0xC0, 0x0C]);        // Name: pointer to offset 12
-        resp.extend_from_slice(&[0x00, 0x10]);        // TYPE = TXT (16)
-        resp.extend_from_slice(&[0x00, 0x01]);        // CLASS = IN
+        resp.extend_from_slice(&[0xC0, 0x0C]); // Name: pointer to offset 12
+        resp.extend_from_slice(&[0x00, 0x10]); // TYPE = TXT (16)
+        resp.extend_from_slice(&[0x00, 0x01]); // CLASS = IN
         resp.extend_from_slice(&[0x00, 0x00, 0x00, 0x3C]); // TTL = 60
         resp.extend_from_slice(&rdlength.to_be_bytes()); // RDLENGTH
-        resp.push(txt_bytes.len() as u8);             // TXT string length prefix
-        resp.extend_from_slice(txt_bytes);            // TXT string data
+        resp.push(txt_bytes.len() as u8); // TXT string length prefix
+        resp.extend_from_slice(txt_bytes); // TXT string data
         resp
     }
 
@@ -119,10 +119,7 @@ mod tests {
     /// Build a resolver config pointing at a local UDP nameserver on `port`.
     fn local_resolver(port: u16) -> (ResolverConfig, ResolverOpts) {
         let mut config = ResolverConfig::new();
-        let ns = NameServerConfig::new(
-            format!("127.0.0.1:{port}").parse().unwrap(),
-            Protocol::Udp,
-        );
+        let ns = NameServerConfig::new(format!("127.0.0.1:{port}").parse().unwrap(), Protocol::Udp);
         config.add_name_server(ns);
         (config, ResolverOpts::default())
     }
@@ -139,7 +136,10 @@ mod tests {
         let resolver = TokioAsyncResolver::tokio(config, opts);
 
         let result = validate_with_resolver("example.test", key_auth, resolver).await;
-        assert!(result.is_ok(), "expected Ok for matching TXT record: {result:?}");
+        assert!(
+            result.is_ok(),
+            "expected Ok for matching TXT record: {result:?}"
+        );
     }
 
     /// Covers dns01.rs lines 36-44, 47-49: TXT record found but value wrong → IncorrectResponse.
@@ -159,7 +159,11 @@ mod tests {
     #[tokio::test]
     async fn validate_fails_for_nonexistent_domain() {
         // This domain is guaranteed not to exist; the DNS lookup will fail.
-        let result = validate("invalid.localhost.acme-test-nonexistent.invalid", "token.thumbprint").await;
+        let result = validate(
+            "invalid.localhost.acme-test-nonexistent.invalid",
+            "token.thumbprint",
+        )
+        .await;
         // Should return a Dns error or IncorrectResponse
         assert!(result.is_err(), "expected error for non-existent domain");
     }
