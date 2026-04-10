@@ -262,4 +262,23 @@ mod tests {
         let changed = update_key(&db, "acct-7", vec![], "thumb".into(), 0).await.unwrap();
         assert!(!changed, "update_key should fail for non-valid account");
     }
+
+    /// Cover the error propagation path in each function by calling them on a
+    /// connection that has no schema (no tables).  Every DB operation inside the
+    /// closure will fail with "no such table", which exercises the `)?;` early-
+    /// return paths that are normally never triggered in happy-path tests.
+    #[tokio::test]
+    async fn db_error_paths_no_table() {
+        // Raw connection — no migrations run, so no tables exist.
+        let raw = Arc::new(tokio_rusqlite::Connection::open_in_memory().await.unwrap());
+
+        let row = sample_account("err-acct");
+        assert!(insert(&raw, row).await.is_err(), "insert should fail on no-table DB");
+
+        assert!(get_by_id(&raw, "any").await.is_err());
+        assert!(get_by_thumbprint(&raw, "any").await.is_err());
+        assert!(update_contact(&raw, "any", None, 0).await.is_err());
+        assert!(update_status(&raw, "any", "deactivated", 0).await.is_err());
+        assert!(update_key(&raw, "any", vec![], "thumb".into(), 0).await.is_err());
+    }
 }

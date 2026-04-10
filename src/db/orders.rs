@@ -247,4 +247,14 @@ mod tests {
         let ids = list_authz_ids(&db, "order-6").await.unwrap();
         assert_eq!(ids, vec!["authz-a"]);
     }
+
+    #[tokio::test]
+    async fn db_error_paths_no_table() {
+        let raw = Arc::new(tokio_rusqlite::Connection::open_in_memory().await.unwrap());
+        assert!(insert(&raw, sample_order("err-order", "err-acct")).await.is_err());
+        assert!(get_by_id(&raw, "any").await.is_err());
+        assert!(update_status(&raw, "any", "invalid", None, 0).await.is_err());
+        assert!(set_certificate(&raw, "any", "cert-id", 0).await.is_err());
+        assert!(list_authz_ids(&raw, "any").await.is_err());
+    }
 }

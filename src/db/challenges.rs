@@ -275,4 +275,15 @@ mod tests {
         assert_eq!(row.status, "invalid");
         assert_eq!(row.error, Some("{\"type\":\"connection\"}".to_string()));
     }
+
+    #[tokio::test]
+    async fn db_error_paths_no_table() {
+        let raw = Arc::new(tokio_rusqlite::Connection::open_in_memory().await.unwrap());
+        assert!(insert(&raw, sample_challenge("err-chall", "err-authz")).await.is_err());
+        assert!(get_by_id(&raw, "any").await.is_err());
+        assert!(list_by_authz(&raw, "any").await.is_err());
+        assert!(set_processing(&raw, "any", 0).await.is_err());
+        assert!(set_valid(&raw, "any", 0).await.is_err());
+        assert!(set_invalid(&raw, "any", "{}".into(), 0).await.is_err());
+    }
 }

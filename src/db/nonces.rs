@@ -109,4 +109,11 @@ mod tests {
         let consumed = consume(&db, "fresh-nonce").await.unwrap();
         assert!(consumed);
     }
+
+    #[tokio::test]
+    async fn db_error_paths_no_table() {
+        let raw = Arc::new(tokio_rusqlite::Connection::open_in_memory().await.unwrap());
+        assert!(insert(&raw, "any-nonce").await.is_err());
+        assert!(sweep_expired(&raw, 3600).await.is_err());
+    }
 }

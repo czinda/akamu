@@ -457,4 +457,35 @@ mod tests {
         let results = list_valid_for_account(&db, "acct-z", now).await.unwrap();
         assert!(results.is_empty(), "revoked cert should not appear in valid list");
     }
+
+    #[tokio::test]
+    async fn db_error_paths_no_table() {
+        let raw = Arc::new(tokio_rusqlite::Connection::open_in_memory().await.unwrap());
+        let now = 1_700_000_000i64;
+        let row = CertificateRow {
+            id: "err-cert".into(),
+            order_id: "err-order".into(),
+            account_id: "err-acct".into(),
+            serial_number: "ff".into(),
+            status: "valid".into(),
+            der: vec![],
+            pem: String::new(),
+            not_before: now,
+            not_after: now + 86400,
+            revoked_at: None,
+            revocation_reason: None,
+            mtc_log_index: None,
+            created: now,
+            suggested_window_start: None,
+            suggested_window_end: None,
+        };
+        assert!(insert(&raw, row).await.is_err());
+        assert!(get_by_id(&raw, "any").await.is_err());
+        assert!(get_by_serial(&raw, "any").await.is_err());
+        assert!(revoke(&raw, "any", None, now).await.is_err());
+        assert!(set_mtc_log_index(&raw, "any", 0).await.is_err());
+        assert!(set_renewal_window(&raw, "any", now, now + 86400).await.is_err());
+        assert!(list_revoked(&raw).await.is_err());
+        assert!(list_valid_for_account(&raw, "any", now).await.is_err());
+    }
 }

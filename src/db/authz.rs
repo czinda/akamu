@@ -212,4 +212,14 @@ mod tests {
         assert_eq!(row.status, "valid");
         assert_eq!(row.updated, 1_700_000_001);
     }
+
+    #[tokio::test]
+    async fn db_error_paths_no_table() {
+        let raw = Arc::new(tokio_rusqlite::Connection::open_in_memory().await.unwrap());
+        let row = sample_authz("err-authz", "err-order", "err-acct");
+        assert!(insert(&raw, row).await.is_err());
+        assert!(get_by_id(&raw, "any").await.is_err());
+        assert!(list_by_order(&raw, "any").await.is_err());
+        assert!(update_status(&raw, "any", "valid", 0).await.is_err());
+    }
 }
