@@ -235,6 +235,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
         }),
         tls: None,
+        spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
     });
 
     (state, dir)
@@ -2202,6 +2203,7 @@ async fn test_directory_with_optional_fields() {
             algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
         }),
         tls: None,
+        spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
     });
     let router = routes::build_router(Arc::clone(&state));
     let (status, dir_body, _) = get(&router, "/acme/directory").await;
@@ -2458,6 +2460,7 @@ async fn test_finalize_with_mtc_enabled() {
             algorithm,
         }),
         tls: None,
+        spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
     });
 
     let router = routes::build_router(Arc::clone(&state));
@@ -2678,6 +2681,7 @@ async fn test_finalize_with_aia_and_cdp() {
             algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
         }),
         tls: None,
+        spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
     });
 
     let router = routes::build_router(Arc::clone(&state));

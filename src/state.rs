@@ -1,6 +1,7 @@
 //! Shared application state threaded through axum handlers via `Arc<AppState>`.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
 use synta_certificate::BackendPrivateKey;
 use synta_mtc::crypto::HashAlgorithm;
@@ -18,6 +19,12 @@ pub struct AppState {
     pub mtc: Arc<MtcState>,
     /// Present when `[tls]` is enabled and client auth is configured.
     pub tls: Option<Arc<TlsState>>,
+    /// In-memory cache of account SPKI DER bytes keyed by account ID.
+    ///
+    /// Populated on first authenticated request per account; evicted when the
+    /// account is deactivated or its key is rolled over. Eliminates one DB
+    /// round-trip per kid-authenticated POST after the first request.
+    pub spki_cache: Arc<RwLock<HashMap<String, Vec<u8>>>>,
 }
 
 /// TLS client-auth state available to handlers for introspection.

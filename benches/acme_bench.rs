@@ -704,6 +704,7 @@ async fn start_server(args: &Args) -> BenchServer {
             algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
         }),
         tls: None,
+        spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
     });
 
     let router = routes::build_router(state);

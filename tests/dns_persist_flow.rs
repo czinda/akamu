@@ -192,6 +192,7 @@ async fn build_state(
             algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
         }),
         tls: None,
+        spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
     });
     (state, dir)
 }

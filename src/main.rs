@@ -103,6 +103,7 @@ async fn run() -> Result<(), String> {
         ca,
         mtc,
         tls: tls_state,
+        spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
     });
 
     // ── HTTP / TLS server ─────────────────────────────────────────────────────

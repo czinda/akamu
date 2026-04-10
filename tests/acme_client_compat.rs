@@ -161,6 +161,7 @@ async fn start_plain_server(http_validation_port: u16) -> PlainServer {
             algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
         }),
         tls: None,
+        spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
     });
 
     let router = routes::build_router(state);

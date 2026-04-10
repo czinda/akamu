@@ -284,6 +284,7 @@ mod tests {
                 algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
             }),
             tls: None,
+            spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         })
     }
 
@@ -675,6 +676,7 @@ mod tests {
                 algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
             }),
             tls: None,
+            spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         });
 
         // The identifier is just the IP address — no port embedded.
@@ -822,6 +824,7 @@ mod tests {
                 algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
             }),
             tls: None,
+            spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         });
         // on_valid tries set_valid first; fails on no-table DB → warn + return (lines 65-67).
         on_valid(&state, "fake-chall", "fake-authz", unix_now()).await;
@@ -879,6 +882,7 @@ mod tests {
                 algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
             }),
             tls: None,
+            spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         });
         // on_invalid tries set_invalid first; fails on no-table DB → warn (lines 128-135).
         on_invalid(
@@ -970,6 +974,7 @@ mod tests {
                 algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
             }),
             tls: None,
+            spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         });
 
         // set_valid succeeds (challenge row exists), then update_status(authz) fails
@@ -1024,6 +1029,7 @@ mod tests {
                 algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
             }),
             tls: None,
+            spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         })
     }
 

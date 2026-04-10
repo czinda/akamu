@@ -83,9 +83,11 @@ pub async fn key_change(
         ));
     }
 
-    // Update the account key.
+    // Update the account key and evict from the SPKI cache so the next
+    // request re-loads the new key from the database.
     let now = unix_now();
     db::accounts::update_key(&state.db, &account_id, new_spki, new_thumbprint, now).await?;
+    state.spki_cache.write().unwrap().remove(&account_id);
 
     let account = db::accounts::get_by_id(&state.db, &account_id)
         .await?

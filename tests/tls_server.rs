@@ -463,6 +463,7 @@ async fn start_tls_server() -> TlsTestServer {
             algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
         }),
         tls: None,
+        spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
     });
 
     let router = routes::build_router(Arc::clone(&state));

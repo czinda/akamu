@@ -157,6 +157,7 @@ pub async fn update_account(
     // Handle deactivation.
     if payload.status.as_deref() == Some("deactivated") {
         db::accounts::update_status(&state.db, &id, "deactivated", unix_now()).await?;
+        state.spki_cache.write().unwrap().remove(&id);
         let mut deactivated = account.clone();
         deactivated.status = "deactivated".into();
         let contacts = parse_contacts(&deactivated.contact);

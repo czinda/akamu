@@ -129,8 +129,20 @@ pub(crate) async fn parse_jws(
             (spki, None)
         }
         JwsKeyRef::Kid { kid } => {
-            let spki = spki_for_kid(&state.db, &state.config.base_url, kid).await?;
             let id = crate::jose::kid::account_id_from_kid(&state.config.base_url, kid)?;
+            // Try the in-memory SPKI cache first to avoid a DB round-trip.
+            let cached = state.spki_cache.read().unwrap().get(&id).cloned();
+            let spki = if let Some(spki) = cached {
+                spki
+            } else {
+                let spki = spki_for_kid(&state.db, &state.config.base_url, kid).await?;
+                state
+                    .spki_cache
+                    .write()
+                    .unwrap()
+                    .insert(id.clone(), spki.clone());
+                spki
+            };
             (spki, Some(id))
         }
     };
