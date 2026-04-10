@@ -4,6 +4,7 @@
 //! After validation the function updates challenge, authorization, and order state.
 
 mod dns01;
+mod dns_persist_01;
 mod http01;
 mod tls_alpn01;
 
@@ -31,7 +32,9 @@ pub async fn validate_challenge(
     token: &str,
 ) {
     let http_port = state.config.server.http_validation_port;
-    let result = dispatch(chall_type, id_type, id_value, key_auth, token, http_port).await;
+    let issuer_domain = state.config.dns_persist_issuer_domain();
+    let result =
+        dispatch(chall_type, id_type, id_value, key_auth, token, http_port, &issuer_domain).await;
 
     let now = unix_now();
     match result {
@@ -41,6 +44,8 @@ pub async fn validate_challenge(
 }
 
 /// Dispatch to the correct validator based on challenge type.
+///
+/// For `dns-persist-01`, `key_auth` carries the account URI (not a token·thumbprint).
 async fn dispatch(
     chall_type: &str,
     _id_type: &str,
@@ -48,11 +53,13 @@ async fn dispatch(
     key_auth: &str,
     token: &str,
     http_port: u16,
+    issuer_domain: &str,
 ) -> Result<(), AcmeError> {
     match chall_type {
         "http-01" => http01::validate(id_value, token, key_auth, http_port).await,
         "dns-01" => dns01::validate(id_value, key_auth).await,
         "tls-alpn-01" => tls_alpn01::validate(id_value, key_auth).await,
+        "dns-persist-01" => dns_persist_01::validate(id_value, key_auth, issuer_domain).await,
         other => Err(AcmeError::IncorrectResponse(format!(
             "unsupported challenge type: {other}"
         ))),
@@ -272,7 +279,9 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_unsupported_type_returns_error() {
-        let result = dispatch("bogus-type", "dns", "example.com", "key-auth", "token", 80).await;
+        let result =
+            dispatch("bogus-type", "dns", "example.com", "key-auth", "token", 80, "acme.test")
+                .await;
         assert!(result.is_err());
         match result.unwrap_err() {
             AcmeError::IncorrectResponse(msg) => {

@@ -69,7 +69,13 @@ pub async fn respond_challenge(
         .ok_or(AcmeError::Unauthorized("account not found".into()))?;
 
     let jwk_thumbprint = account.jwk_thumbprint.clone();
-    let key_auth = format!("{}.{}", challenge.token, jwk_thumbprint);
+    // dns-persist-01 is validated against the account URI stored as the key_auth;
+    // all other challenge types use the standard token·thumbprint form.
+    let key_auth = if chall_type == "dns-persist-01" {
+        format!("{}/acme/account/{}", state.config.base_url, account_id)
+    } else {
+        format!("{}.{}", challenge.token, jwk_thumbprint)
+    };
 
     // Spawn background validation task. The JoinHandle is observed so that a
     // panic inside the task is logged rather than silently swallowed.
@@ -118,8 +124,15 @@ async fn challenge_response(
         "type": challenge.r#type,
         "url": format!("{base}/acme/chall/{}/{}", challenge.authz_id, challenge.r#type),
         "status": challenge.status,
-        "token": challenge.token,
     });
+    // dns-persist-01 has no per-challenge token; instead the client is told
+    // which issuer domain(s) the CA will match against the TXT record.
+    if challenge.r#type == "dns-persist-01" {
+        let issuer_domain = state.config.dns_persist_issuer_domain();
+        obj["issuer-domain-names"] = json!([issuer_domain]);
+    } else {
+        obj["token"] = json!(challenge.token);
+    }
     if let Some(v) = challenge.validated {
         obj["validated"] = json!(fmt_time(v));
     }

@@ -84,8 +84,16 @@ pub async fn new_order(
         let identifier_json =
             serde_json::to_string(&json!({"type": id.r#type, "value": id.value})).unwrap();
         let token = gen_token();
+        // dns-persist-01 is offered only when the operator has explicitly configured
+        // an issuer domain — without it the challenge cannot be validated.
+        let dns_persist_enabled = state.config.server.dns_persist_issuer_domain.is_some();
+        let dns_types: &[&str] = if dns_persist_enabled {
+            &["http-01", "dns-01", "tls-alpn-01", "dns-persist-01"]
+        } else {
+            &["http-01", "dns-01", "tls-alpn-01"]
+        };
         let challenge_types: &[&str] = match id.r#type.as_str() {
-            "dns" => &["http-01", "dns-01", "tls-alpn-01"],
+            "dns" => dns_types,
             "ip" => &["http-01", "tls-alpn-01"],
             _ => &[],
         };

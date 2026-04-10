@@ -34,6 +34,7 @@ pub async fn get_authz(
     let challenges = db::challenges::list_by_authz(&state.db, &id).await?;
     let base = &state.config.base_url;
 
+    let issuer_domain = state.config.dns_persist_issuer_domain();
     let chall_jsons: Vec<_> = challenges
         .iter()
         .map(|c| {
@@ -41,8 +42,13 @@ pub async fn get_authz(
                 "type": c.r#type,
                 "url": format!("{base}/acme/chall/{}/{}", authz.id, c.r#type),
                 "status": c.status,
-                "token": c.token,
             });
+            // dns-persist-01 has no per-challenge token; expose the issuer domain instead.
+            if c.r#type == "dns-persist-01" {
+                obj["issuer-domain-names"] = json!([issuer_domain]);
+            } else {
+                obj["token"] = json!(c.token);
+            }
             if let Some(v) = c.validated {
                 obj["validated"] = json!(fmt_time(v));
             }

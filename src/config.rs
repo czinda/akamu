@@ -88,6 +88,10 @@ pub struct ServerConfig {
     /// Override to a high port for testing or non-standard deployments.
     #[serde(default = "default_http_validation_port")]
     pub http_validation_port: u16,
+    /// Issuer domain placed in the `issuer-domain-names` field of dns-persist-01
+    /// challenges and matched against TXT records.  When absent the host portion
+    /// of `base_url` is used.
+    pub dns_persist_issuer_domain: Option<String>,
 }
 
 /// Server-side TLS configuration.  Absent or `enabled = false` → plain HTTP (no change).
@@ -206,6 +210,24 @@ impl Config {
             .map_err(|e| format!("cannot read config file '{}': {}", path, e))?;
         toml::from_str(&content).map_err(|e| format!("config parse error: {}", e))
     }
+
+    /// Returns the issuer domain used for dns-persist-01 TXT record validation.
+    ///
+    /// Uses `server.dns_persist_issuer_domain` when explicitly configured; otherwise
+    /// extracts the host portion of `base_url` (stripping scheme and port).
+    pub fn dns_persist_issuer_domain(&self) -> String {
+        if let Some(ref d) = self.server.dns_persist_issuer_domain {
+            return d.clone();
+        }
+        // Extract host from base_url: strip scheme, then take up to first '/' or ':'
+        let without_scheme = self.base_url
+            .strip_prefix("https://")
+            .or_else(|| self.base_url.strip_prefix("http://"))
+            .unwrap_or(&self.base_url);
+        let host = without_scheme.split('/').next().unwrap_or(without_scheme);
+        let host = host.split(':').next().unwrap_or(host);
+        host.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -269,6 +291,39 @@ enabled = false
         assert!(cfg.server.caa_identities.is_empty());
         assert!(cfg.server.terms_of_service_url.is_none());
         assert!(cfg.server.website_url.is_none());
+        assert!(cfg.server.dns_persist_issuer_domain.is_none());
+    }
+
+    #[test]
+    fn dns_persist_issuer_domain_uses_explicit_field() {
+        let toml = format!("{}\n[server]\ndns_persist_issuer_domain = \"ca.example.org\"\n", minimal_toml());
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        assert_eq!(cfg.dns_persist_issuer_domain(), "ca.example.org");
+    }
+
+    #[test]
+    fn dns_persist_issuer_domain_falls_back_to_base_url_https() {
+        let cfg: Config = toml::from_str(minimal_toml()).unwrap();
+        // base_url = "https://acme.example.com" → host = "acme.example.com"
+        assert_eq!(cfg.dns_persist_issuer_domain(), "acme.example.com");
+    }
+
+    #[test]
+    fn dns_persist_issuer_domain_strips_port_from_base_url() {
+        let toml = r#"
+listen_addr = "127.0.0.1:8080"
+base_url = "https://acme.example.com:8443"
+[database]
+path = ":memory:"
+[ca]
+key_file = "/tmp/ca.key"
+cert_file = "/tmp/ca.crt"
+[mtc]
+log_path = "/dev/null"
+enabled = false
+"#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.dns_persist_issuer_domain(), "acme.example.com");
     }
 
     #[test]
