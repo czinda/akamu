@@ -643,6 +643,73 @@ async fn test_renewal_info() {
     assert!(ari_body["suggestedWindow"]["end"].as_str().is_some());
 }
 
+/// Renewal-info returns the explicitly-set renewal window (covers routes/renewal_info.rs:28).
+///
+/// Tests the `(Some(s), Some(e)) => (s, e)` match arm — triggered only when
+/// `db::certs::set_renewal_window` has been called before the endpoint is queried.
+#[tokio::test]
+async fn test_renewal_info_explicit_window() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let db = Arc::clone(&state.db);
+    let router = routes::build_router(Arc::clone(&state));
+    let domain = "ari-explicit.example";
+
+    // Create account
+    let key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    // Create order
+    let jws = key.jws_with_kid(&account_url, &nonce, &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": domain}]})));
+    let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
+    let nonce = nonce_header(&order_headers);
+
+    let order_id: String = db.call(|conn| {
+        Ok(conn.query_row(
+            "SELECT id FROM orders ORDER BY created DESC LIMIT 1", [], |r| r.get(0),
+        )?)
+    }).await.unwrap();
+
+    mark_order_ready(&db, &order_id).await;
+
+    // Finalize
+    let csr_der = make_csr_der(domain);
+    let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
+    let finalize_url = format!("{base_url}/acme/order/{order_id}/finalize");
+    let jws = key.jws_with_kid(&account_url, &nonce, &finalize_url,
+        Some(json!({"csr": csr_b64})));
+    let (status, final_body, _) =
+        post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
+    assert_eq!(status, StatusCode::OK, "finalize failed: {final_body}");
+
+    let cert_id: String = db.call(|conn| {
+        Ok(conn.query_row(
+            "SELECT id FROM certificates ORDER BY created DESC LIMIT 1", [], |r| r.get(0),
+        )?)
+    }).await.unwrap();
+
+    // Set an explicit renewal window on this certificate.
+    let window_start: i64 = 1_800_000_000; // 2027-01-15
+    let window_end: i64 = 1_800_086_400;   // 2027-01-16
+    db::certs::set_renewal_window(&db, &cert_id, window_start, window_end).await.unwrap();
+
+    // GET /acme/renewal-info/{cert_id} — must use the explicit window, not the computed default.
+    let (status, ari_body, _) = get(&router, &format!("/acme/renewal-info/{cert_id}")).await;
+    assert_eq!(status, StatusCode::OK, "renewal-info failed: {ari_body}");
+
+    let start_str = ari_body["suggestedWindow"]["start"].as_str().unwrap();
+    let end_str = ari_body["suggestedWindow"]["end"].as_str().unwrap();
+    // The explicit window timestamps encode to specific RFC 3339 strings.
+    assert!(start_str.starts_with("2027-"), "expected explicit 2027 start, got: {start_str}");
+    assert!(end_str.starts_with("2027-"), "expected explicit 2027 end, got: {end_str}");
+}
+
 #[tokio::test]
 async fn test_renewal_info_not_found() {
     let base_url = "https://acme.test";
