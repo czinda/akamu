@@ -201,3 +201,55 @@ pub(crate) fn fmt_time(unix: i64) -> String {
         gt.year, gt.month, gt.day, gt.hour, gt.minute, gt.second
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fmt_time_known_epoch() {
+        // Unix epoch = 1970-01-01T00:00:00Z
+        assert_eq!(fmt_time(0), "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn fmt_time_known_date() {
+        // 2024-01-01 00:00:00 UTC = 1704067200
+        assert_eq!(fmt_time(1_704_067_200), "2024-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn unix_now_is_positive() {
+        let t = unix_now();
+        assert!(t > 0, "unix_now() should return a positive Unix timestamp");
+    }
+
+    #[test]
+    fn require_payload_empty_returns_error() {
+        let result: Result<serde_json::Value, _> = require_payload(b"", "test-ctx");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AcmeError::BadRequest(msg) => {
+                assert!(msg.contains("test-ctx"));
+                assert!(msg.contains("required"));
+            }
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn require_payload_invalid_json_returns_error() {
+        let result: Result<serde_json::Value, _> = require_payload(b"not json", "test-ctx");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AcmeError::BadRequest(msg) => assert!(msg.contains("test-ctx")),
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn require_payload_valid_json() {
+        let result: Result<serde_json::Value, _> = require_payload(b"{\"key\":\"value\"}", "test-ctx");
+        assert!(result.is_ok());
+    }
+}
