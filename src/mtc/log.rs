@@ -178,4 +178,43 @@ mod tests {
         assert_eq!(idx2, 1);
         assert_eq!(tree_size(&shared).await.unwrap(), 2);
     }
+
+    #[tokio::test]
+    async fn open_existing_log_reopens_correctly() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("reopen.log").to_string_lossy().into_owned();
+        let algorithm = HashAlgorithm::Sha256;
+
+        // Create and populate a log.
+        {
+            let log = open_or_create(&path, algorithm).unwrap();
+            let shared = Arc::new(Mutex::new(log));
+            let cert_der = test_cert_der();
+            append_cert_to_log(&shared, cert_der, algorithm).await.unwrap();
+        }
+
+        // Re-open the existing file (covers the `DiskBackedLog::open` branch).
+        let log = open_or_create(&path, algorithm).unwrap();
+        let shared = Arc::new(Mutex::new(log));
+        assert_eq!(tree_size(&shared).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn compute_root_returns_hash() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("root.log").to_string_lossy().into_owned();
+        let algorithm = HashAlgorithm::Sha256;
+
+        let log = open_or_create(&path, algorithm).unwrap();
+        let shared = Arc::new(Mutex::new(log));
+
+        // Append a leaf so the tree is non-empty.
+        let cert_der = test_cert_der();
+        append_cert_to_log(&shared, cert_der, algorithm).await.unwrap();
+
+        let root = super::compute_root(&shared).await.unwrap();
+        assert!(!root.is_empty(), "root hash should be non-empty");
+        // SHA-256 root is 32 bytes.
+        assert_eq!(root.len(), 32);
+    }
 }
