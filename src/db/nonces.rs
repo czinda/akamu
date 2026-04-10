@@ -7,10 +7,8 @@ pub async fn insert(db: &Connection, nonce: &str) -> Result<(), AcmeError> {
     let nonce = nonce.to_string();
     let now = now_secs();
     db.call(move |conn| {
-        conn.execute(
-            "INSERT INTO nonces (nonce, created) VALUES (?1, ?2)",
-            rusqlite::params![nonce, now],
-        )?;
+        conn.prepare_cached("INSERT INTO nonces (nonce, created) VALUES (?1, ?2)")?
+            .execute(rusqlite::params![nonce, now])?;
         Ok(())
     })
     .await
@@ -22,10 +20,9 @@ pub async fn insert(db: &Connection, nonce: &str) -> Result<(), AcmeError> {
 pub async fn consume(db: &Connection, nonce: &str) -> Result<bool, AcmeError> {
     let nonce = nonce.to_string();
     db.call(move |conn| {
-        let n = conn.execute(
-            "DELETE FROM nonces WHERE nonce = ?1",
-            rusqlite::params![nonce],
-        )?;
+        let n = conn
+            .prepare_cached("DELETE FROM nonces WHERE nonce = ?1")?
+            .execute(rusqlite::params![nonce])?;
         Ok(n > 0)
     })
     .await
@@ -36,10 +33,9 @@ pub async fn consume(db: &Connection, nonce: &str) -> Result<bool, AcmeError> {
 pub async fn sweep_expired(db: &Connection, max_age_secs: i64) -> Result<u64, AcmeError> {
     let cutoff = now_secs().saturating_sub(max_age_secs);
     db.call(move |conn| {
-        let n = conn.execute(
-            "DELETE FROM nonces WHERE created < ?1",
-            rusqlite::params![cutoff],
-        )?;
+        let n = conn
+            .prepare_cached("DELETE FROM nonces WHERE created < ?1")?
+            .execute(rusqlite::params![cutoff])?;
         Ok(n as u64)
     })
     .await

@@ -25,30 +25,30 @@ fn row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<CertificateRow> {
 
 pub async fn insert(db: &Connection, row: CertificateRow) -> Result<(), AcmeError> {
     db.call(move |conn| {
-        conn.execute(
+        conn.prepare_cached(
             "INSERT INTO certificates
              (id, order_id, account_id, serial_number, status, der, pem,
               not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
               suggested_window_start, suggested_window_end)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
-            rusqlite::params![
-                row.id,
-                row.order_id,
-                row.account_id,
-                row.serial_number,
-                row.status,
-                row.der,
-                row.pem,
-                row.not_before,
-                row.not_after,
-                row.revoked_at,
-                row.revocation_reason,
-                row.mtc_log_index,
-                row.created,
-                row.suggested_window_start,
-                row.suggested_window_end,
-            ],
-        )?;
+        )?
+        .execute(rusqlite::params![
+            row.id,
+            row.order_id,
+            row.account_id,
+            row.serial_number,
+            row.status,
+            row.der,
+            row.pem,
+            row.not_before,
+            row.not_after,
+            row.revoked_at,
+            row.revocation_reason,
+            row.mtc_log_index,
+            row.created,
+            row.suggested_window_start,
+            row.suggested_window_end,
+        ])?;
         Ok(())
     })
     .await
@@ -58,7 +58,7 @@ pub async fn insert(db: &Connection, row: CertificateRow) -> Result<(), AcmeErro
 pub async fn get_by_id(db: &Connection, id: &str) -> Result<Option<CertificateRow>, AcmeError> {
     let id = id.to_string();
     db.call(move |conn| {
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT id, order_id, account_id, serial_number, status, der, pem,
              not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
              suggested_window_start, suggested_window_end
@@ -81,7 +81,7 @@ pub async fn get_by_serial(
 ) -> Result<Option<CertificateRow>, AcmeError> {
     let serial = serial.to_string();
     db.call(move |conn| {
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT id, order_id, account_id, serial_number, status, der, pem,
              not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
              suggested_window_start, suggested_window_end
@@ -107,11 +107,12 @@ pub async fn revoke(
 ) -> Result<bool, AcmeError> {
     let id = id.to_string();
     db.call(move |conn| {
-        let n = conn.execute(
-            "UPDATE certificates SET status = 'revoked', revoked_at = ?1, revocation_reason = ?2
+        let n = conn
+            .prepare_cached(
+                "UPDATE certificates SET status = 'revoked', revoked_at = ?1, revocation_reason = ?2
              WHERE id = ?3 AND status = 'valid'",
-            rusqlite::params![now, reason, id],
-        )?;
+            )?
+            .execute(rusqlite::params![now, reason, id])?;
         Ok(n > 0)
     })
     .await
@@ -122,10 +123,8 @@ pub async fn revoke(
 pub async fn set_mtc_log_index(db: &Connection, id: &str, index: i64) -> Result<(), AcmeError> {
     let id = id.to_string();
     db.call(move |conn| {
-        conn.execute(
-            "UPDATE certificates SET mtc_log_index = ?1 WHERE id = ?2",
-            rusqlite::params![index, id],
-        )?;
+        conn.prepare_cached("UPDATE certificates SET mtc_log_index = ?1 WHERE id = ?2")?
+            .execute(rusqlite::params![index, id])?;
         Ok(())
     })
     .await
@@ -148,11 +147,11 @@ pub async fn set_renewal_window(
     }
     let id = id.to_string();
     db.call(move |conn| {
-        conn.execute(
+        conn.prepare_cached(
             "UPDATE certificates SET suggested_window_start = ?1, suggested_window_end = ?2
              WHERE id = ?3",
-            rusqlite::params![start, end, id],
-        )?;
+        )?
+        .execute(rusqlite::params![start, end, id])?;
         Ok(())
     })
     .await
@@ -162,7 +161,7 @@ pub async fn set_renewal_window(
 /// List all revoked certificates (for CRL generation).
 pub async fn list_revoked(db: &Connection) -> Result<Vec<CertificateRow>, AcmeError> {
     db.call(move |conn| {
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT id, order_id, account_id, serial_number, status, der, pem,
              not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
              suggested_window_start, suggested_window_end
@@ -185,7 +184,7 @@ pub async fn list_valid_for_account(
 ) -> Result<Vec<CertificateRow>, AcmeError> {
     let account_id = account_id.to_string();
     db.call(move |conn| {
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT id, order_id, account_id, serial_number, status, der, pem,
              not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
              suggested_window_start, suggested_window_end

@@ -21,24 +21,24 @@ fn row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<OrderRow> {
 
 pub async fn insert(db: &Connection, row: OrderRow) -> Result<(), AcmeError> {
     db.call(move |conn| {
-        conn.execute(
+        conn.prepare_cached(
             "INSERT INTO orders (id, account_id, status, expires, identifiers,
              not_before, not_after, error, certificate_id, created, updated)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            rusqlite::params![
-                row.id,
-                row.account_id,
-                row.status,
-                row.expires,
-                row.identifiers,
-                row.not_before,
-                row.not_after,
-                row.error,
-                row.certificate_id,
-                row.created,
-                row.updated,
-            ],
-        )?;
+        )?
+        .execute(rusqlite::params![
+            row.id,
+            row.account_id,
+            row.status,
+            row.expires,
+            row.identifiers,
+            row.not_before,
+            row.not_after,
+            row.error,
+            row.certificate_id,
+            row.created,
+            row.updated,
+        ])?;
         Ok(())
     })
     .await
@@ -48,7 +48,7 @@ pub async fn insert(db: &Connection, row: OrderRow) -> Result<(), AcmeError> {
 pub async fn get_by_id(db: &Connection, id: &str) -> Result<Option<OrderRow>, AcmeError> {
     let id = id.to_string();
     db.call(move |conn| {
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT id, account_id, status, expires, identifiers,
              not_before, not_after, error, certificate_id, created, updated
              FROM orders WHERE id = ?1",
@@ -74,10 +74,8 @@ pub async fn update_status(
     let id = id.to_string();
     let status = status.to_string();
     db.call(move |conn| {
-        conn.execute(
-            "UPDATE orders SET status = ?1, error = ?2, updated = ?3 WHERE id = ?4",
-            rusqlite::params![status, error, now, id],
-        )?;
+        conn.prepare_cached("UPDATE orders SET status = ?1, error = ?2, updated = ?3 WHERE id = ?4")?
+            .execute(rusqlite::params![status, error, now, id])?;
         Ok(())
     })
     .await
@@ -93,10 +91,10 @@ pub async fn set_certificate(
     let id = id.to_string();
     let certificate_id = certificate_id.to_string();
     db.call(move |conn| {
-        conn.execute(
+        conn.prepare_cached(
             "UPDATE orders SET status = 'valid', certificate_id = ?1, updated = ?2 WHERE id = ?3",
-            rusqlite::params![certificate_id, now, id],
-        )?;
+        )?
+        .execute(rusqlite::params![certificate_id, now, id])?;
         Ok(())
     })
     .await
@@ -107,7 +105,7 @@ pub async fn set_certificate(
 pub async fn list_authz_ids(db: &Connection, order_id: &str) -> Result<Vec<String>, AcmeError> {
     let order_id = order_id.to_string();
     db.call(move |conn| {
-        let mut stmt = conn.prepare("SELECT id FROM authorizations WHERE order_id = ?1")?;
+        let mut stmt = conn.prepare_cached("SELECT id FROM authorizations WHERE order_id = ?1")?;
         let ids = stmt
             .query_map(rusqlite::params![order_id], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;

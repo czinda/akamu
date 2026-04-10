@@ -19,21 +19,21 @@ fn row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChallengeRow> {
 
 pub async fn insert(db: &Connection, row: ChallengeRow) -> Result<(), AcmeError> {
     db.call(move |conn| {
-        conn.execute(
+        conn.prepare_cached(
             "INSERT INTO challenges (id, authz_id, type, status, token, validated, error, created, updated)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            rusqlite::params![
-                row.id,
-                row.authz_id,
-                row.r#type,
-                row.status,
-                row.token,
-                row.validated,
-                row.error,
-                row.created,
-                row.updated,
-            ],
-        )?;
+        )?
+        .execute(rusqlite::params![
+            row.id,
+            row.authz_id,
+            row.r#type,
+            row.status,
+            row.token,
+            row.validated,
+            row.error,
+            row.created,
+            row.updated,
+        ])?;
         Ok(())
     })
     .await
@@ -43,7 +43,7 @@ pub async fn insert(db: &Connection, row: ChallengeRow) -> Result<(), AcmeError>
 pub async fn get_by_id(db: &Connection, id: &str) -> Result<Option<ChallengeRow>, AcmeError> {
     let id = id.to_string();
     db.call(move |conn| {
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT id, authz_id, type, status, token, validated, error, created, updated
              FROM challenges WHERE id = ?1",
         )?;
@@ -64,7 +64,7 @@ pub async fn list_by_authz(
 ) -> Result<Vec<ChallengeRow>, AcmeError> {
     let authz_id = authz_id.to_string();
     db.call(move |conn| {
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT id, authz_id, type, status, token, validated, error, created, updated
              FROM challenges WHERE authz_id = ?1",
         )?;
@@ -80,10 +80,10 @@ pub async fn list_by_authz(
 pub async fn set_processing(db: &Connection, id: &str, now: i64) -> Result<(), AcmeError> {
     let id = id.to_string();
     db.call(move |conn| {
-        conn.execute(
+        conn.prepare_cached(
             "UPDATE challenges SET status = 'processing', updated = ?1 WHERE id = ?2",
-            rusqlite::params![now, id],
-        )?;
+        )?
+        .execute(rusqlite::params![now, id])?;
         Ok(())
     })
     .await
@@ -93,10 +93,10 @@ pub async fn set_processing(db: &Connection, id: &str, now: i64) -> Result<(), A
 pub async fn set_valid(db: &Connection, id: &str, validated: i64) -> Result<(), AcmeError> {
     let id = id.to_string();
     db.call(move |conn| {
-        conn.execute(
+        conn.prepare_cached(
             "UPDATE challenges SET status = 'valid', validated = ?1, updated = ?1 WHERE id = ?2",
-            rusqlite::params![validated, id],
-        )?;
+        )?
+        .execute(rusqlite::params![validated, id])?;
         Ok(())
     })
     .await
@@ -111,10 +111,10 @@ pub async fn set_invalid(
 ) -> Result<(), AcmeError> {
     let id = id.to_string();
     db.call(move |conn| {
-        conn.execute(
+        conn.prepare_cached(
             "UPDATE challenges SET status = 'invalid', error = ?1, updated = ?2 WHERE id = ?3",
-            rusqlite::params![error, now, id],
-        )?;
+        )?
+        .execute(rusqlite::params![error, now, id])?;
         Ok(())
     })
     .await

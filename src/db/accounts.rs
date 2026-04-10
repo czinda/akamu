@@ -17,19 +17,19 @@ fn row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRow> {
 
 pub async fn insert(db: &Connection, row: AccountRow) -> Result<(), AcmeError> {
     db.call(move |conn| {
-        conn.execute(
+        conn.prepare_cached(
             "INSERT INTO accounts (id, status, contact, public_key, jwk_thumbprint, created, updated)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![
-                row.id,
-                row.status,
-                row.contact,
-                row.public_key,
-                row.jwk_thumbprint,
-                row.created,
-                row.updated,
-            ],
-        )?;
+        )?
+        .execute(rusqlite::params![
+            row.id,
+            row.status,
+            row.contact,
+            row.public_key,
+            row.jwk_thumbprint,
+            row.created,
+            row.updated,
+        ])?;
         Ok(())
     })
     .await
@@ -39,7 +39,7 @@ pub async fn insert(db: &Connection, row: AccountRow) -> Result<(), AcmeError> {
 pub async fn get_by_id(db: &Connection, id: &str) -> Result<Option<AccountRow>, AcmeError> {
     let id = id.to_string();
     db.call(move |conn| {
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated
              FROM accounts WHERE id = ?1",
         )?;
@@ -60,7 +60,7 @@ pub async fn get_by_thumbprint(
 ) -> Result<Option<AccountRow>, AcmeError> {
     let thumbprint = thumbprint.to_string();
     db.call(move |conn| {
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated
              FROM accounts WHERE jwk_thumbprint = ?1",
         )?;
@@ -83,10 +83,11 @@ pub async fn update_contact(
 ) -> Result<bool, AcmeError> {
     let id = id.to_string();
     db.call(move |conn| {
-        let n = conn.execute(
-            "UPDATE accounts SET contact = ?1, updated = ?2 WHERE id = ?3 AND status = 'valid'",
-            rusqlite::params![contact, now, id],
-        )?;
+        let n = conn
+            .prepare_cached(
+                "UPDATE accounts SET contact = ?1, updated = ?2 WHERE id = ?3 AND status = 'valid'",
+            )?
+            .execute(rusqlite::params![contact, now, id])?;
         Ok(n > 0)
     })
     .await
@@ -102,10 +103,9 @@ pub async fn update_status(
     let id = id.to_string();
     let status = status.to_string();
     db.call(move |conn| {
-        let n = conn.execute(
-            "UPDATE accounts SET status = ?1, updated = ?2 WHERE id = ?3",
-            rusqlite::params![status, now, id],
-        )?;
+        let n = conn
+            .prepare_cached("UPDATE accounts SET status = ?1, updated = ?2 WHERE id = ?3")?
+            .execute(rusqlite::params![status, now, id])?;
         Ok(n > 0)
     })
     .await
@@ -122,11 +122,12 @@ pub async fn update_key(
 ) -> Result<bool, AcmeError> {
     let id = id.to_string();
     db.call(move |conn| {
-        let n = conn.execute(
-            "UPDATE accounts SET public_key = ?1, jwk_thumbprint = ?2, updated = ?3
+        let n = conn
+            .prepare_cached(
+                "UPDATE accounts SET public_key = ?1, jwk_thumbprint = ?2, updated = ?3
              WHERE id = ?4 AND status = 'valid'",
-            rusqlite::params![public_key, jwk_thumbprint, now, id],
-        )?;
+            )?
+            .execute(rusqlite::params![public_key, jwk_thumbprint, now, id])?;
         Ok(n > 0)
     })
     .await

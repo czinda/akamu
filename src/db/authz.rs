@@ -19,22 +19,22 @@ fn row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuthorizationRow> {
 
 pub async fn insert(db: &Connection, row: AuthorizationRow) -> Result<(), AcmeError> {
     db.call(move |conn| {
-        conn.execute(
+        conn.prepare_cached(
             "INSERT INTO authorizations
              (id, order_id, account_id, status, identifier, expires, wildcard, created, updated)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            rusqlite::params![
-                row.id,
-                row.order_id,
-                row.account_id,
-                row.status,
-                row.identifier,
-                row.expires,
-                row.wildcard as i64,
-                row.created,
-                row.updated,
-            ],
-        )?;
+        )?
+        .execute(rusqlite::params![
+            row.id,
+            row.order_id,
+            row.account_id,
+            row.status,
+            row.identifier,
+            row.expires,
+            row.wildcard as i64,
+            row.created,
+            row.updated,
+        ])?;
         Ok(())
     })
     .await
@@ -44,7 +44,7 @@ pub async fn insert(db: &Connection, row: AuthorizationRow) -> Result<(), AcmeEr
 pub async fn get_by_id(db: &Connection, id: &str) -> Result<Option<AuthorizationRow>, AcmeError> {
     let id = id.to_string();
     db.call(move |conn| {
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT id, order_id, account_id, status, identifier, expires, wildcard, created, updated
              FROM authorizations WHERE id = ?1",
         )?;
@@ -65,7 +65,7 @@ pub async fn list_by_order(
 ) -> Result<Vec<AuthorizationRow>, AcmeError> {
     let order_id = order_id.to_string();
     db.call(move |conn| {
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT id, order_id, account_id, status, identifier, expires, wildcard, created, updated
              FROM authorizations WHERE order_id = ?1",
         )?;
@@ -87,10 +87,8 @@ pub async fn update_status(
     let id = id.to_string();
     let status = status.to_string();
     db.call(move |conn| {
-        conn.execute(
-            "UPDATE authorizations SET status = ?1, updated = ?2 WHERE id = ?3",
-            rusqlite::params![status, now, id],
-        )?;
+        conn.prepare_cached("UPDATE authorizations SET status = ?1, updated = ?2 WHERE id = ?3")?
+            .execute(rusqlite::params![status, now, id])?;
         Ok(())
     })
     .await
