@@ -261,8 +261,9 @@ mod tests {
     use super::*;
     use synta_certificate::{BackendPrivateKey, CsrBuilder, NameBuilder, PrivateKey as _,
         SubjectAlternativeNameBuilder, BasicConstraints};
+    use synta_certificate::csr::CertificationRequest;
     use synta_certificate::oids;
-    use synta::{Encoder, Encoding};
+    use synta::{Decoder, Encoder, Encoding};
     use synta::traits::Encode;
 
     fn make_csr_der(key: &BackendPrivateKey, domain: &str, include_bc_ca_true: bool) -> Vec<u8> {
@@ -502,6 +503,40 @@ mod tests {
         assert!(result.is_ok(), "rfc822Name SAN should be silently ignored: {result:?}");
         let validated = result.unwrap();
         assert!(validated.sans.is_empty(), "email SAN should be excluded from parsed SANs");
+    }
+
+    /// Covers lines 173-176: extract_csr_extensions when CSR has attributes but
+    /// none with the extensionRequest OID — the for loop completes without returning,
+    /// falling through to `Ok(Vec::new())`.
+    #[test]
+    fn extract_csr_extensions_with_non_extensionrequest_attribute() {
+        // Build a valid CSR that has an extensionRequest attribute.
+        let key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let csr_der = make_csr_der(&key, "example.com", false);
+
+        // extensionRequest OID in DER: 06 09 2A 86 48 86 F7 0D 01 09 0E
+        // Change the last byte (0x0E = extensionRequest) to 0x07 (challengePassword).
+        // Both OIDs have the same DER encoding length, so structure stays valid.
+        let ext_req_oid: &[u8] = &[0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x09, 0x0E];
+        let mut modified_der = csr_der.clone();
+        if let Some(pos) = modified_der.windows(ext_req_oid.len()).position(|w| w == ext_req_oid) {
+            modified_der[pos + ext_req_oid.len() - 1] = 0x07; // change to challengePassword OID
+        } else {
+            panic!("extensionRequest OID not found in CSR DER — test needs updating");
+        }
+
+        // Parse the modified DER. Signature will be invalid because CRI bytes changed,
+        // but extract_csr_extensions does not check signatures.
+        let mut decoder = Decoder::new(&modified_der, Encoding::Der);
+        let csr: CertificationRequest = decoder.decode().expect("modified CSR DER should still parse");
+
+        // Call the private function directly — accessible from child test module.
+        let result = super::extract_csr_extensions(&csr);
+        assert!(result.is_ok(), "expected Ok from extract_csr_extensions");
+        assert!(
+            result.unwrap().is_empty(),
+            "expected empty extensions when no extensionRequest attribute found"
+        );
     }
 
     #[test]
