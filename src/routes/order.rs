@@ -200,7 +200,8 @@ pub async fn get_order(
         .account_id
         .ok_or(AcmeError::Unauthorized("kid required".into()))?;
 
-    let order = db::orders::get_by_id(&state.db, &id)
+    // Fetch order and its authz IDs in one DB call.
+    let (order, authz_ids) = db::orders::get_with_authz_ids(&state.db, &id)
         .await?
         .ok_or(AcmeError::NotFound)?;
     if order.account_id != account_id {
@@ -209,7 +210,6 @@ pub async fn get_order(
         ));
     }
 
-    let authz_ids = db::orders::list_authz_ids(&state.db, &id).await?;
     let authz_urls: Vec<_> = authz_ids
         .iter()
         .map(|aid| format!("{}/acme/authz/{}", state.config.base_url, aid))

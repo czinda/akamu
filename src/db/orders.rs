@@ -74,8 +74,10 @@ pub async fn update_status(
     let id = id.to_string();
     let status = status.to_string();
     db.call(move |conn| {
-        conn.prepare_cached("UPDATE orders SET status = ?1, error = ?2, updated = ?3 WHERE id = ?4")?
-            .execute(rusqlite::params![status, error, now, id])?;
+        conn.prepare_cached(
+            "UPDATE orders SET status = ?1, error = ?2, updated = ?3 WHERE id = ?4",
+        )?
+        .execute(rusqlite::params![status, error, now, id])?;
         Ok(())
     })
     .await
@@ -96,6 +98,43 @@ pub async fn set_certificate(
         )?
         .execute(rusqlite::params![certificate_id, now, id])?;
         Ok(())
+    })
+    .await
+    .map_err(AcmeError::from)
+}
+
+/// Fetch an order and its authorization IDs in a single database call.
+///
+/// Returns `None` if no order with `order_id` exists.
+pub async fn get_with_authz_ids(
+    db: &Connection,
+    order_id: &str,
+) -> Result<Option<(OrderRow, Vec<String>)>, AcmeError> {
+    let id = order_id.to_string();
+    db.call(move |conn| {
+        let order = {
+            let mut stmt = conn.prepare_cached(
+                "SELECT id, account_id, status, expires, identifiers,
+                 not_before, not_after, error, certificate_id, created, updated
+                 FROM orders WHERE id = ?1",
+            )?;
+            let mut rows = stmt.query(rusqlite::params![id])?;
+            if let Some(row) = rows.next()? {
+                row_from(row)?
+            } else {
+                return Ok(None);
+            }
+        };
+        let authz_ids = {
+            let mut stmt =
+                conn.prepare_cached("SELECT id FROM authorizations WHERE order_id = ?1")?;
+            let ids = stmt
+                .query_map(rusqlite::params![id], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(stmt);
+            ids
+        };
+        Ok(Some((order, authz_ids)))
     })
     .await
     .map_err(AcmeError::from)
