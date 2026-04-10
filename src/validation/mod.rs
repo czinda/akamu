@@ -9,6 +9,7 @@ mod tls_alpn01;
 
 use std::sync::Arc;
 
+use rusqlite::OptionalExtension;
 use serde_json::json;
 
 use crate::db;
@@ -58,49 +59,76 @@ async fn dispatch(
 
 /// Handle a successful challenge validation.
 ///
+/// All state transitions (challenge → authz → order) run inside a single
+/// SQLite transaction so a partial failure cannot leave the DB inconsistent.
+///
 /// 1. Mark challenge as `valid`.
 /// 2. Mark the parent authorization as `valid`.
 /// 3. If all authorizations for the order are now `valid`, advance the order to `ready`.
 async fn on_valid(state: &AppState, challenge_id: &str, authz_id: &str, now: i64) {
-    if let Err(e) = db::challenges::set_valid(&state.db, challenge_id, now).await {
-        tracing::warn!("challenge {challenge_id}: set_valid failed: {e}");
-        return;
-    }
+    let challenge_id = challenge_id.to_string();
+    let authz_id = authz_id.to_string();
+    let authz_id_log = authz_id.clone();
 
-    if let Err(e) = db::authz::update_status(&state.db, authz_id, "valid", now).await {
-        tracing::warn!("authz {authz_id}: update_status valid failed: {e}");
-        return;
-    }
+    let result = state.db.call(move |conn| {
+        let tx = conn.transaction()?;
 
-    // Find the parent order so we can check whether all authzs are now valid.
-    let authz = match db::authz::get_by_id(&state.db, authz_id).await {
-        Ok(Some(a)) => a,
-        Ok(None) => {
-            tracing::warn!("authz {authz_id} not found after validation");
-            return;
+        // 1. Mark challenge valid.
+        tx.execute(
+            "UPDATE challenges SET status = 'valid', validated = ?1, updated = ?1 WHERE id = ?2",
+            rusqlite::params![now, challenge_id],
+        )?;
+
+        // 2. Mark authorization valid.
+        tx.execute(
+            "UPDATE authorizations SET status = 'valid', updated = ?1 WHERE id = ?2",
+            rusqlite::params![now, authz_id],
+        )?;
+
+        // 3. Find the parent order_id.
+        let order_id: Option<String> = tx
+            .query_row(
+                "SELECT order_id FROM authorizations WHERE id = ?1",
+                rusqlite::params![authz_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        let order_id = match order_id {
+            Some(id) => id,
+            None => {
+                // Authz disappeared (shouldn't happen, but be safe).
+                tx.commit()?;
+                return Ok(None);
+            }
+        };
+
+        // 4. Check whether all authzs for this order are now valid.
+        let pending_count: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM authorizations WHERE order_id = ?1 AND status != 'valid'",
+            rusqlite::params![order_id],
+            |row| row.get(0),
+        )?;
+
+        let all_valid = pending_count == 0;
+        if all_valid {
+            tx.execute(
+                "UPDATE orders SET status = 'ready', error = NULL, updated = ?1 WHERE id = ?2",
+                rusqlite::params![now, order_id],
+            )?;
         }
+
+        tx.commit()?;
+        Ok(Some((order_id, all_valid)))
+    }).await;
+
+    match result {
+        Ok(Some((order_id, true))) => {
+            tracing::info!("order {order_id} is now ready");
+        }
+        Ok(_) => {}
         Err(e) => {
-            tracing::warn!("authz {authz_id}: get_by_id failed: {e}");
-            return;
-        }
-    };
-
-    let order_authzs = match db::authz::list_by_order(&state.db, &authz.order_id).await {
-        Ok(list) => list,
-        Err(e) => {
-            tracing::warn!("order {}: list_by_order failed: {e}", authz.order_id);
-            return;
-        }
-    };
-
-    let all_valid = order_authzs.iter().all(|a| a.status == "valid");
-    if all_valid {
-        if let Err(e) =
-            db::orders::update_status(&state.db, &authz.order_id, "ready", None, now).await
-        {
-            tracing::warn!("order {}: set ready failed: {e}", authz.order_id);
-        } else {
-            tracing::info!("order {} is now ready", authz.order_id);
+            tracing::warn!("authz {authz_id_log}: on_valid transaction failed: {e}");
         }
     }
 }
@@ -136,12 +164,21 @@ async fn on_invalid(
     }
 
     // Mark the order invalid too.
-    if let Ok(Some(authz)) = db::authz::get_by_id(&state.db, authz_id).await {
-        if let Err(e) =
-            db::orders::update_status(&state.db, &authz.order_id, "invalid", None, now).await
-        {
-            tracing::warn!("order {}: set invalid failed: {e}", authz.order_id);
+    let authz = match db::authz::get_by_id(&state.db, authz_id).await {
+        Ok(Some(a)) => a,
+        Ok(None) => {
+            tracing::warn!("authz {authz_id} not found when marking order invalid");
+            return;
         }
+        Err(e) => {
+            tracing::warn!("authz {authz_id}: get_by_id failed when marking order invalid: {e}");
+            return;
+        }
+    };
+    if let Err(e) =
+        db::orders::update_status(&state.db, &authz.order_id, "invalid", None, now).await
+    {
+        tracing::warn!("order {}: set invalid failed: {e}", authz.order_id);
     }
 }
 
