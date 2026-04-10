@@ -49,3 +49,64 @@ fn now_secs() -> i64 {
         .unwrap_or_default()
         .as_secs() as i64
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    async fn open_db() -> Arc<Connection> {
+        Arc::new(crate::db::open(":memory:").await.unwrap())
+    }
+
+    #[tokio::test]
+    async fn insert_and_consume_nonce() {
+        let db = open_db().await;
+        insert(&db, "test-nonce-1").await.unwrap();
+
+        let consumed = consume(&db, "test-nonce-1").await.unwrap();
+        assert!(consumed, "should consume existing nonce");
+
+        // Second consume should return false (already deleted).
+        let again = consume(&db, "test-nonce-1").await.unwrap();
+        assert!(!again, "consuming same nonce twice should return false");
+    }
+
+    #[tokio::test]
+    async fn consume_nonexistent_nonce_returns_false() {
+        let db = open_db().await;
+        let result = consume(&db, "nonexistent-nonce").await.unwrap();
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn sweep_expired_removes_old_nonces() {
+        let db = open_db().await;
+
+        // Insert a nonce.
+        insert(&db, "old-nonce").await.unwrap();
+
+        // Use max_age_secs = -1 so the cutoff is now + 1 second (future), which
+        // means ALL nonces (created <= now) are considered "expired".
+        let deleted = sweep_expired(&db, -1).await.unwrap();
+        assert!(deleted >= 1, "should have deleted at least 1 nonce");
+
+        // The nonce should no longer be consumable.
+        let consumed = consume(&db, "old-nonce").await.unwrap();
+        assert!(!consumed, "nonce should have been swept");
+    }
+
+    #[tokio::test]
+    async fn sweep_expired_keeps_recent_nonces() {
+        let db = open_db().await;
+        insert(&db, "fresh-nonce").await.unwrap();
+
+        // max_age_secs = 3600 means anything created within the last hour is kept.
+        let deleted = sweep_expired(&db, 3600).await.unwrap();
+        assert_eq!(deleted, 0, "recent nonce should not be deleted");
+
+        // The nonce should still be consumable.
+        let consumed = consume(&db, "fresh-nonce").await.unwrap();
+        assert!(consumed);
+    }
+}
