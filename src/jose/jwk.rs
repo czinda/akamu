@@ -600,4 +600,17 @@ mod tests {
             other => panic!("expected BadRequest, got {other:?}"),
         }
     }
+
+    /// Covers jwk.rs line 215 — build_okp_spki `_` arm (unknown OKP prefix byte).
+    #[test]
+    fn build_okp_spki_unknown_prefix_returns_internal_error() {
+        // Mutate the Ed25519 prefix so that prefix[8] is neither 0x70 nor 0x71.
+        let mut bad_prefix = OKP_ED25519_SPKI_PREFIX.to_vec();
+        bad_prefix[8] = 0xFF; // invalid OKP type byte
+        let result = build_okp_spki(&[0u8; 32], &bad_prefix);
+        assert!(
+            matches!(result, Err(AcmeError::Internal(_))),
+            "expected Internal error for unknown OKP prefix, got {result:?}"
+        );
+    }
 }
