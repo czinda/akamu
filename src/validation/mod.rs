@@ -21,6 +21,7 @@ use crate::state::AppState;
 ///
 /// This function is intentionally infallible — all errors are recorded in the
 /// database rather than propagated.
+#[allow(clippy::too_many_arguments)]
 pub async fn validate_challenge(
     state: &Arc<AppState>,
     challenge_id: &str,
@@ -61,6 +62,7 @@ pub async fn validate_challenge(
 /// Dispatch to the correct validator based on challenge type.
 ///
 /// For `dns-persist-01`, `key_auth` carries the account URI (not a token·thumbprint).
+#[allow(clippy::too_many_arguments)]
 async fn dispatch(
     chall_type: &str,
     _id_type: &str,

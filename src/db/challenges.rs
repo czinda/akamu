@@ -69,7 +69,7 @@ pub async fn list_by_authz(
              FROM challenges WHERE authz_id = ?1",
         )?;
         let rows = stmt
-            .query_map(rusqlite::params![authz_id], |row| row_from(row))?
+            .query_map(rusqlite::params![authz_id], row_from)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     })

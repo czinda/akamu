@@ -70,7 +70,7 @@ pub async fn list_by_order(
              FROM authorizations WHERE order_id = ?1",
         )?;
         let rows = stmt
-            .query_map(rusqlite::params![order_id], |row| row_from(row))?
+            .query_map(rusqlite::params![order_id], row_from)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     })

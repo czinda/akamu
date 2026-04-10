@@ -42,9 +42,7 @@ pub static COMPOSITE_SCHEMES: &[SignatureScheme] = &[
 /// Returns `true` if `scheme` is a composite ML-DSA TLS signature scheme.
 pub fn is_composite(scheme: SignatureScheme) -> bool {
     if let SignatureScheme::Unknown(code) = scheme {
-        COMPOSITE_SCHEMES
-            .iter()
-            .any(|s| *s == SignatureScheme::Unknown(code))
+        COMPOSITE_SCHEMES.contains(&SignatureScheme::Unknown(code))
     } else {
         false
     }

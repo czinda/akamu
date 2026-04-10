@@ -23,11 +23,11 @@ use crate::error::AcmeError;
 /// Validate a dns-persist-01 challenge.
 ///
 /// * `domain`        — identifier value; any leading `*.` wildcard is stripped
-///                     before forming the DNS query.
+///   before forming the DNS query.
 /// * `account_uri`   — full ACME account URI (stored in the key_auth DB column).
 /// * `issuer_domain` — CA's configured issuer domain (from `Config::dns_persist_issuer_domain`).
 /// * `resolver_addr` — optional DNS resolver override (used in tests and split-horizon
-///                     deployments); `None` uses the system default resolver.
+///   deployments); `None` uses the system default resolver.
 pub async fn validate(
     domain: &str,
     account_uri: &str,
@@ -199,7 +199,11 @@ fn parse_persist_until(s: &str) -> Option<i64> {
     let minute: i64 = s[14..16].parse().ok()?;
     let second: i64 = s[17..19].parse().ok()?;
 
-    if month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 60
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
     // 60 for leap seconds
     {
         return None;

@@ -14,7 +14,7 @@ use crate::error::AcmeError;
 /// Validate a dns-01 challenge.
 ///
 /// * `domain`   — the identifier value; any leading `*.` wildcard is stripped
-///                before querying.
+///   before querying.
 /// * `key_auth` — `{token}.{jwk_thumbprint}`.
 pub async fn validate(domain: &str, key_auth: &str) -> Result<(), AcmeError> {
     let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());

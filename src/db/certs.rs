@@ -169,7 +169,7 @@ pub async fn list_revoked(db: &Connection) -> Result<Vec<CertificateRow>, AcmeEr
              FROM certificates WHERE status = 'revoked'",
         )?;
         let rows = stmt
-            .query_map([], |row| row_from(row))?
+            .query_map([], row_from)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     })
@@ -193,7 +193,7 @@ pub async fn list_valid_for_account(
              WHERE account_id = ?1 AND status = 'valid' AND not_after > ?2",
         )?;
         let rows = stmt
-            .query_map(rusqlite::params![account_id, now], |row| row_from(row))?
+            .query_map(rusqlite::params![account_id, now], row_from)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     })
