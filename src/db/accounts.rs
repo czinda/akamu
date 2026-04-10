@@ -132,3 +132,134 @@ pub async fn update_key(
     .await
     .map_err(AcmeError::from)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    async fn open_db() -> Arc<Connection> {
+        Arc::new(crate::db::open(":memory:").await.unwrap())
+    }
+
+    fn sample_account(id: &str) -> AccountRow {
+        AccountRow {
+            id: id.to_string(),
+            status: "valid".to_string(),
+            contact: None,
+            public_key: vec![0u8; 4],
+            jwk_thumbprint: format!("thumb-{id}"),
+            created: 1_700_000_000,
+            updated: 1_700_000_000,
+        }
+    }
+
+    #[tokio::test]
+    async fn insert_and_get_by_id() {
+        let db = open_db().await;
+        insert(&db, sample_account("acct-1")).await.unwrap();
+        let row = get_by_id(&db, "acct-1").await.unwrap().unwrap();
+        assert_eq!(row.id, "acct-1");
+        assert_eq!(row.status, "valid");
+    }
+
+    #[tokio::test]
+    async fn get_by_id_missing_returns_none() {
+        let db = open_db().await;
+        let result = get_by_id(&db, "nonexistent").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_by_thumbprint_finds_account() {
+        let db = open_db().await;
+        insert(&db, sample_account("acct-2")).await.unwrap();
+        let row = get_by_thumbprint(&db, "thumb-acct-2").await.unwrap().unwrap();
+        assert_eq!(row.id, "acct-2");
+    }
+
+    #[tokio::test]
+    async fn get_by_thumbprint_missing_returns_none() {
+        let db = open_db().await;
+        let result = get_by_thumbprint(&db, "nonexistent-thumb").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn update_contact_valid_account() {
+        let db = open_db().await;
+        insert(&db, sample_account("acct-3")).await.unwrap();
+
+        let changed = update_contact(&db, "acct-3", Some("[\"mailto:a@b.com\"]".into()), 1_700_000_001).await.unwrap();
+        assert!(changed, "update_contact should return true for valid account");
+
+        let row = get_by_id(&db, "acct-3").await.unwrap().unwrap();
+        assert_eq!(row.contact, Some("[\"mailto:a@b.com\"]".to_string()));
+    }
+
+    #[tokio::test]
+    async fn update_contact_nonexistent_returns_false() {
+        let db = open_db().await;
+        let changed = update_contact(&db, "nonexistent", None, 1_700_000_001).await.unwrap();
+        assert!(!changed);
+    }
+
+    #[tokio::test]
+    async fn update_contact_deactivated_returns_false() {
+        let db = open_db().await;
+        insert(&db, sample_account("acct-4")).await.unwrap();
+        update_status(&db, "acct-4", "deactivated", 1_700_000_001).await.unwrap();
+
+        let changed = update_contact(&db, "acct-4", None, 1_700_000_002).await.unwrap();
+        assert!(!changed, "update_contact should fail for non-valid account");
+    }
+
+    #[tokio::test]
+    async fn update_status_changes_status() {
+        let db = open_db().await;
+        insert(&db, sample_account("acct-5")).await.unwrap();
+
+        let changed = update_status(&db, "acct-5", "deactivated", 1_700_000_001).await.unwrap();
+        assert!(changed);
+
+        let row = get_by_id(&db, "acct-5").await.unwrap().unwrap();
+        assert_eq!(row.status, "deactivated");
+    }
+
+    #[tokio::test]
+    async fn update_status_nonexistent_returns_false() {
+        let db = open_db().await;
+        let changed = update_status(&db, "nonexistent", "revoked", 1_700_000_001).await.unwrap();
+        assert!(!changed);
+    }
+
+    #[tokio::test]
+    async fn update_key_valid_account() {
+        let db = open_db().await;
+        insert(&db, sample_account("acct-6")).await.unwrap();
+
+        let changed = update_key(&db, "acct-6", vec![0xDE, 0xAD, 0xBE, 0xEF], "new-thumb".into(), 1_700_000_001).await.unwrap();
+        assert!(changed);
+
+        let row = get_by_id(&db, "acct-6").await.unwrap().unwrap();
+        assert_eq!(row.jwk_thumbprint, "new-thumb");
+        assert_eq!(row.public_key, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
+    #[tokio::test]
+    async fn update_key_nonexistent_returns_false() {
+        let db = open_db().await;
+        let changed = update_key(&db, "nonexistent", vec![], "thumb".into(), 0).await.unwrap();
+        assert!(!changed);
+    }
+
+    #[tokio::test]
+    async fn update_key_deactivated_returns_false() {
+        let db = open_db().await;
+        insert(&db, sample_account("acct-7")).await.unwrap();
+        update_status(&db, "acct-7", "deactivated", 1_700_000_001).await.unwrap();
+
+        let changed = update_key(&db, "acct-7", vec![], "thumb".into(), 0).await.unwrap();
+        assert!(!changed, "update_key should fail for non-valid account");
+    }
+}

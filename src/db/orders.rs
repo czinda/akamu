@@ -117,3 +117,134 @@ pub async fn list_authz_ids(db: &Connection, order_id: &str) -> Result<Vec<Strin
     .await
     .map_err(AcmeError::from)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    use crate::db::schema::AccountRow;
+
+    async fn open_db() -> Arc<Connection> {
+        Arc::new(crate::db::open(":memory:").await.unwrap())
+    }
+
+    async fn insert_account(db: &Connection, account_id: &str) {
+        crate::db::accounts::insert(db, AccountRow {
+            id: account_id.to_string(),
+            status: "valid".to_string(),
+            contact: None,
+            public_key: vec![0u8; 4],
+            jwk_thumbprint: format!("thumb-{account_id}"),
+            created: 1_700_000_000,
+            updated: 1_700_000_000,
+        }).await.unwrap();
+    }
+
+    fn sample_order(id: &str, account_id: &str) -> OrderRow {
+        OrderRow {
+            id: id.to_string(),
+            account_id: account_id.to_string(),
+            status: "pending".to_string(),
+            expires: None,
+            identifiers: "[{\"type\":\"dns\",\"value\":\"example.com\"}]".to_string(),
+            not_before: None,
+            not_after: None,
+            error: None,
+            certificate_id: None,
+            created: 1_700_000_000,
+            updated: 1_700_000_000,
+        }
+    }
+
+    #[tokio::test]
+    async fn insert_and_get_by_id() {
+        let db = open_db().await;
+        insert_account(&db, "acct-1").await;
+        insert(&db, sample_order("order-1", "acct-1")).await.unwrap();
+
+        let row = get_by_id(&db, "order-1").await.unwrap().unwrap();
+        assert_eq!(row.id, "order-1");
+        assert_eq!(row.status, "pending");
+    }
+
+    #[tokio::test]
+    async fn get_by_id_missing_returns_none() {
+        let db = open_db().await;
+        let result = get_by_id(&db, "nonexistent").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn update_status_changes_status() {
+        let db = open_db().await;
+        insert_account(&db, "acct-2").await;
+        insert(&db, sample_order("order-2", "acct-2")).await.unwrap();
+
+        update_status(&db, "order-2", "ready", None, 1_700_000_001).await.unwrap();
+
+        let row = get_by_id(&db, "order-2").await.unwrap().unwrap();
+        assert_eq!(row.status, "ready");
+        assert!(row.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn update_status_with_error() {
+        let db = open_db().await;
+        insert_account(&db, "acct-3").await;
+        insert(&db, sample_order("order-3", "acct-3")).await.unwrap();
+
+        update_status(&db, "order-3", "invalid", Some("{\"type\":\"error\"}".to_string()), 1_700_000_001).await.unwrap();
+
+        let row = get_by_id(&db, "order-3").await.unwrap().unwrap();
+        assert_eq!(row.status, "invalid");
+        assert!(row.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn set_certificate_marks_valid() {
+        let db = open_db().await;
+        insert_account(&db, "acct-4").await;
+        insert(&db, sample_order("order-4", "acct-4")).await.unwrap();
+
+        set_certificate(&db, "order-4", "cert-xyz", 1_700_000_001).await.unwrap();
+
+        let row = get_by_id(&db, "order-4").await.unwrap().unwrap();
+        assert_eq!(row.status, "valid");
+        assert_eq!(row.certificate_id, Some("cert-xyz".to_string()));
+    }
+
+    #[tokio::test]
+    async fn list_authz_ids_empty_for_no_authzs() {
+        let db = open_db().await;
+        insert_account(&db, "acct-5").await;
+        insert(&db, sample_order("order-5", "acct-5")).await.unwrap();
+
+        let ids = list_authz_ids(&db, "order-5").await.unwrap();
+        assert!(ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_authz_ids_returns_authz_ids() {
+        use crate::db::schema::AuthorizationRow;
+
+        let db = open_db().await;
+        insert_account(&db, "acct-6").await;
+        insert(&db, sample_order("order-6", "acct-6")).await.unwrap();
+
+        crate::db::authz::insert(&db, AuthorizationRow {
+            id: "authz-a".to_string(),
+            order_id: "order-6".to_string(),
+            account_id: "acct-6".to_string(),
+            status: "pending".to_string(),
+            identifier: "{\"type\":\"dns\",\"value\":\"example.com\"}".to_string(),
+            expires: None,
+            wildcard: false,
+            created: 1_700_000_000,
+            updated: 1_700_000_000,
+        }).await.unwrap();
+
+        let ids = list_authz_ids(&db, "order-6").await.unwrap();
+        assert_eq!(ids, vec!["authz-a"]);
+    }
+}
