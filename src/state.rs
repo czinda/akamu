@@ -16,6 +16,15 @@ pub struct AppState {
     pub db: Arc<Connection>,
     pub ca: Arc<CaState>,
     pub mtc: Arc<MtcState>,
+    /// Present when `[tls]` is enabled and client auth is configured.
+    pub tls: Option<Arc<TlsState>>,
+}
+
+/// TLS client-auth state available to handlers for introspection.
+/// The heavy work (pre-parsed trust anchors via OwnedStore) lives inside
+/// `SyntaClientCertVerifier`, which is Arc-d inside the rustls `ServerConfig`.
+pub struct TlsState {
+    pub client_auth_config: crate::config::ClientAuthConfig,
 }
 
 /// CA key material and issuance policy.
