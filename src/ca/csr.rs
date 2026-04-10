@@ -503,4 +503,30 @@ mod tests {
         let validated = result.unwrap();
         assert!(validated.sans.is_empty(), "email SAN should be excluded from parsed SANs");
     }
+
+    #[test]
+    fn csr_with_basic_constraints_ca_false_is_accepted() {
+        // CSR with BasicConstraints present but cA=FALSE — should pass the cA check.
+        // This covers the closing braces of the inner `if bc.c_a...` block (lines 94-97)
+        // reached when BasicConstraints is decoded successfully but cA is not TRUE.
+        use synta_certificate::encode_basic_constraints;
+        let key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let spki_der = key.public_key().unwrap().spki_der().to_vec();
+        let name_der = NameBuilder::new().common_name("example.com").build().unwrap();
+        let san_der = SubjectAlternativeNameBuilder::new()
+            .dns_name("example.com")
+            .build()
+            .unwrap();
+        let bc = encode_basic_constraints(false, None).unwrap();
+        let signer = key.as_signer("sha256");
+        let csr_der = CsrBuilder::new()
+            .subject_name(&name_der)
+            .public_key_der(&spki_der)
+            .add_extension_oid(oids::SUBJECT_ALT_NAME, false, &san_der)
+            .add_extension_oid(oids::BASIC_CONSTRAINTS, false, &bc)
+            .sign(&signer)
+            .unwrap();
+        let result = validate_csr(&csr_der, &[("dns", "example.com")]);
+        assert!(result.is_ok(), "CSR with cA=FALSE BasicConstraints should be accepted: {result:?}");
+    }
 }
