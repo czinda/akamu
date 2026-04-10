@@ -1,0 +1,256 @@
+//! CSR (Certificate Signing Request) parsing and validation.
+//!
+//! Parses a PKCS #10 CSR (DER), verifies its self-signature, and checks
+//! that the requested identifiers match those authorised by the ACME order.
+
+use synta::traits::Encode;
+use synta::{Decoder, Encoder, Encoding};
+use synta_certificate::{
+    csr::CertificationRequest, general_name, oids, parse_general_names, BackendPublicKey,
+    BasicConstraints, Extension,
+};
+
+use crate::error::AcmeError;
+
+/// Parsed identifier from a CSR SAN extension.
+#[derive(Debug, Clone)]
+pub struct SanEntry {
+    /// `"dns"` or `"ip"`.
+    pub san_type: String,
+    /// Value as a string: DNS name or dotted-decimal / colon-hex IP address.
+    pub value: String,
+}
+
+/// A validated CSR ready for certificate issuance.
+pub struct ValidatedCsr {
+    /// SPKI DER from the CSR (for inclusion in the issued certificate).
+    pub spki_der: Vec<u8>,
+    /// Subject Name DER from the CSR.
+    pub subject_der: Vec<u8>,
+    /// Parsed SANs.
+    pub sans: Vec<SanEntry>,
+}
+
+/// Parse and validate a DER-encoded PKCS #10 CSR.
+///
+/// Checks:
+/// 1. Parses as a valid DER PKCS #10 structure.
+/// 2. CSR self-signature is valid.
+/// 3. No `BasicConstraints` with `cA=TRUE`.
+/// 4. `allowed_identifiers` and CSR SANs are identical sets (bidirectional).
+pub fn validate_csr(
+    csr_der: &[u8],
+    allowed_identifiers: &[(&str, &str)],
+) -> Result<ValidatedCsr, AcmeError> {
+    // 1. Parse the CSR.
+    let mut decoder = Decoder::new(csr_der, Encoding::Der);
+    let csr: CertificationRequest =
+        decoder.decode().map_err(|e| AcmeError::BadCsr(format!("parse: {e}")))?;
+
+    // 2. Re-encode CertificationRequestInfo → TBS bytes.
+    let mut enc = Encoder::new(Encoding::Der);
+    csr.certification_request_info
+        .encode(&mut enc)
+        .map_err(|e| AcmeError::BadCsr(format!("CRI encode: {e}")))?;
+    let cri_der = enc
+        .finish()
+        .map_err(|e| AcmeError::BadCsr(format!("CRI finish: {e}")))?;
+
+    // 3. Re-encode the AlgorithmIdentifier.
+    let mut enc = Encoder::new(Encoding::Der);
+    csr.signature_algorithm
+        .encode(&mut enc)
+        .map_err(|e| AcmeError::BadCsr(format!("AlgId encode: {e}")))?;
+    let sig_alg_der = enc
+        .finish()
+        .map_err(|e| AcmeError::BadCsr(format!("AlgId finish: {e}")))?;
+
+    // 4. Re-encode SubjectPublicKeyInfo.
+    let mut enc = Encoder::new(Encoding::Der);
+    csr.certification_request_info
+        .subject_pkinfo
+        .encode(&mut enc)
+        .map_err(|e| AcmeError::BadCsr(format!("SPKI encode: {e}")))?;
+    let spki_der = enc
+        .finish()
+        .map_err(|e| AcmeError::BadCsr(format!("SPKI finish: {e}")))?;
+
+    // 5. Verify self-signature.
+    //    BitStringRef::as_bytes() strips the unused-bits leading octet.
+    let sig_bytes = csr.signature.as_bytes();
+    let pub_key = BackendPublicKey::from_spki_der(spki_der.clone());
+    pub_key
+        .verify_signature(&cri_der, &sig_alg_der, sig_bytes)
+        .map_err(|e| AcmeError::BadCsr(format!("signature invalid: {e}")))?;
+
+    // 6. Extract X.509 extensions from the extensionRequest attribute.
+    let extensions = extract_csr_extensions(&csr)?;
+
+    // 7. Reject CSRs that assert cA=TRUE in BasicConstraints.
+    if let Some(bc_bytes) = find_ext_value(&extensions, oids::BASIC_CONSTRAINTS) {
+        let mut bc_dec = Decoder::new(&bc_bytes, Encoding::Der);
+        if let Ok(bc) = bc_dec.decode::<BasicConstraints>() {
+            if bc.c_a.map(|b| b.0).unwrap_or(false) {
+                return Err(AcmeError::BadCsr("cA=TRUE not allowed in end-entity CSR".into()));
+            }
+        }
+    }
+
+    // 8. Parse Subject Alternative Names.
+    let mut sans: Vec<SanEntry> = Vec::new();
+    if let Some(san_bytes) = find_ext_value(&extensions, oids::SUBJECT_ALT_NAME) {
+        for (tag, content) in parse_general_names(&san_bytes) {
+            match tag {
+                general_name::DNS_NAME => {
+                    let name = String::from_utf8(content)
+                        .map_err(|_| AcmeError::BadCsr("SAN dNSName is not valid UTF-8".into()))?;
+                    sans.push(SanEntry { san_type: "dns".into(), value: name });
+                }
+                general_name::IP_ADDRESS => {
+                    let ip = bytes_to_ip_string(&content)
+                        .ok_or_else(|| AcmeError::BadCsr("SAN iPAddress invalid length".into()))?;
+                    sans.push(SanEntry { san_type: "ip".into(), value: ip });
+                }
+                _ => {} // rfc822Name, URI, etc. — ignored for ACME
+            }
+        }
+    }
+
+    // 9. Bidirectional check: CSR SANs == allowed_identifiers (as sets).
+    for san in &sans {
+        if !allowed_identifiers
+            .iter()
+            .any(|(t, v)| *t == san.san_type.as_str() && *v == san.value.as_str())
+        {
+            return Err(AcmeError::BadCsr(format!(
+                "SAN {}:{} not authorised by order",
+                san.san_type, san.value
+            )));
+        }
+    }
+    for (t, v) in allowed_identifiers {
+        if !sans.iter().any(|s| s.san_type == *t && s.value == *v) {
+            return Err(AcmeError::BadCsr(format!(
+                "order identifier {t}:{v} missing from CSR SANs"
+            )));
+        }
+    }
+
+    // 10. Re-encode subject Name DER.
+    let mut enc = Encoder::new(Encoding::Der);
+    csr.certification_request_info
+        .subject
+        .encode(&mut enc)
+        .map_err(|e| AcmeError::BadCsr(format!("subject encode: {e}")))?;
+    let subject_der = enc
+        .finish()
+        .map_err(|e| AcmeError::BadCsr(format!("subject finish: {e}")))?;
+
+    Ok(ValidatedCsr { spki_der, subject_der, sans })
+}
+
+// ── Internal helpers ──────────────────────────────────────────────────────────
+
+/// Extracted extension (OID arc components + raw extension value DER bytes).
+struct CsrExt {
+    oid_arcs: Vec<u32>,
+    /// Raw DER of the extension value (content inside the OCTET STRING).
+    value_der: Vec<u8>,
+}
+
+/// Walk the CSR attributes and collect all extensions from the
+/// `extensionRequest` attribute (OID 1.2.840.113549.1.9.14).
+fn extract_csr_extensions<'a>(csr: &CertificationRequest<'a>) -> Result<Vec<CsrExt>, AcmeError> {
+    let Some(attributes) = &csr.certification_request_info.attributes else {
+        return Ok(Vec::new());
+    };
+    for attr in attributes.elements() {
+        if attr.attr_type.components() == oids::PKCS9_EXTENSION_REQUEST {
+            // attr_values is SET OF ANY; the single element is SEQUENCE OF Extension.
+            if let Some(raw) = attr.attr_values.elements().first() {
+                return decode_extension_sequence(raw.0);
+            }
+        }
+    }
+    Ok(Vec::new())
+}
+
+/// Decode a DER-encoded `SEQUENCE OF Extension` into `CsrExt` pairs.
+fn decode_extension_sequence(seq_der: &[u8]) -> Result<Vec<CsrExt>, AcmeError> {
+    let content = strip_sequence(seq_der)
+        .ok_or_else(|| AcmeError::BadCsr("extensionRequest value is not a valid SEQUENCE".into()))?;
+    let mut pos = 0;
+    let mut result = Vec::new();
+    while pos < content.len() {
+        let (hlen, vlen) = tlv_header(content, pos)
+            .ok_or_else(|| AcmeError::BadCsr("truncated Extension TLV in CSR".into()))?;
+        let ext_der = &content[pos..pos + hlen + vlen];
+        pos += hlen + vlen;
+
+        let mut dec = Decoder::new(ext_der, Encoding::Der);
+        let ext = dec
+            .decode::<Extension>()
+            .map_err(|e| AcmeError::BadCsr(format!("Extension decode: {e}")))?;
+        result.push(CsrExt {
+            oid_arcs: ext.extn_id.components().to_vec(),
+            value_der: ext.extn_value.as_bytes().to_vec(),
+        });
+    }
+    Ok(result)
+}
+
+/// Return the value DER for the first extension whose OID matches `oid`.
+fn find_ext_value(exts: &[CsrExt], oid: &[u32]) -> Option<Vec<u8>> {
+    exts.iter()
+        .find(|e| e.oid_arcs.as_slice() == oid)
+        .map(|e| e.value_der.clone())
+}
+
+/// Skip the outer SEQUENCE TLV header and return the content bytes.
+fn strip_sequence(der: &[u8]) -> Option<&[u8]> {
+    if der.first()? != &0x30 {
+        return None;
+    }
+    let (hlen, vlen) = tlv_header(der, 0)?;
+    Some(&der[hlen..hlen + vlen])
+}
+
+/// Return `(header_bytes, value_bytes)` for the TLV starting at `der[pos]`.
+fn tlv_header(der: &[u8], pos: usize) -> Option<(usize, usize)> {
+    let d = &der[pos..];
+    if d.len() < 2 {
+        return None;
+    }
+    let mut i = 1usize; // skip tag byte
+    let vlen = if d[i] < 0x80 {
+        let l = d[i] as usize;
+        i += 1;
+        l
+    } else {
+        let num_bytes = (d[i] & 0x7f) as usize;
+        i += 1;
+        if d.len() < i + num_bytes {
+            return None;
+        }
+        let mut l = 0usize;
+        for k in 0..num_bytes {
+            l = (l << 8) | d[i + k] as usize;
+        }
+        i += num_bytes;
+        l
+    };
+    Some((i, vlen))
+}
+
+/// Convert 4 (IPv4) or 16 (IPv6) raw bytes to a string.
+fn bytes_to_ip_string(bytes: &[u8]) -> Option<String> {
+    match bytes.len() {
+        4 => Some(format!("{}.{}.{}.{}", bytes[0], bytes[1], bytes[2], bytes[3])),
+        16 => {
+            let mut octets = [0u8; 16];
+            octets.copy_from_slice(bytes);
+            Some(std::net::Ipv6Addr::from(octets).to_string())
+        }
+        _ => None,
+    }
+}
