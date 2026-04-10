@@ -123,43 +123,49 @@ pub async fn new_order(
             .db
             .call(move |conn| {
                 let tx = conn.transaction()?;
-                tx.execute(
+                tx.prepare_cached(
                     "INSERT INTO orders
                      (id, account_id, status, expires, identifiers,
                       not_before, not_after, error, certificate_id, created, updated)
                      VALUES (?1, ?2, 'pending', ?3, ?4, NULL, NULL, NULL, NULL, ?5, ?5)",
-                    rusqlite::params![
-                        order_id_clone,
-                        account_id_clone,
-                        expiry,
-                        identifiers_json,
-                        now
-                    ],
-                )?;
+                )?
+                .execute(rusqlite::params![
+                    order_id_clone,
+                    account_id_clone,
+                    expiry,
+                    identifiers_json,
+                    now
+                ])?;
                 for plan in &authz_plans {
-                    tx.execute(
+                    tx.prepare_cached(
                         "INSERT INTO authorizations
                          (id, order_id, account_id, status, identifier, expires,
                           wildcard, created, updated)
                          VALUES (?1, ?2, ?3, 'pending', ?4, ?5, ?6, ?7, ?7)",
-                        rusqlite::params![
-                            plan.authz_id,
-                            order_id_clone,
-                            account_id_clone,
-                            plan.identifier_json,
-                            authz_expiry,
-                            plan.wildcard as i64,
-                            now
-                        ],
-                    )?;
+                    )?
+                    .execute(rusqlite::params![
+                        plan.authz_id,
+                        order_id_clone,
+                        account_id_clone,
+                        plan.identifier_json,
+                        authz_expiry,
+                        plan.wildcard as i64,
+                        now
+                    ])?;
                     for (chall_id, chall_type) in &plan.challenges {
-                        tx.execute(
+                        tx.prepare_cached(
                             "INSERT INTO challenges
                              (id, authz_id, type, status, token, validated,
                               error, created, updated)
                              VALUES (?1, ?2, ?3, 'pending', ?4, NULL, NULL, ?5, ?5)",
-                            rusqlite::params![chall_id, plan.authz_id, chall_type, plan.token, now],
-                        )?;
+                        )?
+                        .execute(rusqlite::params![
+                            chall_id,
+                            plan.authz_id,
+                            chall_type,
+                            plan.token,
+                            now
+                        ])?;
                     }
                 }
                 tx.commit()?;

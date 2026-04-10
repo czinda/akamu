@@ -99,33 +99,34 @@ pub async fn finalize_order(
         .db
         .call(move |conn| {
             let tx = conn.transaction()?;
-            tx.execute(
+            tx.prepare_cached(
                 "INSERT INTO certificates
                  (id, order_id, account_id, serial_number, status, der, pem,
                   not_before, not_after, revoked_at, revocation_reason,
                   mtc_log_index, created, suggested_window_start, suggested_window_end)
                  VALUES (?1, ?2, ?3, ?4, 'valid', ?5, ?6, ?7, ?8,
                          NULL, NULL, NULL, ?9, NULL, NULL)",
-                rusqlite::params![
-                    cert_id,
-                    order_id_clone,
-                    acct_id,
-                    serial,
-                    cert_der,
-                    cert_pem,
-                    not_before,
-                    not_after,
-                    now,
-                ],
-            )?;
-            tx.execute(
+            )?
+            .execute(rusqlite::params![
+                cert_id,
+                order_id_clone,
+                acct_id,
+                serial,
+                cert_der,
+                cert_pem,
+                not_before,
+                not_after,
+                now,
+            ])?;
+            tx.prepare_cached(
                 "UPDATE orders SET status = 'valid', certificate_id = ?1, updated = ?2
                  WHERE id = ?3",
-                rusqlite::params![cert_id, now, order_id_clone],
-            )?;
+            )?
+            .execute(rusqlite::params![cert_id, now, order_id_clone])?;
             // Fetch authz IDs within the same db.call to avoid a separate round-trip.
             // drop(stmt) before tx.commit() so the borrow of tx is released.
-            let mut stmt = tx.prepare("SELECT id FROM authorizations WHERE order_id = ?1")?;
+            let mut stmt =
+                tx.prepare_cached("SELECT id FROM authorizations WHERE order_id = ?1")?;
             let ids: Vec<String> = stmt
                 .query_map(rusqlite::params![order_id_clone], |row| {
                     row.get::<_, String>(0)
