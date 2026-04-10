@@ -104,3 +104,66 @@ fn extract_serial_hex(cert_der: &[u8]) -> Result<String, AcmeError> {
     let hex: String = serial_bytes.iter().map(|b| format!("{b:02x}")).collect();
     Ok(hex)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use synta_certificate::{BackendPrivateKey, CertificateBuilder, NameBuilder, PrivateKey as _,
+        SubjectAlternativeNameBuilder, encode_basic_constraints, encode_key_usage,
+        encode_subject_key_identifier, encode_authority_key_identifier, KeyIdMethod,
+        default_key_id_hasher, KEY_USAGE_DIGITAL_SIGNATURE, oids, parse_time};
+    use synta_certificate::ExtendedKeyUsageBuilder;
+    use synta::Integer;
+    use crate::ca::init::unix_to_generalized_time;
+
+    fn make_cert_der() -> Vec<u8> {
+        let ca_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let ca_spki = ca_key.public_key().unwrap().spki_der().to_vec();
+        let name_der = NameBuilder::new().common_name("Test").build().unwrap();
+        let hasher = default_key_id_hasher();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        let not_before = parse_time(&unix_to_generalized_time(now)).unwrap();
+        let not_after = parse_time(&unix_to_generalized_time(now + 86400)).unwrap();
+        let bc = encode_basic_constraints(false, None).unwrap();
+        let ku = encode_key_usage(1u16 << KEY_USAGE_DIGITAL_SIGNATURE).unwrap();
+        let eku = ExtendedKeyUsageBuilder::new().server_auth().build().unwrap();
+        let ski = encode_subject_key_identifier(&ca_spki, KeyIdMethod::Rfc5280Sha1, &hasher).unwrap();
+        let aki = encode_authority_key_identifier(&ca_spki, KeyIdMethod::Rfc5280Sha1, &hasher).unwrap();
+        let san_der = SubjectAlternativeNameBuilder::new().dns_name("test.example.com").build().unwrap();
+        let signer = ca_key.as_signer("sha256");
+        CertificateBuilder::new()
+            .issuer_name(&name_der)
+            .subject_name(&name_der)
+            .public_key_der(&ca_spki)
+            .serial_number(Integer::from_i64(0x12345678))
+            .not_valid_before(not_before)
+            .not_valid_after(not_after)
+            .add_extension_oid(oids::BASIC_CONSTRAINTS, false, &bc)
+            .add_extension_oid(oids::KEY_USAGE, true, &ku)
+            .add_extension_oid(oids::EXTENDED_KEY_USAGE, false, &eku)
+            .add_extension_oid(oids::SUBJECT_KEY_IDENTIFIER, false, &ski)
+            .add_extension_oid(oids::AUTHORITY_KEY_IDENTIFIER, false, &aki)
+            .add_extension_oid(oids::SUBJECT_ALT_NAME, false, &san_der)
+            .sign(&signer)
+            .unwrap()
+    }
+
+    #[test]
+    fn extract_serial_hex_valid_cert() {
+        let cert_der = make_cert_der();
+        let hex = extract_serial_hex(&cert_der).unwrap();
+        // Serial 0x12345678 = "12345678"
+        assert_eq!(hex, "12345678");
+    }
+
+    #[test]
+    fn extract_serial_hex_invalid_der_returns_error() {
+        let result = extract_serial_hex(b"not a certificate");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AcmeError::BadRequest(msg) => assert!(msg.contains("certificate parse")),
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+}
