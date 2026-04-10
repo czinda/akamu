@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::db;
-use crate::db::schema::{AuthorizationRow, ChallengeRow, OrderRow};
+use crate::db::schema::OrderRow;
 use crate::error::AcmeError;
 use crate::state::AppState;
 
@@ -66,74 +66,89 @@ pub async fn new_order(
         json!({"type": id.r#type, "value": id.value})
     }).collect::<Vec<_>>()).unwrap();
 
-    db::orders::insert(
-        &state.db,
-        OrderRow {
-            id: order_id.clone(),
-            account_id: account_id.clone(),
-            status: "pending".into(),
-            expires: Some(expiry),
-            identifiers: identifiers_json,
-            not_before: None,
-            not_after: None,
-            error: None,
-            certificate_id: None,
-            created: now,
-            updated: now,
-        },
-    )
-    .await?;
+    // Build all the rows before entering the DB call so we don't need to
+    // cross an await boundary inside the transaction closure.
+    struct AuthzPlan {
+        authz_id: String,
+        identifier_json: String,
+        wildcard: bool,
+        challenges: Vec<(String, String)>, // (challenge_id, type)
+        token: String,
+    }
 
-    // Create one authorization per identifier.
-    let mut authz_urls = Vec::new();
+    let mut authz_plans: Vec<AuthzPlan> = Vec::new();
+    let mut authz_urls: Vec<String> = Vec::new();
+
     for id in &payload.identifiers {
         let authz_id = uuid::Uuid::new_v4().to_string();
-        let identifier_json = serde_json::to_string(&json!({
-            "type": id.r#type, "value": id.value
-        })).unwrap();
-
-        db::authz::insert(
-            &state.db,
-            AuthorizationRow {
-                id: authz_id.clone(),
-                order_id: order_id.clone(),
-                account_id: account_id.clone(),
-                status: "pending".into(),
-                identifier: identifier_json,
-                expires: Some(authz_expiry),
-                wildcard: id.value.starts_with("*."),
-                created: now,
-                updated: now,
-            },
-        )
-        .await?;
-
-        // Create http-01, dns-01, (and for DNS: tls-alpn-01) challenges.
+        let identifier_json =
+            serde_json::to_string(&json!({"type": id.r#type, "value": id.value})).unwrap();
         let token = gen_token();
         let challenge_types: &[&str] = match id.r#type.as_str() {
             "dns" => &["http-01", "dns-01", "tls-alpn-01"],
             "ip" => &["http-01", "tls-alpn-01"],
             _ => &[],
         };
-        for chall_type in challenge_types {
-            db::challenges::insert(
-                &state.db,
-                ChallengeRow {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    authz_id: authz_id.clone(),
-                    r#type: chall_type.to_string(),
-                    status: "pending".into(),
-                    token: token.clone(),
-                    validated: None,
-                    error: None,
-                    created: now,
-                    updated: now,
-                },
-            )
-            .await?;
-        }
-
+        let challenges = challenge_types
+            .iter()
+            .map(|&t| (uuid::Uuid::new_v4().to_string(), t.to_string()))
+            .collect();
         authz_urls.push(format!("{}/acme/authz/{}", state.config.base_url, authz_id));
+        authz_plans.push(AuthzPlan {
+            authz_id,
+            identifier_json,
+            wildcard: id.value.starts_with("*."),
+            challenges,
+            token,
+        });
+    }
+
+    // Write everything inside a single transaction so a partial failure
+    // cannot leave orphaned orders, authorizations, or challenges.
+    {
+        let order_id_clone = order_id.clone();
+        let account_id_clone = account_id.clone();
+        state
+            .db
+            .call(move |conn| {
+                let tx = conn.transaction()?;
+                tx.execute(
+                    "INSERT INTO orders
+                     (id, account_id, status, expires, identifiers,
+                      not_before, not_after, error, certificate_id, created, updated)
+                     VALUES (?1, ?2, 'pending', ?3, ?4, NULL, NULL, NULL, NULL, ?5, ?5)",
+                    rusqlite::params![
+                        order_id_clone, account_id_clone, expiry, identifiers_json, now
+                    ],
+                )?;
+                for plan in &authz_plans {
+                    tx.execute(
+                        "INSERT INTO authorizations
+                         (id, order_id, account_id, status, identifier, expires,
+                          wildcard, created, updated)
+                         VALUES (?1, ?2, ?3, 'pending', ?4, ?5, ?6, ?7, ?7)",
+                        rusqlite::params![
+                            plan.authz_id, order_id_clone, account_id_clone,
+                            plan.identifier_json, authz_expiry, plan.wildcard as i64, now
+                        ],
+                    )?;
+                    for (chall_id, chall_type) in &plan.challenges {
+                        tx.execute(
+                            "INSERT INTO challenges
+                             (id, authz_id, type, status, token, validated,
+                              error, created, updated)
+                             VALUES (?1, ?2, ?3, 'pending', ?4, NULL, NULL, ?5, ?5)",
+                            rusqlite::params![
+                                chall_id, plan.authz_id, chall_type, plan.token, now
+                            ],
+                        )?;
+                    }
+                }
+                tx.commit()?;
+                Ok(())
+            })
+            .await
+            .map_err(AcmeError::from)?;
     }
 
     let base = &state.config.base_url;
