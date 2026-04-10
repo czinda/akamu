@@ -424,4 +424,150 @@ mod tests {
             None
         }
     }
+
+    #[test]
+    fn decode_payload_empty_returns_empty_vec() {
+        let jws = JwsFlattened {
+            protected: String::new(),
+            payload: String::new(),
+            signature: String::new(),
+        };
+        let result = jws.decode_payload().unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn decode_payload_non_empty() {
+        let jws = JwsFlattened {
+            protected: String::new(),
+            payload: URL_SAFE_NO_PAD.encode(b"{\"key\":\"value\"}"),
+            signature: String::new(),
+        };
+        let result = jws.decode_payload().unwrap();
+        assert_eq!(result, b"{\"key\":\"value\"}");
+    }
+
+    #[test]
+    fn decode_payload_invalid_base64_returns_error() {
+        let jws = JwsFlattened {
+            protected: String::new(),
+            payload: "!!!invalid!!!".to_string(),
+            signature: String::new(),
+        };
+        assert!(jws.decode_payload().is_err());
+    }
+
+    #[test]
+    fn p1363_to_der_wrong_length_returns_error() {
+        // ES256 expects 64 bytes (32+32), provide only 32.
+        let short_sig = vec![0u8; 32];
+        let result = p1363_to_der(&short_sig, 32);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AcmeError::BadRequest(msg) => assert!(msg.contains("wrong for half-size")),
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn p1363_to_der_all_zero_valid() {
+        // Zero signature bytes are valid P1363 input (mathematically nonsense, but structurally valid).
+        let sig = vec![0u8; 64]; // 32+32 for ES256
+        let result = p1363_to_der(&sig, 32);
+        assert!(result.is_ok());
+        let der = result.unwrap();
+        // Should start with SEQUENCE tag 0x30.
+        assert_eq!(der[0], 0x30);
+    }
+
+    #[test]
+    fn encode_asn1_integer_high_bit_needs_pad() {
+        // 0x80 needs zero-padding: result should be 02 02 00 80
+        let result = encode_asn1_integer(&[0x80]);
+        assert_eq!(result, vec![0x02, 0x02, 0x00, 0x80]);
+    }
+
+    #[test]
+    fn encode_asn1_integer_no_pad_needed() {
+        // 0x7f does not need padding: result should be 02 01 7f
+        let result = encode_asn1_integer(&[0x7f]);
+        assert_eq!(result, vec![0x02, 0x01, 0x7f]);
+    }
+
+    #[test]
+    fn encode_asn1_length_short_form() {
+        let mut buf = Vec::new();
+        encode_asn1_length(&mut buf, 127);
+        assert_eq!(buf, vec![0x7f]);
+    }
+
+    #[test]
+    fn encode_asn1_length_two_byte_form() {
+        let mut buf = Vec::new();
+        encode_asn1_length(&mut buf, 128);
+        assert_eq!(buf, vec![0x81, 0x80]);
+
+        let mut buf = Vec::new();
+        encode_asn1_length(&mut buf, 255);
+        assert_eq!(buf, vec![0x81, 0xff]);
+    }
+
+    #[test]
+    fn encode_asn1_length_three_byte_form() {
+        let mut buf = Vec::new();
+        encode_asn1_length(&mut buf, 256);
+        assert_eq!(buf, vec![0x82, 0x01, 0x00]);
+
+        let mut buf = Vec::new();
+        encode_asn1_length(&mut buf, 0x1234);
+        assert_eq!(buf, vec![0x82, 0x12, 0x34]);
+    }
+
+    #[test]
+    fn verify_unsupported_algorithm_returns_error() {
+        let key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let spki_der = key.public_key().unwrap().spki_der().to_vec();
+
+        let hdr = r#"{"alg":"BOGUS","nonce":"n","url":"https://acme.test/","kid":"https://acme.test/account/1"}"#;
+        let protected = URL_SAFE_NO_PAD.encode(hdr.as_bytes());
+        let jws = JwsFlattened {
+            protected,
+            payload: URL_SAFE_NO_PAD.encode(b"{}"),
+            signature: URL_SAFE_NO_PAD.encode(&[0u8; 64]),
+        };
+        let result = jws.verify(&spki_der);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AcmeError::BadSignatureAlgorithm(_) => {}
+            other => panic!("expected BadSignatureAlgorithm, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_bad_protected_base64_returns_error() {
+        let key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let spki_der = key.public_key().unwrap().spki_der().to_vec();
+
+        let jws = JwsFlattened {
+            protected: "!!!not base64!!!".to_string(),
+            payload: String::new(),
+            signature: String::new(),
+        };
+        assert!(jws.verify(&spki_der).is_err());
+    }
+
+    #[test]
+    fn verify_bad_signature_base64_returns_error() {
+        let key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let spki_der = key.public_key().unwrap().spki_der().to_vec();
+
+        let hdr = r#"{"alg":"ES256","nonce":"n","url":"https://acme.test/","kid":"https://acme.test/account/1"}"#;
+        let protected = URL_SAFE_NO_PAD.encode(hdr.as_bytes());
+        let jws = JwsFlattened {
+            protected,
+            payload: String::new(),
+            signature: "!!!not base64!!!".to_string(),
+        };
+        assert!(jws.verify(&spki_der).is_err());
+    }
 }
