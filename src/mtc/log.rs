@@ -23,12 +23,21 @@ use crate::error::AcmeError;
 pub type SharedLog = Arc<Mutex<DiskBackedLog>>;
 
 /// Open an existing MTC log file, or create a new one if none exists.
+///
+/// Uses a try-create-first strategy to eliminate the TOCTOU race that a
+/// `exists()` → `open/create` sequence would introduce: we attempt to create
+/// the log, and if that fails (because the file already exists), we open it.
+///
+/// Note: concurrent calls on the **same path** from different processes are
+/// still not supported — the caller is responsible for ensuring mutual
+/// exclusion at that level (e.g. via a file lock or single-process guarantee).
 pub fn open_or_create(path: &str, algorithm: HashAlgorithm) -> Result<DiskBackedLog, AcmeError> {
-    if std::path::Path::new(path).exists() {
-        DiskBackedLog::open(path).map_err(|e| AcmeError::Mtc(format!("open MTC log: {e}")))
-    } else {
-        DiskBackedLog::create(path, algorithm)
-            .map_err(|e| AcmeError::Mtc(format!("create MTC log: {e}")))
+    match DiskBackedLog::create(path, algorithm) {
+        Ok(log) => Ok(log),
+        Err(_) => {
+            // Creation failed — assume the file already exists and open it.
+            DiskBackedLog::open(path).map_err(|e| AcmeError::Mtc(format!("open MTC log: {e}")))
+        }
     }
 }
 
