@@ -74,6 +74,12 @@ synta-mtc = { path = "/home/abokovoy/src/upstream/synta/synta-mtc", features = [
 tokio = { version = "1", features = ["full", "test-util"] }
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
+# Independent ACME client used for external protocol-compatibility tests.
+instant-acme = "0.4"
+# Hyper 0.14 (plain-HTTP connector) — needed to supply a custom HttpClient to
+# instant-acme 0.4, whose DefaultClient only supports HTTPS.
+# Aliased to avoid colliding with the hyper 1.x in [dependencies].
+hyper-14 = { version = "0.14", package = "hyper", features = ["client", "http1", "tcp"] }
 
 [patch.crates-io]
 # Use the same rust-openssl fork as synta-certificate so that both crates see

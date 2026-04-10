@@ -49,8 +49,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/acme/authz/{id}", post(authz::get_authz))
         // Challenges
         .route("/acme/chall/{authz_id}/{type}", post(challenge::respond_challenge))
-        // Certificates
-        .route("/acme/cert/{id}", get(certificate::download_cert))
+        // Certificates — GET for plain clients; POST for RFC 8555 POST-as-GET clients
+        .route("/acme/cert/{id}", get(certificate::download_cert).post(certificate::download_cert_post))
         // Revocation
         .route("/acme/revoke-cert", post(revoke::revoke_cert))
         // Key change
