@@ -2003,6 +2003,40 @@ async fn test_finalize_ip_san() {
     assert_eq!(body["status"].as_str(), Some("valid"), "order should be valid after IP finalize");
 }
 
+/// Deactivating an account and then trying to create a new order — covers routes/order.rs:44.
+#[tokio::test]
+async fn test_new_order_with_deactivated_account() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let router = routes::build_router(Arc::clone(&state));
+
+    let key = TestKey::generate();
+
+    // Create the account.
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (status, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    // Deactivate the account.
+    let acct_path = account_url.strip_prefix(base_url).unwrap();
+    let jws = key.jws_with_kid(&account_url, &nonce, &account_url,
+        Some(json!({"status": "deactivated"})));
+    let (status, body, headers) = post_acme(&router, acct_path, jws).await;
+    assert_eq!(status, StatusCode::OK, "deactivate failed: {body}");
+    assert_eq!(body["status"].as_str(), Some("deactivated"));
+    let nonce = nonce_header(&headers);
+
+    // Attempt to create a new order — should be rejected because account is deactivated.
+    let jws = key.jws_with_kid(&account_url, &nonce, &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": "deactivated.test"}]})));
+    let (status, body, _) = post_acme(&router, "/acme/new-order", jws).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "expected 401 for deactivated account: {body}");
+}
+
 /// Finalize a certificate when OCSP and CRL URLs are configured — covers ca/issue.rs lines 145-158.
 #[tokio::test]
 async fn test_finalize_with_aia_and_cdp() {
