@@ -12,7 +12,6 @@ use serde::Deserialize;
 
 use crate::ca;
 use crate::db;
-use crate::db::schema::CertificateRow;
 use crate::error::AcmeError;
 use crate::state::AppState;
 
@@ -79,31 +78,45 @@ pub async fn finalize_order(
 
     let now = unix_now();
 
-    // Persist the certificate.
-    db::certs::insert(
-        &state.db,
-        CertificateRow {
-            id: issued.id.clone(),
-            order_id: id.clone(),
-            account_id: account_id.clone(),
-            serial_number: issued.serial_hex.clone(),
-            status: "valid".into(),
-            der: issued.cert_der.clone(),
-            pem: issued.cert_pem.clone(),
-            not_before: issued.not_before,
-            not_after: issued.not_after,
-            revoked_at: None,
-            revocation_reason: None,
-            mtc_log_index: None,
-            created: now,
-            suggested_window_start: None,
-            suggested_window_end: None,
-        },
-    )
-    .await?;
+    // Persist the certificate and link it to the order atomically so that a
+    // crash between the two writes cannot leave the DB inconsistent.
+    {
+        let cert_id = issued.id.clone();
+        let order_id_clone = id.clone();
+        let acct_id = account_id.clone();
+        let serial = issued.serial_hex.clone();
+        let cert_der = issued.cert_der.clone();
+        let cert_pem = issued.cert_pem.clone();
+        let not_before = issued.not_before;
+        let not_after = issued.not_after;
 
-    // Link certificate to order.
-    db::orders::set_certificate(&state.db, &id, &issued.id, now).await?;
+        state
+            .db
+            .call(move |conn| {
+                let tx = conn.transaction()?;
+                tx.execute(
+                    "INSERT INTO certificates
+                     (id, order_id, account_id, serial_number, status, der, pem,
+                      not_before, not_after, revoked_at, revocation_reason,
+                      mtc_log_index, created, suggested_window_start, suggested_window_end)
+                     VALUES (?1, ?2, ?3, ?4, 'valid', ?5, ?6, ?7, ?8,
+                             NULL, NULL, NULL, ?9, NULL, NULL)",
+                    rusqlite::params![
+                        cert_id, order_id_clone, acct_id, serial,
+                        cert_der, cert_pem, not_before, not_after, now,
+                    ],
+                )?;
+                tx.execute(
+                    "UPDATE orders SET status = 'valid', certificate_id = ?1, updated = ?2
+                     WHERE id = ?3",
+                    rusqlite::params![cert_id, now, order_id_clone],
+                )?;
+                tx.commit()?;
+                Ok(())
+            })
+            .await
+            .map_err(AcmeError::from)?;
+    }
 
     // Optionally append to the MTC log.
     if state.mtc.is_enabled() {
@@ -116,10 +129,16 @@ pub async fn finalize_order(
             tokio::spawn(async move {
                 match crate::mtc::log::append_cert_to_log(&log, cert_der, algorithm).await {
                     Ok(index) => {
-                        let _ = db::certs::set_mtc_log_index(&db, &cert_id, index as i64).await;
+                        if let Err(e) =
+                            db::certs::set_mtc_log_index(&db, &cert_id, index as i64).await
+                        {
+                            tracing::warn!(
+                                "cert {cert_id}: MTC log index {index} not saved to DB: {e}"
+                            );
+                        }
                     }
                     Err(e) => {
-                        tracing::warn!("MTC log append failed: {e}");
+                        tracing::warn!("MTC log append failed for cert {cert_id}: {e}");
                     }
                 }
             });
