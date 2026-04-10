@@ -136,7 +136,7 @@ fn generate(config: &CaConfig) -> Result<(BackendPrivateKey, Vec<u8>), AcmeError
 }
 
 /// Generate a `BackendPrivateKey` using the synta-certificate crypto backend.
-fn generate_backend_key(key_type: &str) -> Result<BackendPrivateKey, AcmeError> {
+pub(crate) fn generate_backend_key(key_type: &str) -> Result<BackendPrivateKey, AcmeError> {
     let result = match key_type {
         "ec:P-256" | "P-256" => BackendPrivateKey::generate_ec("P-256"),
         "ec:P-384" | "P-384" => BackendPrivateKey::generate_ec("P-384"),

@@ -7,11 +7,12 @@ use synta_certificate::{
     default_key_id_hasher, der_to_pem, encode_authority_key_identifier,
     encode_basic_constraints, encode_key_usage, encode_subject_key_identifier,
     AuthorityInformationAccessBuilder, CRLDistributionPointsBuilder, Certificate,
-    CertificateBuilder, ExtendedKeyUsageBuilder, KeyIdMethod, PrivateKey,
+    CertificateBuilder, ExtendedKeyUsageBuilder, KeyIdMethod, NameBuilder, PrivateKey,
     SubjectAlternativeNameBuilder, KEY_USAGE_DIGITAL_SIGNATURE, oids,
 };
 
 use crate::error::AcmeError;
+use crate::state::CaState;
 
 use super::csr::ValidatedCsr;
 use super::init::unix_to_generalized_time;
@@ -217,6 +218,104 @@ fn ip_string_to_bytes(s: &str) -> Option<Vec<u8>> {
         Ok(IpAddr::V6(v6)) => Some(v6.octets().to_vec()),
         Err(_) => None,
     }
+}
+
+/// Issue a server TLS certificate for Akāmu itself (bootstrap / self-hosted TLS).
+///
+/// The certificate is signed by the Akāmu CA so that any client trusting the CA
+/// will also trust the TLS connection without extra configuration.
+///
+/// Extensions: SAN dNSName=`server_name`, BasicConstraints CA:FALSE,
+/// KeyUsage digitalSignature, ExtendedKeyUsage serverAuth, SKI, AKI.
+/// Validity: `ca.validity_days` days (same as subscriber certs).
+pub fn sign_server_cert(
+    server_name: &str,
+    server_key: &synta_certificate::BackendPrivateKey,
+    ca: &CaState,
+) -> Result<Vec<u8>, AcmeError> {
+    // Extract CA subject name for the issuer field.
+    let ca_name_der = extract_ca_subject_der(&ca.cert_der)?;
+
+    // Server public key SPKI.
+    let spki_der = server_key
+        .public_key()
+        .map_err(|e| AcmeError::Crypto(format!("server public key: {e}")))?
+        .spki_der()
+        .to_vec();
+
+    // CA public key for AKI.
+    let ca_spki_der = ca.key
+        .public_key()
+        .map_err(|e| AcmeError::Crypto(format!("CA public key for AKI: {e}")))?
+        .spki_der()
+        .to_vec();
+
+    // Random 16-byte positive serial.
+    let mut serial_bytes = [0u8; 16];
+    getrandom::getrandom(&mut serial_bytes)
+        .map_err(|e| AcmeError::Internal(format!("random serial: {e}")))?;
+    serial_bytes[0] &= 0x7f;
+    let serial = synta::Integer::from_bytes(&serial_bytes);
+
+    // Validity window.
+    let now = unix_now();
+    let not_before_str = unix_to_generalized_time(now);
+    let not_after_str = unix_to_generalized_time(now + ca.validity_days as i64 * 86400);
+    let not_before = synta_certificate::parse_time(&not_before_str)
+        .map_err(|e| AcmeError::Builder(format!("notBefore: {e}")))?;
+    let not_after = synta_certificate::parse_time(&not_after_str)
+        .map_err(|e| AcmeError::Builder(format!("notAfter: {e}")))?;
+
+    // Subject: CN=server_name.
+    let subject_der = NameBuilder::new()
+        .common_name(server_name)
+        .build()
+        .map_err(|e| AcmeError::Builder(format!("subject name: {e}")))?;
+
+    // Extensions.
+    let hasher = default_key_id_hasher();
+
+    let bc_der = encode_basic_constraints(false, None)
+        .ok_or_else(|| AcmeError::Builder("BasicConstraints".into()))?;
+
+    let ku_der = encode_key_usage(1u16 << KEY_USAGE_DIGITAL_SIGNATURE)
+        .ok_or_else(|| AcmeError::Builder("KeyUsage".into()))?;
+
+    let eku_der = ExtendedKeyUsageBuilder::new()
+        .server_auth()
+        .build()
+        .map_err(|e| AcmeError::Builder(format!("EKU: {e}")))?;
+
+    let ski_der =
+        encode_subject_key_identifier(&spki_der, KeyIdMethod::Rfc5280Sha1, &hasher)
+            .ok_or_else(|| AcmeError::Builder("SKI".into()))?;
+
+    let aki_der =
+        encode_authority_key_identifier(&ca_spki_der, KeyIdMethod::Rfc5280Sha1, &hasher)
+            .ok_or_else(|| AcmeError::Builder("AKI".into()))?;
+
+    let san_der = SubjectAlternativeNameBuilder::new()
+        .dns_name(server_name)
+        .build()
+        .map_err(|e| AcmeError::Builder(format!("SAN: {e}")))?;
+
+    // Sign with the CA key.
+    let signer = ca.key.as_signer(&ca.hash_alg);
+    CertificateBuilder::new()
+        .issuer_name(&ca_name_der)
+        .subject_name(&subject_der)
+        .public_key_der(&spki_der)
+        .serial_number(serial)
+        .not_valid_before(not_before)
+        .not_valid_after(not_after)
+        .add_extension_oid(oids::BASIC_CONSTRAINTS, false, &bc_der)
+        .add_extension_oid(oids::KEY_USAGE, true, &ku_der)
+        .add_extension_oid(oids::EXTENDED_KEY_USAGE, false, &eku_der)
+        .add_extension_oid(oids::SUBJECT_KEY_IDENTIFIER, false, &ski_der)
+        .add_extension_oid(oids::AUTHORITY_KEY_IDENTIFIER, false, &aki_der)
+        .add_extension_oid(oids::SUBJECT_ALT_NAME, false, &san_der)
+        .sign(&signer)
+        .map_err(|e| AcmeError::Builder(format!("sign server cert: {e}")))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
