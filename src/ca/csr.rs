@@ -185,6 +185,9 @@ fn decode_extension_sequence(seq_der: &[u8]) -> Result<Vec<CsrExt>, AcmeError> {
     while pos < content.len() {
         let (hlen, vlen) = tlv_header(content, pos)
             .ok_or_else(|| AcmeError::BadCsr("truncated Extension TLV in CSR".into()))?;
+        if pos + hlen + vlen > content.len() {
+            return Err(AcmeError::BadCsr("Extension TLV value truncated in CSR".into()));
+        }
         let ext_der = &content[pos..pos + hlen + vlen];
         pos += hlen + vlen;
 
@@ -230,7 +233,7 @@ fn tlv_header(der: &[u8], pos: usize) -> Option<(usize, usize)> {
     } else {
         let num_bytes = (d[i] & 0x7f) as usize;
         i += 1;
-        if d.len() < i + num_bytes {
+        if num_bytes == 0 || num_bytes > (usize::BITS / 8) as usize || d.len() < i + num_bytes {
             return None;
         }
         let mut l = 0usize;
