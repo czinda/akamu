@@ -186,7 +186,7 @@ impl IntoResponse for AcmeError {
         let mut resp = (status, Json(body)).into_response();
         resp.headers_mut().insert(
             axum::http::header::CONTENT_TYPE,
-            "application/problem+json".parse().unwrap(),
+            axum::http::HeaderValue::from_static("application/problem+json"),
         );
         resp
     }
