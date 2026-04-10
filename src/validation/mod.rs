@@ -33,8 +33,13 @@ pub async fn validate_challenge(
 ) {
     let http_port = state.config.server.http_validation_port;
     let issuer_domain = state.config.dns_persist_issuer_domain();
-    let result =
-        dispatch(chall_type, id_type, id_value, key_auth, token, http_port, &issuer_domain).await;
+    let dns_resolver_addr = state.config.server.dns_resolver_addr
+        .as_deref()
+        .and_then(|s| s.parse::<std::net::SocketAddr>().ok());
+    let result = dispatch(
+        chall_type, id_type, id_value, key_auth, token,
+        http_port, &issuer_domain, dns_resolver_addr,
+    ).await;
 
     let now = unix_now();
     match result {
@@ -54,12 +59,15 @@ async fn dispatch(
     token: &str,
     http_port: u16,
     issuer_domain: &str,
+    dns_resolver_addr: Option<std::net::SocketAddr>,
 ) -> Result<(), AcmeError> {
     match chall_type {
         "http-01" => http01::validate(id_value, token, key_auth, http_port).await,
         "dns-01" => dns01::validate(id_value, key_auth).await,
         "tls-alpn-01" => tls_alpn01::validate(id_value, key_auth).await,
-        "dns-persist-01" => dns_persist_01::validate(id_value, key_auth, issuer_domain).await,
+        "dns-persist-01" => {
+            dns_persist_01::validate(id_value, key_auth, issuer_domain, dns_resolver_addr).await
+        }
         other => Err(AcmeError::IncorrectResponse(format!(
             "unsupported challenge type: {other}"
         ))),
@@ -280,7 +288,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_unsupported_type_returns_error() {
         let result =
-            dispatch("bogus-type", "dns", "example.com", "key-auth", "token", 80, "acme.test")
+            dispatch("bogus-type", "dns", "example.com", "key-auth", "token", 80, "acme.test", None)
                 .await;
         assert!(result.is_err());
         match result.unwrap_err() {

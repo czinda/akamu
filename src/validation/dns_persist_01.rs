@@ -15,7 +15,7 @@
 //!   "<issuer-domain>; accounturi=<uri>[; policy=wildcard][; persistUntil=<ISO8601Z>]"
 //! ```
 
-use hickory_resolver::config::{ResolverConfig, ResolverOpts};
+use hickory_resolver::config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts};
 use hickory_resolver::TokioAsyncResolver;
 
 use crate::error::AcmeError;
@@ -26,12 +26,22 @@ use crate::error::AcmeError;
 ///                     before forming the DNS query.
 /// * `account_uri`   — full ACME account URI (stored in the key_auth DB column).
 /// * `issuer_domain` — CA's configured issuer domain (from `Config::dns_persist_issuer_domain`).
+/// * `resolver_addr` — optional DNS resolver override (used in tests and split-horizon
+///                     deployments); `None` uses the system default resolver.
 pub async fn validate(
     domain: &str,
     account_uri: &str,
     issuer_domain: &str,
+    resolver_addr: Option<std::net::SocketAddr>,
 ) -> Result<(), AcmeError> {
-    let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
+    let resolver = match resolver_addr {
+        Some(addr) => {
+            let mut config = ResolverConfig::new();
+            config.add_name_server(NameServerConfig::new(addr, Protocol::Udp));
+            TokioAsyncResolver::tokio(config, ResolverOpts::default())
+        }
+        None => TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default()),
+    };
     validate_with_resolver(domain, account_uri, issuer_domain, resolver).await
 }
 
@@ -533,7 +543,7 @@ mod tests {
     #[tokio::test]
     async fn validate_nonexistent_domain_returns_dns_error() {
         let result =
-            validate("nonexistent.acme-test-invalid.invalid", "uri", "issuer").await;
+            validate("nonexistent.acme-test-invalid.invalid", "uri", "issuer", None).await;
         assert!(result.is_err());
     }
 }

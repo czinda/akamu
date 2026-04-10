@@ -92,6 +92,11 @@ pub struct ServerConfig {
     /// challenges and matched against TXT records.  When absent the host portion
     /// of `base_url` is used.
     pub dns_persist_issuer_domain: Option<String>,
+    /// Override the DNS resolver used for challenge validation (dns-01,
+    /// dns-persist-01).  Format: `"ip:port"`, e.g. `"127.0.0.1:5353"`.
+    /// When absent the system default resolver is used.
+    /// Useful for testing and for split-horizon DNS deployments.
+    pub dns_resolver_addr: Option<String>,
 }
 
 /// Server-side TLS configuration.  Absent or `enabled = false` → plain HTTP (no change).
