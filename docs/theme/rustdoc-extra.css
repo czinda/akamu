@@ -1,0 +1,133 @@
+/* =============================================================================
+   Synta Documentation — rustdoc theme integration
+   Aligns rustdoc's visual style with docs/theme/synta.css.
+   Loaded via RUSTDOCFLAGS="--extend-css docs/theme/rustdoc-extra.css" and
+   appended after rustdoc's own theme CSS, so normal specificity wins.
+
+   Rustdoc 1.76+ sets data-theme on <html> (documentElement) via JS:
+     document.documentElement.setAttribute("data-theme", name)
+   The bare [data-theme="..."] attribute selector matches it without a tag.
+   :root covers the initial render before JS has run (defaults to light).
+   ============================================================================= */
+
+/* ── Font scale ──────────────────────────────────────────────────────────────── */
+/*
+ * Rustdoc is embedded in an iframe whose viewport width equals the mdBook
+ * content area (page width minus sidebar ≈ 83 % of full page width).
+ * mdBook uses clamp(20px, 1.2vw, 26px) on :root relative to the full page.
+ * To produce the same effective size relative to the iframe viewport:
+ *   1.2 / 0.83 ≈ 1.45vw  →  rounded up to 1.5vw for a comfortable match.
+ * Rustdoc sets body { font: 1rem/1.5 … } so all rem-based sizes scale with
+ * this root value.
+ */
+html {
+    font-size: clamp(16px, 1.5vw, 26px);
+}
+
+/* ── Font stack ──────────────────────────────────────────────────────────────── */
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+code, pre, .code-header, kbd {
+    font-family: "JetBrains Mono", "Fira Code", "Cascadia Code",
+                 ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas,
+                 "Liberation Mono", monospace !important;
+}
+
+/* ── Light theme (also :root for initial render before JS sets data-theme) ───── */
+/* Palette from synta.css .light: bg=#f8fafc fg=#0f172a links=#1d4ed8          */
+
+:root,
+[data-theme="light"] {
+    --main-background-color:              #f8fafc;
+    --main-color:                         #0f172a;
+    --sidebar-background-color:           #f1f5f9;
+    --sidebar-foreground:                 #334155;
+    --sidebar-current-item:               #1d4ed8;
+    --link-color:                         #1d4ed8;
+    --code-color:                         #be185d;
+    --code-block-background-color:        #f1f5f9;
+    --table-alter-row-background-color:   #f8fafc;
+    --button-background-color:            #ffffff;
+    --stab-background-color:              #f0f9ff;
+    --stab-code-color:                    #0f172a;
+    --source-sidebar-background:          #f1f5f9;
+    --source-sidebar-transform-color:     #0f172a;
+    /* Syntax highlighting */
+    --code-highlight-kw-color:            #7c3aed;
+    --code-highlight-kw-2-color:          #1d4ed8;
+    --code-highlight-lifetime-color:      #d97706;
+    --code-highlight-prelude-color:       #1d4ed8;
+    --code-highlight-prelude-val-color:   #be185d;
+    --code-highlight-number-color:        #15803d;
+    --code-highlight-string-color:        #15803d;
+    --code-highlight-literal-color:       #be185d;
+    --code-highlight-attribute-color:     #be185d;
+    --code-highlight-self-color:          #be185d;
+    --code-highlight-macro-color:         #0e7490;
+    --code-highlight-question-mark-color: #d97706;
+    --code-highlight-comment-color:       #64748b;
+    --code-highlight-doc-comment-color:   #475569;
+}
+
+/* ── Dark theme (navy) ───────────────────────────────────────────────────────── */
+/* Palette from synta.css .navy: bg=#131d2e fg=#d4e0f0 links=#60a5fa          */
+
+[data-theme="dark"] {
+    --main-background-color:              #131d2e;
+    --main-color:                         #d4e0f0;
+    --sidebar-background-color:           #0c1525;
+    --sidebar-foreground:                 #7ea8cc;
+    --sidebar-current-item:               #93c5fd;
+    --link-color:                         #60a5fa;
+    --code-color:                         #f9a8d4;
+    --code-block-background-color:        #0e1a2b;
+    --table-alter-row-background-color:   #101c2e;
+    --button-background-color:            #18253a;
+    --stab-background-color:              #162236;
+    --stab-code-color:                    #d4e0f0;
+    --source-sidebar-background:          #0c1525;
+    --source-sidebar-transform-color:     #d4e0f0;
+    /* Syntax highlighting */
+    --code-highlight-kw-color:            #c084fc;
+    --code-highlight-kw-2-color:          #93c5fd;
+    --code-highlight-lifetime-color:      #fbbf24;
+    --code-highlight-prelude-color:       #93c5fd;
+    --code-highlight-prelude-val-color:   #f9a8d4;
+    --code-highlight-number-color:        #86efac;
+    --code-highlight-string-color:        #86efac;
+    --code-highlight-literal-color:       #f9a8d4;
+    --code-highlight-attribute-color:     #f9a8d4;
+    --code-highlight-self-color:          #f9a8d4;
+    --code-highlight-macro-color:         #67e8f9;
+    --code-highlight-question-mark-color: #fbbf24;
+    --code-highlight-comment-color:       #64748b;
+    --code-highlight-doc-comment-color:   #5a80a0;
+}
+
+/* ── Ayu theme ───────────────────────────────────────────────────────────────── */
+/* Palette from synta.css .ayu: bg=#0d1017 fg=#cccac2 links=#e6b450           */
+
+[data-theme="ayu"] {
+    --main-background-color:              #0d1017;
+    --main-color:                         #cccac2;
+    --sidebar-background-color:           #08090f;
+    --sidebar-foreground:                 #8a9199;
+    --sidebar-current-item:               #ffb454;
+    --link-color:                         #e6b450;
+    --code-color:                         #ff8f40;
+    --code-block-background-color:        #080c12;
+    --source-sidebar-background:          #08090f;
+    --source-sidebar-transform-color:     #cccac2;
+}
+
+/* ── Scrollbar (matches synta.css) ───────────────────────────────────────────── */
+
+::-webkit-scrollbar         { width: 6px; height: 6px; }
+::-webkit-scrollbar-track   { background: transparent; }
+::-webkit-scrollbar-thumb   { border-radius: 3px; }

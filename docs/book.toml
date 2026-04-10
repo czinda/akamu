@@ -1,0 +1,19 @@
+[book]
+title = "Akāmu documentation"
+authors = ["Alexander Bokovoy"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+no-section-label = true
+git-repository-url = ""
+additional-css = ["theme/synta.css"]
+default-theme = "light"
+preferred-dark-theme = "navy"
+
+[output.rustdoc]
+command = "python3 ../../scripts/mdbook-copy-api.py"
+

@@ -1,0 +1,483 @@
+/* =============================================================================
+   Synta Documentation Theme
+   Professional styling for all four mdBooks (Rust, C, Python, Performance).
+   Overrides mdBook CSS variables and adds layout / typographic polish.
+   Supports light, navy, coal, ayu, and rust themes.
+   ============================================================================= */
+
+/* ── Layout ────────────────────────────────────────────────────────────────── */
+
+:root {
+    /*
+     * Base font size — scales with viewport so the document feels comfortable
+     * from 1080p up to 4K without manual browser zoom.
+     *
+     *   ≤ 1667 px wide  →  clamp floor: 20 px  (1.25× browser default 16 px)
+     *     1920 px wide  →  1.2vw ≈ 23 px        (1.44×)
+     *     2560 px wide  →  1.2vw ≈ 31 px → 26 px cap
+     *     3840 px (4K)  →  cap    26 px          (1.625×)
+     */
+    font-size: clamp(20px, 1.2vw, 26px);
+
+    /*
+     * Wide reading column.  The sidebar (300 px) is separate; setting this to
+     * 1400 px means text fills roughly 75–82 % of the viewport on screens
+     * from 1280 px to 1920 px while still fitting on 768 px mobile.
+     */
+    --content-max-width: 1400px;
+    --page-padding: 28px;
+
+    /*
+     * Sidebar width — scales with viewport so the TOC stays comfortable
+     * on wide monitors without crowding small ones.
+     *   ≤ 1766 px  →  300 px (floor)
+     *     1920 px  →  17vw = 326 px
+     *     2560 px  →  17vw = 435 px (ceiling)
+     */
+    --sidebar-target-width: clamp(300px, 17vw, 435px);
+
+    /* mono font stack — prefers code-native fonts, falls back gracefully */
+    --mono-font: "JetBrains Mono", "Fira Code", "Cascadia Code",
+                 ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas,
+                 "Liberation Mono", monospace;
+}
+
+/* ── Light theme ────────────────────────────────────────────────────────────── */
+
+.light {
+    --bg:                    #f8fafc;
+    --fg:                    #0f172a;
+    --sidebar-bg:            #f1f5f9;
+    --sidebar-fg:            #334155;
+    --sidebar-non-existant:  #94a3b8;
+    --sidebar-active:        #1d4ed8;
+    --sidebar-spacer:        #e2e8f0;
+    --scrollbar:             #cbd5e1;
+    --icons:                 #64748b;
+    --icons-hover:           #0f172a;
+    --links:                 #1d4ed8;
+    --inline-code-color:     #be185d;
+    --theme-popup-bg:        #ffffff;
+    --theme-popup-border:    #e2e8f0;
+    --theme-hover:           #e2e8f0;
+    --quote-bg:              #f0f9ff;
+    --quote-border:          #0284c7;
+    --warning-border:        #d97706;
+    --table-border-color:    #e2e8f0;
+    --table-header-bg:       #f1f5f9;
+    --table-alternate-bg:    #f8fafc;
+    --searchbar-border-color:#cbd5e1;
+    --searchbar-bg:          #ffffff;
+    --searchbar-fg:          #0f172a;
+    --searchbar-shadow-color:rgba(15, 23, 42, 0.08);
+    --searchresults-header-fg:#64748b;
+    --searchresults-border-color:#e2e8f0;
+    --searchresults-li-bg:   #f8fafc;
+    --search-mark-bg:        #bfdbfe;
+    --code-fg:               #1e293b;
+    --code-bg:               #f1f5f9;
+}
+
+/* ── Navy (preferred dark) ───────────────────────────────────────────────────── */
+
+.navy {
+    --bg:                    #131d2e;
+    --fg:                    #d4e0f0;
+    --sidebar-bg:            #0c1525;
+    --sidebar-fg:            #7ea8cc;
+    --sidebar-non-existant:  #3a5474;
+    --sidebar-active:        #93c5fd;
+    --sidebar-spacer:        #1b2d46;
+    --scrollbar:             #2a4460;
+    --icons:                 #5a80a0;
+    --icons-hover:           #d4e0f0;
+    --links:                 #60a5fa;
+    --inline-code-color:     #f9a8d4;
+    --theme-popup-bg:        #18253a;
+    --theme-popup-border:    #2a4460;
+    --theme-hover:           #1b2d46;
+    --quote-bg:              #162236;
+    --quote-border:          #3b82f6;
+    --warning-border:        #f59e0b;
+    --table-border-color:    #24395a;
+    --table-header-bg:       #162236;
+    --table-alternate-bg:    #101c2e;
+    --searchbar-border-color:#24395a;
+    --searchbar-bg:          #18253a;
+    --searchbar-fg:          #d4e0f0;
+    --searchbar-shadow-color:rgba(0, 0, 0, 0.4);
+    --searchresults-header-fg:#7ea8cc;
+    --searchresults-border-color:#24395a;
+    --searchresults-li-bg:   #18253a;
+    --search-mark-bg:        #1e3a8a;
+    --code-fg:               #d4e0f0;
+    --code-bg:               #0e1a2b;
+}
+
+/* ── Coal ────────────────────────────────────────────────────────────────────── */
+
+.coal {
+    --bg:                    #1a1c21;
+    --fg:                    #d4dae5;
+    --sidebar-bg:            #121418;
+    --sidebar-fg:            #8fa3b4;
+    --sidebar-non-existant:  #4a5568;
+    --sidebar-active:        #90cdf4;
+    --sidebar-spacer:        #252932;
+    --scrollbar:             #374151;
+    --icons:                 #6b7280;
+    --icons-hover:           #d4dae5;
+    --links:                 #63b3ed;
+    --inline-code-color:     #f687b3;
+    --theme-popup-bg:        #1e2029;
+    --theme-popup-border:    #374151;
+    --theme-hover:           #252932;
+    --quote-bg:              #1c2030;
+    --quote-border:          #4299e1;
+    --warning-border:        #f6ad55;
+    --table-border-color:    #2d3748;
+    --table-header-bg:       #1e2029;
+    --table-alternate-bg:    #171a1f;
+    --searchbar-border-color:#374151;
+    --searchbar-bg:          #1e2029;
+    --searchbar-fg:          #d4dae5;
+    --searchbar-shadow-color:rgba(0, 0, 0, 0.5);
+    --searchresults-header-fg:#8fa3b4;
+    --searchresults-border-color:#374151;
+    --searchresults-li-bg:   #1e2029;
+    --search-mark-bg:        #1e3a8a;
+    --code-fg:               #d4dae5;
+    --code-bg:               #14161b;
+}
+
+/* ── Ayu ──────────────────────────────────────────────────────────────────────── */
+
+.ayu {
+    --bg:                    #0d1017;
+    --fg:                    #cccac2;
+    --sidebar-bg:            #08090f;
+    --sidebar-fg:            #8a9199;
+    --sidebar-non-existant:  #3d4552;
+    --sidebar-active:        #ffb454;
+    --sidebar-spacer:        #14171f;
+    --scrollbar:             #1e2433;
+    --icons:                 #5c6773;
+    --icons-hover:           #cccac2;
+    --links:                 #e6b450;
+    --inline-code-color:     #ff8f40;
+    --theme-popup-bg:        #10151f;
+    --theme-popup-border:    #1e2433;
+    --theme-hover:           #131720;
+    --quote-bg:              #0f141e;
+    --quote-border:          #e6b450;
+    --warning-border:        #ff8f40;
+    --table-border-color:    #1e2433;
+    --table-header-bg:       #10151f;
+    --table-alternate-bg:    #0b0e16;
+    --searchbar-border-color:#1e2433;
+    --searchbar-bg:          #10151f;
+    --searchbar-fg:          #cccac2;
+    --searchbar-shadow-color:rgba(0, 0, 0, 0.6);
+    --searchresults-header-fg:#8a9199;
+    --searchresults-border-color:#1e2433;
+    --searchresults-li-bg:   #10151f;
+    --search-mark-bg:        #3d2e00;
+    --code-fg:               #cccac2;
+    --code-bg:               #080c12;
+}
+
+/* ── Rust ─────────────────────────────────────────────────────────────────────── */
+
+.rust {
+    --bg:                    #fdf5ed;
+    --fg:                    #1c0e00;
+    --sidebar-bg:            #f3e8d8;
+    --sidebar-fg:            #4a2c00;
+    --sidebar-non-existant:  #a07850;
+    --sidebar-active:        #a52b00;
+    --sidebar-spacer:        #e8d5bc;
+    --scrollbar:             #c8a88a;
+    --icons:                 #8a5a38;
+    --icons-hover:           #1c0e00;
+    --links:                 #a52b00;
+    --inline-code-color:     #7c1c00;
+    --theme-popup-bg:        #fdf0e0;
+    --theme-popup-border:    #e0c8a0;
+    --theme-hover:           #f0ddc0;
+    --quote-bg:              #fef5e6;
+    --quote-border:          #d94f00;
+    --warning-border:        #c05a00;
+    --table-border-color:    #ddc8a8;
+    --table-header-bg:       #f3e8d8;
+    --table-alternate-bg:    #fdf5ed;
+    --searchbar-border-color:#c8a88a;
+    --searchbar-bg:          #fdf5ed;
+    --searchbar-fg:          #1c0e00;
+    --searchbar-shadow-color:rgba(28, 14, 0, 0.12);
+    --searchresults-header-fg:#8a5a38;
+    --searchresults-border-color:#ddc8a8;
+    --searchresults-li-bg:   #fdf5ed;
+    --search-mark-bg:        #ffd59e;
+    --code-fg:               #1c0e00;
+    --code-bg:               #f5e8d4;
+}
+
+/* ── Typography ───────────────────────────────────────────────────────────────── */
+
+body {
+    font-size: 1rem;    /* inherits :root clamp — 20 px @ 1440p, 23 px @ 1080p, 26 px @ 4K */
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+.content main {
+    /* enforce wide reading column within the content pane */
+    max-width: var(--content-max-width);
+    margin: 0 auto;
+    padding: 1.5rem 0 3rem;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    line-height: 1.3;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    margin-top: 2em;
+    margin-bottom: 0.6em;
+}
+
+h1 {
+    font-size: 2em;
+    border-bottom: 2px solid var(--table-border-color);
+    padding-bottom: 0.35em;
+    margin-top: 0.5em;
+}
+
+h2 {
+    font-size: 1.5em;
+    border-bottom: 1px solid var(--table-border-color);
+    padding-bottom: 0.25em;
+}
+
+h3 { font-size: 1.25em; }
+h4 { font-size: 1.05em; font-weight: 700; }
+h5 { font-size: 1em;    font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+
+p {
+    margin-top: 0;
+    margin-bottom: 1em;
+}
+
+ul, ol {
+    padding-left: 1.5em;
+    margin-bottom: 1em;
+}
+
+li + li {
+    margin-top: 0.25em;
+}
+
+a {
+    color: var(--links);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+/* ── Code ─────────────────────────────────────────────────────────────────────── */
+
+code, kbd, samp, tt {
+    font-family: var(--mono-font);
+}
+
+/* Inline code — slightly smaller than body so monospace doesn't visually overpower */
+code:not(pre > code) {
+    background: var(--code-bg);
+    color: var(--inline-code-color);
+    padding: 0.15em 0.45em;
+    border-radius: 4px;
+    font-size: 0.95em;
+    border: 1px solid var(--table-border-color);
+}
+
+/* Fenced code block container */
+pre {
+    border-radius: 8px;
+    padding: 1.1rem 1.4rem;
+    overflow-x: auto;
+    line-height: 1.6;
+    border: 1px solid var(--table-border-color);
+    background: var(--code-bg) !important;
+}
+
+pre > code {
+    font-size: 1rem;
+    background: transparent !important;
+    color: var(--code-fg);
+    border: none;
+    padding: 0;
+}
+
+/* Keyboard shortcut key */
+kbd {
+    display: inline-block;
+    padding: 0.1em 0.45em;
+    background: var(--table-header-bg);
+    border: 1px solid var(--table-border-color);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    font-size: 0.8em;
+    line-height: 1.4;
+}
+
+/* ── Blockquotes ─────────────────────────────────────────────────────────────── */
+
+blockquote {
+    border-left: 4px solid var(--quote-border);
+    background: var(--quote-bg);
+    padding: 0.8rem 1.25rem;
+    margin: 1.5rem 0;
+    border-radius: 0 6px 6px 0;
+}
+
+blockquote p:last-child {
+    margin-bottom: 0;
+}
+
+/* ── Tables ───────────────────────────────────────────────────────────────────── */
+
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1.5rem 0;
+    font-size: 1rem;
+    border: 1px solid var(--table-border-color);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+th, td {
+    padding: 0.55rem 1rem;
+    border: 1px solid var(--table-border-color);
+    text-align: left;
+    vertical-align: top;
+}
+
+th {
+    background: var(--table-header-bg);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+
+tr:nth-child(even) > td {
+    background: var(--table-alternate-bg);
+}
+
+/* ── Sidebar ──────────────────────────────────────────────────────────────────── */
+
+#sidebar {
+    border-right: 1px solid var(--table-border-color);
+}
+
+#sidebar .sidebar-scrollbox {
+    padding: 0.5rem 0 1rem;
+}
+
+/* Compact font and tight line-height for the whole nav tree.
+   0.8rem relative to the clamp root keeps sidebar readable without
+   overflowing the pane or wasting vertical space. */
+.chapter {
+    font-size: 0.8rem;
+    line-height: 1.3;
+}
+
+/* Part headings */
+.chapter li.part-title {
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--icons);
+    padding: 0.9rem 1rem 0.2rem;
+    margin: 0;
+    user-select: none;
+}
+
+/* Chapter links — reduced vertical padding; ellipsis for long names */
+.chapter li a {
+    padding: 0.12rem 0.75rem;
+    border-radius: 4px;
+    transition: background 0.12s ease, color 0.12s ease;
+    display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.chapter li a:hover {
+    background: var(--theme-hover);
+    text-decoration: none;
+}
+
+.chapter li a.active {
+    color: var(--sidebar-active);
+    font-weight: 600;
+    background: var(--theme-hover);
+}
+
+/* ── Menu bar ────────────────────────────────────────────────────────────────── */
+
+#menu-bar, #menu-bar-hover-placeholder {
+    border-bottom: 1px solid var(--table-border-color);
+}
+
+/* ── Horizontal rule ──────────────────────────────────────────────────────────── */
+
+hr {
+    border: none;
+    border-top: 1px solid var(--table-border-color);
+    margin: 2rem 0;
+}
+
+/* ── Scrollbar ────────────────────────────────────────────────────────────────── */
+
+::-webkit-scrollbar         { width: 6px; height: 6px; }
+::-webkit-scrollbar-track   { background: transparent; }
+::-webkit-scrollbar-thumb   { background: var(--scrollbar); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--icons); }
+
+/* ── Warning admonition (mdBook's built-in) ──────────────────────────────────── */
+
+.warning {
+    border-left: 4px solid var(--warning-border);
+    padding: 0.8rem 1.25rem;
+    margin: 1.5rem 0;
+    border-radius: 0 6px 6px 0;
+}
+
+/* ── Responsive ───────────────────────────────────────────────────────────────── */
+
+/* On tablets / small windows, let content fill the available pane */
+@media screen and (max-width: 1100px) {
+    :root { --content-max-width: none; }
+    .content main { padding: 1rem 0 2rem; }
+}
+
+/* On small screens drop the font back to a fixed comfortable size */
+@media screen and (max-width: 600px) {
+    :root {
+        font-size: 18px;
+        --page-padding: 16px;
+    }
+}
+
+/* ── Print ────────────────────────────────────────────────────────────────────── */
+
+@media print {
+    #sidebar, #menu-bar, #nav-wide-wrapper, .nav-chapters { display: none !important; }
+    .content main { max-width: 100%; padding: 0; }
+    pre { border: 1px solid #ccc; }
+}
