@@ -476,4 +476,21 @@ mod tests {
         assert!(matches!(err, crate::error::AcmeError::Builder(_)), "unexpected error: {err}");
     }
 
+    /// Construct a ValidatedCsr with an "email" SAN (unsupported type).
+    /// The match in issue_certificate hits the `_ => {}` arm (line 123) → continues → cert issued.
+    #[test]
+    fn issue_cert_unknown_san_type_is_silently_skipped() {
+        let (ca_key, ca_cert_der) = make_test_ca();
+        let key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let spki_der = key.public_key().unwrap().spki_der().to_vec();
+        let name_der = NameBuilder::new().common_name("test").build().unwrap();
+        let validated_csr = ValidatedCsr {
+            spki_der,
+            subject_der: name_der,
+            sans: vec![SanEntry { san_type: "email".into(), value: "user@example.com".into() }],
+        };
+        // The "email" type hits `_ => {}` (line 123) — SAN is ignored, cert issued with no SAN.
+        let result = issue_certificate(&ca_key, &ca_cert_der, "sha256", 90, None, None, &validated_csr);
+        assert!(result.is_ok(), "unknown SAN type should be skipped silently");
+    }
 }
