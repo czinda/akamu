@@ -22,9 +22,14 @@ pub async fn open(path: &str) -> Result<Connection, AcmeError> {
 
     // Run migrations synchronously inside the rusqlite background thread
     conn.call(|conn| {
+        // Enable foreign-key enforcement before running migrations so that any
+        // FK-violating data inserted by a future migration is rejected up-front.
+        conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+
         let migrations = Migrations::new(vec![
             M::up(include_str!("../../migrations/001_initial.sql")),
             M::up(include_str!("../../migrations/002_renewal_info.sql")),
+            M::up(include_str!("../../migrations/003_indexes.sql")),
         ]);
         migrations
             .to_latest(conn)
@@ -32,10 +37,8 @@ pub async fn open(path: &str) -> Result<Connection, AcmeError> {
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
                 Some(e.to_string()),
             ))?;
-        // Enable WAL mode and foreign keys for this connection
-        conn.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;",
-        )?;
+        // Enable WAL mode for this connection (after migrations complete).
+        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
         Ok(())
     })
     .await
