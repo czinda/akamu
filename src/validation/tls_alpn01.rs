@@ -78,8 +78,9 @@ async fn validate_inner(domain: &str, key_auth: &str, port: u16) -> Result<(), A
 /// Verify the presented certificate against the tls-alpn-01 requirements.
 ///
 /// Checks (RFC 8737 §3):
-/// 1. id-pe-acmeIdentifier extension is present and critical.
-/// 2. Extension value = `OCTET STRING { expected_hash }`.
+/// 1. The SAN extension contains the domain being validated as a dNSName.
+/// 2. id-pe-acmeIdentifier extension is present and critical.
+/// 3. Extension value = `OCTET STRING { expected_hash }`.
 ///    (The extnValue OCTET STRING wrapper is already stripped by the time we
 ///    see `ext_content`.)
 fn verify_acme_cert(
@@ -90,6 +91,10 @@ fn verify_acme_cert(
     // OID 1.3.6.1.5.5.7.1.31 as DER — pre-computed.
     // Encoding: 06 08 2b 06 01 05 05 07 01 1f
     const ACME_ID_OID_DER: &[u8] = &[0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x01, 0x1f];
+
+    // OID 2.5.29.17 (subjectAltName) as DER — pre-computed.
+    // Encoding: 06 03 55 1d 11
+    const SAN_OID_DER: &[u8] = &[0x06, 0x03, 0x55, 0x1d, 0x11];
 
     // Walk the DER to find TBSCertificate → Extensions → the target extension.
     let (found_critical, ext_value) = find_extension_value(cert_der, ACME_ID_OID_DER)
@@ -119,7 +124,50 @@ fn verify_acme_cert(
         )));
     }
 
+    // RFC 8737 §3: The certificate MUST have exactly the identifier being
+    // validated as a dNSName in its SAN extension.
+    let (_, san_value) = find_extension_value(cert_der, SAN_OID_DER)
+        .map_err(|e| AcmeError::Tls(format!("cert SAN parse for '{domain}': {e}")))?
+        .ok_or_else(|| {
+            AcmeError::IncorrectResponse(format!(
+                "tls-alpn-01: certificate for '{domain}' is missing SAN extension"
+            ))
+        })?;
+
+    verify_san_contains_domain(domain, san_value)
+        .map_err(|reason| {
+            AcmeError::IncorrectResponse(format!(
+                "tls-alpn-01: certificate SAN does not match '{domain}': {reason}"
+            ))
+        })?;
+
     Ok(())
+}
+
+/// Check that `domain` appears as a dNSName ([2] IMPLICIT IA5String, tag 0x82)
+/// in the raw SEQUENCE OF GeneralName bytes from the SAN extension value.
+fn verify_san_contains_domain(domain: &str, san_seq: &[u8]) -> Result<(), &'static str> {
+    // san_seq is the content of the SAN OCTET STRING — a SEQUENCE OF GeneralName.
+    let seq_content = strip_sequence(san_seq)?;
+    let mut remaining = seq_content;
+    let mut found = false;
+    while !remaining.is_empty() {
+        let (tag, rest, content) = read_tlv(remaining)?;
+        remaining = rest;
+        // dNSName is [2] IMPLICIT IA5String → context-specific primitive tag 0x82.
+        if tag == 0x82 {
+            let name = std::str::from_utf8(content).map_err(|_| "dNSName is not valid UTF-8")?;
+            if name.eq_ignore_ascii_case(domain) {
+                found = true;
+                break;
+            }
+        }
+    }
+    if found {
+        Ok(())
+    } else {
+        Err("domain not present as dNSName in SAN")
+    }
 }
 
 // ── Manual DER TLV walker ─────────────────────────────────────────────────────
@@ -483,9 +531,30 @@ mod tests {
         ext_seq.extend_from_slice(critical_bytes);
         ext_seq.extend_from_slice(&ext_val_wrapper);
 
-        // Extensions SEQUENCE OF (contains our one extension)
-        let mut exts_seq = vec![0x30, ext_seq.len() as u8];
+        // SAN extension: OID 2.5.29.17 + OCTET STRING { SEQUENCE { dNSName "example.com" } }
+        // dNSName [2] IMPLICIT IA5String, tag 0x82, "example.com" = 11 bytes
+        let domain_bytes: &[u8] = b"example.com";
+        let san_dns_len = domain_bytes.len() as u8; // 11 = 0x0b
+        let mut san_dns = vec![0x82, san_dns_len];
+        san_dns.extend_from_slice(domain_bytes);
+        // SEQUENCE { dNSName }
+        let mut san_inner_seq = vec![0x30, san_dns.len() as u8];
+        san_inner_seq.extend_from_slice(&san_dns);
+        // extnValue OCTET STRING
+        let mut san_extn_value = vec![0x04, san_inner_seq.len() as u8];
+        san_extn_value.extend_from_slice(&san_inner_seq);
+        // Extension SEQUENCE: OID + OCTET STRING
+        let san_oid_bytes: &[u8] = &[0x06, 0x03, 0x55, 0x1d, 0x11];
+        let san_ext_inner = san_oid_bytes.len() + san_extn_value.len();
+        let mut san_ext_seq = vec![0x30, san_ext_inner as u8];
+        san_ext_seq.extend_from_slice(san_oid_bytes);
+        san_ext_seq.extend_from_slice(&san_extn_value);
+
+        // Extensions SEQUENCE OF (acmeIdentifier + SAN)
+        let exts_inner_len = ext_seq.len() + san_ext_seq.len();
+        let mut exts_seq = vec![0x30, exts_inner_len as u8];
         exts_seq.extend_from_slice(&ext_seq);
+        exts_seq.extend_from_slice(&san_ext_seq);
 
         // Extensions [3] EXPLICIT
         let mut exts_a3 = vec![0xa3, exts_seq.len() as u8];
