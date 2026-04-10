@@ -80,6 +80,12 @@ instant-acme = "0.4"
 # instant-acme 0.4, whose DefaultClient only supports HTTPS.
 # Aliased to avoid colliding with the hyper 1.x in [dependencies].
 hyper-14 = { version = "0.14", package = "hyper", features = ["client", "http1", "tcp"] }
+# CLI argument parsing for the acme-bench standalone benchmark binary.
+clap = { version = "4", features = ["derive"] }
+
+[[bench]]
+name = "acme_bench"
+harness = false
 
 [patch.crates-io]
 # Use the same rust-openssl fork as synta-certificate so that both crates see
