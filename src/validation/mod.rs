@@ -277,4 +277,252 @@ mod tests {
         ).await;
         // If we get here without panicking, the test passes
     }
+
+    #[tokio::test]
+    async fn on_valid_with_real_rows_updates_db() {
+        use crate::db;
+        use crate::db::schema::{AccountRow, OrderRow, AuthorizationRow, ChallengeRow};
+
+        let state = make_state().await;
+        let now = unix_now();
+
+        let acc_id = "acc-val-001".to_string();
+        let order_id = "ord-val-001".to_string();
+        let authz_id = "authz-val-001".to_string();
+        let chall_id = "chall-val-001".to_string();
+
+        db::accounts::insert(&state.db, AccountRow {
+            id: acc_id.clone(),
+            status: "valid".to_string(),
+            contact: None,
+            public_key: vec![0u8; 4],
+            jwk_thumbprint: "thumb-val-001".to_string(),
+            created: now,
+            updated: now,
+        }).await.unwrap();
+
+        db::orders::insert(&state.db, OrderRow {
+            id: order_id.clone(),
+            account_id: acc_id.clone(),
+            status: "pending".to_string(),
+            expires: Some(now + 3600),
+            identifiers: r#"[{"type":"dns","value":"example.com"}]"#.to_string(),
+            not_before: None,
+            not_after: None,
+            error: None,
+            certificate_id: None,
+            created: now,
+            updated: now,
+        }).await.unwrap();
+
+        db::authz::insert(&state.db, AuthorizationRow {
+            id: authz_id.clone(),
+            order_id: order_id.clone(),
+            account_id: acc_id.clone(),
+            status: "pending".to_string(),
+            identifier: r#"{"type":"dns","value":"example.com"}"#.to_string(),
+            expires: Some(now + 3600),
+            wildcard: false,
+            created: now,
+            updated: now,
+        }).await.unwrap();
+
+        db::challenges::insert(&state.db, ChallengeRow {
+            id: chall_id.clone(),
+            authz_id: authz_id.clone(),
+            r#type: "http-01".to_string(),
+            status: "pending".to_string(),
+            token: "mytoken".to_string(),
+            validated: None,
+            error: None,
+            created: now,
+            updated: now,
+        }).await.unwrap();
+
+        // Call on_valid — should update challenge, authz, and order status.
+        on_valid(&state, &chall_id, &authz_id, now).await;
+
+        let chall = db::challenges::get_by_id(&state.db, &chall_id).await.unwrap().unwrap();
+        assert_eq!(chall.status, "valid");
+
+        let authz = db::authz::get_by_id(&state.db, &authz_id).await.unwrap().unwrap();
+        assert_eq!(authz.status, "valid");
+
+        // Single authz now valid → order → ready.
+        let order = db::orders::get_by_id(&state.db, &order_id).await.unwrap().unwrap();
+        assert_eq!(order.status, "ready");
+    }
+
+    #[tokio::test]
+    async fn on_invalid_with_real_rows_marks_invalid() {
+        use crate::db;
+        use crate::db::schema::{AccountRow, OrderRow, AuthorizationRow, ChallengeRow};
+
+        let state = make_state().await;
+        let now = unix_now();
+
+        let acc_id = "acc-inv-001".to_string();
+        let order_id = "ord-inv-001".to_string();
+        let authz_id = "authz-inv-001".to_string();
+        let chall_id = "chall-inv-001".to_string();
+
+        db::accounts::insert(&state.db, AccountRow {
+            id: acc_id.clone(),
+            status: "valid".to_string(),
+            contact: None,
+            public_key: vec![0u8; 4],
+            jwk_thumbprint: "thumb-inv-001".to_string(),
+            created: now,
+            updated: now,
+        }).await.unwrap();
+
+        db::orders::insert(&state.db, OrderRow {
+            id: order_id.clone(),
+            account_id: acc_id.clone(),
+            status: "pending".to_string(),
+            expires: Some(now + 3600),
+            identifiers: r#"[{"type":"dns","value":"example.com"}]"#.to_string(),
+            not_before: None,
+            not_after: None,
+            error: None,
+            certificate_id: None,
+            created: now,
+            updated: now,
+        }).await.unwrap();
+
+        db::authz::insert(&state.db, AuthorizationRow {
+            id: authz_id.clone(),
+            order_id: order_id.clone(),
+            account_id: acc_id.clone(),
+            status: "pending".to_string(),
+            identifier: r#"{"type":"dns","value":"example.com"}"#.to_string(),
+            expires: Some(now + 3600),
+            wildcard: false,
+            created: now,
+            updated: now,
+        }).await.unwrap();
+
+        db::challenges::insert(&state.db, ChallengeRow {
+            id: chall_id.clone(),
+            authz_id: authz_id.clone(),
+            r#type: "http-01".to_string(),
+            status: "pending".to_string(),
+            token: "mytoken".to_string(),
+            validated: None,
+            error: None,
+            created: now,
+            updated: now,
+        }).await.unwrap();
+
+        on_invalid(
+            &state,
+            &chall_id,
+            &authz_id,
+            AcmeError::Connection("test failure".into()),
+            now,
+        ).await;
+
+        let chall = db::challenges::get_by_id(&state.db, &chall_id).await.unwrap().unwrap();
+        assert_eq!(chall.status, "invalid");
+
+        let authz = db::authz::get_by_id(&state.db, &authz_id).await.unwrap().unwrap();
+        assert_eq!(authz.status, "invalid");
+
+        let order = db::orders::get_by_id(&state.db, &order_id).await.unwrap().unwrap();
+        assert_eq!(order.status, "invalid");
+    }
+
+    #[tokio::test]
+    async fn validate_challenge_http01_success_updates_db() {
+        use crate::db;
+        use crate::db::schema::{AccountRow, OrderRow, AuthorizationRow, ChallengeRow};
+        use axum::{Router, routing::get};
+        use tokio::net::TcpListener;
+
+        let state = make_state().await;
+        let now = unix_now();
+
+        let token = "test-http01-token";
+        let key_auth = format!("{token}.fake-thumbprint");
+        let key_auth_clone = key_auth.clone();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let path = format!("/.well-known/acme-challenge/{token}");
+        let router = Router::new().route(&path, get(move || {
+            let body = key_auth_clone.clone();
+            async move { body }
+        }));
+        tokio::spawn(async move { axum::serve(listener, router).await.ok(); });
+
+        let id_value = format!("127.0.0.1:{}", addr.port());
+
+        let acc_id = "acc-http01-001".to_string();
+        let order_id = "ord-http01-001".to_string();
+        let authz_id = "authz-http01-001".to_string();
+        let chall_id = "chall-http01-001".to_string();
+
+        db::accounts::insert(&state.db, AccountRow {
+            id: acc_id.clone(),
+            status: "valid".to_string(),
+            contact: None,
+            public_key: vec![0u8; 4],
+            jwk_thumbprint: "thumb-http01-001".to_string(),
+            created: now,
+            updated: now,
+        }).await.unwrap();
+
+        db::orders::insert(&state.db, OrderRow {
+            id: order_id.clone(),
+            account_id: acc_id.clone(),
+            status: "pending".to_string(),
+            expires: Some(now + 3600),
+            identifiers: r#"[{"type":"ip","value":"127.0.0.1"}]"#.to_string(),
+            not_before: None,
+            not_after: None,
+            error: None,
+            certificate_id: None,
+            created: now,
+            updated: now,
+        }).await.unwrap();
+
+        db::authz::insert(&state.db, AuthorizationRow {
+            id: authz_id.clone(),
+            order_id: order_id.clone(),
+            account_id: acc_id.clone(),
+            status: "pending".to_string(),
+            identifier: format!(r#"{{"type":"ip","value":"{}"}}"#, id_value),
+            expires: Some(now + 3600),
+            wildcard: false,
+            created: now,
+            updated: now,
+        }).await.unwrap();
+
+        db::challenges::insert(&state.db, ChallengeRow {
+            id: chall_id.clone(),
+            authz_id: authz_id.clone(),
+            r#type: "http-01".to_string(),
+            status: "pending".to_string(),
+            token: token.to_string(),
+            validated: None,
+            error: None,
+            created: now,
+            updated: now,
+        }).await.unwrap();
+
+        validate_challenge(
+            &state,
+            &chall_id,
+            &authz_id,
+            "http-01",
+            "ip",
+            &id_value,
+            &key_auth,
+            token,
+        ).await;
+
+        // Covers Ok(()) => on_valid branch in validate_challenge.
+        let chall = db::challenges::get_by_id(&state.db, &chall_id).await.unwrap().unwrap();
+        assert_eq!(chall.status, "valid", "http-01 validation should mark challenge valid");
+    }
 }

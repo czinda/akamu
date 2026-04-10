@@ -72,6 +72,18 @@ pub async fn validate(domain: &str, token: &str, key_auth: &str) -> Result<(), A
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{Router, routing::get, http::StatusCode};
+    use tokio::net::TcpListener;
+
+    /// Start a local HTTP server with the given router and return its address.
+    async fn start_server(router: Router) -> std::net::SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.ok();
+        });
+        addr
+    }
 
     #[tokio::test]
     async fn validate_fails_for_unreachable_domain() {
@@ -82,5 +94,52 @@ mod tests {
             AcmeError::Connection(_) => {}
             other => panic!("expected Connection error, got: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn validate_success_with_correct_key_auth() {
+        let addr = start_server(Router::new().route(
+            "/.well-known/acme-challenge/mytoken",
+            get(|| async { "mytoken.thumbprint" }),
+        )).await;
+        let domain = format!("127.0.0.1:{}", addr.port());
+        let result = validate(&domain, "mytoken", "mytoken.thumbprint").await;
+        assert!(result.is_ok(), "expected Ok(()), got: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn validate_non_200_returns_error() {
+        let addr = start_server(Router::new().route(
+            "/.well-known/acme-challenge/token",
+            get(|| async { StatusCode::NOT_FOUND }),
+        )).await;
+        let domain = format!("127.0.0.1:{}", addr.port());
+        let result = validate(&domain, "token", "expected").await;
+        assert!(matches!(result, Err(AcmeError::IncorrectResponse(_))),
+            "expected IncorrectResponse, got: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn validate_body_too_large_returns_error() {
+        let addr = start_server(Router::new().route(
+            "/.well-known/acme-challenge/token",
+            get(|| async { "x".repeat(8193) }),
+        )).await;
+        let domain = format!("127.0.0.1:{}", addr.port());
+        let result = validate(&domain, "token", "expected").await;
+        assert!(matches!(result, Err(AcmeError::IncorrectResponse(_))),
+            "expected IncorrectResponse for oversized body, got: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn validate_key_auth_mismatch_returns_error() {
+        let addr = start_server(Router::new().route(
+            "/.well-known/acme-challenge/token",
+            get(|| async { "wrong-auth" }),
+        )).await;
+        let domain = format!("127.0.0.1:{}", addr.port());
+        let result = validate(&domain, "token", "correct-auth").await;
+        assert!(matches!(result, Err(AcmeError::IncorrectResponse(_))),
+            "expected IncorrectResponse for mismatch, got: {result:?}");
     }
 }
