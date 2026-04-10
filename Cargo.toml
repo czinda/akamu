@@ -41,6 +41,9 @@ rustls = { version = "0.23", default-features = false, features = ["std", "tls12
 tokio-rustls = "0.26"
 rustls-pki-types = "1"
 
+# Native TLS server (axum-server manages the accept loop; rustls 0.23 compatible)
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+
 # HTTP client for http-01 challenge validation (hyper is already pulled by axum)
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "client-legacy"] }
@@ -55,6 +58,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Cryptographically random nonces/tokens
 getrandom = "0.2"
+
+# OpenSSL bindings (pqc-prs fork for ML-DSA / composite PQ support)
+openssl = "0.10"
 
 # Base ASN.1 library (needed for Decoder/Encoder and Integer type)
 synta = { path = "/home/abokovoy/src/upstream/synta", features = ["std", "derive"] }

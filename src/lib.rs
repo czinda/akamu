@@ -11,4 +11,5 @@ pub mod jose;
 pub mod mtc;
 pub mod routes;
 pub mod state;
+pub mod tls;
 pub mod validation;
