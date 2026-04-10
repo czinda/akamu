@@ -105,25 +105,25 @@ async fn on_valid(state: &AppState, challenge_id: &str, authz_id: &str, now: i64
             let tx = conn.transaction()?;
 
             // 1. Mark challenge valid.
-            tx.execute(
-            "UPDATE challenges SET status = 'valid', validated = ?1, updated = ?1 WHERE id = ?2",
-            rusqlite::params![now, challenge_id],
-        )?;
+            tx.prepare_cached(
+                "UPDATE challenges SET status = 'valid', validated = ?1, updated = ?1 WHERE id = ?2",
+            )?
+            .execute(rusqlite::params![now, challenge_id])?;
 
             // 2. Mark authorization valid.
-            tx.execute(
+            tx.prepare_cached(
                 "UPDATE authorizations SET status = 'valid', updated = ?1 WHERE id = ?2",
-                rusqlite::params![now, authz_id],
-            )?;
+            )?
+            .execute(rusqlite::params![now, authz_id])?;
 
             // 3. Find the parent order_id.
-            let order_id: Option<String> = tx
-                .query_row(
+            let order_id: Option<String> = {
+                let mut stmt = tx.prepare_cached(
                     "SELECT order_id FROM authorizations WHERE id = ?1",
-                    rusqlite::params![authz_id],
-                    |row| row.get(0),
-                )
-                .optional()?;
+                )?;
+                stmt.query_row(rusqlite::params![authz_id], |row| row.get(0))
+                    .optional()?
+            };
 
             let order_id = match order_id {
                 Some(id) => id,
@@ -135,18 +135,19 @@ async fn on_valid(state: &AppState, challenge_id: &str, authz_id: &str, now: i64
             };
 
             // 4. Check whether all authzs for this order are now valid.
-            let pending_count: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM authorizations WHERE order_id = ?1 AND status != 'valid'",
-                rusqlite::params![order_id],
-                |row| row.get(0),
-            )?;
+            let pending_count: i64 = {
+                let mut stmt = tx.prepare_cached(
+                    "SELECT COUNT(*) FROM authorizations WHERE order_id = ?1 AND status != 'valid'",
+                )?;
+                stmt.query_row(rusqlite::params![order_id], |row| row.get(0))?
+            };
 
             let all_valid = pending_count == 0;
             if all_valid {
-                tx.execute(
+                tx.prepare_cached(
                     "UPDATE orders SET status = 'ready', error = NULL, updated = ?1 WHERE id = ?2",
-                    rusqlite::params![now, order_id],
-                )?;
+                )?
+                .execute(rusqlite::params![now, order_id])?;
             }
 
             tx.commit()?;
