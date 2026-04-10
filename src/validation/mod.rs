@@ -525,4 +525,111 @@ mod tests {
         let chall = db::challenges::get_by_id(&state.db, &chall_id).await.unwrap().unwrap();
         assert_eq!(chall.status, "valid", "http-01 validation should mark challenge valid");
     }
+
+    /// Call on_valid with a raw (no-schema) DB so that set_valid fails immediately.
+    /// Covers validation/mod.rs lines 65-67 (set_valid Err path → warn + return).
+    #[tokio::test]
+    async fn on_valid_db_error_set_valid_fails() {
+        use crate::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
+        use crate::state::{AppState, CaState, MtcState};
+        use crate::ca;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = Arc::new(Config {
+            listen_addr: "127.0.0.1:0".into(),
+            base_url: "https://acme.test".into(),
+            database: DatabaseConfig { path: ":memory:".into() },
+            ca: CaConfig {
+                key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
+                cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
+                key_type: "ec:P-256".into(),
+                hash_alg: "sha256".into(),
+                validity_days: 90,
+                crl_url: None,
+                ocsp_url: None,
+                common_name: "Test CA".into(),
+                organization: "Test".into(),
+                ca_validity_years: 10,
+            },
+            mtc: MtcConfig { log_path: "/dev/null".into(), enabled: false },
+            server: ServerConfig::default(),
+        });
+        let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
+        // Raw connection — no schema — so every DB call fails immediately.
+        let raw_db = Arc::new(tokio_rusqlite::Connection::open_in_memory().await.unwrap());
+        let state = Arc::new(AppState {
+            config: Arc::clone(&config),
+            db: Arc::clone(&raw_db),
+            ca: Arc::new(CaState {
+                key: ca_key,
+                cert_der: ca_cert_der,
+                hash_alg: "sha256".into(),
+                validity_days: 90,
+                crl_url: None,
+                ocsp_url: None,
+            }),
+            mtc: Arc::new(MtcState {
+                log: None,
+                algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
+            }),
+        });
+        // on_valid tries set_valid first; fails on no-table DB → warn + return (lines 65-67).
+        on_valid(&state, "fake-chall", "fake-authz", unix_now()).await;
+    }
+
+    /// Call on_invalid with a raw (no-schema) DB so set_invalid fails immediately.
+    /// Covers validation/mod.rs lines 128-135 (set_invalid + update_status Err paths).
+    #[tokio::test]
+    async fn on_invalid_db_error_set_invalid_fails() {
+        use crate::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
+        use crate::state::{AppState, CaState, MtcState};
+        use crate::ca;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = Arc::new(Config {
+            listen_addr: "127.0.0.1:0".into(),
+            base_url: "https://acme.test".into(),
+            database: DatabaseConfig { path: ":memory:".into() },
+            ca: CaConfig {
+                key_file: dir.path().join("ca2.key").to_string_lossy().into_owned(),
+                cert_file: dir.path().join("ca2.crt").to_string_lossy().into_owned(),
+                key_type: "ec:P-256".into(),
+                hash_alg: "sha256".into(),
+                validity_days: 90,
+                crl_url: None,
+                ocsp_url: None,
+                common_name: "Test CA".into(),
+                organization: "Test".into(),
+                ca_validity_years: 10,
+            },
+            mtc: MtcConfig { log_path: "/dev/null".into(), enabled: false },
+            server: ServerConfig::default(),
+        });
+        let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
+        let raw_db = Arc::new(tokio_rusqlite::Connection::open_in_memory().await.unwrap());
+        let state = Arc::new(AppState {
+            config: Arc::clone(&config),
+            db: Arc::clone(&raw_db),
+            ca: Arc::new(CaState {
+                key: ca_key,
+                cert_der: ca_cert_der,
+                hash_alg: "sha256".into(),
+                validity_days: 90,
+                crl_url: None,
+                ocsp_url: None,
+            }),
+            mtc: Arc::new(MtcState {
+                log: None,
+                algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
+            }),
+        });
+        // on_invalid tries set_invalid first; fails on no-table DB → warn (lines 128-135).
+        on_invalid(
+            &state,
+            "fake-chall",
+            "fake-authz",
+            AcmeError::Connection("test".into()),
+            unix_now(),
+        ).await;
+    }
 }
