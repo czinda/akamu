@@ -1471,7 +1471,6 @@ dependencies = [
 name = "synta-mtc"
 version = "0.1.4"
 dependencies = [
- "sha2",
  "smallvec",
  "synta",
  "synta-certificate",
