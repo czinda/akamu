@@ -1383,3 +1383,223 @@ async fn test_bad_nonce() {
     let (status, _, _) = post_acme(&router, "/acme/new-account", jws).await;
     assert!(status.is_client_error(), "bad nonce should fail, got {status}");
 }
+
+/// Key-change where inner payload `account` field doesn't match the outer account URL.
+#[tokio::test]
+async fn test_key_change_wrong_inner_account_url() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let router = routes::build_router(Arc::clone(&state));
+
+    let old_key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = old_key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    let new_key = TestKey::generate();
+    let key_change_url = format!("{base_url}/acme/key-change");
+
+    // Inner payload has the WRONG account URL (different from the kid account).
+    let wrong_account_url = format!("{base_url}/acme/account/wrong-id");
+    let inner = new_key.inner_key_change_jws(&key_change_url, &wrong_account_url, &old_key.jwk());
+
+    let jws = old_key.jws_with_kid(&account_url, &nonce, &key_change_url, Some(inner));
+    let (status, _, _) = post_acme(&router, "/acme/key-change", jws).await;
+    assert!(status.is_client_error(),
+        "key-change with wrong inner account URL should fail, got {status}");
+}
+
+/// Key-change where new key is already registered to another account → Conflict.
+#[tokio::test]
+async fn test_key_change_new_key_already_in_use() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let router = routes::build_router(Arc::clone(&state));
+
+    // Create account A with key1.
+    let key1 = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = key1.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, acct_headers1) = post_acme(&router, "/acme/new-account", jws).await;
+    let account1_url = location_header(&acct_headers1);
+    let nonce = nonce_header(&acct_headers1);
+
+    // Create account B with key2.
+    let key2 = TestKey::generate();
+    let nonce2 = head_nonce(&router).await;
+    let jws2 = key2.jws_with_jwk(&nonce2, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, _acct_headers2) = post_acme(&router, "/acme/new-account", jws2).await;
+
+    // Try to change account A's key to key2 (already registered to account B).
+    let key_change_url = format!("{base_url}/acme/key-change");
+    let inner = key2.inner_key_change_jws(&key_change_url, &account1_url, &key1.jwk());
+    let jws = key1.jws_with_kid(&account1_url, &nonce, &key_change_url, Some(inner));
+    let (status, _, _) = post_acme(&router, "/acme/key-change", jws).await;
+    assert!(status.is_client_error(),
+        "key-change to already-registered key should fail, got {status}");
+}
+
+/// Creating a new order with a deactivated account → Unauthorized.
+#[tokio::test]
+async fn test_new_order_deactivated_account() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let router = routes::build_router(Arc::clone(&state));
+
+    let key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let account_url = location_header(&acct_headers);
+    let account_id = account_url.split('/').last().unwrap().to_string();
+    let nonce = nonce_header(&acct_headers);
+
+    // Deactivate the account.
+    let jws = key.jws_with_kid(&account_url, &nonce, &account_url,
+        Some(json!({"status": "deactivated"})));
+    let (status, _, acct_resp_hdrs) = post_acme(&router, &format!("/acme/account/{account_id}"), jws).await;
+    assert_eq!(status, StatusCode::OK);
+    let nonce = nonce_header(&acct_resp_hdrs);
+
+    // Try to create an order.
+    let order_url = format!("{base_url}/acme/new-order");
+    let jws = key.jws_with_kid(&account_url, &nonce, &order_url,
+        Some(json!({"identifiers": [{"type": "dns", "value": "deactivated.test"}]})));
+    let (status, _, _) = post_acme(&router, "/acme/new-order", jws).await;
+    assert!(status.is_client_error(),
+        "deactivated account should not be able to create order, got {status}");
+}
+
+/// GET order with an account that does not own that order → Unauthorized.
+#[tokio::test]
+async fn test_get_order_wrong_account() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let router = routes::build_router(Arc::clone(&state));
+    let db = Arc::clone(&state.db);
+
+    // Owner creates an order.
+    let owner_key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = owner_key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let owner_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    let jws = owner_key.jws_with_kid(&owner_url, &nonce, &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": "get-order-wrong.test"}]})));
+    let (_, _, _) = post_acme(&router, "/acme/new-order", jws).await;
+    let order_id: String = db.call(|c| Ok(c.query_row(
+        "SELECT id FROM orders ORDER BY created DESC LIMIT 1", [], |r| r.get(0))?)).await.unwrap();
+
+    // Attacker creates account and tries to GET the order.
+    let attacker_key = TestKey::generate();
+    let nonce2 = head_nonce(&router).await;
+    let jws2 = attacker_key.jws_with_jwk(&nonce2, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, atk_headers) = post_acme(&router, "/acme/new-account", jws2).await;
+    let attacker_url = location_header(&atk_headers);
+    let nonce = nonce_header(&atk_headers);
+
+    let order_url = format!("{base_url}/acme/order/{order_id}");
+    let jws = attacker_key.jws_with_kid(&attacker_url, &nonce, &order_url, None);
+    let (status, _, _) = post_acme(&router, &format!("/acme/order/{order_id}"), jws).await;
+    assert!(status.is_client_error(),
+        "get-order with wrong account should fail, got {status}");
+}
+
+/// Finalize a cert with MTC log enabled — verifies the MTC log path in finalize.rs.
+#[tokio::test]
+async fn test_finalize_with_mtc_enabled() {
+    use acme_server::mtc::log;
+    use synta_mtc::crypto::HashAlgorithm;
+    use tokio::sync::Mutex;
+
+    let base_url = "https://acme.test";
+    let dir = tempfile::TempDir::new().unwrap();
+    let log_path = dir.path().join("mtc.log").to_string_lossy().into_owned();
+
+    let config = Arc::new(acme_server::config::Config {
+        listen_addr: "127.0.0.1:0".into(),
+        base_url: base_url.into(),
+        database: DatabaseConfig { path: ":memory:".into() },
+        ca: CaConfig {
+            key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
+            cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
+            key_type: "ec:P-256".into(),
+            hash_alg: "sha256".into(),
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            common_name: "MTC Test CA".into(),
+            organization: "Test Org".into(),
+            ca_validity_years: 10,
+        },
+        mtc: MtcConfig { log_path: log_path.clone(), enabled: true },
+        server: acme_server::config::ServerConfig::default(),
+    });
+
+    let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
+    let db_conn = Arc::new(db::open(":memory:").await.unwrap());
+    let algorithm = HashAlgorithm::Sha256;
+    let mtc_log = log::open_or_create(&log_path, algorithm).unwrap();
+    let shared_log = Arc::new(Mutex::new(mtc_log));
+
+    let state = Arc::new(AppState {
+        config: Arc::clone(&config),
+        db: Arc::clone(&db_conn),
+        ca: Arc::new(CaState {
+            key: ca_key,
+            cert_der: ca_cert_der,
+            hash_alg: "sha256".into(),
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+        }),
+        mtc: Arc::new(MtcState {
+            log: Some(shared_log.clone()),
+            algorithm,
+        }),
+    });
+
+    let router = routes::build_router(Arc::clone(&state));
+
+    // Run a full ACME flow to finalize a cert (triggers MTC log append).
+    let key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    let jws = key.jws_with_kid(&account_url, &nonce, &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": "mtc-test.example"}]})));
+    let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
+    let nonce = nonce_header(&order_headers);
+
+    let order_id: String = db_conn.call(|c| Ok(c.query_row(
+        "SELECT id FROM orders ORDER BY created DESC LIMIT 1", [], |r| r.get(0))?)).await.unwrap();
+    mark_order_ready(&db_conn, &order_id).await;
+
+    let csr_der = make_csr_der("mtc-test.example");
+    let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
+    let finalize_url = format!("{base_url}/acme/order/{order_id}/finalize");
+    let jws = key.jws_with_kid(&account_url, &nonce, &finalize_url,
+        Some(json!({"csr": csr_b64})));
+    let (status, body, _) = post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
+    assert_eq!(status, StatusCode::OK, "finalize with MTC failed: {body}");
+
+    // Give the spawned MTC log task a moment to run.
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    // Verify something was logged to the MTC log.
+    let tree_size = log::tree_size(&shared_log).await.unwrap();
+    assert!(tree_size >= 1, "MTC log should have at least 1 entry after finalize");
+}
