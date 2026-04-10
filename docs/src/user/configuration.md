@@ -310,3 +310,35 @@ Maximum size in bytes of JOSE+JSON request bodies. Requests larger than this lim
 ```toml
 max_body_bytes = 65536
 ```
+
+### `http_validation_port`
+
+**Optional. Default: `80`.**
+
+TCP port used when the server fetches http-01 challenge responses. RFC 8555 §8.3 requires port 80 in production deployments. Override this to a high port for local testing or non-standard network environments.
+
+```toml
+http_validation_port = 80
+```
+
+### `dns_persist_issuer_domain`
+
+**Optional. Default: absent (dns-persist-01 disabled).**
+
+The issuer domain placed in the `issuer-domain-names` field of `dns-persist-01` challenge objects and matched against the first token of TXT records during validation. When this field is set, the server offers `dns-persist-01` as an additional challenge type for all `dns` identifiers. When absent, `dns-persist-01` is not offered and existing clients are unaffected.
+
+See [dns-persist-01 Challenge](dns-persist-01.md) for the full description of the challenge type and TXT record format.
+
+```toml
+dns_persist_issuer_domain = "acme.example.com"
+```
+
+### `dns_resolver_addr`
+
+**Optional. Default: absent (system resolver).**
+
+Override the DNS resolver used for `dns-01` and `dns-persist-01` challenge validation. Format: `"<ip>:<port>"`. When absent, the system default resolver is used. Useful for split-horizon DNS deployments where the ACME server cannot reach the public resolver, and for integration testing against a local stub server.
+
+```toml
+dns_resolver_addr = "127.0.0.1:5353"
+```
