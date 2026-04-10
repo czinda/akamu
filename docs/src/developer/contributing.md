@@ -2,6 +2,18 @@
 
 This chapter describes the conventions for code style, commit messages, and the pull request process for `Akāmu`.
 
+## Running CI locally
+
+Before pushing, verify the pipeline locally with `contrib/ci/local-ci.sh`:
+
+```bash
+./contrib/ci/local-ci.sh all
+```
+
+This runs the same jobs the CI system runs: build, fmt, clippy, doc, test,
+bench (compile-only), and workflow linting.  See [Local CI](ci.md) for the
+full reference.
+
 ## Code style
 
 ### Formatting
@@ -12,7 +24,11 @@ All Rust code is formatted with `rustfmt` using the default configuration:
 cargo fmt
 ```
 
-Run this before committing. CI will fail if the code is not formatted.
+Run this before committing, or let the `fmt` job catch it:
+
+```bash
+./contrib/ci/local-ci.sh fmt
+```
 
 ### Lints
 
@@ -20,6 +36,12 @@ Clippy is the linter. Address all warnings before submitting:
 
 ```
 cargo clippy -- -D warnings
+```
+
+Or via the CI script:
+
+```bash
+./contrib/ci/local-ci.sh clippy
 ```
 
 ### Documentation comments
@@ -102,7 +124,7 @@ fix: use saturating_sub in nonce sweep to avoid debug-mode panic
 
 1. Fork the repository and create a topic branch from `main`.
 2. Make your changes with appropriate tests.
-3. Ensure `cargo fmt`, `cargo clippy -- -D warnings`, and `cargo test` all pass.
+3. Ensure `./contrib/ci/local-ci.sh all` passes (covers fmt, clippy, doc, test, and bench compilation).
 4. Write a clear PR description explaining what problem the change solves and how it was tested.
 5. Keep PRs focused on a single concern. Unrelated changes should be separate PRs.
 6. Address review feedback by adding new commits; do not force-push to squash during review (it makes the diff hard to follow). Squashing happens at merge time if the reviewer requests it.

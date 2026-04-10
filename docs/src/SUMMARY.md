@@ -29,4 +29,5 @@
 - [Challenge Validation](developer/validation.md)
 - [Error Handling](developer/error-handling.md)
 - [Testing](developer/testing.md)
+- [Local CI](developer/ci.md)
 - [Contributing](developer/contributing.md)
