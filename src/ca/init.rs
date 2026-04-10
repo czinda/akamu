@@ -186,3 +186,106 @@ pub(crate) fn unix_to_generalized_time(secs: i64) -> String {
         gt.year, gt.month, gt.day, gt.hour, gt.minute, gt.second
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    use crate::config::CaConfig;
+
+    fn make_config_with_paths(dir: &std::path::Path, key_type: &str) -> CaConfig {
+        CaConfig {
+            key_file: dir.join("ca.key").to_string_lossy().into_owned(),
+            cert_file: dir.join("ca.crt").to_string_lossy().into_owned(),
+            key_type: key_type.to_string(),
+            hash_alg: "sha256".to_string(),
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            common_name: "Test CA".to_string(),
+            organization: "Test Org".to_string(),
+            ca_validity_years: 1,
+        }
+    }
+
+    #[test]
+    fn generate_backend_key_ec_p256() {
+        let key = generate_backend_key("ec:P-256").unwrap();
+        assert!(!key.public_key().unwrap().spki_der().is_empty());
+    }
+
+    #[test]
+    fn generate_backend_key_ec_p384() {
+        let key = generate_backend_key("ec:P-384").unwrap();
+        assert!(!key.public_key().unwrap().spki_der().is_empty());
+    }
+
+    #[test]
+    fn generate_backend_key_ec_p521() {
+        let key = generate_backend_key("ec:P-521").unwrap();
+        assert!(!key.public_key().unwrap().spki_der().is_empty());
+    }
+
+    #[test]
+    fn generate_backend_key_ed25519() {
+        let key = generate_backend_key("ed25519").unwrap();
+        assert!(!key.public_key().unwrap().spki_der().is_empty());
+    }
+
+    #[test]
+    fn generate_backend_key_unknown_type_returns_error() {
+        let result = generate_backend_key("bogus:key-type");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AcmeError::Internal(msg) => assert!(msg.contains("unknown key type")),
+            other => panic!("expected Internal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unix_to_generalized_time_known_epoch() {
+        // Unix epoch = 1970-01-01 00:00:00 UTC
+        let result = unix_to_generalized_time(0);
+        assert_eq!(result, "19700101000000Z");
+    }
+
+    #[test]
+    fn unix_to_generalized_time_known_date() {
+        // 2024-01-01 00:00:00 UTC = 1704067200
+        let result = unix_to_generalized_time(1_704_067_200);
+        assert_eq!(result, "20240101000000Z");
+    }
+
+    #[test]
+    fn load_or_generate_creates_files() {
+        let dir = tempdir().unwrap();
+        let config = make_config_with_paths(dir.path(), "ec:P-256");
+
+        // Neither file exists — should generate.
+        let (key, cert_der) = load_or_generate(&config).unwrap();
+        assert!(!cert_der.is_empty());
+        assert!(std::path::Path::new(&config.key_file).exists());
+        assert!(std::path::Path::new(&config.cert_file).exists());
+
+        // Both files now exist — should load.
+        let (key2, cert_der2) = load_or_generate(&config).unwrap();
+        assert_eq!(cert_der, cert_der2, "loaded cert should match generated cert");
+    }
+
+    #[test]
+    fn load_or_generate_partial_files_returns_error() {
+        let dir = tempdir().unwrap();
+        let config = make_config_with_paths(dir.path(), "ec:P-256");
+
+        // Only key file exists (cert missing) — should error.
+        fs::write(&config.key_file, b"dummy").unwrap();
+        let result = load_or_generate(&config);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AcmeError::Internal(msg) => assert!(msg.contains("both exist or both be absent")),
+            other => panic!("expected Internal, got {other:?}"),
+        }
+    }
+}
