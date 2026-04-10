@@ -44,3 +44,89 @@ pub async fn spki_for_kid(
 
     Ok(account.public_key)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn account_id_from_kid_valid() {
+        let id = account_id_from_kid("https://acme.test", "https://acme.test/acme/account/abc123").unwrap();
+        assert_eq!(id, "abc123");
+    }
+
+    #[test]
+    fn account_id_from_kid_wrong_base_url() {
+        let result = account_id_from_kid("https://acme.test", "https://other.example.com/acme/account/abc123");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AcmeError::Unauthorized(msg) => assert!(msg.contains("does not match server base URL")),
+            other => panic!("expected Unauthorized, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn account_id_from_kid_empty_id() {
+        // URL matches prefix but account ID is empty.
+        let result = account_id_from_kid("https://acme.test", "https://acme.test/acme/account/");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AcmeError::Unauthorized(msg) => assert!(msg.contains("empty")),
+            other => panic!("expected Unauthorized, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn spki_for_kid_account_not_found() {
+        let db = Arc::new(crate::db::open(":memory:").await.unwrap());
+        let result = spki_for_kid(&db, "https://acme.test", "https://acme.test/acme/account/nonexistent").await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AcmeError::Unauthorized(msg) => assert!(msg.contains("account not found")),
+            other => panic!("expected Unauthorized, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn spki_for_kid_deactivated_account_returns_error() {
+        use crate::db::schema::AccountRow;
+        let db = Arc::new(crate::db::open(":memory:").await.unwrap());
+        crate::db::accounts::insert(&db, AccountRow {
+            id: "deact-acct".to_string(),
+            status: "deactivated".to_string(),
+            contact: None,
+            public_key: vec![0u8; 4],
+            jwk_thumbprint: "thumb-deact".to_string(),
+            created: 1_700_000_000,
+            updated: 1_700_000_000,
+        }).await.unwrap();
+
+        let result = spki_for_kid(&db, "https://acme.test", "https://acme.test/acme/account/deact-acct").await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AcmeError::Unauthorized(msg) => assert!(msg.contains("deactivated")),
+            other => panic!("expected Unauthorized, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn spki_for_kid_valid_account_returns_spki() {
+        use crate::db::schema::AccountRow;
+        let db = Arc::new(crate::db::open(":memory:").await.unwrap());
+        let spki = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        crate::db::accounts::insert(&db, AccountRow {
+            id: "valid-acct".to_string(),
+            status: "valid".to_string(),
+            contact: None,
+            public_key: spki.clone(),
+            jwk_thumbprint: "thumb-valid".to_string(),
+            created: 1_700_000_000,
+            updated: 1_700_000_000,
+        }).await.unwrap();
+
+        let result = spki_for_kid(&db, "https://acme.test", "https://acme.test/acme/account/valid-acct").await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), spki);
+    }
+}
