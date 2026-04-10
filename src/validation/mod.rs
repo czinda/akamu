@@ -632,4 +632,201 @@ mod tests {
             unix_now(),
         ).await;
     }
+
+    /// on_valid where set_valid succeeds (challenges table present) but
+    /// update_status(authz) fails (authorizations table absent).
+    /// Covers validation/mod.rs lines 70-72 (update_status Err → warn + return).
+    #[tokio::test]
+    async fn on_valid_set_valid_ok_but_authz_update_fails() {
+        use crate::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
+        use crate::state::{AppState, CaState, MtcState};
+        use crate::ca;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = Arc::new(Config {
+            listen_addr: "127.0.0.1:0".into(),
+            base_url: "https://acme.test".into(),
+            database: DatabaseConfig { path: ":memory:".into() },
+            ca: CaConfig {
+                key_file: dir.path().join("ca3.key").to_string_lossy().into_owned(),
+                cert_file: dir.path().join("ca3.crt").to_string_lossy().into_owned(),
+                key_type: "ec:P-256".into(),
+                hash_alg: "sha256".into(),
+                validity_days: 90,
+                crl_url: None,
+                ocsp_url: None,
+                common_name: "Test CA".into(),
+                organization: "Test".into(),
+                ca_validity_years: 10,
+            },
+            mtc: MtcConfig { log_path: "/dev/null".into(), enabled: false },
+            server: ServerConfig::default(),
+        });
+        let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
+
+        // Create a DB with only the challenges table (no authorizations/orders).
+        let partial_db = Arc::new(tokio_rusqlite::Connection::open_in_memory().await.unwrap());
+        partial_db.call(|conn| {
+            conn.execute_batch(
+                "PRAGMA foreign_keys=OFF;
+                 CREATE TABLE challenges (
+                     id TEXT PRIMARY KEY,
+                     authz_id TEXT NOT NULL,
+                     type TEXT NOT NULL,
+                     status TEXT NOT NULL DEFAULT 'pending',
+                     token TEXT NOT NULL,
+                     validated INTEGER,
+                     error TEXT,
+                     created INTEGER NOT NULL,
+                     updated INTEGER NOT NULL
+                 );
+                 INSERT INTO challenges
+                     (id, authz_id, type, status, token, created, updated)
+                 VALUES ('chall-partial', 'authz-partial', 'http-01', 'pending', 'tok', 0, 0);"
+            )?;
+            Ok(())
+        }).await.unwrap();
+
+        let state = Arc::new(AppState {
+            config: Arc::clone(&config),
+            db: Arc::clone(&partial_db),
+            ca: Arc::new(CaState {
+                key: ca_key,
+                cert_der: ca_cert_der,
+                hash_alg: "sha256".into(),
+                validity_days: 90,
+                crl_url: None,
+                ocsp_url: None,
+            }),
+            mtc: Arc::new(MtcState {
+                log: None,
+                algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
+            }),
+        });
+
+        // set_valid succeeds (challenge row exists), then update_status(authz) fails
+        // (no authorizations table) → lines 70-72 (warn + return) are covered.
+        on_valid(&state, "chall-partial", "authz-partial", unix_now()).await;
+    }
+
+    /// Helper to build a state backed by a given db connection.
+    async fn make_state_with_db(db: Arc<tokio_rusqlite::Connection>) -> Arc<AppState> {
+        use crate::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
+        use crate::state::{AppState, CaState, MtcState};
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = Arc::new(Config {
+            listen_addr: "127.0.0.1:0".into(),
+            base_url: "https://acme.test".into(),
+            database: DatabaseConfig { path: ":memory:".into() },
+            ca: CaConfig {
+                key_file: dir.path().join("ca-p.key").to_string_lossy().into_owned(),
+                cert_file: dir.path().join("ca-p.crt").to_string_lossy().into_owned(),
+                key_type: "ec:P-256".into(),
+                hash_alg: "sha256".into(),
+                validity_days: 90,
+                crl_url: None,
+                ocsp_url: None,
+                common_name: "Test CA".into(),
+                organization: "Test".into(),
+                ca_validity_years: 10,
+            },
+            mtc: MtcConfig { log_path: "/dev/null".into(), enabled: false },
+            server: ServerConfig::default(),
+        });
+        let (ca_key, ca_cert_der) = crate::ca::init::load_or_generate(&config.ca).unwrap();
+        Arc::new(AppState {
+            config,
+            db: Arc::clone(&db),
+            ca: Arc::new(CaState {
+                key: ca_key,
+                cert_der: ca_cert_der,
+                hash_alg: "sha256".into(),
+                validity_days: 90,
+                crl_url: None,
+                ocsp_url: None,
+            }),
+            mtc: Arc::new(MtcState {
+                log: None,
+                algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
+            }),
+        })
+    }
+
+    /// Insert minimal test data: account, order, authz, challenge — all with the given IDs.
+    async fn insert_test_rows(
+        db: &Arc<tokio_rusqlite::Connection>,
+        acc_id: &str,
+        order_id: &str,
+        authz_id: &str,
+        chall_id: &str,
+    ) {
+        use crate::db;
+        use crate::db::schema::{AccountRow, AuthorizationRow, ChallengeRow, OrderRow};
+        let now = unix_now();
+        db::accounts::insert(db, AccountRow {
+            id: acc_id.to_string(), status: "valid".into(), contact: None,
+            public_key: vec![0], jwk_thumbprint: format!("t-{acc_id}"),
+            created: now, updated: now,
+        }).await.unwrap();
+        db::orders::insert(db, OrderRow {
+            id: order_id.to_string(), account_id: acc_id.to_string(),
+            status: "pending".into(), expires: None,
+            identifiers: r#"[{"type":"dns","value":"x.test"}]"#.into(),
+            not_before: None, not_after: None, error: None, certificate_id: None,
+            created: now, updated: now,
+        }).await.unwrap();
+        db::authz::insert(db, AuthorizationRow {
+            id: authz_id.to_string(), order_id: order_id.to_string(),
+            account_id: acc_id.to_string(), status: "pending".into(),
+            identifier: r#"{"type":"dns","value":"x.test"}"#.into(),
+            expires: None, wildcard: false, created: now, updated: now,
+        }).await.unwrap();
+        db::challenges::insert(db, ChallengeRow {
+            id: chall_id.to_string(), authz_id: authz_id.to_string(),
+            r#type: "http-01".into(), status: "pending".into(),
+            token: "tok".into(), validated: None, error: None,
+            created: now, updated: now,
+        }).await.unwrap();
+    }
+
+    /// on_valid where set_valid + update_status + get_by_id + list_by_order all
+    /// succeed, but update_status(orders "ready") fails because the orders table
+    /// was dropped.  Covers lines 97-105 (all_valid=true + orders-update Err path).
+    #[tokio::test]
+    async fn on_valid_orders_update_fails() {
+        let db_conn = Arc::new(crate::db::open(":memory:").await.unwrap());
+        insert_test_rows(&db_conn, "acc-ov", "ord-ov", "authz-ov", "chall-ov").await;
+
+        // Drop the orders table so update_status("ready") fails.
+        db_conn.call(|c| { c.execute_batch("PRAGMA foreign_keys=OFF; DROP TABLE orders;")?; Ok(()) }).await.unwrap();
+
+        let state = make_state_with_db(db_conn).await;
+        // on_valid: set_valid OK → update_status(authz) OK → get_by_id OK(Some) →
+        //   list_by_order OK([authz valid]) → all_valid=true → orders update FAIL →
+        //   lines 98-101 (warn) + line 105 (closing }) covered.
+        on_valid(&state, "chall-ov", "authz-ov", unix_now()).await;
+    }
+
+    /// on_invalid where set_invalid + update_status(authz invalid) + get_by_id
+    /// succeed but update_status(orders invalid) fails because orders was dropped.
+    /// Covers lines 139-143 (orders-invalid Err path).
+    #[tokio::test]
+    async fn on_invalid_orders_update_fails() {
+        let db_conn = Arc::new(crate::db::open(":memory:").await.unwrap());
+        insert_test_rows(&db_conn, "acc-oi", "ord-oi", "authz-oi", "chall-oi").await;
+
+        // Drop orders table so the order-invalid update fails.
+        db_conn.call(|c| { c.execute_batch("PRAGMA foreign_keys=OFF; DROP TABLE orders;")?; Ok(()) }).await.unwrap();
+
+        let state = make_state_with_db(db_conn).await;
+        // on_invalid: set_invalid OK → update_status(authz invalid) OK →
+        //   get_by_id(authz) Ok(Some) → orders update FAIL → lines 140-143 covered.
+        on_invalid(
+            &state,
+            "chall-oi",
+            "authz-oi",
+            AcmeError::Connection("test".into()),
+            unix_now(),
+        ).await;
+    }
 }
