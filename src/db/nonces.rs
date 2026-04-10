@@ -31,7 +31,7 @@ pub async fn consume(db: &Connection, nonce: &str) -> Result<bool, AcmeError> {
 
 /// Delete nonces older than `max_age_secs` seconds.
 pub async fn sweep_expired(db: &Connection, max_age_secs: i64) -> Result<u64, AcmeError> {
-    let cutoff = now_secs() - max_age_secs;
+    let cutoff = now_secs().saturating_sub(max_age_secs);
     db.call(move |conn| {
         let n = conn.execute(
             "DELETE FROM nonces WHERE created < ?1",
@@ -114,6 +114,7 @@ mod tests {
     async fn db_error_paths_no_table() {
         let raw = Arc::new(tokio_rusqlite::Connection::open_in_memory().await.unwrap());
         assert!(insert(&raw, "any-nonce").await.is_err());
+        assert!(consume(&raw, "any-nonce").await.is_err());
         assert!(sweep_expired(&raw, 3600).await.is_err());
     }
 }
