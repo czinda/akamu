@@ -19,13 +19,14 @@ pub async fn validate_challenge(
 )
 ```
 
-`validate_challenge` calls `dispatch(chall_type, ...)`, which routes to one of three validators:
+`validate_challenge` calls `dispatch(chall_type, ...)`, which routes to one of four validators:
 
 | `chall_type` | Module | Function |
 |---|---|---|
 | `"http-01"` | `validation::http01` | `validate(domain, token, key_auth)` |
 | `"dns-01"` | `validation::dns01` | `validate(domain, key_auth)` |
 | `"tls-alpn-01"` | `validation::tls_alpn01` | `validate(domain, key_auth)` |
+| `"dns-persist-01"` | `validation::dns_persist_01` | `validate(domain, account_uri, issuer_domain, resolver_addr)` |
 | Any other | — | Returns `AcmeError::IncorrectResponse` |
 
 After `dispatch` returns, `validate_challenge` calls either `on_valid` or `on_invalid` to update the database.
@@ -156,3 +157,37 @@ Error mapping:
 ### `AcceptAnyCert`
 
 The `AcceptAnyCert` struct implements `rustls::client::danger::ServerCertVerifier`. It returns `Ok(ServerCertVerified::assertion())` unconditionally for every certificate. Chain validation is intentionally bypassed because the tls-alpn-01 certificate is self-signed and issued by the ACME client for validation purposes only. All semantic checks are performed by `verify_acme_cert` instead.
+
+## dns-persist-01 validator (`src/validation/dns_persist_01.rs`)
+
+Uses `hickory_resolver::TokioAsyncResolver`. The resolver is either the system default or the address configured via `server.dns_resolver_addr`.
+
+Unlike the other challenge types, `dns-persist-01` does not use a `token · thumbprint` key authorization. The `key_auth` value passed to the validator is the requesting account's full URI (constructed as `<base_url>/acme/account/<account_id>` in `routes::challenge`). This URI is matched directly against the `accounturi=` field in the TXT record.
+
+Validation steps:
+1. Strip any leading `*.` prefix from the domain; record whether the order is a wildcard.
+2. Construct the query name `_validation-persist.<base_domain>`.
+3. Perform a TXT record lookup.
+4. For each TXT record value, call `matches_record(value, issuer_domain, account_uri, is_wildcard, now)`.
+5. If at least one record matches, return `Ok(())`.
+
+### `matches_record`
+
+`matches_record` is `pub(crate)` and is unit-tested independently of the DNS stack.
+
+It splits the raw TXT value on `;` and applies the following checks in order:
+
+1. The first token (trimmed, trailing dot stripped, lowercased) equals `expected_issuer` (same normalization applied).
+2. Among the remaining tokens, `accounturi=<uri>` is present and the URI matches `expected_account_uri` exactly (case-sensitive).
+3. If `require_wildcard_policy` is true, `policy=wildcard` is present among the tokens.
+4. If a `persistUntil=<ts>` token is present, `parse_persist_until(ts)` returns a Unix timestamp that is greater than or equal to `now`.
+
+Unknown tokens are silently ignored. The function returns `false` as soon as any required condition is not met.
+
+### `parse_persist_until`
+
+A pure-Rust, zero-dependency parser for the `YYYY-MM-DDTHH:MM:SSZ` timestamp format. It performs the proleptic Gregorian day count from the Unix epoch without using any external date/time crate. Returns `None` for malformed input (wrong separators, out-of-range fields, missing `Z` suffix).
+
+Error mapping:
+- DNS lookup failure → `AcmeError::Dns`
+- No matching TXT record → `AcmeError::IncorrectResponse`
