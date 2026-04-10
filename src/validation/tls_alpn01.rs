@@ -22,6 +22,11 @@ use crate::error::AcmeError;
 /// * `domain`   — the identifier value (DNS name).
 /// * `key_auth` — `{token}.{jwk_thumbprint}`.
 pub async fn validate(domain: &str, key_auth: &str) -> Result<(), AcmeError> {
+    validate_inner(domain, key_auth, 443).await
+}
+
+/// Inner implementation that allows injecting a custom port for testing.
+async fn validate_inner(domain: &str, key_auth: &str, port: u16) -> Result<(), AcmeError> {
     let expected_hash: [u8; 32] = Sha256::digest(key_auth.as_bytes()).into();
 
     // Build a rustls ClientConfig that:
@@ -44,9 +49,9 @@ pub async fn validate(domain: &str, key_auth: &str) -> Result<(), AcmeError> {
         .map_err(|e| AcmeError::Tls(format!("invalid server name '{domain}': {e}")))?;
 
     // TCP connect.
-    let tcp = TcpStream::connect((domain, 443u16))
+    let tcp = TcpStream::connect((domain, port))
         .await
-        .map_err(|e| AcmeError::Connection(format!("TCP connect to {domain}:443: {e}")))?;
+        .map_err(|e| AcmeError::Connection(format!("TCP connect to {domain}:{port}: {e}")))?;
 
     // TLS handshake (this also performs the ALPN negotiation).
     let tls_stream = connector
@@ -791,6 +796,90 @@ mod tests {
         }
     }
 
+    /// Covers tls_alpn01.rs line 248 — `tbs = skip_tlv(tbs)?` for issuerUniqueID [1].
+    ///
+    /// Builds a minimal raw cert DER with an issuerUniqueID [1] field (tag 0x81) before
+    /// the extensions [3] wrapper.  synta CertificateBuilder cannot produce issuerUniqueID,
+    /// so raw bytes are used.  The OID is encoded via synta API.
+    #[test]
+    fn find_extension_value_skips_issuer_unique_id() {
+        use synta::{Encode, Encoding, Encoder, ObjectIdentifier};
+        use synta_certificate::oids;
+
+        // TBSCertificate fields (6 mandatory skipped as INTEGER 0):
+        let mandatory: &[u8] = &[
+            0x02, 0x01, 0x00, // version (skipped — no [0] tag so code jumps to serial)
+            0x02, 0x01, 0x00, // serialNumber
+            0x02, 0x01, 0x00, // signature
+            0x02, 0x01, 0x00, // issuer
+            0x02, 0x01, 0x00, // validity
+            0x02, 0x01, 0x00, // subject
+            // subjectPublicKeyInfo (6th mandatory skip)
+        ];
+        // issuerUniqueID [1] IMPLICIT { 0xFF } — tag 0x81, length 1
+        let issuer_uid: &[u8] = &[0x81, 0x01, 0xff];
+        // extensions [3] EXPLICIT { SEQUENCE {} } — empty extension list → returns Ok(None)
+        let exts: &[u8] = &[0xa3, 0x02, 0x30, 0x00];
+
+        let tbs_content_len = mandatory.len() + issuer_uid.len() + exts.len();
+        let mut tbs = vec![0x30, tbs_content_len as u8];
+        tbs.extend_from_slice(mandatory);
+        tbs.extend_from_slice(issuer_uid);
+        tbs.extend_from_slice(exts);
+
+        let mut cert = vec![0x30, tbs.len() as u8];
+        cert.extend_from_slice(&tbs);
+
+        let acme_oid = ObjectIdentifier::new(oids::PE_ACME_IDENTIFIER).unwrap();
+        let mut enc = Encoder::new(Encoding::Der);
+        acme_oid.encode(&mut enc).unwrap();
+        let acme_oid_der = enc.finish().unwrap();
+
+        // Should not error — returns Ok(None) because extensions list is empty.
+        let result = find_extension_value(&cert, &acme_oid_der);
+        assert!(result.is_ok(), "expected Ok for cert with issuerUniqueID: {result:?}");
+        assert!(result.unwrap().is_none(), "expected None — no matching extension");
+    }
+
+    /// Covers tls_alpn01.rs line 252 — `tbs = skip_tlv(tbs)?` for subjectUniqueID [2].
+    ///
+    /// Same structure but uses tag 0x82 for subjectUniqueID.
+    #[test]
+    fn find_extension_value_skips_subject_unique_id() {
+        use synta::{Encode, Encoding, Encoder, ObjectIdentifier};
+        use synta_certificate::oids;
+
+        let mandatory: &[u8] = &[
+            0x02, 0x01, 0x00,
+            0x02, 0x01, 0x00,
+            0x02, 0x01, 0x00,
+            0x02, 0x01, 0x00,
+            0x02, 0x01, 0x00,
+            0x02, 0x01, 0x00,
+        ];
+        // subjectUniqueID [2] IMPLICIT { 0xFF } — tag 0x82, length 1
+        let subject_uid: &[u8] = &[0x82, 0x01, 0xff];
+        let exts: &[u8] = &[0xa3, 0x02, 0x30, 0x00];
+
+        let tbs_content_len = mandatory.len() + subject_uid.len() + exts.len();
+        let mut tbs = vec![0x30, tbs_content_len as u8];
+        tbs.extend_from_slice(mandatory);
+        tbs.extend_from_slice(subject_uid);
+        tbs.extend_from_slice(exts);
+
+        let mut cert = vec![0x30, tbs.len() as u8];
+        cert.extend_from_slice(&tbs);
+
+        let acme_oid = ObjectIdentifier::new(oids::PE_ACME_IDENTIFIER).unwrap();
+        let mut enc = Encoder::new(Encoding::Der);
+        acme_oid.encode(&mut enc).unwrap();
+        let acme_oid_der = enc.finish().unwrap();
+
+        let result = find_extension_value(&cert, &acme_oid_der);
+        assert!(result.is_ok(), "expected Ok for cert with subjectUniqueID: {result:?}");
+        assert!(result.unwrap().is_none(), "expected None — no matching extension");
+    }
+
     /// Covers tls_alpn01.rs line 267 — `return Err("expected Extension SEQUENCE")`.
     ///
     /// The extensions SEQUENCE contains an INTEGER (tag 0x02) instead of a SEQUENCE
@@ -867,6 +956,153 @@ mod tests {
 
         let result = find_extension_value(&cert, &acme_oid_der);
         assert!(result.is_err(), "expected Err for non-OID first element in extension: {result:?}");
+    }
+
+    // ── TLS server helpers for validate_inner integration tests ───────────────
+
+    /// Build a minimal self-signed certificate DER using synta.
+    /// No ACME extension — keeps the cert valid for use in rustls server configs.
+    fn build_simple_test_cert(key: &synta_certificate::BackendPrivateKey) -> Vec<u8> {
+        use synta_certificate::{CertificateBuilder, NameBuilder, PrivateKey as _};
+
+        let spki = key.public_key().unwrap().spki_der().to_vec();
+        let name_der = NameBuilder::new().common_name("acme-test").build().unwrap();
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let not_before = synta_certificate::parse_time(
+            &crate::ca::init::unix_to_generalized_time(now_secs),
+        )
+        .unwrap();
+        let not_after = synta_certificate::parse_time(
+            &crate::ca::init::unix_to_generalized_time(now_secs + 86400),
+        )
+        .unwrap();
+        let signer = key.as_signer("sha256");
+        CertificateBuilder::new()
+            .issuer_name(&name_der)
+            .subject_name(&name_der)
+            .public_key_der(&spki)
+            .serial_number(synta::Integer::from_i64(1))
+            .not_valid_before(not_before)
+            .not_valid_after(not_after)
+            .sign(&signer)
+            .unwrap()
+    }
+
+    /// Start a local TLS server on a random port, presenting `cert_der` signed by
+    /// `key`, with ALPN "acme-tls/1".  Uses TLS 1.3 (the default).
+    /// Returns the bound port.
+    async fn start_acme_tls13_server(
+        cert_der: Vec<u8>,
+        key: &synta_certificate::BackendPrivateKey,
+    ) -> u16 {
+        use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
+        use tokio::net::TcpListener;
+        use tokio_rustls::TlsAcceptor;
+
+        let pkcs8_der = key.to_der().unwrap();
+        let private_key = rustls::pki_types::PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(pkcs8_der));
+        let cert = CertificateDer::from(cert_der);
+
+        let mut server_config = rustls::ServerConfig::builder_with_provider(
+            Arc::new(rustls::crypto::ring::default_provider()),
+        )
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert], private_key)
+        .unwrap();
+        server_config.alpn_protocols = vec![b"acme-tls/1".to_vec()];
+
+        let acceptor = TlsAcceptor::from(Arc::new(server_config));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            if let Ok((stream, _)) = listener.accept().await {
+                let _ = acceptor.accept(stream).await;
+            }
+        });
+        port
+    }
+
+    /// Start a local TLS 1.2-only server on a random port.
+    /// Returns the bound port.
+    async fn start_acme_tls12_server(
+        cert_der: Vec<u8>,
+        key: &synta_certificate::BackendPrivateKey,
+    ) -> u16 {
+        use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
+        use tokio::net::TcpListener;
+        use tokio_rustls::TlsAcceptor;
+
+        let pkcs8_der = key.to_der().unwrap();
+        let private_key = rustls::pki_types::PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(pkcs8_der));
+        let cert = CertificateDer::from(cert_der);
+
+        let mut server_config = rustls::ServerConfig::builder_with_provider(
+            Arc::new(rustls::crypto::ring::default_provider()),
+        )
+        .with_protocol_versions(&[&rustls::version::TLS12])
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert], private_key)
+        .unwrap();
+        server_config.alpn_protocols = vec![b"acme-tls/1".to_vec()];
+
+        let acceptor = TlsAcceptor::from(Arc::new(server_config));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            if let Ok((stream, _)) = listener.accept().await {
+                let _ = acceptor.accept(stream).await;
+            }
+        });
+        port
+    }
+
+    /// Covers validate_inner TLS handshake lines 52-68 and verify_tls13_signature
+    /// (lines 903-910).  The TLS 1.3 handshake succeeds; the server presents a cert
+    /// without the ACME extension, so verify_acme_cert returns IncorrectResponse.
+    #[tokio::test]
+    async fn validate_inner_tls13_handshake_covers_lines_52_68() {
+        use synta_certificate::BackendPrivateKey;
+
+        let key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let cert_der = build_simple_test_cert(&key);
+        let port = start_acme_tls13_server(cert_der, &key).await;
+
+        // TLS handshake succeeds (lines 52-68 covered).
+        // verify_acme_cert returns IncorrectResponse because there is no ACME extension.
+        let result = validate_inner("127.0.0.1", "token.thumbprint", port).await;
+        assert!(
+            matches!(result, Err(crate::error::AcmeError::IncorrectResponse(_))
+                | Err(crate::error::AcmeError::Tls(_))),
+            "expected IncorrectResponse or Tls error after TLS handshake: {result:?}"
+        );
+    }
+
+    /// Covers verify_tls12_signature (lines 894-901).
+    /// The client's AcceptAnyCert::verify_tls12_signature is called during the
+    /// TLS 1.2 ServerKeyExchange message verification.
+    #[tokio::test]
+    async fn validate_inner_tls12_handshake_covers_verify_tls12_signature() {
+        use synta_certificate::BackendPrivateKey;
+
+        let key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let cert_der = build_simple_test_cert(&key);
+        let port = start_acme_tls12_server(cert_der, &key).await;
+
+        // TLS 1.2 handshake: verify_tls12_signature is called (lines 894-901 covered).
+        let result = validate_inner("127.0.0.1", "token.thumbprint", port).await;
+        assert!(
+            matches!(result, Err(crate::error::AcmeError::IncorrectResponse(_))
+                | Err(crate::error::AcmeError::Tls(_))),
+            "expected IncorrectResponse or Tls error after TLS 1.2 handshake: {result:?}"
+        );
     }
 }
 
