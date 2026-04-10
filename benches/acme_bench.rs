@@ -23,6 +23,7 @@
 //!   --verify-cert     parse and check SAN of every issued cert
 
 use std::{
+    alloc::{GlobalAlloc, Layout, System},
     collections::HashMap,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -53,6 +54,127 @@ use acme_server::{
     db, routes,
     state::{AppState, CaState, MtcState},
 };
+
+// ── Heap-allocation tracking (borrowed from synta-fuzz/src/main.rs) ───────────
+//
+// A thin wrapper around the system allocator that maintains four AtomicU64
+// counters:
+//
+//   ALLOC_COUNT — number of alloc() calls since process start.
+//   ALLOC_BYTES — cumulative bytes requested (includes subsequently freed
+//                 memory, so this measures allocation *pressure*).
+//   LIVE_BYTES  — currently live bytes (incremented on alloc, decremented on
+//                 dealloc/realloc-shrink).
+//   PEAK_BYTES  — maximum LIVE_BYTES seen since the last reset_peak() call.
+//
+// These give the benchmark two complementary views of memory:
+//
+//   • Live (LIVE_BYTES) — footprint: how much heap the process actually holds.
+//   • Pressure (ALLOC_BYTES) — churn: how much total allocation the workload
+//     drives through the allocator, including short-lived temporaries.
+
+static ALLOC_COUNT: AtomicU64 = AtomicU64::new(0);
+static ALLOC_BYTES: AtomicU64 = AtomicU64::new(0);
+static LIVE_BYTES: AtomicU64 = AtomicU64::new(0);
+static PEAK_BYTES: AtomicU64 = AtomicU64::new(0);
+
+struct TrackingAlloc;
+
+unsafe impl GlobalAlloc for TrackingAlloc {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let ptr = unsafe { System.alloc(layout) };
+        if !ptr.is_null() {
+            ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+            ALLOC_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
+            let live = LIVE_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed)
+                + layout.size() as u64;
+            update_peak(live);
+        }
+        ptr
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) };
+        LIVE_BYTES.fetch_sub(layout.size() as u64, Ordering::Relaxed);
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let ptr = unsafe { System.realloc(ptr, layout, new_size) };
+        if !ptr.is_null() {
+            let old = layout.size() as u64;
+            let new = new_size as u64;
+            if new > old {
+                ALLOC_BYTES.fetch_add(new - old, Ordering::Relaxed);
+                let live = LIVE_BYTES.fetch_add(new - old, Ordering::Relaxed) + (new - old);
+                update_peak(live);
+            } else {
+                LIVE_BYTES.fetch_sub(old - new, Ordering::Relaxed);
+            }
+        }
+        ptr
+    }
+}
+
+#[global_allocator]
+static ALLOC: TrackingAlloc = TrackingAlloc;
+
+fn update_peak(live: u64) {
+    let mut old = PEAK_BYTES.load(Ordering::Relaxed);
+    while live > old {
+        match PEAK_BYTES.compare_exchange_weak(old, live, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(x) => old = x,
+        }
+    }
+}
+
+/// Reset the peak tracker to the current live level.
+///
+/// Call this just before the measured window begins so that PEAK_BYTES
+/// captures the high-water mark *within* that window rather than since
+/// process start.
+fn reset_peak() {
+    PEAK_BYTES.store(LIVE_BYTES.load(Ordering::Relaxed), Ordering::Relaxed);
+}
+
+/// Point-in-time snapshot of the four allocation counters.
+#[derive(Default, Clone, Copy)]
+struct AllocSnapshot {
+    live: u64,
+    peak: u64,
+    total_bytes: u64,
+    total_count: u64,
+}
+
+fn alloc_snapshot() -> AllocSnapshot {
+    AllocSnapshot {
+        live: LIVE_BYTES.load(Ordering::Relaxed),
+        peak: PEAK_BYTES.load(Ordering::Relaxed),
+        total_bytes: ALLOC_BYTES.load(Ordering::Relaxed),
+        total_count: ALLOC_COUNT.load(Ordering::Relaxed),
+    }
+}
+
+/// Memory statistics captured at three milestones in the benchmark run.
+struct MemStats {
+    /// After process start, before the ACME server is initialised.
+    start: AllocSnapshot,
+    /// After server init (CA key-gen, DB open, TCP bind) — before any issuances.
+    server_ready: AllocSnapshot,
+    /// After all issuances (warmup + benchmark) complete.
+    after_bench: AllocSnapshot,
+    /// Total number of issuances performed (warmup + benchmark), used as
+    /// the denominator for per-issuance calculations.
+    total_issuances: usize,
+}
+
+fn mib(bytes: u64) -> f64 {
+    bytes as f64 / (1024.0 * 1024.0)
+}
+
+fn kib(bytes: u64) -> f64 {
+    bytes as f64 / 1024.0
+}
 
 // ── CLI ────────────────────────────────────────────────────────────────────────
 
@@ -1037,7 +1159,7 @@ fn max_ms(v: &[u64]) -> f64 {
 
 // ── Report output ──────────────────────────────────────────────────────────────
 
-fn text_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64) {
+fn text_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64, mem: &MemStats) {
     let ok: Vec<&IssuanceTiming> = timings.iter().filter(|t| t.success).collect();
     let err: Vec<&IssuanceTiming> = timings.iter().filter(|t| !t.success).collect();
     let n_ok = ok.len();
@@ -1119,10 +1241,57 @@ fn text_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64) {
             println!("    [{count}] {msg}");
         }
     }
+
+    // ── Memory section ─────────────────────────────────────────────────────────
+    {
+        let s = &mem.start;
+        let r = &mem.server_ready;
+        let b = &mem.after_bench;
+        let n = mem.total_issuances;
+
+        let server_overhead = b.live.saturating_sub(s.live);
+        let issuance_growth = b.live.saturating_sub(r.live);
+        let issuance_alloc = b.total_bytes.saturating_sub(r.total_bytes);
+        let per_iss_growth_kib = if n > 0 {
+            kib(issuance_growth) / n as f64
+        } else {
+            0.0
+        };
+        let per_iss_alloc_mib = if n > 0 {
+            mib(issuance_alloc) / n as f64
+        } else {
+            0.0
+        };
+
+        println!("\n  Heap (allocator counters):");
+        println!("    process start:    {:7.1} MiB  live", mib(s.live));
+        println!(
+            "    server ready:     {:7.1} MiB  live   (server overhead: +{:.1} MiB)",
+            mib(r.live),
+            mib(server_overhead),
+        );
+        println!(
+            "    after {:4} iss.:  {:7.1} MiB  live   (issuance growth: +{:.1} MiB, {:.1} KiB/iss.)",
+            n,
+            mib(b.live),
+            mib(issuance_growth),
+            per_iss_growth_kib,
+        );
+        println!(
+            "    peak live:        {:7.1} MiB         (high-water mark during issuances)",
+            mib(b.peak)
+        );
+        println!(
+            "    alloc pressure:   {:7.1} MiB  total  ({:.3} MiB/iss. requested, incl. freed)",
+            mib(issuance_alloc),
+            per_iss_alloc_mib,
+        );
+    }
+
     println!();
 }
 
-fn json_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64) {
+fn json_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64, mem: &MemStats) {
     let ok: Vec<&IssuanceTiming> = timings.iter().filter(|t| t.success).collect();
     let n_ok = ok.len();
     let n_err = timings.len() - n_ok;
@@ -1133,6 +1302,13 @@ fn json_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64) {
     };
     let mut totals: Vec<u64> = ok.iter().map(|t| t.total_us).collect();
     totals.sort_unstable();
+
+    let n = mem.total_issuances;
+    let issuance_growth = mem.after_bench.live.saturating_sub(mem.server_ready.live);
+    let issuance_alloc = mem
+        .after_bench
+        .total_bytes
+        .saturating_sub(mem.server_ready.total_bytes);
 
     let out = json!({
         "config": {
@@ -1156,6 +1332,19 @@ fn json_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64) {
             "challenge_ms":    mean_ms(&ok.iter().map(|t| t.challenge_us).collect::<Vec<_>>()),
             "finalize_ms":     mean_ms(&ok.iter().map(|t| t.finalize_us).collect::<Vec<_>>()),
             "download_ms":     mean_ms(&ok.iter().map(|t| t.download_us).collect::<Vec<_>>()),
+        },
+        "memory": {
+            // All values in bytes; divide by 1 MiB (1 048 576) for MiB.
+            "start_live_bytes":         mem.start.live,
+            "server_ready_live_bytes":  mem.server_ready.live,
+            "after_bench_live_bytes":   mem.after_bench.live,
+            "peak_live_bytes":          mem.after_bench.peak,
+            "server_overhead_bytes":    mem.after_bench.live.saturating_sub(mem.start.live),
+            "issuance_growth_bytes":    issuance_growth,
+            "per_issuance_growth_bytes": if n > 0 { issuance_growth / n as u64 } else { 0 },
+            "issuance_alloc_bytes":     issuance_alloc,
+            "per_issuance_alloc_bytes": if n > 0 { issuance_alloc / n as u64 } else { 0 },
+            "total_alloc_count":        mem.after_bench.total_count,
         },
         "raw": timings.iter().map(|t| json!({
             "worker_id": t.worker_id, "request_id": t.request_id,
@@ -1204,7 +1393,9 @@ async fn main() {
         "Starting server (ca-key={}, db={})…",
         args.ca_key_type, args.db
     );
+    let mem_start = alloc_snapshot();
     let server = Arc::new(start_server(&args).await);
+    let mem_server_ready = alloc_snapshot();
     eprintln!("Server ready at {}", server.base_url);
 
     let total = args.warmup + args.requests;
@@ -1229,6 +1420,7 @@ async fn main() {
     let last_bench_us = Arc::new(AtomicU64::new(0));
     let t_epoch = Instant::now();
 
+    reset_peak();
     let mut handles = Vec::new();
     for worker_id in 0..args.clients {
         let args = args.clone();
@@ -1272,6 +1464,13 @@ async fn main() {
     for h in handles {
         h.await.unwrap();
     }
+    let mem_after_bench = alloc_snapshot();
+    let mem = MemStats {
+        start: mem_start,
+        server_ready: mem_server_ready,
+        after_bench: mem_after_bench,
+        total_issuances: args.warmup + args.requests,
+    };
 
     // Compute benchmark wall time from the first non-warmup start to the last end.
     let f = first_bench_us.load(Ordering::Relaxed);
@@ -1289,7 +1488,7 @@ async fn main() {
         .collect();
 
     match args.output.as_str() {
-        "json" => json_report(&args, &bench_timings, bench_wall),
-        _ => text_report(&args, &bench_timings, bench_wall),
+        "json" => json_report(&args, &bench_timings, bench_wall, &mem),
+        _ => text_report(&args, &bench_timings, bench_wall, &mem),
     }
 }
