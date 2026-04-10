@@ -82,52 +82,61 @@ pub async fn finalize_order(
 
     let now = unix_now();
 
-    // Persist the certificate and link it to the order atomically so that a
-    // crash between the two writes cannot leave the DB inconsistent.
-    {
-        let cert_id = issued.id.clone();
-        let order_id_clone = id.clone();
-        let acct_id = account_id.clone();
-        let serial = issued.serial_hex.clone();
-        let cert_der = issued.cert_der.clone();
-        let cert_pem = issued.cert_pem.clone();
-        let not_before = issued.not_before;
-        let not_after = issued.not_after;
+    // Persist the certificate, update the order, and fetch authz IDs atomically
+    // in a single db.call so that (a) a crash between the two writes cannot leave
+    // the DB inconsistent, and (b) we avoid two extra channel round-trips that
+    // would otherwise be needed to re-read the order and its authorizations.
+    let cert_id = issued.id.clone();
+    let order_id_clone = id.clone();
+    let acct_id = account_id.clone();
+    let serial = issued.serial_hex.clone();
+    let cert_der = issued.cert_der.clone();
+    let cert_pem = issued.cert_pem.clone();
+    let not_before = issued.not_before;
+    let not_after = issued.not_after;
 
-        state
-            .db
-            .call(move |conn| {
-                let tx = conn.transaction()?;
-                tx.execute(
-                    "INSERT INTO certificates
-                     (id, order_id, account_id, serial_number, status, der, pem,
-                      not_before, not_after, revoked_at, revocation_reason,
-                      mtc_log_index, created, suggested_window_start, suggested_window_end)
-                     VALUES (?1, ?2, ?3, ?4, 'valid', ?5, ?6, ?7, ?8,
-                             NULL, NULL, NULL, ?9, NULL, NULL)",
-                    rusqlite::params![
-                        cert_id,
-                        order_id_clone,
-                        acct_id,
-                        serial,
-                        cert_der,
-                        cert_pem,
-                        not_before,
-                        not_after,
-                        now,
-                    ],
-                )?;
-                tx.execute(
-                    "UPDATE orders SET status = 'valid', certificate_id = ?1, updated = ?2
-                     WHERE id = ?3",
-                    rusqlite::params![cert_id, now, order_id_clone],
-                )?;
-                tx.commit()?;
-                Ok(())
-            })
-            .await
-            .map_err(AcmeError::from)?;
-    }
+    let authz_ids: Vec<String> = state
+        .db
+        .call(move |conn| {
+            let tx = conn.transaction()?;
+            tx.execute(
+                "INSERT INTO certificates
+                 (id, order_id, account_id, serial_number, status, der, pem,
+                  not_before, not_after, revoked_at, revocation_reason,
+                  mtc_log_index, created, suggested_window_start, suggested_window_end)
+                 VALUES (?1, ?2, ?3, ?4, 'valid', ?5, ?6, ?7, ?8,
+                         NULL, NULL, NULL, ?9, NULL, NULL)",
+                rusqlite::params![
+                    cert_id,
+                    order_id_clone,
+                    acct_id,
+                    serial,
+                    cert_der,
+                    cert_pem,
+                    not_before,
+                    not_after,
+                    now,
+                ],
+            )?;
+            tx.execute(
+                "UPDATE orders SET status = 'valid', certificate_id = ?1, updated = ?2
+                 WHERE id = ?3",
+                rusqlite::params![cert_id, now, order_id_clone],
+            )?;
+            // Fetch authz IDs within the same db.call to avoid a separate round-trip.
+            // drop(stmt) before tx.commit() so the borrow of tx is released.
+            let mut stmt = tx.prepare("SELECT id FROM authorizations WHERE order_id = ?1")?;
+            let ids: Vec<String> = stmt
+                .query_map(rusqlite::params![order_id_clone], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(stmt);
+            tx.commit()?;
+            Ok(ids)
+        })
+        .await
+        .map_err(AcmeError::from)?;
 
     // Optionally append to the MTC log.
     if state.mtc.is_enabled() {
@@ -156,11 +165,12 @@ pub async fn finalize_order(
         }
     }
 
-    // Return updated order.
-    let updated_order = db::orders::get_by_id(&state.db, &id)
-        .await?
-        .ok_or(AcmeError::NotFound)?;
-    let authz_ids = db::orders::list_authz_ids(&state.db, &id).await?;
+    // Build the response from the known post-finalize state without a DB re-fetch.
+    let mut updated_order = order;
+    updated_order.status = "valid".to_string();
+    updated_order.certificate_id = Some(issued.id.clone());
+    updated_order.updated = now;
+
     let authz_urls: Vec<_> = authz_ids
         .iter()
         .map(|aid| format!("{}/acme/authz/{}", state.config.base_url, aid))
