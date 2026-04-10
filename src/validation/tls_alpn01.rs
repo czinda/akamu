@@ -623,6 +623,120 @@ mod tests {
         assert!(result.is_err(), "should fail when extension is not critical");
     }
 
+    /// Covers find_extension_value line 286 (`continue; // wrong OID`).
+    ///
+    /// Build a certificate with two extensions: BasicConstraints (wrong OID) first,
+    /// then id-pe-acmeIdentifier (correct OID) second. find_extension_value must
+    /// skip the first extension via `continue` and return the second.
+    #[test]
+    fn find_extension_value_skips_non_matching_oid() {
+        use synta::{Encode, Encoding, Encoder, ObjectIdentifier, OctetString};
+        use synta_certificate::{
+            BackendPrivateKey, CertificateBuilder, NameBuilder, PrivateKey as _,
+            encode_basic_constraints, acme_types::Authorization,
+        };
+
+        let key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let spki = key.public_key().unwrap().spki_der().to_vec();
+        let name_der = NameBuilder::new().common_name("example.com").build().unwrap();
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let not_before = synta_certificate::parse_time(
+            &crate::ca::init::unix_to_generalized_time(now_secs),
+        )
+        .unwrap();
+        let not_after = synta_certificate::parse_time(
+            &crate::ca::init::unix_to_generalized_time(now_secs + 86400),
+        )
+        .unwrap();
+
+        // BasicConstraints extension (wrong OID — must be skipped via `continue`)
+        let bc = encode_basic_constraints(false, None).unwrap();
+
+        // ACME id-pe-acmeIdentifier extension (correct OID — must be found)
+        let digest = [0xab_u8; 32];
+        let auth = Authorization::new_unchecked(OctetString::new(digest.to_vec()));
+        let auth_der = auth.to_der().unwrap();
+
+        let signer = key.as_signer("sha256");
+        let cert_der = CertificateBuilder::new()
+            .issuer_name(&name_der)
+            .subject_name(&name_der)
+            .public_key_der(&spki)
+            .serial_number(synta::Integer::from_i64(1))
+            .not_valid_before(not_before)
+            .not_valid_after(not_after)
+            .add_extension_oid(synta_certificate::oids::BASIC_CONSTRAINTS, false, &bc)
+            .add_extension_oid(synta_certificate::oids::PE_ACME_IDENTIFIER, true, &auth_der)
+            .sign(&signer)
+            .unwrap();
+
+        // Encode the ACME OID to DER using synta (produces 06 08 2b 06 01 05 05 07 01 1f)
+        let acme_oid = ObjectIdentifier::new(synta_certificate::oids::PE_ACME_IDENTIFIER).unwrap();
+        let mut enc = Encoder::new(Encoding::Der);
+        acme_oid.encode(&mut enc).unwrap();
+        let acme_oid_der = enc.finish().unwrap();
+
+        let result = find_extension_value(&cert_der, &acme_oid_der);
+        assert!(result.is_ok(), "expected Ok, got: {result:?}");
+        assert!(result.unwrap().is_some(), "expected Some for the ACME extension");
+    }
+
+    /// Covers find_extension_value line 303 (`Ok(None)`).
+    ///
+    /// Build a certificate with only BasicConstraints — no ACME extension.
+    /// find_extension_value iterates all extensions, finds no match, and returns Ok(None).
+    #[test]
+    fn find_extension_value_no_matching_oid_returns_none() {
+        use synta::{Encode, Encoding, Encoder, ObjectIdentifier};
+        use synta_certificate::{
+            BackendPrivateKey, CertificateBuilder, NameBuilder, PrivateKey as _,
+            encode_basic_constraints,
+        };
+
+        let key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let spki = key.public_key().unwrap().spki_der().to_vec();
+        let name_der = NameBuilder::new().common_name("example.com").build().unwrap();
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let not_before = synta_certificate::parse_time(
+            &crate::ca::init::unix_to_generalized_time(now_secs),
+        )
+        .unwrap();
+        let not_after = synta_certificate::parse_time(
+            &crate::ca::init::unix_to_generalized_time(now_secs + 86400),
+        )
+        .unwrap();
+
+        // Only BasicConstraints — no ACME extension
+        let bc = encode_basic_constraints(false, None).unwrap();
+        let signer = key.as_signer("sha256");
+        let cert_der = CertificateBuilder::new()
+            .issuer_name(&name_der)
+            .subject_name(&name_der)
+            .public_key_der(&spki)
+            .serial_number(synta::Integer::from_i64(1))
+            .not_valid_before(not_before)
+            .not_valid_after(not_after)
+            .add_extension_oid(synta_certificate::oids::BASIC_CONSTRAINTS, false, &bc)
+            .sign(&signer)
+            .unwrap();
+
+        // Encode the ACME OID to DER using synta (produces 06 08 2b 06 01 05 05 07 01 1f)
+        let acme_oid = ObjectIdentifier::new(synta_certificate::oids::PE_ACME_IDENTIFIER).unwrap();
+        let mut enc = Encoder::new(Encoding::Der);
+        acme_oid.encode(&mut enc).unwrap();
+        let acme_oid_der = enc.finish().unwrap();
+
+        let result = find_extension_value(&cert_der, &acme_oid_der);
+        assert!(result.is_ok(), "should not error: {result:?}");
+        assert!(result.unwrap().is_none(), "should return None when ACME extension is absent");
+    }
+
     // ── AcceptAnyCert ─────────────────────────────────────────────────────────
 
     #[test]
