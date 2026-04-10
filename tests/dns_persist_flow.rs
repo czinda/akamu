@@ -45,9 +45,16 @@ use acme_server::{ca, db, routes};
 fn init_tracing() {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
-        // tower_http=trace  — logs every inbound request + response status/latency
+        // compact()         — renders span fields inline on the same line as the event,
+        //                     e.g.: DEBUG request{method=POST uri=/acme/new-order} finished … status=201
+        // with_target(false) — omits the "tower_http::trace::on_response:" module-path prefix
+        // Together these collapse each HTTP exchange to a single readable line.
+        .compact()
+        .with_target(false)
+        // tower_http=debug  — one "finished processing request" line per HTTP exchange
+        //                     (on_request and on_eos are suppressed in build_router)
         // acme_server=debug — server-side validation logic, CA signing, DB updates
-        .with_env_filter("tower_http=trace,acme_server=debug,info")
+        .with_env_filter("tower_http=debug,acme_server=debug,info")
         .try_init();
 }
 

@@ -48,7 +48,11 @@ use acme_server::{ca, db, routes, tls};
 fn init_tracing() {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
-        .with_env_filter("acme_server=debug,info")
+        // compact()          — renders span fields inline; one log line per HTTP exchange
+        // with_target(false) — omits module-path prefixes like "tower_http::trace::on_response:"
+        .compact()
+        .with_target(false)
+        .with_env_filter("tower_http=debug,acme_server=debug,info")
         .try_init();
 }
 

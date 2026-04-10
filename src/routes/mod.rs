@@ -57,7 +57,15 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/acme/key-change", post(key_change::key_change))
         // Renewal Info (RFC 9773 ARI)
         .route("/acme/renewal-info/{cert_id}", get(renewal_info::get_renewal_info))
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http()
+                // Suppress "started processing request" — the response line already
+                // carries method, URI, status, and latency; the request event is redundant.
+                .on_request(())
+                // Suppress "end of stream" — this fires after the body is fully
+                // sent and adds no useful information for ACME endpoints.
+                .on_eos(()),
+        )
         .with_state(state)
 }
 

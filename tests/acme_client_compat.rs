@@ -38,10 +38,15 @@ use acme_server::{
 fn init_tracing() {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
-        // tower_http=trace  — logs every inbound request path + outbound status on the server
-        // acme_server=debug — server-side business logic (validation, CA signing, DB)
+        // compact()          — renders span fields inline; one log line per HTTP exchange
+        // with_target(false) — omits module-path prefixes like "tower_http::trace::on_response:"
+        .compact()
+        .with_target(false)
+        // tower_http=debug   — one "finished processing request" line per HTTP call
+        //                      (on_request and on_eos are suppressed in build_router)
+        // acme_server=debug  — server-side business logic (validation, CA signing, DB)
         // instant_acme=debug — client-side JWS, nonce refresh, retry logic
-        .with_env_filter("tower_http=trace,acme_server=debug,instant_acme=debug,info")
+        .with_env_filter("tower_http=debug,acme_server=debug,instant_acme=debug,info")
         .try_init();
 }
 
