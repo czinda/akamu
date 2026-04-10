@@ -19,6 +19,15 @@ pub struct AppState {
 }
 
 /// CA key material and issuance policy.
+///
+/// # Concurrency
+///
+/// `CaState` is shared across all concurrent axum handler tasks via
+/// `Arc<CaState>`. `BackendPrivateKey` delegates signing to the underlying
+/// `synta_certificate` backend (OpenSSL / AWS-LC), which serialises concurrent
+/// operations internally. If the backend ever changes to one that is not
+/// thread-safe for concurrent signing, protect `key` with a
+/// `tokio::sync::Mutex<BackendPrivateKey>`.
 pub struct CaState {
     /// CA private key (used for signing certificates and CRLs).
     pub key: BackendPrivateKey,
