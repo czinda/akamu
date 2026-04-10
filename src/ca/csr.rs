@@ -22,6 +22,7 @@ pub struct SanEntry {
 }
 
 /// A validated CSR ready for certificate issuance.
+#[derive(Debug)]
 pub struct ValidatedCsr {
     /// SPKI DER from the CSR (for inclusion in the issued certificate).
     pub spki_der: Vec<u8>,
@@ -252,5 +253,192 @@ fn bytes_to_ip_string(bytes: &[u8]) -> Option<String> {
             Some(std::net::Ipv6Addr::from(octets).to_string())
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use synta_certificate::{BackendPrivateKey, CsrBuilder, NameBuilder, PrivateKey as _,
+        SubjectAlternativeNameBuilder, BasicConstraints};
+    use synta_certificate::oids;
+    use synta::{Encoder, Encoding};
+    use synta::traits::Encode;
+
+    fn make_csr_der(key: &BackendPrivateKey, domain: &str, include_bc_ca_true: bool) -> Vec<u8> {
+        let spki_der = key.public_key().unwrap().spki_der().to_vec();
+        let name_der = NameBuilder::new().common_name(domain).build().unwrap();
+        let san_der = SubjectAlternativeNameBuilder::new()
+            .dns_name(domain)
+            .build()
+            .unwrap();
+        let signer = key.as_signer("sha256");
+        let mut builder = CsrBuilder::new()
+            .subject_name(&name_der)
+            .public_key_der(&spki_der)
+            .add_extension_oid(oids::SUBJECT_ALT_NAME, false, &san_der);
+
+        if include_bc_ca_true {
+            // Build BasicConstraints with cA=TRUE.
+            let bc = synta_certificate::encode_basic_constraints(true, None).unwrap();
+            builder = builder.add_extension_oid(oids::BASIC_CONSTRAINTS, true, &bc);
+        }
+
+        builder.sign(&signer).unwrap()
+    }
+
+    fn make_ip_csr_der(key: &BackendPrivateKey, ip_bytes: &[u8]) -> Vec<u8> {
+        let spki_der = key.public_key().unwrap().spki_der().to_vec();
+        let name_der = NameBuilder::new().common_name("ip-san-test").build().unwrap();
+        let san_der = SubjectAlternativeNameBuilder::new()
+            .ip_address(ip_bytes)
+            .build()
+            .unwrap();
+        let signer = key.as_signer("sha256");
+        CsrBuilder::new()
+            .subject_name(&name_der)
+            .public_key_der(&spki_der)
+            .add_extension_oid(oids::SUBJECT_ALT_NAME, false, &san_der)
+            .sign(&signer)
+            .unwrap()
+    }
+
+    #[test]
+    fn valid_dns_csr_parses_correctly() {
+        let key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let csr_der = make_csr_der(&key, "example.com", false);
+        let result = validate_csr(&csr_der, &[("dns", "example.com")]);
+        assert!(result.is_ok(), "should parse valid CSR");
+        let validated = result.unwrap();
+        assert_eq!(validated.sans.len(), 1);
+        assert_eq!(validated.sans[0].san_type, "dns");
+        assert_eq!(validated.sans[0].value, "example.com");
+        assert!(!validated.spki_der.is_empty());
+        assert!(!validated.subject_der.is_empty());
+    }
+
+    #[test]
+    fn invalid_der_returns_parse_error() {
+        let result = validate_csr(b"not a csr", &[("dns", "example.com")]);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AcmeError::BadCsr(msg) => assert!(msg.contains("parse")),
+            other => panic!("expected BadCsr, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tampered_signature_rejected() {
+        let key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let mut csr_der = make_csr_der(&key, "example.com", false);
+        // Flip last byte to corrupt signature.
+        let last = csr_der.len() - 1;
+        csr_der[last] ^= 0xff;
+        let result = validate_csr(&csr_der, &[("dns", "example.com")]);
+        assert!(result.is_err(), "tampered CSR should fail");
+        match result.unwrap_err() {
+            AcmeError::BadCsr(_) => {}
+            other => panic!("expected BadCsr, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ca_true_in_basic_constraints_rejected() {
+        let key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let csr_der = make_csr_der(&key, "example.com", true);
+        let result = validate_csr(&csr_der, &[("dns", "example.com")]);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AcmeError::BadCsr(msg) => assert!(msg.contains("cA=TRUE")),
+            other => panic!("expected BadCsr, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn san_not_in_allowed_identifiers_rejected() {
+        let key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let csr_der = make_csr_der(&key, "evil.com", false);
+        // Only "example.com" is authorized, but CSR has "evil.com".
+        let result = validate_csr(&csr_der, &[("dns", "example.com")]);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AcmeError::BadCsr(msg) => assert!(msg.contains("not authorised")),
+            other => panic!("expected BadCsr, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn allowed_identifier_missing_from_csr_rejected() {
+        let key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let csr_der = make_csr_der(&key, "example.com", false);
+        // CSR has only "example.com" but we require both.
+        let result = validate_csr(&csr_der, &[("dns", "example.com"), ("dns", "other.com")]);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AcmeError::BadCsr(msg) => assert!(msg.contains("missing from CSR SANs")),
+            other => panic!("expected BadCsr, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ipv4_san_parses_correctly() {
+        let key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let ip_bytes = &[192u8, 0, 2, 1]; // 192.0.2.1
+        let csr_der = make_ip_csr_der(&key, ip_bytes);
+        let result = validate_csr(&csr_der, &[("ip", "192.0.2.1")]);
+        assert!(result.is_ok(), "IPv4 SAN should parse");
+        let validated = result.unwrap();
+        assert_eq!(validated.sans[0].san_type, "ip");
+        assert_eq!(validated.sans[0].value, "192.0.2.1");
+    }
+
+    #[test]
+    fn ipv6_san_parses_correctly() {
+        let key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let ip_bytes = &[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1u8]; // 2001:db8::1
+        let csr_der = make_ip_csr_der(&key, ip_bytes);
+        let result = validate_csr(&csr_der, &[("ip", "2001:db8::1")]);
+        assert!(result.is_ok(), "IPv6 SAN should parse");
+    }
+
+    #[test]
+    fn strip_sequence_wrong_tag_returns_none() {
+        // First byte is not 0x30.
+        let bad = vec![0x04, 0x01, 0x00];
+        assert!(strip_sequence(&bad).is_none());
+    }
+
+    #[test]
+    fn strip_sequence_empty_returns_none() {
+        assert!(strip_sequence(&[]).is_none());
+    }
+
+    #[test]
+    fn bytes_to_ip_string_ipv4() {
+        let bytes = [10u8, 0, 0, 1];
+        assert_eq!(bytes_to_ip_string(&bytes), Some("10.0.0.1".to_string()));
+    }
+
+    #[test]
+    fn bytes_to_ip_string_wrong_length_returns_none() {
+        let bytes = [1u8, 2, 3]; // 3 bytes, not 4 or 16
+        assert!(bytes_to_ip_string(&bytes).is_none());
+    }
+
+    #[test]
+    fn tlv_header_short_input_returns_none() {
+        // Less than 2 bytes at position.
+        assert!(tlv_header(&[0x30], 0).is_none());
+        // Empty slice.
+        assert!(tlv_header(&[], 0).is_none());
+    }
+
+    #[test]
+    fn tlv_header_long_form_length() {
+        // 0x30 0x81 0x01 0x00 → SEQUENCE of length 1, content = [0x00]
+        let der = vec![0x30, 0x81, 0x01, 0x00];
+        let (hlen, vlen) = tlv_header(&der, 0).unwrap();
+        assert_eq!(hlen, 3); // tag + 0x81 + 1 length byte
+        assert_eq!(vlen, 1);
     }
 }
