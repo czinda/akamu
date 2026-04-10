@@ -17,6 +17,7 @@ use super::csr::ValidatedCsr;
 use super::init::unix_to_generalized_time;
 
 /// Output of a successful certificate issuance.
+#[derive(Debug)]
 pub struct IssuedCert {
     /// Random UUID for the `certificates` table primary key.
     pub id: String,
@@ -120,7 +121,12 @@ pub fn issue_certificate(
                 })?;
                 san_builder = san_builder.ip_address(&ip_bytes);
             }
-            _ => {}
+            other => {
+                tracing::warn!(
+                    "issue_certificate: unrecognised SAN type '{}' — skipped",
+                    other
+                );
+            }
         }
     }
     let san_der = san_builder.build().map_err(|e| AcmeError::Builder(format!("SAN: {e}")))?;
