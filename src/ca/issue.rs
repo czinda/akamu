@@ -457,4 +457,23 @@ mod tests {
     fn hex_encode_bytes() {
         assert_eq!(hex_encode(&[0xde, 0xad, 0xbe, 0xef]), "deadbeef");
     }
+
+    /// Construct a ValidatedCsr with a bogus "ip" SAN value.
+    /// ip_string_to_bytes("not-an-ip") returns None → AcmeError::Builder → lines 119-120 covered.
+    #[test]
+    fn issue_cert_invalid_ip_san_returns_builder_error() {
+        let (ca_key, ca_cert_der) = make_test_ca();
+        let key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let spki_der = key.public_key().unwrap().spki_der().to_vec();
+        let name_der = NameBuilder::new().common_name("test").build().unwrap();
+        let validated_csr = ValidatedCsr {
+            spki_der,
+            subject_der: name_der,
+            sans: vec![SanEntry { san_type: "ip".into(), value: "not-an-ip".into() }],
+        };
+        let result = issue_certificate(&ca_key, &ca_cert_der, "sha256", 90, None, None, &validated_csr);
+        let Err(err) = result else { panic!("expected Builder error for invalid IP SAN") };
+        assert!(matches!(err, crate::error::AcmeError::Builder(_)), "unexpected error: {err}");
+    }
+
 }
