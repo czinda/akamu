@@ -45,7 +45,9 @@ use acme_server::{ca, db, routes};
 fn init_tracing() {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
-        .with_env_filter("acme_server=debug,info")
+        // tower_http=trace  — logs every inbound request + response status/latency
+        // acme_server=debug — server-side validation logic, CA signing, DB updates
+        .with_env_filter("tower_http=trace,acme_server=debug,info")
         .try_init();
 }
 

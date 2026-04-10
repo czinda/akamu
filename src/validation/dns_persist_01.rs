@@ -57,18 +57,40 @@ async fn validate_with_resolver(
 
     let now = unix_now();
 
+    tracing::debug!(
+        domain, query_name, issuer_domain, account_uri, is_wildcard,
+        "dns-persist-01: querying TXT records"
+    );
+
     let lookup = resolver
         .txt_lookup(&query_name)
         .await
         .map_err(|e| AcmeError::Dns(format!("TXT lookup for '{query_name}': {e}")))?;
 
-    for record in lookup.iter() {
-        // TXT records may be split across multiple character-strings; join them.
-        let value: String = record
-            .iter()
-            .map(|s| String::from_utf8_lossy(s).into_owned())
-            .collect();
-        if matches_record(value.trim(), issuer_domain, account_uri, is_wildcard, now) {
+    let records: Vec<String> = lookup
+        .iter()
+        .map(|r| r.iter().map(|s| String::from_utf8_lossy(s).into_owned()).collect())
+        .collect();
+
+    tracing::debug!(
+        query_name,
+        count = records.len(),
+        "dns-persist-01: TXT records received"
+    );
+
+    for value in &records {
+        let value = value.trim();
+        let matched = matches_record(value, issuer_domain, account_uri, is_wildcard, now);
+        tracing::debug!(
+            record = value,
+            matched,
+            "dns-persist-01: evaluating TXT record"
+        );
+        if matched {
+            tracing::info!(
+                domain, query_name,
+                "dns-persist-01: TXT record validated successfully"
+            );
             return Ok(());
         }
     }
