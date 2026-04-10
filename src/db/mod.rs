@@ -43,3 +43,40 @@ pub async fn open(path: &str) -> Result<Connection, AcmeError> {
 
     Ok(conn)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn open_in_memory_succeeds() {
+        let conn = open(":memory:").await.unwrap();
+        // Basic sanity: can issue a query.
+        conn.call(|c| {
+            let _ = c.query_row("SELECT 1", [], |r| r.get::<_, i64>(0))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn open_file_path_creates_and_migrates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db").to_string_lossy().into_owned();
+        // Opens a real file — covers the `Connection::open(path)` branch.
+        let conn = open(&path).await.unwrap();
+        conn.call(|c| {
+            // Verify the schema was created by checking that the accounts table exists.
+            let n: i64 = c.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='accounts'",
+                [],
+                |r| r.get(0),
+            )?;
+            assert_eq!(n, 1);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+}
