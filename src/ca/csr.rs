@@ -441,4 +441,66 @@ mod tests {
         assert_eq!(hlen, 3); // tag + 0x81 + 1 length byte
         assert_eq!(vlen, 1);
     }
+
+    #[test]
+    fn tlv_header_truncated_long_form_returns_none() {
+        // 0x82 means 2 more bytes for the length, but only 1 byte follows.
+        let der = vec![0x30, 0x82, 0x00]; // truncated — needs 2 length bytes, only 1 present
+        assert!(tlv_header(&der, 0).is_none());
+    }
+
+    #[test]
+    fn csr_with_no_san_extension_validates_against_empty_identifiers() {
+        // A CSR with no SAN extension should be valid if allowed_identifiers is also empty.
+        // This exercises the "no SAN extension" path (extract_csr_extensions returning empty).
+        let key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let spki_der = key.public_key().unwrap().spki_der().to_vec();
+        let name_der = NameBuilder::new().common_name("no-san").build().unwrap();
+        let signer = key.as_signer("sha256");
+        let csr_der = CsrBuilder::new()
+            .subject_name(&name_der)
+            .public_key_der(&spki_der)
+            .sign(&signer)
+            .unwrap();
+        // No SANs in CSR and no required identifiers → should pass validation.
+        let result = validate_csr(&csr_der, &[]);
+        assert!(result.is_ok(), "CSR with no SAN should validate against empty identifiers: {result:?}");
+        let validated = result.unwrap();
+        assert!(validated.sans.is_empty());
+    }
+
+    #[test]
+    fn csr_with_email_san_is_ignored() {
+        // CSR with rfc822Name (email) SAN — this SAN type is ignored by ACME,
+        // so with no allowed_identifiers, validation should succeed.
+        // This covers the `_ => {}` branch in parse_general_names.
+        let key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let spki_der = key.public_key().unwrap().spki_der().to_vec();
+        let name_der = NameBuilder::new().common_name("email-san").build().unwrap();
+
+        // Manually construct SAN extension value with rfc822Name (tag 0x81).
+        // DER: SEQUENCE { [1] IA5String "a@b.com" }
+        let email = b"a@b.com";
+        let mut san_der = vec![
+            0x30,                          // SEQUENCE
+            (email.len() + 2) as u8,       // length
+            0x81,                          // [1] IMPLICIT (rfc822Name)
+            email.len() as u8,             // length of email
+        ];
+        san_der.extend_from_slice(email);
+
+        let signer = key.as_signer("sha256");
+        let csr_der = CsrBuilder::new()
+            .subject_name(&name_der)
+            .public_key_der(&spki_der)
+            .add_extension_oid(oids::SUBJECT_ALT_NAME, false, &san_der)
+            .sign(&signer)
+            .unwrap();
+
+        // rfc822Name SAN is ignored → sans is empty → validates OK against empty identifiers
+        let result = validate_csr(&csr_der, &[]);
+        assert!(result.is_ok(), "rfc822Name SAN should be silently ignored: {result:?}");
+        let validated = result.unwrap();
+        assert!(validated.sans.is_empty(), "email SAN should be excluded from parsed SANs");
+    }
 }
