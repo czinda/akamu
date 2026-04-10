@@ -1515,6 +1515,92 @@ async fn test_get_order_wrong_account() {
         "get-order with wrong account should fail, got {status}");
 }
 
+/// GET authz when a challenge has a `validated` timestamp set.
+/// Covers routes/authz.rs line 47 and routes/challenge.rs line 113.
+#[tokio::test]
+async fn test_authz_challenge_with_validated_timestamp() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let db = Arc::clone(&state.db);
+
+    let (router, key, account_url, order_body, nonce) =
+        setup_account_and_order(base_url, &state, "authz-validated.example").await;
+    let authz_url = order_body["authorizations"][0].as_str().unwrap().to_string();
+    let authz_id = authz_url.split('/').last().unwrap().to_string();
+
+    // Set challenge to 'valid' with a validated timestamp.
+    let aid = authz_id.clone();
+    db.call(move |c| {
+        c.execute(
+            "UPDATE challenges SET status='valid', validated=1700000000 WHERE authz_id=?1 AND type='http-01'",
+            rusqlite::params![aid],
+        )?;
+        Ok(())
+    }).await.unwrap();
+
+    // GET the authz — response includes challenge with validated timestamp.
+    let authz_path = authz_url.trim_start_matches(base_url).to_string();
+    let jws = key.jws_with_kid(&account_url, &nonce, &authz_url, None);
+    let (status, body, hdr) = post_acme(&router, &authz_path, jws).await;
+    assert_eq!(status, StatusCode::OK, "get authz with validated challenge failed: {body}");
+    let challenges = body["challenges"].as_array().unwrap();
+    let valid_chall = challenges.iter().find(|c| c["status"].as_str() == Some("valid")).unwrap();
+    assert!(valid_chall["validated"].as_str().is_some(), "validated field missing");
+
+    // Also POST directly to the challenge (status != pending → challenge_response with validated).
+    let nonce2 = nonce_header(&hdr);
+    let chall_url = format!("{base_url}/acme/chall/{authz_id}/http-01");
+    let chall_path = format!("/acme/chall/{authz_id}/http-01");
+    let jws = key.jws_with_kid(&account_url, &nonce2, &chall_url, Some(json!({})));
+    let (status, body, _) = post_acme(&router, &chall_path, jws).await;
+    assert_eq!(status, StatusCode::OK, "POST valid challenge failed: {body}");
+    assert!(body["validated"].as_str().is_some(), "validated field missing in challenge response");
+}
+
+/// GET authz when a challenge has an `error` field set.
+/// Covers routes/authz.rs lines 50-51 and routes/challenge.rs line 116.
+#[tokio::test]
+async fn test_authz_challenge_with_error_field() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let db = Arc::clone(&state.db);
+
+    let (router, key, account_url, order_body, nonce) =
+        setup_account_and_order(base_url, &state, "authz-error.example").await;
+    let authz_url = order_body["authorizations"][0].as_str().unwrap().to_string();
+    let authz_id = authz_url.split('/').last().unwrap().to_string();
+
+    // Set challenge to 'invalid' with a JSON error string.
+    let error_json = r#"{"type":"urn:ietf:params:acme:error:dns","detail":"DNS lookup failed"}"#;
+    let aid = authz_id.clone();
+    let ej = error_json.to_string();
+    db.call(move |c| {
+        c.execute(
+            "UPDATE challenges SET status='invalid', error=?1 WHERE authz_id=?2 AND type='http-01'",
+            rusqlite::params![ej, aid],
+        )?;
+        Ok(())
+    }).await.unwrap();
+
+    // GET the authz — response includes challenge error.
+    let authz_path = authz_url.trim_start_matches(base_url).to_string();
+    let jws = key.jws_with_kid(&account_url, &nonce, &authz_url, None);
+    let (status, body, hdr) = post_acme(&router, &authz_path, jws).await;
+    assert_eq!(status, StatusCode::OK, "get authz with error challenge failed: {body}");
+    let challenges = body["challenges"].as_array().unwrap();
+    let inv_chall = challenges.iter().find(|c| c["status"].as_str() == Some("invalid")).unwrap();
+    assert!(inv_chall["error"].as_object().is_some(), "error field missing in authz response");
+
+    // Also POST directly to the challenge (status != pending → challenge_response with error).
+    let nonce2 = nonce_header(&hdr);
+    let chall_url = format!("{base_url}/acme/chall/{authz_id}/http-01");
+    let chall_path = format!("/acme/chall/{authz_id}/http-01");
+    let jws = key.jws_with_kid(&account_url, &nonce2, &chall_url, Some(json!({})));
+    let (status, body, _) = post_acme(&router, &chall_path, jws).await;
+    assert_eq!(status, StatusCode::OK, "POST invalid challenge failed: {body}");
+    assert!(body["error"].as_object().is_some(), "error field missing in challenge response");
+}
+
 /// GET /acme/directory with all optional ServerConfig fields set.
 /// Covers the 4 conditional branches in routes/directory.rs.
 #[tokio::test]
