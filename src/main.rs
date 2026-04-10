@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
 use acme_server::config::Config;
-use acme_server::state::{AppState, CaState, MtcState};
+use acme_server::state::{AppState, CaState, MtcState, TlsState};
 use acme_server::{ca, db, mtc, routes};
 
 #[tokio::main]
@@ -60,6 +60,12 @@ async fn run() -> Result<(), String> {
         ocsp_url: config.ca.ocsp_url.clone(),
     });
 
+    // ── TLS bootstrap (auto-generate cert/key if absent) ─────────────────────
+    if config.tls.enabled {
+        acme_server::tls::init::load_or_generate(&config.tls, &ca)
+            .map_err(|e| format!("TLS init: {e}"))?;
+    }
+
     // ── MTC transparency log ──────────────────────────────────────────────────
     let mtc_algorithm = synta_mtc::crypto::HashAlgorithm::Sha256;
     let mtc = if config.mtc.enabled {
@@ -79,30 +85,62 @@ async fn run() -> Result<(), String> {
         })
     };
 
+    // ── TLS state (lean; heavy OwnedStore lives inside SyntaClientCertVerifier) ─
+    let tls_state = if config.tls.enabled {
+        config.tls.client_auth.as_ref().map(|client_auth| {
+            Arc::new(TlsState {
+                client_auth_config: client_auth.clone(),
+            })
+        })
+    } else {
+        None
+    };
+
     // ── Application state ─────────────────────────────────────────────────────
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: Arc::clone(&db),
         ca,
         mtc,
+        tls: tls_state,
     });
 
-    // ── HTTP server ───────────────────────────────────────────────────────────
+    // ── HTTP / TLS server ─────────────────────────────────────────────────────
     let router = routes::build_router(Arc::clone(&state));
 
-    let listener = tokio::net::TcpListener::bind(&config.listen_addr)
-        .await
-        .map_err(|e| format!("bind '{}': {e}", config.listen_addr))?;
-
-    tracing::info!(
-        "ACME server listening on {} (base_url={})",
-        config.listen_addr,
-        config.base_url
-    );
-
-    axum::serve(listener, router)
-        .await
-        .map_err(|e| format!("server error: {e}"))?;
+    if config.tls.enabled {
+        tracing::info!(
+            "ACME server listening on {} with TLS (base_url={})",
+            config.listen_addr,
+            config.base_url
+        );
+        let server_cfg = acme_server::tls::build_rustls_server_config(&config.tls)
+            .map_err(|e| format!("TLS config: {e}"))?;
+        let rustls_config =
+            axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(server_cfg));
+        let addr: std::net::SocketAddr = config
+            .listen_addr
+            .parse()
+            .map_err(|e| format!("parse listen addr '{}': {e}", config.listen_addr))?;
+        axum_server::bind_rustls(addr, rustls_config)
+            .serve(
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .map_err(|e| format!("server error: {e}"))?;
+    } else {
+        let listener = tokio::net::TcpListener::bind(&config.listen_addr)
+            .await
+            .map_err(|e| format!("bind '{}': {e}", config.listen_addr))?;
+        tracing::info!(
+            "ACME server listening on {} (base_url={})",
+            config.listen_addr,
+            config.base_url
+        );
+        axum::serve(listener, router)
+            .await
+            .map_err(|e| format!("server error: {e}"))?;
+    }
 
     Ok(())
 }

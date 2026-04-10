@@ -198,6 +198,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         },
         mtc: MtcConfig { log_path: "/dev/null".into(), enabled: false },
         server: ServerConfig::default(),
+        tls: Default::default(),
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
@@ -218,6 +219,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             log: None,
             algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
         }),
+        tls: None,
     });
 
     (state, dir)
@@ -1719,6 +1721,7 @@ async fn test_directory_with_optional_fields() {
             external_account_required: true,
             ..acme_server::config::ServerConfig::default()
         },
+        tls: Default::default(),
     });
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
     let db_conn = Arc::new(db::open(":memory:").await.unwrap());
@@ -1732,6 +1735,7 @@ async fn test_directory_with_optional_fields() {
         mtc: Arc::new(acme_server::state::MtcState {
             log: None, algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
         }),
+        tls: None,
     });
     let router = routes::build_router(Arc::clone(&state));
     let (status, dir_body, _) = get(&router, "/acme/directory").await;
@@ -1908,6 +1912,7 @@ async fn test_finalize_with_mtc_enabled() {
         },
         mtc: MtcConfig { log_path: log_path.clone(), enabled: true },
         server: acme_server::config::ServerConfig::default(),
+        tls: Default::default(),
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
@@ -1931,6 +1936,7 @@ async fn test_finalize_with_mtc_enabled() {
             log: Some(shared_log.clone()),
             algorithm,
         }),
+        tls: None,
     });
 
     let router = routes::build_router(Arc::clone(&state));
@@ -2060,6 +2066,7 @@ async fn test_finalize_with_aia_and_cdp() {
         },
         mtc: MtcConfig { log_path: "/dev/null".into(), enabled: false },
         server: ServerConfig::default(),
+        tls: Default::default(),
     });
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
     let db_conn = Arc::new(db::open(":memory:").await.unwrap());
@@ -2078,6 +2085,7 @@ async fn test_finalize_with_aia_and_cdp() {
             log: None,
             algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
         }),
+        tls: None,
     });
 
     let router = routes::build_router(Arc::clone(&state));

@@ -227,6 +227,7 @@ mod tests {
             },
             mtc: MtcConfig { log_path: "/dev/null".into(), enabled: false },
             server: ServerConfig::default(),
+            tls: Default::default(),
         });
 
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
@@ -247,6 +248,7 @@ mod tests {
                 log: None,
                 algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
             }),
+            tls: None,
         })
     }
 
@@ -590,6 +592,7 @@ mod tests {
             },
             mtc: MtcConfig { log_path: "/dev/null".into(), enabled: false },
             server: ServerConfig::default(),
+            tls: Default::default(),
         });
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
         // Raw connection — no schema — so every DB call fails immediately.
@@ -609,6 +612,7 @@ mod tests {
                 log: None,
                 algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
             }),
+            tls: None,
         });
         // on_valid tries set_valid first; fails on no-table DB → warn + return (lines 65-67).
         on_valid(&state, "fake-chall", "fake-authz", unix_now()).await;
@@ -641,6 +645,7 @@ mod tests {
             },
             mtc: MtcConfig { log_path: "/dev/null".into(), enabled: false },
             server: ServerConfig::default(),
+            tls: Default::default(),
         });
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
         let raw_db = Arc::new(tokio_rusqlite::Connection::open_in_memory().await.unwrap());
@@ -659,6 +664,7 @@ mod tests {
                 log: None,
                 algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
             }),
+            tls: None,
         });
         // on_invalid tries set_invalid first; fails on no-table DB → warn (lines 128-135).
         on_invalid(
@@ -698,6 +704,7 @@ mod tests {
             },
             mtc: MtcConfig { log_path: "/dev/null".into(), enabled: false },
             server: ServerConfig::default(),
+            tls: Default::default(),
         });
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
 
@@ -739,6 +746,7 @@ mod tests {
                 log: None,
                 algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
             }),
+            tls: None,
         });
 
         // set_valid succeeds (challenge row exists), then update_status(authz) fails
@@ -769,6 +777,7 @@ mod tests {
             },
             mtc: MtcConfig { log_path: "/dev/null".into(), enabled: false },
             server: ServerConfig::default(),
+            tls: Default::default(),
         });
         let (ca_key, ca_cert_der) = crate::ca::init::load_or_generate(&config.ca).unwrap();
         Arc::new(AppState {
@@ -786,6 +795,7 @@ mod tests {
                 log: None,
                 algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
             }),
+            tls: None,
         })
     }
 
