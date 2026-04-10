@@ -570,4 +570,114 @@ mod tests {
         };
         assert!(jws.verify(&spki_der).is_err());
     }
+
+    /// ES384 sign/verify round-trip using a P-384 key.
+    /// Covers jws.rs lines 102-103 (ES384 path in JwsFlattened::verify).
+    #[test]
+    fn es384_sign_verify_roundtrip() {
+        let key = BackendPrivateKey::generate_ec("P-384").unwrap();
+        let spki_der = key.public_key().unwrap().spki_der().to_vec();
+
+        let hdr = r#"{"alg":"ES384","nonce":"testnonce","url":"https://acme.test/new-account","kid":"https://acme.test/account/1"}"#;
+        let protected = URL_SAFE_NO_PAD.encode(hdr.as_bytes());
+        let payload = URL_SAFE_NO_PAD.encode(b"{}");
+        let signing_input = format!("{}.{}", protected, payload);
+
+        // P-384 signs with SHA-384; P1363 format needs 48 bytes per component.
+        let signer = key.as_signer("sha384");
+        let der_sig = signer.sign_tbs(signing_input.as_bytes()).unwrap();
+        let p1363 = ecdsa_der_to_p1363(&der_sig, 48).expect("DER→P1363 for P-384 failed");
+        let signature = URL_SAFE_NO_PAD.encode(&p1363);
+
+        let jws = JwsFlattened { protected, payload, signature };
+        jws.verify(&spki_der).unwrap();
+    }
+
+    /// ES512 sign/verify round-trip using a P-521 key.
+    /// Covers jws.rs lines 106-107 (ES512 path in JwsFlattened::verify).
+    #[test]
+    fn es512_sign_verify_roundtrip() {
+        let key = BackendPrivateKey::generate_ec("P-521").unwrap();
+        let spki_der = key.public_key().unwrap().spki_der().to_vec();
+
+        let hdr = r#"{"alg":"ES512","nonce":"testnonce","url":"https://acme.test/new-account","kid":"https://acme.test/account/1"}"#;
+        let protected = URL_SAFE_NO_PAD.encode(hdr.as_bytes());
+        let payload = URL_SAFE_NO_PAD.encode(b"{}");
+        let signing_input = format!("{}.{}", protected, payload);
+
+        // P-521 signs with SHA-512; P1363 format needs 66 bytes per component.
+        let signer = key.as_signer("sha512");
+        let der_sig = signer.sign_tbs(signing_input.as_bytes()).unwrap();
+        let p1363 = ecdsa_der_to_p1363(&der_sig, 66).expect("DER→P1363 for P-521 failed");
+        let signature = URL_SAFE_NO_PAD.encode(&p1363);
+
+        let jws = JwsFlattened { protected, payload, signature };
+        jws.verify(&spki_der).unwrap();
+    }
+
+    /// ecdsa_der_to_p1363 with r > half returns None.
+    /// Covers jws.rs line 384.
+    #[test]
+    fn ecdsa_der_to_p1363_r_too_large_returns_none() {
+        // Manually craft a DER ECDSA signature with r component of 33 non-zero bytes (> 32 for ES256).
+        // strip_integer strips leading 0x00, so r must start with a non-zero byte.
+        let mut r = vec![0x01u8; 33]; // 33 bytes, all non-zero — too large for half=32
+        r[0] = 0x42; // ensure high bit clear so DER doesn't add extra pad
+        let s = vec![0x01u8; 32];
+        let mut der = Vec::new();
+        der.push(0x02);
+        der.push(r.len() as u8);
+        der.extend_from_slice(&r);
+        der.push(0x02);
+        der.push(s.len() as u8);
+        der.extend_from_slice(&s);
+        let mut seq = vec![0x30, der.len() as u8];
+        seq.extend_from_slice(&der);
+        let result = ecdsa_der_to_p1363(&seq, 32);
+        assert!(result.is_none(), "expected None when r > half");
+    }
+
+    /// strip_tlv returns None when the first byte is not the expected tag.
+    /// Covers jws.rs line 395.
+    #[test]
+    fn strip_tlv_wrong_tag_returns_none() {
+        let buf = &[0x04u8, 0x02, 0x01, 0x02]; // tag 0x04 instead of 0x30
+        assert!(strip_tlv(buf, 0x30).is_none());
+    }
+
+    /// strip_integer returns None when first byte is not 0x02.
+    /// Covers jws.rs line 403.
+    #[test]
+    fn strip_integer_wrong_tag_returns_none() {
+        let buf = &[0x04u8, 0x01, 0x00]; // tag 0x04 instead of 0x02
+        assert!(strip_integer(buf).is_none());
+    }
+
+    /// decode_der_len handles 0x81 (one-byte length) form.
+    /// Covers jws.rs lines 418-419.
+    #[test]
+    fn decode_der_len_0x81_form() {
+        let buf = &[0x81u8, 0x80]; // 0x81 means 1 extra byte: length = 0x80 = 128
+        let (len, rest) = decode_der_len(buf).unwrap();
+        assert_eq!(len, 128);
+        assert!(rest.is_empty());
+    }
+
+    /// decode_der_len handles 0x82 (two-byte length) form.
+    /// Covers jws.rs lines 420-422.
+    #[test]
+    fn decode_der_len_0x82_form() {
+        let buf = &[0x82u8, 0x01, 0x00]; // 0x82 means 2 extra bytes: length = 0x0100 = 256
+        let (len, rest) = decode_der_len(buf).unwrap();
+        assert_eq!(len, 256);
+        assert!(rest.is_empty());
+    }
+
+    /// decode_der_len returns None for unsupported length encodings (e.g. 0x83+).
+    /// Covers jws.rs line 424.
+    #[test]
+    fn decode_der_len_unsupported_form_returns_none() {
+        let buf = &[0x83u8, 0x01, 0x00, 0x01]; // 0x83 = 3 extra bytes — not supported
+        assert!(decode_der_len(buf).is_none());
+    }
 }
