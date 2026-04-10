@@ -1,0 +1,37 @@
+//! GET /acme/directory — RFC 8555 §7.1.1
+
+use std::sync::Arc;
+
+use axum::extract::State;
+use axum::response::IntoResponse;
+use axum::Json;
+use serde_json::json;
+
+use crate::state::AppState;
+
+pub async fn get_directory(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let base = &state.config.base_url;
+    let mut meta = json!({});
+    if let Some(tos) = &state.config.server.terms_of_service_url {
+        meta["termsOfService"] = json!(tos);
+    }
+    if let Some(website) = &state.config.server.website_url {
+        meta["website"] = json!(website);
+    }
+    if !state.config.server.caa_identities.is_empty() {
+        meta["caaIdentities"] = json!(state.config.server.caa_identities);
+    }
+    if state.config.server.external_account_required {
+        meta["externalAccountRequired"] = json!(true);
+    }
+
+    let dir = json!({
+        "newNonce":   format!("{base}/acme/new-nonce"),
+        "newAccount": format!("{base}/acme/new-account"),
+        "newOrder":   format!("{base}/acme/new-order"),
+        "revokeCert": format!("{base}/acme/revoke-cert"),
+        "keyChange":  format!("{base}/acme/key-change"),
+        "meta": meta,
+    });
+    Json(dir)
+}
