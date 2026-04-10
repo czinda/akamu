@@ -17,6 +17,7 @@
 - [Certificates](user/certificates.md)
 - [CRL and OCSP](user/crl-ocsp.md)
 - [Merkle Tree Certificate Log](user/mtc.md)
+- [TLS Configuration](user/tls.md)
 
 # Developer Guide
 
