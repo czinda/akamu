@@ -1,8 +1,10 @@
 # Challenges
 
-A challenge is the mechanism by which `Akāmu` verifies that an ACME client controls the identifier (domain name or IP address) in an authorization. The server supports three challenge types: **http-01**, **dns-01**, and **tls-alpn-01**.
+A challenge is the mechanism by which `Akāmu` verifies that an ACME client controls the identifier (domain name or IP address) in an authorization. The server supports four challenge types: **http-01**, **dns-01**, **tls-alpn-01**, and **dns-persist-01**.
 
 For each identifier in an order, the server creates one challenge of each supported type. The client chooses which challenge type to complete.
+
+`dns-persist-01` is an opt-in type that requires explicit server configuration. When it is not configured, clients see the standard three types and are not affected. See [dns-persist-01 Challenge](dns-persist-01.md) for the full description of that type.
 
 ## Key authorization
 
@@ -18,6 +20,8 @@ Where:
 - `base64url` uses the URL-safe alphabet without padding characters.
 
 In practice, ACME client libraries compute this for you.
+
+`dns-persist-01` does not use this formula. Instead of a token, the client receives an `issuer-domain-names` array, and the server matches the account URI directly against the TXT record. See [dns-persist-01 Challenge](dns-persist-01.md) for details.
 
 ## Responding to a challenge
 
@@ -130,7 +134,7 @@ For a wildcard identifier `*.example.com`, the leading `*.` is stripped before c
 
 ### DNS propagation
 
-The server uses the system default DNS resolver. If the TXT record has not propagated by the time the server queries, validation will fail. Use a short TTL (60 seconds or less) to speed up propagation.
+The server uses the system default DNS resolver (or the address configured via `server.dns_resolver_addr`). If the TXT record has not propagated by the time the server queries, validation will fail. Use a short TTL (60 seconds or less) to speed up propagation.
 
 ---
 
