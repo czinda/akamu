@@ -137,12 +137,19 @@ pub async fn set_mtc_log_index(
 }
 
 /// Set renewal window (RFC 9773 ARI).
+///
+/// Returns `Err` if `start >= end` — a window must be a non-empty interval.
 pub async fn set_renewal_window(
     db: &Connection,
     id: &str,
     start: i64,
     end: i64,
 ) -> Result<(), AcmeError> {
+    if start >= end {
+        return Err(AcmeError::BadRequest(format!(
+            "renewal window start ({start}) must be before end ({end})"
+        )));
+    }
     let id = id.to_string();
     db.call(move |conn| {
         conn.execute(
