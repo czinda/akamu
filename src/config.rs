@@ -83,6 +83,11 @@ pub struct ServerConfig {
     /// Maximum body size for JOSE+JSON requests (bytes)
     #[serde(default = "default_max_body_bytes")]
     pub max_body_bytes: usize,
+    /// TCP port used when fetching http-01 challenge responses.
+    /// RFC 8555 §8.3 requires port 80 in production.
+    /// Override to a high port for testing or non-standard deployments.
+    #[serde(default = "default_http_validation_port")]
+    pub http_validation_port: u16,
 }
 
 /// Server-side TLS configuration.  Absent or `enabled = false` → plain HTTP (no change).
@@ -177,6 +182,10 @@ fn default_ca_org() -> String {
 
 fn default_ca_validity_years() -> u32 {
     10
+}
+
+fn default_http_validation_port() -> u16 {
+    80
 }
 
 fn default_order_expiry_secs() -> u64 {

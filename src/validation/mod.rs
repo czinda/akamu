@@ -30,7 +30,8 @@ pub async fn validate_challenge(
     key_auth: &str,
     token: &str,
 ) {
-    let result = dispatch(chall_type, id_type, id_value, key_auth, token).await;
+    let http_port = state.config.server.http_validation_port;
+    let result = dispatch(chall_type, id_type, id_value, key_auth, token, http_port).await;
 
     let now = unix_now();
     match result {
@@ -46,9 +47,10 @@ async fn dispatch(
     id_value: &str,
     key_auth: &str,
     token: &str,
+    http_port: u16,
 ) -> Result<(), AcmeError> {
     match chall_type {
-        "http-01" => http01::validate(id_value, token, key_auth).await,
+        "http-01" => http01::validate(id_value, token, key_auth, http_port).await,
         "dns-01" => dns01::validate(id_value, key_auth).await,
         "tls-alpn-01" => tls_alpn01::validate(id_value, key_auth).await,
         other => Err(AcmeError::IncorrectResponse(format!(
@@ -270,7 +272,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_unsupported_type_returns_error() {
-        let result = dispatch("bogus-type", "dns", "example.com", "key-auth", "token").await;
+        let result = dispatch("bogus-type", "dns", "example.com", "key-auth", "token", 80).await;
         assert!(result.is_err());
         match result.unwrap_err() {
             AcmeError::IncorrectResponse(msg) => {
@@ -473,18 +475,17 @@ mod tests {
 
     #[tokio::test]
     async fn validate_challenge_http01_success_updates_db() {
-        use crate::db;
         use crate::db::schema::{AccountRow, OrderRow, AuthorizationRow, ChallengeRow};
         use axum::{Router, routing::get};
         use tokio::net::TcpListener;
 
-        let state = make_state().await;
         let now = unix_now();
 
         let token = "test-http01-token";
         let key_auth = format!("{token}.fake-thumbprint");
         let key_auth_clone = key_auth.clone();
 
+        // Start the challenge responder first so we know the port.
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let path = format!("/.well-known/acme-challenge/{token}");
@@ -494,7 +495,52 @@ mod tests {
         }));
         tokio::spawn(async move { axum::serve(listener, router).await.ok(); });
 
-        let id_value = format!("127.0.0.1:{}", addr.port());
+        // Build state with http_validation_port pointing at our test responder.
+        let config = Arc::new(Config {
+            listen_addr: "127.0.0.1:0".into(),
+            base_url: "https://acme.test".into(),
+            database: DatabaseConfig { path: ":memory:".into() },
+            ca: CaConfig {
+                key_file: "/tmp/val-test-http01-ca.key".into(),
+                cert_file: "/tmp/val-test-http01-ca.crt".into(),
+                key_type: "ec:P-256".into(),
+                hash_alg: "sha256".into(),
+                validity_days: 90,
+                crl_url: None,
+                ocsp_url: None,
+                common_name: "Val Test CA".into(),
+                organization: "Test".into(),
+                ca_validity_years: 10,
+            },
+            mtc: MtcConfig { log_path: "/dev/null".into(), enabled: false },
+            server: ServerConfig {
+                http_validation_port: addr.port(),
+                ..ServerConfig::default()
+            },
+            tls: Default::default(),
+        });
+        let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
+        let db_conn = Arc::new(db::open(":memory:").await.unwrap());
+        let state = Arc::new(AppState {
+            config: Arc::clone(&config),
+            db: Arc::clone(&db_conn),
+            ca: Arc::new(CaState {
+                key: ca_key,
+                cert_der: ca_cert_der,
+                hash_alg: "sha256".into(),
+                validity_days: 90,
+                crl_url: None,
+                ocsp_url: None,
+            }),
+            mtc: Arc::new(MtcState {
+                log: None,
+                algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
+            }),
+            tls: None,
+        });
+
+        // The identifier is just the IP address — no port embedded.
+        let id_value = "127.0.0.1".to_string();
 
         let acc_id = "acc-http01-001".to_string();
         let order_id = "ord-http01-001".to_string();
