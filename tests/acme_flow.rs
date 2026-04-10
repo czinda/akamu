@@ -354,6 +354,27 @@ fn make_csr_der(domain: &str) -> Vec<u8> {
         .unwrap()
 }
 
+fn make_ip_csr_der(ip_str: &str) -> Vec<u8> {
+    let ip_bytes: Vec<u8> = if let Ok(addr) = ip_str.parse::<std::net::Ipv4Addr>() {
+        addr.octets().to_vec()
+    } else if let Ok(addr) = ip_str.parse::<std::net::Ipv6Addr>() {
+        addr.octets().to_vec()
+    } else {
+        panic!("invalid IP: {ip_str}")
+    };
+    let backend_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+    let spki_der = backend_key.public_key().unwrap().spki_der().to_vec();
+    let name_der = NameBuilder::new().common_name(ip_str).build().unwrap();
+    let san_der = SubjectAlternativeNameBuilder::new().ip_address(&ip_bytes).build().unwrap();
+    let signer = backend_key.as_signer("sha256");
+    CsrBuilder::new()
+        .subject_name(&name_der)
+        .public_key_der(&spki_der)
+        .add_extension_oid(synta_certificate::oids::SUBJECT_ALT_NAME, false, &san_der)
+        .sign(&signer)
+        .unwrap()
+}
+
 // ── Integration test ──────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -1945,4 +1966,110 @@ async fn test_finalize_with_mtc_enabled() {
     // Verify something was logged to the MTC log.
     let tree_size = log::tree_size(&shared_log).await.unwrap();
     assert!(tree_size >= 1, "MTC log should have at least 1 entry after finalize");
+}
+
+/// Finalize an order with an IP SAN — covers ca/issue.rs IP SAN path (lines 117-121).
+#[tokio::test]
+async fn test_finalize_ip_san() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let db = Arc::clone(&state.db);
+    let router = routes::build_router(Arc::clone(&state));
+
+    let key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    let jws = key.jws_with_kid(&account_url, &nonce, &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "ip", "value": "192.0.2.1"}]})));
+    let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
+    let nonce = nonce_header(&order_headers);
+
+    let order_id: String = db.call(|c| Ok(c.query_row(
+        "SELECT id FROM orders ORDER BY created DESC LIMIT 1", [], |r| r.get(0))?)).await.unwrap();
+    mark_order_ready(&db, &order_id).await;
+
+    let csr_der = make_ip_csr_der("192.0.2.1");
+    let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
+    let finalize_url = format!("{base_url}/acme/order/{order_id}/finalize");
+    let jws = key.jws_with_kid(&account_url, &nonce, &finalize_url,
+        Some(json!({"csr": csr_b64})));
+    let (status, body, _) = post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
+    assert_eq!(status, StatusCode::OK, "finalize with IP SAN failed: {body}");
+    assert_eq!(body["status"].as_str(), Some("valid"), "order should be valid after IP finalize");
+}
+
+/// Finalize a certificate when OCSP and CRL URLs are configured — covers ca/issue.rs lines 145-158.
+#[tokio::test]
+async fn test_finalize_with_aia_and_cdp() {
+    let base_url = "https://acme.test";
+    let dir = tempfile::TempDir::new().unwrap();
+    let config = Arc::new(Config {
+        listen_addr: "127.0.0.1:0".into(),
+        base_url: base_url.into(),
+        database: DatabaseConfig { path: ":memory:".into() },
+        ca: CaConfig {
+            key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
+            cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
+            key_type: "ec:P-256".into(),
+            hash_alg: "sha256".into(),
+            validity_days: 90,
+            crl_url: Some("http://crl.test/ca.crl".into()),
+            ocsp_url: Some("http://ocsp.test/".into()),
+            common_name: "Test CA".into(),
+            organization: "Test Org".into(),
+            ca_validity_years: 10,
+        },
+        mtc: MtcConfig { log_path: "/dev/null".into(), enabled: false },
+        server: ServerConfig::default(),
+    });
+    let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
+    let db_conn = Arc::new(db::open(":memory:").await.unwrap());
+    let state = Arc::new(AppState {
+        config: Arc::clone(&config),
+        db: Arc::clone(&db_conn),
+        ca: Arc::new(CaState {
+            key: ca_key,
+            cert_der: ca_cert_der,
+            hash_alg: "sha256".into(),
+            validity_days: 90,
+            crl_url: Some("http://crl.test/ca.crl".into()),
+            ocsp_url: Some("http://ocsp.test/".into()),
+        }),
+        mtc: Arc::new(MtcState {
+            log: None,
+            algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
+        }),
+    });
+
+    let router = routes::build_router(Arc::clone(&state));
+    let key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(&nonce, &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})));
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    let jws = key.jws_with_kid(&account_url, &nonce, &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": "aia-cdp.test"}]})));
+    let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
+    let nonce = nonce_header(&order_headers);
+
+    let order_id: String = db_conn.call(|c| Ok(c.query_row(
+        "SELECT id FROM orders ORDER BY created DESC LIMIT 1", [], |r| r.get(0))?)).await.unwrap();
+    mark_order_ready(&db_conn, &order_id).await;
+
+    let csr_der = make_csr_der("aia-cdp.test");
+    let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
+    let finalize_url = format!("{base_url}/acme/order/{order_id}/finalize");
+    let jws = key.jws_with_kid(&account_url, &nonce, &finalize_url,
+        Some(json!({"csr": csr_b64})));
+    let (status, body, _) = post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
+    assert_eq!(status, StatusCode::OK, "finalize with AIA/CDP failed: {body}");
+    assert_eq!(body["status"].as_str(), Some("valid"), "order should be valid after AIA/CDP finalize");
 }
