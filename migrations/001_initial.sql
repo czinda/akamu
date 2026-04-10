@@ -1,7 +1,3 @@
--- Enable WAL mode and foreign key enforcement
-PRAGMA journal_mode=WAL;
-PRAGMA foreign_keys=ON;
-
 -- Anti-replay nonces; consumed on first use
 CREATE TABLE nonces (
     nonce   TEXT    PRIMARY KEY,
