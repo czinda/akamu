@@ -17,7 +17,8 @@ pub async fn get_renewal_info(
     State(state): State<Arc<AppState>>,
     Path(cert_id): Path<String>,
 ) -> Result<Response, AcmeError> {
-    let cert = db::certs::get_by_id(&state.db, &cert_id)
+    // cert_id is base64url(AKI) "." base64url(serial bytes) per RFC 9773 §4.1
+    let cert = db::certs::get_by_cert_id(&state.db, &cert_id)
         .await?
         .ok_or(AcmeError::NotFound)?;
 
@@ -41,15 +42,24 @@ pub async fn get_renewal_info(
             "start": fmt_time(window_start),
             "end":   fmt_time(window_end),
         },
-        "explanationURL": null,
     });
 
-    // Return 200 with the renewal info.
-    // Note: ARI does not use the ACME JWS envelope.
+    // Return 200 with renewal info and Retry-After (RFC 9773 §4.3).
+    // ARI does not use the ACME JWS envelope.
     let mut resp = (StatusCode::OK, axum::Json(obj)).into_response();
     resp.headers_mut().insert(
         axum::http::header::CONTENT_TYPE,
         "application/json".parse().unwrap(),
+    );
+    resp.headers_mut().insert(
+        axum::http::header::RETRY_AFTER,
+        state
+            .config
+            .server
+            .ari_retry_after_secs
+            .to_string()
+            .parse()
+            .unwrap(),
     );
     Ok(resp)
 }
