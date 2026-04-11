@@ -30,10 +30,13 @@ pub async fn respond_challenge(
         .account_id
         .ok_or(AcmeError::Unauthorized("kid required".into()))?;
 
-    // Load the authorization and its challenges in one DB call.
-    let (authz, challenges) = db::authz::get_with_challenges(&state.db, &authz_id)
-        .await?
-        .ok_or(AcmeError::NotFound)?;
+    // Load the authorization and its challenges, and atomically mark the target
+    // challenge as "processing" — all in one db.call instead of two.
+    let now = unix_now();
+    let (authz, challenges) =
+        db::authz::get_with_challenges_mark_processing(&state.db, &authz_id, &chall_type, now)
+            .await?
+            .ok_or(AcmeError::NotFound)?;
     if authz.account_id != account_id {
         return Err(AcmeError::Unauthorized(
             "authorization belongs to different account".into(),
@@ -46,19 +49,17 @@ pub async fn respond_challenge(
         )));
     }
 
-    // Find the specific challenge.
+    // Find the specific challenge (status is the pre-UPDATE value from the SELECT).
     let challenge = challenges
         .into_iter()
         .find(|c| c.r#type == chall_type)
         .ok_or(AcmeError::NotFound)?;
 
     if challenge.status != "pending" {
-        // Already processing or completed; just return current state.
+        // Already processing or completed; the UPDATE was a no-op. Return current state.
         return challenge_response(&state, &challenge, &ctx.next_nonce);
     }
-
-    // Mark challenge as processing.
-    db::challenges::set_processing(&state.db, &challenge.id, unix_now()).await?;
+    // challenge.status was "pending" — the DB already flipped it to "processing".
 
     // Extract identifier.
     let identifier: serde_json::Value =

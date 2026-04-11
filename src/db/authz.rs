@@ -116,6 +116,64 @@ pub async fn get_with_challenges(
     .map_err(AcmeError::from)
 }
 
+/// Fetch an authorization with its challenges and atomically mark the specified
+/// challenge type as "processing" — all in a single database call.
+///
+/// Returns `None` if no authorization with `authz_id` exists. If the challenge
+/// matching `chall_type` is already "processing" or "valid", the UPDATE is a
+/// no-op; the caller inspects the returned `ChallengeRow.status` to decide
+/// whether to proceed or return the current state.
+pub async fn get_with_challenges_mark_processing(
+    db: &Connection,
+    authz_id: &str,
+    chall_type: &str,
+    now: i64,
+) -> Result<Option<(AuthorizationRow, Vec<ChallengeRow>)>, AcmeError> {
+    let authz_id_s = authz_id.to_string();
+    let chall_type_s = chall_type.to_string();
+    db.call(move |conn| {
+        // Fetch authorization.
+        let authz = {
+            let mut stmt = conn.prepare_cached(
+                "SELECT id, order_id, account_id, status, identifier, expires, wildcard,
+                        created, updated
+                 FROM authorizations WHERE id = ?1",
+            )?;
+            let mut rows = stmt.query(rusqlite::params![authz_id_s])?;
+            if let Some(row) = rows.next()? {
+                row_from(row)?
+            } else {
+                return Ok(None);
+            }
+        };
+        // Fetch all challenges for this authorization.
+        let challenges = {
+            let mut stmt = conn.prepare_cached(
+                "SELECT id, authz_id, type, status, token, validated, error, created, updated
+                 FROM challenges WHERE authz_id = ?1",
+            )?;
+            let rows: Vec<ChallengeRow> = stmt
+                .query_map(
+                    rusqlite::params![authz_id_s],
+                    crate::db::challenges::row_from,
+                )?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(stmt);
+            rows
+        };
+        // Atomically mark the target challenge "processing". Only fires when the
+        // challenge is still "pending"; a no-op for already-active challenges.
+        conn.prepare_cached(
+            "UPDATE challenges SET status = 'processing', updated = ?1
+             WHERE authz_id = ?2 AND type = ?3 AND status = 'pending'",
+        )?
+        .execute(rusqlite::params![now, authz_id_s, chall_type_s])?;
+        Ok(Some((authz, challenges)))
+    })
+    .await
+    .map_err(AcmeError::from)
+}
+
 pub async fn update_status(
     db: &Connection,
     id: &str,
