@@ -34,18 +34,19 @@ const CABF_ONION_CSR_NONCE: &[u32] = &[2, 23, 140, 41];
 ///
 /// RFC 9799 §2: v2 addresses (16-char label) MUST NOT be used.
 pub fn validate_onion_v3(domain: &str) -> bool {
-    let label = match domain
-        .strip_suffix(".onion")
-        .and_then(|s| {
-            // Support subdomains: take the rightmost label before ".onion".
-            // For a bare address like `abc…xyz.onion` this is the whole prefix.
-            let last = s.rsplit('.').next()?;
-            Some(last)
-        }) {
+    let label = match domain.strip_suffix(".onion").and_then(|s| {
+        // Support subdomains: take the rightmost label before ".onion".
+        // For a bare address like `abc…xyz.onion` this is the whole prefix.
+        let last = s.rsplit('.').next()?;
+        Some(last)
+    }) {
         Some(l) => l,
         None => return false,
     };
-    label.len() == 56 && label.bytes().all(|b| matches!(b, b'a'..=b'z' | b'2'..=b'7'))
+    label.len() == 56
+        && label
+            .bytes()
+            .all(|b| matches!(b, b'a'..=b'z' | b'2'..=b'7'))
 }
 
 /// Decode a v3 `.onion` address label (56 base32 chars) to a 32-byte Ed25519
@@ -56,10 +57,7 @@ pub fn validate_onion_v3(domain: &str) -> bool {
 ///
 /// Returns `None` if decoding fails or the version byte is not 0x03.
 fn decode_onion_pubkey(domain: &str) -> Option<[u8; 32]> {
-    let label = domain
-        .strip_suffix(".onion")?
-        .rsplit('.')
-        .next()?;
+    let label = domain.strip_suffix(".onion")?.rsplit('.').next()?;
     if label.len() != 56 {
         return None;
     }
@@ -241,11 +239,7 @@ fn extract_csr_extensions(csr: &CertificationRequest<'_>) -> Result<Vec<CsrExt>,
 /// * `onion_domain` — the `.onion` domain being authorized.
 /// * `csr_der`      — DER-encoded PKCS#10 CSR from the client.
 /// * `key_auth`     — expected key authorization: `{token}.{thumbprint}`.
-pub fn validate(
-    onion_domain: &str,
-    csr_der: &[u8],
-    key_auth: &str,
-) -> Result<(), AcmeError> {
+pub fn validate(onion_domain: &str, csr_der: &[u8], key_auth: &str) -> Result<(), AcmeError> {
     // 1. Extract the Ed25519 public key from the .onion address.
     let pubkey_bytes = decode_onion_pubkey(onion_domain).ok_or_else(|| {
         AcmeError::IncorrectResponse(format!(
@@ -479,8 +473,7 @@ mod tests {
     use super::*;
 
     // A real v3 onion address for testing (BBC onion service).
-    const BBC_ONION: &str =
-        "bbcweb3hytmzhn5d532owbu6oqadra5z3ar726vq5kgwwn6aucdccrad.onion";
+    const BBC_ONION: &str = "bbcweb3hytmzhn5d532owbu6oqadra5z3ar726vq5kgwwn6aucdccrad.onion";
     // Shorter/malformed addresses.
     const V2_ONION: &str = "expyuzz4wqqyqhjn.onion"; // 16-char label (v2)
     const BAD_ONION: &str = "tooshort.onion";
@@ -571,7 +564,7 @@ mod tests {
         // We'll use 35 bytes: all zeros except byte 34 = 0x04 (wrong version).
         let mut raw = [0u8; 35];
         raw[34] = 0x04; // wrong version
-        // Encode 35 bytes as 56 base32 chars.
+                        // Encode 35 bytes as 56 base32 chars.
         let label = base32_encode(&raw);
         let domain = format!("{label}.onion");
         assert!(
@@ -633,8 +626,10 @@ mod tests {
     /// cabf-onion-csr-nonce extension, and verify.
     #[test]
     fn validate_with_ed25519_csr_key_matches_onion_key() {
-        use synta_certificate::{BackendPrivateKey, CsrBuilder, NameBuilder, PrivateKey as _,
-                                SubjectAlternativeNameBuilder};
+        use synta_certificate::{
+            BackendPrivateKey, CsrBuilder, NameBuilder, PrivateKey as _,
+            SubjectAlternativeNameBuilder,
+        };
 
         // Generate an Ed25519 key for the hidden service.
         let hs_key = BackendPrivateKey::generate_ed25519().unwrap();
@@ -716,8 +711,10 @@ mod tests {
 
     #[test]
     fn validate_missing_nonce_extension_fails() {
-        use synta_certificate::{BackendPrivateKey, CsrBuilder, NameBuilder, PrivateKey as _,
-                                SubjectAlternativeNameBuilder};
+        use synta_certificate::{
+            BackendPrivateKey, CsrBuilder, NameBuilder, PrivateKey as _,
+            SubjectAlternativeNameBuilder,
+        };
 
         let hs_key = BackendPrivateKey::generate_ed25519().unwrap();
         let hs_pub_spki = hs_key.public_key().unwrap().spki_der().to_vec();
@@ -728,7 +725,10 @@ mod tests {
         let label = base32_encode(&raw35);
         let onion_domain = format!("{label}.onion");
 
-        let name_der = NameBuilder::new().common_name(&onion_domain).build().unwrap();
+        let name_der = NameBuilder::new()
+            .common_name(&onion_domain)
+            .build()
+            .unwrap();
         let san_der = SubjectAlternativeNameBuilder::new()
             .dns_name(&onion_domain)
             .build()
@@ -748,7 +748,10 @@ mod tests {
         );
         match result.unwrap_err() {
             AcmeError::IncorrectResponse(msg) => {
-                assert!(msg.contains("cabf-onion-csr-nonce"), "error should mention the OID: {msg}");
+                assert!(
+                    msg.contains("cabf-onion-csr-nonce"),
+                    "error should mention the OID: {msg}"
+                );
             }
             other => panic!("expected IncorrectResponse, got: {other:?}"),
         }
@@ -756,8 +759,10 @@ mod tests {
 
     #[test]
     fn validate_wrong_nonce_value_fails() {
-        use synta_certificate::{BackendPrivateKey, CsrBuilder, NameBuilder, PrivateKey as _,
-                                SubjectAlternativeNameBuilder};
+        use synta_certificate::{
+            BackendPrivateKey, CsrBuilder, NameBuilder, PrivateKey as _,
+            SubjectAlternativeNameBuilder,
+        };
 
         let hs_key = BackendPrivateKey::generate_ed25519().unwrap();
         let hs_pub_spki = hs_key.public_key().unwrap().spki_der().to_vec();
@@ -772,7 +777,10 @@ mod tests {
         let mut nonce_ext = vec![0x0C, wrong_nonce.len() as u8];
         nonce_ext.extend_from_slice(wrong_nonce);
 
-        let name_der = NameBuilder::new().common_name(&onion_domain).build().unwrap();
+        let name_der = NameBuilder::new()
+            .common_name(&onion_domain)
+            .build()
+            .unwrap();
         let san_der = SubjectAlternativeNameBuilder::new()
             .dns_name(&onion_domain)
             .build()
@@ -798,8 +806,10 @@ mod tests {
 
     #[test]
     fn validate_wrong_san_fails() {
-        use synta_certificate::{BackendPrivateKey, CsrBuilder, NameBuilder, PrivateKey as _,
-                                SubjectAlternativeNameBuilder};
+        use synta_certificate::{
+            BackendPrivateKey, CsrBuilder, NameBuilder, PrivateKey as _,
+            SubjectAlternativeNameBuilder,
+        };
 
         let hs_key = BackendPrivateKey::generate_ed25519().unwrap();
         let hs_pub_spki = hs_key.public_key().unwrap().spki_der().to_vec();
@@ -817,7 +827,10 @@ mod tests {
 
         // Use a different domain in the SAN.
         let wrong_domain = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2.onion";
-        let name_der = NameBuilder::new().common_name(&onion_domain).build().unwrap();
+        let name_der = NameBuilder::new()
+            .common_name(&onion_domain)
+            .build()
+            .unwrap();
         let san_der = SubjectAlternativeNameBuilder::new()
             .dns_name(wrong_domain)
             .build()

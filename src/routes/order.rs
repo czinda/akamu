@@ -30,8 +30,8 @@ struct NewOrderIdentifier {
 struct AutoRenewalRequest {
     #[serde(default)]
     start_date: Option<String>, // RFC 3339
-    end_date: String,           // RFC 3339, required
-    lifetime: u64,              // seconds
+    end_date: String, // RFC 3339, required
+    lifetime: u64,    // seconds
     #[serde(default)]
     lifetime_adjust: i64, // seconds, default 0
     #[serde(default)]
@@ -49,6 +49,9 @@ struct NewOrderPayload {
     replaces: Option<String>,
     #[serde(rename = "auto-renewal", default)]
     auto_renewal: Option<AutoRenewalRequest>,
+    /// draft-aaron-acme-profiles-01: optional profile identifier.
+    #[serde(default)]
+    profile: Option<String>,
 }
 
 /// Parse an RFC 3339 timestamp string to a Unix timestamp.
@@ -94,11 +97,12 @@ fn parse_rfc3339(s: &str) -> Result<i64, AcmeError> {
     let tz_hours: i64 = tz_parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
     let tz_mins: i64 = tz_parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
     // Determine sign from original string
-    let tz_sign: i64 = if date_time.len() < s.len() && s.as_bytes().get(date_time.len()) == Some(&b'-') {
-        -1
-    } else {
-        1
-    };
+    let tz_sign: i64 =
+        if date_time.len() < s.len() && s.as_bytes().get(date_time.len()) == Some(&b'-') {
+            -1
+        } else {
+            1
+        };
     let tz_offset_secs = tz_sign * (tz_hours * 3600 + tz_mins * 60);
 
     // Convert to Unix timestamp using simple Gregorian algorithm.
@@ -110,7 +114,7 @@ fn parse_rfc3339(s: &str) -> Result<i64, AcmeError> {
 
 /// Compute days since Unix epoch for a Gregorian date (no external deps).
 fn days_since_epoch(year: i64, month: i64, day: i64) -> Option<i64> {
-    if month < 1 || month > 12 || day < 1 || day > 31 || year < 1970 {
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || year < 1970 {
         return None;
     }
     // Use the proleptic Gregorian formula.
@@ -178,20 +182,41 @@ pub async fn new_order(
         None
     };
 
+    // draft-aaron-acme-profiles-01: validate profile if specified.
+    let order_profile: Option<String> = if let Some(ref p) = payload.profile {
+        if !state.config.server.profiles.is_empty()
+            && !state.config.server.profiles.contains_key(p.as_str())
+        {
+            return Err(AcmeError::InvalidProfile(format!(
+                "profile '{p}' is not advertised by this server"
+            )));
+        }
+        Some(p.clone())
+    } else {
+        None
+    };
+
     // RFC 8739 §3.1.1: parse auto-renewal if present.
-    let (star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs,
-         star_allow_cert_get) = if let Some(ref ar) = payload.auto_renewal {
+    let (
+        star_start_date,
+        star_end_date,
+        star_lifetime_secs,
+        star_lifetime_adjust_secs,
+        star_allow_cert_get,
+    ) = if let Some(ref ar) = payload.auto_renewal {
         // RFC 8739 §3.1.1: "notBefore" and "notAfter" MUST NOT be present with auto-renewal.
         if payload.not_before.is_some() || payload.not_after.is_some() {
             return Err(AcmeError::BadRequest(
                 "notBefore and notAfter MUST NOT be present in a STAR order".into(),
             ));
         }
-        let end_ts = parse_rfc3339(&ar.end_date)
-            .map_err(|_| AcmeError::BadRequest("auto-renewal endDate is not valid RFC 3339".into()))?;
+        let end_ts = parse_rfc3339(&ar.end_date).map_err(|_| {
+            AcmeError::BadRequest("auto-renewal endDate is not valid RFC 3339".into())
+        })?;
         let start_ts = if let Some(ref s) = ar.start_date {
-            Some(parse_rfc3339(s)
-                .map_err(|_| AcmeError::BadRequest("auto-renewal startDate is not valid RFC 3339".into()))?)
+            Some(parse_rfc3339(s).map_err(|_| {
+                AcmeError::BadRequest("auto-renewal startDate is not valid RFC 3339".into())
+            })?)
         } else {
             None
         };
@@ -200,8 +225,13 @@ pub async fn new_order(
                 "auto-renewal lifetime must be > 0".into(),
             ));
         }
-        (start_ts, Some(end_ts), Some(ar.lifetime as i64),
-         ar.lifetime_adjust, ar.allow_certificate_get)
+        (
+            start_ts,
+            Some(end_ts),
+            Some(ar.lifetime as i64),
+            ar.lifetime_adjust,
+            ar.allow_certificate_get,
+        )
     } else {
         (None, None, None, 0, false)
     };
@@ -250,13 +280,14 @@ pub async fn new_order(
         // Validate that .onion identifiers use v3 addresses and offer the
         // appropriate challenge types (onion-csr-01; optionally http-01 and
         // tls-alpn-01 for Tor-network-connected CAs; NEVER dns-01).
-        if authz_type == "dns" && is_onion_domain(authz_value) {
-            if !crate::validation::onion_csr_01::validate_onion_v3(authz_value) {
-                return Err(AcmeError::RejectedIdentifier(format!(
-                    "only v3 .onion addresses are supported (56-char base32 label); \
-                     got: {authz_value}"
-                )));
-            }
+        if authz_type == "dns"
+            && is_onion_domain(authz_value)
+            && !crate::validation::onion_csr_01::validate_onion_v3(authz_value)
+        {
+            return Err(AcmeError::RejectedIdentifier(format!(
+                "only v3 .onion addresses are supported (56-char base32 label); \
+                 got: {authz_value}"
+            )));
         }
 
         let identifier_json =
@@ -304,6 +335,7 @@ pub async fn new_order(
         let replaces_clone = validated_replaces.clone();
         let identifiers_json_clone = identifiers_json.clone();
         let star_allow_cert_get_i64 = star_allow_cert_get as i64;
+        let profile_clone = order_profile.clone();
         state
             .db
             .call(move |conn| {
@@ -313,9 +345,9 @@ pub async fn new_order(
                      (id, account_id, status, expires, identifiers,
                       not_before, not_after, error, certificate_id, replaces, created, updated,
                       star_start_date, star_end_date, star_lifetime_secs,
-                      star_lifetime_adjust_secs, star_allow_cert_get)
+                      star_lifetime_adjust_secs, star_allow_cert_get, profile)
                      VALUES (?1, ?2, 'pending', ?3, ?4, NULL, NULL, NULL, NULL, ?5, ?6, ?6,
-                             ?7, ?8, ?9, ?10, ?11)",
+                             ?7, ?8, ?9, ?10, ?11, ?12)",
                 )?
                 .execute(rusqlite::params![
                     order_id_clone,
@@ -329,6 +361,7 @@ pub async fn new_order(
                     star_lifetime_secs,
                     star_lifetime_adjust_secs,
                     star_allow_cert_get_i64,
+                    profile_clone,
                 ])?;
                 for plan in &authz_plans {
                     tx.prepare_cached(
@@ -392,6 +425,7 @@ pub async fn new_order(
         star_allow_cert_get,
         star_canceled_at: None,
         star_csr_der: None,
+        profile: order_profile,
     };
     let mut resp = json_response(
         &state,
@@ -484,7 +518,10 @@ struct AutoRenewalJson {
     lifetime: i64,
     #[serde(rename = "lifetime-adjust", skip_serializing_if = "Option::is_none")]
     lifetime_adjust: Option<i64>,
-    #[serde(rename = "allow-certificate-get", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "allow-certificate-get",
+        skip_serializing_if = "Option::is_none"
+    )]
     allow_certificate_get: Option<bool>,
 }
 
@@ -511,6 +548,9 @@ pub(crate) struct OrderJson<'a> {
     replaces: Option<&'a str>,
     #[serde(rename = "auto-renewal", skip_serializing_if = "Option::is_none")]
     auto_renewal: Option<AutoRenewalJson>,
+    /// draft-aaron-acme-profiles-01
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profile: Option<&'a str>,
 }
 
 pub(crate) fn order_json<'a>(
@@ -529,22 +569,20 @@ pub(crate) fn order_json<'a>(
         .and_then(|s| serde_json::value::RawValue::from_string(s.to_string()).ok());
 
     // Build STAR auto-renewal object if this is a STAR order.
-    let auto_renewal = order.star_end_date.map(|end_ts| {
-        AutoRenewalJson {
-            start_date: order.star_start_date.map(fmt_time),
-            end_date: fmt_time(end_ts),
-            lifetime: order.star_lifetime_secs.unwrap_or(0),
-            lifetime_adjust: if order.star_lifetime_adjust_secs != 0 {
-                Some(order.star_lifetime_adjust_secs)
-            } else {
-                None
-            },
-            allow_certificate_get: if order.star_allow_cert_get {
-                Some(true)
-            } else {
-                None
-            },
-        }
+    let auto_renewal = order.star_end_date.map(|end_ts| AutoRenewalJson {
+        start_date: order.star_start_date.map(fmt_time),
+        end_date: fmt_time(end_ts),
+        lifetime: order.star_lifetime_secs.unwrap_or(0),
+        lifetime_adjust: if order.star_lifetime_adjust_secs != 0 {
+            Some(order.star_lifetime_adjust_secs)
+        } else {
+            None
+        },
+        allow_certificate_get: if order.star_allow_cert_get {
+            Some(true)
+        } else {
+            None
+        },
     });
 
     // star-certificate URL: present when order is valid and is a STAR order.
@@ -572,6 +610,7 @@ pub(crate) fn order_json<'a>(
         error,
         replaces: order.replaces.as_deref(),
         auto_renewal,
+        profile: order.profile.as_deref(),
     }
 }
 
@@ -621,6 +660,7 @@ mod tests {
             star_allow_cert_get: false,
             star_canceled_at: None,
             star_csr_der: None,
+            profile: None,
         }
     }
 
@@ -717,7 +757,10 @@ mod tests {
         let json = to_val(order_json(&order, &[], "https://acme.test"));
         assert_eq!(json["status"], "valid");
         // star-certificate should be present, not regular certificate
-        assert!(json["star-certificate"].as_str().unwrap().contains("order-1"));
+        assert!(json["star-certificate"]
+            .as_str()
+            .unwrap()
+            .contains("order-1"));
         assert!(json.get("certificate").map_or(true, |v| v.is_null()));
         // auto-renewal object present
         let ar = &json["auto-renewal"];
@@ -752,5 +795,20 @@ mod tests {
     fn parse_rfc3339_invalid_returns_error() {
         assert!(parse_rfc3339("not-a-date").is_err());
         assert!(parse_rfc3339("2020-13-01T00:00:00Z").is_err()); // month 13 ok structurally but days_since_epoch returns None for year < 1970 check — actually month 13 is > 12 → None
+    }
+
+    #[test]
+    fn order_json_with_profile_includes_field() {
+        let mut order = make_order("pending", None, None, None);
+        order.profile = Some("tls-server-auth".to_string());
+        let json = to_val(order_json(&order, &[], "https://acme.test"));
+        assert_eq!(json["profile"], "tls-server-auth");
+    }
+
+    #[test]
+    fn order_json_without_profile_omits_field() {
+        let order = make_order("pending", None, None, None);
+        let json = to_val(order_json(&order, &[], "https://acme.test"));
+        assert!(json.get("profile").map_or(true, |v| v.is_null()));
     }
 }

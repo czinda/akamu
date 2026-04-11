@@ -3,12 +3,12 @@
 //! Each call runs inside a `tokio::spawn` and must not panic.
 //! After validation the function updates challenge, authorization, and order state.
 
+pub mod caa;
 mod dns01;
 mod dns_persist_01;
 mod http01;
-mod tls_alpn01;
-pub mod caa;
 pub mod onion_csr_01;
+mod tls_alpn01;
 
 use std::sync::Arc;
 
@@ -497,6 +497,7 @@ mod tests {
                 star_allow_cert_get: false,
                 star_canceled_at: None,
                 star_csr_der: None,
+                profile: None,
             },
         )
         .await
@@ -610,6 +611,7 @@ mod tests {
                 star_allow_cert_get: false,
                 star_canceled_at: None,
                 star_csr_der: None,
+                profile: None,
             },
         )
         .await
@@ -807,6 +809,7 @@ mod tests {
                 star_allow_cert_get: false,
                 star_canceled_at: None,
                 star_csr_der: None,
+                profile: None,
             },
         )
         .await
@@ -1200,6 +1203,7 @@ mod tests {
                 star_allow_cert_get: false,
                 star_canceled_at: None,
                 star_csr_der: None,
+                profile: None,
             },
         )
         .await
