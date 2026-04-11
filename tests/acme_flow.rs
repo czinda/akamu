@@ -31,7 +31,7 @@ struct TestKey {
     key: BackendPrivateKey,
     x_b64: String,
     y_b64: String,
-    spki_der: Vec<u8>,
+    _spki_der: Vec<u8>,
 }
 
 impl TestKey {
@@ -44,13 +44,13 @@ impl TestKey {
         let (x_bytes, y_bytes) = pub_key.ec_affine_coordinates().unwrap().unwrap();
         let x_b64 = encode_coord(&x_bytes, 32);
         let y_b64 = encode_coord(&y_bytes, 32);
-        let spki_der = pub_key.spki_der().to_vec();
+        let _spki_der = pub_key.spki_der().to_vec();
 
         TestKey {
             key,
             x_b64,
             y_b64,
-            spki_der,
+            _spki_der,
         }
     }
 
@@ -1672,7 +1672,7 @@ async fn test_finalize_wrong_account() {
         Some(json!({"identifiers": [{"type": "dns", "value": "wrong-acct.test"}]})),
     );
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
-    let nonce = nonce_header(&order_headers);
+    let _nonce = nonce_header(&order_headers);
     let order_id: String = db
         .call(|c| {
             Ok(c.query_row(

@@ -240,7 +240,7 @@ fn build_okp_spki(x_bytes: &[u8], prefix: &[u8]) -> Result<Vec<u8>, AcmeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synta_certificate::{BackendPrivateKey, PrivateKey as _};
+    use synta_certificate::BackendPrivateKey;
 
     /// RFC 7638 §3.1 example thumbprint
     #[test]

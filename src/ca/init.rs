@@ -271,13 +271,13 @@ mod tests {
         let config = make_config_with_paths(dir.path(), "ec:P-256");
 
         // Neither file exists — should generate.
-        let (key, cert_der) = load_or_generate(&config).unwrap();
+        let (_key, cert_der) = load_or_generate(&config).unwrap();
         assert!(!cert_der.is_empty());
         assert!(std::path::Path::new(&config.key_file).exists());
         assert!(std::path::Path::new(&config.cert_file).exists());
 
         // Both files now exist — should load.
-        let (key2, cert_der2) = load_or_generate(&config).unwrap();
+        let (_key2, cert_der2) = load_or_generate(&config).unwrap();
         assert_eq!(
             cert_der, cert_der2,
             "loaded cert should match generated cert"

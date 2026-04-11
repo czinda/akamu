@@ -129,14 +129,13 @@ fn unix_now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synta_certificate::BackendPrivateKey;
-
     use crate::ca::init;
 
     fn make_ca() -> (synta_certificate::BackendPrivateKey, Vec<u8>) {
+        let dir = tempfile::TempDir::new().unwrap();
         let config = crate::config::CaConfig {
-            key_file: "/tmp/test-ca.key".into(),
-            cert_file: "/tmp/test-ca.crt".into(),
+            key_file: dir.path().join("ca.key").to_str().unwrap().into(),
+            cert_file: dir.path().join("ca.crt").to_str().unwrap().into(),
             key_type: "ec:P-256".into(),
             hash_alg: "sha256".into(),
             validity_days: 90,

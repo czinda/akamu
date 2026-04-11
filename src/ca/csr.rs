@@ -281,13 +281,11 @@ fn bytes_to_ip_string(bytes: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synta::traits::Encode;
-    use synta::{Decoder, Encoder, Encoding};
+    use synta::{Decoder, Encoding};
     use synta_certificate::csr::CertificationRequest;
     use synta_certificate::oids;
     use synta_certificate::{
-        BackendPrivateKey, BasicConstraints, CsrBuilder, NameBuilder, PrivateKey as _,
-        SubjectAlternativeNameBuilder,
+        BackendPrivateKey, CsrBuilder, NameBuilder, PrivateKey as _, SubjectAlternativeNameBuilder,
     };
 
     fn make_csr_der(key: &BackendPrivateKey, domain: &str, include_bc_ca_true: bool) -> Vec<u8> {

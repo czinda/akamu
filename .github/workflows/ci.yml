@@ -1,0 +1,230 @@
+---
+# Project: https://codeberg.org/abbra/akamu
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  # System packages required to compile akamu and to run JavaScript-based
+  # Forgejo Actions (actions/checkout, actions/cache) inside the container.
+  #   nodejs22           — required by actions/checkout and actions/cache
+  #   openssl-devel      — OpenSSL headers (pqc-prs fork via [patch.crates-io])
+  #   sqlite-devel       — system SQLite (rusqlite, no bundled feature)
+  #   pkgconf-pkg-config — pkg-config used by openssl-sys and rusqlite-sys
+  #   gcc / make         — C linker and build tooling
+  DNF_PACKAGES: >-
+    nodejs22 gcc make pkgconf-pkg-config openssl-devel sqlite-devel
+
+jobs:
+  # ── Build ──────────────────────────────────────────────────────────────────
+  # Compiles the workspace (debug) once and caches the artifacts.
+  # All downstream jobs restore from this cache instead of recompiling.
+  build:
+    name: Build
+    runs-on: vdali
+    container: quay.io/hummingbird/rust:latest-builder
+    steps:
+      - name: Install build dependencies
+        run: |
+          if rpm -q $DNF_PACKAGES >/dev/null 2>&1; then
+            echo "All required packages already installed"
+          else
+            dnf install -y $DNF_PACKAGES
+          fi
+      - uses: actions/checkout@v4
+      - name: Restore cargo registry cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/registry
+          key: cargo-registry-v1-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-registry-v1-
+      - name: Restore cargo git cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/git
+          key: cargo-git-v1-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-git-v1-
+      - name: Build workspace
+        run: ./contrib/ci/local-ci.sh --no-deps build
+      - name: Prune incremental artifacts before caching
+        run: rm -rf target/debug/incremental
+      - name: Save debug build artifacts
+        uses: actions/cache@v5
+        with:
+          path: |
+            target/debug/deps
+            target/debug/build
+            target/debug/examples
+          key: cargo-target-debug-v1-${{ github.sha }}
+
+  # ── Format ─────────────────────────────────────────────────────────────────
+  # rustfmt needs no compiled artifacts and no system libraries — runs in
+  # parallel with build.
+  fmt:
+    name: Rustfmt
+    runs-on: vdali
+    container: quay.io/hummingbird/rust:latest-builder
+    steps:
+      - name: Install build dependencies
+        run: |
+          if rpm -q $DNF_PACKAGES >/dev/null 2>&1; then
+            echo "All required packages already installed"
+          else
+            dnf install -y $DNF_PACKAGES
+          fi
+      - uses: actions/checkout@v4
+      - name: Check formatting
+        run: ./contrib/ci/local-ci.sh --no-deps fmt
+
+  # ── Clippy ─────────────────────────────────────────────────────────────────
+  clippy:
+    name: Clippy
+    needs: [build]
+    runs-on: vdali
+    container: quay.io/hummingbird/rust:latest-builder
+    steps:
+      - name: Install build dependencies
+        run: |
+          if rpm -q $DNF_PACKAGES >/dev/null 2>&1; then
+            echo "All required packages already installed"
+          else
+            dnf install -y $DNF_PACKAGES
+          fi
+      - uses: actions/checkout@v4
+      - name: Restore cargo registry cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/registry
+          key: cargo-registry-v1-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-registry-v1-
+      - name: Restore debug build artifacts
+        uses: actions/cache@v5
+        with:
+          path: |
+            target/debug/deps
+            target/debug/build
+            target/debug/examples
+          key: cargo-target-debug-v1-${{ github.sha }}
+      - name: Run clippy
+        run: ./contrib/ci/local-ci.sh --no-deps clippy
+
+  # ── Documentation ──────────────────────────────────────────────────────────
+  doc:
+    name: Documentation
+    needs: [build]
+    runs-on: vdali
+    container: quay.io/hummingbird/rust:latest-builder
+    steps:
+      - name: Install build dependencies
+        run: |
+          if rpm -q $DNF_PACKAGES >/dev/null 2>&1; then
+            echo "All required packages already installed"
+          else
+            dnf install -y $DNF_PACKAGES
+          fi
+      - uses: actions/checkout@v4
+      - name: Restore cargo registry cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/registry
+          key: cargo-registry-v1-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-registry-v1-
+      - name: Restore debug build artifacts
+        uses: actions/cache@v5
+        with:
+          path: |
+            target/debug/deps
+            target/debug/build
+            target/debug/examples
+          key: cargo-target-debug-v1-${{ github.sha }}
+      - name: Build documentation
+        run: ./contrib/ci/local-ci.sh --no-deps doc
+
+  # ── Test suite ─────────────────────────────────────────────────────────────
+  test:
+    name: Test Suite
+    needs: [build]
+    runs-on: vdali
+    container: quay.io/hummingbird/rust:latest-builder
+    steps:
+      - name: Install build dependencies
+        run: |
+          if rpm -q $DNF_PACKAGES >/dev/null 2>&1; then
+            echo "All required packages already installed"
+          else
+            dnf install -y $DNF_PACKAGES
+          fi
+      - uses: actions/checkout@v4
+      - name: Restore cargo registry cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/registry
+          key: cargo-registry-v1-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-registry-v1-
+      - name: Restore debug build artifacts
+        uses: actions/cache@v5
+        with:
+          path: |
+            target/debug/deps
+            target/debug/build
+            target/debug/examples
+          key: cargo-target-debug-v1-${{ github.sha }}
+      - name: Run tests
+        run: ./contrib/ci/local-ci.sh --no-deps test
+
+  # ── Benchmarks ─────────────────────────────────────────────────────────────
+  # Compile-only: verifies the bench binary stays buildable without the
+  # wall-clock cost of running the full issuance benchmark in CI.
+  bench:
+    name: Benchmarks (compile only)
+    needs: [build]
+    runs-on: vdali
+    container: quay.io/hummingbird/rust:latest-builder
+    steps:
+      - name: Install build dependencies
+        run: |
+          if rpm -q $DNF_PACKAGES >/dev/null 2>&1; then
+            echo "All required packages already installed"
+          else
+            dnf install -y $DNF_PACKAGES
+          fi
+      - uses: actions/checkout@v4
+      - name: Restore cargo registry cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/registry
+          key: cargo-registry-v1-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-registry-v1-
+      - name: Restore debug build artifacts
+        uses: actions/cache@v5
+        with:
+          path: |
+            target/debug/deps
+            target/debug/build
+            target/debug/examples
+          key: cargo-target-debug-v1-${{ github.sha }}
+      - name: Build benchmarks
+        run: ./contrib/ci/local-ci.sh --no-deps bench
+
+  # ── Workflow lint ───────────────────────────────────────────────────────────
+  # Validates .github/workflows/*.yml with actionlint; no Rust toolchain needed.
+  lint-workflows:
+    name: Lint Workflows
+    runs-on: vdali
+    container: quay.io/hummingbird/rust:latest-builder
+    steps:
+      - name: Install build dependencies
+        run: |
+          if rpm -q $DNF_PACKAGES >/dev/null 2>&1; then
+            echo "All required packages already installed"
+          else
+            dnf install -y $DNF_PACKAGES
+          fi
+      - uses: actions/checkout@v4
+      - name: Lint workflow files
+        run: ./contrib/ci/local-ci.sh --no-deps lint-workflows
