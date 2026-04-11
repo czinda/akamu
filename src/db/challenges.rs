@@ -103,6 +103,32 @@ pub async fn set_valid(db: &Connection, id: &str, validated: i64) -> Result<(), 
     .map_err(AcmeError::from)
 }
 
+/// Return the challenge type (`"http-01"`, `"dns-01"`, etc.) of the single
+/// validated challenge for an authorization, or `None` if no challenge is
+/// in the `"valid"` state yet.
+///
+/// Used by the finalize handler to supply a real challenge type to the CAA
+/// `validationmethods` check (RFC 8657).
+pub async fn get_validated_type(
+    db: &Connection,
+    authz_id: &str,
+) -> Result<Option<String>, AcmeError> {
+    let authz_id = authz_id.to_string();
+    db.call(move |conn| {
+        let mut stmt = conn.prepare_cached(
+            "SELECT type FROM challenges WHERE authz_id = ?1 AND status = 'valid' LIMIT 1",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![authz_id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get::<_, String>(0)?))
+        } else {
+            Ok(None)
+        }
+    })
+    .await
+    .map_err(AcmeError::from)
+}
+
 pub async fn set_invalid(
     db: &Connection,
     id: &str,
@@ -319,6 +345,47 @@ mod tests {
         let row = get_by_id(&db, "chall-6").await.unwrap().unwrap();
         assert_eq!(row.status, "invalid");
         assert_eq!(row.error, Some("{\"type\":\"connection\"}".to_string()));
+    }
+
+    #[tokio::test]
+    async fn get_validated_type_returns_none_when_no_valid_challenge() {
+        let db = open_db().await;
+        insert_challenge(&db, "chall-v1", "acct-v1", "order-v1", "authz-v1").await;
+        // Challenge is still "pending" — no valid type yet.
+        let result = get_validated_type(&db, "authz-v1").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_validated_type_returns_type_after_set_valid() {
+        let db = open_db().await;
+        insert_parents(&db, "acct-v2", "order-v2", "authz-v2").await;
+        insert(
+            &db,
+            ChallengeRow {
+                id: "chall-v2".to_string(),
+                authz_id: "authz-v2".to_string(),
+                r#type: "dns-01".to_string(),
+                status: "pending".to_string(),
+                token: "token-v2".to_string(),
+                validated: None,
+                error: None,
+                created: 1_700_000_000,
+                updated: 1_700_000_000,
+            },
+        )
+        .await
+        .unwrap();
+        set_valid(&db, "chall-v2", 1_700_000_099).await.unwrap();
+        let result = get_validated_type(&db, "authz-v2").await.unwrap();
+        assert_eq!(result, Some("dns-01".to_string()));
+    }
+
+    #[tokio::test]
+    async fn get_validated_type_no_such_authz_returns_none() {
+        let db = open_db().await;
+        let result = get_validated_type(&db, "nonexistent-authz").await.unwrap();
+        assert!(result.is_none());
     }
 
     #[tokio::test]

@@ -80,6 +80,19 @@ pub async fn finalize_order(
         }
     }
 
+    // Build identifier → authz_id map so we can look up the validated challenge
+    // type for each authorization during the CAA validationmethods check (RFC 8657).
+    let authz_rows = db::authz::list_by_order(&state.db, &id).await?;
+    let mut identifier_to_authz: std::collections::HashMap<(String, String), String> =
+        std::collections::HashMap::new();
+    for authz in &authz_rows {
+        if let Ok(id_obj) = serde_json::from_str::<serde_json::Value>(&authz.identifier) {
+            if let (Some(t), Some(v)) = (id_obj["type"].as_str(), id_obj["value"].as_str()) {
+                identifier_to_authz.insert((t.to_string(), v.to_string()), authz.id.clone());
+            }
+        }
+    }
+
     // CAA check (RFC 8659 + RFC 8657): only when caa_identities is configured.
     if !state.config.server.caa_identities.is_empty() {
         for (id_type, id_value) in &allowed {
@@ -90,11 +103,20 @@ pub async fn finalize_order(
                 } else {
                     id_value
                 };
+                let challenge_type = if let Some(authz_id) =
+                    identifier_to_authz.get(&(id_type.to_string(), id_value.to_string()))
+                {
+                    db::challenges::get_validated_type(&state.db, authz_id)
+                        .await?
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
                 crate::validation::caa::check_caa(
                     domain,
                     &state.config.server.caa_identities,
                     is_wildcard,
-                    "", // challenge_type not tracked per-authz at finalize time
+                    &challenge_type,
                     state.config.server.dns_resolver_addr.as_deref(),
                 )
                 .await?;

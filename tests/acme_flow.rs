@@ -382,6 +382,24 @@ fn cert_id_from_serial_hex(serial_hex: &str) -> String {
 
 // ── CSR builder ───────────────────────────────────────────────────────────────
 
+/// Build a CSR for `domain` signed by an *existing* `BackendPrivateKey`.
+/// Used by tests that need to know the certificate's private key (e.g. JWK revocation).
+fn make_csr_der_with_key(domain: &str, backend_key: &BackendPrivateKey) -> Vec<u8> {
+    let spki_der = backend_key.public_key().unwrap().spki_der().to_vec();
+    let name_der = NameBuilder::new().common_name(domain).build().unwrap();
+    let san_der = SubjectAlternativeNameBuilder::new()
+        .dns_name(domain)
+        .build()
+        .unwrap();
+    let signer = backend_key.as_signer("sha256");
+    CsrBuilder::new()
+        .subject_name(&name_der)
+        .public_key_der(&spki_der)
+        .add_extension_oid(synta_certificate::oids::SUBJECT_ALT_NAME, false, &san_der)
+        .sign(&signer)
+        .unwrap()
+}
+
 fn make_csr_der(domain: &str) -> Vec<u8> {
     let backend_key = BackendPrivateKey::generate_ec("P-256").unwrap();
     let spki_der = backend_key.public_key().unwrap().spki_der().to_vec();
@@ -2422,15 +2440,107 @@ async fn test_challenge_already_processing() {
 }
 
 /// Revoke a cert using JWK (cert's own key) rather than KID (account key).
-/// Covers routes/revoke.rs None branch (lines 63-67).
+/// RFC 8555 §7.6: the signing key MUST be the certificate's actual public key.
+/// Covers routes/revoke.rs None branch.
 #[tokio::test]
 async fn test_revoke_cert_by_jwk() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let (router, cert_b64url) = issue_cert_for_domain(base_url, &state, "jwk-revoke.test").await;
+    let db = Arc::clone(&state.db);
+    let router = routes::build_router(Arc::clone(&state));
 
-    // Use any key with JWK (not KID) — server accepts cert-key-based revocation per RFC 8555 §7.6.
-    let cert_key = TestKey::generate();
+    // Account key used to create the account and order.
+    let account_key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = account_key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    let jws = account_key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": "jwk-revoke.test"}]})),
+    );
+    let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
+    let nonce = nonce_header(&order_headers);
+
+    let order_id: String = db
+        .call(|conn| {
+            Ok(conn.query_row(
+                "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    mark_order_ready(&db, &order_id).await;
+
+    // Build CSR with a known cert key so we can use it for JWK revocation.
+    let cert_backend_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+    let csr_der = make_csr_der_with_key("jwk-revoke.test", &cert_backend_key);
+    let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
+    let finalize_url = format!("{base_url}/acme/order/{order_id}/finalize");
+    let jws = account_key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &finalize_url,
+        Some(json!({"csr": csr_b64})),
+    );
+    let (status, final_body, _) =
+        post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
+    assert_eq!(status, StatusCode::OK, "finalize failed: {final_body}");
+
+    // Extract the leaf cert DER.
+    let cert_path = final_body["certificate"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches(base_url)
+        .to_string();
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(&cert_path)
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    let cert_bytes = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let pem = std::str::from_utf8(&cert_bytes).unwrap();
+    let der_b64 = pem
+        .lines()
+        .skip_while(|l| !l.starts_with("-----BEGIN CERTIFICATE-----"))
+        .skip(1)
+        .take_while(|l| !l.starts_with("-----END CERTIFICATE-----"))
+        .collect::<Vec<_>>()
+        .join("");
+    let cert_der = base64::engine::general_purpose::STANDARD
+        .decode(&der_b64)
+        .unwrap();
+    let cert_b64url = URL_SAFE_NO_PAD.encode(&cert_der);
+
+    // Build a TestKey from cert_backend_key to sign the revocation JWS.
+    let cert_key = {
+        let pub_key = cert_backend_key.public_key().unwrap();
+        let (x_bytes, y_bytes) = pub_key.ec_affine_coordinates().unwrap().unwrap();
+        let x_b64 = encode_coord(&x_bytes, 32);
+        let y_b64 = encode_coord(&y_bytes, 32);
+        let _spki_der = pub_key.spki_der().to_vec();
+        TestKey {
+            key: cert_backend_key,
+            x_b64,
+            y_b64,
+            _spki_der,
+        }
+    };
+
+    // Revoke using the cert's own key (JWK) — RFC 8555 §7.6.
     let nonce = head_nonce(&router).await;
     let revoke_url = format!("{base_url}/acme/revoke-cert");
     let jws = cert_key.jws_with_jwk(
