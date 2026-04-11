@@ -225,6 +225,25 @@ pub async fn new_order(
                 "auto-renewal lifetime must be > 0".into(),
             ));
         }
+        // RFC 8739 §3.1.1: enforce server-configured minimum lifetime and
+        // maximum total renewal period when the operator has set them.
+        if let Some(min) = state.config.server.star_min_lifetime_secs {
+            if ar.lifetime < min {
+                return Err(AcmeError::BadRequest(format!(
+                    "STAR lifetime {lifetime}s is below server minimum {min}s",
+                    lifetime = ar.lifetime,
+                )));
+            }
+        }
+        if let Some(max_dur) = state.config.server.star_max_duration_secs {
+            let reference_ts = start_ts.unwrap_or_else(unix_now);
+            let total_secs = (end_ts - reference_ts).max(0) as u64;
+            if total_secs > max_dur {
+                return Err(AcmeError::BadRequest(format!(
+                    "STAR renewal period {total_secs}s exceeds server maximum {max_dur}s"
+                )));
+            }
+        }
         (
             start_ts,
             Some(end_ts),
