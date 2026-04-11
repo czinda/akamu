@@ -112,6 +112,13 @@ pub async fn new_authz(
         ));
     }
 
+    // RFC 9444 §4: reject subdomainAuthAllowed if the server does not support it.
+    if payload.subdomain_auth_allowed && !state.config.server.allow_subdomain_auth {
+        return Err(AcmeError::BadRequest(
+            "server does not support subdomainAuthAllowed pre-authorization".into(),
+        ));
+    }
+
     let identifier_json = serde_json::to_string(
         &json!({"type": payload.identifier.r#type, "value": payload.identifier.value}),
     )
