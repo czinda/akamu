@@ -165,7 +165,11 @@ pub async fn finalize_order(
     let not_before = issued.not_before;
     let not_after = issued.not_after;
 
-    let authz_ids: Vec<String> = state
+    // The closure returns (authz_ids, pred_already_replaced) so we can signal
+    // a concurrent alreadyReplaced conflict (RFC 9773 §5) without a separate
+    // DB round-trip.  The bool is true when the predecessor's replaced_by was
+    // already set by another concurrent finalization.
+    let (authz_ids, pred_already_replaced): (Vec<String>, bool) = state
         .db
         .call(move |conn| {
             let tx = conn.transaction()?;
@@ -195,13 +199,20 @@ pub async fn finalize_order(
             )?
             .execute(rusqlite::params![cert_id, now, order_id_clone])?;
             // Mark predecessor certificate as replaced (RFC 9773 §5).
-            if let Some(ref pred_uuid) = pred_cert_uuid {
-                tx.prepare_cached(
-                    "UPDATE certificates SET replaced_by = ?1 \
-                     WHERE id = ?2 AND replaced_by IS NULL",
-                )?
-                .execute(rusqlite::params![order_id_clone, pred_uuid])?;
-            }
+            // The WHERE clause is conditional on replaced_by IS NULL so that
+            // concurrent replacement orders produce 0 rows changed, which we
+            // surface as alreadyReplaced (HTTP 409) after the transaction.
+            let pred_already_replaced = if let Some(ref pred_uuid) = pred_cert_uuid {
+                let rows_changed = tx
+                    .prepare_cached(
+                        "UPDATE certificates SET replaced_by = ?1 \
+                         WHERE id = ?2 AND replaced_by IS NULL",
+                    )?
+                    .execute(rusqlite::params![order_id_clone, pred_uuid])?;
+                rows_changed == 0
+            } else {
+                false
+            };
             // Fetch authz IDs within the same db.call to avoid a separate round-trip.
             // drop(stmt) before tx.commit() so the borrow of tx is released.
             let mut stmt =
@@ -213,10 +224,16 @@ pub async fn finalize_order(
                 .collect::<Result<Vec<_>, _>>()?;
             drop(stmt);
             tx.commit()?;
-            Ok(ids)
+            Ok((ids, pred_already_replaced))
         })
         .await
         .map_err(AcmeError::from)?;
+
+    // RFC 9773 §5: return 409 alreadyReplaced if another order concurrently
+    // replaced the same predecessor certificate during this finalization.
+    if pred_already_replaced {
+        return Err(AcmeError::CertAlreadyReplaced);
+    }
 
     // Optionally append to the MTC log.
     if state.mtc.is_enabled() {
