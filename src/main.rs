@@ -15,10 +15,6 @@ use http_body_util::Empty;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 
-use http_body_util::Empty;
-use hyper_util::client::legacy::Client;
-use hyper_util::rt::TokioExecutor;
-
 #[tokio::main]
 async fn main() {
     // ── Logging ───────────────────────────────────────────────────────────────
