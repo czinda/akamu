@@ -68,6 +68,25 @@ pub async fn finalize_order(
     // Validate CSR.
     let validated_csr = ca::csr::validate_csr(&csr_der, &allowed)?;
 
+    // CAA check (RFC 8659 + RFC 8657): only when caa_identities is configured.
+    if !state.config.server.caa_identities.is_empty() {
+        for (id_type, id_value) in &allowed {
+            if *id_type == "dns" {
+                let is_wildcard = id_value.starts_with("*.");
+                let domain = if is_wildcard { &id_value[2..] } else { id_value };
+                crate::validation::caa::check_caa(
+                    domain,
+                    &state.config.server.caa_identities,
+                    is_wildcard,
+                    "", // challenge_type not tracked per-authz at finalize time
+                    state.config.server.dns_resolver_addr.as_deref(),
+                )
+                .await?;
+            }
+            // IP identifiers: CAA is not applicable per RFC 8659.
+        }
+    }
+
     // Issue certificate, honouring any notBefore/notAfter requested in the order
     // (RFC 8555 §7.1.3).
     let ca = &state.ca;

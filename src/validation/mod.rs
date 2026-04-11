@@ -7,6 +7,7 @@ mod dns01;
 mod dns_persist_01;
 mod http01;
 mod tls_alpn01;
+pub mod caa;
 
 use std::sync::Arc;
 
