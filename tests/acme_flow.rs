@@ -362,6 +362,24 @@ async fn mark_order_ready(db: &tokio_rusqlite::Connection, order_id: &str) {
     .unwrap();
 }
 
+// ── ARI cert_id helper ────────────────────────────────────────────────────────
+
+/// Build a minimal RFC 9773 cert_id for a certificate identified by its
+/// hex-encoded serial number (as stored in the `certificates.serial_number`
+/// column).  The AKI component is arbitrary because `get_by_cert_id` only uses
+/// the serial for the DB lookup.
+fn cert_id_from_serial_hex(serial_hex: &str) -> String {
+    let serial_bytes: Vec<u8> = (0..serial_hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&serial_hex[i..i + 2], 16).unwrap())
+        .collect();
+    format!(
+        "{}.{}",
+        URL_SAFE_NO_PAD.encode(b"test-aki"),
+        URL_SAFE_NO_PAD.encode(&serial_bytes)
+    )
+}
+
 // ── CSR builder ───────────────────────────────────────────────────────────────
 
 fn make_csr_der(domain: &str) -> Vec<u8> {
@@ -734,23 +752,29 @@ async fn test_renewal_info() {
         post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
     assert_eq!(status, StatusCode::OK, "finalize failed: {final_body}");
 
-    // Get cert_id from DB
-    let cert_id: String = db
+    // Get serial_number from DB and build RFC 9773 cert_id.
+    let serial_hex: String = db
         .call(|conn| {
             Ok(conn.query_row(
-                "SELECT id FROM certificates ORDER BY created DESC LIMIT 1",
+                "SELECT serial_number FROM certificates ORDER BY created DESC LIMIT 1",
                 [],
                 |r| r.get(0),
             )?)
         })
         .await
         .unwrap();
+    let cert_id = cert_id_from_serial_hex(&serial_hex);
 
     // GET /acme/renewal-info/{cert_id}
     let (status, ari_body, _) = get(&router, &format!("/acme/renewal-info/{cert_id}")).await;
     assert_eq!(status, StatusCode::OK, "renewal-info failed: {ari_body}");
     assert!(ari_body["suggestedWindow"]["start"].as_str().is_some());
     assert!(ari_body["suggestedWindow"]["end"].as_str().is_some());
+    // RFC 9773 §4.3 — Retry-After header must be present.
+    assert!(
+        ari_body.get("explanationURL").is_none(),
+        "explanationURL must not be present"
+    );
 }
 
 /// Renewal-info returns the explicitly-set renewal window (covers routes/renewal_info.rs:28).
@@ -814,21 +838,22 @@ async fn test_renewal_info_explicit_window() {
         post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
     assert_eq!(status, StatusCode::OK, "finalize failed: {final_body}");
 
-    let cert_id: String = db
+    let (cert_uuid, serial_hex): (String, String) = db
         .call(|conn| {
             Ok(conn.query_row(
-                "SELECT id FROM certificates ORDER BY created DESC LIMIT 1",
+                "SELECT id, serial_number FROM certificates ORDER BY created DESC LIMIT 1",
                 [],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )?)
         })
         .await
         .unwrap();
+    let cert_id = cert_id_from_serial_hex(&serial_hex);
 
     // Set an explicit renewal window on this certificate.
     let window_start: i64 = 1_800_000_000; // 2027-01-15
     let window_end: i64 = 1_800_086_400; // 2027-01-16
-    db::certs::set_renewal_window(&db, &cert_id, window_start, window_end)
+    db::certs::set_renewal_window(&db, &cert_uuid, window_start, window_end)
         .await
         .unwrap();
 
@@ -855,8 +880,14 @@ async fn test_renewal_info_not_found() {
     let (state, _tmp) = build_test_state(base_url).await;
     let router = routes::build_router(Arc::clone(&state));
 
-    let (status, body, _) = get(&router, "/acme/renewal-info/nonexistent-cert").await;
+    // Well-formed cert_id (has a dot, valid base64url serial) but no matching cert.
+    let unknown = cert_id_from_serial_hex("deadbeefdeadbeef");
+    let (status, body, _) = get(&router, &format!("/acme/renewal-info/{unknown}")).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "expected 404: {body}");
+
+    // Malformed cert_id (no dot) → 400 Bad Request.
+    let (status, body, _) = get(&router, "/acme/renewal-info/nonexistent-cert").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "expected 400: {body}");
 }
 
 // ── Tests for key_change route ────────────────────────────────────────────────
