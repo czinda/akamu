@@ -42,6 +42,9 @@ pub enum AcmeError {
     #[error("order not ready")]
     OrderNotReady,
 
+    #[error("certificate has already been replaced")]
+    CertAlreadyReplaced,
+
     #[error("bad CSR: {0}")]
     BadCsr(String),
 
@@ -132,6 +135,7 @@ impl AcmeError {
                 "urn:ietf:params:acme:error:unsupportedIdentifier"
             }
             AcmeError::OrderNotReady => "urn:ietf:params:acme:error:orderNotReady",
+            AcmeError::CertAlreadyReplaced => "urn:ietf:params:acme:error:alreadyReplaced",
             AcmeError::BadCsr(_) => "urn:ietf:params:acme:error:badCSR",
             AcmeError::BadRevocationReason => "urn:ietf:params:acme:error:badRevocationReason",
             AcmeError::AlreadyRevoked => "urn:ietf:params:acme:error:alreadyRevoked",
@@ -157,6 +161,7 @@ impl AcmeError {
             AcmeError::RejectedIdentifier(_) => StatusCode::BAD_REQUEST,
             AcmeError::UnsupportedIdentifier(_) => StatusCode::BAD_REQUEST,
             AcmeError::OrderNotReady => StatusCode::FORBIDDEN,
+            AcmeError::CertAlreadyReplaced => StatusCode::CONFLICT,
             AcmeError::BadCsr(_) => StatusCode::BAD_REQUEST,
             AcmeError::BadRevocationReason => StatusCode::BAD_REQUEST,
             AcmeError::AlreadyRevoked => StatusCode::BAD_REQUEST,
@@ -243,6 +248,10 @@ mod tests {
         assert_eq!(
             AcmeError::OrderNotReady.acme_type(),
             "urn:ietf:params:acme:error:orderNotReady"
+        );
+        assert_eq!(
+            AcmeError::CertAlreadyReplaced.acme_type(),
+            "urn:ietf:params:acme:error:alreadyReplaced"
         );
         assert_eq!(
             AcmeError::BadCsr("x".into()).acme_type(),
@@ -333,6 +342,10 @@ mod tests {
         assert_eq!(
             AcmeError::OrderNotReady.http_status(),
             StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            AcmeError::CertAlreadyReplaced.http_status(),
+            StatusCode::CONFLICT
         );
         assert_eq!(
             AcmeError::BadCsr("x".into()).http_status(),
