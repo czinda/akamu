@@ -174,6 +174,39 @@ pub async fn get_with_challenges_mark_processing(
     .map_err(AcmeError::from)
 }
 
+/// Find a valid, unexpired authorization for a given account and identifier JSON string.
+///
+/// Returns the first matching row (status `pending` or `valid`, not yet expired),
+/// or `None` if no such authorization exists. Used by `new-authz` to deduplicate.
+pub async fn find_valid_by_account_and_identifier(
+    db: &Connection,
+    account_id: &str,
+    identifier_json: &str,
+    now: i64,
+) -> Result<Option<AuthorizationRow>, AcmeError> {
+    let account_id = account_id.to_string();
+    let identifier_json = identifier_json.to_string();
+    db.call(move |conn| {
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, order_id, account_id, status, identifier, expires, wildcard, created, updated
+             FROM authorizations
+             WHERE account_id = ?1
+               AND identifier = ?2
+               AND status IN ('pending', 'valid')
+               AND (expires IS NULL OR expires > ?3)
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![account_id, identifier_json, now])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row_from(row)?))
+        } else {
+            Ok(None)
+        }
+    })
+    .await
+    .map_err(AcmeError::from)
+}
+
 pub async fn update_status(
     db: &Connection,
     id: &str,

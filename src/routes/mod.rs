@@ -44,6 +44,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/acme/order/{id}", post(order::get_order))
         .route("/acme/order/{id}/finalize", post(finalize::finalize_order))
         // Authorizations
+        .route("/acme/new-authz", post(authz::new_authz))
         .route("/acme/authz/{id}", post(authz::get_authz))
         // Challenges
         .route(

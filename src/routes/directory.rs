@@ -29,6 +29,7 @@ pub async fn get_directory(State(state): State<Arc<AppState>>) -> impl IntoRespo
         "newNonce":    format!("{base}/acme/new-nonce"),
         "newAccount":  format!("{base}/acme/new-account"),
         "newOrder":    format!("{base}/acme/new-order"),
+        "newAuthz":    format!("{base}/acme/new-authz"),
         "revokeCert":  format!("{base}/acme/revoke-cert"),
         "keyChange":   format!("{base}/acme/key-change"),
         "renewalInfo": format!("{base}/acme/renewal-info"),
