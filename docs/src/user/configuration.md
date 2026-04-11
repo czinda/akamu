@@ -43,6 +43,14 @@ external_account_required = false
 order_expiry_secs      = 86400
 authz_expiry_secs      = 86400
 max_body_bytes         = 65536
+ari_retry_after_secs   = 21600
+allow_subdomain_auth   = false
+star_min_lifetime_secs = 86400
+star_max_duration_secs = 31536000
+
+[server.profiles]
+"tls-server-auth" = "https://acme.example.com/docs/profiles/tls-server-auth"
+"client-auth"     = "https://acme.example.com/docs/profiles/client-auth"
 ```
 
 ---
@@ -263,19 +271,21 @@ website_url = "https://acme.example.com"
 
 **Optional. Default: empty list.**
 
-List of CA domain names for CAA record verification. When set, these strings appear in the `meta.caaIdentities` field of the directory response. ACME clients that check CAA records will use these values to confirm the CA is authorised to issue for a domain.
+List of CA domain names for CAA record verification (RFC 8659). When set, Akāmu queries CAA DNS records before issuing each certificate and verifies that at least one `issue` (or `issuewild` for wildcard) record authorises one of these CA domain names. The values also appear in `meta.caaIdentities` of the directory response.
+
+When the list is empty (the default), CAA checking is skipped entirely.
 
 ```toml
 caa_identities = ["acme.example.com"]
 ```
 
-The server itself does not perform CAA record lookups; it only advertises the list.
-
 ### `external_account_required`
 
 **Optional. Default: `false`.**
 
-When `true`, the directory response includes `meta.externalAccountRequired: true`. This signals to ACME clients that they must use External Account Binding (EAB) when creating a new account. The server advertises this requirement but does not currently validate EAB credentials; enforcement must happen at the network or application layer.
+When `true`, new-account requests must include an `externalAccountBinding` field (RFC 8555 §7.3.4). Requests without it are rejected with `urn:ietf:params:acme:error:externalAccountRequired` (HTTP 403). The directory response also includes `meta.externalAccountRequired: true`.
+
+> **Note:** Akāmu verifies the _presence_ of the `externalAccountBinding` field but does not verify its HMAC. Full cryptographic EAB verification requires a pre-shared key management system; enforce it at a gateway layer if needed.
 
 ```toml
 external_account_required = false
@@ -342,3 +352,63 @@ Override the DNS resolver used for `dns-01` and `dns-persist-01` challenge valid
 ```toml
 dns_resolver_addr = "127.0.0.1:5353"
 ```
+
+### `ari_retry_after_secs`
+
+**Optional. Default: `21600` (6 hours).**
+
+The value of the `Retry-After` header returned on `GET /acme/renewal-info/{cert-id}` responses (RFC 9773 §4.3). Controls how frequently ACME clients poll for renewal information.
+
+```toml
+ari_retry_after_secs = 21600
+```
+
+### `allow_subdomain_auth`
+
+**Optional. Default: `false`.**
+
+When `true`, the directory `meta` includes `"subdomainAuthAllowed": true`, advertising that the server supports RFC 9444 subdomain authorization. Clients may then:
+- Include `"subdomainAuthAllowed": true` in `POST /acme/new-authz` requests.
+- Reference an ancestor domain in `newOrder` via the `ancestorDomain` identifier field.
+
+```toml
+allow_subdomain_auth = true
+```
+
+### `star_min_lifetime_secs`
+
+**Optional. Default: absent (STAR not advertised).**
+
+Minimum certificate lifetime in seconds for ACME STAR orders (RFC 8739). When set, the directory `meta` includes an `auto-renewal` object advertising STAR capability. Clients that place STAR orders must request a `lifetime` value greater than or equal to this minimum.
+
+Setting this field enables the STAR background reissuance task.
+
+```toml
+star_min_lifetime_secs = 86400   # 1 day minimum
+```
+
+### `star_max_duration_secs`
+
+**Optional. Default: absent.**
+
+Maximum total renewal duration in seconds for ACME STAR orders. When set, it is included in the directory `meta.auto-renewal` object as `max-duration`. Clients must supply an `end-date` that does not exceed this value beyond the order creation time.
+
+```toml
+star_max_duration_secs = 31536000   # 1 year maximum
+```
+
+### `profiles`
+
+**Optional. Default: empty (profiles not advertised).**
+
+A table mapping certificate profile identifiers to human-readable descriptions or documentation URLs, per [draft-aaron-acme-profiles-01](https://datatracker.ietf.org/doc/draft-aaron-acme-profiles-01/). When non-empty, the directory `meta` includes a `"profiles"` object with these entries, and clients may select a profile by name in `newOrder`.
+
+Requests for a profile name not present in this table are rejected with `urn:ietf:params:acme:error:invalidProfile` (HTTP 400).
+
+```toml
+[server.profiles]
+"tls-server-auth" = "https://acme.example.com/docs/profiles/tls-server-auth"
+"client-auth"     = "https://acme.example.com/docs/profiles/client-auth"
+```
+
+When `profiles` is empty (the default), the `profile` field in `newOrder` is accepted but ignored — the server issues under its default policy.
