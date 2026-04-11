@@ -147,7 +147,17 @@ pub async fn new_order(
     }
     for id in &payload.identifiers {
         match id.r#type.as_str() {
-            "dns" | "ip" => {}
+            "dns" => {}
+            "ip" => {
+                // RFC 8738: validate that the value is a syntactically valid IP address
+                // (IPv4 dotted-decimal or IPv6 colon-hex per RFC 5952).
+                if id.value.parse::<std::net::IpAddr>().is_err() {
+                    return Err(AcmeError::BadRequest(format!(
+                        "invalid IP address identifier: '{}'",
+                        id.value
+                    )));
+                }
+            }
             other => return Err(AcmeError::UnsupportedIdentifier(other.into())),
         }
         // Validate ancestorDomain if present: identifier.value must end with
@@ -454,8 +464,8 @@ pub async fn new_order(
         status: "pending".to_string(),
         expires: Some(expiry),
         identifiers: identifiers_json.clone(),
-        not_before: None,
-        not_after: None,
+        not_before: order_not_before,
+        not_after: order_not_after,
         error: None,
         certificate_id: None,
         replaces: validated_replaces,
@@ -578,6 +588,11 @@ pub(crate) struct OrderJson<'a> {
     status: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     expires: Option<String>,
+    /// RFC 8555 §7.1.3: echo notBefore/notAfter back in the order object when set.
+    #[serde(rename = "notBefore", skip_serializing_if = "Option::is_none")]
+    not_before: Option<String>,
+    #[serde(rename = "notAfter", skip_serializing_if = "Option::is_none")]
+    not_after: Option<String>,
     identifiers: Box<serde_json::value::RawValue>,
     authorizations: &'a [String],
     finalize: String,
@@ -638,6 +653,8 @@ pub(crate) fn order_json<'a>(
     OrderJson {
         status: &order.status,
         expires: order.expires.map(fmt_time),
+        not_before: order.not_before.map(fmt_time),
+        not_after: order.not_after.map(fmt_time),
         identifiers,
         authorizations: authz_urls,
         finalize: format!("{base_url}/acme/order/{}/finalize", order.id),
