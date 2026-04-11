@@ -37,6 +37,9 @@ pub async fn get_directory(State(state): State<Arc<AppState>>) -> impl IntoRespo
         }
         meta["auto-renewal"] = auto_renewal;
     }
+    if !state.config.server.profiles.is_empty() {
+        meta["profiles"] = json!(state.config.server.profiles);
+    }
 
     let dir = json!({
         "newNonce":    format!("{base}/acme/new-nonce"),
