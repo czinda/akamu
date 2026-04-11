@@ -13,10 +13,10 @@
 - Implements the ACME Renewal Information extension ([RFC 9773](https://www.rfc-editor.org/rfc/rfc9773)) so ACME clients know when to renew.
 - Optionally appends issued certificates to a Merkle Tree Certificate transparency log using the `synta-mtc` library.
 - When `external_account_required = true`, performs full HMAC verification of the `externalAccountBinding` JWS (HS256/HS384/HS512), confirms the payload is the account key, and atomically consumes the EAB key on account creation. Keys are provisioned in the TOML config under `[server.eab_keys]`.
+- Optionally terminates TLS directly using rustls, with an auto-generated certificate on first run. Supports mutual TLS (mTLS) client certificate authentication with configurable CA trust anchors, chain depth, RSA modulus enforcement, and post-quantum client certificate acceptance.
 
 ## What it does not do
 
-- It does not terminate TLS itself. Deploy it behind nginx, Caddy, or another reverse proxy that handles HTTPS.
 - It does not serve the CRL or OCSP responses over HTTP itself; those endpoints must be provided separately if you enable `crl_url` or `ocsp_url`.
 - It does not support wildcard certificates via http-01 or tls-alpn-01 (only dns-01 and dns-persist-01 can authorize wildcard identifiers per RFC 8555 §7.1.3).
 
@@ -26,11 +26,12 @@
 |---|---|
 | Async runtime | tokio |
 | HTTP framework | axum 0.8 |
-| Database | rusqlite (bundled SQLite) + tokio-rusqlite |
+| Database | rusqlite (system SQLite) + tokio-rusqlite |
 | Schema migrations | rusqlite_migration |
 | X.509 / PKCS#10 / CRL | synta-certificate |
 | MTC transparency log | synta-mtc |
 | DNS resolution | hickory-resolver |
+| TLS server | axum-server + rustls |
 | TLS client | rustls + tokio-rustls |
 | HTTP client | hyper 1 |
 | Configuration | TOML |
