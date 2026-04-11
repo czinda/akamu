@@ -33,6 +33,7 @@ pub async fn open(path: &str) -> Result<Connection, AcmeError> {
             M::up(include_str!("../../migrations/004_ari_replaces.sql")),
             M::up(include_str!("../../migrations/005_subdomain_auth.sql")),
             M::up(include_str!("../../migrations/006_star.sql")),
+            M::up(include_str!("../../migrations/007_profiles.sql")),
         ]);
         migrations.to_latest(conn).map_err(|e| {
             rusqlite::Error::SqliteFailure(
