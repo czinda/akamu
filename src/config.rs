@@ -115,6 +115,12 @@ pub struct ServerConfig {
     /// When empty, profile selection is not advertised and profile fields are ignored.
     #[serde(default)]
     pub profiles: HashMap<String, String>,
+    /// External Account Binding pre-shared keys (RFC 8555 §7.3.4).
+    /// Maps key identifier (kid) → base64url-encoded raw HMAC key bytes.
+    /// Keys are seeded into the eab_keys DB table at startup using INSERT OR IGNORE,
+    /// so runtime-provisioned or consumed keys are never overwritten.
+    #[serde(default)]
+    pub eab_keys: HashMap<String, String>,
 }
 
 /// Server-side TLS configuration.  Absent or `enabled = false` → plain HTTP (no change).
