@@ -7,7 +7,7 @@ use synta::traits::Encode;
 use synta::{Decoder, Encoder, Encoding};
 use synta_certificate::{
     csr::CertificationRequest, general_name, oids, parse_general_names, BackendPublicKey,
-    BasicConstraints, Extension,
+    BasicConstraints,
 };
 
 use crate::error::AcmeError;
@@ -182,41 +182,17 @@ fn extract_csr_extensions<'a>(csr: &CertificationRequest<'a>) -> Result<Vec<CsrE
         if attr.attr_type.components() == oids::PKCS9_EXTENSION_REQUEST {
             // attr_values is SET OF ANY; the single element is SEQUENCE OF Extension.
             if let Some(raw) = attr.attr_values.elements().first() {
-                return decode_extension_sequence(raw.0);
+                return Ok(synta_certificate::decode_extensions(raw.0)
+                    .into_iter()
+                    .map(|ext| CsrExt {
+                        oid_arcs: ext.extn_id.components().to_vec(),
+                        value_der: ext.extn_value.as_bytes().to_vec(),
+                    })
+                    .collect());
             }
         }
     }
     Ok(Vec::new())
-}
-
-/// Decode a DER-encoded `SEQUENCE OF Extension` into `CsrExt` pairs.
-fn decode_extension_sequence(seq_der: &[u8]) -> Result<Vec<CsrExt>, AcmeError> {
-    let content = strip_sequence(seq_der).ok_or_else(|| {
-        AcmeError::BadCsr("extensionRequest value is not a valid SEQUENCE".into())
-    })?;
-    let mut pos = 0;
-    let mut result = Vec::new();
-    while pos < content.len() {
-        let (hlen, vlen) = tlv_header(content, pos)
-            .ok_or_else(|| AcmeError::BadCsr("truncated Extension TLV in CSR".into()))?;
-        if pos + hlen + vlen > content.len() {
-            return Err(AcmeError::BadCsr(
-                "Extension TLV value truncated in CSR".into(),
-            ));
-        }
-        let ext_der = &content[pos..pos + hlen + vlen];
-        pos += hlen + vlen;
-
-        let mut dec = Decoder::new(ext_der, Encoding::Der);
-        let ext = dec
-            .decode::<Extension>()
-            .map_err(|e| AcmeError::BadCsr(format!("Extension decode: {e}")))?;
-        result.push(CsrExt {
-            oid_arcs: ext.extn_id.components().to_vec(),
-            value_der: ext.extn_value.as_bytes().to_vec(),
-        });
-    }
-    Ok(result)
 }
 
 /// Return the value DER for the first extension whose OID matches `oid`.
@@ -224,42 +200,6 @@ fn find_ext_value(exts: &[CsrExt], oid: &[u32]) -> Option<Vec<u8>> {
     exts.iter()
         .find(|e| e.oid_arcs.as_slice() == oid)
         .map(|e| e.value_der.clone())
-}
-
-/// Skip the outer SEQUENCE TLV header and return the content bytes.
-fn strip_sequence(der: &[u8]) -> Option<&[u8]> {
-    if der.first()? != &0x30 {
-        return None;
-    }
-    let (hlen, vlen) = tlv_header(der, 0)?;
-    Some(&der[hlen..hlen + vlen])
-}
-
-/// Return `(header_bytes, value_bytes)` for the TLV starting at `der[pos]`.
-fn tlv_header(der: &[u8], pos: usize) -> Option<(usize, usize)> {
-    let d = &der[pos..];
-    if d.len() < 2 {
-        return None;
-    }
-    let mut i = 1usize; // skip tag byte
-    let vlen = if d[i] < 0x80 {
-        let l = d[i] as usize;
-        i += 1;
-        l
-    } else {
-        let num_bytes = (d[i] & 0x7f) as usize;
-        i += 1;
-        if num_bytes == 0 || num_bytes > (usize::BITS / 8) as usize || d.len() < i + num_bytes {
-            return None;
-        }
-        let mut l = 0usize;
-        for k in 0..num_bytes {
-            l = (l << 8) | d[i + k] as usize;
-        }
-        i += num_bytes;
-        l
-    };
-    Some((i, vlen))
 }
 
 /// Convert 4 (IPv4) or 16 (IPv6) raw bytes to a string.
@@ -428,18 +368,6 @@ mod tests {
     }
 
     #[test]
-    fn strip_sequence_wrong_tag_returns_none() {
-        // First byte is not 0x30.
-        let bad = vec![0x04, 0x01, 0x00];
-        assert!(strip_sequence(&bad).is_none());
-    }
-
-    #[test]
-    fn strip_sequence_empty_returns_none() {
-        assert!(strip_sequence(&[]).is_none());
-    }
-
-    #[test]
     fn bytes_to_ip_string_ipv4() {
         let bytes = [10u8, 0, 0, 1];
         assert_eq!(bytes_to_ip_string(&bytes), Some("10.0.0.1".to_string()));
@@ -449,30 +377,6 @@ mod tests {
     fn bytes_to_ip_string_wrong_length_returns_none() {
         let bytes = [1u8, 2, 3]; // 3 bytes, not 4 or 16
         assert!(bytes_to_ip_string(&bytes).is_none());
-    }
-
-    #[test]
-    fn tlv_header_short_input_returns_none() {
-        // Less than 2 bytes at position.
-        assert!(tlv_header(&[0x30], 0).is_none());
-        // Empty slice.
-        assert!(tlv_header(&[], 0).is_none());
-    }
-
-    #[test]
-    fn tlv_header_long_form_length() {
-        // 0x30 0x81 0x01 0x00 → SEQUENCE of length 1, content = [0x00]
-        let der = vec![0x30, 0x81, 0x01, 0x00];
-        let (hlen, vlen) = tlv_header(&der, 0).unwrap();
-        assert_eq!(hlen, 3); // tag + 0x81 + 1 length byte
-        assert_eq!(vlen, 1);
-    }
-
-    #[test]
-    fn tlv_header_truncated_long_form_returns_none() {
-        // 0x82 means 2 more bytes for the length, but only 1 byte follows.
-        let der = vec![0x30, 0x82, 0x00]; // truncated — needs 2 length bytes, only 1 present
-        assert!(tlv_header(&der, 0).is_none());
     }
 
     #[test]
