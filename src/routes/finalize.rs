@@ -68,12 +68,28 @@ pub async fn finalize_order(
     // Validate CSR.
     let validated_csr = ca::csr::validate_csr(&csr_der, &allowed)?;
 
+    // draft-aaron-acme-profiles-01: if the order carries a profile that the server
+    // no longer advertises, reject at finalize time rather than issuing silently.
+    if let Some(ref p) = order.profile {
+        if !state.config.server.profiles.is_empty()
+            && !state.config.server.profiles.contains_key(p.as_str())
+        {
+            return Err(AcmeError::InvalidProfile(format!(
+                "profile '{p}' is no longer issued by this server"
+            )));
+        }
+    }
+
     // CAA check (RFC 8659 + RFC 8657): only when caa_identities is configured.
     if !state.config.server.caa_identities.is_empty() {
         for (id_type, id_value) in &allowed {
             if *id_type == "dns" {
                 let is_wildcard = id_value.starts_with("*.");
-                let domain = if is_wildcard { &id_value[2..] } else { id_value };
+                let domain = if is_wildcard {
+                    &id_value[2..]
+                } else {
+                    id_value
+                };
                 crate::validation::caa::check_caa(
                     domain,
                     &state.config.server.caa_identities,
