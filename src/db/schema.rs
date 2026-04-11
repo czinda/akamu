@@ -26,6 +26,14 @@ pub struct OrderRow {
     pub replaces: Option<String>, // RFC 9773 ARI cert_id of predecessor
     pub created: i64,
     pub updated: i64,
+    // RFC 8739 STAR fields
+    pub star_start_date: Option<i64>,
+    pub star_end_date: Option<i64>,
+    pub star_lifetime_secs: Option<i64>,
+    pub star_lifetime_adjust_secs: i64, // default 0
+    pub star_allow_cert_get: bool,
+    pub star_canceled_at: Option<i64>,
+    pub star_csr_der: Option<Vec<u8>>, // stored CSR DER for reissuance
 }
 
 #[derive(Debug, Clone)]

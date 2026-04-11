@@ -207,6 +207,13 @@ pub async fn finalize_order(
         }
     }
 
+    // For STAR orders, persist the CSR DER so the background task can reissue.
+    if order.star_end_date.is_some() {
+        if let Err(e) = db::orders::set_star_csr(&state.db, &id, csr_der.clone()).await {
+            tracing::warn!("STAR order {id}: failed to store CSR DER: {e}");
+        }
+    }
+
     // Build the response from the known post-finalize state without a DB re-fetch.
     let mut updated_order = order;
     updated_order.status = "valid".to_string();

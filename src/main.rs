@@ -9,7 +9,7 @@ use tracing_subscriber::EnvFilter;
 
 use akamu::config::Config;
 use akamu::state::{AppState, CaState, MtcState, TlsState};
-use akamu::{ca, db, mtc, routes};
+use akamu::{ca, db, mtc, routes, star};
 
 use http_body_util::Empty;
 use hyper_util::client::legacy::Client;
@@ -118,6 +118,9 @@ async fn run() -> Result<(), String> {
         validation_client: Client::builder(TokioExecutor::new())
             .build_http::<Empty<hyper::body::Bytes>>(),
     });
+
+    // ── STAR background reissuance task ──────────────────────────────────────
+    let _star_task = star::spawn(Arc::clone(&state));
 
     // ── HTTP / TLS server ─────────────────────────────────────────────────────
     let router = routes::build_router(Arc::clone(&state));

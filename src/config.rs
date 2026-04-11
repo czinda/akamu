@@ -103,6 +103,10 @@ pub struct ServerConfig {
     /// Advertise RFC 9444 subdomain authorization support in the directory meta.
     #[serde(default)]
     pub allow_subdomain_auth: bool,
+    /// Minimum STAR certificate lifetime in seconds (advertised in directory meta).
+    pub star_min_lifetime_secs: Option<u64>,
+    /// Maximum STAR order duration in seconds (advertised in directory meta).
+    pub star_max_duration_secs: Option<u64>,
 }
 
 /// Server-side TLS configuration.  Absent or `enabled = false` → plain HTTP (no change).

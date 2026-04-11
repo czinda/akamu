@@ -1,4 +1,4 @@
-//! POST /acme/new-order, POST /acme/order/{id} — RFC 8555 §7.4
+//! POST /acme/new-order, POST /acme/order/{id} — RFC 8555 §7.4 + RFC 8739 STAR
 
 use std::sync::Arc;
 
@@ -24,11 +24,100 @@ struct NewOrderIdentifier {
     ancestor_domain: Option<String>,
 }
 
+/// RFC 8739 §3.1.1 — auto-renewal parameters in newOrder
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AutoRenewalRequest {
+    #[serde(default)]
+    start_date: Option<String>, // RFC 3339
+    end_date: String,           // RFC 3339, required
+    lifetime: u64,              // seconds
+    #[serde(default)]
+    lifetime_adjust: i64, // seconds, default 0
+    #[serde(default)]
+    allow_certificate_get: bool,
+}
+
 #[derive(Deserialize)]
 struct NewOrderPayload {
     identifiers: Vec<NewOrderIdentifier>,
     #[serde(default)]
+    not_before: Option<String>,
+    #[serde(default)]
+    not_after: Option<String>,
+    #[serde(default)]
     replaces: Option<String>,
+    #[serde(rename = "auto-renewal", default)]
+    auto_renewal: Option<AutoRenewalRequest>,
+}
+
+/// Parse an RFC 3339 timestamp string to a Unix timestamp.
+fn parse_rfc3339(s: &str) -> Result<i64, AcmeError> {
+    // We rely on a simple manual parse since no chrono/time crate is available.
+    // Expected format: YYYY-MM-DDTHH:MM:SSZ  (or with timezone offset)
+    // We use a best-effort parse for the common cases.
+    let s = s.trim();
+    // Normalise Z suffix
+    let s = if s.ends_with('Z') || s.ends_with('z') {
+        s[..s.len() - 1].to_string() + "+00:00"
+    } else {
+        s.to_string()
+    };
+    // Expected: YYYY-MM-DDTHH:MM:SS+HH:MM
+    let err = || AcmeError::BadRequest(format!("invalid RFC 3339 date: '{}'", s));
+    let (date_time, tz) = if let Some(pos) = s[10..].find('+') {
+        (&s[..10 + pos], &s[10 + pos + 1..])
+    } else if let Some(pos) = s[10..].rfind('-') {
+        (&s[..10 + pos], &s[10 + pos + 1..])
+    } else {
+        return Err(err());
+    };
+    let parts: Vec<&str> = date_time.splitn(2, 'T').collect();
+    if parts.len() != 2 {
+        return Err(err());
+    }
+    let date_parts: Vec<&str> = parts[0].split('-').collect();
+    let time_parts: Vec<&str> = parts[1].split(':').collect();
+    if date_parts.len() != 3 || time_parts.len() != 3 {
+        return Err(err());
+    }
+    let year: i64 = date_parts[0].parse().map_err(|_| err())?;
+    let month: i64 = date_parts[1].parse().map_err(|_| err())?;
+    let day: i64 = date_parts[2].parse().map_err(|_| err())?;
+    let hour: i64 = time_parts[0].parse().map_err(|_| err())?;
+    let minute: i64 = time_parts[1].parse().map_err(|_| err())?;
+    let sec_str = time_parts[2].split('.').next().unwrap_or(time_parts[2]);
+    let second: i64 = sec_str.parse().map_err(|_| err())?;
+
+    // Parse timezone offset HH:MM
+    let tz_parts: Vec<&str> = tz.split(':').collect();
+    let tz_hours: i64 = tz_parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let tz_mins: i64 = tz_parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    // Determine sign from original string
+    let tz_sign: i64 = if date_time.len() < s.len() && s.as_bytes().get(date_time.len()) == Some(&b'-') {
+        -1
+    } else {
+        1
+    };
+    let tz_offset_secs = tz_sign * (tz_hours * 3600 + tz_mins * 60);
+
+    // Convert to Unix timestamp using simple Gregorian algorithm.
+    // Days since Unix epoch (1970-01-01).
+    let days = days_since_epoch(year, month, day).ok_or_else(err)?;
+    let unix = days * 86400 + hour * 3600 + minute * 60 + second - tz_offset_secs;
+    Ok(unix)
+}
+
+/// Compute days since Unix epoch for a Gregorian date (no external deps).
+fn days_since_epoch(year: i64, month: i64, day: i64) -> Option<i64> {
+    if month < 1 || month > 12 || day < 1 || day > 31 || year < 1970 {
+        return None;
+    }
+    // Use the proleptic Gregorian formula.
+    let m = if month <= 2 { month + 12 } else { month };
+    let y = if month <= 2 { year - 1 } else { year };
+    let k = day + (153 * m - 457) / 5 + 365 * y + y / 4 - y / 100 + y / 400 - 719469;
+    Some(k)
 }
 
 pub async fn new_order(
@@ -87,6 +176,34 @@ pub async fn new_order(
         Some(cert_id.clone())
     } else {
         None
+    };
+
+    // RFC 8739 §3.1.1: parse auto-renewal if present.
+    let (star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs,
+         star_allow_cert_get) = if let Some(ref ar) = payload.auto_renewal {
+        // RFC 8739 §3.1.1: "notBefore" and "notAfter" MUST NOT be present with auto-renewal.
+        if payload.not_before.is_some() || payload.not_after.is_some() {
+            return Err(AcmeError::BadRequest(
+                "notBefore and notAfter MUST NOT be present in a STAR order".into(),
+            ));
+        }
+        let end_ts = parse_rfc3339(&ar.end_date)
+            .map_err(|_| AcmeError::BadRequest("auto-renewal endDate is not valid RFC 3339".into()))?;
+        let start_ts = if let Some(ref s) = ar.start_date {
+            Some(parse_rfc3339(s)
+                .map_err(|_| AcmeError::BadRequest("auto-renewal startDate is not valid RFC 3339".into()))?)
+        } else {
+            None
+        };
+        if ar.lifetime == 0 {
+            return Err(AcmeError::BadRequest(
+                "auto-renewal lifetime must be > 0".into(),
+            ));
+        }
+        (start_ts, Some(end_ts), Some(ar.lifetime as i64),
+         ar.lifetime_adjust, ar.allow_certificate_get)
+    } else {
+        (None, None, None, 0, false)
     };
 
     let now = unix_now();
@@ -166,6 +283,7 @@ pub async fn new_order(
         let account_id_clone = account_id.clone();
         let replaces_clone = validated_replaces.clone();
         let identifiers_json_clone = identifiers_json.clone();
+        let star_allow_cert_get_i64 = star_allow_cert_get as i64;
         state
             .db
             .call(move |conn| {
@@ -173,8 +291,11 @@ pub async fn new_order(
                 tx.prepare_cached(
                     "INSERT INTO orders
                      (id, account_id, status, expires, identifiers,
-                      not_before, not_after, error, certificate_id, replaces, created, updated)
-                     VALUES (?1, ?2, 'pending', ?3, ?4, NULL, NULL, NULL, NULL, ?5, ?6, ?6)",
+                      not_before, not_after, error, certificate_id, replaces, created, updated,
+                      star_start_date, star_end_date, star_lifetime_secs,
+                      star_lifetime_adjust_secs, star_allow_cert_get)
+                     VALUES (?1, ?2, 'pending', ?3, ?4, NULL, NULL, NULL, NULL, ?5, ?6, ?6,
+                             ?7, ?8, ?9, ?10, ?11)",
                 )?
                 .execute(rusqlite::params![
                     order_id_clone,
@@ -182,7 +303,12 @@ pub async fn new_order(
                     expiry,
                     identifiers_json_clone,
                     replaces_clone,
-                    now
+                    now,
+                    star_start_date,
+                    star_end_date,
+                    star_lifetime_secs,
+                    star_lifetime_adjust_secs,
+                    star_allow_cert_get_i64,
                 ])?;
                 for plan in &authz_plans {
                     tx.prepare_cached(
@@ -239,6 +365,13 @@ pub async fn new_order(
         replaces: validated_replaces,
         created: now,
         updated: now,
+        star_start_date,
+        star_end_date,
+        star_lifetime_secs,
+        star_lifetime_adjust_secs,
+        star_allow_cert_get,
+        star_canceled_at: None,
+        star_csr_der: None,
     };
     let mut resp = json_response(
         &state,
@@ -251,6 +384,13 @@ pub async fn new_order(
         format!("{base}/acme/order/{order_id}").parse().unwrap(),
     );
     Ok(resp)
+}
+
+/// Payload for POST /acme/order/{id} — either empty (GET-order) or cancellation.
+#[derive(Deserialize, Default)]
+struct OrderUpdatePayload {
+    #[serde(default)]
+    status: Option<String>,
 }
 
 pub async fn get_order(
@@ -266,13 +406,37 @@ pub async fn get_order(
         .ok_or(AcmeError::Unauthorized("kid required".into()))?;
 
     // Fetch order and its authz IDs in one DB call.
-    let (order, authz_ids) = db::orders::get_with_authz_ids(&state.db, &id)
+    let (mut order, authz_ids) = db::orders::get_with_authz_ids(&state.db, &id)
         .await?
         .ok_or(AcmeError::NotFound)?;
     if order.account_id != account_id {
         return Err(AcmeError::Unauthorized(
             "order belongs to different account".into(),
         ));
+    }
+
+    // RFC 8739 §3.1.2: handle cancellation if payload contains {"status":"canceled"}.
+    if !ctx.payload.is_empty() {
+        let update: OrderUpdatePayload = serde_json::from_slice(&ctx.payload)
+            .map_err(|e| AcmeError::BadRequest(format!("order update JSON: {e}")))?;
+
+        if update.status.as_deref() == Some("canceled") {
+            // Cancellation is only valid for STAR orders.
+            if order.star_end_date.is_none() {
+                return Err(AcmeError::BadRequest(
+                    "cancellation is only valid for STAR (auto-renewal) orders".into(),
+                ));
+            }
+            // RFC 8739 §3.1.2: the order must be in "valid" state to cancel.
+            if order.status != "valid" {
+                return Err(AcmeError::AutoRenewalCancellationInvalid);
+            }
+            let now = unix_now();
+            db::orders::cancel_star(&state.db, &id, now).await?;
+            order.star_canceled_at = Some(now);
+            order.status = "canceled".to_string();
+            order.updated = now;
+        }
     }
 
     let authz_urls: Vec<_> = authz_ids
@@ -290,6 +454,20 @@ pub async fn get_order(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/// The `auto-renewal` object returned in order responses for STAR orders.
+#[derive(Serialize)]
+struct AutoRenewalJson {
+    #[serde(skip_serializing_if = "Option::is_none", rename = "start-date")]
+    start_date: Option<String>,
+    #[serde(rename = "end-date")]
+    end_date: String,
+    lifetime: i64,
+    #[serde(rename = "lifetime-adjust", skip_serializing_if = "Option::is_none")]
+    lifetime_adjust: Option<i64>,
+    #[serde(rename = "allow-certificate-get", skip_serializing_if = "Option::is_none")]
+    allow_certificate_get: Option<bool>,
+}
+
 /// Typed ACME order response body. Using `Box<RawValue>` for `identifiers`
 /// avoids the `serde_json::from_str` parse + `Vec<Value>` / `HashMap`
 /// allocations that the old `json!` macro approach required. The identifiers
@@ -305,10 +483,14 @@ pub(crate) struct OrderJson<'a> {
     finalize: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     certificate: Option<String>,
+    #[serde(rename = "star-certificate", skip_serializing_if = "Option::is_none")]
+    star_certificate: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<Box<serde_json::value::RawValue>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     replaces: Option<&'a str>,
+    #[serde(rename = "auto-renewal", skip_serializing_if = "Option::is_none")]
+    auto_renewal: Option<AutoRenewalJson>,
 }
 
 pub(crate) fn order_json<'a>(
@@ -325,13 +507,40 @@ pub(crate) fn order_json<'a>(
         .error
         .as_deref()
         .and_then(|s| serde_json::value::RawValue::from_string(s.to_string()).ok());
+
+    // Build STAR auto-renewal object if this is a STAR order.
+    let auto_renewal = order.star_end_date.map(|end_ts| {
+        AutoRenewalJson {
+            start_date: order.star_start_date.map(fmt_time),
+            end_date: fmt_time(end_ts),
+            lifetime: order.star_lifetime_secs.unwrap_or(0),
+            lifetime_adjust: if order.star_lifetime_adjust_secs != 0 {
+                Some(order.star_lifetime_adjust_secs)
+            } else {
+                None
+            },
+            allow_certificate_get: if order.star_allow_cert_get {
+                Some(true)
+            } else {
+                None
+            },
+        }
+    });
+
+    // star-certificate URL: present when order is valid and is a STAR order.
+    let star_certificate = if order.star_end_date.is_some() && order.status == "valid" {
+        Some(format!("{base_url}/acme/cert/star/{}", order.id))
+    } else {
+        None
+    };
+
     OrderJson {
         status: &order.status,
         expires: order.expires.map(fmt_time),
         identifiers,
         authorizations: authz_urls,
         finalize: format!("{base_url}/acme/order/{}/finalize", order.id),
-        certificate: if order.status == "valid" {
+        certificate: if order.status == "valid" && order.star_end_date.is_none() {
             order
                 .certificate_id
                 .as_ref()
@@ -339,8 +548,10 @@ pub(crate) fn order_json<'a>(
         } else {
             None
         },
+        star_certificate,
         error,
         replaces: order.replaces.as_deref(),
+        auto_renewal,
     }
 }
 
@@ -375,6 +586,13 @@ mod tests {
             replaces: None,
             created: 1_700_000_000,
             updated: 1_700_000_000,
+            star_start_date: None,
+            star_end_date: None,
+            star_lifetime_secs: None,
+            star_lifetime_adjust_secs: 0,
+            star_allow_cert_get: false,
+            star_canceled_at: None,
+            star_csr_der: None,
         }
     }
 
@@ -460,5 +678,51 @@ mod tests {
         assert!(t
             .chars()
             .all(|c| c.is_alphanumeric() || c == '-' || c == '_'));
+    }
+
+    #[test]
+    fn order_json_star_order_includes_auto_renewal() {
+        let mut order = make_order("valid", None, Some("cert-xyz"), None);
+        order.star_end_date = Some(1_800_000_000);
+        order.star_lifetime_secs = Some(86400);
+        order.star_allow_cert_get = true;
+        let json = to_val(order_json(&order, &[], "https://acme.test"));
+        assert_eq!(json["status"], "valid");
+        // star-certificate should be present, not regular certificate
+        assert!(json["star-certificate"].as_str().unwrap().contains("order-1"));
+        assert!(json.get("certificate").map_or(true, |v| v.is_null()));
+        // auto-renewal object present
+        let ar = &json["auto-renewal"];
+        assert!(ar.is_object());
+        assert_eq!(ar["lifetime"], 86400);
+        assert_eq!(ar["allow-certificate-get"], true);
+    }
+
+    #[test]
+    fn order_json_non_star_valid_does_not_have_star_certificate() {
+        let order = make_order("valid", None, Some("cert-abc"), None);
+        let json = to_val(order_json(&order, &[], "https://acme.test"));
+        assert!(json.get("star-certificate").map_or(true, |v| v.is_null()));
+        assert!(json["certificate"].as_str().unwrap().contains("cert-abc"));
+    }
+
+    #[test]
+    fn parse_rfc3339_utc_z() {
+        let ts = parse_rfc3339("2025-01-01T00:00:00Z").unwrap();
+        // 2025-01-01 = 1735689600
+        assert_eq!(ts, 1_735_689_600);
+    }
+
+    #[test]
+    fn parse_rfc3339_with_offset() {
+        // 2025-01-01T01:00:00+01:00 == 2025-01-01T00:00:00Z
+        let ts = parse_rfc3339("2025-01-01T01:00:00+01:00").unwrap();
+        assert_eq!(ts, 1_735_689_600);
+    }
+
+    #[test]
+    fn parse_rfc3339_invalid_returns_error() {
+        assert!(parse_rfc3339("not-a-date").is_err());
+        assert!(parse_rfc3339("2020-13-01T00:00:00Z").is_err()); // month 13 ok structurally but days_since_epoch returns None for year < 1970 check — actually month 13 is > 12 → None
     }
 }

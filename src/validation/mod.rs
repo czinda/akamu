@@ -471,6 +471,13 @@ mod tests {
                 replaces: None,
                 created: now,
                 updated: now,
+                star_start_date: None,
+                star_end_date: None,
+                star_lifetime_secs: None,
+                star_lifetime_adjust_secs: 0,
+                star_allow_cert_get: false,
+                star_canceled_at: None,
+                star_csr_der: None,
             },
         )
         .await
@@ -577,6 +584,13 @@ mod tests {
                 replaces: None,
                 created: now,
                 updated: now,
+                star_start_date: None,
+                star_end_date: None,
+                star_lifetime_secs: None,
+                star_lifetime_adjust_secs: 0,
+                star_allow_cert_get: false,
+                star_canceled_at: None,
+                star_csr_der: None,
             },
         )
         .await
@@ -767,6 +781,13 @@ mod tests {
                 replaces: None,
                 created: now,
                 updated: now,
+                star_start_date: None,
+                star_end_date: None,
+                star_lifetime_secs: None,
+                star_lifetime_adjust_secs: 0,
+                star_allow_cert_get: false,
+                star_canceled_at: None,
+                star_csr_der: None,
             },
         )
         .await
@@ -1153,6 +1174,13 @@ mod tests {
                 replaces: None,
                 created: now,
                 updated: now,
+                star_start_date: None,
+                star_end_date: None,
+                star_lifetime_secs: None,
+                star_lifetime_adjust_secs: 0,
+                star_allow_cert_get: false,
+                star_canceled_at: None,
+                star_csr_der: None,
             },
         )
         .await

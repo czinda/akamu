@@ -27,6 +27,16 @@ pub async fn get_directory(State(state): State<Arc<AppState>>) -> impl IntoRespo
     if state.config.server.allow_subdomain_auth {
         meta["subdomainAuthAllowed"] = json!(true);
     }
+    if let Some(min_lifetime) = state.config.server.star_min_lifetime_secs {
+        let mut auto_renewal = json!({
+            "min-lifetime": min_lifetime,
+            "allow-certificate-get": true,
+        });
+        if let Some(max_dur) = state.config.server.star_max_duration_secs {
+            auto_renewal["max-duration"] = json!(max_dur);
+        }
+        meta["auto-renewal"] = auto_renewal;
+    }
 
     let dir = json!({
         "newNonce":    format!("{base}/acme/new-nonce"),

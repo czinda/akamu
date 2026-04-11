@@ -72,6 +72,16 @@ pub enum AcmeError {
     #[error("TLS error: {0}")]
     Tls(String),
 
+    // ── RFC 8739 STAR errors ──────────────────────────────────────────────────
+    #[error("auto-renewal has been canceled")]
+    AutoRenewalCanceled,
+
+    #[error("auto-renewal cancellation invalid: order not in valid state")]
+    AutoRenewalCancellationInvalid,
+
+    #[error("auto-renewal certificates cannot be revoked")]
+    AutoRenewalRevocationNotSupported,
+
     // ── Generic HTTP-mapped errors ────────────────────────────────────────────
     #[error("not found")]
     NotFound,
@@ -150,6 +160,15 @@ impl AcmeError {
             AcmeError::ExternalAccountRequired => {
                 "urn:ietf:params:acme:error:externalAccountRequired"
             }
+            AcmeError::AutoRenewalCanceled => {
+                "urn:ietf:params:acme:error:autoRenewalCanceled"
+            }
+            AcmeError::AutoRenewalCancellationInvalid => {
+                "urn:ietf:params:acme:error:autoRenewalCancellationInvalid"
+            }
+            AcmeError::AutoRenewalRevocationNotSupported => {
+                "urn:ietf:params:acme:error:autoRenewalRevocationNotSupported"
+            }
             _ => "urn:ietf:params:acme:error:serverInternal",
         }
     }
@@ -183,6 +202,9 @@ impl AcmeError {
             AcmeError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             AcmeError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AcmeError::ExternalAccountRequired => StatusCode::FORBIDDEN,
+            AcmeError::AutoRenewalCanceled => StatusCode::FORBIDDEN,
+            AcmeError::AutoRenewalCancellationInvalid => StatusCode::BAD_REQUEST,
+            AcmeError::AutoRenewalRevocationNotSupported => StatusCode::FORBIDDEN,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -295,6 +317,18 @@ mod tests {
         assert_eq!(
             AcmeError::ExternalAccountRequired.acme_type(),
             "urn:ietf:params:acme:error:externalAccountRequired"
+        );
+        assert_eq!(
+            AcmeError::AutoRenewalCanceled.acme_type(),
+            "urn:ietf:params:acme:error:autoRenewalCanceled"
+        );
+        assert_eq!(
+            AcmeError::AutoRenewalCancellationInvalid.acme_type(),
+            "urn:ietf:params:acme:error:autoRenewalCancellationInvalid"
+        );
+        assert_eq!(
+            AcmeError::AutoRenewalRevocationNotSupported.acme_type(),
+            "urn:ietf:params:acme:error:autoRenewalRevocationNotSupported"
         );
         // Internal/generic errors fall through to serverInternal
         assert_eq!(
@@ -433,6 +467,18 @@ mod tests {
         );
         assert_eq!(
             AcmeError::ExternalAccountRequired.http_status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            AcmeError::AutoRenewalCanceled.http_status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            AcmeError::AutoRenewalCancellationInvalid.http_status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            AcmeError::AutoRenewalRevocationNotSupported.http_status(),
             StatusCode::FORBIDDEN
         );
     }

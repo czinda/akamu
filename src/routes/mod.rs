@@ -27,6 +27,7 @@ pub mod nonce;
 pub mod order;
 pub mod renewal_info;
 pub mod revoke;
+pub mod star_cert;
 
 /// Build the main axum router with all ACME endpoints.
 pub fn build_router(state: Arc<AppState>) -> Router {
@@ -55,6 +56,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route(
             "/acme/cert/{id}",
             get(certificate::download_cert).post(certificate::download_cert_post),
+        )
+        // STAR rolling certificate URL (RFC 8739 §3.3)
+        .route(
+            "/acme/cert/star/{order_id}",
+            get(star_cert::star_cert_get).post(star_cert::star_cert_post),
         )
         // Revocation
         .route("/acme/revoke-cert", post(revoke::revoke_cert))

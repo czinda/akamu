@@ -10,6 +10,7 @@ pub mod error;
 pub mod jose;
 pub mod mtc;
 pub mod routes;
+pub mod star;
 pub mod state;
 pub mod tls;
 pub mod validation;
