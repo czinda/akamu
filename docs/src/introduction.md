@@ -16,7 +16,7 @@
 ## What it does not do
 
 - It does not terminate TLS itself. Deploy it behind nginx, Caddy, or another reverse proxy that handles HTTPS.
-- When `external_account_required = true`, it checks for the _presence_ of an `externalAccountBinding` field in new-account requests but does not verify the HMAC. Full cryptographic EAB verification requires a pre-shared key management system; enforce it at a gateway layer if needed.
+- When `external_account_required = true`, it performs full HMAC verification of the `externalAccountBinding` JWS (HS256/HS384/HS512), confirms the payload is the account key, and atomically consumes the EAB key on account creation. Keys are provisioned in the TOML config under `[server.eab_keys]`.
 - It does not serve the CRL or OCSP responses over HTTP itself; those endpoints must be provided separately if you enable `crl_url` or `ocsp_url`.
 - It does not support wildcard certificates via http-01 or tls-alpn-01 (only dns-01 and dns-persist-01 can authorize wildcard identifiers per RFC 8555 §7.1.3).
 

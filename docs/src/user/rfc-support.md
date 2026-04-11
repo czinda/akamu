@@ -73,7 +73,26 @@ The response is identical to a reactive authorization created by `newOrder`.
 
 When `server.external_account_required = true`, every `newAccount` request **must** include an `externalAccountBinding` field. Requests without it are rejected with `urn:ietf:params:acme:error:externalAccountRequired` (HTTP 403).
 
-> **Note:** The current implementation checks for the _presence_ of the `externalAccountBinding` field but does not verify the HMAC over it. Full MAC verification requires a pre-shared key management system that is outside the scope of the embedded CA. Enforce the HMAC at a gateway or reverse-proxy layer if cryptographic EAB verification is required.
+EAB keys are provisioned in the TOML configuration under `[server]`:
+
+```toml
+[server]
+external_account_required = true
+
+[server.eab_keys]
+"kid-1" = "c2VjcmV0LWhtYWMta2V5LWJ1ZmZlcg"   # base64url-encoded raw key bytes
+"kid-2" = "YW5vdGhlci1rZXktaGVyZQ"
+```
+
+Keys are seeded into the `eab_keys` database table at startup using `INSERT OR IGNORE`, so a key consumed or modified at runtime is never overwritten by a server restart.  The server performs full HMAC verification per RFC 8555 §7.3.4:
+
+1. Extracts the `kid` from the EAB protected header.
+2. Looks up the key in the database; rejects unknown or already-consumed kids.
+3. Validates the algorithm (`HS256`, `HS384`, or `HS512`), the `url` (must match the `new-account` endpoint), and the payload (must be the account public key).
+4. Verifies the HMAC signature using OpenSSL constant-time comparison.
+5. Inserts the new account and marks the EAB key as consumed in a single SQLite transaction.
+
+The design is forward-compatible with an admin API endpoint: `insert`, `delete`, and `get_by_kid` are already implemented in the database layer.
 
 ### Certificate validity window
 

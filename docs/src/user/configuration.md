@@ -285,10 +285,29 @@ caa_identities = ["acme.example.com"]
 
 When `true`, new-account requests must include an `externalAccountBinding` field (RFC 8555 §7.3.4). Requests without it are rejected with `urn:ietf:params:acme:error:externalAccountRequired` (HTTP 403). The directory response also includes `meta.externalAccountRequired: true`.
 
-> **Note:** Akāmu verifies the _presence_ of the `externalAccountBinding` field but does not verify its HMAC. Full cryptographic EAB verification requires a pre-shared key management system; enforce it at a gateway layer if needed.
+When enabled, the server performs full HMAC verification: it resolves the `kid` in `[server.eab_keys]`, verifies the HS256/HS384/HS512 MAC, confirms the payload is the account key, and atomically consumes the key at account creation so each EAB key can only be used once.
 
 ```toml
-external_account_required = false
+external_account_required = true
+```
+
+### `eab_keys`
+
+**Optional. Default: `{}`.**
+
+Pre-shared External Account Binding keys, expressed as a TOML table under `[server.eab_keys]`. Each entry maps a key identifier (`kid`) to its base64url-encoded raw HMAC key bytes. The key material must be at least 16 bytes; 32 bytes (256 bits) is recommended for HS256.
+
+Keys are seeded into the `eab_keys` database table at startup using `INSERT OR IGNORE`. A key that has been consumed (used to create an account) or modified by a future admin API call is never overwritten by a restart.
+
+```toml
+[server.eab_keys]
+"kid-1" = "c2VjcmV0LWhtYWMta2V5LWJ1ZmZlcg"   # base64url, no padding
+"kid-2" = "YW5vdGhlci1rZXktaGVyZQ"
+```
+
+To generate a key:
+```bash
+openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
 ```
 
 ### `order_expiry_secs`
