@@ -23,12 +23,19 @@ pub async fn validate(
     port: u16,
     client: &ValidationClient,
 ) -> Result<(), AcmeError> {
+    // RFC 3986 §3.2.2: IPv6 literals must be enclosed in brackets when used
+    // as a host in a URL.  An IPv6 address contains ':', so detect it that way.
+    let host = if domain.contains(':') {
+        format!("[{domain}]")
+    } else {
+        domain.to_string()
+    };
     let url = if port == 80 {
-        format!("http://{}/.well-known/acme-challenge/{}", domain, token)
+        format!("http://{}/.well-known/acme-challenge/{}", host, token)
     } else {
         format!(
             "http://{}:{}/.well-known/acme-challenge/{}",
-            domain, port, token
+            host, port, token
         )
     };
     let uri: Uri = url
