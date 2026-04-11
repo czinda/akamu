@@ -49,6 +49,7 @@
 - [RFC 7807](https://www.rfc-editor.org/rfc/rfc7807) — Problem Details for HTTP APIs (error responses)
 - [RFC 5280](https://www.rfc-editor.org/rfc/rfc5280) — X.509 Certificate and CRL profile
 - [Let's Encrypt dns-persist-01](https://letsencrypt.org/2026/02/18/dns-persist-01) — Persistent DNS challenge type
+- [draft-aaron-acme-profiles-01](https://www.ietf.org/archive/id/draft-aaron-acme-profiles-01.html) — ACME certificate profiles
 - [draft-ietf-lamps-pq-composite-sigs](https://datatracker.ietf.org/doc/draft-ietf-lamps-pq-composite-sigs/) — ML-DSA composite TLS signature schemes (provisional code points)
 
 For a detailed breakdown of each RFC, including which sections are covered and which are intentionally omitted, see the [RFC Support Reference](user/rfc-support.md).
