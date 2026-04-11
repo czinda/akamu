@@ -61,6 +61,7 @@ pub async fn key_change(
     #[serde(rename_all = "camelCase")]
     struct InnerPayload {
         account: String,
+        old_key: crate::jose::jwk::JwkPublic,
     }
     let inner_payload: InnerPayload = serde_json::from_slice(&inner_payload_bytes)
         .map_err(|e| AcmeError::BadRequest(format!("inner payload JSON: {e}")))?;
@@ -70,6 +71,14 @@ pub async fn key_change(
     if inner_payload.account != expected_account_url {
         return Err(AcmeError::BadRequest(
             "inner payload account URL does not match".into(),
+        ));
+    }
+
+    // RFC 8555 §7.3.5: oldKey must match the current account key.
+    let old_spki = inner_payload.old_key.to_spki_der()?;
+    if old_spki != ctx.spki_der {
+        return Err(AcmeError::Unauthorized(
+            "inner payload oldKey does not match current account key".into(),
         ));
     }
 
