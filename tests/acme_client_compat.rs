@@ -30,7 +30,7 @@ use synta_certificate::{
 };
 use tokio::{net::TcpListener, sync::RwLock};
 
-use acme_server::{
+use akamu::{
     ca,
     config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig},
     db, routes,

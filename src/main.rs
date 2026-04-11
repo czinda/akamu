@@ -1,15 +1,15 @@
 //! ACME server binary entry point.
 //!
-//! Usage: `acme-server [/path/to/config.toml]`
+//! Usage: `akamu [/path/to/config.toml]`
 //! Defaults to `config.toml` in the current working directory.
 
 use std::sync::Arc;
 
 use tracing_subscriber::EnvFilter;
 
-use acme_server::config::Config;
-use acme_server::state::{AppState, CaState, MtcState, TlsState};
-use acme_server::{ca, db, mtc, routes};
+use akamu::config::Config;
+use akamu::state::{AppState, CaState, MtcState, TlsState};
+use akamu::{ca, db, mtc, routes};
 
 use http_body_util::Empty;
 use hyper_util::client::legacy::Client;
@@ -66,7 +66,7 @@ async fn run() -> Result<(), String> {
 
     // ── TLS bootstrap (auto-generate cert/key if absent) ─────────────────────
     if config.tls.enabled {
-        acme_server::tls::init::load_or_generate(&config.tls, &ca)
+        akamu::tls::init::load_or_generate(&config.tls, &ca)
             .map_err(|e| format!("TLS init: {e}"))?;
     }
 
@@ -128,7 +128,7 @@ async fn run() -> Result<(), String> {
             config.listen_addr,
             config.base_url
         );
-        let server_cfg = acme_server::tls::build_rustls_server_config(&config.tls)
+        let server_cfg = akamu::tls::build_rustls_server_config(&config.tls)
             .map_err(|e| format!("TLS config: {e}"))?;
         let rustls_config =
             axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(server_cfg));

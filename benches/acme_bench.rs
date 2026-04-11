@@ -48,7 +48,7 @@ use synta_certificate::{
 };
 use tokio::{net::UdpSocket, sync::RwLock};
 
-use acme_server::{
+use akamu::{
     ca,
     config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig},
     db, routes,

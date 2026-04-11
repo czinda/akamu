@@ -36,9 +36,9 @@ use synta_certificate::{
 use tokio::{net::UdpSocket, sync::RwLock};
 use tower::ServiceExt;
 
-use acme_server::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
-use acme_server::state::{AppState, CaState, MtcState};
-use acme_server::{ca, db, routes};
+use akamu::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
+use akamu::state::{AppState, CaState, MtcState};
+use akamu::{ca, db, routes};
 
 // ── Tracing ───────────────────────────────────────────────────────────────────
 

@@ -30,9 +30,9 @@ use synta_certificate::{
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 
-use acme_server::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig, TlsConfig};
-use acme_server::state::{AppState, CaState, MtcState};
-use acme_server::{ca, db, routes, tls};
+use akamu::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig, TlsConfig};
+use akamu::state::{AppState, CaState, MtcState};
+use akamu::{ca, db, routes, tls};
 
 // ── Tracing initialisation ────────────────────────────────────────────────────
 

@@ -20,9 +20,9 @@ use synta_certificate::{
 };
 use tower::ServiceExt;
 
-use acme_server::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
-use acme_server::state::{AppState, CaState, MtcState};
-use acme_server::{ca, db, routes};
+use akamu::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
+use akamu::state::{AppState, CaState, MtcState};
+use akamu::{ca, db, routes};
 
 // ── ACME test client ──────────────────────────────────────────────────────────
 
@@ -1407,7 +1407,7 @@ async fn test_revoke_already_revoked_cert() {
         .await
         .unwrap();
     // Directly revoke via DB.
-    acme_server::db::certs::revoke(&state.db, &cert_id, Some(1), 1_700_000_000)
+    akamu::db::certs::revoke(&state.db, &cert_id, Some(1), 1_700_000_000)
         .await
         .unwrap();
 
@@ -2161,7 +2161,7 @@ async fn test_authz_challenge_with_error_field() {
 async fn test_directory_with_optional_fields() {
     let base_url = "https://acme.test";
     let dir = tempfile::TempDir::new().unwrap();
-    let config = Arc::new(acme_server::config::Config {
+    let config = Arc::new(akamu::config::Config {
         listen_addr: "127.0.0.1:0".into(),
         base_url: base_url.into(),
         database: DatabaseConfig {
@@ -2179,16 +2179,16 @@ async fn test_directory_with_optional_fields() {
             organization: "Test Org".into(),
             ca_validity_years: 10,
         },
-        mtc: acme_server::config::MtcConfig {
+        mtc: akamu::config::MtcConfig {
             log_path: "/dev/null".into(),
             enabled: false,
         },
-        server: acme_server::config::ServerConfig {
+        server: akamu::config::ServerConfig {
             terms_of_service_url: Some("https://example.org/tos".into()),
             website_url: Some("https://example.org".into()),
             caa_identities: vec!["ca.example.org".into()],
             external_account_required: true,
-            ..acme_server::config::ServerConfig::default()
+            ..akamu::config::ServerConfig::default()
         },
         tls: Default::default(),
     });
@@ -2197,7 +2197,7 @@ async fn test_directory_with_optional_fields() {
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db_conn,
-        ca: Arc::new(acme_server::state::CaState {
+        ca: Arc::new(akamu::state::CaState {
             key: ca_key,
             cert_der: ca_cert_der,
             hash_alg: "sha256".into(),
@@ -2205,7 +2205,7 @@ async fn test_directory_with_optional_fields() {
             crl_url: None,
             ocsp_url: None,
         }),
-        mtc: Arc::new(acme_server::state::MtcState {
+        mtc: Arc::new(akamu::state::MtcState {
             log: None,
             algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
         }),
@@ -2418,7 +2418,7 @@ async fn test_revoke_cert_by_jwk() {
 /// Finalize a cert with MTC log enabled — verifies the MTC log path in finalize.rs.
 #[tokio::test]
 async fn test_finalize_with_mtc_enabled() {
-    use acme_server::mtc::log;
+    use akamu::mtc::log;
     use synta_mtc::crypto::HashAlgorithm;
     use tokio::sync::Mutex;
 
@@ -2426,7 +2426,7 @@ async fn test_finalize_with_mtc_enabled() {
     let dir = tempfile::TempDir::new().unwrap();
     let log_path = dir.path().join("mtc.log").to_string_lossy().into_owned();
 
-    let config = Arc::new(acme_server::config::Config {
+    let config = Arc::new(akamu::config::Config {
         listen_addr: "127.0.0.1:0".into(),
         base_url: base_url.into(),
         database: DatabaseConfig {
@@ -2448,7 +2448,7 @@ async fn test_finalize_with_mtc_enabled() {
             log_path: log_path.clone(),
             enabled: true,
         },
-        server: acme_server::config::ServerConfig::default(),
+        server: akamu::config::ServerConfig::default(),
         tls: Default::default(),
     });
 
