@@ -26,11 +26,12 @@ pub async fn get_directory(State(state): State<Arc<AppState>>) -> impl IntoRespo
     }
 
     let dir = json!({
-        "newNonce":   format!("{base}/acme/new-nonce"),
-        "newAccount": format!("{base}/acme/new-account"),
-        "newOrder":   format!("{base}/acme/new-order"),
-        "revokeCert": format!("{base}/acme/revoke-cert"),
-        "keyChange":  format!("{base}/acme/key-change"),
+        "newNonce":    format!("{base}/acme/new-nonce"),
+        "newAccount":  format!("{base}/acme/new-account"),
+        "newOrder":    format!("{base}/acme/new-order"),
+        "revokeCert":  format!("{base}/acme/revoke-cert"),
+        "keyChange":   format!("{base}/acme/key-change"),
+        "renewalInfo": format!("{base}/acme/renewal-info"),
         "meta": meta,
     });
     Json(dir)
