@@ -6,6 +6,7 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::Response;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -43,20 +44,11 @@ pub async fn new_account(
 
     let payload: NewAccountPayload = require_payload(&ctx.payload, "new-account")?;
 
-    // RFC 8555 §7.3.4 — when externalAccountRequired is set the payload MUST
-    // contain an externalAccountBinding field.  Full MAC verification of the
-    // EAB JWS is deferred until key-management support is added; presence
-    // checking is the correct first gate per the spec.
-    if state.config.server.external_account_required
-        && payload.external_account_binding.is_none()
-    {
-        return Err(AcmeError::ExternalAccountRequired);
-    }
-
     let thumbprint = jwk.thumbprint()?;
     let now = unix_now();
 
     // Check if an account with this key already exists.
+    // EAB checks only apply to new account creation, not returning clients.
     if let Some(existing) = db::accounts::get_by_thumbprint(&state.db, &thumbprint).await? {
         let account_url = format!("{}/acme/account/{}", state.config.base_url, existing.id);
         let contacts = parse_contacts(&existing.contact);
@@ -80,25 +72,84 @@ pub async fn new_account(
     // Validate contacts.
     validate_contacts(payload.contact.as_deref().unwrap_or(&[]))?;
 
+    // ── External Account Binding (RFC 8555 §7.3.4) ────────────────────────────
+    // When external_account_required is set every new-account request must carry
+    // a valid HMAC-signed EAB JWS whose payload is the account public key.
+    let verified_eab_kid: Option<String> = if state.config.server.external_account_required {
+        let eab_val = payload
+            .external_account_binding
+            .as_ref()
+            .ok_or(AcmeError::ExternalAccountRequired)?;
+
+        // Extract kid from EAB protected header → look it up in the DB.
+        let kid = crate::jose::eab::parse_eab_kid(eab_val)?;
+        let key_row = db::eab::get_by_kid(&state.db, &kid)
+            .await?
+            .ok_or_else(|| AcmeError::Unauthorized(format!("EAB: unknown kid '{kid}'")))?;
+
+        if key_row.used_at.is_some() {
+            return Err(AcmeError::Unauthorized(format!(
+                "EAB: kid '{kid}' has already been used"
+            )));
+        }
+
+        // Decode the raw HMAC key bytes.
+        let hmac_key = URL_SAFE_NO_PAD
+            .decode(&key_row.hmac_key_b64u)
+            .map_err(|e| AcmeError::BadRequest(format!("EAB: invalid HMAC key encoding: {e}")))?;
+
+        // Full HMAC verification: alg, url, payload-key, and MAC.
+        crate::jose::eab::verify_eab_jws(eab_val, &url, &kid, &thumbprint, &hmac_key)?;
+
+        Some(kid)
+    } else {
+        None
+    };
+
     let id = uuid::Uuid::new_v4().to_string();
     let contact_json = payload
         .contact
         .as_ref()
         .map(|c| serde_json::to_string(c).unwrap());
 
-    db::accounts::insert(
-        &state.db,
-        AccountRow {
-            id: id.clone(),
-            status: "valid".into(),
-            contact: contact_json.clone(),
-            public_key: ctx.spki_der,
-            jwk_thumbprint: thumbprint,
-            created: now,
-            updated: now,
-        },
-    )
-    .await?;
+    // Insert the new account — atomically consume the EAB key if one was verified.
+    if let Some(eab_kid) = verified_eab_kid {
+        let id_c = id.clone();
+        let contact_c = contact_json.clone();
+        let spki_c = ctx.spki_der.clone();
+        let thumb_c = thumbprint.clone();
+        state
+            .db
+            .call(move |conn| {
+                let tx = conn.transaction()?;
+                tx.prepare_cached(
+                    "INSERT INTO accounts \
+                     (id, status, contact, public_key, jwk_thumbprint, created, updated) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                )?
+                .execute(rusqlite::params![
+                    id_c, "valid", contact_c, spki_c, thumb_c, now, now
+                ])?;
+                crate::db::eab::mark_used_tx(&tx, &eab_kid, now)?;
+                Ok(tx.commit()?)
+            })
+            .await
+            .map_err(AcmeError::from)?;
+    } else {
+        db::accounts::insert(
+            &state.db,
+            AccountRow {
+                id: id.clone(),
+                status: "valid".into(),
+                contact: contact_json.clone(),
+                public_key: ctx.spki_der,
+                jwk_thumbprint: thumbprint,
+                created: now,
+                updated: now,
+            },
+        )
+        .await?;
+    }
 
     let row = AccountRow {
         id: id.clone(),
