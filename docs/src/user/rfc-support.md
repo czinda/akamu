@@ -7,6 +7,7 @@ This page documents every RFC that is relevant to `Akāmu`, explaining what each
 | Specification | Title | Status |
 |---------------|-------|--------|
 | [dns-persist-01](#lets-encrypt-dns-persist-01) | Let's Encrypt Persistent DNS Challenge | Full |
+| [draft-aaron-acme-profiles-01](#draft-aaron-acme-profiles-01) | ACME Certificate Profiles | Full |
 | [draft-ietf-lamps-pq-composite-sigs](#draft-ietf-lamps-pq-composite-sigs) | ML-DSA Composite TLS Signature Schemes | Partial (provisional code points) |
 | [RFC 8555](#rfc-8555-core-acme) | Automatic Certificate Management Environment (ACME) | Full |
 | [RFC 8659](#rfc-8659-caa-dns-resource-record) | DNS Certification Authority Authorization (CAA) | Full |
@@ -481,6 +482,72 @@ Optional extensions:
 ### Validation
 
 Akāmu queries the `_validation-persist.<domain>` TXT record, verifies the issuer domain matches `dns_persist_issuer_domain`, and checks that the `accounturi` matches the requesting ACME account URL. If both match, the authorization is marked valid.
+
+---
+
+## draft-aaron-acme-profiles-01
+
+**[draft-aaron-acme-profiles-01](https://www.ietf.org/archive/id/draft-aaron-acme-profiles-01.html)** defines a mechanism for an ACME server to advertise named certificate profiles and for clients to request a specific profile when placing an order. This moves policy selection from CSR extensions and post-issuance inspection into the order object itself, making the server's issuance policy explicit and machine-readable.
+
+### What it adds
+
+| Feature | Location | Status |
+|---------|----------|--------|
+| `meta.profiles` in directory | `GET /acme/directory` | Yes |
+| `profile` field in `newOrder` payload | `POST /acme/new-order` | Yes |
+| `profile` field in order response | `GET/POST /acme/order/{id}` | Yes |
+| `invalidProfile` error type | All order and finalize endpoints | Yes |
+| Finalize-time profile re-validation | `POST /acme/order/{id}/finalize` | Yes |
+
+### Directory advertisement
+
+When `server.profiles` is configured, the directory `meta` includes a `profiles` object:
+
+```json
+"meta": {
+  "profiles": {
+    "tls-server-auth": "https://acme.example.com/docs/profiles/tls-server-auth",
+    "client-auth":     "https://acme.example.com/docs/profiles/client-auth"
+  }
+}
+```
+
+### Requesting a profile in newOrder
+
+Clients include the `profile` field in the `newOrder` payload:
+
+```json
+{
+  "identifiers": [{ "type": "dns", "value": "example.com" }],
+  "profile": "tls-server-auth"
+}
+```
+
+The server validates that the requested profile is in the configured map. If not, it returns:
+
+```json
+{
+  "type": "urn:ietf:params:acme:error:invalidProfile",
+  "status": 400,
+  "detail": "profile 'unknown-profile' is not advertised by this server"
+}
+```
+
+The `profile` field is echoed back in every subsequent order response so that clients can confirm which profile applies.
+
+### Finalize-time re-validation
+
+If a profile is removed from the server's configuration after an order has been placed but before it is finalized, the `finalize` endpoint rejects the request with `invalidProfile`. This prevents silent issuance under a policy the server no longer supports.
+
+### Configuration
+
+```toml
+[server.profiles]
+"tls-server-auth" = "https://acme.example.com/docs/profiles/tls-server-auth"
+"client-auth"     = "https://acme.example.com/docs/profiles/client-auth"
+```
+
+When `profiles` is empty (the default), profile selection is not advertised. A `profile` field in `newOrder` is accepted but ignored — the server issues under its default policy.
 
 ---
 
