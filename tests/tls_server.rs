@@ -441,6 +441,7 @@ async fn start_tls_server() -> TlsTestServer {
         validity_days: 90,
         crl_url: None,
         ocsp_url: None,
+        aki_bytes: Vec::new(),
     });
 
     // Bootstrap TLS cert/key signed by the CA.

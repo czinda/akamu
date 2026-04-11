@@ -155,6 +155,8 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         tls: Default::default(),
     });
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
+    let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();
+    let ca_aki_bytes = akamu::ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
     let db_conn = Arc::new(db::open(":memory:").await.unwrap());
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
@@ -166,6 +168,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             validity_days: 90,
             crl_url: None,
             ocsp_url: None,
+            aki_bytes: ca_aki_bytes,
         }),
         mtc: Arc::new(MtcState {
             log: None,
@@ -307,16 +310,15 @@ fn make_csr_der(domain: &str) -> Vec<u8> {
         .unwrap()
 }
 
-/// Build an RFC 9773 cert_id from a hex-encoded serial number.
-/// The AKI bytes are arbitrary (the server-side lookup only uses the serial).
-fn cert_id_from_serial_hex(serial_hex: &str) -> String {
+/// Build an RFC 9773 cert_id from a hex-encoded serial number and AKI bytes.
+fn cert_id_from_serial_hex(serial_hex: &str, aki_bytes: &[u8]) -> String {
     let serial_bytes: Vec<u8> = (0..serial_hex.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&serial_hex[i..i + 2], 16).unwrap())
         .collect();
     format!(
         "{}.{}",
-        URL_SAFE_NO_PAD.encode(b"test-aki"),
+        URL_SAFE_NO_PAD.encode(aki_bytes),
         URL_SAFE_NO_PAD.encode(&serial_bytes)
     )
 }
@@ -332,6 +334,7 @@ async fn issue_cert(
     base_url: &str,
     key: &TestKey,
     domain: &str,
+    aki_bytes: &[u8],
 ) -> (String, String, String) {
     // new-account
     let nonce = head_nonce(router).await;
@@ -383,7 +386,7 @@ async fn issue_cert(
         })
         .await
         .unwrap();
-    let cert_id = cert_id_from_serial_hex(&serial_hex);
+    let cert_id = cert_id_from_serial_hex(&serial_hex, aki_bytes);
     (account_url, order_id, cert_id)
 }
 
@@ -414,7 +417,15 @@ async fn test_renewal_info_response_format() {
     let router = routes::build_router(Arc::clone(&state));
 
     let key = TestKey::generate();
-    let (_, _, cert_id) = issue_cert(&router, &db, base_url, &key, "ari-fmt.example").await;
+    let (_, _, cert_id) = issue_cert(
+        &router,
+        &db,
+        base_url,
+        &key,
+        "ari-fmt.example",
+        &state.ca.aki_bytes,
+    )
+    .await;
 
     let (status, body, headers) = get(&router, &format!("/acme/renewal-info/{cert_id}")).await;
     assert_eq!(status, StatusCode::OK, "expected 200: {body}");
@@ -450,8 +461,15 @@ async fn test_new_order_with_replaces_field() {
     let router = routes::build_router(Arc::clone(&state));
 
     let key = TestKey::generate();
-    let (account_url, _, cert_id) =
-        issue_cert(&router, &db, base_url, &key, "ari-rpl.example").await;
+    let (account_url, _, cert_id) = issue_cert(
+        &router,
+        &db,
+        base_url,
+        &key,
+        "ari-rpl.example",
+        &state.ca.aki_bytes,
+    )
+    .await;
 
     // new-order that replaces the issued cert.
     let nonce = head_nonce(&router).await;
@@ -486,8 +504,15 @@ async fn test_finalize_marks_predecessor_replaced() {
     let router = routes::build_router(Arc::clone(&state));
 
     let key = TestKey::generate();
-    let (account_url, _, cert_id) =
-        issue_cert(&router, &db, base_url, &key, "ari-pred.example").await;
+    let (account_url, _, cert_id) = issue_cert(
+        &router,
+        &db,
+        base_url,
+        &key,
+        "ari-pred.example",
+        &state.ca.aki_bytes,
+    )
+    .await;
 
     // Capture the predecessor's UUID before the second cert is issued.
     let pred_uuid: String = db
@@ -563,8 +588,15 @@ async fn test_new_order_already_replaced() {
     let router = routes::build_router(Arc::clone(&state));
 
     let key = TestKey::generate();
-    let (account_url, _, cert_id) =
-        issue_cert(&router, &db, base_url, &key, "ari-ar.example").await;
+    let (account_url, _, cert_id) = issue_cert(
+        &router,
+        &db,
+        base_url,
+        &key,
+        "ari-ar.example",
+        &state.ca.aki_bytes,
+    )
+    .await;
 
     // Mark the cert as replaced directly in the DB.
     db.call(|conn| {
@@ -605,7 +637,15 @@ async fn test_new_order_replaces_wrong_account() {
 
     // Account A issues a cert.
     let key_a = TestKey::generate();
-    let (_, _, cert_id) = issue_cert(&router, &db, base_url, &key_a, "ari-wa.example").await;
+    let (_, _, cert_id) = issue_cert(
+        &router,
+        &db,
+        base_url,
+        &key_a,
+        "ari-wa.example",
+        &state.ca.aki_bytes,
+    )
+    .await;
 
     // Account B registers and tries to replace Account A's cert.
     let key_b = TestKey::generate();
@@ -654,7 +694,7 @@ async fn test_new_order_replaces_unknown_cert() {
     let account_url = location_header(&acct_headers);
     let nonce = nonce_header(&acct_headers);
 
-    let unknown = cert_id_from_serial_hex("deadbeefdeadbeef");
+    let unknown = cert_id_from_serial_hex("deadbeefdeadbeef", b"unknown-aki");
     let jws = key.jws_with_kid(
         &account_url,
         &nonce,

@@ -135,6 +135,44 @@ fn generate(config: &CaConfig) -> Result<(BackendPrivateKey, Vec<u8>), AcmeError
     Ok((backend_key, cert_der))
 }
 
+/// Compute the AKI key-identifier bytes for the given SubjectPublicKeyInfo DER.
+///
+/// Uses RFC 5280 §4.2.1.1 method 1: SHA-1 of the BIT STRING value of the
+/// public key.  This matches the `KeyIdMethod::Rfc5280Sha1` method used when
+/// encoding the CA certificate's SKI / AKI extensions, so the result equals
+/// the `keyIdentifier` stored in every issued certificate's AKI extension.
+///
+/// The value is used by the ARI (RFC 9773) handler to validate the first
+/// component of the `cert_id` path parameter.
+pub fn compute_aki_from_spki(spki_der: &[u8]) -> Option<Vec<u8>> {
+    let hasher = default_key_id_hasher();
+    // encode_subject_key_identifier returns the DER-encoded extension value,
+    // which is a KeyIdentifier ::= OCTET STRING { hash }.
+    // Wire format: 0x04 | length_bytes | hash_bytes
+    let ski_val = encode_subject_key_identifier(spki_der, KeyIdMethod::Rfc5280Sha1, &hasher)?;
+    if ski_val.len() < 2 || ski_val[0] != 0x04 {
+        return None;
+    }
+    // Parse DER length (short-form for SHA-1; long-form handled generically).
+    let (hash_start, hash_len) = if ski_val[1] & 0x80 == 0 {
+        (2usize, ski_val[1] as usize)
+    } else {
+        let num_len = (ski_val[1] & 0x7f) as usize;
+        if ski_val.len() < 2 + num_len {
+            return None;
+        }
+        let mut len = 0usize;
+        for &b in &ski_val[2..2 + num_len] {
+            len = (len << 8) | b as usize;
+        }
+        (2 + num_len, len)
+    };
+    if ski_val.len() < hash_start + hash_len {
+        return None;
+    }
+    Some(ski_val[hash_start..hash_start + hash_len].to_vec())
+}
+
 /// Generate a `BackendPrivateKey` using the synta-certificate crypto backend.
 pub(crate) fn generate_backend_key(key_type: &str) -> Result<BackendPrivateKey, AcmeError> {
     let cry = |e: &dyn std::fmt::Display| AcmeError::Crypto(format!("generate {key_type}: {e}"));

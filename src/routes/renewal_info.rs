@@ -17,7 +17,24 @@ pub async fn get_renewal_info(
     State(state): State<Arc<AppState>>,
     Path(cert_id): Path<String>,
 ) -> Result<Response, AcmeError> {
-    // cert_id is base64url(AKI) "." base64url(serial bytes) per RFC 9773 §4.1
+    // cert_id is base64url(AKI) "." base64url(serial bytes) per RFC 9773 §4.1.
+    // Validate the AKI component against the CA's key identifier (RFC 9773 §4.1):
+    // a cert-id whose AKI does not belong to this CA must return 404.
+    {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        let dot = cert_id
+            .find('.')
+            .ok_or_else(|| AcmeError::BadRequest("cert_id missing '.' separator".into()))?;
+        let aki_b64 = &cert_id[..dot];
+        let aki_bytes = URL_SAFE_NO_PAD
+            .decode(aki_b64)
+            .map_err(|_| AcmeError::BadRequest("cert_id AKI is not valid base64url".into()))?;
+        if aki_bytes != state.ca.aki_bytes {
+            return Err(AcmeError::NotFound);
+        }
+    }
+
     let cert = db::certs::get_by_cert_id(&state.db, &cert_id)
         .await?
         .ok_or(AcmeError::NotFound)?;

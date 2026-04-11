@@ -79,6 +79,10 @@ pub struct CaState {
     pub crl_url: Option<String>,
     /// Optional OCSP responder URL.
     pub ocsp_url: Option<String>,
+    /// RFC 5280 §4.2.1.1 key identifier bytes (SHA-1 of the CA public key
+    /// BIT STRING value).  Used to validate the AKI component of ARI cert-ids
+    /// (RFC 9773 §4.1) — a cert-id whose AKI does not match returns 404.
+    pub aki_bytes: Vec<u8>,
 }
 
 /// Cached account key material stored in `AppState::spki_cache`.

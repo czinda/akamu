@@ -73,6 +73,13 @@ async fn run() -> Result<(), String> {
     let (ca_key, ca_cert_der) =
         ca::init::load_or_generate(&config.ca).map_err(|e| format!("CA init: {e}"))?;
 
+    let ca_spki_der = ca_key
+        .public_key()
+        .map_err(|e| format!("CA public key: {e}"))?
+        .spki_der()
+        .to_vec();
+    let ca_aki_bytes = ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
+
     let ca = Arc::new(CaState {
         key: ca_key,
         cert_der: ca_cert_der,
@@ -80,6 +87,7 @@ async fn run() -> Result<(), String> {
         validity_days: config.ca.validity_days,
         crl_url: config.ca.crl_url.clone(),
         ocsp_url: config.ca.ocsp_url.clone(),
+        aki_bytes: ca_aki_bytes,
     });
 
     // ── TLS bootstrap (auto-generate cert/key if absent) ─────────────────────

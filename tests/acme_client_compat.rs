@@ -155,6 +155,7 @@ async fn start_plain_server(http_validation_port: u16) -> PlainServer {
             validity_days: 90,
             crl_url: None,
             ocsp_url: None,
+            aki_bytes: Vec::new(),
         }),
         mtc: Arc::new(MtcState {
             log: None,

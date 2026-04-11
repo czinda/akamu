@@ -217,6 +217,8 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
+    let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();
+    let ca_aki_bytes = ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
     let db_conn = Arc::new(db::open(":memory:").await.unwrap());
 
     let state = Arc::new(AppState {
@@ -229,6 +231,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             validity_days: 90,
             crl_url: None,
             ocsp_url: None,
+            aki_bytes: ca_aki_bytes,
         }),
         mtc: Arc::new(MtcState {
             log: None,
@@ -366,16 +369,16 @@ async fn mark_order_ready(db: &tokio_rusqlite::Connection, order_id: &str) {
 
 /// Build a minimal RFC 9773 cert_id for a certificate identified by its
 /// hex-encoded serial number (as stored in the `certificates.serial_number`
-/// column).  The AKI component is arbitrary because `get_by_cert_id` only uses
-/// the serial for the DB lookup.
-fn cert_id_from_serial_hex(serial_hex: &str) -> String {
+/// column).  Pass `aki_bytes = state.ca.aki_bytes` for renewal-info requests;
+/// an arbitrary slice is fine for `replaces` lookups (serial-only in the DB).
+fn cert_id_from_serial_hex(serial_hex: &str, aki_bytes: &[u8]) -> String {
     let serial_bytes: Vec<u8> = (0..serial_hex.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&serial_hex[i..i + 2], 16).unwrap())
         .collect();
     format!(
         "{}.{}",
-        URL_SAFE_NO_PAD.encode(b"test-aki"),
+        URL_SAFE_NO_PAD.encode(aki_bytes),
         URL_SAFE_NO_PAD.encode(&serial_bytes)
     )
 }
@@ -781,7 +784,7 @@ async fn test_renewal_info() {
         })
         .await
         .unwrap();
-    let cert_id = cert_id_from_serial_hex(&serial_hex);
+    let cert_id = cert_id_from_serial_hex(&serial_hex, &state.ca.aki_bytes);
 
     // GET /acme/renewal-info/{cert_id}
     let (status, ari_body, _) = get(&router, &format!("/acme/renewal-info/{cert_id}")).await;
@@ -866,7 +869,7 @@ async fn test_renewal_info_explicit_window() {
         })
         .await
         .unwrap();
-    let cert_id = cert_id_from_serial_hex(&serial_hex);
+    let cert_id = cert_id_from_serial_hex(&serial_hex, &state.ca.aki_bytes);
 
     // Set an explicit renewal window on this certificate.
     let window_start: i64 = 1_800_000_000; // 2027-01-15
@@ -898,8 +901,8 @@ async fn test_renewal_info_not_found() {
     let (state, _tmp) = build_test_state(base_url).await;
     let router = routes::build_router(Arc::clone(&state));
 
-    // Well-formed cert_id (has a dot, valid base64url serial) but no matching cert.
-    let unknown = cert_id_from_serial_hex("deadbeefdeadbeef");
+    // Well-formed cert_id with correct AKI but no matching serial → 404.
+    let unknown = cert_id_from_serial_hex("deadbeefdeadbeef", &state.ca.aki_bytes);
     let (status, body, _) = get(&router, &format!("/acme/renewal-info/{unknown}")).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "expected 404: {body}");
 
@@ -2253,6 +2256,7 @@ async fn test_directory_with_optional_fields() {
             validity_days: 90,
             crl_url: None,
             ocsp_url: None,
+            aki_bytes: Vec::new(),
         }),
         mtc: Arc::new(akamu::state::MtcState {
             log: None,
@@ -2609,6 +2613,7 @@ async fn test_finalize_with_mtc_enabled() {
             validity_days: 90,
             crl_url: None,
             ocsp_url: None,
+            aki_bytes: Vec::new(),
         }),
         mtc: Arc::new(MtcState {
             log: Some(shared_log.clone()),
@@ -2837,6 +2842,7 @@ async fn test_finalize_with_aia_and_cdp() {
             validity_days: 90,
             crl_url: Some("http://crl.test/ca.crl".into()),
             ocsp_url: Some("http://ocsp.test/".into()),
+            aki_bytes: Vec::new(),
         }),
         mtc: Arc::new(MtcState {
             log: None,
