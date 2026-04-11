@@ -1,0 +1,560 @@
+# RFC Support Reference
+
+This page documents every RFC that is relevant to `Akāmu`, explaining what each one specifies, which parts are implemented, and — for RFCs that are intentionally not implemented — why.
+
+## Summary
+
+| Specification | Title | Status |
+|---------------|-------|--------|
+| [dns-persist-01](#lets-encrypt-dns-persist-01) | Let's Encrypt Persistent DNS Challenge | Full |
+| [draft-ietf-lamps-pq-composite-sigs](#draft-ietf-lamps-pq-composite-sigs) | ML-DSA Composite TLS Signature Schemes | Partial (provisional code points) |
+| [RFC 8555](#rfc-8555-core-acme) | Automatic Certificate Management Environment (ACME) | Full |
+| [RFC 8659](#rfc-8659-caa-dns-resource-record) | DNS Certification Authority Authorization (CAA) | Full |
+| [RFC 8657](#rfc-8657-caa-accounturi-and-validationmethods) | CAA Extensions: accounturi and validationmethods | Full |
+| [RFC 8737](#rfc-8737-tls-alpn-01-challenge) | ACME TLS-ALPN-01 Challenge Extension | Full |
+| [RFC 8738](#rfc-8738-ip-identifier-validation) | ACME IP Identifier Validation | Full |
+| [RFC 8739](#rfc-8739-acme-star) | ACME Short-Term, Automatically Renewed (STAR) Certificates | Full |
+| [RFC 9444](#rfc-9444-acme-for-subdomains) | ACME for Subdomains | Full |
+| [RFC 9773](#rfc-9773-acme-renewal-information-ari) | ACME Renewal Information (ARI) | Full |
+| [RFC 9799](#rfc-9799-acme-for-onion-domains) | ACME Extensions for .onion Special-Use Domain Names | Full |
+| [RFC 5280](#rfc-5280-x509-certificate-profile) | X.509 Certificate and CRL Profile | Full |
+| [RFC 7807](#rfc-7807-problem-details-for-http-apis) | Problem Details for HTTP APIs | Full |
+| [RFC 8823](#rfc-8823-smime-certificates-informational) | ACME Extensions for S/MIME Certificates | Not implemented |
+| [RFC 9115](#rfc-9115-acme-profile-for-delegated-certificates) | ACME Profile for Delegated Certificates | Not implemented |
+| [RFC 9345](#rfc-9345-delegated-credentials-for-tls) | Delegated Credentials for TLS | Not implemented |
+| [RFC 9447](#rfc-9447-acme-authority-token-challenge) | ACME Challenges Using an Authority Token | Not implemented |
+| [RFC 9448](#rfc-9448-acme-tnauthlist-authority-token) | ACME TNAuthList Authority Token | Not implemented |
+| [RFC 9538](#rfc-9538-cdni-delegation-metadata) | ACME Delegation Metadata for CDNI | Not implemented |
+| [RFC 9891](#rfc-9891-acme-dtn-node-id-experimental) | ACME DTN Node ID Validation (Experimental) | Not implemented |
+
+---
+
+## RFC 8555 — Core ACME
+
+**[RFC 8555](https://www.rfc-editor.org/rfc/rfc8555)** is the foundation. It defines the full ACME protocol: the HTTP API, the JSON object model, the JWS (JSON Web Signature) authentication scheme, and the challenge validation framework.
+
+### What it covers
+
+| Section | Feature | Status |
+|---------|---------|--------|
+| §7.1 | Directory (`GET /acme/directory`) | Yes |
+| §7.2 | Nonces (`HEAD /acme/new-nonce`, `GET /acme/new-nonce`) | Yes |
+| §7.3 | Account creation and management (`/acme/new-account`, `/acme/account/{id}`) | Yes |
+| §7.3.4 | `externalAccountRequired` enforcement | Yes |
+| §7.4 | Order management (`/acme/new-order`, `/acme/order/{id}`) | Yes |
+| §7.4.1 | Pre-authorization (`POST /acme/new-authz`) | Yes |
+| §7.1.3 | Honour order `notBefore` / `notAfter` in issued certificates | Yes |
+| §7.5 | Authorizations (`/acme/authz/{id}`) | Yes |
+| §7.5.1 | Challenge response (`/acme/chall/{authz}/{type}`) | Yes |
+| §7.4 finalize | Certificate issuance (`/acme/order/{id}/finalize`) | Yes |
+| §7.4.2 | Certificate download (`/acme/cert/{id}`) | Yes |
+| §7.6 | Certificate revocation (`/acme/revoke-cert`) | Yes |
+| §7.3.5 | Account key rollover (`/acme/key-change`) | Yes |
+| §8.3 | http-01 challenge validation | Yes |
+| §8.4 | dns-01 challenge validation | Yes |
+
+### Pre-authorization (`newAuthz`)
+
+Pre-authorization lets a client prove domain control ahead of any specific order. Once pre-authorized, the client can request multiple certificates for that domain (or its subdomains, if `subdomainAuthAllowed` is set) without repeating the challenge for each order.
+
+```
+POST /acme/new-authz
+Content-Type: application/jose+json
+
+payload: {
+  "identifier": { "type": "dns", "value": "example.com" }
+}
+```
+
+The response is identical to a reactive authorization created by `newOrder`.
+
+### External Account Binding
+
+When `server.external_account_required = true`, every `newAccount` request **must** include an `externalAccountBinding` field. Requests without it are rejected with `urn:ietf:params:acme:error:externalAccountRequired` (HTTP 403).
+
+> **Note:** The current implementation checks for the _presence_ of the `externalAccountBinding` field but does not verify the HMAC over it. Full MAC verification requires a pre-shared key management system that is outside the scope of the embedded CA. Enforce the HMAC at a gateway or reverse-proxy layer if cryptographic EAB verification is required.
+
+### Certificate validity window
+
+If the `newOrder` request includes `notBefore` and/or `notAfter` fields, the issued certificate's validity period will honour them, subject to the CA's configured `validity_days` limit and a 5-minute clock-skew grace on `notBefore`.
+
+---
+
+## RFC 8659 — CAA DNS Resource Record
+
+**[RFC 8659](https://www.rfc-editor.org/rfc/rfc8659)** requires a CA to look up DNS Certification Authority Authorization (CAA) records before issuing a certificate. A domain owner can publish CAA records to restrict which CAs are allowed to issue certificates for that domain.
+
+### How Akāmu implements it
+
+Before issuing any certificate, Akāmu queries CAA records for each DNS identifier in the order:
+
+1. It starts at the requested domain (e.g., `sub.example.com`) and walks up the DNS tree (`example.com`, `com`) until it finds a CAA record set or exhausts the tree.
+2. If no CAA records are found anywhere, issuance proceeds (unconstrained domain).
+3. If a CAA record set is found, Akāmu checks whether any `issue` record (or `issuewild` record for wildcard certs) contains one of the CA's configured domain names (`server.caa_identities`).
+4. If none match, issuance is denied with `urn:ietf:params:acme:error:caa` (HTTP 403).
+
+### Configuration
+
+```toml
+[server]
+caa_identities = ["acme.example.com"]
+```
+
+When `caa_identities` is empty (the default), CAA checking is disabled entirely.
+
+### Example CAA record
+
+A domain owner who trusts only this Akāmu instance would publish:
+
+```dns
+example.com. IN CAA 0 issue "acme.example.com"
+```
+
+To also allow wildcard certificates:
+
+```dns
+example.com. IN CAA 0 issuewild "acme.example.com"
+```
+
+IP identifiers are not subject to CAA checking (CAA is a DNS mechanism).
+
+---
+
+## RFC 8657 — CAA accounturi and validationmethods
+
+**[RFC 8657](https://www.rfc-editor.org/rfc/rfc8657)** extends CAA with two optional parameters that give domain owners finer-grained control:
+
+- **`accounturi`** — Restricts issuance to a specific ACME account URI.
+- **`validationmethods`** — Restricts issuance to specific challenge types (e.g., only `dns-01`).
+
+### validationmethods
+
+When Akāmu finds a matching `issue` or `issuewild` CAA record that contains a `validationmethods` parameter, it checks whether the challenge type used to validate the order appears in the list. If not, issuance is denied.
+
+**Example:**
+
+```dns
+; Only allow dns-01 for this CA
+example.com. IN CAA 0 issue "acme.example.com; validationmethods=dns-01"
+```
+
+With this record, an http-01-validated order for `example.com` would be denied at finalization time.
+
+### accounturi
+
+Akāmu recognises the `accounturi` parameter in CAA records and logs a warning if it is present, but does not enforce it. Full `accounturi` enforcement requires correlating ACME account URLs during the CA's validation phase; this is planned for a future release.
+
+---
+
+## RFC 8737 — TLS-ALPN-01 Challenge
+
+**[RFC 8737](https://www.rfc-editor.org/rfc/rfc8737)** defines the `tls-alpn-01` challenge, which proves domain control by serving a specially crafted TLS certificate on port 443 using the ALPN protocol identifier `acme-tls/1`.
+
+### How it works
+
+1. Akāmu computes the SHA-256 of the key authorization.
+2. It opens a TLS connection to port 443 of the domain, advertising `acme-tls/1` as the ALPN protocol.
+3. It verifies that the server presents a certificate with:
+   - The domain as a `dNSName` SAN (exactly one SAN entry).
+   - A critical `id-pe-acmeIdentifier` extension (OID `1.3.6.1.5.5.7.1.31`) containing the SHA-256 hash of the key authorization as a DER `OCTET STRING`.
+4. For IP identifiers, the server connects directly to the IP address; the reverse-DNS name is used as the TLS SNI value.
+
+### Constraints
+
+- Port 443 must be reachable from the Akāmu server.
+- Wildcard identifiers cannot be validated with `tls-alpn-01`.
+- Both TLS 1.2 and TLS 1.3 are accepted.
+
+---
+
+## RFC 8738 — IP Identifier Validation
+
+**[RFC 8738](https://www.rfc-editor.org/rfc/rfc8738)** extends ACME to issue certificates for IP addresses (IPv4 and IPv6), not just domain names.
+
+### Supported identifier type
+
+```json
+{ "type": "ip", "value": "192.0.2.1" }
+{ "type": "ip", "value": "2001:db8::1" }
+```
+
+IPv4 values use dotted-decimal notation. IPv6 values use the compressed text representation defined in RFC 5952.
+
+### Supported challenge types for IP identifiers
+
+| Challenge | Supported |
+|-----------|-----------|
+| http-01 | Yes — connects directly to the IP; `Host` header is the IP address literal |
+| tls-alpn-01 | Yes — connects to the IP; SNI uses the reverse-DNS name (e.g., `1.2.0.192.in-addr.arpa`) |
+| dns-01 | No — MUST NOT be used for IP identifiers per RFC 8738 §7 |
+| dns-persist-01 | No — DNS-based, not applicable to IP identifiers |
+
+---
+
+## RFC 8739 — ACME STAR
+
+**[RFC 8739](https://www.rfc-editor.org/rfc/rfc8739)** (Short-Term, Automatically Renewed) allows a client to place a single order and receive a continuous stream of short-lived certificates without repeating domain validation. The CA automatically reissues each certificate before the previous one expires.
+
+### Use case
+
+STAR is designed for scenarios where certificate revocation is unreliable. Instead of revoking a compromised certificate, the operator simply cancels the STAR order; the attacker's window is limited to the remaining validity of the current short-lived certificate.
+
+Another key use case is CDN delegation (see [RFC 9115](#rfc-9115-acme-profile-for-delegated-certificates)): the domain owner holds the STAR order and can revoke the CDN's access at any time by canceling it.
+
+### Creating a STAR order
+
+Include an `auto-renewal` object in the `newOrder` payload:
+
+```json
+{
+  "identifiers": [{ "type": "dns", "value": "example.com" }],
+  "auto-renewal": {
+    "start-date": "2025-01-01T00:00:00Z",
+    "end-date":   "2025-12-31T00:00:00Z",
+    "lifetime":   86400
+  }
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `end-date` | Yes | The latest date of validity of the last certificate issued (RFC 3339). |
+| `lifetime` | Yes | Validity period of each certificate, in seconds. |
+| `start-date` | No | The earliest `notBefore` of the first certificate. Defaults to when the order becomes ready. |
+| `lifetime-adjust` | No | Pre-dates each certificate's `notBefore` by this many seconds (for clock-skew tolerance). Default: 0. |
+| `allow-certificate-get` | No | If `true`, the rolling certificate URL can be fetched with an unauthenticated `GET`. |
+
+> `notBefore` and `notAfter` must NOT be present in a STAR order.
+
+### Rolling certificate URL
+
+After finalization, the order response includes a `star-certificate` URL instead of `certificate`:
+
+```json
+{
+  "status": "valid",
+  "star-certificate": "https://acme.example.com/acme/cert/star/<order-id>"
+}
+```
+
+`GET /acme/cert/star/<order-id>` always returns the currently active PEM certificate, along with `Cert-Not-Before` and `Cert-Not-After` HTTP headers matching the certificate's validity window.
+
+### Canceling a STAR order
+
+POST to the order URL with `{"status": "canceled"}` to stop automatic renewal:
+
+```json
+POST /acme/order/<id>
+{ "status": "canceled" }
+```
+
+Once canceled, the `star-certificate` endpoint returns HTTP 403 (`autoRenewalCanceled`). The currently active short-lived certificate continues to be usable until it expires naturally.
+
+### Server configuration
+
+Advertise STAR capability in the directory by configuring minimum lifetime and maximum duration:
+
+```toml
+[server]
+star_min_lifetime_secs = 86400     # 1 day minimum cert lifetime
+star_max_duration_secs = 31536000  # 1 year maximum renewal period
+```
+
+When either field is set, the directory `meta` object includes the `auto-renewal` advertisement.
+
+---
+
+## RFC 9444 — ACME for Subdomains
+
+**[RFC 9444](https://www.rfc-editor.org/rfc/rfc9444)** allows a client to prove control of an ancestor domain (e.g., `example.com`) and then obtain certificates for any subdomain (e.g., `api.example.com`, `www.example.com`) without repeating the challenge for each one.
+
+### ancestorDomain in new orders
+
+When placing an order for a subdomain, the client can declare which ancestor domain it controls:
+
+```json
+{
+  "identifiers": [
+    {
+      "type": "dns",
+      "value": "api.example.com",
+      "ancestorDomain": "example.com"
+    }
+  ]
+}
+```
+
+Akāmu validates that `ancestorDomain` is a genuine ancestor (label-aligned DNS suffix) of the requested identifier. If accepted, the authorization challenge is issued against `example.com` rather than `api.example.com`.
+
+### subdomainAuthAllowed in pre-authorization
+
+When pre-authorizing an ancestor domain, include `subdomainAuthAllowed: true`:
+
+```json
+POST /acme/new-authz
+{
+  "identifier": { "type": "dns", "value": "example.com" },
+  "subdomainAuthAllowed": true
+}
+```
+
+The returned authorization object includes the same flag:
+
+```json
+{
+  "identifier": { "type": "dns", "value": "example.com" },
+  "status": "valid",
+  "subdomainAuthAllowed": true,
+  ...
+}
+```
+
+A client can reuse this authorization for any subsequent order that specifies `ancestorDomain: "example.com"`.
+
+### Server advertisement
+
+To advertise subdomain authorization support in the directory:
+
+```toml
+[server]
+allow_subdomain_auth = true
+```
+
+This adds `"subdomainAuthAllowed": true` to the directory `meta` object.
+
+---
+
+## RFC 9773 — ACME Renewal Information (ARI)
+
+**[RFC 9773](https://www.rfc-editor.org/rfc/rfc9773)** defines the Renewal Information extension, which lets the server tell ACME clients when to renew their certificates — even before the certificate expires. This is useful when a CA needs to revoke and reissue certificates en masse (e.g., due to a key compromise or mis-issuance event).
+
+### Endpoints
+
+```
+GET /acme/renewal-info/<cert-id>
+```
+
+`<cert-id>` is the RFC 9773 certificate identifier: `base64url(AKI keyIdentifier) "." base64url(DER-encoded serial number bytes)`.
+
+The response includes a suggested renewal window:
+
+```json
+{
+  "suggestedWindow": {
+    "start": "2025-03-15T00:00:00Z",
+    "end":   "2025-03-20T00:00:00Z"
+  }
+}
+```
+
+The server includes a `Retry-After` header indicating how often to poll.
+
+### Renewal replacement
+
+When placing a renewal order for a certificate that is being replaced, include the predecessor's `cert-id` in the order:
+
+```json
+{
+  "identifiers": [...],
+  "replaces": "<cert-id-of-predecessor>"
+}
+```
+
+Akāmu validates that the predecessor cert belongs to the same account, marks it as replaced in the database at finalization, and returns an HTTP 409 (`alreadyReplaced`) if a replacement order has already been finalized.
+
+### Configuration
+
+```toml
+[server]
+ari_retry_after_secs = 21600  # 6 hours between renewal-info polls (default)
+```
+
+---
+
+## RFC 9799 — ACME for .onion Domains
+
+**[RFC 9799](https://www.rfc-editor.org/rfc/rfc9799)** defines how ACME can issue certificates for Tor Hidden Services (`.onion` Special-Use Domain Names). These are not DNS names — the second-level label encodes the hidden service's Ed25519 public key.
+
+### Supported challenges for .onion identifiers
+
+| Challenge | Supported | Notes |
+|-----------|-----------|-------|
+| `onion-csr-01` | Yes | Key validation via CSR; no Tor network access needed server-side |
+| `http-01` | Offered | Requires Tor connectivity from the Akāmu server |
+| `tls-alpn-01` | Offered | Requires Tor connectivity from the Akāmu server |
+| `dns-01` | No | MUST NOT be used for .onion identifiers |
+
+### onion-csr-01 challenge
+
+`onion-csr-01` is the recommended challenge type for .onion domains because it does not require the ACME server to connect to the Tor network. Proof of control comes from a cryptographic signature by the hidden service's private key (the same key embedded in the `.onion` address).
+
+**Protocol:**
+
+1. Akāmu returns a challenge object with `type: "onion-csr-01"`, a `token`, and an `authKey` (the JWK thumbprint of the ACME account key).
+2. The client builds a CSR that:
+   - Contains the `.onion` SAN.
+   - Includes a `cabf-onion-csr-nonce` extension (OID `2.23.140.41`) containing the key authorization (`token.thumbprint`).
+   - Is signed with both the CSR subject key and the hidden service's Ed25519 private key.
+3. The client POSTs `{"csr": "<base64url-CSR-DER>"}` to the challenge URL.
+4. Akāmu:
+   - Extracts the 32-byte Ed25519 public key from the `.onion` address.
+   - Verifies the `cabf-onion-csr-nonce` extension contains the correct key authorization.
+   - Verifies the CSR signature using the extracted hidden-service public key.
+   - If all checks pass, marks the authorization as valid.
+
+### Identifier format
+
+Only v3 (Ed25519) `.onion` addresses are accepted. A v3 address has a 56-character base32 second-level label:
+
+```
+bbcweb3hytmzhn5d532owbu6oqadra5z3ar726vq5kgwwn6aucdccrad.onion
+```
+
+Version 2 addresses (16-character label) are rejected per RFC 9799 §2.
+
+---
+
+## RFC 5280 — X.509 Certificate Profile
+
+**[RFC 5280](https://www.rfc-editor.org/rfc/rfc5280)** defines the structure of X.509 v3 certificates and Certificate Revocation Lists (CRLs). Akāmu issues certificates that conform to the RFC 5280 PKIX profile via the `synta-certificate` library.
+
+Conformance includes:
+- Correct `BasicConstraints` (CA: false on end-entity certs).
+- `SubjectKeyIdentifier` and `AuthorityKeyIdentifier` extensions.
+- `KeyUsage` and `ExtendedKeyUsage` extensions.
+- `SubjectAlternativeName` extensions carrying dNSName, iPAddress, or a `.onion`-specific form.
+- CRL Distribution Points and OCSP Access Information when `crl_url` / `ocsp_url` are configured.
+
+---
+
+## RFC 7807 — Problem Details for HTTP APIs
+
+**[RFC 7807](https://www.rfc-editor.org/rfc/rfc7807)** defines a JSON format for HTTP error responses. All Akāmu error responses use this format with `Content-Type: application/problem+json`:
+
+```json
+{
+  "type":   "urn:ietf:params:acme:error:malformed",
+  "detail": "JWS url mismatch: got '...', expected '...'",
+  "status": 400
+}
+```
+
+All ACME-specific error URNs are defined in RFC 8555 §6.7 and its extensions.
+
+---
+
+## Let's Encrypt dns-persist-01
+
+The **[dns-persist-01 specification](https://letsencrypt.org/2026/02/18/dns-persist-01)** is a non-standard ACME challenge type published by Let's Encrypt. Unlike the standard `dns-01` challenge, which requires a fresh DNS TXT record for every renewal, `dns-persist-01` uses a single long-lived TXT record that remains in place across renewals. This eliminates the need to modify DNS on every certificate renewal cycle.
+
+### How it differs from dns-01
+
+| Property | dns-01 | dns-persist-01 |
+|----------|--------|----------------|
+| TXT record name | `_acme-challenge.<domain>` | `_validation-persist.<domain>` |
+| Record changes per renewal | Required | Not required |
+| Token in record | Yes (changes each time) | No |
+| Record format | `<key-auth>` | `"<issuer-domain>; accounturi=<uri>[; policy=wildcard][; persistUntil=<ISO8601Z>]"` |
+| Wildcard support | Requires explicit `policy=wildcard` parameter |
+
+### Configuration
+
+```toml
+[server]
+dns_persist_issuer_domain = "acme.example.com"
+```
+
+When `dns_persist_issuer_domain` is set, the server offers `dns-persist-01` as an additional challenge type alongside `http-01`, `dns-01`, and `tls-alpn-01`. Without it, the challenge type is not advertised.
+
+### TXT record format
+
+The domain owner publishes (and keeps permanently):
+
+```dns
+_validation-persist.example.com. IN TXT "acme.example.com; accounturi=https://acme.example.com/acme/account/abc123"
+```
+
+Optional extensions:
+- `policy=wildcard` — authorizes wildcard certificate issuance.
+- `persistUntil=2026-12-31T00:00:00Z` — caps the record's validity. After this date, the record must be renewed.
+
+### Validation
+
+Akāmu queries the `_validation-persist.<domain>` TXT record, verifies the issuer domain matches `dns_persist_issuer_domain`, and checks that the `accounturi` matches the requesting ACME account URL. If both match, the authorization is marked valid.
+
+---
+
+## draft-ietf-lamps-pq-composite-sigs
+
+**[draft-ietf-lamps-pq-composite-sigs](https://datatracker.ietf.org/doc/draft-ietf-lamps-pq-composite-sigs/)** is an active IETF draft that defines hybrid post-quantum signature algorithms combining a classical algorithm (ECDSA or RSA) with a post-quantum algorithm (ML-DSA, formerly CRYSTALS-Dilithium). Akāmu implements the TLS 1.3 signature scheme code points from the provisional IANA allocations in this draft.
+
+### What this affects
+
+These code points are used only for **mutual TLS client authentication** — they appear in the TLS `CertificateVerify` message when a client presents a certificate signed with a composite ML-DSA scheme. Server-side certificate issuance (for ACME clients) is not affected.
+
+The 12 composite scheme code points implemented are:
+
+| Code point | Scheme |
+|------------|--------|
+| 0x0901 | id-MLDSA44-RSA2048-PSS-SHA256 |
+| 0x0902 | id-MLDSA44-RSA2048-PKCS15-SHA256 |
+| 0x0903 | id-MLDSA44-Ed25519-SHA512 |
+| 0x0904 | id-MLDSA44-ECDSA-P256-SHA256 |
+| 0x0905 | id-MLDSA65-RSA3072-PSS-SHA512 |
+| 0x0906 | id-MLDSA65-RSA3072-PKCS15-SHA512 |
+| 0x0907 | id-MLDSA65-ECDSA-P384-SHA512 |
+| 0x0908 | id-MLDSA65-ECDSA-brainpoolP256r1-SHA512 |
+| 0x0909 | id-MLDSA87-ECDSA-P384-SHA512 |
+| 0x090A | id-MLDSA87-ECDSA-brainpoolP384r1-SHA512 |
+| 0x090B | id-MLDSA87-Ed448-SHA512 |
+| 0x090C | id-MLDSA65-ECDSA-P256-SHA512 |
+
+### Stability warning
+
+These code points come from the **provisional IANA registry** for an in-progress draft. They may change as the draft advances toward RFC publication. Before deploying to production, verify the current draft version against the code points in `src/tls/schemes.rs`. If the code points change, only that file needs to be updated.
+
+---
+
+## Not implemented
+
+### RFC 8823 — S/MIME Certificates (Informational)
+
+Defines an `email` identifier type and `email-reply-00` challenge, where proof of control is a DKIM-signed reply email.
+
+**Not implemented.** Issuing S/MIME certificates requires an SMTP/IMAP email delivery stack that is outside the scope of an embedded CA.
+
+### RFC 9115 — ACME Profile for Delegated Certificates
+
+Enables a three-party delegation model: a domain owner (IdO) authorizes a third party (e.g., a CDN) to obtain certificates for the IdO's domain, where the certificate's public key belongs to the third party rather than the domain owner. The CA acts as a proxy between the two parties and enforces a JSON CSR template that restricts what the delegate may request.
+
+**Not implemented.** This requires a dedicated API surface for IdOs to manage delegation policies, plus proxy routing between the NDC and IdO accounts. It is primarily useful for large-scale CDN deployments.
+
+### RFC 9345 — Delegated Credentials for TLS
+
+Defines a TLS certificate extension (`delegated_credential`) that allows a TLS server to present short-lived sub-credentials derived from an issued certificate, without requiring a new CA-signed certificate for each sub-credential. The ACME interaction is limited to requesting certs with this extension set.
+
+**Not implemented.** Requires X.509 extension support in `synta-certificate` for the Delegated Credentials extension (OID TBD / draft status at time of implementation).
+
+### RFC 9447 — ACME Challenges Using an Authority Token
+
+Defines a generic `tkauth-01` challenge type where proof of control comes from a JWT issued by an external authority rather than from DNS or HTTP. Designed for identifier types that cannot be validated by the classic ACME challenges (e.g., telephone numbers in STIR/SHAKEN).
+
+**Not implemented.** Requires integration with an external token authority, which is deployment-specific.
+
+### RFC 9448 — ACME TNAuthList Authority Token
+
+Extends RFC 9447 for telephone number (STIR/SHAKEN) use cases, where the authority token contains a TNAuthList claim.
+
+**Not implemented.** Telecom-specific; requires connectivity to a Secure Telephone Identity (STI) Policy Administrator.
+
+### RFC 9538 — ACME Delegation Metadata for CDNI
+
+Extends RFC 9115 for CDN Interconnection (CDNI) scenarios where multiple CDN tiers chain certificate delegation.
+
+**Not implemented.** Layered on top of RFC 9115 and equally CDN-infrastructure-specific.
+
+### RFC 9891 — ACME DTN Node ID Validation (Experimental)
+
+An experimental RFC that defines a `bundleEID` identifier type and a Bundle Protocol (BP) challenge for validating Delay-Tolerant Networking node identities.
+
+**Not implemented.** Experimental status; targets space/satellite networks using the Bundle Protocol (RFC 9171).
