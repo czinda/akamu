@@ -13,7 +13,6 @@ use std::sync::Arc;
 use rusqlite::OptionalExtension;
 use serde_json::json;
 
-use crate::db;
 use crate::error::AcmeError;
 use crate::state::AppState;
 
@@ -76,7 +75,9 @@ async fn dispatch(
     validation_client: &crate::state::ValidationClient,
 ) -> Result<(), AcmeError> {
     match chall_type {
-        "http-01" => http01::validate(id_value, token, key_auth, http_port, validation_client).await,
+        "http-01" => {
+            http01::validate(id_value, token, key_auth, http_port, validation_client).await
+        }
         "dns-01" => dns01::validate(id_value, key_auth).await,
         "tls-alpn-01" => tls_alpn01::validate(id_value, key_auth).await,
         "dns-persist-01" => {
@@ -173,6 +174,9 @@ async fn on_valid(state: &AppState, challenge_id: &str, authz_id: &str, now: i64
 /// 1. Record the error on the challenge.
 /// 2. Mark the authorization as `invalid`.
 /// 3. Mark the parent order as `invalid`.
+///
+/// All three state transitions run inside a single SQLite transaction so a
+/// partial failure cannot leave challenge valid while authz/order stays pending.
 async fn on_invalid(
     state: &AppState,
     challenge_id: &str,
@@ -188,30 +192,50 @@ async fn on_invalid(
     })
     .to_string();
 
-    if let Err(e) = db::challenges::set_invalid(&state.db, challenge_id, error_json, now).await {
-        tracing::warn!("challenge {challenge_id}: set_invalid failed: {e}");
-    }
+    let challenge_id = challenge_id.to_string();
+    let authz_id = authz_id.to_string();
+    let authz_id_log = authz_id.clone();
 
-    if let Err(e) = db::authz::update_status(&state.db, authz_id, "invalid", now).await {
-        tracing::warn!("authz {authz_id}: set invalid failed: {e}");
-    }
+    let result = state
+        .db
+        .call(move |conn| {
+            let tx = conn.transaction()?;
 
-    // Mark the order invalid too.
-    let authz = match db::authz::get_by_id(&state.db, authz_id).await {
-        Ok(Some(a)) => a,
-        Ok(None) => {
-            tracing::warn!("authz {authz_id} not found when marking order invalid");
-            return;
-        }
-        Err(e) => {
-            tracing::warn!("authz {authz_id}: get_by_id failed when marking order invalid: {e}");
-            return;
-        }
-    };
-    if let Err(e) =
-        db::orders::update_status(&state.db, &authz.order_id, "invalid", None, now).await
-    {
-        tracing::warn!("order {}: set invalid failed: {e}", authz.order_id);
+            // 1. Mark challenge invalid with the error detail.
+            tx.prepare_cached(
+                "UPDATE challenges SET status = 'invalid', error = ?1, updated = ?2 WHERE id = ?3",
+            )?
+            .execute(rusqlite::params![error_json, now, challenge_id])?;
+
+            // 2. Mark authorization invalid.
+            tx.prepare_cached(
+                "UPDATE authorizations SET status = 'invalid', updated = ?1 WHERE id = ?2",
+            )?
+            .execute(rusqlite::params![now, authz_id])?;
+
+            // 3. Find the parent order_id and mark it invalid.
+            let order_id: Option<String> = {
+                let mut stmt = tx.prepare_cached(
+                    "SELECT order_id FROM authorizations WHERE id = ?1",
+                )?;
+                stmt.query_row(rusqlite::params![authz_id], |row| row.get(0))
+                    .optional()?
+            };
+
+            if let Some(oid) = order_id {
+                tx.prepare_cached(
+                    "UPDATE orders SET status = 'invalid', error = NULL, updated = ?1 WHERE id = ?2",
+                )?
+                .execute(rusqlite::params![now, oid])?;
+            }
+
+            tx.commit()?;
+            Ok(())
+        })
+        .await;
+
+    if let Err(e) = result {
+        tracing::warn!("authz {authz_id_log}: on_invalid transaction failed: {e}");
     }
 }
 
@@ -288,8 +312,13 @@ mod tests {
             }),
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-            link_header: Arc::new(axum::http::HeaderValue::from_static("<https://acme.test/acme/directory>;rel=\"index\"")),
-            validation_client: hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new()).build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
+            link_header: Arc::new(axum::http::HeaderValue::from_static(
+                "<https://acme.test/acme/directory>;rel=\"index\"",
+            )),
+            validation_client: hyper_util::client::legacy::Client::builder(
+                hyper_util::rt::TokioExecutor::new(),
+            )
+            .build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
         })
     }
 
@@ -329,8 +358,9 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_unsupported_type_returns_error() {
-        let client = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
-            .build_http::<http_body_util::Empty<hyper::body::Bytes>>();
+        let client =
+            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                .build_http::<http_body_util::Empty<hyper::body::Bytes>>();
         let result = dispatch(
             "bogus-type",
             "dns",
@@ -685,8 +715,13 @@ mod tests {
             }),
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-            link_header: Arc::new(axum::http::HeaderValue::from_static("<https://acme.test/acme/directory>;rel=\"index\"")),
-            validation_client: hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new()).build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
+            link_header: Arc::new(axum::http::HeaderValue::from_static(
+                "<https://acme.test/acme/directory>;rel=\"index\"",
+            )),
+            validation_client: hyper_util::client::legacy::Client::builder(
+                hyper_util::rt::TokioExecutor::new(),
+            )
+            .build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
         });
 
         // The identifier is just the IP address — no port embedded.
@@ -835,8 +870,13 @@ mod tests {
             }),
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-            link_header: Arc::new(axum::http::HeaderValue::from_static("<https://acme.test/acme/directory>;rel=\"index\"")),
-            validation_client: hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new()).build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
+            link_header: Arc::new(axum::http::HeaderValue::from_static(
+                "<https://acme.test/acme/directory>;rel=\"index\"",
+            )),
+            validation_client: hyper_util::client::legacy::Client::builder(
+                hyper_util::rt::TokioExecutor::new(),
+            )
+            .build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
         });
         // on_valid tries set_valid first; fails on no-table DB → warn + return (lines 65-67).
         on_valid(&state, "fake-chall", "fake-authz", unix_now()).await;
@@ -895,8 +935,13 @@ mod tests {
             }),
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-            link_header: Arc::new(axum::http::HeaderValue::from_static("<https://acme.test/acme/directory>;rel=\"index\"")),
-            validation_client: hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new()).build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
+            link_header: Arc::new(axum::http::HeaderValue::from_static(
+                "<https://acme.test/acme/directory>;rel=\"index\"",
+            )),
+            validation_client: hyper_util::client::legacy::Client::builder(
+                hyper_util::rt::TokioExecutor::new(),
+            )
+            .build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
         });
         // on_invalid tries set_invalid first; fails on no-table DB → warn (lines 128-135).
         on_invalid(
@@ -989,8 +1034,13 @@ mod tests {
             }),
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-            link_header: Arc::new(axum::http::HeaderValue::from_static("<https://acme.test/acme/directory>;rel=\"index\"")),
-            validation_client: hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new()).build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
+            link_header: Arc::new(axum::http::HeaderValue::from_static(
+                "<https://acme.test/acme/directory>;rel=\"index\"",
+            )),
+            validation_client: hyper_util::client::legacy::Client::builder(
+                hyper_util::rt::TokioExecutor::new(),
+            )
+            .build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
         });
 
         // set_valid succeeds (challenge row exists), then update_status(authz) fails
@@ -1046,8 +1096,13 @@ mod tests {
             }),
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-            link_header: Arc::new(axum::http::HeaderValue::from_static("<https://acme.test/acme/directory>;rel=\"index\"")),
-            validation_client: hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new()).build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
+            link_header: Arc::new(axum::http::HeaderValue::from_static(
+                "<https://acme.test/acme/directory>;rel=\"index\"",
+            )),
+            validation_client: hyper_util::client::legacy::Client::builder(
+                hyper_util::rt::TokioExecutor::new(),
+            )
+            .build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
         })
     }
 
