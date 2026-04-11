@@ -442,7 +442,7 @@ Conformance includes:
 - Correct `BasicConstraints` (CA: false on end-entity certs).
 - `SubjectKeyIdentifier` and `AuthorityKeyIdentifier` extensions.
 - `KeyUsage` and `ExtendedKeyUsage` extensions.
-- `SubjectAlternativeName` extensions carrying dNSName, iPAddress, or a `.onion`-specific form.
+- `SubjectAlternativeName` extensions carrying dNSName (including `.onion` domains) or iPAddress.
 - CRL Distribution Points and OCSP Access Information when `crl_url` / `ocsp_url` are configured.
 
 ---
