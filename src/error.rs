@@ -72,6 +72,10 @@ pub enum AcmeError {
     #[error("TLS error: {0}")]
     Tls(String),
 
+    // ── draft-aaron-acme-profiles-01 ─────────────────────────────────────────
+    #[error("invalid profile: {0}")]
+    InvalidProfile(String),
+
     // ── RFC 8739 STAR errors ──────────────────────────────────────────────────
     #[error("auto-renewal has been canceled")]
     AutoRenewalCanceled,
@@ -160,15 +164,14 @@ impl AcmeError {
             AcmeError::ExternalAccountRequired => {
                 "urn:ietf:params:acme:error:externalAccountRequired"
             }
-            AcmeError::AutoRenewalCanceled => {
-                "urn:ietf:params:acme:error:autoRenewalCanceled"
-            }
+            AcmeError::AutoRenewalCanceled => "urn:ietf:params:acme:error:autoRenewalCanceled",
             AcmeError::AutoRenewalCancellationInvalid => {
                 "urn:ietf:params:acme:error:autoRenewalCancellationInvalid"
             }
             AcmeError::AutoRenewalRevocationNotSupported => {
                 "urn:ietf:params:acme:error:autoRenewalRevocationNotSupported"
             }
+            AcmeError::InvalidProfile(_) => "urn:ietf:params:acme:error:invalidProfile",
             _ => "urn:ietf:params:acme:error:serverInternal",
         }
     }
@@ -205,6 +208,7 @@ impl AcmeError {
             AcmeError::AutoRenewalCanceled => StatusCode::FORBIDDEN,
             AcmeError::AutoRenewalCancellationInvalid => StatusCode::BAD_REQUEST,
             AcmeError::AutoRenewalRevocationNotSupported => StatusCode::FORBIDDEN,
+            AcmeError::InvalidProfile(_) => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -329,6 +333,10 @@ mod tests {
         assert_eq!(
             AcmeError::AutoRenewalRevocationNotSupported.acme_type(),
             "urn:ietf:params:acme:error:autoRenewalRevocationNotSupported"
+        );
+        assert_eq!(
+            AcmeError::InvalidProfile("unknown".into()).acme_type(),
+            "urn:ietf:params:acme:error:invalidProfile"
         );
         // Internal/generic errors fall through to serverInternal
         assert_eq!(
@@ -480,6 +488,10 @@ mod tests {
         assert_eq!(
             AcmeError::AutoRenewalRevocationNotSupported.http_status(),
             StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            AcmeError::InvalidProfile("x".into()).http_status(),
+            StatusCode::BAD_REQUEST
         );
     }
 
