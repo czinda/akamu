@@ -39,13 +39,25 @@ pub struct IssuedCert {
 /// Issue an end-entity certificate.
 ///
 /// Parameters:
-/// - `ca_key`       — CA private key (signing).
-/// - `ca_cert_der`  — CA certificate DER (for issuer name + AKI).
-/// - `hash_alg`     — Digest algorithm: `"sha256"`, `"sha384"`, `"sha512"`.
-/// - `validity_days`— Cert validity in days.
-/// - `crl_url`      — Optional CRL distribution point URL.
-/// - `ocsp_url`     — Optional OCSP responder URL.
-/// - `csr`          — Validated CSR output from `ca::csr::validate_csr`.
+/// - `ca_key`              — CA private key (signing).
+/// - `ca_cert_der`         — CA certificate DER (for issuer name + AKI).
+/// - `hash_alg`            — Digest algorithm: `"sha256"`, `"sha384"`, `"sha512"`.
+/// - `validity_days`       — Cert validity in days (used when `not_after_override` is `None`).
+/// - `crl_url`             — Optional CRL distribution point URL.
+/// - `ocsp_url`            — Optional OCSP responder URL.
+/// - `csr`                 — Validated CSR output from `ca::csr::validate_csr`.
+/// - `not_before_override` — Optional Unix timestamp to use as notBefore (RFC 8555 §7.1.3).
+/// - `not_after_override`  — Optional Unix timestamp to use as notAfter (RFC 8555 §7.1.3).
+///
+/// Validity window resolution:
+/// - Both `None`: `now` → `now + validity_days * 86400`.
+/// - Only `not_before_override` set: override → `override + validity_days * 86400`.
+/// - Only `not_after_override` set: `now` → override.
+/// - Both set: override → override.
+///
+/// Clamping: notBefore is clamped to `now - 300` (5-minute grace for clock skew).
+/// A warning is logged if either bound is adjusted.
+#[allow(clippy::too_many_arguments)]
 pub fn issue_certificate(
     ca_key: &synta_certificate::BackendPrivateKey,
     ca_cert_der: &[u8],
@@ -54,6 +66,8 @@ pub fn issue_certificate(
     crl_url: Option<&str>,
     ocsp_url: Option<&str>,
     csr: &ValidatedCsr,
+    not_before_override: Option<i64>,
+    not_after_override: Option<i64>,
 ) -> Result<IssuedCert, AcmeError> {
     // ── Extract CA name and SPKI DER from the CA certificate ─────────────────
     let ca_name_der = extract_ca_subject_der(ca_cert_der)?;
@@ -73,8 +87,43 @@ pub fn issue_certificate(
 
     // ── Compute validity window ───────────────────────────────────────────────
     let now = unix_now();
-    let not_before_unix = now;
-    let not_after_unix = now + validity_days as i64 * 86400;
+
+    // Resolve the raw requested notBefore.
+    let raw_not_before = not_before_override.unwrap_or(now);
+
+    // Clamp notBefore: must not be more than 5 minutes in the past.
+    let earliest_allowed = now - 300;
+    let not_before_unix = if raw_not_before < earliest_allowed {
+        tracing::warn!(
+            "issue_certificate: requested notBefore {} is before now-300 ({}); \
+             clamping to {}",
+            raw_not_before,
+            earliest_allowed,
+            earliest_allowed,
+        );
+        earliest_allowed
+    } else {
+        raw_not_before
+    };
+
+    // Resolve notAfter: explicit override, or computed from the (clamped) notBefore.
+    let raw_not_after =
+        not_after_override.unwrap_or(not_before_unix + validity_days as i64 * 86400);
+
+    // notAfter must be strictly after notBefore.
+    let not_after_unix = if raw_not_after <= not_before_unix {
+        let fallback = not_before_unix + validity_days as i64 * 86400;
+        tracing::warn!(
+            "issue_certificate: requested notAfter {} is not after notBefore {}; \
+             using fallback {}",
+            raw_not_after,
+            not_before_unix,
+            fallback,
+        );
+        fallback
+    } else {
+        raw_not_after
+    };
     let not_before_str = unix_to_generalized_time(not_before_unix);
     let not_after_str = unix_to_generalized_time(not_after_unix);
     let not_before = synta_certificate::parse_time(&not_before_str)
@@ -427,6 +476,8 @@ mod tests {
             None,
             None,
             &validated_csr,
+            None,
+            None,
         )
         .unwrap();
 
@@ -500,6 +551,8 @@ mod tests {
             Some("http://crl.example.com/ca.crl"),
             Some("http://ocsp.example.com"),
             &validated_csr,
+            None,
+            None,
         )
         .unwrap();
 
@@ -530,8 +583,18 @@ mod tests {
 
         let validated = validate_csr(&csr_der, &[("ip", "127.0.0.1")]).unwrap();
 
-        let issued =
-            issue_certificate(&ca_key, &ca_cert_der, "sha256", 90, None, None, &validated).unwrap();
+        let issued = issue_certificate(
+            &ca_key,
+            &ca_cert_der,
+            "sha256",
+            90,
+            None,
+            None,
+            &validated,
+            None,
+            None,
+        )
+        .unwrap();
 
         assert!(!issued.cert_der.is_empty());
         assert!(issued.cert_pem.contains("-----BEGIN CERTIFICATE-----"));
@@ -589,6 +652,8 @@ mod tests {
             None,
             None,
             &validated_csr,
+            None,
+            None,
         );
         let Err(err) = result else {
             panic!("expected Builder error for invalid IP SAN")
@@ -624,10 +689,162 @@ mod tests {
             None,
             None,
             &validated_csr,
+            None,
+            None,
         );
         assert!(
             result.is_ok(),
             "unknown SAN type should be skipped silently"
+        );
+    }
+
+    /// Verify that `not_before_override` is honoured: the issued cert's `not_before`
+    /// field matches the requested timestamp (RFC 8555 §7.1.3).
+    #[test]
+    fn issue_cert_not_before_override_is_used() {
+        let (ca_key, ca_cert_der) = make_test_ca();
+        let (_ee_key, validated_csr) = make_test_csr("nb-override.example.com");
+
+        // Pick a notBefore that is "now" (within the 5-minute grace window).
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let requested_nb = now; // same second — well within the grace window
+
+        let issued = issue_certificate(
+            &ca_key,
+            &ca_cert_der,
+            "sha256",
+            30,
+            None,
+            None,
+            &validated_csr,
+            Some(requested_nb),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            issued.not_before, requested_nb,
+            "issued cert notBefore must equal the requested override"
+        );
+        // notAfter should be notBefore + 30 days (validity_days) when no notAfter override given.
+        assert_eq!(
+            issued.not_after,
+            requested_nb + 30 * 86400,
+            "issued cert notAfter must be notBefore + validity_days * 86400"
+        );
+    }
+
+    /// Verify that both `not_before_override` and `not_after_override` are honoured.
+    #[test]
+    fn issue_cert_both_overrides_are_used() {
+        let (ca_key, ca_cert_der) = make_test_ca();
+        let (_ee_key, validated_csr) = make_test_csr("both-override.example.com");
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let requested_nb = now;
+        let requested_na = now + 7 * 86400; // 7-day window
+
+        let issued = issue_certificate(
+            &ca_key,
+            &ca_cert_der,
+            "sha256",
+            90,
+            None,
+            None,
+            &validated_csr,
+            Some(requested_nb),
+            Some(requested_na),
+        )
+        .unwrap();
+
+        assert_eq!(
+            issued.not_before, requested_nb,
+            "notBefore must match the requested override"
+        );
+        assert_eq!(
+            issued.not_after, requested_na,
+            "notAfter must match the requested override"
+        );
+    }
+
+    /// Verify that a `not_before_override` earlier than `now - 300` is clamped
+    /// and the function still succeeds (with a warning logged).
+    #[test]
+    fn issue_cert_not_before_too_far_past_is_clamped() {
+        let (ca_key, ca_cert_der) = make_test_ca();
+        let (_ee_key, validated_csr) = make_test_csr("clamp-nb.example.com");
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        // Request a notBefore 1 hour in the past — well outside the 5-min grace window.
+        let too_early = now - 3600;
+
+        let issued = issue_certificate(
+            &ca_key,
+            &ca_cert_der,
+            "sha256",
+            90,
+            None,
+            None,
+            &validated_csr,
+            Some(too_early),
+            None,
+        )
+        .unwrap();
+
+        let earliest_allowed = now - 300;
+        // The clamped notBefore must be >= earliest_allowed and <= now.
+        assert!(
+            issued.not_before >= earliest_allowed,
+            "notBefore {} must be >= earliest_allowed {}",
+            issued.not_before,
+            earliest_allowed,
+        );
+        assert!(
+            issued.not_after > issued.not_before,
+            "notAfter must be after notBefore"
+        );
+    }
+
+    /// Verify that a `not_after_override` that is not after `not_before` is replaced
+    /// by the fallback (notBefore + validity_days * 86400).
+    #[test]
+    fn issue_cert_not_after_not_after_not_before_falls_back() {
+        let (ca_key, ca_cert_der) = make_test_ca();
+        let (_ee_key, validated_csr) = make_test_csr("clamp-na.example.com");
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        // notAfter == notBefore → invalid, should fall back.
+        let issued = issue_certificate(
+            &ca_key,
+            &ca_cert_der,
+            "sha256",
+            90,
+            None,
+            None,
+            &validated_csr,
+            Some(now),
+            Some(now), // equal, not strictly after
+        )
+        .unwrap();
+
+        // Fallback: notBefore + 90 days.
+        assert_eq!(
+            issued.not_after,
+            issued.not_before + 90 * 86400,
+            "notAfter must fall back to notBefore + validity_days * 86400 when override is invalid"
         );
     }
 }

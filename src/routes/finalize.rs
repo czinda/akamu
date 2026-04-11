@@ -68,7 +68,8 @@ pub async fn finalize_order(
     // Validate CSR.
     let validated_csr = ca::csr::validate_csr(&csr_der, &allowed)?;
 
-    // Issue certificate.
+    // Issue certificate, honouring any notBefore/notAfter requested in the order
+    // (RFC 8555 §7.1.3).
     let ca = &state.ca;
     let issued = ca::issue::issue_certificate(
         &ca.key,
@@ -78,6 +79,8 @@ pub async fn finalize_order(
         ca.crl_url.as_deref(),
         ca.ocsp_url.as_deref(),
         &validated_csr,
+        order.not_before,
+        order.not_after,
     )?;
 
     let now = unix_now();
