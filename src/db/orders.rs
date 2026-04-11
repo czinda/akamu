@@ -24,6 +24,7 @@ fn row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<OrderRow> {
         star_allow_cert_get: row.get::<_, i64>(16).map(|v| v != 0).unwrap_or(false),
         star_canceled_at: row.get(17)?,
         star_csr_der: row.get(18)?,
+        profile: row.get(19)?,
     })
 }
 
@@ -33,9 +34,9 @@ pub async fn insert(db: &Connection, row: OrderRow) -> Result<(), AcmeError> {
             "INSERT INTO orders (id, account_id, status, expires, identifiers,
              not_before, not_after, error, certificate_id, replaces, created, updated,
              star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs,
-             star_allow_cert_get, star_canceled_at, star_csr_der)
+             star_allow_cert_get, star_canceled_at, star_csr_der, profile)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                     ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                     ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
         )?
         .execute(rusqlite::params![
             row.id,
@@ -57,6 +58,7 @@ pub async fn insert(db: &Connection, row: OrderRow) -> Result<(), AcmeError> {
             row.star_allow_cert_get as i64,
             row.star_canceled_at,
             row.star_csr_der,
+            row.profile,
         ])?;
         Ok(())
     })
@@ -68,10 +70,8 @@ pub async fn insert(db: &Connection, row: OrderRow) -> Result<(), AcmeError> {
 pub async fn cancel_star(db: &Connection, id: &str, now: i64) -> Result<(), AcmeError> {
     let id = id.to_string();
     db.call(move |conn| {
-        conn.prepare_cached(
-            "UPDATE orders SET star_canceled_at = ?1, updated = ?2 WHERE id = ?3",
-        )?
-        .execute(rusqlite::params![now, now, id])?;
+        conn.prepare_cached("UPDATE orders SET star_canceled_at = ?1, updated = ?2 WHERE id = ?3")?
+            .execute(rusqlite::params![now, now, id])?;
         Ok(())
     })
     .await
@@ -85,7 +85,7 @@ pub async fn list_active_star(db: &Connection) -> Result<Vec<OrderRow>, AcmeErro
             "SELECT id, account_id, status, expires, identifiers,
              not_before, not_after, error, certificate_id, replaces, created, updated,
              star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs,
-             star_allow_cert_get, star_canceled_at, star_csr_der
+             star_allow_cert_get, star_canceled_at, star_csr_der, profile
              FROM orders
              WHERE star_end_date IS NOT NULL AND star_canceled_at IS NULL AND status = 'valid'",
         )?;
@@ -117,7 +117,7 @@ pub async fn get_by_id(db: &Connection, id: &str) -> Result<Option<OrderRow>, Ac
             "SELECT id, account_id, status, expires, identifiers,
              not_before, not_after, error, certificate_id, replaces, created, updated,
              star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs,
-             star_allow_cert_get, star_canceled_at, star_csr_der
+             star_allow_cert_get, star_canceled_at, star_csr_der, profile
              FROM orders WHERE id = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![id])?;
@@ -184,7 +184,7 @@ pub async fn get_with_authz_ids(
                 "SELECT id, account_id, status, expires, identifiers,
                  not_before, not_after, error, certificate_id, replaces, created, updated,
                  star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs,
-                 star_allow_cert_get, star_canceled_at, star_csr_der
+                 star_allow_cert_get, star_canceled_at, star_csr_der, profile
                  FROM orders WHERE id = ?1",
             )?;
             let mut rows = stmt.query(rusqlite::params![id])?;
@@ -272,6 +272,7 @@ mod tests {
             star_allow_cert_get: false,
             star_canceled_at: None,
             star_csr_der: None,
+            profile: None,
         }
     }
 

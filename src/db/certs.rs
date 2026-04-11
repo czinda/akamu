@@ -296,6 +296,7 @@ mod tests {
             star_allow_cert_get: false,
             star_canceled_at: None,
             star_csr_der: None,
+            profile: None,
         };
         crate::db::orders::insert(db, order).await.unwrap();
     }

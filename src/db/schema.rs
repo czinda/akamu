@@ -34,6 +34,8 @@ pub struct OrderRow {
     pub star_allow_cert_get: bool,
     pub star_canceled_at: Option<i64>,
     pub star_csr_der: Option<Vec<u8>>, // stored CSR DER for reissuance
+    // draft-aaron-acme-profiles-01
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Clone)]
