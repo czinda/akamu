@@ -23,6 +23,8 @@ use super::{acme_headers, json_response, parse_jws, require_payload, unix_now};
 struct NewAccountPayload {
     contact: Option<Vec<String>>,
     #[serde(default)]
+    terms_of_service_agreed: Option<bool>,
+    #[serde(default)]
     only_return_existing: bool,
     external_account_binding: Option<serde_json::Value>,
 }
@@ -73,6 +75,25 @@ pub async fn new_account(
         resp.headers_mut()
             .extend(acme_headers(&state, &ctx.next_nonce));
         return Ok(resp);
+    }
+
+    // ── Terms of Service (RFC 8555 §7.3.3) ───────────────────────────────────
+    // Enforce ToS agreement only for new account creation; existing accounts
+    // that predate a ToS update are handled by the lookup path above.
+    if let Some(tos_url) = &state.config.server.terms_of_service_url {
+        if payload.terms_of_service_agreed != Some(true) {
+            let mut resp =
+                AcmeError::UserActionRequired("you must agree to the terms of service".into())
+                    .into_response();
+            resp.headers_mut()
+                .extend(acme_headers(&state, &ctx.next_nonce));
+            resp.headers_mut().append(
+                axum::http::header::LINK,
+                HeaderValue::from_str(&format!("<{tos_url}>; rel=\"terms-of-service\""))
+                    .unwrap_or_else(|_| HeaderValue::from_static("")),
+            );
+            return Ok(resp);
+        }
     }
 
     // Validate contacts.
@@ -326,6 +347,24 @@ mod tests {
         let json = Some("not-json".to_string());
         let result = parse_contacts(&json);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn new_account_payload_tos_field() {
+        // Absent → None (not agreed)
+        let absent: NewAccountPayload =
+            serde_json::from_str(r#"{"contact":["mailto:a@b.com"]}"#).unwrap();
+        assert_eq!(absent.terms_of_service_agreed, None);
+
+        // Explicit true → Some(true)
+        let agreed: NewAccountPayload =
+            serde_json::from_str(r#"{"termsOfServiceAgreed":true}"#).unwrap();
+        assert_eq!(agreed.terms_of_service_agreed, Some(true));
+
+        // Explicit false → Some(false)
+        let refused: NewAccountPayload =
+            serde_json::from_str(r#"{"termsOfServiceAgreed":false}"#).unwrap();
+        assert_eq!(refused.terms_of_service_agreed, Some(false));
     }
 
     /// Verifies that `NewAccountPayload` deserialises `externalAccountBinding`
