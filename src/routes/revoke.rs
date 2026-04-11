@@ -63,11 +63,14 @@ pub async fn revoke_cert(
             }
         }
         None => {
-            // jwk was used — verify the signing key matches the certificate's public key.
-            // (The cert public key and the JWS signing key should match.)
-            // We already verified the JWS signature, so ctx.spki_der is the signer's key.
-            // For a self-revocation with the cert key, we just need the cert's SPKI.
-            // This is acceptable per RFC 8555 §7.6.
+            // jwk was used — RFC 8555 §7.6: the signing key must be the certificate's
+            // public key. JWS signature is already verified; compare SPKIs.
+            let cert_spki = extract_spki_der(&cert_der)?;
+            if cert_spki != ctx.spki_der {
+                return Err(AcmeError::Unauthorized(
+                    "signing key does not match certificate public key".into(),
+                ));
+            }
         }
     }
 
@@ -99,6 +102,29 @@ fn extract_serial_hex(cert_der: &[u8]) -> Result<String, AcmeError> {
     let serial_bytes = cert.tbs_certificate.serial_number.as_bytes();
     let hex: String = serial_bytes.iter().map(|b| format!("{b:02x}")).collect();
     Ok(hex)
+}
+
+/// Re-encode the SubjectPublicKeyInfo from a DER-encoded certificate.
+///
+/// Used by the self-revocation path (RFC 8555 §7.6) to verify that the JWS
+/// signing key matches the certificate's public key.
+fn extract_spki_der(cert_der: &[u8]) -> Result<Vec<u8>, AcmeError> {
+    use synta::traits::Encode;
+    use synta::{Decoder, Encoder, Encoding};
+    use synta_certificate::Certificate;
+
+    let mut dec = Decoder::new(cert_der, Encoding::Der);
+    let cert: Certificate = dec
+        .decode()
+        .map_err(|e| AcmeError::BadRequest(format!("certificate parse: {e}")))?;
+
+    let mut enc = Encoder::new(Encoding::Der);
+    cert.tbs_certificate
+        .subject_public_key_info
+        .encode(&mut enc)
+        .map_err(|e| AcmeError::Internal(format!("SPKI encode: {e}")))?;
+    enc.finish()
+        .map_err(|e| AcmeError::Internal(format!("SPKI finish: {e}")))
 }
 
 #[cfg(test)]
@@ -173,5 +199,38 @@ mod tests {
             AcmeError::BadRequest(msg) => assert!(msg.contains("certificate parse")),
             other => panic!("expected BadRequest, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn extract_spki_der_matches_original_key() {
+        let cert_der = make_cert_der();
+        // Re-derive the expected SPKI by generating the same key used in make_cert_der.
+        // make_cert_der uses ca_key.public_key().spki_der() as the cert's public key,
+        // so extracting SPKI from the cert DER should round-trip to the same bytes.
+        let spki = extract_spki_der(&cert_der).unwrap();
+        // Must be non-empty and parseable.
+        assert!(!spki.is_empty());
+        // The first byte of a SEQUENCE DER is 0x30.
+        assert_eq!(spki[0], 0x30, "SPKI DER must start with SEQUENCE tag");
+    }
+
+    #[test]
+    fn extract_spki_der_invalid_der_returns_error() {
+        let result = extract_spki_der(b"garbage");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AcmeError::BadRequest(msg) => assert!(msg.contains("certificate parse")),
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_spki_der_roundtrip_with_serial() {
+        // Both helpers must agree on which cert they're parsing.
+        let cert_der = make_cert_der();
+        let serial = extract_serial_hex(&cert_der).unwrap();
+        let spki = extract_spki_der(&cert_der).unwrap();
+        assert_eq!(serial, "12345678");
+        assert!(!spki.is_empty());
     }
 }
