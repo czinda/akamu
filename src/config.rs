@@ -97,6 +97,9 @@ pub struct ServerConfig {
     /// When absent the system default resolver is used.
     /// Useful for testing and for split-horizon DNS deployments.
     pub dns_resolver_addr: Option<String>,
+    /// Retry-After interval in seconds for `GET /acme/renewal-info` responses (RFC 9773 §4.3).
+    #[serde(default = "default_ari_retry_after_secs")]
+    pub ari_retry_after_secs: u64,
 }
 
 /// Server-side TLS configuration.  Absent or `enabled = false` → plain HTTP (no change).
@@ -195,6 +198,10 @@ fn default_ca_validity_years() -> u32 {
 
 fn default_http_validation_port() -> u16 {
     80
+}
+
+fn default_ari_retry_after_secs() -> u64 {
+    21600 // 6 hours
 }
 
 fn default_order_expiry_secs() -> u64 {
@@ -298,6 +305,7 @@ enabled = false
         assert!(cfg.server.terms_of_service_url.is_none());
         assert!(cfg.server.website_url.is_none());
         assert!(cfg.server.dns_persist_issuer_domain.is_none());
+        assert_eq!(cfg.server.ari_retry_after_secs, 21600);
     }
 
     #[test]
@@ -393,6 +401,22 @@ max_body_bytes = 131072
         assert_eq!(cfg.server.order_expiry_secs, 3600);
         assert_eq!(cfg.server.authz_expiry_secs, 7200);
         assert_eq!(cfg.server.max_body_bytes, 131072);
+    }
+
+    #[test]
+    fn ari_retry_after_secs_explicit_and_default() {
+        let toml_explicit = format!(
+            "{}\n[server]\nari_retry_after_secs = 3600\n",
+            minimal_toml()
+        );
+        let cfg: Config = toml::from_str(&toml_explicit).unwrap();
+        assert_eq!(cfg.server.ari_retry_after_secs, 3600);
+
+        // Default when [server] section is present but field is absent.
+        // (When the section is completely absent, Rust's Default impl is used instead.)
+        let toml_section_only = format!("{}\n[server]\n", minimal_toml());
+        let cfg_default: Config = toml::from_str(&toml_section_only).unwrap();
+        assert_eq!(cfg_default.server.ari_retry_after_secs, 21600);
     }
 
     #[test]
