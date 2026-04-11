@@ -25,6 +25,8 @@ struct Identifier {
 #[derive(Deserialize)]
 struct NewOrderPayload {
     identifiers: Vec<Identifier>,
+    #[serde(default)]
+    replaces: Option<String>,
 }
 
 pub async fn new_order(
@@ -54,6 +56,24 @@ pub async fn new_order(
             other => return Err(AcmeError::UnsupportedIdentifier(other.into())),
         }
     }
+
+    // Validate the optional `replaces` cert_id (RFC 9773 §5).
+    let validated_replaces: Option<String> = if let Some(ref cert_id) = payload.replaces {
+        let pred = db::certs::get_by_cert_id(&state.db, cert_id)
+            .await?
+            .ok_or(AcmeError::NotFound)?;
+        if pred.account_id != account_id {
+            return Err(AcmeError::Unauthorized(
+                "replaces certificate belongs to different account".into(),
+            ));
+        }
+        if pred.replaced_by.is_some() {
+            return Err(AcmeError::CertAlreadyReplaced);
+        }
+        Some(cert_id.clone())
+    } else {
+        None
+    };
 
     let now = unix_now();
     let expiry = now + state.config.server.order_expiry_secs as i64;
@@ -119,6 +139,8 @@ pub async fn new_order(
     {
         let order_id_clone = order_id.clone();
         let account_id_clone = account_id.clone();
+        let replaces_clone = validated_replaces.clone();
+        let identifiers_json_clone = identifiers_json.clone();
         state
             .db
             .call(move |conn| {
@@ -126,14 +148,15 @@ pub async fn new_order(
                 tx.prepare_cached(
                     "INSERT INTO orders
                      (id, account_id, status, expires, identifiers,
-                      not_before, not_after, error, certificate_id, created, updated)
-                     VALUES (?1, ?2, 'pending', ?3, ?4, NULL, NULL, NULL, NULL, ?5, ?5)",
+                      not_before, not_after, error, certificate_id, replaces, created, updated)
+                     VALUES (?1, ?2, 'pending', ?3, ?4, NULL, NULL, NULL, NULL, ?5, ?6, ?6)",
                 )?
                 .execute(rusqlite::params![
                     order_id_clone,
                     account_id_clone,
                     expiry,
-                    identifiers_json,
+                    identifiers_json_clone,
+                    replaces_clone,
                     now
                 ])?;
                 for plan in &authz_plans {
@@ -176,17 +199,27 @@ pub async fn new_order(
     }
 
     let base = &state.config.base_url;
-    let order_json = json!({
-        "status": "pending",
-        "expires": fmt_time(expiry),
-        "identifiers": payload.identifiers.iter().map(|id| {
-            json!({"type": id.r#type, "value": id.value})
-        }).collect::<Vec<_>>(),
-        "authorizations": authz_urls,
-        "finalize": format!("{base}/acme/order/{order_id}/finalize"),
-    });
-
-    let mut resp = json_response(&state, StatusCode::CREATED, order_json, &ctx.next_nonce)?;
+    // Build a temporary OrderRow so we can reuse order_json() and get replaces for free.
+    let new_order_row = OrderRow {
+        id: order_id.clone(),
+        account_id: account_id.clone(),
+        status: "pending".to_string(),
+        expires: Some(expiry),
+        identifiers: identifiers_json.clone(),
+        not_before: None,
+        not_after: None,
+        error: None,
+        certificate_id: None,
+        replaces: validated_replaces,
+        created: now,
+        updated: now,
+    };
+    let mut resp = json_response(
+        &state,
+        StatusCode::CREATED,
+        order_json(&new_order_row, &authz_urls, base),
+        &ctx.next_nonce,
+    )?;
     resp.headers_mut().insert(
         axum::http::header::LOCATION,
         format!("{base}/acme/order/{order_id}").parse().unwrap(),
@@ -248,6 +281,8 @@ pub(crate) struct OrderJson<'a> {
     certificate: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<Box<serde_json::value::RawValue>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replaces: Option<&'a str>,
 }
 
 pub(crate) fn order_json<'a>(
@@ -279,6 +314,7 @@ pub(crate) fn order_json<'a>(
             None
         },
         error,
+        replaces: order.replaces.as_deref(),
     }
 }
 
@@ -310,6 +346,7 @@ mod tests {
             not_after: None,
             error: error.map(|s| s.to_string()),
             certificate_id: cert_id.map(|s| s.to_string()),
+            replaces: None,
             created: 1_700_000_000,
             updated: 1_700_000_000,
         }
@@ -372,6 +409,21 @@ mod tests {
         let json = to_val(order_json(&order, &[], "https://acme.test"));
         // either missing or null
         assert!(json.get("certificate").map_or(true, |v| v.is_null()));
+    }
+
+    #[test]
+    fn order_json_with_replaces_includes_field() {
+        let mut order = make_order("pending", None, None, None);
+        order.replaces = Some("akiABC.serialXYZ".to_string());
+        let json = to_val(order_json(&order, &[], "https://acme.test"));
+        assert_eq!(json["replaces"], "akiABC.serialXYZ");
+    }
+
+    #[test]
+    fn order_json_without_replaces_omits_field() {
+        let order = make_order("pending", None, None, None);
+        let json = to_val(order_json(&order, &[], "https://acme.test"));
+        assert!(json.get("replaces").map_or(true, |v| v.is_null()));
     }
 
     #[test]
