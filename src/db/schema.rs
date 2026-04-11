@@ -23,6 +23,7 @@ pub struct OrderRow {
     pub not_after: Option<i64>,
     pub error: Option<String>,
     pub certificate_id: Option<String>,
+    pub replaces: Option<String>, // RFC 9773 ARI cert_id of predecessor
     pub created: i64,
     pub updated: i64,
 }
@@ -70,4 +71,5 @@ pub struct CertificateRow {
     pub created: i64,
     pub suggested_window_start: Option<i64>,
     pub suggested_window_end: Option<i64>,
+    pub replaced_by: Option<String>, // RFC 9773: order_id that replaced this cert
 }
