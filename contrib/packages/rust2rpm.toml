@@ -1,0 +1,58 @@
+[package]
+# FIXME: Replace this placeholder with the actual forge release URL before
+# submitting to Fedora.  Expected form:
+#   https://<forge>/<org>/akamu/archive/v{version}.tar.gz
+url = "https://PLACEHOLDER.example.com/akamu/archive/v{version}.tar.gz"
+
+summary = "ACME server with post-quantum certificate support"
+
+description = """
+akamu is an ACME (RFC 8555) certificate authority server that supports
+post-quantum cryptography via an ML-DSA/PQC-capable OpenSSL fork.  It
+implements the full ACME protocol including http-01, dns-01, and tls-alpn-01
+challenge types, and supports Merkle Tree Certificates (MTC) for
+compressed certificate delivery.
+"""
+
+license = "GPL-3.0-or-later"
+
+# This crate has both src/lib.rs and src/main.rs.  The library is only used
+# internally by the binary; install the binary only.
+cargo-install-bin = true
+cargo-install-lib = false
+
+[requires]
+build = [
+    "openssl-devel",
+    "sqlite-devel",
+    "clang-devel",
+]
+
+[tests]
+comments = [
+    "Vendoring is required because [patch.crates-io] in Cargo.toml overrides",
+    "openssl and openssl-sys with a git fork (pqc-prs branch from",
+    "https://github.com/abbra/rust-openssl.git) for ML-DSA/ML-KEM/PQC",
+    "support.  This fork is not published to crates.io.",
+    "A vendor tarball (Source1) must be generated with 'cargo vendor' and",
+    "added alongside the forge source tarball before submission.",
+    "",
+    "Rebuild this package whenever openssl-devel is updated in Fedora.",
+    "The project uses an OpenSSL fork (pqc-prs) for ML-DSA/PQ support;",
+    "verify compatibility when the system OpenSSL major version changes.",
+    "",
+    "PREREQUISITE: the synta* path-dependencies are not part of this package",
+    "and must be installed into the mock chroot before this SRPM can build:",
+    "  rust-synta-devel, rust-synta-certificate-devel,",
+    "  rust-synta-x509-verification-devel, rust-synta-mtc-devel",
+    "Run 'mock --install' for each of those packages in dependency order",
+    "before running 'mock --rebuild' on this SRPM.",
+    "",
+    "NOTE: tokio-rusqlite and rusqlite_migration are not yet packaged in",
+    "Fedora (as of 2026-04-11) and are included in the vendor tarball.",
+    "File separate Fedora review requests for those crates.",
+    "",
+    "NOTE: axum-server 0.8 is required but only 0.7.3 is available in",
+    "Fedora (as of 2026-04-11).  axum-server 0.8 is also in the vendor",
+    "tarball.  A Fedora package update or new review may be needed.",
+]
