@@ -82,6 +82,16 @@ pub async fn finalize_order(
 
     let now = unix_now();
 
+    // If this order carries a `replaces` cert_id, resolve the predecessor UUID
+    // before entering the DB transaction (we need an async call for this).
+    let pred_cert_uuid: Option<String> = if let Some(ref cid) = order.replaces {
+        db::certs::get_by_cert_id(&state.db, cid)
+            .await?
+            .map(|c| c.id)
+    } else {
+        None
+    };
+
     // Persist the certificate, update the order, and fetch authz IDs atomically
     // in a single db.call so that (a) a crash between the two writes cannot leave
     // the DB inconsistent, and (b) we avoid two extra channel round-trips that
@@ -103,9 +113,10 @@ pub async fn finalize_order(
                 "INSERT INTO certificates
                  (id, order_id, account_id, serial_number, status, der, pem,
                   not_before, not_after, revoked_at, revocation_reason,
-                  mtc_log_index, created, suggested_window_start, suggested_window_end)
+                  mtc_log_index, created, suggested_window_start, suggested_window_end,
+                  replaced_by)
                  VALUES (?1, ?2, ?3, ?4, 'valid', ?5, ?6, ?7, ?8,
-                         NULL, NULL, NULL, ?9, NULL, NULL)",
+                         NULL, NULL, NULL, ?9, NULL, NULL, NULL)",
             )?
             .execute(rusqlite::params![
                 cert_id,
@@ -123,6 +134,14 @@ pub async fn finalize_order(
                  WHERE id = ?3",
             )?
             .execute(rusqlite::params![cert_id, now, order_id_clone])?;
+            // Mark predecessor certificate as replaced (RFC 9773 §5).
+            if let Some(ref pred_uuid) = pred_cert_uuid {
+                tx.prepare_cached(
+                    "UPDATE certificates SET replaced_by = ?1 \
+                     WHERE id = ?2 AND replaced_by IS NULL",
+                )?
+                .execute(rusqlite::params![order_id_clone, pred_uuid])?;
+            }
             // Fetch authz IDs within the same db.call to avoid a separate round-trip.
             // drop(stmt) before tx.commit() so the borrow of tx is released.
             let mut stmt =
