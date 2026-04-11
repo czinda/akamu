@@ -6,6 +6,7 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::Response;
+use serde::Serialize;
 use serde_json::json;
 
 use crate::db;
@@ -116,32 +117,53 @@ pub async fn respond_challenge(
     challenge_response(&state, &updated, &ctx.next_nonce)
 }
 
+/// Typed challenge response body — borrows `&str` fields from `ChallengeRow`
+/// to avoid intermediate `serde_json::Value` (HashMap) allocation.
+#[derive(Serialize)]
+struct ChallengeJson<'a> {
+    r#type: &'a str,
+    url: String,
+    status: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token: Option<&'a str>,
+    #[serde(
+        rename = "issuer-domain-names",
+        skip_serializing_if = "Option::is_none"
+    )]
+    issuer_domain_names: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    validated: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<Box<serde_json::value::RawValue>>,
+}
+
 fn challenge_response(
     state: &AppState,
     challenge: &crate::db::schema::ChallengeRow,
     nonce: &str,
 ) -> Result<Response, AcmeError> {
     let base = &state.config.base_url;
-    let mut obj = json!({
-        "type": challenge.r#type,
-        "url": format!("{base}/acme/chall/{}/{}", challenge.authz_id, challenge.r#type),
-        "status": challenge.status,
-    });
-    // dns-persist-01 has no per-challenge token; instead the client is told
-    // which issuer domain(s) the CA will match against the TXT record.
-    if challenge.r#type == "dns-persist-01" {
+    // dns-persist-01 has no per-challenge token; instead expose the issuer domain.
+    let (token, issuer_domain_names) = if challenge.r#type == "dns-persist-01" {
         let issuer_domain = state.config.dns_persist_issuer_domain();
-        obj["issuer-domain-names"] = json!([issuer_domain]);
+        (None, Some(vec![issuer_domain.to_string()]))
     } else {
-        obj["token"] = json!(challenge.token);
-    }
-    if let Some(v) = challenge.validated {
-        obj["validated"] = json!(fmt_time(v));
-    }
-    if let Some(err) = &challenge.error {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(err) {
-            obj["error"] = v;
-        }
-    }
-    json_response(state, StatusCode::OK, obj, nonce)
+        (Some(challenge.token.as_str()), None)
+    };
+    let body = ChallengeJson {
+        r#type: &challenge.r#type,
+        url: format!(
+            "{base}/acme/chall/{}/{}",
+            challenge.authz_id, challenge.r#type
+        ),
+        status: &challenge.status,
+        token,
+        issuer_domain_names,
+        validated: challenge.validated.map(fmt_time),
+        error: challenge
+            .error
+            .as_deref()
+            .and_then(|s| serde_json::value::RawValue::from_string(s.to_string()).ok()),
+    };
+    json_response(state, StatusCode::OK, body, nonce)
 }

@@ -718,8 +718,10 @@ async fn start_server(args: &Args) -> BenchServer {
             ))
             .expect("base_url produces a valid Link header value"),
         ),
-        validation_client: hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
-            .build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
+        validation_client: hyper_util::client::legacy::Client::builder(
+            hyper_util::rt::TokioExecutor::new(),
+        )
+        .build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
     });
 
     let router = routes::build_router(state);
@@ -931,13 +933,17 @@ async fn respond_and_poll(
         return Err(format!("challenge respond {status}: {body}"));
     }
     // Thread the nonce from the challenge response into the poll loop.
-    let mut cur_nonce = nonce_hdr(&headers)
-        .unwrap_or_else(|_| String::new());
+    let mut cur_nonce = nonce_hdr(&headers).unwrap_or_else(|_| String::new());
 
     let order_path = order_url.trim_start_matches(&server.base_url);
     let deadline = Instant::now() + std::time::Duration::from_secs(30);
+    // Adaptive backoff: start at 1 ms, double each miss, cap at poll_ms.
+    // Real-world ACME clients use exponential backoff; on loopback http-01
+    // validation completes in ~1-3 ms so the first or second poll usually wins.
+    let mut next_sleep_ms: u64 = 1;
     loop {
-        tokio::time::sleep(std::time::Duration::from_millis(poll_ms)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(next_sleep_ms)).await;
+        next_sleep_ms = (next_sleep_ms * 2).min(poll_ms);
         if Instant::now() > deadline {
             return Err("timed out waiting for order ready".to_string());
         }
@@ -947,7 +953,9 @@ async fn respond_and_poll(
         } else {
             std::mem::take(&mut cur_nonce)
         };
-        let jws = worker.key.jws_kid(account_url, &poll_nonce, order_url, None);
+        let jws = worker
+            .key
+            .jws_kid(account_url, &poll_nonce, order_url, None);
         let (_, body, headers) =
             http_post_jws(client, &format!("{}{order_path}", server.base_url), &jws).await?;
         cur_nonce = nonce_hdr(&headers).unwrap_or_default();
@@ -1014,7 +1022,9 @@ async fn finalize_and_poll(
         } else {
             fetch_nonce(client, &nonce_url).await?
         };
-        let jws = worker.key.jws_kid(account_url, &poll_nonce, order_url, None);
+        let jws = worker
+            .key
+            .jws_kid(account_url, &poll_nonce, order_url, None);
         let (_, body, headers) =
             http_post_jws(client, &format!("{}{order_path}", server.base_url), &jws).await?;
         cur_nonce = nonce_hdr(&headers).ok();
