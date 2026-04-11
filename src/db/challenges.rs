@@ -160,6 +160,7 @@ mod tests {
                 not_after: None,
                 error: None,
                 certificate_id: None,
+                replaces: None,
                 created: 1_700_000_000,
                 updated: 1_700_000_000,
             },
