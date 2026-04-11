@@ -777,6 +777,10 @@ struct WorkerState {
     account_url: Option<String>,
     /// Domain identifier used in all orders from this worker.
     domain: String,
+    /// Nonce carried over from the previous issuance's last response.
+    /// Each POST response includes Replay-Nonce; threading it eliminates the
+    /// HEAD /new-nonce round-trip at the start of every subsequent issuance.
+    last_nonce: Option<String>,
 }
 
 impl WorkerState {
@@ -798,6 +802,7 @@ impl WorkerState {
             key: AccountKey::generate(),
             account_url: None,
             domain,
+            last_nonce: None,
         }
     }
 }
@@ -809,11 +814,13 @@ async fn fetch_nonce(client: &HyperClient, new_nonce_url: &str) -> Result<String
     nonce_hdr(&headers)
 }
 
+/// Create a new ACME account. Returns (account_url, next_nonce) so the caller
+/// can chain the nonce directly into the following new-order request.
 async fn create_account(
     worker: &WorkerState,
     server: &BenchServer,
     client: &HyperClient,
-) -> Result<String, String> {
+) -> Result<(String, String), String> {
     let nonce_url = format!("{}/acme/new-nonce", server.base_url);
     let acct_url = format!("{}/acme/new-account", server.base_url);
     let nonce = fetch_nonce(client, &nonce_url).await?;
@@ -826,27 +833,32 @@ async fn create_account(
     if status != 201 {
         return Err(format!("new-account {status}: {body}"));
     }
-    location_hdr(&headers)
+    let account_url = location_hdr(&headers)?;
+    let next_nonce = nonce_hdr(&headers)?;
+    Ok((account_url, next_nonce))
 }
 
+/// POST new-order using the supplied nonce (no HEAD needed). Returns
+/// (order_url, authz_url, finalize_url, next_nonce) so the nonce can be
+/// chained to the following get-authz request.
 async fn new_order(
     worker: &WorkerState,
     server: &BenchServer,
     client: &HyperClient,
     account_url: &str,
-) -> Result<(String, String, String), String> {
-    let nonce_url = format!("{}/acme/new-nonce", server.base_url);
+    nonce: &str,
+) -> Result<(String, String, String, String), String> {
     let order_url = format!("{}/acme/new-order", server.base_url);
-    let nonce = fetch_nonce(client, &nonce_url).await?;
     let payload = json!({"identifiers": [{"type": "dns", "value": worker.domain}]});
     let jws = worker
         .key
-        .jws_kid(account_url, &nonce, &order_url, Some(payload));
+        .jws_kid(account_url, nonce, &order_url, Some(payload));
     let (status, body, headers) = http_post_jws(client, &order_url, &jws).await?;
     if status != 201 {
         return Err(format!("new-order {status}: {body}"));
     }
     let loc = location_hdr(&headers)?;
+    let next_nonce = nonce_hdr(&headers)?;
     let authz_url = body["authorizations"][0]
         .as_str()
         .ok_or("missing authorizations[0]")?
@@ -855,10 +867,11 @@ async fn new_order(
         .as_str()
         .ok_or("missing finalize URL")?
         .to_string();
-    Ok((loc, authz_url, fin_url))
+    Ok((loc, authz_url, fin_url, next_nonce))
 }
 
-/// POST-as-GET the authz, return (challenge_url, token_or_none).
+/// POST-as-GET the authz using the supplied nonce (no HEAD needed). Returns
+/// (challenge_url, token_or_none, next_nonce).
 async fn get_authz(
     worker: &WorkerState,
     server: &BenchServer,
@@ -866,17 +879,17 @@ async fn get_authz(
     account_url: &str,
     authz_url: &str,
     challenge_type: &str,
-) -> Result<(String, Option<String>), String> {
-    let nonce_url = format!("{}/acme/new-nonce", server.base_url);
-    let nonce = fetch_nonce(client, &nonce_url).await?;
+    nonce: &str,
+) -> Result<(String, Option<String>, String), String> {
     // authz_url is a full URL; the server expects the full URL in the JWS header.
     let path = authz_url.trim_start_matches(&server.base_url);
-    let jws = worker.key.jws_kid(account_url, &nonce, authz_url, None);
-    let (status, body, _) =
+    let jws = worker.key.jws_kid(account_url, nonce, authz_url, None);
+    let (status, body, headers) =
         http_post_jws(client, &format!("{}{path}", server.base_url), &jws).await?;
     if status != 200 {
         return Err(format!("authz {status}: {body}"));
     }
+    let next_nonce = nonce_hdr(&headers)?;
     let challenges = body["challenges"].as_array().ok_or("no challenges")?;
     let chall = challenges
         .iter()
@@ -884,10 +897,13 @@ async fn get_authz(
         .ok_or_else(|| format!("no {challenge_type} challenge"))?;
     let chall_url = chall["url"].as_str().ok_or("no challenge url")?.to_string();
     let token = chall["token"].as_str().map(|s| s.to_string());
-    Ok((chall_url, token))
+    Ok((chall_url, token, next_nonce))
 }
 
-/// POST the challenge response, then poll the order until `ready` or terminal.
+/// POST the challenge response (using the supplied nonce, no HEAD needed), then
+/// poll the order until `ready` or terminal, threading the nonce from each
+/// response to the next poll. Returns the nonce from the last poll response so
+/// the caller can chain it into the finalize request.
 async fn respond_and_poll(
     worker: &WorkerState,
     server: &BenchServer,
@@ -895,18 +911,21 @@ async fn respond_and_poll(
     account_url: &str,
     chall_url: &str,
     order_url: &str,
-) -> Result<(), String> {
+    nonce: &str,
+) -> Result<String, String> {
     let nonce_url = format!("{}/acme/new-nonce", server.base_url);
-    let nonce = fetch_nonce(client, &nonce_url).await?;
     let chall_path = chall_url.trim_start_matches(&server.base_url);
     let jws = worker
         .key
-        .jws_kid(account_url, &nonce, chall_url, Some(json!({})));
-    let (status, body, _) =
+        .jws_kid(account_url, nonce, chall_url, Some(json!({})));
+    let (status, body, headers) =
         http_post_jws(client, &format!("{}{chall_path}", server.base_url), &jws).await?;
     if status != 200 {
         return Err(format!("challenge respond {status}: {body}"));
     }
+    // Thread the nonce from the challenge response into the poll loop.
+    let mut cur_nonce = nonce_hdr(&headers)
+        .unwrap_or_else(|_| String::new());
 
     let order_path = order_url.trim_start_matches(&server.base_url);
     let deadline = Instant::now() + std::time::Duration::from_secs(30);
@@ -915,19 +934,28 @@ async fn respond_and_poll(
         if Instant::now() > deadline {
             return Err("timed out waiting for order ready".to_string());
         }
-        let nonce = fetch_nonce(client, &nonce_url).await?;
-        let jws = worker.key.jws_kid(account_url, &nonce, order_url, None);
-        let (_, body, _) =
+        // Use the nonce from the previous response; fall back to HEAD only if lost.
+        let poll_nonce = if cur_nonce.is_empty() {
+            fetch_nonce(client, &nonce_url).await?
+        } else {
+            std::mem::take(&mut cur_nonce)
+        };
+        let jws = worker.key.jws_kid(account_url, &poll_nonce, order_url, None);
+        let (_, body, headers) =
             http_post_jws(client, &format!("{}{order_path}", server.base_url), &jws).await?;
+        cur_nonce = nonce_hdr(&headers).unwrap_or_default();
         match body["status"].as_str() {
-            Some("ready") | Some("valid") => return Ok(()),
+            Some("ready") | Some("valid") => return Ok(cur_nonce),
             Some("invalid") => return Err(format!("order invalid: {}", body["error"])),
             _ => continue,
         }
     }
 }
 
-/// Finalize the order with a CSR and poll until `valid`.  Returns the cert URL.
+/// Finalize the order with a CSR using the supplied nonce (no HEAD needed).
+/// Returns (cert_url, next_nonce). The nonce is taken from the finalize response
+/// and can be stored for the next issuance. The poll loop is only a fallback —
+/// this server returns status="valid" synchronously in the finalize response.
 async fn finalize_and_poll(
     worker: &WorkerState,
     server: &BenchServer,
@@ -936,34 +964,37 @@ async fn finalize_and_poll(
     order_url: &str,
     finalize_url: &str,
     key_type: &str,
-) -> Result<String, String> {
+    nonce: &str,
+) -> Result<(String, Option<String>), String> {
     let nonce_url = format!("{}/acme/new-nonce", server.base_url);
     let csr_der = make_csr(&worker.domain, key_type)?;
     let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
-    let nonce = fetch_nonce(client, &nonce_url).await?;
     let fin_path = finalize_url.trim_start_matches(&server.base_url);
     let jws = worker.key.jws_kid(
         account_url,
-        &nonce,
+        nonce,
         finalize_url,
         Some(json!({"csr": csr_b64})),
     );
-    let (status, body, _) =
+    let (status, body, headers) =
         http_post_jws(client, &format!("{}{fin_path}", server.base_url), &jws).await?;
     if status != 200 {
         return Err(format!("finalize {status}: {body}"));
     }
+    let next_nonce = nonce_hdr(&headers).ok();
     // RFC 8555 §7.4: the finalize response IS the order object. If the server
     // has already moved the order to "valid" synchronously, skip the poll loop
     // entirely — no sleep needed. This server finalizes certificates in-line so
     // "valid" is always present here; the loop below only fires as a fallback.
     if body["status"].as_str() == Some("valid") {
-        return body["certificate"]
+        let cert_url = body["certificate"]
             .as_str()
-            .ok_or_else(|| "no certificate URL in finalize response".to_string())
-            .map(|s| s.to_string());
+            .ok_or_else(|| "no certificate URL in finalize response".to_string())?
+            .to_string();
+        return Ok((cert_url, next_nonce));
     }
 
+    let mut cur_nonce = next_nonce;
     let order_path = order_url.trim_start_matches(&server.base_url);
     let deadline = Instant::now() + std::time::Duration::from_secs(30);
     loop {
@@ -971,16 +1002,22 @@ async fn finalize_and_poll(
         if Instant::now() > deadline {
             return Err("timed out waiting for order valid".to_string());
         }
-        let nonce = fetch_nonce(client, &nonce_url).await?;
-        let jws = worker.key.jws_kid(account_url, &nonce, order_url, None);
-        let (_, body, _) =
+        let poll_nonce = if let Some(n) = cur_nonce.take() {
+            n
+        } else {
+            fetch_nonce(client, &nonce_url).await?
+        };
+        let jws = worker.key.jws_kid(account_url, &poll_nonce, order_url, None);
+        let (_, body, headers) =
             http_post_jws(client, &format!("{}{order_path}", server.base_url), &jws).await?;
+        cur_nonce = nonce_hdr(&headers).ok();
         match body["status"].as_str() {
             Some("valid") => {
-                return body["certificate"]
+                let cert_url = body["certificate"]
                     .as_str()
-                    .ok_or_else(|| "no certificate URL in valid order".to_string())
-                    .map(|s| s.to_string());
+                    .ok_or_else(|| "no certificate URL in valid order".to_string())?
+                    .to_string();
+                return Ok((cert_url, cur_nonce));
             }
             Some("invalid") => {
                 return Err(format!("order invalid after finalize: {}", body["error"]))
@@ -1021,10 +1058,14 @@ async fn run_issuance(
     let wid = worker.id;
 
     // ── Account (first issuance per worker only) ───────────────────────────────
-    let account_us = if worker.account_url.is_none() {
+    // create_account returns (account_url, next_nonce) so the nonce from the
+    // new-account response can be threaded directly into the new-order request,
+    // eliminating the HEAD /new-nonce that would otherwise precede it.
+    let nonce_url = format!("{}/acme/new-nonce", server.base_url);
+    let (account_us, nonce) = if worker.account_url.is_none() {
         let t = Instant::now();
         match create_account(worker, server, client).await {
-            Ok(url) => {
+            Ok((url, nonce)) => {
                 // Register dns-persist-01 TXT record now that we have the account URI.
                 if args.challenge == "dns-persist-01" {
                     if let Some(ref dns) = server.dns {
@@ -1039,34 +1080,45 @@ async fn run_issuance(
                     }
                 }
                 worker.account_url = Some(url);
-                t.elapsed().as_micros() as u64
+                (t.elapsed().as_micros() as u64, nonce)
             }
             Err(e) => return IssuanceTiming::failed(wid, request_id, format!("account: {e}")),
         }
     } else {
-        0
+        // Reuse the nonce carried from the previous issuance's last response.
+        // Fall back to HEAD only if no nonce is available (first time or after error).
+        let n = if let Some(n) = worker.last_nonce.take() {
+            n
+        } else {
+            match fetch_nonce(client, &nonce_url).await {
+                Ok(n) => n,
+                Err(e) => return IssuanceTiming::failed(wid, request_id, format!("nonce: {e}")),
+            }
+        };
+        (0, n)
     };
     let account_url = worker.account_url.clone().unwrap();
 
-    // ── New order ──────────────────────────────────────────────────────────────
+    // ── New order (uses nonce from account creation or previous issuance) ───────
     let t_total = Instant::now();
     let t = Instant::now();
-    let (order_url, authz_url, fin_url) =
-        match new_order(worker, server, client, &account_url).await {
+    let (order_url, authz_url, fin_url, nonce) =
+        match new_order(worker, server, client, &account_url, &nonce).await {
             Ok(v) => v,
             Err(e) => return IssuanceTiming::failed(wid, request_id, format!("new-order: {e}")),
         };
     let order_us = t.elapsed().as_micros() as u64;
 
-    // ── Get authorization ──────────────────────────────────────────────────────
+    // ── Get authorization (uses nonce from new-order response) ─────────────────
     let t = Instant::now();
-    let (chall_url, token) = match get_authz(
+    let (chall_url, token, nonce) = match get_authz(
         worker,
         server,
         client,
         &account_url,
         &authz_url,
         &args.challenge,
+        &nonce,
     )
     .await
     {
@@ -1084,18 +1136,19 @@ async fn run_issuance(
         }
     }
 
-    // ── Trigger challenge → poll until ready ───────────────────────────────────
+    // ── Trigger challenge (uses nonce from authz response) → poll until ready ──
     let t = Instant::now();
-    if let Err(e) =
-        respond_and_poll(worker, server, client, &account_url, &chall_url, &order_url).await
+    let nonce =
+        match respond_and_poll(worker, server, client, &account_url, &chall_url, &order_url, &nonce).await
     {
-        return IssuanceTiming::failed(wid, request_id, format!("challenge: {e}"));
-    }
+        Ok(n) => n,
+        Err(e) => return IssuanceTiming::failed(wid, request_id, format!("challenge: {e}")),
+    };
     let challenge_us = t.elapsed().as_micros() as u64;
 
-    // ── Finalize → poll until valid ────────────────────────────────────────────
+    // ── Finalize (uses nonce from last poll response) → cert URL ───────────────
     let t = Instant::now();
-    let cert_url = match finalize_and_poll(
+    let (cert_url, leftover_nonce) = match finalize_and_poll(
         worker,
         server,
         client,
@@ -1103,12 +1156,15 @@ async fn run_issuance(
         &order_url,
         &fin_url,
         &args.key_type,
+        &nonce,
     )
     .await
     {
         Ok(v) => v,
         Err(e) => return IssuanceTiming::failed(wid, request_id, format!("finalize: {e}")),
     };
+    // Store the nonce for the next issuance (cert download is a GET — no nonce used).
+    worker.last_nonce = leftover_nonce;
     let finalize_us = t.elapsed().as_micros() as u64;
 
     // ── Download certificate ───────────────────────────────────────────────────
