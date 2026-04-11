@@ -4,7 +4,7 @@ use serde::Deserialize;
 pub struct Config {
     /// Address to listen on, e.g. "0.0.0.0:8080"
     pub listen_addr: String,
-    /// Public base URL of this ACME server, e.g. "https://acme.example.com"
+    /// Public base URL of this ACME server, e.g. `https://acme.example.com`
     pub base_url: String,
     pub database: DatabaseConfig,
     pub ca: CaConfig,
