@@ -50,6 +50,24 @@ async fn run() -> Result<(), String> {
     // Sweep nonces older than 24 h at startup (best-effort).
     let _ = db::nonces::sweep_expired(&db, 86400).await;
 
+    // Seed EAB keys from config into the DB (INSERT OR IGNORE — never overwrites
+    // keys that were provisioned or consumed by the runtime admin endpoint).
+    let now_ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    for (kid, hmac_key_b64u) in &config.server.eab_keys {
+        if let Err(e) = db::eab::insert_if_absent(&db, kid, hmac_key_b64u, now_ts).await {
+            tracing::warn!("failed to seed EAB key '{kid}': {e}");
+        }
+    }
+    if !config.server.eab_keys.is_empty() {
+        tracing::info!(
+            "seeded {} EAB key(s) from config",
+            config.server.eab_keys.len()
+        );
+    }
+
     // ── CA key and certificate ────────────────────────────────────────────────
     tracing::info!("loading CA from '{}'", config.ca.key_file);
     let (ca_key, ca_cert_der) =
