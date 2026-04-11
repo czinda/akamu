@@ -153,6 +153,20 @@ pub async fn new_authz(
     let authz_id = uuid::Uuid::new_v4().to_string();
     let authz_expiry = now + state.config.server.authz_expiry_secs as i64;
 
+    // RFC 9799 §2: validate v3 .onion addresses in pre-authorization.
+    let is_onion = payload.identifier.r#type == "dns"
+        && payload
+            .identifier
+            .value
+            .to_ascii_lowercase()
+            .ends_with(".onion");
+    if is_onion && !crate::validation::onion_csr_01::validate_onion_v3(&payload.identifier.value) {
+        return Err(AcmeError::RejectedIdentifier(format!(
+            "only v3 .onion addresses are supported (56-char base32 label); got: {}",
+            payload.identifier.value
+        )));
+    }
+
     let token = gen_token();
     let dns_persist_enabled = state.config.server.dns_persist_issuer_domain.is_some();
     let dns_types: &[&str] = if dns_persist_enabled {
@@ -161,6 +175,9 @@ pub async fn new_authz(
         &["http-01", "dns-01", "tls-alpn-01"]
     };
     let challenge_types: &[&str] = match payload.identifier.r#type.as_str() {
+        // RFC 9799 §3.1.1: .onion domains MUST offer onion-csr-01 and MUST NOT
+        // offer dns-01.  http-01 and tls-alpn-01 are allowed (require Tor).
+        "dns" if is_onion => &["onion-csr-01", "http-01", "tls-alpn-01"],
         "dns" => dns_types,
         "ip" => &["http-01", "tls-alpn-01"],
         _ => &[],
