@@ -5,7 +5,7 @@ use std::sync::Arc;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::Deserialize;
 use serde_json::json;
@@ -16,7 +16,7 @@ use crate::error::AcmeError;
 use crate::jose::jws::JwsKeyRef;
 use crate::state::AppState;
 
-use super::{json_response, parse_jws, require_payload, unix_now};
+use super::{acme_headers, json_response, parse_jws, require_payload, unix_now};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -66,7 +66,13 @@ pub async fn new_account(
     }
 
     if payload.only_return_existing {
-        return Err(AcmeError::AccountDoesNotExist);
+        // RFC 8555 §7.3.1: respond with accountDoesNotExist.
+        // Include Replay-Nonce so the client can retry with a creation request
+        // (RFC 8555 §6.5.1 SHOULD include nonce in error responses).
+        let mut resp = AcmeError::AccountDoesNotExist.into_response();
+        resp.headers_mut()
+            .extend(acme_headers(&state, &ctx.next_nonce));
+        return Ok(resp);
     }
 
     // Validate contacts.
