@@ -131,7 +131,7 @@ pub fn verify_eab_jws(
 mod tests {
     use super::*;
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-    use synta_certificate::{BackendPrivateKey, PrivateKey as _};
+    use synta_certificate::BackendPrivateKey;
 
     // ── helpers ────────────────────────────────────────────────────────────────
 
