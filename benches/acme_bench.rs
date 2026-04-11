@@ -953,6 +953,16 @@ async fn finalize_and_poll(
     if status != 200 {
         return Err(format!("finalize {status}: {body}"));
     }
+    // RFC 8555 §7.4: the finalize response IS the order object. If the server
+    // has already moved the order to "valid" synchronously, skip the poll loop
+    // entirely — no sleep needed. This server finalizes certificates in-line so
+    // "valid" is always present here; the loop below only fires as a fallback.
+    if body["status"].as_str() == Some("valid") {
+        return body["certificate"]
+            .as_str()
+            .ok_or_else(|| "no certificate URL in finalize response".to_string())
+            .map(|s| s.to_string());
+    }
 
     let order_path = order_url.trim_start_matches(&server.base_url);
     let deadline = Instant::now() + std::time::Duration::from_secs(30);
