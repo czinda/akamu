@@ -57,6 +57,9 @@ pub enum AcmeError {
     #[error("CAA check failed: {0}")]
     Caa(String),
 
+    #[error("external account binding required")]
+    ExternalAccountRequired,
+
     #[error("connection error during challenge: {0}")]
     Connection(String),
 
@@ -144,6 +147,9 @@ impl AcmeError {
             AcmeError::Dns(_) => "urn:ietf:params:acme:error:dns",
             AcmeError::IncorrectResponse(_) => "urn:ietf:params:acme:error:incorrectResponse",
             AcmeError::Tls(_) => "urn:ietf:params:acme:error:tls",
+            AcmeError::ExternalAccountRequired => {
+                "urn:ietf:params:acme:error:externalAccountRequired"
+            }
             _ => "urn:ietf:params:acme:error:serverInternal",
         }
     }
@@ -176,6 +182,7 @@ impl AcmeError {
             AcmeError::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             AcmeError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             AcmeError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            AcmeError::ExternalAccountRequired => StatusCode::FORBIDDEN,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -284,6 +291,10 @@ mod tests {
         assert_eq!(
             AcmeError::Tls("x".into()).acme_type(),
             "urn:ietf:params:acme:error:tls"
+        );
+        assert_eq!(
+            AcmeError::ExternalAccountRequired.acme_type(),
+            "urn:ietf:params:acme:error:externalAccountRequired"
         );
         // Internal/generic errors fall through to serverInternal
         assert_eq!(
@@ -419,6 +430,10 @@ mod tests {
         assert_eq!(
             AcmeError::Mtc("x".into()).http_status(),
             StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            AcmeError::ExternalAccountRequired.http_status(),
+            StatusCode::FORBIDDEN
         );
     }
 

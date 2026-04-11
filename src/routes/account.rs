@@ -23,6 +23,7 @@ struct NewAccountPayload {
     contact: Option<Vec<String>>,
     #[serde(default)]
     only_return_existing: bool,
+    external_account_binding: Option<serde_json::Value>,
 }
 
 pub async fn new_account(
@@ -41,6 +42,17 @@ pub async fn new_account(
     };
 
     let payload: NewAccountPayload = require_payload(&ctx.payload, "new-account")?;
+
+    // RFC 8555 §7.3.4 — when externalAccountRequired is set the payload MUST
+    // contain an externalAccountBinding field.  Full MAC verification of the
+    // EAB JWS is deferred until key-management support is added; presence
+    // checking is the correct first gate per the spec.
+    if state.config.server.external_account_required
+        && payload.external_account_binding.is_none()
+    {
+        return Err(AcmeError::ExternalAccountRequired);
+    }
+
     let thumbprint = jwk.thumbprint()?;
     let now = unix_now();
 
@@ -257,6 +269,26 @@ mod tests {
         let json = Some("not-json".to_string());
         let result = parse_contacts(&json);
         assert!(result.is_empty());
+    }
+
+    /// Verifies that `NewAccountPayload` deserialises `externalAccountBinding`
+    /// when present and treats its absence as `None` (RFC 8555 §7.3.4).
+    /// The handler-level enforcement (returning `ExternalAccountRequired` when
+    /// `server.external_account_required` is true and the field is absent) is
+    /// covered by integration tests that exercise the full Axum stack.
+    #[test]
+    fn new_account_payload_eab_field_optional() {
+        // Without the field → None
+        let without: NewAccountPayload =
+            serde_json::from_str(r#"{"termsOfServiceAgreed":true}"#).unwrap();
+        assert!(without.external_account_binding.is_none());
+
+        // With the field → Some
+        let with_eab: NewAccountPayload = serde_json::from_str(
+            r#"{"termsOfServiceAgreed":true,"externalAccountBinding":{"protected":"x","payload":"y","signature":"z"}}"#,
+        )
+        .unwrap();
+        assert!(with_eab.external_account_binding.is_some());
     }
 
     #[test]
