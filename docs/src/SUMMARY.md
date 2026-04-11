@@ -20,6 +20,7 @@
 - [Merkle Tree Certificate Log](user/mtc.md)
 - [TLS Configuration](user/tls.md)
 - [Performance](user/performance.md)
+- [RFC Support Reference](user/rfc-support.md)
 
 # Developer Guide
 
