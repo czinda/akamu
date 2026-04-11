@@ -14,8 +14,9 @@ fn row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<OrderRow> {
         not_after: row.get(6)?,
         error: row.get(7)?,
         certificate_id: row.get(8)?,
-        created: row.get(9)?,
-        updated: row.get(10)?,
+        replaces: row.get(9)?,
+        created: row.get(10)?,
+        updated: row.get(11)?,
     })
 }
 
@@ -23,8 +24,8 @@ pub async fn insert(db: &Connection, row: OrderRow) -> Result<(), AcmeError> {
     db.call(move |conn| {
         conn.prepare_cached(
             "INSERT INTO orders (id, account_id, status, expires, identifiers,
-             not_before, not_after, error, certificate_id, created, updated)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             not_before, not_after, error, certificate_id, replaces, created, updated)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         )?
         .execute(rusqlite::params![
             row.id,
@@ -36,6 +37,7 @@ pub async fn insert(db: &Connection, row: OrderRow) -> Result<(), AcmeError> {
             row.not_after,
             row.error,
             row.certificate_id,
+            row.replaces,
             row.created,
             row.updated,
         ])?;
@@ -50,7 +52,7 @@ pub async fn get_by_id(db: &Connection, id: &str) -> Result<Option<OrderRow>, Ac
     db.call(move |conn| {
         let mut stmt = conn.prepare_cached(
             "SELECT id, account_id, status, expires, identifiers,
-             not_before, not_after, error, certificate_id, created, updated
+             not_before, not_after, error, certificate_id, replaces, created, updated
              FROM orders WHERE id = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![id])?;
@@ -115,7 +117,7 @@ pub async fn get_with_authz_ids(
         let order = {
             let mut stmt = conn.prepare_cached(
                 "SELECT id, account_id, status, expires, identifiers,
-                 not_before, not_after, error, certificate_id, created, updated
+                 not_before, not_after, error, certificate_id, replaces, created, updated
                  FROM orders WHERE id = ?1",
             )?;
             let mut rows = stmt.query(rusqlite::params![id])?;
@@ -193,6 +195,7 @@ mod tests {
             not_after: None,
             error: None,
             certificate_id: None,
+            replaces: None,
             created: 1_700_000_000,
             updated: 1_700_000_000,
         }
@@ -330,5 +333,29 @@ mod tests {
             .is_err());
         assert!(set_certificate(&raw, "any", "cert-id", 0).await.is_err());
         assert!(list_authz_ids(&raw, "any").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn replaces_round_trip_some() {
+        let db = open_db().await;
+        insert_account(&db, "acct-rpl").await;
+        let mut order = sample_order("order-rpl", "acct-rpl");
+        order.replaces = Some("akiABC.serialXYZ".to_string());
+        insert(&db, order).await.unwrap();
+
+        let row = get_by_id(&db, "order-rpl").await.unwrap().unwrap();
+        assert_eq!(row.replaces.as_deref(), Some("akiABC.serialXYZ"));
+    }
+
+    #[tokio::test]
+    async fn replaces_round_trip_none() {
+        let db = open_db().await;
+        insert_account(&db, "acct-nrpl").await;
+        insert(&db, sample_order("order-nrpl", "acct-nrpl"))
+            .await
+            .unwrap();
+
+        let row = get_by_id(&db, "order-nrpl").await.unwrap().unwrap();
+        assert!(row.replaces.is_none());
     }
 }
