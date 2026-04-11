@@ -19,15 +19,34 @@ use crate::error::AcmeError;
 
 /// Validate a tls-alpn-01 challenge.
 ///
-/// * `domain`   — the identifier value (DNS name).
+/// * `id_type`  — `"dns"` or `"ip"`.
+/// * `id_value` — the identifier value (DNS name or IP address string).
 /// * `key_auth` — `{token}.{jwk_thumbprint}`.
-pub async fn validate(domain: &str, key_auth: &str) -> Result<(), AcmeError> {
-    validate_inner(domain, key_auth, 443).await
+///
+/// For IP identifiers (RFC 8738 §4) the TLS SNI is sent as the reverse-DNS
+/// form of the address (`n.n.n.n.in-addr.arpa` or nibble `.ip6.arpa`) rather
+/// than the raw IP string.  The SAN check also uses the `iPAddress` general
+/// name type (tag `0x87`) instead of `dNSName`.
+pub async fn validate(id_type: &str, id_value: &str, key_auth: &str) -> Result<(), AcmeError> {
+    validate_inner(id_type, id_value, key_auth, 443).await
 }
 
 /// Inner implementation that allows injecting a custom port for testing.
-async fn validate_inner(domain: &str, key_auth: &str, port: u16) -> Result<(), AcmeError> {
+async fn validate_inner(
+    id_type: &str,
+    id_value: &str,
+    key_auth: &str,
+    port: u16,
+) -> Result<(), AcmeError> {
     let expected_hash: [u8; 32] = Sha256::digest(key_auth.as_bytes()).into();
+
+    // RFC 8738 §4: for IP identifiers the SNI MUST be the reverse-DNS name
+    // of the address, not the raw IP string.
+    let sni_string = if id_type == "ip" {
+        ip_to_reverse_dns(id_value)?
+    } else {
+        id_value.to_string()
+    };
 
     // Build a rustls ClientConfig that:
     //  - Accepts any server certificate (we do our own checking below).
@@ -44,20 +63,20 @@ async fn validate_inner(domain: &str, key_auth: &str, port: u16) -> Result<(), A
 
     let connector = TlsConnector::from(Arc::new(config));
 
-    // Resolve the server name.
-    let server_name = ServerName::try_from(domain.to_string())
-        .map_err(|e| AcmeError::Tls(format!("invalid server name '{domain}': {e}")))?;
+    // Resolve the server name (SNI).
+    let server_name = ServerName::try_from(sni_string.clone())
+        .map_err(|e| AcmeError::Tls(format!("invalid server name '{sni_string}': {e}")))?;
 
-    // TCP connect.
-    let tcp = TcpStream::connect((domain, port))
+    // TCP connect to the actual IP / hostname (not the reverse-DNS SNI name).
+    let tcp = TcpStream::connect((id_value, port))
         .await
-        .map_err(|e| AcmeError::Connection(format!("TCP connect to {domain}:{port}: {e}")))?;
+        .map_err(|e| AcmeError::Connection(format!("TCP connect to {id_value}:{port}: {e}")))?;
 
     // TLS handshake (this also performs the ALPN negotiation).
     let tls_stream = connector
         .connect(server_name, tcp)
         .await
-        .map_err(|e| AcmeError::Tls(format!("TLS handshake with {domain}: {e}")))?;
+        .map_err(|e| AcmeError::Tls(format!("TLS handshake with {id_value}: {e}")))?;
 
     // Extract the peer certificate presented during the handshake.
     let (_, client_conn) = tls_stream.get_ref();
@@ -70,21 +89,47 @@ async fn validate_inner(domain: &str, key_auth: &str, port: u16) -> Result<(), A
         .ok_or_else(|| AcmeError::Tls("server certificate chain is empty".into()))?
         .as_ref();
 
-    verify_acme_cert(domain, end_entity_der, &expected_hash)
+    verify_acme_cert(id_type, id_value, end_entity_der, &expected_hash)
+}
+
+/// Convert an IP address string to its reverse-DNS form per RFC 8738 §4.
+///
+/// IPv4: `1.2.3.4` → `4.3.2.1.in-addr.arpa`
+/// IPv6: full nibble expansion → `<nibbles>.ip6.arpa`
+fn ip_to_reverse_dns(ip_str: &str) -> Result<String, AcmeError> {
+    if let Ok(ipv4) = ip_str.parse::<std::net::Ipv4Addr>() {
+        let o = ipv4.octets();
+        Ok(format!("{}.{}.{}.{}.in-addr.arpa", o[3], o[2], o[1], o[0]))
+    } else if let Ok(ipv6) = ip_str.parse::<std::net::Ipv6Addr>() {
+        let expanded = format!("{:032x}", u128::from(ipv6));
+        let nibbles: String = expanded
+            .chars()
+            .rev()
+            .flat_map(|c| [c, '.'])
+            .collect::<String>()
+            .trim_end_matches('.')
+            .to_string();
+        Ok(format!("{nibbles}.ip6.arpa"))
+    } else {
+        Err(AcmeError::Tls(format!(
+            "tls-alpn-01: '{ip_str}' is not a valid IP address"
+        )))
+    }
 }
 
 // ── Certificate verification ──────────────────────────────────────────────────
 
 /// Verify the presented certificate against the tls-alpn-01 requirements.
 ///
-/// Checks (RFC 8737 §3):
-/// 1. The SAN extension contains the domain being validated as a dNSName.
+/// Checks (RFC 8737 §3 / RFC 8738 §4):
+/// 1. The SAN extension contains the identifier: dNSName for DNS, iPAddress for IP.
 /// 2. id-pe-acmeIdentifier extension is present and critical.
 /// 3. Extension value = `OCTET STRING { expected_hash }`.
 ///    (The extnValue OCTET STRING wrapper is already stripped by the time we
 ///    see `ext_content`.)
 fn verify_acme_cert(
-    domain: &str,
+    id_type: &str,
+    identifier: &str,
     cert_der: &[u8],
     expected_hash: &[u8; 32],
 ) -> Result<(), AcmeError> {
@@ -98,16 +143,16 @@ fn verify_acme_cert(
 
     // Walk the DER to find TBSCertificate → Extensions → the target extension.
     let (found_critical, ext_value) = find_extension_value(cert_der, ACME_ID_OID_DER)
-        .map_err(|e| AcmeError::Tls(format!("cert parse for {domain}: {e}")))?
+        .map_err(|e| AcmeError::Tls(format!("cert parse for {identifier}: {e}")))?
         .ok_or_else(|| {
             AcmeError::IncorrectResponse(format!(
-                "tls-alpn-01: certificate for '{domain}' is missing id-pe-acmeIdentifier"
+                "tls-alpn-01: certificate for '{identifier}' is missing id-pe-acmeIdentifier"
             ))
         })?;
 
     if !found_critical {
         return Err(AcmeError::IncorrectResponse(format!(
-            "tls-alpn-01: id-pe-acmeIdentifier extension in '{domain}' cert must be critical"
+            "tls-alpn-01: id-pe-acmeIdentifier extension in '{identifier}' cert must be critical"
         )));
     }
 
@@ -120,25 +165,34 @@ fn verify_acme_cert(
         || &ext_value[2..] != expected_hash
     {
         return Err(AcmeError::IncorrectResponse(format!(
-            "tls-alpn-01: id-pe-acmeIdentifier value mismatch in certificate for '{domain}'"
+            "tls-alpn-01: id-pe-acmeIdentifier value mismatch in certificate for '{identifier}'"
         )));
     }
 
-    // RFC 8737 §3: The certificate MUST have exactly the identifier being
-    // validated as a dNSName in its SAN extension.
+    // RFC 8737 §3 / RFC 8738 §4: The certificate MUST have exactly the
+    // identifier being validated in its SAN extension — as dNSName for DNS
+    // identifiers, or as iPAddress for IP identifiers.
     let (_, san_value) = find_extension_value(cert_der, SAN_OID_DER)
-        .map_err(|e| AcmeError::Tls(format!("cert SAN parse for '{domain}': {e}")))?
+        .map_err(|e| AcmeError::Tls(format!("cert SAN parse for '{identifier}': {e}")))?
         .ok_or_else(|| {
             AcmeError::IncorrectResponse(format!(
-                "tls-alpn-01: certificate for '{domain}' is missing SAN extension"
+                "tls-alpn-01: certificate for '{identifier}' is missing SAN extension"
             ))
         })?;
 
-    verify_san_contains_domain(domain, san_value).map_err(|reason| {
-        AcmeError::IncorrectResponse(format!(
-            "tls-alpn-01: certificate SAN does not match '{domain}': {reason}"
-        ))
-    })?;
+    if id_type == "ip" {
+        verify_san_contains_ip(identifier, san_value).map_err(|reason| {
+            AcmeError::IncorrectResponse(format!(
+                "tls-alpn-01: certificate SAN does not match IP '{identifier}': {reason}"
+            ))
+        })?;
+    } else {
+        verify_san_contains_domain(identifier, san_value).map_err(|reason| {
+            AcmeError::IncorrectResponse(format!(
+                "tls-alpn-01: certificate SAN does not match '{identifier}': {reason}"
+            ))
+        })?;
+    }
 
     Ok(())
 }
@@ -167,6 +221,33 @@ fn verify_san_contains_domain(domain: &str, san_seq: &[u8]) -> Result<(), &'stat
     } else {
         Err("domain not present as dNSName in SAN")
     }
+}
+
+/// Check that `ip_str` appears as an iPAddress ([7] IMPLICIT OCTET STRING,
+/// tag 0x87) in the raw SEQUENCE OF GeneralName bytes from the SAN extension
+/// value.  Used by the IP-identifier validation path (RFC 8738 §4).
+fn verify_san_contains_ip(ip_str: &str, san_seq: &[u8]) -> Result<(), &'static str> {
+    // Parse the IP address to its raw bytes.
+    let ip_bytes: Vec<u8> = if let Ok(ipv4) = ip_str.parse::<std::net::Ipv4Addr>() {
+        ipv4.octets().to_vec()
+    } else if let Ok(ipv6) = ip_str.parse::<std::net::Ipv6Addr>() {
+        ipv6.octets().to_vec()
+    } else {
+        return Err("identifier is not a valid IP address");
+    };
+
+    let seq_content = strip_sequence(san_seq)?;
+    let mut remaining = seq_content;
+    while !remaining.is_empty() {
+        let (tag, rest, content) = read_tlv(remaining)?;
+        remaining = rest;
+        // iPAddress is [7] IMPLICIT OCTET STRING → context-specific primitive tag 0x87.
+        // IPv4: 4 bytes; IPv6: 16 bytes.
+        if tag == 0x87 && content == ip_bytes.as_slice() {
+            return Ok(());
+        }
+    }
+    Err("IP address not present as iPAddress in SAN")
 }
 
 // ── Manual DER TLV walker ─────────────────────────────────────────────────────
@@ -501,7 +582,7 @@ mod tests {
 
     #[test]
     fn verify_acme_cert_invalid_der_returns_error() {
-        let result = verify_acme_cert("example.com", b"bad cert", &[0u8; 32]);
+        let result = verify_acme_cert("dns", "example.com", b"bad cert", &[0u8; 32]);
         assert!(result.is_err());
     }
 
@@ -602,7 +683,7 @@ mod tests {
         cert_der.extend_from_slice(sig_alg2);
         cert_der.extend_from_slice(bit_string);
 
-        let result = verify_acme_cert("example.com", &cert_der, &expected_hash);
+        let result = verify_acme_cert("dns", "example.com", &cert_der, &expected_hash);
         assert!(
             result.is_ok(),
             "verify_acme_cert should succeed: {result:?}"
@@ -658,7 +739,7 @@ mod tests {
         cert_der.extend_from_slice(bit_string);
 
         // Verify with wrong_hash — should fail
-        let result = verify_acme_cert("example.com", &cert_der, &wrong_hash);
+        let result = verify_acme_cert("dns", "example.com", &cert_der, &wrong_hash);
         assert!(result.is_err(), "should fail with wrong hash");
     }
 
@@ -689,7 +770,7 @@ mod tests {
         cert_der.extend_from_slice(sig_alg2);
         cert_der.extend_from_slice(bit_string);
 
-        let result = verify_acme_cert("example.com", &cert_der, &[0u8; 32]);
+        let result = verify_acme_cert("dns", "example.com", &cert_der, &[0u8; 32]);
         assert!(result.is_err(), "should fail when extension is missing");
     }
 
@@ -737,7 +818,7 @@ mod tests {
         cert_der.extend_from_slice(sig_alg2);
         cert_der.extend_from_slice(bit_string);
 
-        let result = verify_acme_cert("example.com", &cert_der, &expected_hash);
+        let result = verify_acme_cert("dns", "example.com", &cert_der, &expected_hash);
         assert!(
             result.is_err(),
             "should fail when extension is not critical"
@@ -891,11 +972,11 @@ mod tests {
     }
 
     /// validate() fails with Tls error when given an invalid server name.
-    /// Covers tls_alpn01.rs lines 43-44 (ServerName::try_from error path).
+    /// Covers tls_alpn01.rs (ServerName::try_from error path).
     #[tokio::test]
     async fn validate_invalid_server_name_returns_error() {
-        // An empty string is not a valid DNS name or IP address.
-        let result = validate("", "token.thumbprint").await;
+        // An empty string is not a valid DNS name.
+        let result = validate("dns", "", "token.thumbprint").await;
         assert!(result.is_err(), "expected error for invalid server name");
         match result.unwrap_err() {
             crate::error::AcmeError::Tls(_) => {}
@@ -903,12 +984,12 @@ mod tests {
         }
     }
 
-    /// validate() fails with Connection error when domain is unreachable.
-    /// Covers tls_alpn01.rs lines 47-49 (TCP connect error path).
+    /// validate() fails with Connection error when IP is unreachable.
+    /// Covers tls_alpn01.rs (TCP connect error path via IP identifier).
     #[tokio::test]
     async fn validate_connection_refused_returns_error() {
         // 127.0.0.1:443 will be immediately refused on a test machine (no TLS server).
-        let result = validate("127.0.0.1", "token.thumbprint").await;
+        let result = validate("ip", "127.0.0.1", "token.thumbprint").await;
         assert!(
             result.is_err(),
             "expected connection error for unreachable host"
@@ -1219,7 +1300,7 @@ mod tests {
 
         // TLS handshake succeeds (lines 52-68 covered).
         // verify_acme_cert returns IncorrectResponse because there is no ACME extension.
-        let result = validate_inner("127.0.0.1", "token.thumbprint", port).await;
+        let result = validate_inner("dns", "127.0.0.1", "token.thumbprint", port).await;
         assert!(
             matches!(
                 result,
@@ -1242,7 +1323,7 @@ mod tests {
         let port = start_acme_tls12_server(cert_der, &key).await;
 
         // TLS 1.2 handshake: verify_tls12_signature is called (lines 894-901 covered).
-        let result = validate_inner("127.0.0.1", "token.thumbprint", port).await;
+        let result = validate_inner("dns", "127.0.0.1", "token.thumbprint", port).await;
         assert!(
             matches!(
                 result,

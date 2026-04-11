@@ -73,7 +73,7 @@ pub async fn validate_challenge(
 #[allow(clippy::too_many_arguments)]
 async fn dispatch(
     chall_type: &str,
-    _id_type: &str,
+    id_type: &str,
     id_value: &str,
     key_auth: &str,
     token: &str,
@@ -88,7 +88,7 @@ async fn dispatch(
             http01::validate(id_value, token, key_auth, http_port, validation_client).await
         }
         "dns-01" => dns01::validate(id_value, key_auth).await,
-        "tls-alpn-01" => tls_alpn01::validate(id_value, key_auth).await,
+        "tls-alpn-01" => tls_alpn01::validate(id_type, id_value, key_auth).await,
         "dns-persist-01" => {
             dns_persist_01::validate(id_value, key_auth, issuer_domain, dns_resolver_addr).await
         }
