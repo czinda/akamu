@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -107,6 +109,12 @@ pub struct ServerConfig {
     pub star_min_lifetime_secs: Option<u64>,
     /// Maximum STAR order duration in seconds (advertised in directory meta).
     pub star_max_duration_secs: Option<u64>,
+    /// Certificate profiles (draft-aaron-acme-profiles-01).
+    /// Maps profile identifier → human-readable description or documentation URL.
+    /// Advertised in directory meta. Clients may request a profile by name in newOrder.
+    /// When empty, profile selection is not advertised and profile fields are ignored.
+    #[serde(default)]
+    pub profiles: HashMap<String, String>,
 }
 
 /// Server-side TLS configuration.  Absent or `enabled = false` → plain HTTP (no change).
