@@ -16,7 +16,7 @@
 ## What it does not do
 
 - It does not terminate TLS itself. Deploy it behind nginx, Caddy, or another reverse proxy that handles HTTPS.
-- It does not implement External Account Binding (EAB) validation even when `external_account_required = true`; it advertises the requirement but does not enforce it cryptographically. Enforce EAB at the network layer if needed.
+- When `external_account_required = true`, it checks for the _presence_ of an `externalAccountBinding` field in new-account requests but does not verify the HMAC. Full cryptographic EAB verification requires a pre-shared key management system; enforce it at a gateway layer if needed.
 - It does not serve the CRL or OCSP responses over HTTP itself; those endpoints must be provided separately if you enable `crl_url` or `ocsp_url`.
 - It does not support wildcard certificates via http-01 or tls-alpn-01 (only dns-01 and dns-persist-01 can authorize wildcard identifiers per RFC 8555 §7.1.3).
 
@@ -38,11 +38,20 @@
 ## Standards implemented
 
 - [RFC 8555](https://www.rfc-editor.org/rfc/rfc8555) — Automatic Certificate Management Environment (ACME)
-- [RFC 8737](https://www.rfc-editor.org/rfc/rfc8737) — ACME TLS ALPN Challenge Type
+- [RFC 8659](https://www.rfc-editor.org/rfc/rfc8659) — DNS CAA Resource Record
+- [RFC 8657](https://www.rfc-editor.org/rfc/rfc8657) — CAA Extensions: accounturi and validationmethods
+- [RFC 8737](https://www.rfc-editor.org/rfc/rfc8737) — ACME TLS-ALPN-01 Challenge Type
+- [RFC 8738](https://www.rfc-editor.org/rfc/rfc8738) — ACME IP Identifier Validation
+- [RFC 8739](https://www.rfc-editor.org/rfc/rfc8739) — ACME Short-Term, Automatically Renewed (STAR) Certificates
+- [RFC 9444](https://www.rfc-editor.org/rfc/rfc9444) — ACME for Subdomains
+- [RFC 9773](https://www.rfc-editor.org/rfc/rfc9773) — ACME Renewal Information (ARI)
+- [RFC 9799](https://www.rfc-editor.org/rfc/rfc9799) — ACME Extensions for .onion Special-Use Domain Names
 - [RFC 7807](https://www.rfc-editor.org/rfc/rfc7807) — Problem Details for HTTP APIs (error responses)
 - [RFC 5280](https://www.rfc-editor.org/rfc/rfc5280) — X.509 Certificate and CRL profile
-- [RFC 9773](https://www.rfc-editor.org/rfc/rfc9773) — ACME Renewal Information (ARI)
 - [Let's Encrypt dns-persist-01](https://letsencrypt.org/2026/02/18/dns-persist-01) — Persistent DNS challenge type
+- [draft-ietf-lamps-pq-composite-sigs](https://datatracker.ietf.org/doc/draft-ietf-lamps-pq-composite-sigs/) — ML-DSA composite TLS signature schemes (provisional code points)
+
+For a detailed breakdown of each RFC, including which sections are covered and which are intentionally omitted, see the [RFC Support Reference](user/rfc-support.md).
 
 ## Quick navigation
 
