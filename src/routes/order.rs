@@ -245,6 +245,20 @@ pub async fn new_order(
             } else {
                 (id.r#type.as_str(), id.value.as_str(), false)
             };
+
+        // RFC 9799 §2: .onion domains require special handling.
+        // Validate that .onion identifiers use v3 addresses and offer the
+        // appropriate challenge types (onion-csr-01; optionally http-01 and
+        // tls-alpn-01 for Tor-network-connected CAs; NEVER dns-01).
+        if authz_type == "dns" && is_onion_domain(authz_value) {
+            if !crate::validation::onion_csr_01::validate_onion_v3(authz_value) {
+                return Err(AcmeError::RejectedIdentifier(format!(
+                    "only v3 .onion addresses are supported (56-char base32 label); \
+                     got: {authz_value}"
+                )));
+            }
+        }
+
         let identifier_json =
             serde_json::to_string(&json!({"type": authz_type, "value": authz_value})).unwrap();
         let token = gen_token();
@@ -256,7 +270,13 @@ pub async fn new_order(
         } else {
             &["http-01", "dns-01", "tls-alpn-01"]
         };
+        // RFC 9799 §3.1.1: for .onion domains MUST offer onion-csr-01 and
+        // MUST NOT offer dns-01.  http-01 and tls-alpn-01 are allowed but
+        // require Tor-network connectivity for actual validation; we include
+        // them so that Tor-capable CAs can use them.
+        let onion_types: &[&str] = &["onion-csr-01", "http-01", "tls-alpn-01"];
         let challenge_types: &[&str] = match authz_type {
+            "dns" if is_onion_domain(authz_value) => onion_types,
             "dns" => dns_types,
             "ip" => &["http-01", "tls-alpn-01"],
             _ => &[],
@@ -553,6 +573,14 @@ pub(crate) fn order_json<'a>(
         replaces: order.replaces.as_deref(),
         auto_renewal,
     }
+}
+
+/// Return `true` if `value` ends with `.onion` (any case).
+///
+/// This is a quick syntactic check; the caller is responsible for validating
+/// that it is a properly formed v3 address.
+fn is_onion_domain(value: &str) -> bool {
+    value.to_ascii_lowercase().ends_with(".onion")
 }
 
 fn gen_token() -> String {

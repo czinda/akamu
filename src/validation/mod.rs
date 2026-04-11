@@ -8,6 +8,7 @@ mod dns_persist_01;
 mod http01;
 mod tls_alpn01;
 pub mod caa;
+pub mod onion_csr_01;
 
 use std::sync::Arc;
 
@@ -21,6 +22,9 @@ use crate::state::AppState;
 ///
 /// This function is intentionally infallible — all errors are recorded in the
 /// database rather than propagated.
+///
+/// `onion_csr_der` carries the DER-encoded CSR submitted by the client for
+/// `onion-csr-01` challenges; it is `None` for all other challenge types.
 #[allow(clippy::too_many_arguments)]
 pub async fn validate_challenge(
     state: &Arc<AppState>,
@@ -31,6 +35,7 @@ pub async fn validate_challenge(
     id_value: &str,
     key_auth: &str,
     token: &str,
+    onion_csr_der: Option<&[u8]>,
 ) {
     let http_port = state.config.server.http_validation_port;
     let issuer_domain = state.config.dns_persist_issuer_domain();
@@ -50,6 +55,7 @@ pub async fn validate_challenge(
         &issuer_domain,
         dns_resolver_addr,
         &state.validation_client,
+        onion_csr_der,
     )
     .await;
 
@@ -63,6 +69,7 @@ pub async fn validate_challenge(
 /// Dispatch to the correct validator based on challenge type.
 ///
 /// For `dns-persist-01`, `key_auth` carries the account URI (not a token·thumbprint).
+/// For `onion-csr-01`, `onion_csr_der` must be `Some(der)` containing the client's CSR.
 #[allow(clippy::too_many_arguments)]
 async fn dispatch(
     chall_type: &str,
@@ -74,6 +81,7 @@ async fn dispatch(
     issuer_domain: &str,
     dns_resolver_addr: Option<std::net::SocketAddr>,
     validation_client: &crate::state::ValidationClient,
+    onion_csr_der: Option<&[u8]>,
 ) -> Result<(), AcmeError> {
     match chall_type {
         "http-01" => {
@@ -83,6 +91,15 @@ async fn dispatch(
         "tls-alpn-01" => tls_alpn01::validate(id_value, key_auth).await,
         "dns-persist-01" => {
             dns_persist_01::validate(id_value, key_auth, issuer_domain, dns_resolver_addr).await
+        }
+        "onion-csr-01" => {
+            let csr_der = onion_csr_der.ok_or_else(|| {
+                AcmeError::IncorrectResponse(
+                    "onion-csr-01: CSR not provided in challenge response".into(),
+                )
+            })?;
+            // id_value is the .onion domain; key_auth is token.thumbprint.
+            onion_csr_01::validate(id_value, csr_der, key_auth)
         }
         other => Err(AcmeError::IncorrectResponse(format!(
             "unsupported challenge type: {other}"
@@ -372,6 +389,7 @@ mod tests {
             "acme.test",
             None,
             &client,
+            None,
         )
         .await;
         assert!(result.is_err());
@@ -423,6 +441,7 @@ mod tests {
             "example.com",
             "token.thumbprint",
             "token",
+            None,
         )
         .await;
         // If we get here without panicking, the test passes
@@ -829,7 +848,7 @@ mod tests {
         .unwrap();
 
         validate_challenge(
-            &state, &chall_id, &authz_id, "http-01", "ip", &id_value, &key_auth, token,
+            &state, &chall_id, &authz_id, "http-01", "ip", &id_value, &key_auth, token, None,
         )
         .await;
 

@@ -26,6 +26,9 @@ fn is_false(b: &bool) -> bool {
 /// Borrows `type` and `status` from `ChallengeRow`; `token` is borrowed for
 /// non-dns-persist-01 challenges. `issuer_domain_names` is only populated
 /// for dns-persist-01 (one allocation per authz at most).
+/// `auth_key` is only populated for `onion-csr-01` challenges (RFC 9799 §3.2):
+/// it carries the JWK thumbprint so the client can construct the key authorization
+/// without an extra server round-trip.
 #[derive(Serialize)]
 struct ChallengeJson<'a> {
     r#type: &'a str,
@@ -38,6 +41,10 @@ struct ChallengeJson<'a> {
         skip_serializing_if = "Option::is_none"
     )]
     issuer_domain_names: Option<Vec<String>>,
+    /// RFC 9799 §3.2: present only for `onion-csr-01` challenges.
+    /// Value is the JWK thumbprint of the account key (base64url, SHA-256).
+    #[serde(rename = "authKey", skip_serializing_if = "Option::is_none")]
+    auth_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     validated: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -105,30 +112,33 @@ pub async fn new_authz(
         ));
     }
 
-    let identifier_json =
-        serde_json::to_string(&json!({"type": payload.identifier.r#type, "value": payload.identifier.value}))
-            .unwrap();
+    let identifier_json = serde_json::to_string(
+        &json!({"type": payload.identifier.r#type, "value": payload.identifier.value}),
+    )
+    .unwrap();
 
     let now = unix_now();
 
     // Check for an existing valid unexpired authorization for this account+identifier.
-    if let Some(existing_authz) =
-        db::authz::find_valid_by_account_and_identifier(&state.db, &account_id, &identifier_json, now)
-            .await?
+    if let Some(existing_authz) = db::authz::find_valid_by_account_and_identifier(
+        &state.db,
+        &account_id,
+        &identifier_json,
+        now,
+    )
+    .await?
     {
         // Return the existing authorization.
-        let (authz, challenges) =
-            db::authz::get_with_challenges(&state.db, &existing_authz.id)
-                .await?
-                .ok_or(AcmeError::NotFound)?;
+        let (authz, challenges) = db::authz::get_with_challenges(&state.db, &existing_authz.id)
+            .await?
+            .ok_or(AcmeError::NotFound)?;
         let base = &state.config.base_url;
         let location = format!("{base}/acme/authz/{}", authz.id);
-        let body = build_authz_json(&authz, &challenges, base, &state);
+        let thumbprint = ctx.jwk_thumbprint.as_deref().unwrap_or("");
+        let body = build_authz_json(&authz, &challenges, base, &state, thumbprint);
         let mut resp = json_response(&state, StatusCode::CREATED, body, &ctx.next_nonce)?;
-        resp.headers_mut().insert(
-            axum::http::header::LOCATION,
-            location.parse().unwrap(),
-        );
+        resp.headers_mut()
+            .insert(axum::http::header::LOCATION, location.parse().unwrap());
         return Ok(resp);
     }
 
@@ -208,30 +218,41 @@ pub async fn new_authz(
 
     let base = &state.config.base_url;
     let location = format!("{base}/acme/authz/{authz_id}");
-    let body = build_authz_json(&authz, &chall_rows, base, &state);
+    let thumbprint = ctx.jwk_thumbprint.as_deref().unwrap_or("");
+    let body = build_authz_json(&authz, &chall_rows, base, &state, thumbprint);
     let mut resp = json_response(&state, StatusCode::CREATED, body, &ctx.next_nonce)?;
-    resp.headers_mut().insert(
-        axum::http::header::LOCATION,
-        location.parse().unwrap(),
-    );
+    resp.headers_mut()
+        .insert(axum::http::header::LOCATION, location.parse().unwrap());
     Ok(resp)
 }
 
 /// Build the typed `AuthzJson` response body from a row + challenges.
+///
+/// `jwk_thumbprint` is the account's JWK thumbprint, used to populate the
+/// `authKey` field for `onion-csr-01` challenges (RFC 9799 §3.2).
 fn build_authz_json<'a>(
     authz: &'a AuthorizationRow,
     challenges: &'a [ChallengeRow],
     base: &str,
     state: &AppState,
+    jwk_thumbprint: &str,
 ) -> AuthzJson<'a> {
     let issuer_domain = state.config.dns_persist_issuer_domain();
     let challs: Vec<ChallengeJson<'_>> = challenges
         .iter()
         .map(|c| {
-            let (token, issuer_domain_names) = if c.r#type == "dns-persist-01" {
-                (None, Some(vec![issuer_domain.to_string()]))
+            let (token, issuer_domain_names, auth_key) = if c.r#type == "dns-persist-01" {
+                (None, Some(vec![issuer_domain.to_string()]), None)
+            } else if c.r#type == "onion-csr-01" {
+                // RFC 9799 §3.2: include authKey (JWK thumbprint) so the client
+                // can construct the key authorization without an extra lookup.
+                (
+                    Some(c.token.as_str()),
+                    None,
+                    Some(jwk_thumbprint.to_string()),
+                )
             } else {
-                (Some(c.token.as_str()), None)
+                (Some(c.token.as_str()), None, None)
             };
             ChallengeJson {
                 r#type: &c.r#type,
@@ -239,6 +260,7 @@ fn build_authz_json<'a>(
                 status: &c.status,
                 token,
                 issuer_domain_names,
+                auth_key,
                 validated: c.validated.map(fmt_time),
                 error: c
                     .error
@@ -289,7 +311,8 @@ pub async fn get_authz(
         ));
     }
     let base = &state.config.base_url;
-    let body = build_authz_json(&authz, &challenges, base, &state);
+    let thumbprint = ctx.jwk_thumbprint.as_deref().unwrap_or("");
+    let body = build_authz_json(&authz, &challenges, base, &state, thumbprint);
     json_response(&state, StatusCode::OK, body, &ctx.next_nonce)
 }
 
@@ -403,6 +426,7 @@ mod tests {
                 status: &c.status,
                 token: Some(c.token.as_str()),
                 issuer_domain_names: None,
+                auth_key: None,
                 validated: None,
                 error: None,
             })

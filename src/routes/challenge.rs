@@ -81,6 +81,38 @@ pub async fn respond_challenge(
         format!("{}.{}", challenge.token, jwk_thumbprint)
     };
 
+    // For onion-csr-01 (RFC 9799 §3.2): the client submits a CSR in the
+    // challenge response payload as {"csr": "<base64url DER>"}.  Extract and
+    // decode it here so it can be passed to the validation task.
+    let onion_csr_der: Option<Vec<u8>> = if chall_type == "onion-csr-01" {
+        #[derive(serde::Deserialize)]
+        struct OnionCsrPayload {
+            csr: String,
+        }
+        match serde_json::from_slice::<OnionCsrPayload>(&ctx.payload) {
+            Ok(p) => {
+                use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+                use base64::Engine;
+                match URL_SAFE_NO_PAD.decode(p.csr.as_bytes()) {
+                    Ok(der) => Some(der),
+                    Err(e) => {
+                        // Return an error immediately — don't spawn background task.
+                        return Err(AcmeError::BadRequest(format!(
+                            "onion-csr-01: csr field is not valid base64url: {e}"
+                        )));
+                    }
+                }
+            }
+            Err(e) => {
+                return Err(AcmeError::BadRequest(format!(
+                    "onion-csr-01: payload must be {{\"csr\":\"<base64url>\"}}: {e}"
+                )));
+            }
+        }
+    } else {
+        None
+    };
+
     // Spawn background validation task. The JoinHandle is observed so that a
     // panic inside the task is logged rather than silently swallowed.
     let state_clone = Arc::clone(&state);
@@ -100,6 +132,7 @@ pub async fn respond_challenge(
             &id_value,
             &key_auth,
             &token,
+            onion_csr_der.as_deref(),
         )
         .await;
     });
