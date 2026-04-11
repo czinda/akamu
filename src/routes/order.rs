@@ -6,7 +6,7 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::Response;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::db;
@@ -231,33 +231,55 @@ pub async fn get_order(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-pub(crate) fn order_json(
-    order: &OrderRow,
-    authz_urls: &[String],
+/// Typed ACME order response body. Using `Box<RawValue>` for `identifiers`
+/// avoids the `serde_json::from_str` parse + `Vec<Value>` / `HashMap`
+/// allocations that the old `json!` macro approach required. The identifiers
+/// JSON string stored in the DB is embedded directly into the response without
+/// being re-parsed.
+#[derive(Serialize)]
+pub(crate) struct OrderJson<'a> {
+    status: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expires: Option<String>,
+    identifiers: Box<serde_json::value::RawValue>,
+    authorizations: &'a [String],
+    finalize: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    certificate: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<Box<serde_json::value::RawValue>>,
+}
+
+pub(crate) fn order_json<'a>(
+    order: &'a OrderRow,
+    authz_urls: &'a [String],
     base_url: &str,
-) -> serde_json::Value {
-    let identifiers: Vec<serde_json::Value> =
-        serde_json::from_str(&order.identifiers).unwrap_or_default();
-    let mut obj = json!({
-        "status": order.status,
-        "identifiers": identifiers,
-        "authorizations": authz_urls,
-        "finalize": format!("{base_url}/acme/order/{}/finalize", order.id),
-    });
-    if let Some(exp) = order.expires {
-        obj["expires"] = json!(fmt_time(exp));
+) -> OrderJson<'a> {
+    // Embed identifiers as raw JSON — no parse, no Vec<Value>/HashMap allocs.
+    // The stored string is always valid JSON (written by serde_json::to_string).
+    let identifiers = serde_json::value::RawValue::from_string(order.identifiers.clone())
+        .unwrap_or_else(|_| serde_json::value::RawValue::from_string("[]".to_string()).unwrap());
+    // Same for error: embed raw JSON if present; skip if None or unparseable.
+    let error = order
+        .error
+        .as_deref()
+        .and_then(|s| serde_json::value::RawValue::from_string(s.to_string()).ok());
+    OrderJson {
+        status: &order.status,
+        expires: order.expires.map(fmt_time),
+        identifiers,
+        authorizations: authz_urls,
+        finalize: format!("{base_url}/acme/order/{}/finalize", order.id),
+        certificate: if order.status == "valid" {
+            order
+                .certificate_id
+                .as_ref()
+                .map(|c| format!("{base_url}/acme/cert/{c}"))
+        } else {
+            None
+        },
+        error,
     }
-    if order.status == "valid" {
-        if let Some(cert_id) = &order.certificate_id {
-            obj["certificate"] = json!(format!("{base_url}/acme/cert/{cert_id}"));
-        }
-    }
-    if let Some(err) = &order.error {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(err) {
-            obj["error"] = v;
-        }
-    }
-    obj
 }
 
 fn gen_token() -> String {
@@ -293,14 +315,19 @@ mod tests {
         }
     }
 
+    // Helper: serialize the typed OrderJson to a serde_json::Value for assertions.
+    fn to_val<'a>(j: OrderJson<'a>) -> serde_json::Value {
+        serde_json::to_value(j).unwrap()
+    }
+
     #[test]
     fn order_json_pending_order() {
         let order = make_order("pending", Some(1_700_100_000), None, None);
-        let json = order_json(
+        let json = to_val(order_json(
             &order,
             &["https://acme.test/acme/authz/a".to_string()],
             "https://acme.test",
-        );
+        ));
         assert_eq!(json["status"], "pending");
         assert!(json["expires"].as_str().is_some());
         assert!(json["certificate"].is_null() || json.get("certificate").is_none());
@@ -310,7 +337,7 @@ mod tests {
     #[test]
     fn order_json_valid_order_includes_certificate() {
         let order = make_order("valid", None, Some("cert-abc"), None);
-        let json = order_json(&order, &[], "https://acme.test");
+        let json = to_val(order_json(&order, &[], "https://acme.test"));
         assert_eq!(json["status"], "valid");
         assert!(json["certificate"].as_str().unwrap().contains("cert-abc"));
     }
@@ -323,7 +350,7 @@ mod tests {
             None,
             Some("{\"type\":\"urn:ietf:params:acme:error:connection\",\"detail\":\"failed\"}"),
         );
-        let json = order_json(&order, &[], "https://acme.test");
+        let json = to_val(order_json(&order, &[], "https://acme.test"));
         assert_eq!(json["status"], "invalid");
         assert_eq!(
             json["error"]["type"],
@@ -334,7 +361,7 @@ mod tests {
     #[test]
     fn order_json_no_expires_when_none() {
         let order = make_order("ready", None, None, None);
-        let json = order_json(&order, &[], "https://acme.test");
+        let json = to_val(order_json(&order, &[], "https://acme.test"));
         assert!(json.get("expires").is_none() || json["expires"].is_null());
     }
 
@@ -342,7 +369,7 @@ mod tests {
     fn order_json_valid_status_without_cert_no_certificate_field() {
         // valid status but no certificate_id → no "certificate" field
         let order = make_order("valid", None, None, None);
-        let json = order_json(&order, &[], "https://acme.test");
+        let json = to_val(order_json(&order, &[], "https://acme.test"));
         // either missing or null
         assert!(json.get("certificate").map_or(true, |v| v.is_null()));
     }

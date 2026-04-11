@@ -9,7 +9,6 @@ use axum::routing::{get, head, post};
 use axum::{Json, Router};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use serde_json::Value;
 use tower_http::trace::TraceLayer;
 
 use crate::db;
@@ -218,12 +217,15 @@ pub(crate) fn acme_headers(state: &AppState, nonce: &str) -> HeaderMap {
 
 /// Wrap a JSON response with ACME headers.
 ///
+/// `body` can be any type implementing `Serialize` — both `serde_json::Value`
+/// and typed response structs (e.g. `OrderJson`) are accepted.
+///
 /// `nonce` must be a fresh nonce already inserted into the DB (use `ctx.next_nonce`
 /// from `parse_jws`, or call `new_nonce` for endpoints that do not use `parse_jws`).
-pub(crate) fn json_response(
+pub(crate) fn json_response<T: serde::Serialize>(
     state: &AppState,
     status: StatusCode,
-    body: Value,
+    body: T,
     nonce: &str,
 ) -> Result<Response, AcmeError> {
     let headers = acme_headers(state, nonce);
