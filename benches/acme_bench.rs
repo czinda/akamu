@@ -221,6 +221,12 @@ struct Args {
     /// Parse and verify the SAN of each issued certificate
     #[arg(long)]
     verify_cert: bool,
+
+    /// Poll interval in milliseconds for the challenge-ready and finalize-valid loops.
+    /// Lower values improve throughput when validation completes in < poll_ms.
+    /// http-01 validation finishes in < 5 ms on loopback; 5 ms is a good floor.
+    #[arg(long, default_value_t = 50)]
+    poll_ms: u64,
 }
 
 // ── HTTP client ────────────────────────────────────────────────────────────────
@@ -912,6 +918,7 @@ async fn respond_and_poll(
     chall_url: &str,
     order_url: &str,
     nonce: &str,
+    poll_ms: u64,
 ) -> Result<String, String> {
     let nonce_url = format!("{}/acme/new-nonce", server.base_url);
     let chall_path = chall_url.trim_start_matches(&server.base_url);
@@ -930,7 +937,7 @@ async fn respond_and_poll(
     let order_path = order_url.trim_start_matches(&server.base_url);
     let deadline = Instant::now() + std::time::Duration::from_secs(30);
     loop {
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(poll_ms)).await;
         if Instant::now() > deadline {
             return Err("timed out waiting for order ready".to_string());
         }
@@ -1138,8 +1145,17 @@ async fn run_issuance(
 
     // ── Trigger challenge (uses nonce from authz response) → poll until ready ──
     let t = Instant::now();
-    let nonce =
-        match respond_and_poll(worker, server, client, &account_url, &chall_url, &order_url, &nonce).await
+    let nonce = match respond_and_poll(
+        worker,
+        server,
+        client,
+        &account_url,
+        &chall_url,
+        &order_url,
+        &nonce,
+        args.poll_ms,
+    )
+    .await
     {
         Ok(n) => n,
         Err(e) => return IssuanceTiming::failed(wid, request_id, format!("challenge: {e}")),
