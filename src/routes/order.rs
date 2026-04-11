@@ -17,14 +17,16 @@ use crate::state::AppState;
 use super::{fmt_time, json_response, parse_jws, require_payload, unix_now};
 
 #[derive(Deserialize)]
-struct Identifier {
+struct NewOrderIdentifier {
     r#type: String,
     value: String,
+    #[serde(default, rename = "ancestorDomain")]
+    ancestor_domain: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct NewOrderPayload {
-    identifiers: Vec<Identifier>,
+    identifiers: Vec<NewOrderIdentifier>,
     #[serde(default)]
     replaces: Option<String>,
 }
@@ -54,6 +56,18 @@ pub async fn new_order(
         match id.r#type.as_str() {
             "dns" | "ip" => {}
             other => return Err(AcmeError::UnsupportedIdentifier(other.into())),
+        }
+        // Validate ancestorDomain if present: identifier.value must end with
+        // ".<ancestor_domain>" (label-aligned, case-insensitive).
+        if let Some(ref ancestor) = id.ancestor_domain {
+            let value_lc = id.value.to_ascii_lowercase();
+            let ancestor_lc = ancestor.to_ascii_lowercase();
+            let suffix = format!(".{}", ancestor_lc);
+            if !value_lc.ends_with(&suffix) {
+                return Err(AcmeError::BadRequest(
+                    "ancestorDomain is not an ancestor of the identifier".into(),
+                ));
+            }
         }
     }
 
@@ -95,6 +109,7 @@ pub async fn new_order(
         authz_id: String,
         identifier_json: String,
         wildcard: bool,
+        subdomain_auth_allowed: bool,
         challenges: Vec<(String, String)>, // (challenge_id, type)
         token: String,
     }
@@ -104,8 +119,17 @@ pub async fn new_order(
 
     for id in &payload.identifiers {
         let authz_id = uuid::Uuid::new_v4().to_string();
+        // When ancestorDomain is set, issue the authz against the ancestor domain
+        // and mark it subdomainAuthAllowed; the proof is for the ancestor, not
+        // the exact subdomain.
+        let (authz_type, authz_value, subdomain_auth_allowed) =
+            if let Some(ref ancestor) = id.ancestor_domain {
+                (id.r#type.as_str(), ancestor.as_str(), true)
+            } else {
+                (id.r#type.as_str(), id.value.as_str(), false)
+            };
         let identifier_json =
-            serde_json::to_string(&json!({"type": id.r#type, "value": id.value})).unwrap();
+            serde_json::to_string(&json!({"type": authz_type, "value": authz_value})).unwrap();
         let token = gen_token();
         // dns-persist-01 is offered only when the operator has explicitly configured
         // an issuer domain — without it the challenge cannot be validated.
@@ -115,7 +139,7 @@ pub async fn new_order(
         } else {
             &["http-01", "dns-01", "tls-alpn-01"]
         };
-        let challenge_types: &[&str] = match id.r#type.as_str() {
+        let challenge_types: &[&str] = match authz_type {
             "dns" => dns_types,
             "ip" => &["http-01", "tls-alpn-01"],
             _ => &[],
@@ -128,7 +152,8 @@ pub async fn new_order(
         authz_plans.push(AuthzPlan {
             authz_id,
             identifier_json,
-            wildcard: id.value.starts_with("*."),
+            wildcard: authz_value.starts_with("*."),
+            subdomain_auth_allowed,
             challenges,
             token,
         });
@@ -163,8 +188,8 @@ pub async fn new_order(
                     tx.prepare_cached(
                         "INSERT INTO authorizations
                          (id, order_id, account_id, status, identifier, expires,
-                          wildcard, created, updated)
-                         VALUES (?1, ?2, ?3, 'pending', ?4, ?5, ?6, ?7, ?7)",
+                          wildcard, subdomain_auth_allowed, created, updated)
+                         VALUES (?1, ?2, ?3, 'pending', ?4, ?5, ?6, ?7, ?8, ?8)",
                     )?
                     .execute(rusqlite::params![
                         plan.authz_id,
@@ -173,6 +198,7 @@ pub async fn new_order(
                         plan.identifier_json,
                         authz_expiry,
                         plan.wildcard as i64,
+                        plan.subdomain_auth_allowed as i64,
                         now
                     ])?;
                     for (chall_id, chall_type) in &plan.challenges {

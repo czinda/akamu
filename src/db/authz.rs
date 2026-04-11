@@ -12,8 +12,9 @@ fn row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuthorizationRow> {
         identifier: row.get(4)?,
         expires: row.get(5)?,
         wildcard: row.get::<_, i64>(6)? != 0,
-        created: row.get(7)?,
-        updated: row.get(8)?,
+        subdomain_auth_allowed: row.get::<_, i64>(7)? != 0,
+        created: row.get(8)?,
+        updated: row.get(9)?,
     })
 }
 
@@ -21,8 +22,9 @@ pub async fn insert(db: &Connection, row: AuthorizationRow) -> Result<(), AcmeEr
     db.call(move |conn| {
         conn.prepare_cached(
             "INSERT INTO authorizations
-             (id, order_id, account_id, status, identifier, expires, wildcard, created, updated)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             (id, order_id, account_id, status, identifier, expires, wildcard,
+              subdomain_auth_allowed, created, updated)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         )?
         .execute(rusqlite::params![
             row.id,
@@ -32,6 +34,7 @@ pub async fn insert(db: &Connection, row: AuthorizationRow) -> Result<(), AcmeEr
             row.identifier,
             row.expires,
             row.wildcard as i64,
+            row.subdomain_auth_allowed as i64,
             row.created,
             row.updated,
         ])?;
@@ -45,7 +48,8 @@ pub async fn get_by_id(db: &Connection, id: &str) -> Result<Option<Authorization
     let id = id.to_string();
     db.call(move |conn| {
         let mut stmt = conn.prepare_cached(
-            "SELECT id, order_id, account_id, status, identifier, expires, wildcard, created, updated
+            "SELECT id, order_id, account_id, status, identifier, expires, wildcard,
+                    subdomain_auth_allowed, created, updated
              FROM authorizations WHERE id = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![id])?;
@@ -66,7 +70,8 @@ pub async fn list_by_order(
     let order_id = order_id.to_string();
     db.call(move |conn| {
         let mut stmt = conn.prepare_cached(
-            "SELECT id, order_id, account_id, status, identifier, expires, wildcard, created, updated
+            "SELECT id, order_id, account_id, status, identifier, expires, wildcard,
+                    subdomain_auth_allowed, created, updated
              FROM authorizations WHERE order_id = ?1",
         )?;
         let rows = stmt
@@ -89,7 +94,8 @@ pub async fn get_with_challenges(
     db.call(move |conn| {
         let authz = {
             let mut stmt = conn.prepare_cached(
-                "SELECT id, order_id, account_id, status, identifier, expires, wildcard, created, updated
+                "SELECT id, order_id, account_id, status, identifier, expires, wildcard,
+                        subdomain_auth_allowed, created, updated
                  FROM authorizations WHERE id = ?1",
             )?;
             let mut rows = stmt.query(rusqlite::params![authz_id])?;
@@ -136,7 +142,7 @@ pub async fn get_with_challenges_mark_processing(
         let authz = {
             let mut stmt = conn.prepare_cached(
                 "SELECT id, order_id, account_id, status, identifier, expires, wildcard,
-                        created, updated
+                        subdomain_auth_allowed, created, updated
                  FROM authorizations WHERE id = ?1",
             )?;
             let mut rows = stmt.query(rusqlite::params![authz_id_s])?;
@@ -188,7 +194,8 @@ pub async fn find_valid_by_account_and_identifier(
     let identifier_json = identifier_json.to_string();
     db.call(move |conn| {
         let mut stmt = conn.prepare_cached(
-            "SELECT id, order_id, account_id, status, identifier, expires, wildcard, created, updated
+            "SELECT id, order_id, account_id, status, identifier, expires, wildcard,
+                    subdomain_auth_allowed, created, updated
              FROM authorizations
              WHERE account_id = ?1
                AND identifier = ?2
@@ -281,6 +288,7 @@ mod tests {
             identifier: "{\"type\":\"dns\",\"value\":\"example.com\"}".to_string(),
             expires: None,
             wildcard: false,
+            subdomain_auth_allowed: false,
             created: 1_700_000_000,
             updated: 1_700_000_000,
         }
@@ -324,6 +332,7 @@ mod tests {
                 identifier: "{\"type\":\"dns\",\"value\":\"other.com\"}".to_string(),
                 expires: None,
                 wildcard: true,
+                subdomain_auth_allowed: false,
                 created: 1_700_000_000,
                 updated: 1_700_000_000,
             },

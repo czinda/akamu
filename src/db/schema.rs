@@ -37,6 +37,7 @@ pub struct AuthorizationRow {
     pub identifier: String, // JSON {"type":..,"value":..}
     pub expires: Option<i64>,
     pub wildcard: bool,
+    pub subdomain_auth_allowed: bool,
     pub created: i64,
     pub updated: i64,
 }

@@ -24,6 +24,9 @@ pub async fn get_directory(State(state): State<Arc<AppState>>) -> impl IntoRespo
     if state.config.server.external_account_required {
         meta["externalAccountRequired"] = json!(true);
     }
+    if state.config.server.allow_subdomain_auth {
+        meta["subdomainAuthAllowed"] = json!(true);
+    }
 
     let dir = json!({
         "newNonce":    format!("{base}/acme/new-nonce"),

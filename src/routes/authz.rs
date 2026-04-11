@@ -47,7 +47,7 @@ struct ChallengeJson<'a> {
 /// Typed authorization response body.
 ///
 /// `identifier` is embedded as raw JSON (no re-parse from the stored string).
-/// `wildcard` is omitted when false.
+/// `wildcard` and `subdomain_auth_allowed` are omitted when false.
 #[derive(Serialize)]
 struct AuthzJson<'a> {
     status: &'a str,
@@ -55,6 +55,8 @@ struct AuthzJson<'a> {
     challenges: Vec<ChallengeJson<'a>>,
     #[serde(skip_serializing_if = "is_false")]
     wildcard: bool,
+    #[serde(rename = "subdomainAuthAllowed", skip_serializing_if = "is_false")]
+    subdomain_auth_allowed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     expires: Option<String>,
 }
@@ -167,17 +169,17 @@ pub async fn new_authz(
             tx.prepare_cached(
                 "INSERT INTO authorizations
                  (id, order_id, account_id, status, identifier, expires,
-                  wildcard, created, updated)
-                 VALUES (?1, NULL, ?2, 'pending', ?3, ?4, 0, ?5, ?5)",
+                  wildcard, subdomain_auth_allowed, created, updated)
+                 VALUES (?1, NULL, ?2, 'pending', ?3, ?4, 0, ?5, ?6, ?6)",
             )?
             .execute(rusqlite::params![
                 authz_id_clone,
                 account_id_clone,
                 identifier_json_clone,
                 authz_expiry,
+                subdomain_auth_allowed as i64,
                 now
             ])?;
-            let _ = subdomain_auth_allowed; // stored in identifier context; noted for future use
             for (chall_id, chall_type) in &challenges_clone {
                 tx.prepare_cached(
                     "INSERT INTO challenges
@@ -252,6 +254,7 @@ fn build_authz_json<'a>(
         identifier,
         challenges: challs,
         wildcard: authz.wildcard,
+        subdomain_auth_allowed: authz.subdomain_auth_allowed,
         expires: authz.expires.map(fmt_time),
     }
 }
@@ -304,6 +307,7 @@ mod tests {
             identifier: "{\"type\":\"dns\",\"value\":\"example.com\"}".to_string(),
             expires,
             wildcard,
+            subdomain_auth_allowed: false,
             created: 1_700_000_000,
             updated: 1_700_000_000,
         }
@@ -410,6 +414,7 @@ mod tests {
             identifier,
             challenges: chall_jsons,
             wildcard: authz.wildcard,
+            subdomain_auth_allowed: authz.subdomain_auth_allowed,
             expires: authz.expires.map(super::super::fmt_time),
         };
         let val = serde_json::to_value(body).unwrap();
@@ -444,6 +449,7 @@ mod tests {
             identifier,
             challenges: vec![],
             wildcard: true,
+            subdomain_auth_allowed: false,
             expires: None,
         };
         let val = serde_json::to_value(body).unwrap();
@@ -461,6 +467,7 @@ mod tests {
             identifier,
             challenges: vec![],
             wildcard: false,
+            subdomain_auth_allowed: false,
             expires: None,
         };
         let val = serde_json::to_value(body).unwrap();

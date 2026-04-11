@@ -178,6 +178,7 @@ mod tests {
                 identifier: "{\"type\":\"dns\",\"value\":\"example.com\"}".to_string(),
                 expires: None,
                 wildcard: false,
+                subdomain_auth_allowed: false,
                 created: 1_700_000_000,
                 updated: 1_700_000_000,
             },
