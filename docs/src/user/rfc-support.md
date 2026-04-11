@@ -11,7 +11,7 @@ This page documents every RFC that is relevant to `Akāmu`, explaining what each
 | [draft-ietf-lamps-pq-composite-sigs](#draft-ietf-lamps-pq-composite-sigs) | ML-DSA Composite TLS Signature Schemes | Partial (provisional code points) |
 | [RFC 8555](#rfc-8555-core-acme) | Automatic Certificate Management Environment (ACME) | Full |
 | [RFC 8659](#rfc-8659-caa-dns-resource-record) | DNS Certification Authority Authorization (CAA) | Full |
-| [RFC 8657](#rfc-8657-caa-accounturi-and-validationmethods) | CAA Extensions: accounturi and validationmethods | Full |
+| [RFC 8657](#rfc-8657-caa-accounturi-and-validationmethods) | CAA Extensions: accounturi and validationmethods | Partial (validationmethods: full; accounturi: not enforced) |
 | [RFC 8737](#rfc-8737-tls-alpn-01-challenge) | ACME TLS-ALPN-01 Challenge Extension | Full |
 | [RFC 8738](#rfc-8738-ip-identifier-validation) | ACME IP Identifier Validation | Full |
 | [RFC 8739](#rfc-8739-acme-star) | ACME Short-Term, Automatically Renewed (STAR) Certificates | Full |
