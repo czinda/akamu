@@ -2,6 +2,7 @@ pub mod accounts;
 pub mod authz;
 pub mod certs;
 pub mod challenges;
+pub mod eab;
 pub mod nonces;
 pub mod orders;
 pub mod schema;
@@ -34,6 +35,7 @@ pub async fn open(path: &str) -> Result<Connection, AcmeError> {
             M::up(include_str!("../../migrations/005_subdomain_auth.sql")),
             M::up(include_str!("../../migrations/006_star.sql")),
             M::up(include_str!("../../migrations/007_profiles.sql")),
+            M::up(include_str!("../../migrations/008_eab_keys.sql")),
         ]);
         migrations.to_latest(conn).map_err(|e| {
             rusqlite::Error::SqliteFailure(
