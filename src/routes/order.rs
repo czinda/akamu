@@ -327,6 +327,20 @@ pub async fn new_order(
         });
     }
 
+    // RFC 8555 §7.1.3: persist notBefore/notAfter from the request so the CA
+    // can honour them at finalization time.  Parse early so errors surface here
+    // rather than inside the transaction closure.
+    let order_not_before: Option<i64> = payload
+        .not_before
+        .as_deref()
+        .map(parse_rfc3339)
+        .transpose()?;
+    let order_not_after: Option<i64> = payload
+        .not_after
+        .as_deref()
+        .map(parse_rfc3339)
+        .transpose()?;
+
     // Write everything inside a single transaction so a partial failure
     // cannot leave orphaned orders, authorizations, or challenges.
     {
@@ -346,7 +360,7 @@ pub async fn new_order(
                       not_before, not_after, error, certificate_id, replaces, created, updated,
                       star_start_date, star_end_date, star_lifetime_secs,
                       star_lifetime_adjust_secs, star_allow_cert_get, profile)
-                     VALUES (?1, ?2, 'pending', ?3, ?4, NULL, NULL, NULL, NULL, ?5, ?6, ?6,
+                     VALUES (?1, ?2, 'pending', ?3, ?4, ?13, ?14, NULL, NULL, ?5, ?6, ?6,
                              ?7, ?8, ?9, ?10, ?11, ?12)",
                 )?
                 .execute(rusqlite::params![
@@ -362,6 +376,8 @@ pub async fn new_order(
                     star_lifetime_adjust_secs,
                     star_allow_cert_get_i64,
                     profile_clone,
+                    order_not_before,
+                    order_not_after,
                 ])?;
                 for plan in &authz_plans {
                     tx.prepare_cached(
