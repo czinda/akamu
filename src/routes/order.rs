@@ -301,6 +301,13 @@ pub async fn new_order(
         } else {
             &["http-01", "dns-01", "tls-alpn-01"]
         };
+        // RFC 8555 §7.1.3 + RFC 8737 §3: wildcard identifiers MUST NOT use
+        // http-01 or tls-alpn-01; only dns-01 (and dns-persist-01) are valid.
+        let wildcard_dns_types: &[&str] = if dns_persist_enabled {
+            &["dns-01", "dns-persist-01"]
+        } else {
+            &["dns-01"]
+        };
         // RFC 9799 §3.1.1: for .onion domains MUST offer onion-csr-01 and
         // MUST NOT offer dns-01.  http-01 and tls-alpn-01 are allowed but
         // require Tor-network connectivity for actual validation; we include
@@ -308,6 +315,7 @@ pub async fn new_order(
         let onion_types: &[&str] = &["onion-csr-01", "http-01", "tls-alpn-01"];
         let challenge_types: &[&str] = match authz_type {
             "dns" if is_onion_domain(authz_value) => onion_types,
+            "dns" if authz_value.starts_with("*.") => wildcard_dns_types,
             "dns" => dns_types,
             "ip" => &["http-01", "tls-alpn-01"],
             _ => &[],
