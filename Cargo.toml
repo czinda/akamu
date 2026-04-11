@@ -13,7 +13,7 @@ axum = { version = "0.8", features = ["http1", "http2"] }
 tower-http = { version = "0.6", features = ["trace"] }
 
 # Database (synchronous SQLite + async wrapper via background thread)
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.31" }
 tokio-rusqlite = "0.5"
 rusqlite_migration = "1"
 
