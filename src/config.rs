@@ -109,6 +109,12 @@ pub struct ServerConfig {
     pub star_min_lifetime_secs: Option<u64>,
     /// Maximum STAR order duration in seconds (advertised in directory meta).
     pub star_max_duration_secs: Option<u64>,
+    /// Whether to advertise and allow unauthenticated GET of STAR certificates
+    /// (RFC 8739 §3.1.3 `allow-certificate-get`).  Defaults to `true`.
+    /// When `false`, the directory does not advertise the capability and
+    /// unauthenticated GET requests are rejected even for orders that request it.
+    #[serde(default = "default_star_allow_certificate_get")]
+    pub star_allow_certificate_get: bool,
     /// Certificate profiles (draft-aaron-acme-profiles-01).
     /// Maps profile identifier → human-readable description or documentation URL.
     /// Advertised in directory meta. Clients may request a profile by name in newOrder.
@@ -235,6 +241,10 @@ fn default_authz_expiry_secs() -> u64 {
 
 fn default_max_body_bytes() -> usize {
     65536
+}
+
+fn default_star_allow_certificate_get() -> bool {
+    true
 }
 
 impl Config {

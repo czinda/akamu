@@ -21,6 +21,14 @@ pub async fn star_cert_get(
     State(state): State<Arc<AppState>>,
     Path(order_id): Path<String>,
 ) -> Result<Response, AcmeError> {
+    // Server-level capability gate (RFC 8739 §3.1.3): reject if operator has
+    // disabled unauthenticated certificate GET globally.
+    if !state.config.server.star_allow_certificate_get {
+        return Err(AcmeError::Unauthorized(
+            "server does not permit unauthenticated STAR certificate GET".into(),
+        ));
+    }
+
     // Check order exists and has allow_certificate_get enabled.
     let order = db::orders::get_by_id(&state.db, &order_id)
         .await?
