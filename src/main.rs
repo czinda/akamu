@@ -11,6 +11,10 @@ use acme_server::config::Config;
 use acme_server::state::{AppState, CaState, MtcState, TlsState};
 use acme_server::{ca, db, mtc, routes};
 
+use http_body_util::Empty;
+use hyper_util::client::legacy::Client;
+use hyper_util::rt::TokioExecutor;
+
 #[tokio::main]
 async fn main() {
     // ── Logging ───────────────────────────────────────────────────────────────
@@ -111,6 +115,8 @@ async fn run() -> Result<(), String> {
             ))
             .expect("base_url produces a valid Link header value"),
         ),
+        validation_client: Client::builder(TokioExecutor::new())
+            .build_http::<Empty<hyper::body::Bytes>>(),
     });
 
     // ── HTTP / TLS server ─────────────────────────────────────────────────────

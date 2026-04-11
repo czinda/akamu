@@ -236,7 +236,13 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-        link_header: Arc::new(axum::http::HeaderValue::from_static("<https://acme.test/acme/directory>;rel=\"index\"")),
+        link_header: Arc::new(axum::http::HeaderValue::from_static(
+            "<https://acme.test/acme/directory>;rel=\"index\"",
+        )),
+        validation_client: hyper_util::client::legacy::Client::builder(
+            hyper_util::rt::TokioExecutor::new(),
+        )
+        .build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
     });
 
     (state, dir)
@@ -2205,7 +2211,13 @@ async fn test_directory_with_optional_fields() {
         }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-        link_header: Arc::new(axum::http::HeaderValue::from_static("<https://acme.test/acme/directory>;rel=\"index\"")),
+        link_header: Arc::new(axum::http::HeaderValue::from_static(
+            "<https://acme.test/acme/directory>;rel=\"index\"",
+        )),
+        validation_client: hyper_util::client::legacy::Client::builder(
+            hyper_util::rt::TokioExecutor::new(),
+        )
+        .build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
     });
     let router = routes::build_router(Arc::clone(&state));
     let (status, dir_body, _) = get(&router, "/acme/directory").await;
@@ -2463,7 +2475,13 @@ async fn test_finalize_with_mtc_enabled() {
         }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-        link_header: Arc::new(axum::http::HeaderValue::from_static("<https://acme.test/acme/directory>;rel=\"index\"")),
+        link_header: Arc::new(axum::http::HeaderValue::from_static(
+            "<https://acme.test/acme/directory>;rel=\"index\"",
+        )),
+        validation_client: hyper_util::client::legacy::Client::builder(
+            hyper_util::rt::TokioExecutor::new(),
+        )
+        .build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
     });
 
     let router = routes::build_router(Arc::clone(&state));
@@ -2685,7 +2703,13 @@ async fn test_finalize_with_aia_and_cdp() {
         }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-        link_header: Arc::new(axum::http::HeaderValue::from_static("<https://acme.test/acme/directory>;rel=\"index\"")),
+        link_header: Arc::new(axum::http::HeaderValue::from_static(
+            "<https://acme.test/acme/directory>;rel=\"index\"",
+        )),
+        validation_client: hyper_util::client::legacy::Client::builder(
+            hyper_util::rt::TokioExecutor::new(),
+        )
+        .build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
     });
 
     let router = routes::build_router(Arc::clone(&state));

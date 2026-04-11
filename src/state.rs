@@ -4,12 +4,21 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use axum::http::HeaderValue;
+use http_body_util::Empty;
+use hyper_util::client::legacy::connect::HttpConnector;
+use hyper_util::client::legacy::Client;
 use synta_certificate::BackendPrivateKey;
 use synta_mtc::crypto::HashAlgorithm;
 use tokio_rusqlite::Connection;
 
 use crate::config::Config;
 use crate::mtc::log::SharedLog;
+
+/// Shared HTTP client for outbound challenge validation requests.
+///
+/// Using a single shared client allows hyper to pool and reuse TCP connections
+/// to challenge responders instead of opening a new connection per validation.
+pub type ValidationClient = Client<HttpConnector, Empty<hyper::body::Bytes>>;
 
 /// Top-level application state cloned into every axum handler.
 #[derive(Clone)]
@@ -32,6 +41,12 @@ pub struct AppState {
     /// Computed once at startup; reused on every ACME response to avoid
     /// `format!()` + `HeaderValue::from_str()` allocations on the hot path.
     pub link_header: Arc<HeaderValue>,
+    /// Shared HTTP client for outbound http-01 challenge validation requests.
+    ///
+    /// `Client` is internally reference-counted and `Clone`; sharing one instance
+    /// allows hyper to pool and reuse TCP connections to challenge responders,
+    /// avoiding a TCP handshake per validation at ~200 validations/sec.
+    pub validation_client: ValidationClient,
 }
 
 /// TLS client-auth state available to handlers for introspection.

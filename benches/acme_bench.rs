@@ -712,6 +712,8 @@ async fn start_server(args: &Args) -> BenchServer {
             ))
             .expect("base_url produces a valid Link header value"),
         ),
+        validation_client: hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+            .build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
     });
 
     let router = routes::build_router(state);

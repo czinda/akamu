@@ -49,6 +49,7 @@ pub async fn validate_challenge(
         http_port,
         &issuer_domain,
         dns_resolver_addr,
+        &state.validation_client,
     )
     .await;
 
@@ -72,9 +73,10 @@ async fn dispatch(
     http_port: u16,
     issuer_domain: &str,
     dns_resolver_addr: Option<std::net::SocketAddr>,
+    validation_client: &crate::state::ValidationClient,
 ) -> Result<(), AcmeError> {
     match chall_type {
-        "http-01" => http01::validate(id_value, token, key_auth, http_port).await,
+        "http-01" => http01::validate(id_value, token, key_auth, http_port, validation_client).await,
         "dns-01" => dns01::validate(id_value, key_auth).await,
         "tls-alpn-01" => tls_alpn01::validate(id_value, key_auth).await,
         "dns-persist-01" => {
@@ -287,6 +289,7 @@ mod tests {
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
             link_header: Arc::new(axum::http::HeaderValue::from_static("<https://acme.test/acme/directory>;rel=\"index\"")),
+            validation_client: hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new()).build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
         })
     }
 
@@ -326,6 +329,8 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_unsupported_type_returns_error() {
+        let client = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+            .build_http::<http_body_util::Empty<hyper::body::Bytes>>();
         let result = dispatch(
             "bogus-type",
             "dns",
@@ -335,6 +340,7 @@ mod tests {
             80,
             "acme.test",
             None,
+            &client,
         )
         .await;
         assert!(result.is_err());
@@ -680,6 +686,7 @@ mod tests {
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
             link_header: Arc::new(axum::http::HeaderValue::from_static("<https://acme.test/acme/directory>;rel=\"index\"")),
+            validation_client: hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new()).build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
         });
 
         // The identifier is just the IP address — no port embedded.
@@ -829,6 +836,7 @@ mod tests {
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
             link_header: Arc::new(axum::http::HeaderValue::from_static("<https://acme.test/acme/directory>;rel=\"index\"")),
+            validation_client: hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new()).build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
         });
         // on_valid tries set_valid first; fails on no-table DB → warn + return (lines 65-67).
         on_valid(&state, "fake-chall", "fake-authz", unix_now()).await;
@@ -888,6 +896,7 @@ mod tests {
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
             link_header: Arc::new(axum::http::HeaderValue::from_static("<https://acme.test/acme/directory>;rel=\"index\"")),
+            validation_client: hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new()).build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
         });
         // on_invalid tries set_invalid first; fails on no-table DB → warn (lines 128-135).
         on_invalid(
@@ -981,6 +990,7 @@ mod tests {
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
             link_header: Arc::new(axum::http::HeaderValue::from_static("<https://acme.test/acme/directory>;rel=\"index\"")),
+            validation_client: hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new()).build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
         });
 
         // set_valid succeeds (challenge row exists), then update_status(authz) fails
@@ -1037,6 +1047,7 @@ mod tests {
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
             link_header: Arc::new(axum::http::HeaderValue::from_static("<https://acme.test/acme/directory>;rel=\"index\"")),
+            validation_client: hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new()).build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
         })
     }
 

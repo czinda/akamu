@@ -464,7 +464,13 @@ async fn start_tls_server() -> TlsTestServer {
         }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-        link_header: Arc::new(axum::http::HeaderValue::from_static("<https://acme.test/acme/directory>;rel=\"index\"")),
+        link_header: Arc::new(axum::http::HeaderValue::from_static(
+            "<https://acme.test/acme/directory>;rel=\"index\"",
+        )),
+        validation_client: hyper_util::client::legacy::Client::builder(
+            hyper_util::rt::TokioExecutor::new(),
+        )
+        .build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
     });
 
     let router = routes::build_router(Arc::clone(&state));

@@ -5,10 +5,9 @@
 
 use http_body_util::BodyExt;
 use hyper::Uri;
-use hyper_util::client::legacy::Client;
-use hyper_util::rt::TokioExecutor;
 
 use crate::error::AcmeError;
+use crate::state::ValidationClient;
 
 /// Validate an http-01 challenge.
 ///
@@ -16,11 +15,13 @@ use crate::error::AcmeError;
 /// * `token`    — the challenge token stored in the database.
 /// * `key_auth` — `{token}.{jwk_thumbprint}` (expected response body).
 /// * `port`     — TCP port to connect to (RFC 8555 §8.3 requires 80; override for testing).
+/// * `client`   — shared hyper client; reusing it avoids a TCP handshake per validation.
 pub async fn validate(
     domain: &str,
     token: &str,
     key_auth: &str,
     port: u16,
+    client: &ValidationClient,
 ) -> Result<(), AcmeError> {
     let url = if port == 80 {
         format!("http://{}/.well-known/acme-challenge/{}", domain, token)
@@ -33,11 +34,6 @@ pub async fn validate(
     let uri: Uri = url
         .parse()
         .map_err(|e| AcmeError::Connection(format!("invalid http-01 URL '{url}': {e}")))?;
-
-    // hyper is already a transitive dependency via axum; re-use it here so we
-    // don't pull in an extra HTTP client library.
-    let client = Client::builder(TokioExecutor::new())
-        .build_http::<http_body_util::Empty<hyper::body::Bytes>>();
 
     let resp = client
         .get(uri)
@@ -84,7 +80,14 @@ pub async fn validate(
 mod tests {
     use super::*;
     use axum::{http::StatusCode, routing::get, Router};
+    use hyper_util::client::legacy::Client;
+    use hyper_util::rt::TokioExecutor;
     use tokio::net::TcpListener;
+
+    fn test_client() -> crate::state::ValidationClient {
+        Client::builder(TokioExecutor::new())
+            .build_http::<http_body_util::Empty<hyper::body::Bytes>>()
+    }
 
     /// Start a local HTTP server with the given router and return its address.
     async fn start_server(router: Router) -> std::net::SocketAddr {
@@ -104,6 +107,7 @@ mod tests {
             "token",
             "key.auth",
             80,
+            &test_client(),
         )
         .await;
         assert!(result.is_err(), "expected connection error");
@@ -120,7 +124,14 @@ mod tests {
             get(|| async { "mytoken.thumbprint" }),
         ))
         .await;
-        let result = validate("127.0.0.1", "mytoken", "mytoken.thumbprint", addr.port()).await;
+        let result = validate(
+            "127.0.0.1",
+            "mytoken",
+            "mytoken.thumbprint",
+            addr.port(),
+            &test_client(),
+        )
+        .await;
         assert!(result.is_ok(), "expected Ok(()), got: {result:?}");
     }
 
@@ -131,7 +142,14 @@ mod tests {
             get(|| async { StatusCode::NOT_FOUND }),
         ))
         .await;
-        let result = validate("127.0.0.1", "token", "expected", addr.port()).await;
+        let result = validate(
+            "127.0.0.1",
+            "token",
+            "expected",
+            addr.port(),
+            &test_client(),
+        )
+        .await;
         assert!(
             matches!(result, Err(AcmeError::IncorrectResponse(_))),
             "expected IncorrectResponse, got: {result:?}"
@@ -145,7 +163,14 @@ mod tests {
             get(|| async { "x".repeat(8193) }),
         ))
         .await;
-        let result = validate("127.0.0.1", "token", "expected", addr.port()).await;
+        let result = validate(
+            "127.0.0.1",
+            "token",
+            "expected",
+            addr.port(),
+            &test_client(),
+        )
+        .await;
         assert!(
             matches!(result, Err(AcmeError::IncorrectResponse(_))),
             "expected IncorrectResponse for oversized body, got: {result:?}"
@@ -159,7 +184,14 @@ mod tests {
             get(|| async { "wrong-auth" }),
         ))
         .await;
-        let result = validate("127.0.0.1", "token", "correct-auth", addr.port()).await;
+        let result = validate(
+            "127.0.0.1",
+            "token",
+            "correct-auth",
+            addr.port(),
+            &test_client(),
+        )
+        .await;
         assert!(
             matches!(result, Err(AcmeError::IncorrectResponse(_))),
             "expected IncorrectResponse for mismatch, got: {result:?}"
