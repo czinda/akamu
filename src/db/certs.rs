@@ -20,6 +20,7 @@ fn row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<CertificateRow> {
         created: row.get(12)?,
         suggested_window_start: row.get(13)?,
         suggested_window_end: row.get(14)?,
+        replaced_by: row.get(15)?,
     })
 }
 
@@ -29,8 +30,8 @@ pub async fn insert(db: &Connection, row: CertificateRow) -> Result<(), AcmeErro
             "INSERT INTO certificates
              (id, order_id, account_id, serial_number, status, der, pem,
               not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-              suggested_window_start, suggested_window_end)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+              suggested_window_start, suggested_window_end, replaced_by)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, NULL)",
         )?
         .execute(rusqlite::params![
             row.id,
@@ -61,7 +62,7 @@ pub async fn get_by_id(db: &Connection, id: &str) -> Result<Option<CertificateRo
         let mut stmt = conn.prepare_cached(
             "SELECT id, order_id, account_id, serial_number, status, der, pem,
              not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-             suggested_window_start, suggested_window_end
+             suggested_window_start, suggested_window_end, replaced_by
              FROM certificates WHERE id = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![id])?;
@@ -84,7 +85,7 @@ pub async fn get_by_serial(
         let mut stmt = conn.prepare_cached(
             "SELECT id, order_id, account_id, serial_number, status, der, pem,
              not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-             suggested_window_start, suggested_window_end
+             suggested_window_start, suggested_window_end, replaced_by
              FROM certificates WHERE serial_number = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![serial])?;
@@ -93,6 +94,57 @@ pub async fn get_by_serial(
         } else {
             Ok(None)
         }
+    })
+    .await
+    .map_err(AcmeError::from)
+}
+
+/// Look up a certificate by RFC 9773 ARI cert_id.
+///
+/// The cert_id format (RFC 9773 §4.1) is:
+///   `base64url(AKI keyIdentifier) "." base64url(serial number bytes)`
+///
+/// Only the serial component is used for the DB lookup; the AKI component is
+/// ignored (our CA issues one cert per serial and the AKI is always the same).
+pub async fn get_by_cert_id(
+    db: &Connection,
+    cert_id: &str,
+) -> Result<Option<CertificateRow>, AcmeError> {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+
+    let dot = cert_id
+        .find('.')
+        .ok_or_else(|| AcmeError::BadRequest("cert_id missing '.' separator".into()))?;
+    let serial_b64 = &cert_id[dot + 1..];
+    let serial_bytes = URL_SAFE_NO_PAD
+        .decode(serial_b64)
+        .map_err(|_| AcmeError::BadRequest("cert_id serial is not valid base64url".into()))?;
+    // Convert bytes to lowercase hex — matches the format stored in serial_number.
+    let serial_hex: String = serial_bytes.iter().map(|b| format!("{b:02x}")).collect();
+    get_by_serial(db, &serial_hex).await
+}
+
+/// Mark a certificate as replaced by a new order.
+///
+/// Sets `replaced_by` to `replacing_order_id` only when it is currently NULL so
+/// concurrent calls are idempotent (the first writer wins).  Returns whether a
+/// row was actually updated.
+pub async fn mark_replaced(
+    db: &Connection,
+    cert_uuid: &str,
+    replacing_order_id: &str,
+) -> Result<bool, AcmeError> {
+    let cert_uuid = cert_uuid.to_string();
+    let replacing_order_id = replacing_order_id.to_string();
+    db.call(move |conn| {
+        let n = conn
+            .prepare_cached(
+                "UPDATE certificates SET replaced_by = ?1 \
+                 WHERE id = ?2 AND replaced_by IS NULL",
+            )?
+            .execute(rusqlite::params![replacing_order_id, cert_uuid])?;
+        Ok(n > 0)
     })
     .await
     .map_err(AcmeError::from)
@@ -164,7 +216,7 @@ pub async fn list_revoked(db: &Connection) -> Result<Vec<CertificateRow>, AcmeEr
         let mut stmt = conn.prepare_cached(
             "SELECT id, order_id, account_id, serial_number, status, der, pem,
              not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-             suggested_window_start, suggested_window_end
+             suggested_window_start, suggested_window_end, replaced_by
              FROM certificates WHERE status = 'revoked'",
         )?;
         let rows = stmt
@@ -187,7 +239,7 @@ pub async fn list_valid_for_account(
         let mut stmt = conn.prepare_cached(
             "SELECT id, order_id, account_id, serial_number, status, der, pem,
              not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-             suggested_window_start, suggested_window_end
+             suggested_window_start, suggested_window_end, replaced_by
              FROM certificates
              WHERE account_id = ?1 AND status = 'valid' AND not_after > ?2",
         )?;
@@ -234,6 +286,7 @@ mod tests {
             not_after: None,
             error: None,
             certificate_id: None,
+            replaces: None,
             created: 1_700_000_000,
             updated: 1_700_000_000,
         };
@@ -257,6 +310,7 @@ mod tests {
             created: 1_700_000_000,
             suggested_window_start: None,
             suggested_window_end: None,
+            replaced_by: None,
         }
     }
 
@@ -465,6 +519,7 @@ mod tests {
                 created: 1_700_000_000,
                 suggested_window_start: None,
                 suggested_window_end: None,
+                replaced_by: None,
             },
         )
         .await
@@ -510,6 +565,7 @@ mod tests {
             created: now,
             suggested_window_start: None,
             suggested_window_end: None,
+            replaced_by: None,
         };
         assert!(insert(&raw, row).await.is_err());
         assert!(get_by_id(&raw, "any").await.is_err());
@@ -521,5 +577,99 @@ mod tests {
             .is_err());
         assert!(list_revoked(&raw).await.is_err());
         assert!(list_valid_for_account(&raw, "any", now).await.is_err());
+    }
+
+    /// Build a base64url-encoded cert_id from AKI and serial hex.
+    ///
+    /// The serial hex must have even length; each pair of chars is one byte.
+    fn make_cert_id(aki_bytes: &[u8], serial_hex: &str) -> String {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        let serial_bytes: Vec<u8> = (0..serial_hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&serial_hex[i..i + 2], 16).unwrap())
+            .collect();
+        format!(
+            "{}.{}",
+            URL_SAFE_NO_PAD.encode(aki_bytes),
+            URL_SAFE_NO_PAD.encode(serial_bytes)
+        )
+    }
+
+    #[tokio::test]
+    async fn get_by_cert_id_valid_hit() {
+        let db = open_db().await;
+        // Use a simple hex serial matching the serial stored in the DB.
+        let serial_hex = "0a0b0c0d0e0f";
+        // sample_cert sets order_id = "order-cert-gcid"; insert_parent_rows must match.
+        insert_parent_rows(&db, "acct-gcid", "order-cert-gcid").await;
+        let mut cert = sample_cert("cert-gcid", "acct-gcid", "valid", 1_800_000_000);
+        cert.serial_number = serial_hex.to_string();
+        insert(&db, cert).await.unwrap();
+
+        let cert_id = make_cert_id(b"aki-bytes", serial_hex);
+        let result = get_by_cert_id(&db, &cert_id).await.unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().serial_number, serial_hex);
+    }
+
+    #[tokio::test]
+    async fn get_by_cert_id_no_dot_returns_bad_request() {
+        let db = open_db().await;
+        let result = get_by_cert_id(&db, "nodothere").await;
+        assert!(matches!(
+            result,
+            Err(crate::error::AcmeError::BadRequest(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn get_by_cert_id_bad_base64_returns_bad_request() {
+        let db = open_db().await;
+        let result = get_by_cert_id(&db, "aki.!!!notbase64!!!").await;
+        assert!(matches!(
+            result,
+            Err(crate::error::AcmeError::BadRequest(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn get_by_cert_id_unknown_serial_returns_none() {
+        let db = open_db().await;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        let cert_id = format!(
+            "{}.{}",
+            URL_SAFE_NO_PAD.encode(b"aki"),
+            URL_SAFE_NO_PAD.encode(b"\xde\xad")
+        );
+        let result = get_by_cert_id(&db, &cert_id).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn mark_replaced_sets_field() {
+        let db = open_db().await;
+        insert_cert(&db, "cert-mr1", "acct-mr1", "valid", 1_800_000_000).await;
+
+        let changed = mark_replaced(&db, "cert-mr1", "order-new-1").await.unwrap();
+        assert!(changed);
+
+        let row = get_by_id(&db, "cert-mr1").await.unwrap().unwrap();
+        assert_eq!(row.replaced_by.as_deref(), Some("order-new-1"));
+    }
+
+    #[tokio::test]
+    async fn mark_replaced_idempotent() {
+        let db = open_db().await;
+        insert_cert(&db, "cert-mr2", "acct-mr2", "valid", 1_800_000_000).await;
+
+        mark_replaced(&db, "cert-mr2", "order-new-2").await.unwrap();
+        // Second call with a different order_id must not overwrite the first.
+        let changed = mark_replaced(&db, "cert-mr2", "order-other").await.unwrap();
+        assert!(!changed);
+
+        let row = get_by_id(&db, "cert-mr2").await.unwrap().unwrap();
+        assert_eq!(row.replaced_by.as_deref(), Some("order-new-2"));
     }
 }
