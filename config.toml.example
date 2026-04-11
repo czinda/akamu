@@ -9,13 +9,13 @@ base_url = "https://acme.example.com"
 
 [database]
 # Path to the SQLite database file.  Will be created on first run.
-path = "/var/lib/acme-server/acme.db"
+path = "/var/lib/akamu/acme.db"
 
 [ca]
 # Paths to the CA private key and certificate PEM files.
 # Both files are auto-generated on first run if neither exists.
-key_file  = "/etc/acme-server/ca.key.pem"
-cert_file = "/etc/acme-server/ca.cert.pem"
+key_file  = "/etc/akamu/ca.key.pem"
+cert_file = "/etc/akamu/ca.cert.pem"
 
 # Key algorithm for auto-generated CA key.
 # Choices: "ec:P-256", "ec:P-384", "ec:P-521", "rsa:2048", "rsa:3072", "rsa:4096", "ed25519"
@@ -43,7 +43,7 @@ organization = "Example Org"
 
 [mtc]
 # Path for the MTC (Merkle Tree Certificate) transparency log.
-log_path = "/var/lib/acme-server/mtc.log"
+log_path = "/var/lib/akamu/mtc.log"
 
 # Set to true to append issued certificates to the MTC log.
 enabled = false
