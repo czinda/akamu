@@ -16,6 +16,39 @@ impl Identifier {
             value: value.into(),
         }
     }
+
+    pub fn ip(addr: impl Into<String>) -> Self {
+        Identifier {
+            r#type: "ip".into(),
+            value: addr.into(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identifier_dns() {
+        let id = Identifier::dns("example.com");
+        assert_eq!(id.r#type, "dns");
+        assert_eq!(id.value, "example.com");
+    }
+
+    #[test]
+    fn identifier_ip() {
+        let id = Identifier::ip("192.0.2.1");
+        assert_eq!(id.r#type, "ip");
+        assert_eq!(id.value, "192.0.2.1");
+    }
+
+    #[test]
+    fn identifier_ip_v6() {
+        let id = Identifier::ip("2001:db8::1");
+        assert_eq!(id.r#type, "ip");
+        assert_eq!(id.value, "2001:db8::1");
+    }
 }
 
 /// ACME order object (RFC 8555 §7.1.3).
