@@ -1,0 +1,15 @@
+[package]
+name = "akamu-jose"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "JWK/JWS primitives for ACME (RFC 7515/7638), including ML-DSA (draft-ietf-cose-dilithium-11)"
+
+[dependencies]
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+synta = { version = "0.1.6", default-features = false, features = ["std", "derive"] }
+synta-certificate = { version = "0.1.6", features = ["std", "openssl", "pqc"] }

@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "crates/akamu-jose", "crates/akamu-client", "crates/akamu-cli"]
+resolver = "2"
+
 [package]
 name = "akamu"
 version = "0.1.0"
@@ -56,6 +60,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Cryptographically random nonces/tokens
 getrandom = "0.2"
+
+# JWK/JWS primitives (extracted from server; no axum/rusqlite dependency)
+akamu-jose = { path = "crates/akamu-jose" }
 
 # OpenSSL bindings (pqc-prs fork for ML-DSA / composite PQ support)
 openssl = "0.10"

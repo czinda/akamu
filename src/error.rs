@@ -122,6 +122,20 @@ pub enum AcmeError {
     Internal(String),
 }
 
+impl From<akamu_jose::JoseError> for AcmeError {
+    fn from(e: akamu_jose::JoseError) -> Self {
+        match e {
+            akamu_jose::JoseError::BadRequest(msg) => AcmeError::BadRequest(msg),
+            akamu_jose::JoseError::Crypto(msg) => AcmeError::Crypto(msg),
+            akamu_jose::JoseError::UnsupportedAlgorithm(msg) => {
+                AcmeError::BadSignatureAlgorithm(msg)
+            }
+            akamu_jose::JoseError::Base64(e) => AcmeError::BadRequest(format!("base64 error: {e}")),
+            akamu_jose::JoseError::Json(e) => AcmeError::BadRequest(format!("JSON error: {e}")),
+        }
+    }
+}
+
 impl From<tokio_rusqlite::Error> for AcmeError {
     fn from(e: tokio_rusqlite::Error) -> Self {
         AcmeError::Database(e.to_string())

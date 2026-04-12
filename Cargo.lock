@@ -27,6 +27,7 @@ dependencies = [
 name = "akamu"
 version = "0.1.0"
 dependencies = [
+ "akamu-jose",
  "axum",
  "axum-server",
  "base64 0.22.1",
@@ -60,6 +61,48 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "akamu-cli"
+version = "0.1.0"
+dependencies = [
+ "akamu-client",
+ "base64 0.22.1",
+ "clap",
+ "serde_json",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "akamu-client"
+version = "0.1.0"
+dependencies = [
+ "akamu-jose",
+ "base64 0.22.1",
+ "getrandom 0.2.17",
+ "http-body-util",
+ "hyper 1.9.0",
+ "hyper-util",
+ "serde",
+ "serde_json",
+ "synta-certificate",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "akamu-jose"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
+ "synta",
+ "synta-certificate",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
