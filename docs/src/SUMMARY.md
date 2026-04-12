@@ -14,13 +14,19 @@
 - [Account Management](user/accounts.md)
 - [Orders](user/orders.md)
 - [Challenges](user/challenges.md)
-- [dns-persist-01 Challenge](user/dns-persist-01.md)
 - [Certificates](user/certificates.md)
 - [CRL and OCSP](user/crl-ocsp.md)
 - [Merkle Tree Certificate Log](user/mtc.md)
 - [TLS Configuration](user/tls.md)
 - [Performance](user/performance.md)
 - [RFC Support Reference](user/rfc-support.md)
+
+# Client Libraries
+
+- [Overview](client/overview.md)
+- [akamu-jose](client/jose.md)
+- [akamu-client](client/client-library.md)
+- [akamu-cli](client/cli.md)
 
 # Developer Guide
 
