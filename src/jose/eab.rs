@@ -153,6 +153,8 @@ mod tests {
             y: Some(pad(&y_bytes)),
             n: None,
             e: None,
+            alg: None,
+            pub_key: None,
         };
         let thumbprint = jwk.thumbprint().unwrap();
         // Canonical JWK JSON (matches what a well-behaved client would send)

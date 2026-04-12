@@ -15,7 +15,7 @@ use crate::error::AcmeError;
 /// key component) field is intentionally ignored.
 #[derive(Debug, Clone, Deserialize)]
 pub struct JwkPublic {
-    /// Key type: "RSA", "EC", "OKP"
+    /// Key type: "RSA", "EC", "OKP", "AKP"
     pub kty: String,
 
     // EC / OKP common
@@ -31,6 +31,13 @@ pub struct JwkPublic {
     pub n: Option<String>,
     /// RSA public exponent (base64url)
     pub e: Option<String>,
+
+    // AKP (ML-DSA per draft-ietf-cose-dilithium-11)
+    /// Algorithm identifier: "ML-DSA-44", "ML-DSA-65", "ML-DSA-87"
+    pub alg: Option<String>,
+    /// Raw public key bytes (base64url, no padding) — `pub` in JSON
+    #[serde(rename = "pub")]
+    pub pub_key: Option<String>,
 }
 
 impl JwkPublic {
@@ -80,6 +87,18 @@ impl JwkPublic {
                 // Required members for OKP: crv, kty, x (alphabetical order)
                 format!(r#"{{"crv":"{}","kty":"OKP","x":"{}"}}"#, crv, x)
             }
+            "AKP" => {
+                let alg = self
+                    .alg
+                    .as_deref()
+                    .ok_or_else(|| AcmeError::BadRequest("AKP JWK missing 'alg'".into()))?;
+                let pub_key = self
+                    .pub_key
+                    .as_deref()
+                    .ok_or_else(|| AcmeError::BadRequest("AKP JWK missing 'pub'".into()))?;
+                // draft-ietf-cose-dilithium-11 §6: alg, kty, pub (alphabetical order)
+                format!(r#"{{"alg":"{}","kty":"AKP","pub":"{}"}}"#, alg, pub_key)
+            }
             kty => {
                 return Err(AcmeError::BadSignatureAlgorithm(format!(
                     "unsupported JWK key type: {}",
@@ -103,6 +122,7 @@ impl JwkPublic {
             "RSA" => self.rsa_to_spki_der(),
             "EC" => self.ec_to_spki_der(),
             "OKP" => self.okp_to_spki_der(),
+            "AKP" => self.ml_dsa_to_spki_der(),
             kty => Err(AcmeError::BadSignatureAlgorithm(format!(
                 "unsupported JWK key type: {}",
                 kty
@@ -194,6 +214,56 @@ impl JwkPublic {
             ))),
         }
     }
+
+    fn ml_dsa_to_spki_der(&self) -> Result<Vec<u8>, AcmeError> {
+        let alg = self
+            .alg
+            .as_deref()
+            .ok_or_else(|| AcmeError::BadRequest("AKP JWK missing 'alg'".into()))?;
+        let pub_b64 = self
+            .pub_key
+            .as_deref()
+            .ok_or_else(|| AcmeError::BadRequest("AKP JWK missing 'pub'".into()))?;
+
+        let pub_bytes = URL_SAFE_NO_PAD
+            .decode(pub_b64)
+            .map_err(|e| AcmeError::BadRequest(format!("JWK 'pub' base64: {}", e)))?;
+
+        // ML-DSA public key sizes per FIPS 204:
+        // ML-DSA-44: 1312, ML-DSA-65: 1952, ML-DSA-87: 2592
+        // OID bytes: 2.16.840.1.101.3.4.3.{17,18,19}
+        let (expected_len, oid_bytes): (usize, &[u8]) = match alg {
+            "ML-DSA-44" => (
+                1312,
+                &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x11],
+            ),
+            "ML-DSA-65" => (
+                1952,
+                &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x12],
+            ),
+            "ML-DSA-87" => (
+                2592,
+                &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x13],
+            ),
+            other => {
+                return Err(AcmeError::BadSignatureAlgorithm(format!(
+                    "unsupported AKP algorithm: {}",
+                    other
+                )));
+            }
+        };
+
+        if pub_bytes.len() != expected_len {
+            return Err(AcmeError::BadRequest(format!(
+                "AKP '{}' public key has wrong length: {} (expected {})",
+                alg,
+                pub_bytes.len(),
+                expected_len
+            )));
+        }
+
+        Ok(build_ml_dsa_spki(oid_bytes, &pub_bytes))
+    }
 }
 
 // Fixed SPKI prefix bytes for EdDSA public keys.
@@ -238,6 +308,49 @@ fn build_okp_spki(x_bytes: &[u8], prefix: &[u8]) -> Result<Vec<u8>, AcmeError> {
     Ok(spki)
 }
 
+/// Build a DER-encoded SubjectPublicKeyInfo for an ML-DSA key.
+///
+/// Structure: SEQUENCE { AlgorithmIdentifier { OID }, BIT STRING { 0x00 || key } }
+/// No AlgorithmIdentifier parameters (ML-DSA uses absent parameters per FIPS 204).
+fn build_ml_dsa_spki(oid_bytes: &[u8], pub_key: &[u8]) -> Vec<u8> {
+    // OID TLV: 06 <len> <oid_bytes>  (oid_bytes.len() < 128 for all ML-DSA OIDs)
+    let mut oid_tlv = vec![0x06u8, oid_bytes.len() as u8];
+    oid_tlv.extend_from_slice(oid_bytes);
+
+    // AlgorithmIdentifier SEQUENCE { OID } — no parameters
+    let mut alg_id = vec![0x30u8];
+    der_push_length(&mut alg_id, oid_tlv.len());
+    alg_id.extend_from_slice(&oid_tlv);
+
+    // BIT STRING: 0x00 (unused bits) || pub_key
+    let bit_string_content_len = 1 + pub_key.len();
+    let mut bit_string = vec![0x03u8]; // BIT STRING tag
+    der_push_length(&mut bit_string, bit_string_content_len);
+    bit_string.push(0x00); // unused bits = 0
+    bit_string.extend_from_slice(pub_key);
+
+    // Outer SEQUENCE { AlgorithmIdentifier, BIT STRING }
+    let outer_content_len = alg_id.len() + bit_string.len();
+    let mut spki = vec![0x30u8]; // SEQUENCE tag
+    der_push_length(&mut spki, outer_content_len);
+    spki.extend_from_slice(&alg_id);
+    spki.extend_from_slice(&bit_string);
+    spki
+}
+
+fn der_push_length(buf: &mut Vec<u8>, len: usize) {
+    if len < 128 {
+        buf.push(len as u8);
+    } else if len < 256 {
+        buf.push(0x81);
+        buf.push(len as u8);
+    } else {
+        buf.push(0x82);
+        buf.push((len >> 8) as u8);
+        buf.push((len & 0xff) as u8);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,6 +374,8 @@ mod tests {
                     .to_string(),
             ),
             e: Some("AQAB".to_string()),
+            alg: None,
+            pub_key: None,
         };
         let thumb = jwk.thumbprint().unwrap();
         assert_eq!(thumb, "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs");
@@ -284,6 +399,8 @@ mod tests {
             y: Some(pad(&y_bytes, 32)),
             n: None,
             e: None,
+            alg: None,
+            pub_key: None,
         };
         // thumbprint should succeed
         let thumb = jwk.thumbprint().unwrap();
@@ -311,6 +428,8 @@ mod tests {
             y: Some(pad(&y_bytes, 48)),
             n: None,
             e: None,
+            alg: None,
+            pub_key: None,
         };
         let thumb = jwk.thumbprint().unwrap();
         assert!(!thumb.is_empty());
@@ -336,6 +455,8 @@ mod tests {
             y: Some(pad(&y_bytes, 66)),
             n: None,
             e: None,
+            alg: None,
+            pub_key: None,
         };
         let spki = jwk.to_spki_der().unwrap();
         assert!(!spki.is_empty());
@@ -352,6 +473,8 @@ mod tests {
             y: None,
             n: None,
             e: None,
+            alg: None,
+            pub_key: None,
         };
         let thumb = jwk.thumbprint().unwrap();
         assert!(!thumb.is_empty());
@@ -371,6 +494,8 @@ mod tests {
             y: None,
             n: None,
             e: None,
+            alg: None,
+            pub_key: None,
         };
         let spki = jwk.to_spki_der().unwrap();
         assert_eq!(spki.len(), OKP_ED448_SPKI_PREFIX.len() + 57);
@@ -387,6 +512,8 @@ mod tests {
             y: None,
             n: None,
             e: None,
+            alg: None,
+            pub_key: None,
         };
         assert!(jwk.to_spki_der().is_err());
     }
@@ -401,6 +528,8 @@ mod tests {
             y: None,
             n: None,
             e: None,
+            alg: None,
+            pub_key: None,
         };
         // thumbprint for OKP doesn't validate curve, so it succeeds
         assert!(
@@ -420,6 +549,8 @@ mod tests {
             y: None,
             n: None,
             e: None,
+            alg: None,
+            pub_key: None,
         };
         assert!(jwk.thumbprint().is_err());
         assert!(jwk.to_spki_der().is_err());
@@ -434,6 +565,8 @@ mod tests {
             y: Some("AAAA".to_string()),
             n: None,
             e: None,
+            alg: None,
+            pub_key: None,
         };
         assert!(jwk.thumbprint().is_err());
         assert!(jwk.to_spki_der().is_err());
@@ -448,6 +581,8 @@ mod tests {
             y: Some(URL_SAFE_NO_PAD.encode(&[0u8; 32])),
             n: None,
             e: None,
+            alg: None,
+            pub_key: None,
         };
         assert!(jwk.to_spki_der().is_err());
     }
@@ -461,6 +596,8 @@ mod tests {
             y: None,
             n: Some("0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4cbbfAAtVT86zwu1RK7aPFFxuhDR1L6tSoc_BJECPebWKRXjBZCiFV4n3oknjhMstn64tZ_2W-5JsGY4Hc5n9yBXArwl93lqt7_RN5w6Cf0h4QyQ5v-65YGjQR0_FDW2QvzqY368QQMicAtaSqzs8KJZgnYb9c7d0zgdAZHzu6qMQvRL5hajrn1n91CbOpbISD08qNLyrdkt-bFTWhAI4vMQFh6WeZu0fM4lFd2NcRwr3XPksINHaQ-G_xBniIqbw0Ls1jF44-csFCur-kEgU8awapJzKnqDKgw".to_string()),
             e: Some("AQAB".to_string()),
+            alg: None,
+            pub_key: None,
         };
         let thumb = jwk.thumbprint().unwrap();
         assert_eq!(thumb, "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs");
@@ -478,6 +615,8 @@ mod tests {
             y: None,
             n: None,
             e: Some("AQAB".to_string()),
+            alg: None,
+            pub_key: None,
         };
         assert!(jwk.thumbprint().is_err());
         assert!(jwk.to_spki_der().is_err());
@@ -492,6 +631,8 @@ mod tests {
             y: None,
             n: Some("AAAA".to_string()),
             e: None,
+            alg: None,
+            pub_key: None,
         };
         assert!(jwk.thumbprint().is_err());
         assert!(jwk.to_spki_der().is_err());
@@ -506,6 +647,8 @@ mod tests {
             y: None,
             n: None,
             e: None,
+            alg: None,
+            pub_key: None,
         };
         assert!(jwk.thumbprint().is_err());
         assert!(jwk.to_spki_der().is_err());
@@ -521,6 +664,8 @@ mod tests {
             y: Some(URL_SAFE_NO_PAD.encode(&[0u8; 32])),
             n: None,
             e: None,
+            alg: None,
+            pub_key: None,
         };
         let err = jwk.thumbprint().unwrap_err();
         match err {
@@ -539,6 +684,8 @@ mod tests {
             y: None,
             n: None,
             e: None,
+            alg: None,
+            pub_key: None,
         };
         let err = jwk.thumbprint().unwrap_err();
         match err {
@@ -557,6 +704,8 @@ mod tests {
             y: None,
             n: None,
             e: None,
+            alg: None,
+            pub_key: None,
         };
         let err = jwk.thumbprint().unwrap_err();
         match err {
@@ -575,6 +724,8 @@ mod tests {
             y: Some(URL_SAFE_NO_PAD.encode(&[0u8; 32])),
             n: None,
             e: None,
+            alg: None,
+            pub_key: None,
         };
         let err = jwk.to_spki_der().unwrap_err();
         match err {
@@ -593,6 +744,8 @@ mod tests {
             y: None,
             n: None,
             e: None,
+            alg: None,
+            pub_key: None,
         };
         let err = jwk.to_spki_der().unwrap_err();
         match err {
@@ -611,6 +764,8 @@ mod tests {
             y: None,
             n: None,
             e: None,
+            alg: None,
+            pub_key: None,
         };
         let err = jwk.to_spki_der().unwrap_err();
         match err {
@@ -629,6 +784,220 @@ mod tests {
         assert!(
             matches!(result, Err(AcmeError::Internal(_))),
             "expected Internal error for unknown OKP prefix, got {result:?}"
+        );
+    }
+
+    // ── AKP (ML-DSA) tests ────────────────────────────────────────────────────
+
+    /// draft-ietf-cose-dilithium-11 §6: thumbprint uses {"alg","kty","pub"} in
+    /// lexicographic order. Verify the canonical form and that the hash succeeds.
+    #[test]
+    fn akp_ml_dsa_87_thumbprint_succeeds() {
+        let pub_bytes = vec![0xABu8; 2592]; // synthetic ML-DSA-87 key bytes
+        let jwk = JwkPublic {
+            kty: "AKP".to_string(),
+            crv: None,
+            x: None,
+            y: None,
+            n: None,
+            e: None,
+            alg: Some("ML-DSA-87".to_string()),
+            pub_key: Some(URL_SAFE_NO_PAD.encode(&pub_bytes)),
+        };
+        let thumb = jwk.thumbprint().unwrap();
+        assert!(!thumb.is_empty(), "AKP thumbprint should be non-empty");
+    }
+
+    /// Verify that SPKI DER constructed from a real ML-DSA-87 key matches the
+    /// key's own SPKI DER (round-trip through JWK).
+    #[test]
+    fn akp_ml_dsa_87_spki_roundtrip() {
+        let priv_key = BackendPrivateKey::generate_ml_dsa("ML-DSA-87").unwrap();
+        let pub_key = priv_key.public_key().unwrap();
+        let spki_der = pub_key.spki_der().to_vec();
+
+        // The ML-DSA SPKI header for all variants is exactly 22 bytes:
+        // 30 82 XX XX  (4) — outer SEQUENCE
+        // 30 0B        (2) — AlgId SEQUENCE
+        // 06 09 OID    (11) — OID TLV
+        // 03 82 XX XX  (4) — BIT STRING
+        // 00           (1) — unused bits
+        // Total: 22 bytes
+        const SPKI_HEADER: usize = 22;
+        assert!(
+            spki_der.len() > SPKI_HEADER,
+            "SPKI DER too short: {}",
+            spki_der.len()
+        );
+        let raw_pub = &spki_der[SPKI_HEADER..];
+        assert_eq!(
+            raw_pub.len(),
+            2592,
+            "ML-DSA-87 raw pub key must be 2592 bytes"
+        );
+
+        let jwk = JwkPublic {
+            kty: "AKP".to_string(),
+            crv: None,
+            x: None,
+            y: None,
+            n: None,
+            e: None,
+            alg: Some("ML-DSA-87".to_string()),
+            pub_key: Some(URL_SAFE_NO_PAD.encode(raw_pub)),
+        };
+
+        let reconstructed = jwk.to_spki_der().unwrap();
+        assert_eq!(
+            reconstructed, spki_der,
+            "reconstructed SPKI must match original"
+        );
+    }
+
+    /// Same round-trip for ML-DSA-65.
+    #[test]
+    fn akp_ml_dsa_65_spki_roundtrip() {
+        let priv_key = BackendPrivateKey::generate_ml_dsa("ML-DSA-65").unwrap();
+        let pub_key = priv_key.public_key().unwrap();
+        let spki_der = pub_key.spki_der().to_vec();
+
+        const SPKI_HEADER: usize = 22;
+        let raw_pub = &spki_der[SPKI_HEADER..];
+        assert_eq!(
+            raw_pub.len(),
+            1952,
+            "ML-DSA-65 raw pub key must be 1952 bytes"
+        );
+
+        let jwk = JwkPublic {
+            kty: "AKP".to_string(),
+            crv: None,
+            x: None,
+            y: None,
+            n: None,
+            e: None,
+            alg: Some("ML-DSA-65".to_string()),
+            pub_key: Some(URL_SAFE_NO_PAD.encode(raw_pub)),
+        };
+
+        let reconstructed = jwk.to_spki_der().unwrap();
+        assert_eq!(
+            reconstructed, spki_der,
+            "reconstructed SPKI must match original"
+        );
+    }
+
+    /// Same round-trip for ML-DSA-44.
+    #[test]
+    fn akp_ml_dsa_44_spki_roundtrip() {
+        let priv_key = BackendPrivateKey::generate_ml_dsa("ML-DSA-44").unwrap();
+        let pub_key = priv_key.public_key().unwrap();
+        let spki_der = pub_key.spki_der().to_vec();
+
+        const SPKI_HEADER: usize = 22;
+        let raw_pub = &spki_der[SPKI_HEADER..];
+        assert_eq!(
+            raw_pub.len(),
+            1312,
+            "ML-DSA-44 raw pub key must be 1312 bytes"
+        );
+
+        let jwk = JwkPublic {
+            kty: "AKP".to_string(),
+            crv: None,
+            x: None,
+            y: None,
+            n: None,
+            e: None,
+            alg: Some("ML-DSA-44".to_string()),
+            pub_key: Some(URL_SAFE_NO_PAD.encode(raw_pub)),
+        };
+
+        let reconstructed = jwk.to_spki_der().unwrap();
+        assert_eq!(
+            reconstructed, spki_der,
+            "reconstructed SPKI must match original"
+        );
+    }
+
+    #[test]
+    fn akp_missing_alg_returns_error() {
+        let jwk = JwkPublic {
+            kty: "AKP".to_string(),
+            crv: None,
+            x: None,
+            y: None,
+            n: None,
+            e: None,
+            alg: None,
+            pub_key: Some(URL_SAFE_NO_PAD.encode(&[0u8; 2592])),
+        };
+        assert!(
+            matches!(jwk.thumbprint(), Err(AcmeError::BadRequest(_))),
+            "missing 'alg' should return BadRequest"
+        );
+        assert!(
+            matches!(jwk.to_spki_der(), Err(AcmeError::BadRequest(_))),
+            "missing 'alg' should return BadRequest"
+        );
+    }
+
+    #[test]
+    fn akp_missing_pub_returns_error() {
+        let jwk = JwkPublic {
+            kty: "AKP".to_string(),
+            crv: None,
+            x: None,
+            y: None,
+            n: None,
+            e: None,
+            alg: Some("ML-DSA-87".to_string()),
+            pub_key: None,
+        };
+        assert!(
+            matches!(jwk.thumbprint(), Err(AcmeError::BadRequest(_))),
+            "missing 'pub' should return BadRequest"
+        );
+        assert!(
+            matches!(jwk.to_spki_der(), Err(AcmeError::BadRequest(_))),
+            "missing 'pub' should return BadRequest"
+        );
+    }
+
+    #[test]
+    fn akp_wrong_pub_length_returns_error() {
+        // ML-DSA-87 expects 2592 bytes; give it 2591
+        let jwk = JwkPublic {
+            kty: "AKP".to_string(),
+            crv: None,
+            x: None,
+            y: None,
+            n: None,
+            e: None,
+            alg: Some("ML-DSA-87".to_string()),
+            pub_key: Some(URL_SAFE_NO_PAD.encode(&[0u8; 2591])),
+        };
+        assert!(
+            matches!(jwk.to_spki_der(), Err(AcmeError::BadRequest(_))),
+            "wrong pub length should return BadRequest"
+        );
+    }
+
+    #[test]
+    fn akp_unsupported_alg_returns_error() {
+        let jwk = JwkPublic {
+            kty: "AKP".to_string(),
+            crv: None,
+            x: None,
+            y: None,
+            n: None,
+            e: None,
+            alg: Some("ML-KEM-768".to_string()),
+            pub_key: Some(URL_SAFE_NO_PAD.encode(&[0u8; 1184])),
+        };
+        assert!(
+            matches!(jwk.to_spki_der(), Err(AcmeError::BadSignatureAlgorithm(_))),
+            "unsupported alg should return BadSignatureAlgorithm"
         );
     }
 }
