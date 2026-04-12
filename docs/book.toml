@@ -13,7 +13,13 @@ git-repository-url = ""
 additional-css = ["theme/synta.css"]
 default-theme = "light"
 preferred-dark-theme = "navy"
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
 
 [output.rustdoc]
 command = "python3 ../../scripts/mdbook-copy-api.py"
+
+[preprocessor]
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
 
