@@ -9,12 +9,17 @@ An ACME order is the top-level object that represents a request to obtain a cert
 
 ## Order lifecycle
 
-```
-  new-order        all authzs valid       finalize (CSR)
-     │                  │                     │
-  pending  ────────►  ready  ──────────►  processing ──► valid
-                                                          │
-  ◄──── any authz fails ──────────────────────────── invalid
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> pending : new-order
+    pending --> ready : all authorizations valid
+    pending --> invalid : any authorization fails
+    ready --> processing : finalize (submit CSR)
+    processing --> valid : certificate issued
+    processing --> invalid : CSR validation failed
+    valid --> [*]
+    invalid --> [*]
 ```
 
 | Status | Meaning |

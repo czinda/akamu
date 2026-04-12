@@ -21,6 +21,26 @@ Backward compatibility is strict: deployments without a `[tls]` section in
 
 ---
 
+## Deployment modes overview
+
+```mermaid
+flowchart TD
+    A([Akāmu startup]) --> B{"tls section<br/>in config.toml?"}
+    B -->|No| C["Mode 1 — Plain HTTP<br/>Bind plain TCP socket<br/>Upstream proxy handles TLS"]
+    B -->|Yes, enabled=true| D{"cert_file AND<br/>key_file both exist?"}
+    D -->|Neither exists| E["Mode 2 — Auto-generated TLS<br/>Generate server key + cert<br/>signed by Akāmu CA<br/>Write files for next start"]
+    D -->|One missing| ERR["Error: both or neither required<br/>startup aborted"]
+    D -->|Both exist| F{"tls.client_auth<br/>section present?"}
+    F -->|No| G["Mode 3 — Native TLS<br/>Load externally-issued cert + key<br/>Serve HTTPS directly"]
+    F -->|Yes| H["Mode 4 — Mutual TLS<br/>Require client certificate<br/>signed by configured CA<br/>Handshake fails for unknown clients"]
+    C & E & G & H --> READY([Server ready])
+
+    classDef ok   fill:#f0fdf4,stroke:#16a34a,color:#0f172a
+    classDef fail fill:#fef2f2,stroke:#dc2626,color:#0f172a
+    class READY ok
+    class ERR fail
+```
+
 ## Deployment walkthroughs
 
 The sections below walk through each of the four supported operating modes in

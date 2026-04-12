@@ -4,7 +4,32 @@ This chapter covers certificate issuance, retrieval, revocation, and the ACME Re
 
 ## Issuance
 
-Certificates are issued when an order is finalized. The client submits a PKCS#10 CSR (DER-encoded, base64url) to the finalize endpoint. The server:
+Certificates are issued when an order is finalized. The client submits a PKCS#10 CSR (DER-encoded, base64url) to the finalize endpoint.
+
+```mermaid
+flowchart TD
+    A(["POST /acme/order/ID/finalize<br/>csr = base64url DER"]) --> B[Decode + parse CSR]
+    B --> C{"Self-signature<br/>valid?"}
+    C -->|No| FAIL([400 badCSR])
+    C -->|Yes| D{"BasicConstraints<br/>cA=FALSE?"}
+    D -->|cA=TRUE found| FAIL
+    D -->|OK| E{"SAN set equals<br/>order identifiers?"}
+    E -->|Mismatch| FAIL
+    E -->|Match| F["Generate random 16-byte serial<br/>clear high bit for positive integer"]
+    F --> G["Build X.509 v3 end-entity cert<br/>KeyUsage=digitalSignature<br/>EKU=serverAuth"]
+    G --> H[Sign with CA private key]
+    H --> I["Store DER + PEM bundle<br/>in certificates table"]
+    I --> J["Update order: status=valid<br/>certificate_id set"]
+    J --> K([Return order with certificate URL])
+    K --> L(["Client: GET /acme/cert/ID<br/>Download PEM bundle"])
+
+    classDef ok   fill:#f0fdf4,stroke:#16a34a,color:#0f172a
+    classDef fail fill:#fef2f2,stroke:#dc2626,color:#0f172a
+    class K,L ok
+    class FAIL fail
+```
+
+The server:
 
 1. Decodes and parses the CSR.
 2. Verifies the CSR's self-signature.
@@ -133,6 +158,18 @@ For a 90-day certificate issued on January 1, 2026:
 - Validity period: 90 days = 7,776,000 seconds
 - Start: January 1 + 60 days = March 2, 2026
 - End: April 1, 2026 (one day before April 2 expiry)
+
+```mermaid
+flowchart LR
+    A(["Jan 1<br/>Issued"]) -->|"60 days"| B(["Mar 2<br/>Window opens"])
+    B -->|"29 days"| C(["Apr 1<br/>Window closes"])
+    C -->|"24 h"| D(["Apr 2<br/>Expires"])
+
+    classDef ok   fill:#f0fdf4,stroke:#16a34a,color:#0f172a
+    classDef fail fill:#fef2f2,stroke:#dc2626,color:#0f172a
+    class B,C ok
+    class D fail
+```
 
 > **Note:** The `explanationURL` field is always `null` in the current implementation. RFC 9773 allows an explanation URL to be provided when the server has specific reasons for the suggested window.
 

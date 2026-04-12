@@ -4,12 +4,12 @@ ACME accounts are persistent identities that tie a public key to one or more ema
 
 ## Account lifecycle
 
-```
-                  ┌─────────┐
-         create   │         │  deactivate
-       ─────────► │  valid  │ ────────────►  deactivated
-                  │         │
-                  └─────────┘
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> valid : create account\nPOST /acme/new-account
+    valid --> deactivated : POST status=deactivated
+    deactivated --> [*]
 ```
 
 Accounts start in `valid` status. A `valid` account can:
@@ -102,6 +102,29 @@ Content-Type: application/jose+json
   "payload": "<inner-jws-signed-with-new-key>",
   "signature": "<outer-signature>"
 }
+```
+
+```mermaid
+sequenceDiagram
+    participant C as ACME Client
+    participant S as Akāmu Server
+
+    Note over C: Currently holds old private key
+    C->>C: Generate new key pair
+    C->>C: Build inner JWS signed by NEW key
+    Note right of C: payload = {"account": "https://…/acme/account/ID"}
+    C->>C: Wrap in outer JWS signed by OLD key
+    Note right of C: url = /acme/key-change, kid = account URL
+
+    C->>S: POST /acme/key-change
+    S->>S: Verify outer JWS signature (old key from DB)
+    S->>S: Verify inner JWS signature (new key from inner jwk)
+    S->>S: Check inner payload account == outer kid account URL
+    S->>S: Check new key not registered to another account
+    S->>S: Replace stored public_key + jwk_thumbprint
+    S-->>C: 200 OK (account object)
+
+    Note over C: All future requests must be signed with the new key
 ```
 
 The server verifies:
