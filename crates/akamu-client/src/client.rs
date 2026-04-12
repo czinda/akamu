@@ -17,6 +17,8 @@ use hyper::{
     header::{CONTENT_TYPE, LOCATION},
     HeaderMap, Method, Request, StatusCode,
 };
+use hyper_rustls::HttpsConnectorBuilder;
+use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::{client::legacy::Client, rt::TokioExecutor};
 use serde_json::Value;
 use tokio::time::{sleep, Duration};
@@ -30,7 +32,7 @@ use crate::{
     types::{AccountOptions, Authorization, Challenge, Identifier, Order},
 };
 
-type HyperClient = Client<hyper_util::client::legacy::connect::HttpConnector, Full<Bytes>>;
+type HyperClient = Client<hyper_rustls::HttpsConnector<HttpConnector>, Full<Bytes>>;
 
 /// Directory-aware ACME client.
 ///
@@ -38,17 +40,25 @@ type HyperClient = Client<hyper_util::client::legacy::connect::HttpConnector, Fu
 /// directory document.  All operations require a [`tokio`] runtime.
 pub struct AcmeClient {
     http: HyperClient,
+    cached_nonce: tokio::sync::Mutex<Option<String>>,
     new_nonce_url: String,
     new_account_url: String,
     new_order_url: String,
-    // Store the full directory for potential future use (e.g. revoke URL).
-    _directory: Value,
+    revoke_cert_url: String,
+    key_change_url: String,
+    renewal_info_url: Option<String>,
 }
 
 impl AcmeClient {
     /// Construct a client by fetching the ACME directory.
     pub async fn new(directory_url: &str) -> Result<Self, ClientError> {
-        let http = Client::builder(TokioExecutor::new()).build_http();
+        let https = HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .map_err(|e| ClientError::Http(format!("TLS root certs: {e}")))?
+            .https_or_http()
+            .enable_http1()
+            .build();
+        let http = Client::builder(TokioExecutor::new()).build(https);
         let dir = get_json(&http, directory_url).await?;
 
         let new_nonce_url = dir["newNonce"]
@@ -63,13 +73,25 @@ impl AcmeClient {
             .as_str()
             .ok_or_else(|| ClientError::Http("directory missing newOrder".into()))?
             .to_string();
+        let revoke_cert_url = dir["revokeCert"]
+            .as_str()
+            .ok_or_else(|| ClientError::Http("directory missing revokeCert".into()))?
+            .to_string();
+        let key_change_url = dir["keyChange"]
+            .as_str()
+            .ok_or_else(|| ClientError::Http("directory missing keyChange".into()))?
+            .to_string();
+        let renewal_info_url = dir["renewalInfo"].as_str().map(String::from);
 
         Ok(AcmeClient {
             http,
+            cached_nonce: tokio::sync::Mutex::new(None),
             new_nonce_url,
             new_account_url,
             new_order_url,
-            _directory: dir,
+            revoke_cert_url,
+            key_change_url,
+            renewal_info_url,
         })
     }
 
@@ -87,7 +109,6 @@ impl AcmeClient {
         key: Arc<AccountKey>,
         opts: &AccountOptions<'_>,
     ) -> Result<Account, ClientError> {
-        let nonce = self.fetch_nonce().await?;
         let url = &self.new_account_url;
 
         // Build the new-account payload.
@@ -108,21 +129,32 @@ impl AcmeClient {
             payload["externalAccountBinding"] = eab_jws;
         }
 
-        let key_ref = JwsKeyRef::Jwk {
-            jwk: key.public_jwk().clone(),
-        };
-        let jws = JwsFlattened::sign(
-            key.private_key(),
-            key.alg(),
-            &nonce,
-            url,
-            key_ref,
-            Some(payload.to_string().as_bytes()),
-        )?;
-        let jws_value = serde_json::to_value(&jws)
-            .map_err(|e| ClientError::Jose(akamu_jose::JoseError::Json(e)))?;
+        let payload_str = payload.to_string();
 
-        let (status, body, headers) = self.post_jws(url, &jws_value).await?;
+        // Retry loop for badNonce.
+        let (status, body, headers) = loop {
+            let nonce = self.fetch_nonce().await?;
+            let key_ref = JwsKeyRef::Jwk {
+                jwk: key.public_jwk().clone(),
+            };
+            let jws = JwsFlattened::sign(
+                key.private_key(),
+                key.alg(),
+                &nonce,
+                url,
+                key_ref,
+                Some(payload_str.as_bytes()),
+            )?;
+            let jws_value = serde_json::to_value(&jws)
+                .map_err(|e| ClientError::Jose(akamu_jose::JoseError::Json(e)))?;
+            let (status, body, headers) = self.post_jws_once(url, &jws_value).await?;
+            if body["type"].as_str() == Some("urn:ietf:params:acme:error:badNonce") {
+                *self.cached_nonce.lock().await = None;
+                continue;
+            }
+            break (status, body, headers);
+        };
+
         if status != StatusCode::CREATED {
             return Err(acme_error(&body, status, "new-account"));
         }
@@ -146,23 +178,12 @@ impl AcmeClient {
     /// Posts `{"status":"deactivated"}` to the account URL.  After this call,
     /// the account can no longer sign orders.
     pub async fn deactivate_account(&self, acct: &Account) -> Result<(), ClientError> {
-        let nonce = self.fetch_nonce().await?;
         let url = &acct.url;
         let payload = serde_json::json!({"status": "deactivated"});
 
-        let key_ref = JwsKeyRef::Kid { kid: url.clone() };
-        let jws = JwsFlattened::sign(
-            acct.key.private_key(),
-            acct.key.alg(),
-            &nonce,
-            url,
-            key_ref,
-            Some(payload.to_string().as_bytes()),
-        )?;
-        let jws_value = serde_json::to_value(&jws)
-            .map_err(|e| ClientError::Jose(akamu_jose::JoseError::Json(e)))?;
-
-        let (status, body, _) = self.post_jws(url, &jws_value).await?;
+        let (status, body, _) = self
+            .post_kid(acct, url, Some(payload.to_string().as_bytes()))
+            .await?;
         if status != StatusCode::OK {
             return Err(acme_error(&body, status, "deactivate-account"));
         }
@@ -177,12 +198,11 @@ impl AcmeClient {
         acct: &Account,
         ids: &[Identifier],
     ) -> Result<Order, ClientError> {
-        let nonce = self.fetch_nonce().await?;
         let url = &self.new_order_url;
         let payload = serde_json::json!({ "identifiers": ids });
 
         let (status, body, headers) = self
-            .post_kid(acct, &nonce, url, Some(payload.to_string().as_bytes()))
+            .post_kid(acct, url, Some(payload.to_string().as_bytes()))
             .await?;
         if status != StatusCode::CREATED {
             return Err(acme_error(&body, status, "new-order"));
@@ -198,8 +218,7 @@ impl AcmeClient {
         acct: &Account,
         url: &str,
     ) -> Result<Authorization, ClientError> {
-        let nonce = self.fetch_nonce().await?;
-        let (status, body, _) = self.post_kid(acct, &nonce, url, None).await?;
+        let (status, body, _) = self.post_kid(acct, url, None).await?;
         if status != StatusCode::OK {
             return Err(acme_error(&body, status, "get-authorization"));
         }
@@ -213,11 +232,10 @@ impl AcmeClient {
         acct: &Account,
         challenge: &Challenge,
     ) -> Result<(), ClientError> {
-        let nonce = self.fetch_nonce().await?;
         let url = &challenge.url;
         let payload = b"{}";
 
-        let (status, body, _) = self.post_kid(acct, &nonce, url, Some(payload)).await?;
+        let (status, body, _) = self.post_kid(acct, url, Some(payload)).await?;
         if status != StatusCode::OK {
             return Err(acme_error(&body, status, "trigger-challenge"));
         }
@@ -239,8 +257,7 @@ impl AcmeClient {
                 return Err(ClientError::Http("timed out polling order".into()));
             }
 
-            let nonce = self.fetch_nonce().await?;
-            let (_, body, _) = self.post_kid(acct, &nonce, order_url, None).await?;
+            let (_, body, _) = self.post_kid(acct, order_url, None).await?;
 
             match body["status"].as_str() {
                 Some("ready") | Some("valid") => return parse_order(&body, order_url.to_owned()),
@@ -266,17 +283,11 @@ impl AcmeClient {
         order: &Order,
         csr_der: &[u8],
     ) -> Result<Order, ClientError> {
-        let nonce = self.fetch_nonce().await?;
         let csr_b64 = URL_SAFE_NO_PAD.encode(csr_der);
         let payload = serde_json::json!({ "csr": csr_b64 });
 
         let (status, body, _) = self
-            .post_kid(
-                acct,
-                &nonce,
-                &order.finalize,
-                Some(payload.to_string().as_bytes()),
-            )
+            .post_kid(acct, &order.finalize, Some(payload.to_string().as_bytes()))
             .await?;
         if status != StatusCode::OK {
             return Err(acme_error(&body, status, "finalize"));
@@ -292,8 +303,7 @@ impl AcmeClient {
         acct: &Account,
         cert_url: &str,
     ) -> Result<Vec<u8>, ClientError> {
-        let nonce = self.fetch_nonce().await?;
-        let (status, _, raw) = self.post_kid_raw(acct, &nonce, cert_url, None).await?;
+        let (status, _, raw) = self.post_kid_raw(acct, cert_url, None).await?;
         if status != StatusCode::OK {
             return Err(ClientError::Http(format!("download-certificate: {status}")));
         }
@@ -302,57 +312,74 @@ impl AcmeClient {
 
     // ── Internal signing helpers ───────────────────────────────────────────────
 
-    /// POST with the account URL as `kid`.
+    /// POST with the account URL as `kid`, with badNonce retry.
     async fn post_kid(
         &self,
         acct: &Account,
-        nonce: &str,
         url: &str,
         payload: Option<&[u8]>,
     ) -> Result<(StatusCode, Value, HeaderMap), ClientError> {
-        let key_ref = JwsKeyRef::Kid {
-            kid: acct.url.clone(),
-        };
-        let jws = JwsFlattened::sign(
-            acct.key.private_key(),
-            acct.key.alg(),
-            nonce,
-            url,
-            key_ref,
-            payload,
-        )?;
-        let jws_value = serde_json::to_value(&jws)
-            .map_err(|e| ClientError::Jose(akamu_jose::JoseError::Json(e)))?;
-        self.post_jws(url, &jws_value).await
+        loop {
+            let nonce = self.fetch_nonce().await?;
+            let key_ref = JwsKeyRef::Kid {
+                kid: acct.url.clone(),
+            };
+            let jws = JwsFlattened::sign(
+                acct.key.private_key(),
+                acct.key.alg(),
+                &nonce,
+                url,
+                key_ref,
+                payload,
+            )?;
+            let jws_value = serde_json::to_value(&jws)
+                .map_err(|e| ClientError::Jose(akamu_jose::JoseError::Json(e)))?;
+            let (status, body, headers) = self.post_jws_once(url, &jws_value).await?;
+            if body["type"].as_str() == Some("urn:ietf:params:acme:error:badNonce") {
+                *self.cached_nonce.lock().await = None;
+                continue;
+            }
+            return Ok((status, body, headers));
+        }
     }
 
     /// Like `post_kid` but returns raw bytes instead of JSON (for PEM download).
     async fn post_kid_raw(
         &self,
         acct: &Account,
-        nonce: &str,
         url: &str,
         payload: Option<&[u8]>,
     ) -> Result<(StatusCode, HeaderMap, Vec<u8>), ClientError> {
-        let key_ref = JwsKeyRef::Kid {
-            kid: acct.url.clone(),
-        };
-        let jws = JwsFlattened::sign(
-            acct.key.private_key(),
-            acct.key.alg(),
-            nonce,
-            url,
-            key_ref,
-            payload,
-        )?;
-        let jws_bytes = serde_json::to_vec(&jws)
-            .map_err(|e| ClientError::Jose(akamu_jose::JoseError::Json(e)))?;
-        let (status, headers, body_bytes) = self.http_post_raw(url, jws_bytes).await?;
-        Ok((status, headers, body_bytes))
+        loop {
+            let nonce = self.fetch_nonce().await?;
+            let key_ref = JwsKeyRef::Kid {
+                kid: acct.url.clone(),
+            };
+            let jws = JwsFlattened::sign(
+                acct.key.private_key(),
+                acct.key.alg(),
+                &nonce,
+                url,
+                key_ref,
+                payload,
+            )?;
+            let jws_bytes = serde_json::to_vec(&jws)
+                .map_err(|e| ClientError::Jose(akamu_jose::JoseError::Json(e)))?;
+            let (status, headers, body_bytes) = self.http_post_raw(url, jws_bytes).await?;
+            // Check for badNonce in raw response.
+            if let Ok(json) = serde_json::from_slice::<Value>(&body_bytes) {
+                if json["type"].as_str() == Some("urn:ietf:params:acme:error:badNonce") {
+                    *self.cached_nonce.lock().await = None;
+                    continue;
+                }
+            }
+            return Ok((status, headers, body_bytes));
+        }
     }
 
-    /// Low-level: POST a JWS body, return (status, parsed JSON, headers).
-    async fn post_jws(
+    /// Low-level: POST a pre-serialised JWS body, return (status, parsed JSON, headers).
+    /// Does NOT perform badNonce retry — callers handle that.
+    async fn post_jws_once(
         &self,
         url: &str,
         body: &Value,
@@ -365,6 +392,7 @@ impl AcmeClient {
     }
 
     /// Send an HTTP POST with `Content-Type: application/jose+json`.
+    /// Caches the `Replay-Nonce` from the response for the next request.
     async fn http_post_raw(
         &self,
         url: &str,
@@ -385,6 +413,10 @@ impl AcmeClient {
 
         let status = resp.status();
         let headers = resp.headers().clone();
+        // Cache the nonce from the response for the next request.
+        if let Ok(nonce) = nonce_from_headers(&headers) {
+            *self.cached_nonce.lock().await = Some(nonce);
+        }
         let raw = resp
             .into_body()
             .collect()
@@ -396,25 +428,27 @@ impl AcmeClient {
         Ok((status, headers, raw))
     }
 
-    /// Fetch a fresh nonce via HEAD /new-nonce.
+    /// Return a nonce: use the cached one if available, otherwise HEAD /new-nonce.
     async fn fetch_nonce(&self) -> Result<String, ClientError> {
+        // Return cached nonce if available.
+        {
+            let mut guard = self.cached_nonce.lock().await;
+            if let Some(nonce) = guard.take() {
+                return Ok(nonce);
+            }
+        }
+        // Fall back to HEAD /new-nonce.
         let req = Request::builder()
             .method(Method::HEAD)
             .uri(&self.new_nonce_url)
             .body(Full::<Bytes>::new(Bytes::new()))
             .map_err(|e| ClientError::Http(format!("build nonce request: {e}")))?;
-
         let resp = self
             .http
             .request(req)
             .await
             .map_err(|e| ClientError::Http(format!("HEAD new-nonce: {e}")))?;
-
-        resp.headers()
-            .get("replay-nonce")
-            .and_then(|v: &hyper::header::HeaderValue| v.to_str().ok())
-            .map(String::from)
-            .ok_or_else(|| ClientError::Http("missing Replay-Nonce header".into()))
+        nonce_from_headers(resp.headers())
     }
 }
 
@@ -454,6 +488,14 @@ fn location_hdr(headers: &HeaderMap) -> Result<String, ClientError> {
         .and_then(|v: &hyper::header::HeaderValue| v.to_str().ok())
         .map(String::from)
         .ok_or_else(|| ClientError::Http("missing Location header".into()))
+}
+
+fn nonce_from_headers(headers: &HeaderMap) -> Result<String, ClientError> {
+    headers
+        .get("replay-nonce")
+        .and_then(|v| v.to_str().ok())
+        .map(String::from)
+        .ok_or_else(|| ClientError::Http("missing Replay-Nonce header".into()))
 }
 
 fn acme_error(body: &Value, status: StatusCode, op: &str) -> ClientError {
