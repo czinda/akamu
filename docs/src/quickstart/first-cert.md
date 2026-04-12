@@ -124,3 +124,109 @@ The certificate is issued by your private CA. Install the CA certificate (`/etc/
 **"account does not exist" error on renewal**
 
 If you re-created the database, existing accounts were lost. Re-register with `certbot register` or re-run `acme.sh --register-account`.
+
+## Using akamu-client (Rust)
+
+If you are writing a Rust application and want to obtain a certificate programmatically, you can use the `akamu-client` library directly. For command-line usage without writing Rust code, see [akamu-cli](../client/cli.md).
+
+```rust
+use akamu_client::{
+    AccountKey, AccountOptions, AcmeClient,
+    Http01Solver, Identifier, build_csr,
+};
+use std::{fs, time::Duration};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Generate or load an account key
+    let key = if std::path::Path::new("account.pem").exists() {
+        let pem = fs::read("account.pem")?;
+        AccountKey::from_pem(&pem)?
+    } else {
+        let k = AccountKey::generate("ec:P-256")?;
+        fs::write("account.pem", k.to_pem()?)?;
+        k
+    };
+
+    // 2. Connect to the ACME directory
+    let client = AcmeClient::new("https://acme.example.com/acme/directory").await?;
+
+    // 3. Register an account (agree to Terms of Service)
+    let opts = AccountOptions {
+        contacts: vec!["mailto:admin@example.com".to_string()],
+        agree_tos: true,
+        eab: None,
+    };
+    let account = client.new_account(&key, opts).await?;
+
+    // 4. Place an order for the desired identifiers
+    let ids = vec![Identifier::Dns("example.com".to_string())];
+    let order = client.new_order(&account, ids).await?;
+
+    // 5. Start the built-in http-01 solver on port 80
+    let solver = Http01Solver::new(80);
+    solver.start().await?;
+
+    // 6. Solve each authorization
+    for authz_url in &order.authorizations {
+        let authz = client.get_authorization(&account, authz_url).await?;
+        let challenge = authz
+            .challenges
+            .into_iter()
+            .find(|c| c.challenge_type == "http-01")
+            .ok_or("http-01 challenge not available")?;
+
+        // Present the key authorization at the well-known URL
+        let key_auth = account.key_authorization(&challenge.token);
+        solver.present(&challenge.token, &key_auth).await?;
+
+        // Signal readiness to the ACME server
+        client.trigger_challenge(&account, &challenge).await?;
+
+        // Poll until the authorization is validated
+        loop {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let updated = client.get_authorization(&account, authz_url).await?;
+            match updated.status.as_str() {
+                "valid"   => break,
+                "invalid" => return Err("authorization failed".into()),
+                _         => continue,
+            }
+        }
+
+        // Remove the challenge token from the solver
+        solver.cleanup(&challenge.token).await?;
+    }
+
+    // 7. Generate a certificate key, build a CSR, and finalize the order
+    let cert_key = AccountKey::generate("ec:P-256")?;
+    fs::write("cert.key.pem", cert_key.to_pem()?)?;
+
+    let csr_der  = build_csr(&["example.com"], &cert_key)?;
+    let finalized = client.finalize(&account, &order, &csr_der).await?;
+
+    let cert_url = finalized.certificate.ok_or("no certificate URL")?;
+
+    // 8. Download the certificate bundle and write to disk
+    let pem = client.download_certificate(&account, &cert_url).await?;
+    fs::write("cert.pem", &pem)?;
+
+    println!("Certificate written to cert.pem");
+    println!("Private key written to cert.key.pem");
+    Ok(())
+}
+```
+
+Add the following to your `Cargo.toml`:
+
+```toml
+[dependencies]
+akamu-client = { path = "/path/to/akamu/crates/akamu-client" }
+tokio = { version = "1", features = ["full"] }
+
+[patch.crates-io]
+openssl-sys = { git = "https://github.com/abbra/rust-openssl.git", branch = "pqc-prs" }
+openssl     = { git = "https://github.com/abbra/rust-openssl.git", branch = "pqc-prs" }
+```
+
+The `[patch.crates-io]` block is required because `akamu-client` depends on the PQC OpenSSL fork. See [Client Libraries Overview](../client/overview.md) for details.

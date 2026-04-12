@@ -40,12 +40,28 @@ Adjust the paths to match where you cloned `synta` before building.
 
 ## Building from source
 
+The repository is a Cargo workspace with four members: the `akamu` server binary, `akamu-jose`, `akamu-client`, and `akamu-cli`.
+
 ```
 cd akamu
 cargo build --release
 ```
 
-The compiled binary is placed at `target/release/akamu`.
+This compiles all four workspace members. The binaries are placed at:
+- `target/release/akamu` — the ACME server
+- `target/release/akamu-cli` — the command-line client
+
+To build only the server:
+
+```
+cargo build --bin akamu --release
+```
+
+To build only the CLI:
+
+```
+cargo build --bin akamu-cli --release
+```
 
 > **Note:** The first build downloads and compiles all dependencies including bundled SQLite and the OpenSSL fork used by `synta-certificate`. It can take several minutes on a first run.
 
@@ -106,6 +122,14 @@ sudo systemctl enable --now akamu
 
 ```
 cargo test
+```
+
+`cargo test` runs tests across all workspace members: the server, `akamu-jose`, and `akamu-client`. To limit the run to a specific crate:
+
+```
+cargo test -p akamu          # server tests only
+cargo test -p akamu-jose     # JWK/JWS primitive tests
+cargo test -p akamu-client   # ACME client library tests
 ```
 
 All tests are self-contained and do not require external services. Some integration tests start local HTTP or TLS servers on ephemeral ports.

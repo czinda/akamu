@@ -31,6 +31,17 @@ Run with output visible (useful for debugging):
 cargo test -- --nocapture
 ```
 
+### Library crate tests
+
+Each library crate ships its own unit tests:
+
+```bash
+cargo test -p akamu-jose    # 66 tests: JWK parsing, JWS sign/verify, ML-DSA
+cargo test -p akamu-client  # 16 tests: AccountKey, EAB, CSR, challenge helpers
+```
+
+`akamu-jose` tests cover every key type including ML-DSA-44/65/87 round-trip sign/verify. `akamu-client` tests use real OpenSSL key generation (no mocking). See `crates/akamu-jose/src/` and `crates/akamu-client/src/` for test modules.
+
 ## Test dependencies
 
 `dev-dependencies` in `Cargo.toml`:

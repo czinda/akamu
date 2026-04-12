@@ -1,6 +1,6 @@
 # Introduction
 
-`Akāmu` is a self-hosted certificate authority that speaks the ACME protocol defined in [RFC 8555](https://www.rfc-editor.org/rfc/rfc8555). It is written in Rust and is designed to be operated inside a private network or behind a reverse proxy, issuing X.509 certificates to ACME clients such as certbot, acme.sh, or any RFC 8555-compliant library.
+`Akāmu` is a self-hosted certificate authority that speaks the ACME protocol defined in [RFC 8555](https://www.rfc-editor.org/rfc/rfc8555). It is written in Rust and is designed to be operated inside a private network or behind a reverse proxy, issuing X.509 certificates to ACME clients such as certbot, acme.sh, or any RFC 8555-compliant library. The project is organized as a Cargo workspace. In addition to the server binary, it ships standalone client libraries — see [Client Libraries](client/overview.md).
 
 For a detailed breakdown of RFC and draft coverage — including which sections are implemented, which are intentionally omitted, and post-quantum support — see the [RFC Support Reference](user/rfc-support.md).
 
@@ -37,6 +37,9 @@ For a detailed breakdown of RFC and draft coverage — including which sections 
 | TLS client | rustls + tokio-rustls |
 | HTTP client | hyper 1 |
 | Configuration | TOML |
+| JWK/JWS primitives | akamu-jose (workspace crate) |
+| ACME client library | akamu-client (workspace crate) |
+| CLI | akamu-cli (workspace crate) |
 
 ## Standards implemented
 
@@ -57,4 +60,4 @@ For a detailed breakdown of RFC and draft coverage — including which sections 
 
 ## Quick navigation
 
-New to Akāmu? Start with the [Quick Start](quickstart/install.md) guide. If you want to understand every configuration key, see the [Configuration Reference](user/configuration.md). Developers should read the [Architecture](developer/architecture.md) chapter first.
+New to Akāmu? Start with the [Quick Start](quickstart/install.md) guide. If you want to understand every configuration key, see the [Configuration Reference](user/configuration.md). Developers should read the [Architecture](developer/architecture.md) chapter first — it includes a full system architecture diagram covering all subsystems and their interactions.

@@ -148,3 +148,22 @@ When adding a new ACME or HTTP endpoint:
 4. Add the new challenge type to the list of challenges created per identifier in `routes::order::new_order`.
 5. Add tests, including both unit tests and, if possible, an integration test using a local stub server.
 6. Document the new challenge type in `docs/src/user/challenges.md`.
+
+### Workspace development
+
+The repository is a Cargo workspace. When adding code to `crates/akamu-jose` or `crates/akamu-client`, run that crate's tests in isolation first:
+
+```bash
+cargo test -p akamu-jose
+cargo test -p akamu-client
+```
+
+Then verify the full workspace:
+
+```bash
+cargo test
+cargo clippy --workspace
+cargo fmt -- --check
+```
+
+Do not add axum, rusqlite, or server-specific dependencies to `akamu-jose` or `akamu-client` — they must remain usable without a running server.
