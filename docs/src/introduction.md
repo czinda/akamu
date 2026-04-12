@@ -2,6 +2,8 @@
 
 `Akāmu` is a self-hosted certificate authority that speaks the ACME protocol defined in [RFC 8555](https://www.rfc-editor.org/rfc/rfc8555). It is written in Rust and is designed to be operated inside a private network or behind a reverse proxy, issuing X.509 certificates to ACME clients such as certbot, acme.sh, or any RFC 8555-compliant library.
 
+For a detailed breakdown of RFC and draft coverage — including which sections are implemented, which are intentionally omitted, and post-quantum support — see the [RFC Support Reference](user/rfc-support.md).
+
 ## What it does
 
 - Implements the full RFC 8555 ACME server protocol: directory, nonces, accounts, orders, authorizations, challenges, certificate issuance, and revocation.
@@ -52,8 +54,6 @@
 - [Let's Encrypt dns-persist-01](https://letsencrypt.org/2026/02/18/dns-persist-01) — Persistent DNS challenge type
 - [draft-aaron-acme-profiles-01](https://www.ietf.org/archive/id/draft-aaron-acme-profiles-01.html) — ACME certificate profiles
 - [draft-ietf-lamps-pq-composite-sigs](https://datatracker.ietf.org/doc/draft-ietf-lamps-pq-composite-sigs/) — ML-DSA composite TLS signature schemes (provisional code points)
-
-For a detailed breakdown of each RFC, including which sections are covered and which are intentionally omitted, see the [RFC Support Reference](user/rfc-support.md).
 
 ## Quick navigation
 

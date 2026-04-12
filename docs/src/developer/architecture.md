@@ -56,6 +56,8 @@ src/
     log.rs         Disk-backed Merkle Tree Certificate log integration
 
   jose/            JWS parsing, JWK handling, thumbprint computation, kid resolution
+                   Supports classical algorithms (RSA, ECDSA, EdDSA) and ML-DSA
+                   post-quantum signatures (draft-ietf-cose-dilithium-11)
 ```
 
 ## Key types
@@ -112,7 +114,8 @@ Almost every POST endpoint calls `routes::parse_jws` before processing the paylo
 3. **URL check**: compare `header.url` with the expected full URL for this endpoint. A mismatch returns `unauthorized`.
 4. **Nonce check**: look up `header.nonce` in the `nonces` database table and mark it consumed. A missing or already-used nonce returns `badNonce`. Anti-replay protection is thus database-backed, surviving server restarts.
 5. **Key resolution**: if the header uses `jwk`, extract the SPKI DER from the JWK directly. If it uses `kid`, look up the account in the database and fetch its stored SPKI DER.
-6. **Signature verification**: verify the JWS signature over `protected || "." || payload` using the resolved public key via `synta-certificate`.
+6. **Signature verification**: verify the JWS signature over `protected || "." || payload` using the resolved public key via `synta-certificate`. Classical algorithms (RS256, RS384,
+   RS512, PS256, PS384, PS512, ES256, ES384, ES512, EdDSA) use `verify_signature`. ML-DSA algorithms (`ML-DSA-44`, `ML-DSA-65`, `ML-DSA-87`) are dispatched first — their raw-byte signatures (not DER) are verified with `verify_ml_dsa_with_context` using an empty context string, as required by draft-ietf-cose-dilithium-11 §4.
 7. **Payload decode**: base64url-decode the `payload` field.
 
 The result is a `JwsContext` struct containing the decoded header, payload bytes, SPKI DER, and optional account ID.

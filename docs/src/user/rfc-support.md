@@ -8,6 +8,7 @@ This page documents every RFC that is relevant to `Akāmu`, explaining what each
 |---------------|-------|--------|
 | [dns-persist-01](#lets-encrypt-dns-persist-01) | Let's Encrypt Persistent DNS Challenge | Full |
 | [draft-aaron-acme-profiles-01](#draft-aaron-acme-profiles-01) | ACME Certificate Profiles | Full |
+| [draft-ietf-cose-dilithium-11](#draft-ietf-cose-dilithium-11) | ML-DSA (Dilithium) for JOSE (JWK + JWS) | Full |
 | [draft-ietf-lamps-pq-composite-sigs](#draft-ietf-lamps-pq-composite-sigs) | ML-DSA Composite TLS Signature Schemes | Partial (provisional code points) |
 | [RFC 8555](#rfc-8555-core-acme) | Automatic Certificate Management Environment (ACME) | Full |
 | [RFC 8659](#rfc-8659-caa-dns-resource-record) | DNS Certification Authority Authorization (CAA) | Full |
@@ -567,6 +568,105 @@ If a profile is removed from the server's configuration after an order has been 
 ```
 
 When `profiles` is empty (the default), profile selection is not advertised. A `profile` field in `newOrder` is accepted but ignored — the server issues under its default policy.
+
+---
+
+## draft-ietf-cose-dilithium-11
+
+**[draft-ietf-cose-dilithium-11](https://datatracker.ietf.org/doc/draft-ietf-cose-dilithium/)**
+defines how ML-DSA (Module-Lattice-Based Digital Signature Algorithm, formerly
+CRYSTALS-Dilithium, standardized in FIPS 204) keys and signatures are represented in JOSE
+(JSON Object Signing and Encryption). This draft has been submitted for RFC publication and
+its wire format is frozen. Akāmu implements it for ACME account key authentication, meaning
+ACME clients can register an ML-DSA key pair and sign every subsequent ACME request with it.
+
+### JWK key type: `AKP`
+
+ML-DSA keys use the key type `"AKP"` (Algorithm Key Pair). Unlike classical key types, the
+algorithm is encoded inside the JWK itself (not only in the JWS protected header), so the
+`alg` field is **required** in the JWK:
+
+```json
+{
+  "kty": "AKP",
+  "alg": "ML-DSA-65",
+  "pub": "<base64url-encoded raw public key bytes>"
+}
+```
+
+| JWK field | Required | Description |
+|-----------|----------|-------------|
+| `kty`     | Yes      | Always `"AKP"` for ML-DSA keys |
+| `alg`     | Yes      | `"ML-DSA-44"`, `"ML-DSA-65"`, or `"ML-DSA-87"` |
+| `pub`     | Yes      | Base64url-encoded raw public key bytes (no padding) |
+| `priv`    | No       | 32-byte seed (private key); **never sent to the server** and ignored if present |
+
+### Supported variants
+
+| Algorithm  | FIPS 204 parameter set | Public key size | Signature size | OID (SPKI) |
+|------------|------------------------|-----------------|----------------|------------|
+| ML-DSA-44  | Parameter set 2 (k=4, l=4) | 1312 bytes | 2420 bytes | 2.16.840.1.101.3.4.3.17 |
+| ML-DSA-65  | Parameter set 3 (k=6, l=5) | 1952 bytes | 3309 bytes | 2.16.840.1.101.3.4.3.18 |
+| ML-DSA-87  | Parameter set 5 (k=8, l=7) | 2592 bytes | 4627 bytes | 2.16.840.1.101.3.4.3.19 |
+
+### JWK thumbprint
+
+Per draft-ietf-cose-dilithium-11 §6, the JWK thumbprint for an `AKP` key is the
+SHA-256 hash of the following canonical JSON object with members in lexicographic order:
+
+```json
+{"alg":"ML-DSA-65","kty":"AKP","pub":"<base64url-key>"}
+```
+
+This is the same SHA-256 / base64url procedure as RFC 7638, applied to the three required
+members `alg`, `kty`, and `pub` (in that order).
+
+### Signature format
+
+ML-DSA signatures in JOSE are **raw bytes** as defined by FIPS 204 §7.2. They are
+**not** DER-encoded. The server validates the signature length before attempting
+verification and returns `HTTP 400` if the length does not match the declared algorithm.
+
+The signing context MUST be an empty byte string (`b""`) per draft-ietf-cose-dilithium-11 §4.
+Verification uses `BackendPublicKey::verify_ml_dsa_with_context(signing_input, signature, b"")`.
+Signature failures return `HTTP 401 Unauthorized`.
+
+### SPKI DER construction
+
+When an `AKP` JWK arrives in a `new-account` request (or any request using `jwk` instead
+of `kid`), Akāmu converts it to a SubjectPublicKeyInfo (SPKI) DER structure for storage and
+subsequent signature verification. The SPKI follows the X.509 / PKIX encoding for ML-DSA
+keys:
+
+```
+SEQUENCE {                          -- outer SEQUENCE
+  SEQUENCE {                        -- AlgorithmIdentifier
+    OID <variant OID>               -- no parameters (absent, not NULL)
+  }
+  BIT STRING {
+    0x00                            -- unused-bits octet
+    <raw public key bytes>          -- from the "pub" JWK field
+  }
+}
+```
+
+The `alg` field in the JWK determines which OID is embedded. The length octets in the DER
+use the minimum-length encoding; for ML-DSA key sizes, the outer SEQUENCE and BIT STRING
+both use the two-byte (`0x82`) length form.
+
+### ACME client integration notes
+
+An ACME client registering with an ML-DSA key must:
+
+1. Generate an ML-DSA key pair (any of the three variants).
+2. Construct the `AKP` JWK from the raw public key bytes (base64url-encode them into `pub`).
+3. Include the JWK in the `new-account` protected header (the `jwk` field).
+4. Sign all ACME requests with the ML-DSA private key using an empty context string.
+5. Set `alg` in the JWS protected header to match the JWK's `alg` field.
+
+Existing ACME clients designed for classical algorithms require ML-DSA support in their
+underlying JOSE library. There is no server-side configuration to enable or disable
+ML-DSA; the feature is always available.
 
 ---
 
