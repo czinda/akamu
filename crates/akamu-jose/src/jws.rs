@@ -108,39 +108,12 @@ impl JwsFlattened {
                 .map_err(|e| JoseError::BadRequest(format!("JWS signature invalid: {}", e)));
         }
 
-        // For ECDSA algorithms, JWS uses IEEE P1363 encoding (raw r||s);
-        // synta_certificate's verify_signature expects DER (SEQUENCE {r, s}).
-        // Convert before verification.
-        let (sig_alg_der, verified_sig) = match header.alg.as_str() {
-            "RS256" => (RS256_ALG_DER, raw_sig),
-            "RS384" => (RS384_ALG_DER, raw_sig),
-            "RS512" => (RS512_ALG_DER, raw_sig),
-            "PS256" => (PS256_ALG_DER, raw_sig),
-            "PS384" => (PS384_ALG_DER, raw_sig),
-            "PS512" => (PS512_ALG_DER, raw_sig),
-            "ES256" => {
-                let der_sig = p1363_to_der(&raw_sig, 32)?;
-                (ES256_ALG_DER, der_sig)
+        verify_with_spki(&header.alg, signing_input, &raw_sig, spki_der).map_err(|e| match e {
+            JoseError::UnsupportedAlgorithm(a) => {
+                JoseError::UnsupportedAlgorithm(format!("unsupported JWS algorithm: {a}"))
             }
-            "ES384" => {
-                let der_sig = p1363_to_der(&raw_sig, 48)?;
-                (ES384_ALG_DER, der_sig)
-            }
-            "ES512" => {
-                let der_sig = p1363_to_der(&raw_sig, 66)?;
-                (ES512_ALG_DER, der_sig)
-            }
-            "EdDSA" => (EDDSA_ALG_DER, raw_sig),
-            alg => {
-                return Err(JoseError::UnsupportedAlgorithm(format!(
-                    "unsupported JWS algorithm: {}",
-                    alg
-                )));
-            }
-        };
-
-        key.verify_signature(signing_input, sig_alg_der, &verified_sig)
-            .map_err(|e| JoseError::BadRequest(format!("JWS signature invalid: {}", e)))
+            other => other,
+        })
     }
 
     /// Build and sign a JWS flattened JSON object.
@@ -257,6 +230,47 @@ impl JwsFlattened {
             signature: URL_SAFE_NO_PAD.encode(&raw_sig),
         })
     }
+}
+
+/// Verify a signature over `signing_input` using `spki_der`.
+///
+/// `raw_sig` is IEEE P1363 for ECDSA algorithms and raw bytes for all others.
+/// Shared between JWS flattened and compact JWT verification.
+pub(crate) fn verify_with_spki(
+    alg: &str,
+    signing_input: &[u8],
+    raw_sig: &[u8],
+    spki_der: &[u8],
+) -> Result<(), JoseError> {
+    let key = BackendPublicKey::from_spki_der(spki_der.to_vec());
+    let (sig_alg_der, verified_sig): (&[u8], Vec<u8>) = match alg {
+        "RS256" => (RS256_ALG_DER, raw_sig.to_vec()),
+        "RS384" => (RS384_ALG_DER, raw_sig.to_vec()),
+        "RS512" => (RS512_ALG_DER, raw_sig.to_vec()),
+        "PS256" => (PS256_ALG_DER, raw_sig.to_vec()),
+        "PS384" => (PS384_ALG_DER, raw_sig.to_vec()),
+        "PS512" => (PS512_ALG_DER, raw_sig.to_vec()),
+        "ES256" => {
+            let der_sig = p1363_to_der(raw_sig, 32)?;
+            (ES256_ALG_DER, der_sig)
+        }
+        "ES384" => {
+            let der_sig = p1363_to_der(raw_sig, 48)?;
+            (ES384_ALG_DER, der_sig)
+        }
+        "ES512" => {
+            let der_sig = p1363_to_der(raw_sig, 66)?;
+            (ES512_ALG_DER, der_sig)
+        }
+        "EdDSA" => (EDDSA_ALG_DER, raw_sig.to_vec()),
+        a => {
+            return Err(JoseError::UnsupportedAlgorithm(format!(
+                "unsupported algorithm: {a}"
+            )));
+        }
+    };
+    key.verify_signature(signing_input, sig_alg_der, &verified_sig)
+        .map_err(|e| JoseError::BadRequest(format!("signature invalid: {e}")))
 }
 
 // ── DER-encoded AlgorithmIdentifier constants ─────────────────────────────────

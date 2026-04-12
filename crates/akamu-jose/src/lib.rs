@@ -7,7 +7,9 @@
 pub mod error;
 pub mod jwk;
 pub mod jws;
+pub mod jwt;
 
 pub use error::JoseError;
 pub use jwk::JwkPublic;
 pub use jws::{JwsFlattened, JwsKeyRef, JwsProtectedHeader};
+pub use jwt::{x5c_leaf_der, AuthorityToken, AuthorityTokenHeader};
