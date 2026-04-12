@@ -89,6 +89,17 @@ pub struct Challenge {
     pub token: Option<String>,
 }
 
+/// Renewal information from the ACME server (RFC 9773).
+#[derive(Debug, Clone)]
+pub struct RenewalInfo {
+    /// Start of the suggested renewal window (RFC 3339 timestamp string).
+    pub window_start: String,
+    /// End of the suggested renewal window (RFC 3339 timestamp string).
+    pub window_end: String,
+    /// Value of the `Retry-After` response header, in seconds (if present).
+    pub retry_after_secs: Option<u64>,
+}
+
 /// Options for account registration; passed to `AcmeClient::new_account()`.
 pub struct AccountOptions<'a> {
     /// Contact URIs (e.g. `"mailto:admin@example.com"`).

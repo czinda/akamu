@@ -7,6 +7,7 @@ description = "ACME client library with ML-DSA account key support (draft-ietf-c
 
 [dependencies]
 akamu-jose = { path = "../akamu-jose" }
+synta = { version = "0.1.6", default-features = false, features = ["std", "derive"] }
 synta-certificate = { version = "0.1.6", features = ["std", "openssl", "pqc"] }
 
 base64 = "0.22"

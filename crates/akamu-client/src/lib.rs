@@ -11,5 +11,5 @@ pub use challenge::{ChallengeSolver, Dns01Helper, DnsPersist01Helper, Http01Solv
 pub use client::AcmeClient;
 pub use csr::build_csr;
 pub use error::ClientError;
-pub use types::{AccountOptions, Authorization, Challenge, EabOptions, Identifier, Order};
+pub use types::{AccountOptions, Authorization, Challenge, EabOptions, Identifier, Order, RenewalInfo};
 pub use synta_certificate::pem_to_der;

@@ -31,7 +31,7 @@ use crate::{
     account::{Account, AccountKey},
     eab::create_eab_jws,
     error::ClientError,
-    types::{AccountOptions, Authorization, Challenge, Identifier, Order},
+    types::{AccountOptions, Authorization, Challenge, Identifier, Order, RenewalInfo},
 };
 
 type HyperClient = Client<hyper_rustls::HttpsConnector<HttpConnector>, Full<Bytes>>;
@@ -374,19 +374,19 @@ impl AcmeClient {
     /// Poll an order URL until status is `"ready"` or `"valid"`.
     ///
     /// Polls with exponential backoff (1 ms → doubles → cap 2 s), timeout 30 s.
+    /// Respects the `Retry-After` header from the server when present.
     pub async fn poll_order(&self, acct: &Account, order_url: &str) -> Result<Order, ClientError> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         let mut delay_ms: u64 = 1;
 
         loop {
             sleep(Duration::from_millis(delay_ms)).await;
-            delay_ms = (delay_ms * 2).min(2000);
 
             if tokio::time::Instant::now() > deadline {
                 return Err(ClientError::Http("timed out polling order".into()));
             }
 
-            let (_, body, _) = self.post_kid(acct, order_url, None).await?;
+            let (_, body, headers) = self.post_kid(acct, order_url, None).await?;
 
             match body["status"].as_str() {
                 Some("ready") | Some("valid") => return parse_order(&body, order_url.to_owned()),
@@ -396,7 +396,19 @@ impl AcmeClient {
                         body["error"]
                     )))
                 }
-                _ => continue,
+                _ => {}
+            }
+
+            // Use Retry-After if the server sent one, otherwise use exponential backoff.
+            let retry_after = headers
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok());
+            let sleep_ms = retry_after.map(|s| s * 1000).unwrap_or(delay_ms);
+            sleep(Duration::from_millis(sleep_ms)).await;
+            // Only advance the backoff counter when Retry-After was absent.
+            if retry_after.is_none() {
+                delay_ms = (delay_ms * 2).min(2000);
             }
         }
     }
@@ -437,6 +449,82 @@ impl AcmeClient {
             return Err(ClientError::Http(format!("download-certificate: {status}")));
         }
         Ok(raw)
+    }
+
+    /// Fetch renewal information for a certificate (RFC 9773 ARI).
+    ///
+    /// `cert_pem` is the PEM-encoded certificate chain (as returned by
+    /// `download_certificate()`). Only the first certificate (end-entity) is used.
+    ///
+    /// Returns `Err` if the server does not advertise an ARI endpoint.
+    pub async fn get_renewal_info(&self, cert_pem: &[u8]) -> Result<RenewalInfo, ClientError> {
+        use synta::{Decoder, Encoding};
+        use synta_certificate::owned::Certificate;
+        use synta_certificate::oids;
+
+        let renewal_info_url = self.renewal_info_url.as_deref()
+            .ok_or_else(|| ClientError::Http("server does not support ARI (no renewalInfo in directory)".into()))?;
+
+        // Parse the end-entity certificate.
+        let cert_ders = synta_certificate::pem_to_der(cert_pem);
+        let cert_der = cert_ders.into_iter().next()
+            .ok_or_else(|| ClientError::Crypto("no certificate found in PEM".into()))?;
+
+        let cert: Certificate = {
+            let mut dec = Decoder::new(&cert_der, Encoding::Der);
+            dec.decode().map_err(|e| ClientError::Crypto(format!("cert parse: {e}")))?
+        };
+
+        // Extract serial bytes.
+        let serial_bytes = cert.tbs_certificate.serial_number.as_bytes().to_vec();
+
+        // Extract AKI key identifier bytes.
+        let extensions = cert.tbs_certificate.extensions
+            .as_ref()
+            .ok_or_else(|| ClientError::Crypto("certificate has no extensions".into()))?;
+        let aki_ext = extensions.iter()
+            .find(|e| e.extn_id.components() == oids::AUTHORITY_KEY_IDENTIFIER)
+            .ok_or_else(|| ClientError::Crypto("certificate missing AKI extension".into()))?;
+        let aki_bytes = aki_key_id_bytes(aki_ext.extn_value.as_bytes())
+            .ok_or_else(|| ClientError::Crypto("could not parse AKI key identifier".into()))?;
+
+        // Build cert-id and fetch.
+        let cert_id = format!(
+            "{}.{}",
+            URL_SAFE_NO_PAD.encode(&aki_bytes),
+            URL_SAFE_NO_PAD.encode(&serial_bytes),
+        );
+        let url = format!("{}/{}", renewal_info_url.trim_end_matches('/'), cert_id);
+
+        let req = hyper::Request::builder()
+            .method(hyper::Method::GET)
+            .uri(&url)
+            .body(http_body_util::Full::<hyper::body::Bytes>::new(hyper::body::Bytes::new()))
+            .map_err(|e| ClientError::Http(format!("build ARI request: {e}")))?;
+        let resp = self.http.request(req).await
+            .map_err(|e| ClientError::Http(format!("GET {url}: {e}")))?;
+        let status = resp.status();
+        let retry_after_secs = resp.headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok());
+        let raw = resp.into_body().collect().await
+            .map_err(|e| ClientError::Http(format!("read ARI body: {e}")))?
+            .to_bytes();
+        if !status.is_success() {
+            return Err(ClientError::Http(format!("get-renewal-info {status}")));
+        }
+        let body: serde_json::Value = serde_json::from_slice(&raw)
+            .map_err(|e| ClientError::Http(format!("parse ARI JSON: {e}")))?;
+        let window_start = body["suggestedWindow"]["start"]
+            .as_str()
+            .ok_or_else(|| ClientError::Http("ARI missing suggestedWindow.start".into()))?
+            .to_string();
+        let window_end = body["suggestedWindow"]["end"]
+            .as_str()
+            .ok_or_else(|| ClientError::Http("ARI missing suggestedWindow.end".into()))?
+            .to_string();
+        Ok(RenewalInfo { window_start, window_end, retry_after_secs })
     }
 
     /// Revoke a certificate using the account key (RFC 8555 §7.6).
@@ -744,4 +832,33 @@ fn parse_order(body: &Value, url: String) -> Result<Order, ClientError> {
         certificate,
         identifiers,
     })
+}
+
+/// Extract the raw key-identifier bytes from a DER-encoded AKI extension value.
+///
+/// The AKI extension value (the content of the OCTET STRING wrapper in the
+/// `Extension.extnValue` field) has the structure:
+/// ```text
+/// SEQUENCE {
+///   [0] IMPLICIT PRIMITIVE (keyIdentifier), length N
+///     <N bytes>  -- the raw SHA-1 hash
+/// }
+/// ```
+fn aki_key_id_bytes(ext_value: &[u8]) -> Option<Vec<u8>> {
+    // Skip SEQUENCE (tag 0x30 + length).
+    if ext_value.len() < 4 || ext_value[0] != 0x30 {
+        return None;
+    }
+    let content_start = if ext_value[1] & 0x80 == 0 {
+        2
+    } else {
+        2 + (ext_value[1] & 0x7f) as usize
+    };
+    let content = ext_value.get(content_start..)?;
+    // [0] IMPLICIT tag = 0x80
+    if content.is_empty() || content[0] != 0x80 {
+        return None;
+    }
+    let len = *content.get(1)? as usize;
+    content.get(2..2 + len).map(<[u8]>::to_vec)
 }
