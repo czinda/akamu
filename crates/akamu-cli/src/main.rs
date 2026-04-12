@@ -161,6 +161,11 @@ struct IssueArgs {
     #[arg(long, default_value_t = 80)]
     http_port: u16,
 
+    /// PEM file for the certificate private key.
+    /// Generated and saved as <out>.key.pem if absent; supply to reuse an existing key.
+    #[arg(long)]
+    cert_key: Option<PathBuf>,
+
     /// Write the PEM certificate chain to this file
     #[arg(long)]
     out: PathBuf,
@@ -319,6 +324,19 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
             args.challenge_type
         ));
     }
+    // http-01 cannot validate wildcard identifiers (RFC 8555 §8.3).
+    if args.challenge_type == "http-01" {
+        let wildcards: Vec<&str> = args.domains.iter()
+            .filter(|d| d.starts_with("*."))
+            .map(String::as_str)
+            .collect();
+        if !wildcards.is_empty() {
+            return Err(format!(
+                "http-01 cannot validate wildcard identifiers: {}; use --challenge dns-01",
+                wildcards.join(", ")
+            ));
+        }
+    }
     let solver = Http01Solver::new(args.http_port);
     solver
         .start()
@@ -363,19 +381,48 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
             .await
             .map_err(|e| e.to_string())?;
 
-        // Poll the order (not individual challenge) for ready/valid.
-        let _ = client
+        // Poll until the order is ready (all authorizations validated).
+        let polled = client
             .poll_order(&account, &order.url)
             .await
             .map_err(|e| e.to_string())?;
+        if polled.status == "invalid" {
+            return Err(format!(
+                "order became invalid during challenge validation for {}",
+                authz.identifier.value
+            ));
+        }
 
         solver.cleanup(token).await.map_err(|e| e.to_string())?;
     }
 
-    // Generate a CSR key and build the CSR.
+    // Load or generate the certificate private key.
+    let cert_key_path: PathBuf = args.cert_key.clone().unwrap_or_else(|| {
+        let mut p = args.out.clone();
+        let mut name = p.file_name().unwrap_or_default().to_os_string();
+        name.push(".key.pem");
+        p.set_file_name(name);
+        p
+    });
+
+    let cert_key = if cert_key_path.exists() {
+        akamu_client::AccountKey::from_pem(
+            &fs::read(&cert_key_path)
+                .map_err(|e| format!("read {}: {e}", cert_key_path.display()))?,
+        )
+        .map_err(|e| e.to_string())?
+    } else {
+        let k = akamu_client::AccountKey::generate(&args.cert_key_type)
+            .map_err(|e| format!("generate cert key: {e}"))?;
+        let pem = k.to_pem().map_err(|e| e.to_string())?;
+        fs::write(&cert_key_path, &pem)
+            .map_err(|e| format!("write {}: {e}", cert_key_path.display()))?;
+        println!("Certificate key saved to {}", cert_key_path.display());
+        k
+    };
+
+    // Build the CSR.
     let domain_refs: Vec<&str> = args.domains.iter().map(String::as_str).collect();
-    let cert_key = akamu_client::AccountKey::generate(&args.cert_key_type)
-        .map_err(|e| format!("generate cert key: {e}"))?;
     let csr_der =
         akamu_client::build_csr(&domain_refs, cert_key.private_key()).map_err(|e| e.to_string())?;
 
@@ -406,6 +453,7 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
 
     fs::write(&args.out, &pem).map_err(|e| format!("write {}: {e}", args.out.display()))?;
     println!("Certificate written to {}", args.out.display());
+    println!("Certificate key:  {}", cert_key_path.display());
     Ok(())
 }
 
