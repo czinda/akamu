@@ -160,14 +160,7 @@ impl AcmeClient {
         }
 
         let account_url = location_hdr(&headers)?;
-        let contacts = body["contact"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let contacts = extract_contacts(&body);
         let account_status = body["status"].as_str().unwrap_or("valid").to_string();
 
         Ok(Account::new(account_url, account_status, contacts, key))
@@ -188,6 +181,86 @@ impl AcmeClient {
             return Err(acme_error(&body, status, "deactivate-account"));
         }
         Ok(())
+    }
+
+    /// Look up an existing account by key without creating one (RFC 8555 §7.3.1).
+    ///
+    /// Returns `Err(ClientError::Acme { acme_type: "urn:ietf:params:acme:error:accountDoesNotExist", .. })`
+    /// if no account exists for this key.
+    pub async fn find_account(
+        &self,
+        key: Arc<AccountKey>,
+    ) -> Result<Account, ClientError> {
+        let url = &self.new_account_url;
+        let payload = serde_json::json!({ "onlyReturnExisting": true });
+        let payload_str = payload.to_string();
+
+        let (status, body, headers) = loop {
+            let nonce = self.fetch_nonce().await?;
+            let key_ref = JwsKeyRef::Jwk {
+                jwk: key.public_jwk().clone(),
+            };
+            let jws = JwsFlattened::sign(
+                key.private_key(),
+                key.alg(),
+                &nonce,
+                url,
+                key_ref,
+                Some(payload_str.as_bytes()),
+            )?;
+            let jws_value = serde_json::to_value(&jws)
+                .map_err(|e| ClientError::Jose(akamu_jose::JoseError::Json(e)))?;
+            let (status, body, headers) = self.post_jws_once(url, &jws_value).await?;
+            if body["type"].as_str() == Some("urn:ietf:params:acme:error:badNonce") {
+                *self.cached_nonce.lock().await = None;
+                continue;
+            }
+            break (status, body, headers);
+        };
+
+        if status != StatusCode::OK {
+            return Err(acme_error(&body, status, "find-account"));
+        }
+        let account_url = location_hdr(&headers)?;
+        let contacts = extract_contacts(&body);
+        let account_status = body["status"].as_str().unwrap_or("valid").to_string();
+        Ok(Account::new(account_url, account_status, contacts, key))
+    }
+
+    /// Fetch the current account state from the server (RFC 8555 §7.3.2).
+    pub async fn get_account(&self, acct: &Account) -> Result<Account, ClientError> {
+        let (status, body, headers) = self.post_kid(acct, &acct.url, None).await?;
+        if status != StatusCode::OK {
+            return Err(acme_error(&body, status, "get-account"));
+        }
+        let account_url = headers
+            .get(hyper::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from)
+            .unwrap_or_else(|| acct.url.clone());
+        let contacts = extract_contacts(&body);
+        let account_status = body["status"].as_str().unwrap_or("valid").to_string();
+        Ok(Account::new(account_url, account_status, contacts, Arc::clone(&acct.key)))
+    }
+
+    /// Update account contacts (RFC 8555 §7.3.2).
+    ///
+    /// Returns the updated account.
+    pub async fn update_account(
+        &self,
+        acct: &Account,
+        contacts: &[&str],
+    ) -> Result<Account, ClientError> {
+        let payload = serde_json::json!({ "contact": contacts });
+        let (status, body, _) = self
+            .post_kid(acct, &acct.url, Some(payload.to_string().as_bytes()))
+            .await?;
+        if status != StatusCode::OK {
+            return Err(acme_error(&body, status, "update-account"));
+        }
+        let updated_contacts = extract_contacts(&body);
+        let account_status = body["status"].as_str().unwrap_or("valid").to_string();
+        Ok(Account::new(acct.url.clone(), account_status, updated_contacts, Arc::clone(&acct.key)))
     }
 
     // ── Order lifecycle ───────────────────────────────────────────────────────
@@ -308,6 +381,67 @@ impl AcmeClient {
             return Err(ClientError::Http(format!("download-certificate: {status}")));
         }
         Ok(raw)
+    }
+
+    /// Revoke a certificate using the account key (RFC 8555 §7.6).
+    ///
+    /// `cert_der` is the DER-encoded end-entity certificate (not the PEM bundle).
+    /// `reason` is an optional CRL reason code (0–10, excluding 7).
+    pub async fn revoke_certificate(
+        &self,
+        acct: &Account,
+        cert_der: &[u8],
+        reason: Option<u8>,
+    ) -> Result<(), ClientError> {
+        let cert_b64 = URL_SAFE_NO_PAD.encode(cert_der);
+        let mut payload = serde_json::json!({ "certificate": cert_b64 });
+        if let Some(r) = reason {
+            payload["reason"] = serde_json::json!(r);
+        }
+        let url = self.revoke_cert_url.clone();
+        let (status, body, _) = self
+            .post_kid(acct, &url, Some(payload.to_string().as_bytes()))
+            .await?;
+        if status != StatusCode::OK {
+            return Err(acme_error(&body, status, "revoke-cert"));
+        }
+        Ok(())
+    }
+
+    /// Revoke a certificate using the certificate's own private key (RFC 8555 §7.6).
+    ///
+    /// Use this when the account key is unavailable but the cert's private key is known.
+    pub async fn revoke_certificate_with_cert_key(
+        &self,
+        cert_key: &AccountKey,
+        cert_der: &[u8],
+        reason: Option<u8>,
+    ) -> Result<(), ClientError> {
+        let nonce = self.fetch_nonce().await?;
+        let url = &self.revoke_cert_url;
+        let cert_b64 = URL_SAFE_NO_PAD.encode(cert_der);
+        let mut payload = serde_json::json!({ "certificate": cert_b64 });
+        if let Some(r) = reason {
+            payload["reason"] = serde_json::json!(r);
+        }
+        let key_ref = JwsKeyRef::Jwk {
+            jwk: cert_key.public_jwk().clone(),
+        };
+        let jws = JwsFlattened::sign(
+            cert_key.private_key(),
+            cert_key.alg(),
+            &nonce,
+            url,
+            key_ref,
+            Some(payload.to_string().as_bytes()),
+        )?;
+        let jws_value = serde_json::to_value(&jws)
+            .map_err(|e| ClientError::Jose(akamu_jose::JoseError::Json(e)))?;
+        let (status, body, _) = self.post_jws_once(url, &jws_value).await?;
+        if status != StatusCode::OK {
+            return Err(acme_error(&body, status, "revoke-cert"));
+        }
+        Ok(())
     }
 
     // ── Internal signing helpers ───────────────────────────────────────────────
@@ -509,6 +643,17 @@ fn acme_error(body: &Value, status: StatusCode, op: &str) -> ClientError {
     } else {
         ClientError::Http(format!("{op} {status}: {detail}"))
     }
+}
+
+fn extract_contacts(body: &Value) -> Vec<String> {
+    body["contact"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn parse_order(body: &Value, url: String) -> Result<Order, ClientError> {

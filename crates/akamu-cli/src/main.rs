@@ -189,6 +189,14 @@ struct RevokeArgs {
     /// PEM file containing the certificate to revoke
     #[arg(long)]
     cert: PathBuf,
+
+    /// CRL reason code (0–6, 8–10; omit for unspecified)
+    #[arg(long)]
+    reason: Option<u8>,
+
+    /// PEM file for the certificate's private key (use instead of --account-key for self-revocation)
+    #[arg(long)]
+    cert_key: Option<PathBuf>,
 }
 
 // ── entry point ───────────────────────────────────────────────────────────────
@@ -460,14 +468,49 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
 // ── revoke ────────────────────────────────────────────────────────────────────
 
 async fn cmd_revoke(args: RevokeArgs) -> Result<(), String> {
-    // Minimal implementation: read the cert PEM, print a note.
-    // Full revoke requires parsing the DER from the PEM and posting to /revoke-cert.
-    // The synta + akamu_client crates have all the pieces; this is left for a
-    // follow-up once the revoke endpoint is exposed in AcmeClient.
-    let _cert_pem =
-        fs::read(&args.cert).map_err(|e| format!("read {}: {e}", args.cert.display()))?;
-    let _key = load_key(&args.account_key)?;
-    eprintln!("revoke: not yet implemented in this version");
+    // Validate reason code client-side for a better error message.
+    if let Some(r) = args.reason {
+        if r == 7 || r > 10 {
+            return Err(format!(
+                "invalid reason code {r}; valid values: 0–6, 8–10"
+            ));
+        }
+    }
+
+    // Read and decode the certificate PEM → DER.
+    let cert_pem = fs::read(&args.cert)
+        .map_err(|e| format!("read {}: {e}", args.cert.display()))?;
+    let cert_ders = akamu_client::pem_to_der(&cert_pem);
+    let cert_der = cert_ders
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("no certificate found in {}", args.cert.display()))?;
+
+    let client = AcmeClient::new(&args.server)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if let Some(cert_key_path) = &args.cert_key {
+        // Self-revocation: sign with the certificate's own private key.
+        let cert_key = load_key(cert_key_path)?;
+        let cert_key = Arc::new(cert_key);
+        client
+            .revoke_certificate_with_cert_key(&cert_key, &cert_der, args.reason)
+            .await
+            .map_err(|e| e.to_string())?;
+    } else {
+        // Account-key revocation.
+        let key = load_key(&args.account_key)?;
+        let key = Arc::new(key);
+        let account_url = load_account_url(&args.account_key)?;
+        let account = akamu_client::Account::new(account_url, "valid".into(), vec![], key);
+        client
+            .revoke_certificate(&account, &cert_der, args.reason)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    println!("Revoked: {}", args.cert.display());
     Ok(())
 }
 
