@@ -265,6 +265,60 @@ impl AcmeClient {
         Ok(Account::new(acct.url.clone(), account_status, updated_contacts, Arc::clone(&acct.key)))
     }
 
+    /// Roll over the account key (RFC 8555 §7.3.5).
+    ///
+    /// The server atomically replaces the account key. After this call, `acct`
+    /// is no longer usable — use the returned `Account` (which holds `new_key`)
+    /// for all subsequent operations.
+    pub async fn key_change(
+        &self,
+        acct: &Account,
+        new_key: Arc<AccountKey>,
+    ) -> Result<Account, ClientError> {
+        let url = &self.key_change_url;
+
+        // Inner JWS: signed with the new key (jwk), url = key-change endpoint.
+        // Payload: {"account": "<account_url>", "oldKey": <serialised old JWK>}
+        let inner_nonce = self.fetch_nonce().await?;
+        let old_jwk_json = serde_json::to_value(acct.key.public_jwk())
+            .map_err(|e| ClientError::Jose(akamu_jose::JoseError::Json(e)))?;
+        let inner_payload = serde_json::json!({
+            "account": acct.url,
+            "oldKey": old_jwk_json,
+        });
+        let inner_key_ref = JwsKeyRef::Jwk {
+            jwk: new_key.public_jwk().clone(),
+        };
+        let inner_jws = JwsFlattened::sign(
+            new_key.private_key(),
+            new_key.alg(),
+            &inner_nonce,
+            url,
+            inner_key_ref,
+            Some(inner_payload.to_string().as_bytes()),
+        )?;
+        let inner_jws_value = serde_json::to_value(&inner_jws)
+            .map_err(|e| ClientError::Jose(akamu_jose::JoseError::Json(e)))?;
+
+        // Outer JWS: signed with the old account key (kid = account URL).
+        // The outer payload is the serialised inner JWS object.
+        // post_kid handles the outer nonce and badNonce retry internally.
+        let (status, body, _) = self
+            .post_kid(
+                acct,
+                url,
+                Some(inner_jws_value.to_string().as_bytes()),
+            )
+            .await?;
+        if status != StatusCode::OK {
+            return Err(acme_error(&body, status, "key-change"));
+        }
+
+        let contacts = extract_contacts(&body);
+        let account_status = body["status"].as_str().unwrap_or("valid").to_string();
+        Ok(Account::new(acct.url.clone(), account_status, contacts, new_key))
+    }
+
     // ── Order lifecycle ───────────────────────────────────────────────────────
 
     /// Place a new order for the given identifiers.
