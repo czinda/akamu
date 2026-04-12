@@ -31,6 +31,56 @@ pub async fn validate_challenge(
 
 After `dispatch` returns, `validate_challenge` calls either `on_valid` or `on_invalid` to update the database.
 
+## Validation flow
+
+```mermaid
+sequenceDiagram
+    participant Client as ACME Client
+    participant H as Route Handler
+    participant V as validate_challenge (spawned)
+    participant D as dispatch()
+    participant Ext as Applicant Server / DNS
+    participant DB as SQLite
+
+    Client->>H: POST to challenge URL
+    H->>DB: challenge → processing
+    H->>V: tokio::spawn(validate_challenge)
+    H-->>Client: 200 processing (immediate return)
+
+    V->>D: dispatch(chall_type, domain, key_auth, …)
+
+    alt http-01
+        D->>Ext: GET /.well-known/acme-challenge/TOKEN
+        Ext-->>D: 200 key_authorization body
+    else dns-01
+        D->>Ext: TXT _acme-challenge.DOMAIN
+        Ext-->>D: TXT record value
+    else tls-alpn-01
+        D->>Ext: TLS connect :443, ALPN acme-tls/1
+        Ext-->>D: Certificate with id-pe-acmeIdentifier
+    else dns-persist-01
+        D->>Ext: TXT _validation-persist.DOMAIN
+        Ext-->>D: TXT record value (issuer;accounturi;policy;persistUntil)
+    end
+
+    alt probe succeeded
+        V->>DB: BEGIN TRANSACTION
+        V->>DB: challenge → valid (+ validated timestamp)
+        V->>DB: authorization → valid
+        V->>DB: count non-valid authzs for order
+        alt all authorizations now valid
+            V->>DB: order → ready
+        end
+        V->>DB: COMMIT
+    else probe failed
+        V->>DB: challenge → invalid (+ error JSON)
+        V->>DB: authorization → invalid
+        V->>DB: order → invalid
+    end
+
+    Note over Client: Client polls authorization URL (POST-as-GET)
+```
+
 ## Background execution
 
 Validation runs inside a `tokio::spawn` task, not in the request handler's async context:
@@ -63,6 +113,35 @@ tokio::spawn(async move {
 The challenge handler returns the `processing` status immediately. The client must poll the authorization URL to detect completion.
 
 The observer task pattern ensures that panics inside the validation task are logged via `tracing::error!` rather than silently discarded (which would happen if the `JoinHandle` were simply dropped).
+
+## State cascade diagram
+
+```mermaid
+stateDiagram-v2
+    direction TB
+
+    state "Challenge" as chall {
+        [*] --> ch_pending
+        ch_pending --> ch_processing : client responds
+        ch_processing --> ch_valid : probe OK
+        ch_processing --> ch_invalid : probe failed
+    }
+
+    state "Authorization" as authz {
+        [*] --> az_pending
+        az_pending --> az_valid : challenge valid
+        az_pending --> az_invalid : challenge invalid
+    }
+
+    state "Order" as ord {
+        [*] --> or_pending
+        or_pending --> or_ready : all authzs valid
+        or_pending --> or_invalid : any authz invalid
+    }
+
+    chall --> authz : atomic DB transaction
+    authz --> ord : atomic DB transaction (on_valid)\nindependent steps (on_invalid)
+```
 
 ## State transitions on success (`on_valid`)
 

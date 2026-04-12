@@ -197,6 +197,84 @@ Multi-table writes use explicit SQLite transactions to ensure atomicity:
 
 This prevents the database from being left in an inconsistent state if the process crashes between writes.
 
+## Schema diagram
+
+The entity-relationship diagram below shows all six tables and their foreign-key
+relationships. The `account_id` column on `authorizations` is denormalized from the
+parent order; both FKs exist in the database.
+
+```mermaid
+erDiagram
+    accounts {
+        TEXT id PK
+        TEXT status
+        TEXT contact
+        BLOB public_key
+        TEXT jwk_thumbprint UK
+        INTEGER created
+        INTEGER updated
+    }
+    orders {
+        TEXT id PK
+        TEXT account_id FK
+        TEXT status
+        INTEGER expires
+        TEXT identifiers
+        TEXT error
+        TEXT certificate_id
+        INTEGER created
+        INTEGER updated
+    }
+    authorizations {
+        TEXT id PK
+        TEXT order_id FK
+        TEXT account_id FK
+        TEXT status
+        TEXT identifier
+        INTEGER expires
+        INTEGER wildcard
+        INTEGER created
+        INTEGER updated
+    }
+    challenges {
+        TEXT id PK
+        TEXT authz_id FK
+        TEXT type
+        TEXT status
+        TEXT token
+        INTEGER validated
+        TEXT error
+        INTEGER created
+        INTEGER updated
+    }
+    certificates {
+        TEXT id PK
+        TEXT order_id FK
+        TEXT account_id FK
+        TEXT serial_number UK
+        TEXT status
+        BLOB der
+        TEXT pem
+        INTEGER not_before
+        INTEGER not_after
+        INTEGER revoked_at
+        INTEGER revocation_reason
+        INTEGER mtc_log_index
+        INTEGER created
+    }
+    nonces {
+        TEXT nonce PK
+        INTEGER created
+    }
+
+    accounts ||--o{ orders : "account_id"
+    accounts ||--o{ authorizations : "account_id (denormalized)"
+    accounts ||--o{ certificates : "account_id"
+    orders ||--o{ authorizations : "order_id"
+    authorizations ||--o{ challenges : "authz_id"
+    orders ||--o{ certificates : "order_id"
+```
+
 ## Foreign key enforcement
 
 Foreign key constraints are enabled at database open time. The constraint graph is:

@@ -2,9 +2,107 @@
 
 This chapter describes the overall structure of `Akāmu`, the key modules, and the full request lifecycle from a TCP connection to an HTTP response.
 
+## System architecture
+
+```mermaid
+graph TB
+    subgraph clients["ACME Clients"]
+        certbot[certbot]
+        acmesh[acme.sh]
+        akamucli[akamu-cli]
+        custom[RFC 8555 library]
+    end
+
+    subgraph akamu["Akāmu Server"]
+        direction TB
+        tls["TLS layer<br/>rustls + axum-server<br/>(optional — Mode 2/3/4)"]
+        acme["ACME endpoints<br/>new-account · new-order · finalize<br/>revoke · ARI · key-change"]
+        jose["akamu-jose<br/>JWK / JWS verification<br/>EAB HMAC check"]
+        ca["CA module<br/>CSR validation<br/>certificate issuance<br/>CRL generation"]
+        db[("SQLite<br/>accounts · orders · authzs<br/>challenges · certs · nonces")]
+        val["Validators<br/>http-01 · dns-01<br/>tls-alpn-01 · dns-persist-01"]
+        mtc["MTC log<br/>synta-mtc<br/>(optional)"]
+    end
+
+    subgraph external["External — Applicant Infrastructure"]
+        httpserver["HTTP server<br/>port 80"]
+        dns["DNS server<br/>TXT records"]
+        tlsserver["TLS server<br/>port 443, ALPN acme-tls/1"]
+    end
+
+    subgraph artifacts["Issued Artifacts"]
+        certchain["X.509 certificate chain<br/>PEM bundle"]
+        crlsvc["CRL / OCSP service<br/>(external, referenced by URL)"]
+    end
+
+    clients -->|"HTTPS ACME requests (JWS-signed)"| tls
+    tls --> acme
+    acme --> jose
+    acme --> ca
+    acme --> db
+    acme -->|"spawns tokio task"| val
+
+    val -->|"GET /.well-known/…"| httpserver
+    val -->|"TXT _acme-challenge.…"| dns
+    val -->|"TLS ALPN connect"| tlsserver
+
+    ca -->|"leaf + CA bundle"| certchain
+    ca -->|"revoked serial list"| crlsvc
+    ca --> mtc
+```
+
 ## Crate layout
 
-The project is a single Rust crate named `Akāmu`. The `src/` directory is organized as follows:
+The repository is organized as a **Cargo workspace** with four members:
+
+```
+Cargo.toml          <- workspace root (members: ., crates/*)
+src/                <- akamu server binary
+crates/
+  akamu-jose/       <- JWK/JWS primitives (no HTTP/DB deps)
+  akamu-client/     <- async ACME client library (tokio, hyper)
+  akamu-cli/        <- CLI binary wrapping akamu-client
+```
+
+### Crate dependencies
+
+```mermaid
+graph LR
+    SERVER["akamu (server)"]
+    CLIENT["akamu-client"]
+    CLI["akamu-cli"]
+    JOSE["akamu-jose"]
+    SYNTA["synta-certificate"]
+
+    SERVER --> JOSE
+    SERVER --> SYNTA
+    CLIENT --> JOSE
+    CLIENT --> SYNTA
+    CLI --> CLIENT
+    JOSE --> SYNTA
+```
+
+The server and `akamu-client` both depend directly on `akamu-jose` and `synta-certificate`. `akamu-cli` depends only on `akamu-client`.
+
+See [Client Libraries](../client/overview.md) for the standalone client API.
+
+### The server's jose/ module
+
+`src/jose/jwk.rs` and `src/jose/jws.rs` are thin re-exports:
+
+```rust
+// src/jose/jwk.rs
+pub use akamu_jose::JwkPublic;
+
+// src/jose/jws.rs
+pub use akamu_jose::{JwsFlattened, JwsKeyRef, JwsProtectedHeader};
+```
+
+All JWK/JWS logic lives in `crates/akamu-jose`. The `src/jose/` shim exists so the rest of the server can use short import paths without knowing about the crate boundary.
+
+### Server source layout
+
+The `src/` directory is organized as follows:
 
 ```
 src/
@@ -55,9 +153,8 @@ src/
     mod.rs         Re-exports mtc submodules
     log.rs         Disk-backed Merkle Tree Certificate log integration
 
-  jose/            JWS parsing, JWK handling, thumbprint computation, kid resolution
-                   Supports classical algorithms (RSA, ECDSA, EdDSA) and ML-DSA
-                   post-quantum signatures (draft-ietf-cose-dilithium-11)
+  jose/            Thin re-exports from crates/akamu-jose
+                   (JwkPublic, JwsFlattened, JwsKeyRef, JwsProtectedHeader)
 ```
 
 ## Key types

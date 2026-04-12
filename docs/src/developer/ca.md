@@ -12,6 +12,26 @@ The CA module (`src/ca/`) handles key generation, certificate issuance, CSR vali
 | Yes | Yes | Load both PEM files from disk. |
 | Yes | No (or No/Yes) | Return an error — partial state is rejected. |
 
+```mermaid
+flowchart TD
+    A([ca::init::load_or_generate]) --> B{"key_file<br/>exists?"}
+    B -->|No| C{"cert_file<br/>exists?"}
+    C -->|No| D["Generate CA private key<br/>generate_backend_key"]
+    D --> E["Build self-signed CA certificate<br/>BasicConstraints cA=TRUE<br/>KeyUsage keyCertSign+cRLSign"]
+    E --> F[Write key_file + cert_file to disk]
+    F --> G([CA ready])
+    C -->|Yes| ERR["Error: partial state rejected<br/>startup aborted"]
+    B -->|Yes| H{"cert_file<br/>exists?"}
+    H -->|Yes| I[Load both PEM files]
+    I --> G
+    H -->|No| ERR
+
+    classDef ok   fill:#f0fdf4,stroke:#16a34a,color:#0f172a
+    classDef fail fill:#fef2f2,stroke:#dc2626,color:#0f172a
+    class G ok
+    class ERR fail
+```
+
 ### Key generation
 
 `generate_backend_key(key_type: &str)` dispatches to `synta_certificate::BackendPrivateKey`:
@@ -52,6 +72,29 @@ Internal timestamps are represented as Unix epoch seconds. The helper function `
 ## CSR validation (`src/ca/csr.rs`)
 
 `ca::csr::validate_csr(csr_der: &[u8], allowed_identifiers: &[(&str, &str)]) -> Result<ValidatedCsr, AcmeError>` performs the following checks in order:
+
+```mermaid
+flowchart TD
+    A([CSR DER bytes]) --> B["1. Parse PKCS#10<br/>CertificationRequest via synta"]
+    B --> C["2. Re-encode CRI to DER<br/>exact bytes that were signed"]
+    C --> D[3. Re-encode AlgorithmIdentifier]
+    D --> E[4. Re-encode SubjectPublicKeyInfo]
+    E --> F{"5. Verify CSR<br/>self-signature"}
+    F -->|invalid| FAIL([Return BadCsr])
+    F -->|valid| G["6. Walk CSR attributes<br/>for extensionRequest OID"]
+    G --> H{"7. BasicConstraints<br/>cA=TRUE?"}
+    H -->|yes| FAIL
+    H -->|no / absent| I["8. Parse SANs<br/>dNSName + iPAddress entries"]
+    I --> J{"9. Bidirectional set equality<br/>CSR SANs == allowed identifiers"}
+    J -->|mismatch| FAIL
+    J -->|match| K[10. Re-encode Subject DER]
+    K --> L(["Return ValidatedCsr<br/>SPKI + Subject + SANs"])
+
+    classDef ok   fill:#f0fdf4,stroke:#16a34a,color:#0f172a
+    classDef fail fill:#fef2f2,stroke:#dc2626,color:#0f172a
+    class L ok
+    class FAIL fail
+```
 
 1. **Parse**: decode the `csr_der` as a DER PKCS#10 `CertificationRequest` using `synta`.
 2. **Re-encode CRI**: encode the `CertificationRequestInfo` back to DER to obtain the exact bytes that were signed.
