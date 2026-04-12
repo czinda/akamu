@@ -53,6 +53,12 @@ enum AccountCommands {
     Register(RegisterArgs),
     /// Deactivate an existing ACME account (RFC 8555 §7.3.7)
     Deregister(DeregisterArgs),
+    /// Show current account details
+    Show(ShowArgs),
+    /// Update account contacts
+    Update(UpdateArgs),
+    /// Roll the account key to a new key
+    KeyChange(KeyChangeArgs),
 }
 
 // ── Shared flags ──────────────────────────────────────────────────────────────
@@ -127,6 +133,57 @@ struct DeregisterArgs {
     /// PEM file for the account key
     #[arg(long)]
     account_key: PathBuf,
+}
+
+// ── show ──────────────────────────────────────────────────────────────────────
+
+#[derive(clap::Args)]
+struct ShowArgs {
+    /// ACME directory URL
+    #[arg(long, default_value = "https://acme-v02.api.letsencrypt.org/directory")]
+    server: String,
+
+    /// PEM file for the account key
+    #[arg(long)]
+    account_key: PathBuf,
+}
+
+// ── update ────────────────────────────────────────────────────────────────────
+
+#[derive(clap::Args)]
+struct UpdateArgs {
+    /// ACME directory URL
+    #[arg(long, default_value = "https://acme-v02.api.letsencrypt.org/directory")]
+    server: String,
+
+    /// PEM file for the account key
+    #[arg(long)]
+    account_key: PathBuf,
+
+    /// New contact URI (e.g. "mailto:admin@example.com"); may be repeated; pass none to clear
+    #[arg(long = "contact")]
+    contacts: Vec<String>,
+}
+
+// ── key-change ────────────────────────────────────────────────────────────────
+
+#[derive(clap::Args)]
+struct KeyChangeArgs {
+    /// ACME directory URL
+    #[arg(long, default_value = "https://acme-v02.api.letsencrypt.org/directory")]
+    server: String,
+
+    /// Current account key PEM file
+    #[arg(long)]
+    account_key: PathBuf,
+
+    /// New key PEM file; generated if absent
+    #[arg(long)]
+    new_key: PathBuf,
+
+    /// Key type for generating a new key (ignored if --new-key file exists)
+    #[arg(long, default_value = "ec:P-256")]
+    new_key_type: String,
 }
 
 // ── issue ─────────────────────────────────────────────────────────────────────
@@ -226,6 +283,9 @@ async fn run(cli: Cli) -> Result<(), String> {
         Commands::Account { cmd } => match cmd {
             AccountCommands::Register(args) => cmd_register(args).await,
             AccountCommands::Deregister(args) => cmd_deregister(args).await,
+            AccountCommands::Show(args) => cmd_show(args).await,
+            AccountCommands::Update(args) => cmd_update(args).await,
+            AccountCommands::KeyChange(args) => cmd_key_change(args).await,
         },
         Commands::Issue(args) => cmd_issue(args).await,
         Commands::Revoke(args) => cmd_revoke(args).await,
@@ -288,6 +348,72 @@ async fn cmd_deregister(args: DeregisterArgs) -> Result<(), String> {
     let url_path = account_url_path(&args.account_key);
     let _ = fs::remove_file(&url_path);
     println!("Deactivated: {account_url}");
+    Ok(())
+}
+
+// ── account show ──────────────────────────────────────────────────────────────
+
+async fn cmd_show(args: ShowArgs) -> Result<(), String> {
+    let key = load_key(&args.account_key)?;
+    let key = Arc::new(key);
+    let account_url = load_account_url(&args.account_key)?;
+
+    let client = AcmeClient::new(&args.server).await.map_err(|e| e.to_string())?;
+    let account = akamu_client::Account::new(account_url, "valid".into(), vec![], key);
+    let account = client.get_account(&account).await.map_err(|e| e.to_string())?;
+
+    println!("URL:     {}", account.url);
+    println!("Status:  {}", account.status);
+    if account.contacts.is_empty() {
+        println!("Contact: (none)");
+    } else {
+        for c in &account.contacts {
+            println!("Contact: {c}");
+        }
+    }
+    Ok(())
+}
+
+// ── account update ────────────────────────────────────────────────────────────
+
+async fn cmd_update(args: UpdateArgs) -> Result<(), String> {
+    let key = load_key(&args.account_key)?;
+    let key = Arc::new(key);
+    let account_url = load_account_url(&args.account_key)?;
+
+    let client = AcmeClient::new(&args.server).await.map_err(|e| e.to_string())?;
+    let account = akamu_client::Account::new(account_url, "valid".into(), vec![], key);
+    let contact_refs: Vec<&str> = args.contacts.iter().map(String::as_str).collect();
+    let updated = client.update_account(&account, &contact_refs).await.map_err(|e| e.to_string())?;
+
+    println!("Updated account: {}", updated.url);
+    for c in &updated.contacts {
+        println!("  Contact: {c}");
+    }
+    Ok(())
+}
+
+// ── account key-change ────────────────────────────────────────────────────────
+
+async fn cmd_key_change(args: KeyChangeArgs) -> Result<(), String> {
+    let old_key = load_key(&args.account_key)?;
+    let old_key = Arc::new(old_key);
+    let account_url = load_account_url(&args.account_key)?;
+
+    let new_key = load_or_generate_key(&args.new_key, &args.new_key_type)?;
+    let new_key = Arc::new(new_key);
+
+    let client = AcmeClient::new(&args.server).await.map_err(|e| e.to_string())?;
+    let account = akamu_client::Account::new(account_url.clone(), "valid".into(), vec![], old_key);
+    let _updated = client.key_change(&account, Arc::clone(&new_key)).await.map_err(|e| e.to_string())?;
+
+    // Overwrite the account key file with the new key.
+    let new_pem = new_key.to_pem().map_err(|e| e.to_string())?;
+    fs::write(&args.account_key, &new_pem)
+        .map_err(|e| format!("write {}: {e}", args.account_key.display()))?;
+    // The account URL stays the same — sidecar file is unchanged.
+    println!("Key changed. New key written to {}", args.account_key.display());
+    println!("Account URL unchanged: {account_url}");
     Ok(())
 }
 
