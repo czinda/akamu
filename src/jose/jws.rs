@@ -26,7 +26,8 @@ pub struct JwsFlattened {
 #[derive(Debug, Deserialize)]
 pub struct JwsProtectedHeader {
     /// Signature algorithm: RS256, RS384, RS512, PS256, PS384, PS512,
-    /// ES256, ES384, ES512, EdDSA
+    /// ES256, ES384, ES512, EdDSA,
+    /// ML-DSA-44, ML-DSA-65, ML-DSA-87 (draft-ietf-cose-dilithium-11)
     pub alg: String,
     /// ACME anti-replay nonce
     pub nonce: String,
@@ -83,6 +84,29 @@ impl JwsFlattened {
             .map_err(|e| AcmeError::BadRequest(format!("JWS signature base64: {}", e)))?;
 
         let key = BackendPublicKey::from_spki_der(spki_der.to_vec());
+
+        // draft-ietf-cose-dilithium-11 §4: ML-DSA signatures are raw bytes
+        // (not DER), context MUST be empty, and they bypass the
+        // verify_signature path entirely.
+        if matches!(header.alg.as_str(), "ML-DSA-44" | "ML-DSA-65" | "ML-DSA-87") {
+            let expected_sig_len: usize = match header.alg.as_str() {
+                "ML-DSA-44" => 2420,
+                "ML-DSA-65" => 3309,
+                "ML-DSA-87" => 4627,
+                _ => unreachable!(),
+            };
+            if raw_sig.len() != expected_sig_len {
+                return Err(AcmeError::BadRequest(format!(
+                    "ML-DSA signature length {} is wrong for {} (expected {})",
+                    raw_sig.len(),
+                    header.alg,
+                    expected_sig_len
+                )));
+            }
+            return key
+                .verify_ml_dsa_with_context(signing_input, &raw_sig, b"")
+                .map_err(|e| AcmeError::Unauthorized(format!("JWS signature invalid: {}", e)));
+        }
 
         // For ECDSA algorithms, JWS uses IEEE P1363 encoding (raw r||s);
         // synta_certificate's verify_signature expects DER (SEQUENCE {r, s}).
@@ -684,5 +708,175 @@ mod tests {
     fn decode_der_len_unsupported_form_returns_none() {
         let buf = &[0x83u8, 0x01, 0x00, 0x01]; // 0x83 = 3 extra bytes — not supported
         assert!(decode_der_len(buf).is_none());
+    }
+
+    // ── ML-DSA (AKP) tests ────────────────────────────────────────────────────
+
+    /// Helper: extract raw ML-DSA public key bytes from SPKI DER.
+    ///
+    /// All ML-DSA variants use the same 22-byte SPKI header:
+    ///   30 82 XX XX  (4) outer SEQUENCE
+    ///   30 0B        (2) AlgId SEQUENCE
+    ///   06 09 <OID>  (11) OID TLV
+    ///   03 82 XX XX  (4) BIT STRING
+    ///   00           (1) unused bits
+    fn ml_dsa_raw_pub_from_spki(spki: &[u8]) -> &[u8] {
+        &spki[22..]
+    }
+
+    /// ML-DSA-87 sign/verify round-trip using draft-ietf-cose-dilithium-11 JWS.
+    #[test]
+    fn ml_dsa_87_sign_verify_roundtrip() {
+        let priv_key = BackendPrivateKey::generate_ml_dsa("ML-DSA-87").unwrap();
+        let pub_key = priv_key.public_key().unwrap();
+        let spki_der = pub_key.spki_der().to_vec();
+
+        // Build AKP JWK from raw public key bytes.
+        let raw_pub = ml_dsa_raw_pub_from_spki(&spki_der);
+        let pub_b64 = URL_SAFE_NO_PAD.encode(raw_pub);
+
+        let hdr = format!(
+            r#"{{"alg":"ML-DSA-87","nonce":"testnonce","url":"https://acme.test/new-account","jwk":{{"kty":"AKP","alg":"ML-DSA-87","pub":"{}"}}}}"#,
+            pub_b64
+        );
+        let protected = URL_SAFE_NO_PAD.encode(hdr.as_bytes());
+        let payload = URL_SAFE_NO_PAD.encode(b"{}");
+        let signing_input = format!("{}.{}", protected, payload);
+
+        // Sign with empty context (draft-ietf-cose-dilithium-11 §4).
+        let raw_sig = priv_key
+            .sign_ml_dsa_with_context(signing_input.as_bytes(), b"")
+            .unwrap();
+        let signature = URL_SAFE_NO_PAD.encode(&raw_sig);
+
+        let jws = JwsFlattened {
+            protected,
+            payload,
+            signature,
+        };
+        jws.verify(&spki_der).unwrap();
+    }
+
+    /// ML-DSA-44 sign/verify round-trip.
+    #[test]
+    fn ml_dsa_44_sign_verify_roundtrip() {
+        let priv_key = BackendPrivateKey::generate_ml_dsa("ML-DSA-44").unwrap();
+        let pub_key = priv_key.public_key().unwrap();
+        let spki_der = pub_key.spki_der().to_vec();
+
+        let raw_pub = ml_dsa_raw_pub_from_spki(&spki_der);
+        let pub_b64 = URL_SAFE_NO_PAD.encode(raw_pub);
+
+        let hdr = format!(
+            r#"{{"alg":"ML-DSA-44","nonce":"n","url":"https://acme.test/","jwk":{{"kty":"AKP","alg":"ML-DSA-44","pub":"{}"}}}}"#,
+            pub_b64
+        );
+        let protected = URL_SAFE_NO_PAD.encode(hdr.as_bytes());
+        let payload = URL_SAFE_NO_PAD.encode(b"{}");
+        let signing_input = format!("{}.{}", protected, payload);
+
+        let raw_sig = priv_key
+            .sign_ml_dsa_with_context(signing_input.as_bytes(), b"")
+            .unwrap();
+        let signature = URL_SAFE_NO_PAD.encode(&raw_sig);
+
+        let jws = JwsFlattened {
+            protected,
+            payload,
+            signature,
+        };
+        jws.verify(&spki_der).unwrap();
+    }
+
+    /// ML-DSA-65 sign/verify round-trip.
+    #[test]
+    fn ml_dsa_65_sign_verify_roundtrip() {
+        let priv_key = BackendPrivateKey::generate_ml_dsa("ML-DSA-65").unwrap();
+        let pub_key = priv_key.public_key().unwrap();
+        let spki_der = pub_key.spki_der().to_vec();
+
+        let raw_pub = ml_dsa_raw_pub_from_spki(&spki_der);
+        let pub_b64 = URL_SAFE_NO_PAD.encode(raw_pub);
+
+        let hdr = format!(
+            r#"{{"alg":"ML-DSA-65","nonce":"n","url":"https://acme.test/","jwk":{{"kty":"AKP","alg":"ML-DSA-65","pub":"{}"}}}}"#,
+            pub_b64
+        );
+        let protected = URL_SAFE_NO_PAD.encode(hdr.as_bytes());
+        let payload = URL_SAFE_NO_PAD.encode(b"{}");
+        let signing_input = format!("{}.{}", protected, payload);
+
+        let raw_sig = priv_key
+            .sign_ml_dsa_with_context(signing_input.as_bytes(), b"")
+            .unwrap();
+        let signature = URL_SAFE_NO_PAD.encode(&raw_sig);
+
+        let jws = JwsFlattened {
+            protected,
+            payload,
+            signature,
+        };
+        jws.verify(&spki_der).unwrap();
+    }
+
+    /// A tampered ML-DSA signature must be rejected.
+    #[test]
+    fn ml_dsa_87_tampered_signature_rejected() {
+        let priv_key = BackendPrivateKey::generate_ml_dsa("ML-DSA-87").unwrap();
+        let pub_key = priv_key.public_key().unwrap();
+        let spki_der = pub_key.spki_der().to_vec();
+
+        let raw_pub = ml_dsa_raw_pub_from_spki(&spki_der);
+        let pub_b64 = URL_SAFE_NO_PAD.encode(raw_pub);
+
+        let hdr = format!(
+            r#"{{"alg":"ML-DSA-87","nonce":"n","url":"https://acme.test/","jwk":{{"kty":"AKP","alg":"ML-DSA-87","pub":"{}"}}}}"#,
+            pub_b64
+        );
+        let protected = URL_SAFE_NO_PAD.encode(hdr.as_bytes());
+        let payload = URL_SAFE_NO_PAD.encode(b"{}");
+        let signing_input = format!("{}.{}", protected, payload);
+
+        let mut raw_sig = priv_key
+            .sign_ml_dsa_with_context(signing_input.as_bytes(), b"")
+            .unwrap();
+        // Flip one byte to corrupt the signature.
+        raw_sig[0] ^= 0xff;
+        let signature = URL_SAFE_NO_PAD.encode(&raw_sig);
+
+        let jws = JwsFlattened {
+            protected,
+            payload,
+            signature,
+        };
+        assert!(
+            jws.verify(&spki_der).is_err(),
+            "tampered ML-DSA signature should fail"
+        );
+    }
+
+    /// Wrong-length ML-DSA signature must be caught before crypto.
+    #[test]
+    fn ml_dsa_87_wrong_signature_length_returns_error() {
+        let priv_key = BackendPrivateKey::generate_ml_dsa("ML-DSA-87").unwrap();
+        let pub_key = priv_key.public_key().unwrap();
+        let spki_der = pub_key.spki_der().to_vec();
+
+        let hdr = r#"{"alg":"ML-DSA-87","nonce":"n","url":"https://acme.test/","kid":"https://acme.test/account/1"}"#;
+        let protected = URL_SAFE_NO_PAD.encode(hdr.as_bytes());
+        // Provide a 64-byte sig instead of 4627 bytes.
+        let jws = JwsFlattened {
+            protected,
+            payload: URL_SAFE_NO_PAD.encode(b"{}"),
+            signature: URL_SAFE_NO_PAD.encode(&[0u8; 64]),
+        };
+        let result = jws.verify(&spki_der);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AcmeError::BadRequest(msg) => {
+                assert!(msg.contains("ML-DSA signature length"), "msg: {msg}");
+            }
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
     }
 }
