@@ -11,7 +11,7 @@ use std::sync::Arc;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
-use sha2::{Digest, Sha256};
+use synta_certificate::{default_data_hasher, DataHasher};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 
@@ -38,7 +38,11 @@ async fn validate_inner(
     key_auth: &str,
     port: u16,
 ) -> Result<(), AcmeError> {
-    let expected_hash: [u8; 32] = Sha256::digest(key_auth.as_bytes()).into();
+    let expected_hash: [u8; 32] = default_data_hasher()
+        .hash_data("sha256", key_auth.as_bytes())
+        .map_err(|e| AcmeError::Crypto(format!("SHA-256: {e}")))?
+        .try_into()
+        .expect("SHA-256 always yields 32 bytes");
 
     // RFC 8738 §4: for IP identifiers the SNI MUST be the reverse-DNS name
     // of the address, not the raw IP string.
@@ -592,7 +596,11 @@ mod tests {
         // This is a hand-crafted DER structure; real certs use synta_certificate.
         // hash = SHA-256 of "test-key-auth"
         let key_auth = "test-key-auth";
-        let expected_hash: [u8; 32] = sha2::Sha256::digest(key_auth.as_bytes()).into();
+        let expected_hash: [u8; 32] = synta_certificate::default_data_hasher()
+            .hash_data("sha256", key_auth.as_bytes())
+            .expect("SHA-256")
+            .try_into()
+            .expect("SHA-256 always yields 32 bytes");
 
         // Build the extension value: OCTET STRING { <hash> }
         let mut ext_value = vec![0x04, 0x20]; // OCTET STRING, length 32
@@ -693,7 +701,11 @@ mod tests {
     #[test]
     fn verify_acme_cert_wrong_hash_returns_error() {
         let key_auth = "test-key-auth";
-        let correct_hash: [u8; 32] = sha2::Sha256::digest(key_auth.as_bytes()).into();
+        let correct_hash: [u8; 32] = synta_certificate::default_data_hasher()
+            .hash_data("sha256", key_auth.as_bytes())
+            .expect("SHA-256")
+            .try_into()
+            .expect("SHA-256 always yields 32 bytes");
         let wrong_hash = [0u8; 32];
 
         // Re-use the same cert construction with correct_hash in the extension

@@ -1,12 +1,11 @@
 //! JWK (JSON Web Key) parsing, thumbprint computation, and SPKI DER conversion.
 //!
-//! No external JOSE crate: thumbprints use sha2 (transitive via synta-mtc),
+//! No external JOSE crate: thumbprints use synta_certificate's DataHasher,
 //! SPKI construction uses synta_certificate::BackendPublicKey factory methods.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
-use synta_certificate::BackendPublicKey;
+use synta_certificate::{default_data_hasher, BackendPublicKey, DataHasher};
 
 use crate::error::AcmeError;
 
@@ -89,8 +88,10 @@ impl JwkPublic {
             }
         };
 
-        let hash = Sha256::digest(canonical.as_bytes());
-        Ok(URL_SAFE_NO_PAD.encode(hash))
+        let hash = default_data_hasher()
+            .hash_data("sha256", canonical.as_bytes())
+            .map_err(|e| AcmeError::Crypto(format!("SHA-256 thumbprint: {e}")))?;
+        Ok(URL_SAFE_NO_PAD.encode(&hash))
     }
 
     /// Convert this JWK to DER-encoded SubjectPublicKeyInfo (SPKI).

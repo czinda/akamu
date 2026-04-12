@@ -30,9 +30,6 @@ uuid = { version = "1", features = ["v4", "serde"] }
 # Base64url (JWS encoding — no padding)
 base64 = "0.22"
 
-# SHA-256 for JWK thumbprint (also transitive via synta-mtc)
-sha2 = { version = "0.10", features = ["oid"] }
-
 # DNS resolution for dns-01 challenge validation
 hickory-resolver = { version = "0.24", features = ["tokio-runtime"] }
 

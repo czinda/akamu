@@ -41,10 +41,9 @@ use hyper_util::{
     rt::TokioExecutor,
 };
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use synta_certificate::{
-    BackendPrivateKey, CertificateSigner as _, CsrBuilder, NameBuilder, PrivateKey as _,
-    SubjectAlternativeNameBuilder,
+    default_data_hasher, BackendPrivateKey, CertificateSigner as _, CsrBuilder, DataHasher,
+    NameBuilder, PrivateKey as _, SubjectAlternativeNameBuilder,
 };
 use tokio::{net::UdpSocket, sync::RwLock};
 
@@ -386,7 +385,11 @@ fn encode_coord(bytes: &[u8], len: usize) -> String {
 /// RFC 7638 JWK thumbprint: SHA-256 of canonical JWK JSON (keys in alphabetical order).
 fn jwk_thumbprint(x_b64: &str, y_b64: &str) -> String {
     let canonical = format!(r#"{{"crv":"P-256","kty":"EC","x":"{x_b64}","y":"{y_b64}"}}"#);
-    URL_SAFE_NO_PAD.encode(Sha256::digest(canonical.as_bytes()).as_slice())
+    URL_SAFE_NO_PAD.encode(
+        default_data_hasher()
+            .hash_data("sha256", canonical.as_bytes())
+            .expect("SHA-256 thumbprint"),
+    )
 }
 
 // DER ECDSA (SEQUENCE{r, s}) → P1363 (r‖s, both padded to `half` bytes).

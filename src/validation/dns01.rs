@@ -7,7 +7,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use hickory_resolver::config::{ResolverConfig, ResolverOpts};
 use hickory_resolver::TokioAsyncResolver;
-use sha2::{Digest, Sha256};
+use synta_certificate::{default_data_hasher, DataHasher};
 
 use crate::error::AcmeError;
 
@@ -33,8 +33,10 @@ async fn validate_with_resolver(
     let query_name = format!("_acme-challenge.{}", base_domain);
 
     // Compute expected TXT value: base64url(SHA-256(keyAuthorization)).
-    let digest = Sha256::digest(key_auth.as_bytes());
-    let expected = URL_SAFE_NO_PAD.encode(digest);
+    let digest = default_data_hasher()
+        .hash_data("sha256", key_auth.as_bytes())
+        .map_err(|e| AcmeError::Crypto(format!("SHA-256 digest: {e}")))?;
+    let expected = URL_SAFE_NO_PAD.encode(&digest);
 
     let lookup = resolver
         .txt_lookup(&query_name)
@@ -128,8 +130,10 @@ mod tests {
     #[tokio::test]
     async fn validate_matching_txt_returns_ok() {
         let key_auth = "test-token.test-thumbprint";
-        let digest = Sha256::digest(key_auth.as_bytes());
-        let expected = URL_SAFE_NO_PAD.encode(digest);
+        let digest = default_data_hasher()
+            .hash_data("sha256", key_auth.as_bytes())
+            .expect("SHA-256 digest");
+        let expected = URL_SAFE_NO_PAD.encode(&digest);
 
         let port = start_txt_dns_server(expected).await;
         let (config, opts) = local_resolver(port);
