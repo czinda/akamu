@@ -6,6 +6,7 @@
 //! akamu-cli account register  [--server <URL>] --account-key <FILE> ...
 //! akamu-cli account deregister [--server <URL>] --account-key <FILE>
 //! akamu-cli issue             [--server <URL>] --domain <DOMAIN> ...
+//! akamu-cli renew             [--server <URL>] --domain <DOMAIN> ... [--cert <FILE>] [--force]
 //! akamu-cli revoke            [--server <URL>] --account-key <FILE> --cert <FILE>
 //! ```
 
@@ -43,6 +44,8 @@ enum Commands {
     },
     /// Issue a certificate for one or more domains
     Issue(IssueArgs),
+    /// Renew a certificate, checking ARI (RFC 9773) before issuing
+    Renew(RenewArgs),
     /// Revoke an issued certificate
     Revoke(RevokeArgs),
 }
@@ -235,6 +238,58 @@ struct IssueArgs {
     eab: EabFlags,
 }
 
+// ── renew ─────────────────────────────────────────────────────────────────────
+
+#[derive(clap::Args)]
+struct RenewArgs {
+    /// ACME directory URL
+    #[arg(long, default_value = "https://acme-v02.api.letsencrypt.org/directory")]
+    server: String,
+
+    /// Domain name; may be repeated (first domain → CN)
+    #[arg(long = "domain", short = 'd')]
+    domains: Vec<String>,
+
+    /// Account key type (used when generating a new account key)
+    #[arg(long, default_value = "ec:P-256")]
+    key_type: String,
+
+    /// PEM file for the account key (generated and saved if absent)
+    #[arg(long)]
+    account_key: PathBuf,
+
+    /// Certificate key type (used when generating the CSR signing key)
+    #[arg(long = "cert-key-type", default_value = "ec:P-256")]
+    cert_key_type: String,
+
+    /// Challenge type: http-01 | dns-01 | dns-persist-01
+    #[arg(long = "challenge", default_value = "http-01")]
+    challenge_type: String,
+
+    /// Port to serve http-01 challenges on (default 80)
+    #[arg(long, default_value_t = 80)]
+    http_port: u16,
+
+    /// Write the PEM certificate chain to this file
+    #[arg(long)]
+    out: PathBuf,
+
+    /// Existing certificate PEM to check ARI renewal window against
+    #[arg(long)]
+    cert: Option<PathBuf>,
+
+    /// Renew unconditionally, skipping the ARI window check
+    #[arg(long)]
+    force: bool,
+
+    /// Maximum seconds to wait for order/challenge validation (default: 120)
+    #[arg(long, default_value_t = 120)]
+    poll_timeout: u64,
+
+    #[command(flatten)]
+    eab: EabFlags,
+}
+
 // ── revoke ────────────────────────────────────────────────────────────────────
 
 #[derive(clap::Args)]
@@ -288,6 +343,7 @@ async fn run(cli: Cli) -> Result<(), String> {
             AccountCommands::KeyChange(args) => cmd_key_change(args).await,
         },
         Commands::Issue(args) => cmd_issue(args).await,
+        Commands::Renew(args) => cmd_renew(args).await,
         Commands::Revoke(args) => cmd_revoke(args).await,
     }
 }
@@ -687,6 +743,82 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
     println!("Certificate written to {}", args.out.display());
     println!("Certificate key:  {}", cert_key_path.display());
     Ok(())
+}
+
+// ── renew ─────────────────────────────────────────────────────────────────────
+
+/// Parse an RFC 3339 UTC timestamp string ("YYYY-MM-DDTHH:MM:SSZ") to Unix seconds.
+fn parse_rfc3339_utc(s: &str) -> Option<u64> {
+    // Accept "YYYY-MM-DDTHH:MM:SSZ" or "YYYY-MM-DDTHH:MM:SS.ffffffZ"
+    let s = s.trim_end_matches('Z');
+    let s = s.split('.').next()?; // drop sub-seconds
+    // "YYYY-MM-DDTHH:MM:SS" = 19 chars
+    if s.len() != 19 { return None; }
+    let year:  u64 = s[0..4].parse().ok()?;
+    let month: u64 = s[5..7].parse().ok()?;
+    let day:   u64 = s[8..10].parse().ok()?;
+    let hour:  u64 = s[11..13].parse().ok()?;
+    let min:   u64 = s[14..16].parse().ok()?;
+    let sec:   u64 = s[17..19].parse().ok()?;
+    // Days since Unix epoch (1970-01-01). Gregorian formula.
+    let y = if month <= 2 { year - 1 } else { year };
+    let m = if month <= 2 { month + 9 } else { month - 3 };
+    let days = 365 * y + y / 4 - y / 100 + y / 400 + (153 * m + 2) / 5 + day - 1 - 719468;
+    Some(days * 86400 + hour * 3600 + min * 60 + sec)
+}
+
+async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
+    if !args.force {
+        if let Some(cert_path) = &args.cert {
+            let client = AcmeClient::new(&args.server)
+                .await
+                .map_err(|e| e.to_string())?;
+            let cert_pem = fs::read(cert_path)
+                .map_err(|e| format!("read {}: {e}", cert_path.display()))?;
+            match client.get_renewal_info(&cert_pem).await {
+                Ok(info) => {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    let start = parse_rfc3339_utc(&info.window_start).unwrap_or(0);
+                    let end   = parse_rfc3339_utc(&info.window_end).unwrap_or(u64::MAX);
+                    if now < start {
+                        println!(
+                            "Renewal not yet suggested (window opens {}). Use --force to override.",
+                            info.window_start
+                        );
+                        return Ok(());
+                    }
+                    if now > end {
+                        eprintln!("Warning: past the ARI renewal window end ({}); renewing anyway.", info.window_end);
+                    }
+                    // Within (or past) window — proceed.
+                    println!("ARI: renewal suggested (window {} – {})", info.window_start, info.window_end);
+                }
+                Err(e) => {
+                    // ARI not supported or error — proceed with renewal.
+                    eprintln!("ARI unavailable ({}); proceeding with renewal.", e);
+                }
+            }
+        }
+    }
+
+    // Delegate to the issue flow by constructing IssueArgs.
+    let issue_args = IssueArgs {
+        server: args.server,
+        domains: args.domains,
+        key_type: args.key_type,
+        account_key: args.account_key,
+        cert_key_type: args.cert_key_type,
+        challenge_type: args.challenge_type,
+        http_port: args.http_port,
+        out: args.out,
+        cert_key: None,
+        poll_timeout: args.poll_timeout,
+        eab: args.eab,
+    };
+    cmd_issue(issue_args).await
 }
 
 // ── revoke ────────────────────────────────────────────────────────────────────
