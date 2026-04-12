@@ -1,0 +1,22 @@
+[package]
+name = "akamu-client"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "ACME client library with ML-DSA account key support (draft-ietf-cose-dilithium-11)"
+
+[dependencies]
+akamu-jose = { path = "../akamu-jose" }
+synta-certificate = { version = "0.1.6", features = ["std", "openssl", "pqc"] }
+
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+getrandom = "0.2"
+
+hyper = { version = "1", features = ["client", "http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "http1"] }
+http-body-util = "0.1"
+tokio = { version = "1", features = ["net", "rt", "time", "sync", "macros"] }
