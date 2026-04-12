@@ -173,6 +173,222 @@ impl DnsPersist01Helper {
     }
 }
 
+// ── tls-alpn-01 solver ────────────────────────────────────────────────────────
+
+/// SNI-based certificate resolver: looks up the per-domain certified key in the
+/// shared store.
+#[derive(Debug)]
+struct SniResolver {
+    certs: Arc<RwLock<HashMap<String, Arc<rustls::sign::CertifiedKey>>>>,
+}
+
+impl rustls::server::ResolvesServerCert for SniResolver {
+    fn resolve(
+        &self,
+        client_hello: rustls::server::ClientHello<'_>,
+    ) -> Option<Arc<rustls::sign::CertifiedKey>> {
+        let sni = client_hello.server_name()?;
+        let certs = self.certs.read().ok()?;
+        certs.get(sni).cloned()
+    }
+}
+
+/// Serves ephemeral ACME challenge certificates for tls-alpn-01 (RFC 8737).
+///
+/// Call [`start`](TlsAlpn01Solver::start) once to bind the port, then call
+/// [`present`](TlsAlpn01Solver::present) for each domain/challenge pair before
+/// triggering the challenge at the ACME server.  When finished, call
+/// [`cleanup`](TlsAlpn01Solver::cleanup) to abort the background listener.
+pub struct TlsAlpn01Solver {
+    port: u16,
+    certs: Arc<RwLock<HashMap<String, Arc<rustls::sign::CertifiedKey>>>>,
+    handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl TlsAlpn01Solver {
+    /// Create a new solver that will listen on `port` (typically 443).
+    pub fn new(port: u16) -> Self {
+        TlsAlpn01Solver {
+            port,
+            certs: Arc::new(RwLock::new(HashMap::new())),
+            handle: None,
+        }
+    }
+
+    /// Bind the TCP port and start the TLS accept loop.
+    ///
+    /// The loop accepts connections and completes TLS handshakes (ALPN
+    /// `acme-tls/1`) so that the ACME server can fetch the challenge cert via
+    /// SNI.  Call this once before the first [`present`](Self::present).
+    pub async fn start(&mut self) -> Result<(), ClientError> {
+        let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .map_err(|e| ClientError::Crypto(format!("rustls: {e}")))?
+        .with_no_client_auth()
+        .with_cert_resolver(Arc::new(SniResolver {
+            certs: Arc::clone(&self.certs),
+        }));
+
+        let mut config = config;
+        config.alpn_protocols = vec![b"acme-tls/1".to_vec()];
+
+        let listener = tokio::net::TcpListener::bind(("0.0.0.0", self.port)).await?;
+
+        self.handle = Some(tokio::spawn(async move {
+            let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+            loop {
+                if let Ok((stream, _)) = listener.accept().await {
+                    let acc = acceptor.clone();
+                    tokio::spawn(async move {
+                        let _ = acc.accept(stream).await;
+                    });
+                }
+            }
+        }));
+
+        Ok(())
+    }
+
+    /// Generate and register the challenge certificate for `domain`.
+    ///
+    /// * `domain`   — the ACME identifier value (DNS name or IP string).
+    /// * `id_type`  — `"dns"` or `"ip"`.
+    /// * `key_auth` — `{token}.{jwk_thumbprint}`.
+    pub async fn present(
+        &self,
+        domain: &str,
+        id_type: &str,
+        key_auth: &str,
+    ) -> Result<(), ClientError> {
+        use synta_certificate::{
+            acme_types::Authorization, default_data_hasher, oids, parse_time, BackendPrivateKey,
+            CertificateBuilder, DataHasher, NameBuilder, PrivateKey as _,
+            SubjectAlternativeNameBuilder,
+        };
+
+        // 1. Compute SHA-256(key_auth) → 32 bytes.
+        let hash: [u8; 32] = default_data_hasher()
+            .hash_data("sha256", key_auth.as_bytes())
+            .map_err(|e| ClientError::Crypto(format!("SHA-256: {e}")))?
+            .try_into()
+            .map_err(|_| ClientError::Crypto("SHA-256 did not return 32 bytes".into()))?;
+
+        // 2. Build the id-pe-acmeIdentifier extension value:
+        //    OCTET STRING { <32-byte hash> } encoded as DER → 04 20 <hash>.
+        let auth = Authorization::new_unchecked(synta::OctetString::new(hash.to_vec()));
+        let ext_value = auth
+            .to_der()
+            .map_err(|e| ClientError::Crypto(format!("encode acme ext: {e}")))?;
+
+        // 3. Generate an ephemeral EC P-256 key pair.
+        let key = BackendPrivateKey::generate_ec("P-256")
+            .map_err(|e| ClientError::Crypto(format!("generate key: {e}")))?;
+
+        // 4. Extract SPKI (for cert) and PKCS#8 DER (for rustls).
+        let spki = key
+            .public_key()
+            .map_err(|e| ClientError::Crypto(format!("public key: {e}")))?
+            .spki_der()
+            .to_vec();
+        let pkcs8_der = key
+            .to_der()
+            .map_err(|e| ClientError::Crypto(format!("key to DER: {e}")))?;
+
+        // 5. Build validity timestamps (not_before = now, not_after = now + 7 days).
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let nb = parse_time(&unix_to_generalized_time(now_secs))
+            .map_err(|e| ClientError::Crypto(format!("notBefore: {e}")))?;
+        let na = parse_time(&unix_to_generalized_time(now_secs + 86400 * 7))
+            .map_err(|e| ClientError::Crypto(format!("notAfter: {e}")))?;
+
+        // 6. Build subject / issuer name.
+        let name_der = NameBuilder::new()
+            .common_name(domain)
+            .build()
+            .map_err(|e| ClientError::Crypto(format!("name: {e}")))?;
+
+        // 7. Build SAN: iPAddress for "ip", dNSName otherwise.
+        let san_der = if id_type == "ip" {
+            let ip_bytes = if let Ok(v4) = domain.parse::<std::net::Ipv4Addr>() {
+                v4.octets().to_vec()
+            } else if let Ok(v6) = domain.parse::<std::net::Ipv6Addr>() {
+                v6.octets().to_vec()
+            } else {
+                return Err(ClientError::Crypto(format!("invalid IP address: {domain}")));
+            };
+            SubjectAlternativeNameBuilder::new()
+                .ip_address(&ip_bytes)
+                .build()
+                .map_err(|e| ClientError::Crypto(format!("SAN ip: {e}")))?
+        } else {
+            SubjectAlternativeNameBuilder::new()
+                .dns_name(domain)
+                .build()
+                .map_err(|e| ClientError::Crypto(format!("SAN dns: {e}")))?
+        };
+
+        // 8. Build and sign the challenge certificate.
+        let signer = key.as_signer("sha256");
+        let cert_der = CertificateBuilder::new()
+            .issuer_name(&name_der)
+            .subject_name(&name_der)
+            .public_key_der(&spki)
+            .serial_number(synta::Integer::from_i64(1))
+            .not_valid_before(nb)
+            .not_valid_after(na)
+            .add_extension_oid(oids::SUBJECT_ALT_NAME, false, &san_der)
+            .add_extension_oid(oids::PE_ACME_IDENTIFIER, true, &ext_value)
+            .sign(&signer)
+            .map_err(|e| ClientError::Crypto(format!("sign cert: {e}")))?;
+
+        // 9. Load the key and cert into a rustls CertifiedKey.
+        let private_key = rustls::pki_types::PrivateKeyDer::Pkcs8(
+            rustls::pki_types::PrivatePkcs8KeyDer::from(pkcs8_der),
+        );
+        let signing_key = rustls::crypto::ring::default_provider()
+            .key_provider
+            .load_private_key(private_key)
+            .map_err(|e| ClientError::Crypto(format!("load key: {e}")))?;
+        let cert_der_type = rustls::pki_types::CertificateDer::from(cert_der);
+        let certified = Arc::new(rustls::sign::CertifiedKey::new(
+            vec![cert_der_type],
+            signing_key,
+        ));
+
+        // 10. Register in the SNI store.
+        self.certs
+            .write()
+            .unwrap()
+            .insert(domain.to_string(), certified);
+
+        Ok(())
+    }
+
+    /// Abort the background TLS listener.
+    pub fn cleanup(&mut self) {
+        if let Some(h) = self.handle.take() {
+            h.abort();
+        }
+    }
+}
+
+/// Convert Unix seconds to a GeneralizedTime string (`YYYYMMDDHHmmssZ`).
+///
+/// Mirrors `crate::ca::init::unix_to_generalized_time` in the server crate.
+fn unix_to_generalized_time(secs: i64) -> String {
+    let gt = synta::GeneralizedTime::from_unix(secs)
+        .unwrap_or_else(|| synta::GeneralizedTime::from_unix(0).unwrap());
+    format!(
+        "{:04}{:02}{:02}{:02}{:02}{:02}Z",
+        gt.year, gt.month, gt.day, gt.hour, gt.minute, gt.second
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,5 +426,12 @@ mod tests {
             let guard = solver.store.read().unwrap();
             assert!(guard.get("tok1").is_none());
         }
+    }
+
+    #[test]
+    fn tls_alpn01_solver_new_and_cleanup() {
+        // cleanup on a solver that has never been started must not panic.
+        let mut solver = TlsAlpn01Solver::new(0);
+        solver.cleanup(); // handle is None — must be a no-op
     }
 }

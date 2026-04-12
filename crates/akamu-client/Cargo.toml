@@ -22,3 +22,5 @@ hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "http1"] }
 hyper-rustls = { version = "0.27", features = ["native-tokio", "http1"] }
 http-body-util = "0.1"
 tokio = { version = "1", features = ["net", "rt", "time", "sync", "macros"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+tokio-rustls = "0.26"
