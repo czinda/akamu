@@ -5,6 +5,8 @@
 //! - nonce management (threaded between requests, HEAD /new-nonce on miss)
 //! - JWS signing via `akamu_jose::JwsFlattened::sign()`
 //! - account registration (with optional EAB)
+//! - account lookup without creation (RFC 8555 §7.3.1)
+//! - account state retrieval and contact updates (RFC 8555 §7.3.2)
 //! - account deactivation (RFC 8555 §7.3.7)
 //! - order lifecycle: new-order, get-authz, trigger-challenge, poll, finalize, download
 
