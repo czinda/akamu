@@ -64,12 +64,12 @@ getrandom = "0.2"
 openssl = "0.10"
 
 # Base ASN.1 library (needed for Decoder/Encoder and Integer type)
-synta = { git = "https://codeberg.org/abbra/synta", branch = "main", features = ["std", "derive"] }
+synta = { version = "0.1.6", default-features = false, features = ["std", "derive"] }
 
 # Synta crates for all X.509 / MTC operations
-synta-certificate = { git = "https://codeberg.org/abbra/synta", branch = "main" }
-synta-x509-verification = { git = "https://codeberg.org/abbra/synta", branch = "main" }
-synta-mtc = { git = "https://codeberg.org/abbra/synta", branch = "main", features = ["std"] }
+synta-certificate =  { version = "0.1.6", features = ["std", "openssl", "pqc"] }
+synta-x509-verification =  { version = "0.1.6" }
+synta-mtc = { version = "0.1.6", features = ["std"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
