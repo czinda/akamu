@@ -16,8 +16,8 @@ use std::{
 };
 
 use akamu_client::{
-    AccountKey, AccountOptions, AcmeClient, ChallengeSolver as _, EabOptions, Http01Solver,
-    Identifier,
+    AccountKey, AccountOptions, AcmeClient, ChallengeSolver as _, Dns01Helper, DnsPersist01Helper,
+    EabOptions, Http01Solver, Identifier,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use clap::{Parser, Subcommand};
@@ -153,13 +153,17 @@ struct IssueArgs {
     #[arg(long = "cert-key-type", default_value = "ec:P-256")]
     cert_key_type: String,
 
-    /// Challenge type (only http-01 is built-in)
+    /// Challenge type: http-01 | dns-01 | dns-persist-01
     #[arg(long = "challenge", default_value = "http-01")]
     challenge_type: String,
 
     /// Port to serve http-01 challenges on (default 80)
     #[arg(long, default_value_t = 80)]
     http_port: u16,
+
+    /// Maximum seconds to wait for order/challenge validation (default: 120)
+    #[arg(long, default_value_t = 120)]
+    poll_timeout: u64,
 
     /// PEM file for the certificate private key.
     /// Generated and saved as <out>.key.pem if absent; supply to reuse an existing key.
@@ -287,6 +291,24 @@ async fn cmd_deregister(args: DeregisterArgs) -> Result<(), String> {
     Ok(())
 }
 
+// ── poll helper ───────────────────────────────────────────────────────────────
+
+/// Poll for order completion with a configurable timeout.
+async fn poll_with_timeout(
+    client: &AcmeClient,
+    account: &akamu_client::Account,
+    order_url: &str,
+    timeout_secs: u64,
+) -> Result<akamu_client::Order, String> {
+    tokio::time::timeout(
+        tokio::time::Duration::from_secs(timeout_secs),
+        client.poll_order(account, order_url),
+    )
+    .await
+    .map_err(|_| format!("timed out after {timeout_secs}s waiting for order"))?
+    .map_err(|e| e.to_string())
+}
+
 // ── issue ─────────────────────────────────────────────────────────────────────
 
 async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
@@ -325,31 +347,39 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
         acct
     };
 
-    // Start the http-01 challenge responder.
-    if args.challenge_type != "http-01" {
-        return Err(format!(
-            "challenge type '{}' not supported; only http-01 is built-in",
-            args.challenge_type
-        ));
-    }
-    // http-01 cannot validate wildcard identifiers (RFC 8555 §8.3).
-    if args.challenge_type == "http-01" {
-        let wildcards: Vec<&str> = args.domains.iter()
-            .filter(|d| d.starts_with("*."))
-            .map(String::as_str)
-            .collect();
-        if !wildcards.is_empty() {
+    // Validate challenge type and wildcard compatibility.
+    match args.challenge_type.as_str() {
+        "http-01" => {
+            // http-01 cannot validate wildcard identifiers (RFC 8555 §8.3).
+            let wildcards: Vec<&str> = args.domains.iter()
+                .filter(|d| d.starts_with("*."))
+                .map(String::as_str)
+                .collect();
+            if !wildcards.is_empty() {
+                return Err(format!(
+                    "http-01 cannot validate wildcard identifiers: {}; use --challenge dns-01",
+                    wildcards.join(", ")
+                ));
+            }
+        }
+        "dns-01" | "dns-persist-01" => {
+            // DNS-based challenges work for both apex and wildcard domains.
+        }
+        other => {
             return Err(format!(
-                "http-01 cannot validate wildcard identifiers: {}; use --challenge dns-01",
-                wildcards.join(", ")
+                "unsupported challenge type '{other}'; supported: http-01, dns-01, dns-persist-01"
             ));
         }
     }
-    let solver = Http01Solver::new(args.http_port);
-    solver
-        .start()
-        .await
-        .map_err(|e| format!("start http-01 solver: {e}"))?;
+
+    // Start the http-01 challenge responder only when needed.
+    let solver = if args.challenge_type == "http-01" {
+        let s = Http01Solver::new(args.http_port);
+        s.start().await.map_err(|e| format!("start http-01 solver: {e}"))?;
+        Some(s)
+    } else {
+        None
+    };
 
     // Place the order.
     let ids: Vec<Identifier> = args.domains.iter().map(Identifier::dns).collect();
@@ -369,39 +399,110 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
             continue; // already satisfied
         }
 
-        let chall = authz.find_challenge("http-01").ok_or_else(|| {
-            format!(
-                "no http-01 challenge in authz for {}",
-                authz.identifier.value
-            )
-        })?;
+        match args.challenge_type.as_str() {
+            "http-01" => {
+                let chall = authz.find_challenge("http-01").ok_or_else(|| {
+                    format!("no http-01 challenge for {}", authz.identifier.value)
+                })?;
+                let token = chall.token.as_deref().ok_or("challenge missing token")?;
+                let key_auth = account.key_authorization(token);
 
-        let token = chall.token.as_deref().ok_or("challenge missing token")?;
-        let key_auth = account.key_authorization(token);
+                let s = solver.as_ref().unwrap();
+                s.present(token, &key_auth).await.map_err(|e| e.to_string())?;
 
-        solver
-            .present(token, &key_auth)
-            .await
-            .map_err(|e| e.to_string())?;
+                client
+                    .trigger_challenge(&account, chall)
+                    .await
+                    .map_err(|e| e.to_string())?;
 
-        client
-            .trigger_challenge(&account, chall)
-            .await
-            .map_err(|e| e.to_string())?;
+                let polled = poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
+                if polled.status == "invalid" {
+                    return Err(format!(
+                        "order invalid after http-01 challenge for {}",
+                        authz.identifier.value
+                    ));
+                }
 
-        // Poll until the order is ready (all authorizations validated).
-        let polled = client
-            .poll_order(&account, &order.url)
-            .await
-            .map_err(|e| e.to_string())?;
-        if polled.status == "invalid" {
-            return Err(format!(
-                "order became invalid during challenge validation for {}",
-                authz.identifier.value
-            ));
+                s.cleanup(token).await.map_err(|e| e.to_string())?;
+            }
+            "dns-01" => {
+                let chall = authz.find_challenge("dns-01").ok_or_else(|| {
+                    format!("no dns-01 challenge for {}", authz.identifier.value)
+                })?;
+                let token = chall.token.as_deref().ok_or("challenge missing token")?;
+                let key_auth = account.key_authorization(token);
+                let txt_value = Dns01Helper::txt_value(&key_auth)
+                    .map_err(|e| e.to_string())?;
+
+                // Strip wildcard prefix for the DNS name.
+                let base_domain = authz.identifier.value.trim_start_matches("*.");
+
+                eprintln!();
+                eprintln!("DNS-01 challenge for {}:", authz.identifier.value);
+                eprintln!("  Name:  _acme-challenge.{}.", base_domain);
+                eprintln!("  Type:  TXT");
+                eprintln!("  Value: {}", txt_value);
+                eprintln!();
+                eprint!("Press Enter after the TXT record has propagated (Ctrl-C to abort)... ");
+                {
+                    use std::io::{self, BufRead};
+                    let stdin = io::stdin();
+                    stdin.lock().lines().next();
+                }
+
+                client
+                    .trigger_challenge(&account, chall)
+                    .await
+                    .map_err(|e| e.to_string())?;
+
+                let polled = poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
+                if polled.status == "invalid" {
+                    return Err(format!(
+                        "order invalid after dns-01 challenge for {}",
+                        authz.identifier.value
+                    ));
+                }
+            }
+            "dns-persist-01" => {
+                let chall = authz.find_challenge("dns-persist-01").ok_or_else(|| {
+                    format!("no dns-persist-01 challenge for {}", authz.identifier.value)
+                })?;
+                let token = chall.token.as_deref().ok_or("challenge missing token")?;
+                let key_auth = account.key_authorization(token);
+                let txt_value = DnsPersist01Helper::txt_value(&key_auth)
+                    .map_err(|e| e.to_string())?;
+
+                let base_domain = authz.identifier.value.trim_start_matches("*.");
+
+                eprintln!();
+                eprintln!("DNS-persist-01 challenge for {}:", authz.identifier.value);
+                eprintln!("  Name:  _validation-persist.{}.", base_domain);
+                eprintln!("  Type:  TXT");
+                eprintln!("  Value: {}", txt_value);
+                eprintln!();
+                eprintln!("This is a long-lived TXT record; it only needs to be set once.");
+                eprint!("Press Enter after the TXT record has propagated (Ctrl-C to abort)... ");
+                {
+                    use std::io::{self, BufRead};
+                    let stdin = io::stdin();
+                    stdin.lock().lines().next();
+                }
+
+                client
+                    .trigger_challenge(&account, chall)
+                    .await
+                    .map_err(|e| e.to_string())?;
+
+                let polled = poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
+                if polled.status == "invalid" {
+                    return Err(format!(
+                        "order invalid after dns-persist-01 challenge for {}",
+                        authz.identifier.value
+                    ));
+                }
+            }
+            _ => unreachable!(),
         }
-
-        solver.cleanup(token).await.map_err(|e| e.to_string())?;
     }
 
     // Load or generate the certificate private key.
@@ -443,10 +544,7 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
     let order = if order.certificate.is_some() {
         order
     } else {
-        client
-            .poll_order(&account, &order.url)
-            .await
-            .map_err(|e| e.to_string())?
+        poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?
     };
 
     let cert_url = order
