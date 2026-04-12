@@ -189,10 +189,7 @@ impl AcmeClient {
     ///
     /// Returns `Err(ClientError::Acme { acme_type: "urn:ietf:params:acme:error:accountDoesNotExist", .. })`
     /// if no account exists for this key.
-    pub async fn find_account(
-        &self,
-        key: Arc<AccountKey>,
-    ) -> Result<Account, ClientError> {
+    pub async fn find_account(&self, key: Arc<AccountKey>) -> Result<Account, ClientError> {
         let url = &self.new_account_url;
         let payload = serde_json::json!({ "onlyReturnExisting": true });
         let payload_str = payload.to_string();
@@ -242,7 +239,12 @@ impl AcmeClient {
             .unwrap_or_else(|| acct.url.clone());
         let contacts = extract_contacts(&body);
         let account_status = body["status"].as_str().unwrap_or("valid").to_string();
-        Ok(Account::new(account_url, account_status, contacts, Arc::clone(&acct.key)))
+        Ok(Account::new(
+            account_url,
+            account_status,
+            contacts,
+            Arc::clone(&acct.key),
+        ))
     }
 
     /// Update account contacts (RFC 8555 §7.3.2).
@@ -262,7 +264,12 @@ impl AcmeClient {
         }
         let updated_contacts = extract_contacts(&body);
         let account_status = body["status"].as_str().unwrap_or("valid").to_string();
-        Ok(Account::new(acct.url.clone(), account_status, updated_contacts, Arc::clone(&acct.key)))
+        Ok(Account::new(
+            acct.url.clone(),
+            account_status,
+            updated_contacts,
+            Arc::clone(&acct.key),
+        ))
     }
 
     /// Roll over the account key (RFC 8555 §7.3.5).
@@ -304,11 +311,7 @@ impl AcmeClient {
         // The outer payload is the serialised inner JWS object.
         // post_kid handles the outer nonce and badNonce retry internally.
         let (status, body, _) = self
-            .post_kid(
-                acct,
-                url,
-                Some(inner_jws_value.to_string().as_bytes()),
-            )
+            .post_kid(acct, url, Some(inner_jws_value.to_string().as_bytes()))
             .await?;
         if status != StatusCode::OK {
             return Err(acme_error(&body, status, "key-change"));
@@ -316,7 +319,12 @@ impl AcmeClient {
 
         let contacts = extract_contacts(&body);
         let account_status = body["status"].as_str().unwrap_or("valid").to_string();
-        Ok(Account::new(acct.url.clone(), account_status, contacts, new_key))
+        Ok(Account::new(
+            acct.url.clone(),
+            account_status,
+            contacts,
+            new_key,
+        ))
     }
 
     // ── Order lifecycle ───────────────────────────────────────────────────────
@@ -369,6 +377,30 @@ impl AcmeClient {
             return Err(acme_error(&body, status, "trigger-challenge"));
         }
         Ok(())
+    }
+
+    /// Trigger an onion-csr-01 challenge (RFC 9799 §3.2).
+    ///
+    /// Posts `{"csr": "<base64url DER>"}` to the challenge URL and returns
+    /// the updated [`Challenge`] object from the server response.
+    pub async fn trigger_challenge_onion(
+        &self,
+        acct: &Account,
+        url: &str,
+        csr_der: &[u8],
+    ) -> Result<Challenge, ClientError> {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine as _;
+        let csr_b64 = URL_SAFE_NO_PAD.encode(csr_der);
+        let payload = serde_json::json!({"csr": csr_b64});
+        let body_bytes =
+            serde_json::to_vec(&payload).map_err(|e| ClientError::Http(format!("JSON: {e}")))?;
+
+        let (status, body, _) = self.post_kid(acct, url, Some(&body_bytes)).await?;
+        if status != StatusCode::OK {
+            return Err(acme_error(&body, status, "trigger-challenge-onion"));
+        }
+        serde_json::from_value(body).map_err(|e| ClientError::Http(format!("parse challenge: {e}")))
     }
 
     /// Poll an order URL until status is `"ready"` or `"valid"`.
@@ -459,30 +491,37 @@ impl AcmeClient {
     /// Returns `Err` if the server does not advertise an ARI endpoint.
     pub async fn get_renewal_info(&self, cert_pem: &[u8]) -> Result<RenewalInfo, ClientError> {
         use synta::{Decoder, Encoding};
-        use synta_certificate::owned::Certificate;
         use synta_certificate::oids;
+        use synta_certificate::owned::Certificate;
 
-        let renewal_info_url = self.renewal_info_url.as_deref()
-            .ok_or_else(|| ClientError::Http("server does not support ARI (no renewalInfo in directory)".into()))?;
+        let renewal_info_url = self.renewal_info_url.as_deref().ok_or_else(|| {
+            ClientError::Http("server does not support ARI (no renewalInfo in directory)".into())
+        })?;
 
         // Parse the end-entity certificate.
         let cert_ders = synta_certificate::pem_to_der(cert_pem);
-        let cert_der = cert_ders.into_iter().next()
+        let cert_der = cert_ders
+            .into_iter()
+            .next()
             .ok_or_else(|| ClientError::Crypto("no certificate found in PEM".into()))?;
 
         let cert: Certificate = {
             let mut dec = Decoder::new(&cert_der, Encoding::Der);
-            dec.decode().map_err(|e| ClientError::Crypto(format!("cert parse: {e}")))?
+            dec.decode()
+                .map_err(|e| ClientError::Crypto(format!("cert parse: {e}")))?
         };
 
         // Extract serial bytes.
         let serial_bytes = cert.tbs_certificate.serial_number.as_bytes().to_vec();
 
         // Extract AKI key identifier bytes.
-        let extensions = cert.tbs_certificate.extensions
+        let extensions = cert
+            .tbs_certificate
+            .extensions
             .as_ref()
             .ok_or_else(|| ClientError::Crypto("certificate has no extensions".into()))?;
-        let aki_ext = extensions.iter()
+        let aki_ext = extensions
+            .iter()
             .find(|e| e.extn_id.components() == oids::AUTHORITY_KEY_IDENTIFIER)
             .ok_or_else(|| ClientError::Crypto("certificate missing AKI extension".into()))?;
         let aki_bytes = aki_key_id_bytes(aki_ext.extn_value.as_bytes())
@@ -499,16 +538,25 @@ impl AcmeClient {
         let req = hyper::Request::builder()
             .method(hyper::Method::GET)
             .uri(&url)
-            .body(http_body_util::Full::<hyper::body::Bytes>::new(hyper::body::Bytes::new()))
+            .body(http_body_util::Full::<hyper::body::Bytes>::new(
+                hyper::body::Bytes::new(),
+            ))
             .map_err(|e| ClientError::Http(format!("build ARI request: {e}")))?;
-        let resp = self.http.request(req).await
+        let resp = self
+            .http
+            .request(req)
+            .await
             .map_err(|e| ClientError::Http(format!("GET {url}: {e}")))?;
         let status = resp.status();
-        let retry_after_secs = resp.headers()
+        let retry_after_secs = resp
+            .headers()
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<u64>().ok());
-        let raw = resp.into_body().collect().await
+        let raw = resp
+            .into_body()
+            .collect()
+            .await
             .map_err(|e| ClientError::Http(format!("read ARI body: {e}")))?
             .to_bytes();
         if !status.is_success() {
@@ -524,7 +572,11 @@ impl AcmeClient {
             .as_str()
             .ok_or_else(|| ClientError::Http("ARI missing suggestedWindow.end".into()))?
             .to_string();
-        Ok(RenewalInfo { window_start, window_end, retry_after_secs })
+        Ok(RenewalInfo {
+            window_start,
+            window_end,
+            retry_after_secs,
+        })
     }
 
     /// Revoke a certificate using the account key (RFC 8555 §7.6).

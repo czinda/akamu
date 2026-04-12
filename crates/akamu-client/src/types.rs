@@ -23,6 +23,13 @@ impl Identifier {
             value: addr.into(),
         }
     }
+
+    pub fn onion(addr: impl Into<String>) -> Self {
+        Identifier {
+            r#type: "onion".into(),
+            value: addr.into(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -48,6 +55,13 @@ mod tests {
         let id = Identifier::ip("2001:db8::1");
         assert_eq!(id.r#type, "ip");
         assert_eq!(id.value, "2001:db8::1");
+    }
+
+    #[test]
+    fn identifier_onion() {
+        let id = Identifier::onion("example.onion");
+        assert_eq!(id.r#type, "onion");
+        assert_eq!(id.value, "example.onion");
     }
 }
 
