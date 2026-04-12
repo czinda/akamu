@@ -18,7 +18,7 @@ use std::{
 
 use akamu_client::{
     AccountKey, AccountOptions, AcmeClient, ChallengeSolver as _, Dns01Helper, DnsPersist01Helper,
-    EabOptions, Http01Solver, Identifier,
+    EabOptions, Http01Solver, Identifier, TlsAlpn01Solver,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use clap::{Parser, Subcommand};
@@ -213,13 +213,21 @@ struct IssueArgs {
     #[arg(long = "cert-key-type", default_value = "ec:P-256")]
     cert_key_type: String,
 
-    /// Challenge type: http-01 | dns-01 | dns-persist-01
+    /// Challenge type: http-01 | dns-01 | dns-persist-01 | tls-alpn-01 | onion-csr-01
     #[arg(long = "challenge", default_value = "http-01")]
     challenge_type: String,
 
     /// Port to serve http-01 challenges on (default 80)
     #[arg(long, default_value_t = 80)]
     http_port: u16,
+
+    /// Port to serve tls-alpn-01 challenges on (default 443)
+    #[arg(long, default_value_t = 443)]
+    tls_port: u16,
+
+    /// Ed25519 hidden-service key PEM file for onion-csr-01 challenges
+    #[arg(long, value_name = "FILE")]
+    onion_key: Option<std::path::PathBuf>,
 
     /// Maximum seconds to wait for order/challenge validation (default: 120)
     #[arg(long, default_value_t = 120)]
@@ -262,13 +270,21 @@ struct RenewArgs {
     #[arg(long = "cert-key-type", default_value = "ec:P-256")]
     cert_key_type: String,
 
-    /// Challenge type: http-01 | dns-01 | dns-persist-01
+    /// Challenge type: http-01 | dns-01 | dns-persist-01 | tls-alpn-01 | onion-csr-01
     #[arg(long = "challenge", default_value = "http-01")]
     challenge_type: String,
 
     /// Port to serve http-01 challenges on (default 80)
     #[arg(long, default_value_t = 80)]
     http_port: u16,
+
+    /// Port to serve tls-alpn-01 challenges on (default 443)
+    #[arg(long, default_value_t = 443)]
+    tls_port: u16,
+
+    /// Ed25519 hidden-service key PEM file for onion-csr-01 challenges
+    #[arg(long, value_name = "FILE")]
+    onion_key: Option<std::path::PathBuf>,
 
     /// Write the PEM certificate chain to this file
     #[arg(long)]
@@ -414,9 +430,14 @@ async fn cmd_show(args: ShowArgs) -> Result<(), String> {
     let key = Arc::new(key);
     let account_url = load_account_url(&args.account_key)?;
 
-    let client = AcmeClient::new(&args.server).await.map_err(|e| e.to_string())?;
+    let client = AcmeClient::new(&args.server)
+        .await
+        .map_err(|e| e.to_string())?;
     let account = akamu_client::Account::new(account_url, "valid".into(), vec![], key);
-    let account = client.get_account(&account).await.map_err(|e| e.to_string())?;
+    let account = client
+        .get_account(&account)
+        .await
+        .map_err(|e| e.to_string())?;
 
     println!("URL:     {}", account.url);
     println!("Status:  {}", account.status);
@@ -437,10 +458,15 @@ async fn cmd_update(args: UpdateArgs) -> Result<(), String> {
     let key = Arc::new(key);
     let account_url = load_account_url(&args.account_key)?;
 
-    let client = AcmeClient::new(&args.server).await.map_err(|e| e.to_string())?;
+    let client = AcmeClient::new(&args.server)
+        .await
+        .map_err(|e| e.to_string())?;
     let account = akamu_client::Account::new(account_url, "valid".into(), vec![], key);
     let contact_refs: Vec<&str> = args.contacts.iter().map(String::as_str).collect();
-    let updated = client.update_account(&account, &contact_refs).await.map_err(|e| e.to_string())?;
+    let updated = client
+        .update_account(&account, &contact_refs)
+        .await
+        .map_err(|e| e.to_string())?;
 
     println!("Updated account: {}", updated.url);
     for c in &updated.contacts {
@@ -459,16 +485,24 @@ async fn cmd_key_change(args: KeyChangeArgs) -> Result<(), String> {
     let new_key = load_or_generate_key(&args.new_key, &args.new_key_type)?;
     let new_key = Arc::new(new_key);
 
-    let client = AcmeClient::new(&args.server).await.map_err(|e| e.to_string())?;
+    let client = AcmeClient::new(&args.server)
+        .await
+        .map_err(|e| e.to_string())?;
     let account = akamu_client::Account::new(account_url.clone(), "valid".into(), vec![], old_key);
-    let _updated = client.key_change(&account, Arc::clone(&new_key)).await.map_err(|e| e.to_string())?;
+    let _updated = client
+        .key_change(&account, Arc::clone(&new_key))
+        .await
+        .map_err(|e| e.to_string())?;
 
     // Overwrite the account key file with the new key.
     let new_pem = new_key.to_pem().map_err(|e| e.to_string())?;
     fs::write(&args.account_key, &new_pem)
         .map_err(|e| format!("write {}: {e}", args.account_key.display()))?;
     // The account URL stays the same — sidecar file is unchanged.
-    println!("Key changed. New key written to {}", args.account_key.display());
+    println!(
+        "Key changed. New key written to {}",
+        args.account_key.display()
+    );
     println!("Account URL unchanged: {account_url}");
     Ok(())
 }
@@ -531,15 +565,19 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
 
     // Validate challenge type and wildcard compatibility.
     match args.challenge_type.as_str() {
-        "http-01" => {
-            // http-01 cannot validate wildcard identifiers (RFC 8555 §8.3).
-            let wildcards: Vec<&str> = args.domains.iter()
+        "http-01" | "tls-alpn-01" => {
+            // http-01 and tls-alpn-01 cannot validate wildcard identifiers
+            // (RFC 8555 §8.3 and RFC 8737 §3).
+            let wildcards: Vec<&str> = args
+                .domains
+                .iter()
                 .filter(|d| d.starts_with("*."))
                 .map(String::as_str)
                 .collect();
             if !wildcards.is_empty() {
                 return Err(format!(
-                    "http-01 cannot validate wildcard identifiers: {}; use --challenge dns-01",
+                    "{} cannot validate wildcard identifiers: {}; use --challenge dns-01",
+                    args.challenge_type,
                     wildcards.join(", ")
                 ));
             }
@@ -547,9 +585,14 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
         "dns-01" | "dns-persist-01" => {
             // DNS-based challenges work for both apex and wildcard domains.
         }
+        "onion-csr-01" => {
+            if args.onion_key.is_none() {
+                return Err("--onion-key is required for onion-csr-01 challenges".to_string());
+            }
+        }
         other => {
             return Err(format!(
-                "unsupported challenge type '{other}'; supported: http-01, dns-01, dns-persist-01"
+                "unsupported challenge type '{other}'; supported: http-01, dns-01, dns-persist-01, tls-alpn-01, onion-csr-01"
             ));
         }
     }
@@ -557,7 +600,20 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
     // Start the http-01 challenge responder only when needed.
     let solver = if args.challenge_type == "http-01" {
         let s = Http01Solver::new(args.http_port);
-        s.start().await.map_err(|e| format!("start http-01 solver: {e}"))?;
+        s.start()
+            .await
+            .map_err(|e| format!("start http-01 solver: {e}"))?;
+        Some(s)
+    } else {
+        None
+    };
+
+    // Start the tls-alpn-01 challenge responder only when needed.
+    let mut tls_solver: Option<TlsAlpn01Solver> = if args.challenge_type == "tls-alpn-01" {
+        let mut s = TlsAlpn01Solver::new(args.tls_port);
+        s.start()
+            .await
+            .map_err(|e| format!("start tls-alpn-01 solver: {e}"))?;
         Some(s)
     } else {
         None
@@ -590,14 +646,17 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                 let key_auth = account.key_authorization(token);
 
                 let s = solver.as_ref().unwrap();
-                s.present(token, &key_auth).await.map_err(|e| e.to_string())?;
+                s.present(token, &key_auth)
+                    .await
+                    .map_err(|e| e.to_string())?;
 
                 client
                     .trigger_challenge(&account, chall)
                     .await
                     .map_err(|e| e.to_string())?;
 
-                let polled = poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
+                let polled =
+                    poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
                 if polled.status == "invalid" {
                     return Err(format!(
                         "order invalid after http-01 challenge for {}",
@@ -608,13 +667,12 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                 s.cleanup(token).await.map_err(|e| e.to_string())?;
             }
             "dns-01" => {
-                let chall = authz.find_challenge("dns-01").ok_or_else(|| {
-                    format!("no dns-01 challenge for {}", authz.identifier.value)
-                })?;
+                let chall = authz
+                    .find_challenge("dns-01")
+                    .ok_or_else(|| format!("no dns-01 challenge for {}", authz.identifier.value))?;
                 let token = chall.token.as_deref().ok_or("challenge missing token")?;
                 let key_auth = account.key_authorization(token);
-                let txt_value = Dns01Helper::txt_value(&key_auth)
-                    .map_err(|e| e.to_string())?;
+                let txt_value = Dns01Helper::txt_value(&key_auth).map_err(|e| e.to_string())?;
 
                 // Strip wildcard prefix for the DNS name.
                 let base_domain = authz.identifier.value.trim_start_matches("*.");
@@ -637,7 +695,8 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                     .await
                     .map_err(|e| e.to_string())?;
 
-                let polled = poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
+                let polled =
+                    poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
                 if polled.status == "invalid" {
                     return Err(format!(
                         "order invalid after dns-01 challenge for {}",
@@ -651,8 +710,8 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                 })?;
                 let token = chall.token.as_deref().ok_or("challenge missing token")?;
                 let key_auth = account.key_authorization(token);
-                let txt_value = DnsPersist01Helper::txt_value(&key_auth)
-                    .map_err(|e| e.to_string())?;
+                let txt_value =
+                    DnsPersist01Helper::txt_value(&key_auth).map_err(|e| e.to_string())?;
 
                 let base_domain = authz.identifier.value.trim_start_matches("*.");
 
@@ -675,7 +734,8 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                     .await
                     .map_err(|e| e.to_string())?;
 
-                let polled = poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
+                let polled =
+                    poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
                 if polled.status == "invalid" {
                     return Err(format!(
                         "order invalid after dns-persist-01 challenge for {}",
@@ -683,8 +743,68 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                     ));
                 }
             }
+            "tls-alpn-01" => {
+                let chall = authz.find_challenge("tls-alpn-01").ok_or_else(|| {
+                    format!("no tls-alpn-01 challenge for {}", authz.identifier.value)
+                })?;
+                let token = chall.token.as_deref().ok_or("challenge missing token")?;
+                let key_auth = account.key_authorization(token);
+
+                tls_solver
+                    .as_ref()
+                    .unwrap()
+                    .present(&authz.identifier.value, &authz.identifier.r#type, &key_auth)
+                    .await
+                    .map_err(|e| format!("tls-alpn-01 present: {e}"))?;
+
+                client
+                    .trigger_challenge(&account, chall)
+                    .await
+                    .map_err(|e| format!("trigger tls-alpn-01: {e}"))?;
+
+                let polled =
+                    poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
+                if polled.status == "invalid" {
+                    return Err(format!(
+                        "order invalid after tls-alpn-01 challenge for {}",
+                        authz.identifier.value
+                    ));
+                }
+            }
+            "onion-csr-01" => {
+                let chall = authz.find_challenge("onion-csr-01").ok_or_else(|| {
+                    format!("no onion-csr-01 challenge for {}", authz.identifier.value)
+                })?;
+                let token = chall.token.as_deref().ok_or("challenge missing token")?;
+                let key_auth = account.key_authorization(token);
+
+                let onion_key_path = args.onion_key.as_ref().unwrap(); // guarded above
+                let hs_pem = std::fs::read(onion_key_path)
+                    .map_err(|e| format!("read onion key {}: {e}", onion_key_path.display()))?;
+                let csr_der =
+                    akamu_client::build_onion_csr(&authz.identifier.value, &key_auth, &hs_pem)
+                        .map_err(|e| format!("build onion CSR: {e}"))?;
+
+                client
+                    .trigger_challenge_onion(&account, &chall.url, &csr_der)
+                    .await
+                    .map_err(|e| format!("trigger onion-csr-01: {e}"))?;
+
+                let polled =
+                    poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
+                if polled.status == "invalid" {
+                    return Err(format!(
+                        "order invalid after onion-csr-01 challenge for {}",
+                        authz.identifier.value
+                    ));
+                }
+            }
             _ => unreachable!(),
         }
+    }
+
+    if let Some(mut s) = tls_solver.take() {
+        s.cleanup();
     }
 
     // Load or generate the certificate private key.
@@ -752,14 +872,16 @@ fn parse_rfc3339_utc(s: &str) -> Option<u64> {
     // Accept "YYYY-MM-DDTHH:MM:SSZ" or "YYYY-MM-DDTHH:MM:SS.ffffffZ"
     let s = s.trim_end_matches('Z');
     let s = s.split('.').next()?; // drop sub-seconds
-    // "YYYY-MM-DDTHH:MM:SS" = 19 chars
-    if s.len() != 19 { return None; }
-    let year:  u64 = s[0..4].parse().ok()?;
+                                  // "YYYY-MM-DDTHH:MM:SS" = 19 chars
+    if s.len() != 19 {
+        return None;
+    }
+    let year: u64 = s[0..4].parse().ok()?;
     let month: u64 = s[5..7].parse().ok()?;
-    let day:   u64 = s[8..10].parse().ok()?;
-    let hour:  u64 = s[11..13].parse().ok()?;
-    let min:   u64 = s[14..16].parse().ok()?;
-    let sec:   u64 = s[17..19].parse().ok()?;
+    let day: u64 = s[8..10].parse().ok()?;
+    let hour: u64 = s[11..13].parse().ok()?;
+    let min: u64 = s[14..16].parse().ok()?;
+    let sec: u64 = s[17..19].parse().ok()?;
     // Days since Unix epoch (1970-01-01). Gregorian formula.
     let y = if month <= 2 { year - 1 } else { year };
     let m = if month <= 2 { month + 9 } else { month - 3 };
@@ -773,8 +895,8 @@ async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
             let client = AcmeClient::new(&args.server)
                 .await
                 .map_err(|e| e.to_string())?;
-            let cert_pem = fs::read(cert_path)
-                .map_err(|e| format!("read {}: {e}", cert_path.display()))?;
+            let cert_pem =
+                fs::read(cert_path).map_err(|e| format!("read {}: {e}", cert_path.display()))?;
             match client.get_renewal_info(&cert_pem).await {
                 Ok(info) => {
                     let now = std::time::SystemTime::now()
@@ -782,7 +904,7 @@ async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
                         .unwrap_or_default()
                         .as_secs();
                     let start = parse_rfc3339_utc(&info.window_start).unwrap_or(0);
-                    let end   = parse_rfc3339_utc(&info.window_end).unwrap_or(u64::MAX);
+                    let end = parse_rfc3339_utc(&info.window_end).unwrap_or(u64::MAX);
                     if now < start {
                         println!(
                             "Renewal not yet suggested (window opens {}). Use --force to override.",
@@ -791,10 +913,16 @@ async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
                         return Ok(());
                     }
                     if now > end {
-                        eprintln!("Warning: past the ARI renewal window end ({}); renewing anyway.", info.window_end);
+                        eprintln!(
+                            "Warning: past the ARI renewal window end ({}); renewing anyway.",
+                            info.window_end
+                        );
                     }
                     // Within (or past) window — proceed.
-                    println!("ARI: renewal suggested (window {} – {})", info.window_start, info.window_end);
+                    println!(
+                        "ARI: renewal suggested (window {} – {})",
+                        info.window_start, info.window_end
+                    );
                 }
                 Err(e) => {
                     // ARI not supported or error — proceed with renewal.
@@ -813,6 +941,8 @@ async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
         cert_key_type: args.cert_key_type,
         challenge_type: args.challenge_type,
         http_port: args.http_port,
+        tls_port: args.tls_port,
+        onion_key: args.onion_key,
         out: args.out,
         cert_key: None,
         poll_timeout: args.poll_timeout,
@@ -827,15 +957,13 @@ async fn cmd_revoke(args: RevokeArgs) -> Result<(), String> {
     // Validate reason code client-side for a better error message.
     if let Some(r) = args.reason {
         if r == 7 || r > 10 {
-            return Err(format!(
-                "invalid reason code {r}; valid values: 0–6, 8–10"
-            ));
+            return Err(format!("invalid reason code {r}; valid values: 0–6, 8–10"));
         }
     }
 
     // Read and decode the certificate PEM → DER.
-    let cert_pem = fs::read(&args.cert)
-        .map_err(|e| format!("read {}: {e}", args.cert.display()))?;
+    let cert_pem =
+        fs::read(&args.cert).map_err(|e| format!("read {}: {e}", args.cert.display()))?;
     let cert_ders = akamu_client::pem_to_der(&cert_pem);
     let cert_der = cert_ders
         .into_iter()
