@@ -4,7 +4,7 @@ A challenge is the mechanism by which `Akāmu` verifies that an ACME client cont
 
 For each identifier in an order, the server creates one challenge of each supported type. The client chooses which challenge type to complete.
 
-`dns-persist-01` is an opt-in type that requires explicit server configuration. When it is not configured, clients see the standard three types and are not affected. See [dns-persist-01 Challenge](dns-persist-01.md) for the full description of that type.
+`dns-persist-01` is an opt-in type that requires explicit server configuration. When it is not configured, clients see the standard three types and are not affected. See [dns-persist-01](#dns-persist-01) below for the full description.
 
 ## Key authorization
 
@@ -21,7 +21,7 @@ Where:
 
 In practice, ACME client libraries compute this for you.
 
-`dns-persist-01` does not use this formula. Instead of a token, the client receives an `issuer-domain-names` array, and the server matches the account URI directly against the TXT record. See [dns-persist-01 Challenge](dns-persist-01.md) for details.
+`dns-persist-01` does not use this formula. Instead of a token, the client receives an `issuer-domain-names` array, and the server matches the account URI directly against the TXT record. See [dns-persist-01](#dns-persist-01) below for details.
 
 ## Responding to a challenge
 
@@ -46,12 +46,41 @@ Poll the authorization URL (POST-as-GET) to check when validation completes.
 
 ## Challenge status transitions
 
-```
-pending → processing → valid
-                     → invalid
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> pending : authorization created
+    pending --> processing : client POSTs {} to challenge URL
+    processing --> valid : server probe succeeds
+    processing --> invalid : server probe fails
+    valid --> [*]
+    invalid --> [*]
 ```
 
 A challenge that is already `processing` or `valid` is returned as-is if the client POSTs to it again.
+
+## Challenge types at a glance
+
+```mermaid
+flowchart TD
+    A([Authorization created]) --> B{"Choose one<br/>challenge type"}
+
+    B -->|http-01| C["Serve key auth at<br/>/.well-known/acme-challenge/TOKEN<br/>on port 80"]
+    B -->|dns-01| D["Add DNS TXT record<br/>_acme-challenge.DOMAIN<br/>= base64url(SHA-256(key_auth))"]
+    B -->|tls-alpn-01| E["Configure TLS on port 443<br/>ALPN: acme-tls/1<br/>Cert with id-pe-acmeIdentifier ext<br/>= SHA-256(key_auth)"]
+    B -->|dns-persist-01| F["Persistent DNS TXT record<br/>_validation-persist.DOMAIN<br/>with issuer + accounturi + policy fields"]
+
+    C & D & E & F --> G["POST {} to challenge URL"]
+    G --> H["Server validates in background<br/>tokio::spawn task"]
+
+    H -->|probe succeeds| I(["Authorization → valid<br/>Order → ready when all valid"])
+    H -->|probe fails| J(["Authorization → invalid<br/>Order → invalid<br/>Create new order to retry"])
+
+    classDef ok   fill:#f0fdf4,stroke:#16a34a,color:#0f172a
+    classDef fail fill:#fef2f2,stroke:#dc2626,color:#0f172a
+    class I ok
+    class J fail
+```
 
 ---
 
@@ -163,6 +192,124 @@ The validator accepts both TLS 1.2 and TLS 1.3 connections.
 - Port 443 must be reachable from the ACME server.
 - Wildcard identifiers are not supported by tls-alpn-01.
 - IP address identifiers (`ip` type) are supported; the server connects to the IP address directly.
+
+---
+
+## dns-persist-01
+
+`dns-persist-01` is a DNS-based challenge type that differs from `dns-01` in one important way: the TXT record is **persistent**. It does not change from one certificate renewal to the next. Once an operator provisions the record, it remains valid for every subsequent renewal by the same ACME account — no per-renewal DNS changes are required.
+
+The challenge type is defined by the Let's Encrypt specification at <https://letsencrypt.org/2026/02/18/dns-persist-01>. It is available only for `dns` type identifiers; IP address identifiers are not supported.
+
+This type is **opt-in**: it is offered to clients only when `server.dns_persist_issuer_domain` is set in `config.toml`. When that field is absent, only the standard three types are advertised and existing clients are unaffected.
+
+### How it works
+
+When `dns-persist-01` is offered, the client does not receive a `token` field. Instead it receives an `issuer-domain-names` array:
+
+```json
+{
+  "type": "dns-persist-01",
+  "url": "https://acme.example.com/acme/chall/<authz-id>/dns-persist-01",
+  "status": "pending",
+  "issuer-domain-names": ["acme.example.com"]
+}
+```
+
+The ACME client must ensure that a TXT record exists at `_validation-persist.<domain>` before signalling the challenge. The server queries that name and evaluates each TXT record value against a set of rules.
+
+#### TXT record format
+
+```
+_validation-persist.<domain>. IN TXT "<issuer-domain>; accounturi=<account-uri>[; policy=wildcard][; persistUntil=<ISO8601Z>]"
+```
+
+Fields are separated by semicolons. Field order is not significant except that the issuer domain must appear first.
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `<issuer-domain>` | Yes | First token (before the first `;`). Must match the CA's configured issuer domain, case-insensitively, trailing dot stripped. |
+| `accounturi=<uri>` | Yes | Full ACME account URI, e.g. `https://acme.example.com/acme/account/42`. Must match the requesting account exactly. |
+| `policy=wildcard` | Only for wildcard orders | Must be present when the identifier starts with `*.`. |
+| `persistUntil=<timestamp>` | No | UTC timestamp in `YYYY-MM-DDTHH:MM:SSZ` format. The server rejects records whose timestamp is in the past. |
+
+**Concrete example** for account `https://acme.example.com/acme/account/42` validating `example.com` through a CA with issuer domain `acme.example.com`:
+
+```
+_validation-persist.example.com. 300 IN TXT "acme.example.com; accounturi=https://acme.example.com/acme/account/42"
+```
+
+For a wildcard certificate (`*.example.com`), add `policy=wildcard`:
+
+```
+_validation-persist.example.com. 300 IN TXT "acme.example.com; accounturi=https://acme.example.com/acme/account/42; policy=wildcard"
+```
+
+A single TXT record containing `policy=wildcard` also satisfies non-wildcard orders for the same domain.
+
+#### What the server checks
+
+The server performs a TXT lookup at `_validation-persist.<base-domain>` (the `*.` prefix is stripped for wildcard orders). It accepts the challenge as soon as one record satisfies all of:
+
+1. The first `;`-delimited token equals the CA's issuer domain (case-insensitive, trailing dot stripped).
+2. `accounturi=<uri>` matches the requesting account's full URI.
+3. For wildcard orders, `policy=wildcard` is present.
+4. If `persistUntil=<timestamp>` is present, the timestamp is at or after the current time.
+
+Unknown key-value tokens are silently ignored, allowing forward-compatible extensions.
+
+#### Key authorization
+
+Unlike the other challenge types, `dns-persist-01` does not use a `token · thumbprint` key authorization. The server stores the account URI in the `key_auth` database column instead, and matches it directly against the `accounturi=` field in the TXT record.
+
+### Wildcard certificates
+
+To validate `*.example.com`, the TXT record must include `policy=wildcard`. The query name is always `_validation-persist.example.com` — the `*.` prefix is stripped before the DNS lookup.
+
+### `persistUntil` expiry
+
+The optional `persistUntil` field lets an operator set an explicit expiry on the authorization grant, independently of the DNS TTL. Format: `YYYY-MM-DDTHH:MM:SSZ` (literal `Z`; lowercase `z` also accepted).
+
+- Timestamp **at or after** current time → field is valid; evaluation continues.
+- Timestamp **before** current time → record rejected, even if all other fields match.
+- Timestamp **unparseable** → record rejected.
+
+Records without `persistUntil` never expire through this mechanism; their lifetime is determined by DNS TTL and operator action.
+
+### Configuration
+
+Both fields belong to the `[server]` section of `config.toml`.
+
+#### `dns_persist_issuer_domain`
+
+**Optional. Default: absent (dns-persist-01 disabled).**
+
+The issuer domain placed in `issuer-domain-names` challenge objects and matched against the first token of TXT records. When set, `dns-persist-01` is offered alongside the standard types for all `dns` identifiers.
+
+```toml
+[server]
+dns_persist_issuer_domain = "acme.example.com"
+```
+
+#### `dns_resolver_addr`
+
+**Optional. Default: absent (system resolver).**
+
+DNS resolver override for `dns-01` and `dns-persist-01` validation. Format: `"<ip>:<port>"`. The `http-01` and `tls-alpn-01` validators are not affected.
+
+```toml
+[server]
+dns_resolver_addr = "127.0.0.1:5353"
+```
+
+Useful for split-horizon DNS (where the ACME server cannot reach the public resolver) and for integration tests against a local stub server.
+
+### Limitations
+
+- **No ACME client library support yet.** As of instant-acme 0.4.3, `dns-persist-01` is not implemented. A custom client, a patched library, or direct ACME HTTP calls are required until upstream support arrives.
+- **No revocation check during TXT lookup.** If an account is deactivated in the Akāmu database, the TXT record is not invalidated automatically; operators must remove it manually.
+- **One issuer domain per server instance.** `dns_persist_issuer_domain` accepts a single string. Deployments with multiple issuer identities should use `dns-01` instead.
+- **Resolver override is global.** `dns_resolver_addr` applies to all DNS-based challenge validation; per-type resolver selection is not supported.
 
 ---
 
