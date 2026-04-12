@@ -12,12 +12,12 @@
      * Base font size — scales with viewport so the document feels comfortable
      * from 1080p up to 4K without manual browser zoom.
      *
-     *   ≤ 1667 px wide  →  clamp floor: 20 px  (1.25× browser default 16 px)
-     *     1920 px wide  →  1.2vw ≈ 23 px        (1.44×)
-     *     2560 px wide  →  1.2vw ≈ 31 px → 26 px cap
-     *     3840 px (4K)  →  cap    26 px          (1.625×)
+     *   ≤ 1636 px wide  →  clamp floor: 18 px  (1.125× browser default 16 px)
+     *     1920 px wide  →  1.1vw ≈ 21 px        (1.31×)
+     *     2560 px wide  →  1.1vw ≈ 28 px → 24 px cap
+     *     3840 px (4K)  →  cap    24 px          (1.5×)
      */
-    font-size: clamp(20px, 1.2vw, 26px);
+    font-size: clamp(18px, 1.1vw, 24px);
 
     /*
      * Wide reading column.  The sidebar (300 px) is separate; setting this to
@@ -46,6 +46,10 @@
 
 .light {
     --bg:                    #f8fafc;
+    --node-ok-bg:            #f0fdf4;
+    --node-ok-border:        #16a34a;
+    --node-fail-bg:          #fef2f2;
+    --node-fail-border:      #dc2626;
     --fg:                    #0f172a;
     --sidebar-bg:            #f1f5f9;
     --sidebar-fg:            #334155;
@@ -82,6 +86,10 @@
 
 .navy {
     --bg:                    #131d2e;
+    --node-ok-bg:            #052e16;
+    --node-ok-border:        #4ade80;
+    --node-fail-bg:          #450a0a;
+    --node-fail-border:      #f87171;
     --fg:                    #d4e0f0;
     --sidebar-bg:            #0c1525;
     --sidebar-fg:            #7ea8cc;
@@ -118,6 +126,10 @@
 
 .coal {
     --bg:                    #1a1c21;
+    --node-ok-bg:            #14291e;
+    --node-ok-border:        #4ade80;
+    --node-fail-bg:          #2d1515;
+    --node-fail-border:      #f87171;
     --fg:                    #d4dae5;
     --sidebar-bg:            #121418;
     --sidebar-fg:            #8fa3b4;
@@ -154,6 +166,10 @@
 
 .ayu {
     --bg:                    #0d1017;
+    --node-ok-bg:            #0a1f13;
+    --node-ok-border:        #6ee7b7;
+    --node-fail-bg:          #1f0a0a;
+    --node-fail-border:      #fca5a5;
     --fg:                    #cccac2;
     --sidebar-bg:            #08090f;
     --sidebar-fg:            #8a9199;
@@ -190,6 +206,10 @@
 
 .rust {
     --bg:                    #fdf5ed;
+    --node-ok-bg:            #f0fdf4;
+    --node-ok-border:        #15803d;
+    --node-fail-bg:          #fef2f2;
+    --node-fail-border:      #b91c1c;
     --fg:                    #1c0e00;
     --sidebar-bg:            #f3e8d8;
     --sidebar-fg:            #4a2c00;
@@ -480,4 +500,58 @@ hr {
     #sidebar, #menu-bar, #nav-wide-wrapper, .nav-chapters { display: none !important; }
     .content main { max-width: 100%; padding: 0; }
     pre { border: 1px solid #ccc; }
+}
+
+/* ── Mermaid diagrams ─────────────────────────────────────────────────────────── */
+
+/*
+ * Strip the code-block appearance: Mermaid replaces the <pre> content with an SVG,
+ * so background, border, and padding from the generic `pre` rule look wrong.
+ */
+pre.mermaid {
+    background: transparent !important;
+    border: none !important;
+    padding: 1.25rem 0 !important;
+    display: flex;
+    justify-content: center;
+    overflow-x: auto;
+}
+
+/* Make the SVG scale to the content column instead of overflowing. */
+pre.mermaid svg {
+    max-width: 100%;
+    height: auto;
+}
+
+/*
+ * Semantic node classes — added to flowchart diagrams via classDef/class.
+ * These use `!important` to win over Mermaid's own injected <style> block.
+ *
+ * .node.ok   — success / terminal endpoint (green)
+ * .node.fail — error / rejection endpoint  (red)
+ */
+pre.mermaid svg .node.ok rect,
+pre.mermaid svg .node.ok circle,
+pre.mermaid svg .node.ok ellipse,
+pre.mermaid svg .node.ok path:not(.arrowMarkerPath) {
+    fill:   var(--node-ok-bg)     !important;
+    stroke: var(--node-ok-border) !important;
+}
+
+pre.mermaid svg .node.ok .nodeLabel,
+pre.mermaid svg .node.ok span {
+    color: var(--fg) !important;
+}
+
+pre.mermaid svg .node.fail rect,
+pre.mermaid svg .node.fail circle,
+pre.mermaid svg .node.fail ellipse,
+pre.mermaid svg .node.fail path:not(.arrowMarkerPath) {
+    fill:   var(--node-fail-bg)     !important;
+    stroke: var(--node-fail-border) !important;
+}
+
+pre.mermaid svg .node.fail .nodeLabel,
+pre.mermaid svg .node.fail span {
+    color: var(--fg) !important;
 }
