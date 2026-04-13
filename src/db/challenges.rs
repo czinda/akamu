@@ -1,8 +1,10 @@
 use crate::db::schema::ChallengeRow;
-use crate::db::Db;
 use crate::error::AcmeError;
 
-pub async fn insert(db: &Db, row: ChallengeRow) -> Result<(), AcmeError> {
+pub async fn insert(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    row: ChallengeRow,
+) -> Result<(), AcmeError> {
     sqlx::query(
         "INSERT INTO challenges (id, authz_id, type, status, token, validated, error, created, updated)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -16,53 +18,63 @@ pub async fn insert(db: &Db, row: ChallengeRow) -> Result<(), AcmeError> {
     .bind(&row.error)
     .bind(row.created)
     .bind(row.updated)
-    .execute(db)
+    .execute(executor)
     .await?;
     Ok(())
 }
 
-pub async fn get_by_id(db: &Db, id: &str) -> Result<Option<ChallengeRow>, AcmeError> {
+pub async fn get_by_id(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    id: &str,
+) -> Result<Option<ChallengeRow>, AcmeError> {
     let row = sqlx::query_as::<_, ChallengeRow>(
         "SELECT id, authz_id, type, status, token, validated, error, created, updated
          FROM challenges WHERE id = ?",
     )
     .bind(id)
-    .fetch_optional(db)
+    .fetch_optional(executor)
     .await?;
     Ok(row)
 }
 
-pub async fn list_by_authz(db: &Db, authz_id: &str) -> Result<Vec<ChallengeRow>, AcmeError> {
+pub async fn list_by_authz(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    authz_id: &str,
+) -> Result<Vec<ChallengeRow>, AcmeError> {
     let rows = sqlx::query_as::<_, ChallengeRow>(
         "SELECT id, authz_id, type, status, token, validated, error, created, updated
          FROM challenges WHERE authz_id = ?",
     )
     .bind(authz_id)
-    .fetch_all(db)
+    .fetch_all(executor)
     .await?;
     Ok(rows)
 }
 
-pub async fn set_processing(db: &Db, id: &str, now: i64) -> Result<(), AcmeError> {
-    sqlx::query(
-        "UPDATE challenges SET status = 'processing', updated = ? WHERE id = ?",
-    )
-    .bind(now)
-    .bind(id)
-    .execute(db)
-    .await?;
+pub async fn set_processing(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    id: &str,
+    now: i64,
+) -> Result<(), AcmeError> {
+    sqlx::query("UPDATE challenges SET status = 'processing', updated = ? WHERE id = ?")
+        .bind(now)
+        .bind(id)
+        .execute(executor)
+        .await?;
     Ok(())
 }
 
-pub async fn set_valid(db: &Db, id: &str, validated: i64) -> Result<(), AcmeError> {
-    sqlx::query(
-        "UPDATE challenges SET status = 'valid', validated = ?, updated = ? WHERE id = ?",
-    )
-    .bind(validated)
-    .bind(validated)
-    .bind(id)
-    .execute(db)
-    .await?;
+pub async fn set_valid(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    id: &str,
+    validated: i64,
+) -> Result<(), AcmeError> {
+    sqlx::query("UPDATE challenges SET status = 'valid', validated = ?, updated = ? WHERE id = ?")
+        .bind(validated)
+        .bind(validated)
+        .bind(id)
+        .execute(executor)
+        .await?;
     Ok(())
 }
 
@@ -72,25 +84,31 @@ pub async fn set_valid(db: &Db, id: &str, validated: i64) -> Result<(), AcmeErro
 ///
 /// Used by the finalize handler to supply a real challenge type to the CAA
 /// `validationmethods` check (RFC 8657).
-pub async fn get_validated_type(db: &Db, authz_id: &str) -> Result<Option<String>, AcmeError> {
+pub async fn get_validated_type(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    authz_id: &str,
+) -> Result<Option<String>, AcmeError> {
     let row: Option<(String,)> = sqlx::query_as(
         "SELECT type FROM challenges WHERE authz_id = ? AND status = 'valid' LIMIT 1",
     )
     .bind(authz_id)
-    .fetch_optional(db)
+    .fetch_optional(executor)
     .await?;
     Ok(row.map(|(t,)| t))
 }
 
-pub async fn set_invalid(db: &Db, id: &str, error: String, now: i64) -> Result<(), AcmeError> {
-    sqlx::query(
-        "UPDATE challenges SET status = 'invalid', error = ?, updated = ? WHERE id = ?",
-    )
-    .bind(&error)
-    .bind(now)
-    .bind(id)
-    .execute(db)
-    .await?;
+pub async fn set_invalid(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    id: &str,
+    error: String,
+    now: i64,
+) -> Result<(), AcmeError> {
+    sqlx::query("UPDATE challenges SET status = 'invalid', error = ?, updated = ? WHERE id = ?")
+        .bind(&error)
+        .bind(now)
+        .bind(id)
+        .execute(executor)
+        .await?;
     Ok(())
 }
 
@@ -99,6 +117,7 @@ mod tests {
     use super::*;
 
     use crate::db::schema::{AccountRow, AuthorizationRow, OrderRow};
+    use crate::db::Db;
 
     async fn open_db() -> Db {
         crate::db::open(":memory:").await.unwrap()
@@ -181,13 +200,7 @@ mod tests {
         }
     }
 
-    async fn insert_challenge(
-        db: &Db,
-        id: &str,
-        account_id: &str,
-        order_id: &str,
-        authz_id: &str,
-    ) {
+    async fn insert_challenge(db: &Db, id: &str, account_id: &str, order_id: &str, authz_id: &str) {
         insert_parents(db, account_id, order_id, authz_id).await;
         insert(db, sample_challenge(id, authz_id)).await.unwrap();
     }

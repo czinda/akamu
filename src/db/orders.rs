@@ -1,8 +1,10 @@
 use crate::db::schema::OrderRow;
-use crate::db::Db;
 use crate::error::AcmeError;
 
-pub async fn insert(db: &Db, row: OrderRow) -> Result<(), AcmeError> {
+pub async fn insert(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    row: OrderRow,
+) -> Result<(), AcmeError> {
     sqlx::query(
         "INSERT INTO orders (id, account_id, status, expires, identifiers,
          not_before, not_after, error, certificate_id, replaces, created, updated,
@@ -30,24 +32,30 @@ pub async fn insert(db: &Db, row: OrderRow) -> Result<(), AcmeError> {
     .bind(row.star_canceled_at)
     .bind(&row.star_csr_der)
     .bind(&row.profile)
-    .execute(db)
+    .execute(executor)
     .await?;
     Ok(())
 }
 
 /// Cancel a STAR order by setting star_canceled_at to the current timestamp.
-pub async fn cancel_star(db: &Db, id: &str, now: i64) -> Result<(), AcmeError> {
+pub async fn cancel_star(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    id: &str,
+    now: i64,
+) -> Result<(), AcmeError> {
     sqlx::query("UPDATE orders SET star_canceled_at = ?, updated = ? WHERE id = ?")
         .bind(now)
         .bind(now)
         .bind(id)
-        .execute(db)
+        .execute(executor)
         .await?;
     Ok(())
 }
 
 /// List all active STAR orders (star_end_date set, not canceled, status = 'valid').
-pub async fn list_active_star(db: &Db) -> Result<Vec<OrderRow>, AcmeError> {
+pub async fn list_active_star(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+) -> Result<Vec<OrderRow>, AcmeError> {
     let rows = sqlx::query_as::<_, OrderRow>(
         "SELECT id, account_id, status, expires, identifiers,
          not_before, not_after, error, certificate_id, replaces, created, updated,
@@ -56,22 +64,29 @@ pub async fn list_active_star(db: &Db) -> Result<Vec<OrderRow>, AcmeError> {
          FROM orders
          WHERE star_end_date IS NOT NULL AND star_canceled_at IS NULL AND status = 'valid'",
     )
-    .fetch_all(db)
+    .fetch_all(executor)
     .await?;
     Ok(rows)
 }
 
 /// Store the CSR DER on an order (set during finalize for STAR orders).
-pub async fn set_star_csr(db: &Db, id: &str, csr_der: Vec<u8>) -> Result<(), AcmeError> {
+pub async fn set_star_csr(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    id: &str,
+    csr_der: Vec<u8>,
+) -> Result<(), AcmeError> {
     sqlx::query("UPDATE orders SET star_csr_der = ? WHERE id = ?")
         .bind(&csr_der)
         .bind(id)
-        .execute(db)
+        .execute(executor)
         .await?;
     Ok(())
 }
 
-pub async fn get_by_id(db: &Db, id: &str) -> Result<Option<OrderRow>, AcmeError> {
+pub async fn get_by_id(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    id: &str,
+) -> Result<Option<OrderRow>, AcmeError> {
     let row = sqlx::query_as::<_, OrderRow>(
         "SELECT id, account_id, status, expires, identifiers,
          not_before, not_after, error, certificate_id, replaces, created, updated,
@@ -80,13 +95,13 @@ pub async fn get_by_id(db: &Db, id: &str) -> Result<Option<OrderRow>, AcmeError>
          FROM orders WHERE id = ?",
     )
     .bind(id)
-    .fetch_optional(db)
+    .fetch_optional(executor)
     .await?;
     Ok(row)
 }
 
 pub async fn update_status(
-    db: &Db,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
     id: &str,
     status: &str,
     error: Option<String>,
@@ -97,66 +112,124 @@ pub async fn update_status(
         .bind(error)
         .bind(now)
         .bind(id)
-        .execute(db)
+        .execute(executor)
         .await?;
     Ok(())
 }
 
 pub async fn set_certificate(
-    db: &Db,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
     id: &str,
     certificate_id: &str,
     now: i64,
 ) -> Result<(), AcmeError> {
-    sqlx::query(
-        "UPDATE orders SET status = 'valid', certificate_id = ?, updated = ? WHERE id = ?",
-    )
-    .bind(certificate_id)
-    .bind(now)
-    .bind(id)
-    .execute(db)
-    .await?;
+    sqlx::query("UPDATE orders SET status = 'valid', certificate_id = ?, updated = ? WHERE id = ?")
+        .bind(certificate_id)
+        .bind(now)
+        .bind(id)
+        .execute(executor)
+        .await?;
     Ok(())
 }
 
-/// Fetch an order and its authorization IDs.
+/// Fetch an order and its authorization IDs in a single JOIN round-trip.
 ///
 /// Returns `None` if no order with `order_id` exists.
+///
+/// Accepts `impl Executor` (single query), so callers can pass either `&pool`
+/// or `&mut *tx`.  The previous two-query implementation required `&Db`.
 pub async fn get_with_authz_ids(
-    db: &Db,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
     order_id: &str,
 ) -> Result<Option<(OrderRow, Vec<String>)>, AcmeError> {
-    let order = match sqlx::query_as::<_, OrderRow>(
-        "SELECT id, account_id, status, expires, identifiers,
-         not_before, not_after, error, certificate_id, replaces, created, updated,
-         star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs,
-         star_allow_cert_get, star_canceled_at, star_csr_der, profile
-         FROM orders WHERE id = ?",
+    // One LEFT JOIN returns N rows (one per authz, or 1 row with NULL authz_id
+    // when no authzs exist yet).  All order columns are the same across rows;
+    // we read them from the first row and collect the authz IDs from all rows.
+    #[derive(sqlx::FromRow)]
+    struct OrderAuthzRow {
+        // Order columns
+        id: String,
+        account_id: String,
+        status: String,
+        expires: Option<i64>,
+        identifiers: String,
+        not_before: Option<i64>,
+        not_after: Option<i64>,
+        error: Option<String>,
+        certificate_id: Option<String>,
+        replaces: Option<String>,
+        created: i64,
+        updated: i64,
+        star_start_date: Option<i64>,
+        star_end_date: Option<i64>,
+        star_lifetime_secs: Option<i64>,
+        star_lifetime_adjust_secs: i64,
+        star_allow_cert_get: bool,
+        star_canceled_at: Option<i64>,
+        star_csr_der: Option<Vec<u8>>,
+        profile: Option<String>,
+        // Authz column (NULL when no authorizations exist for this order)
+        authz_id: Option<String>,
+    }
+
+    let rows = sqlx::query_as::<_, OrderAuthzRow>(
+        "SELECT
+             o.id, o.account_id, o.status, o.expires, o.identifiers,
+             o.not_before, o.not_after, o.error, o.certificate_id, o.replaces,
+             o.created, o.updated,
+             o.star_start_date, o.star_end_date, o.star_lifetime_secs,
+             o.star_lifetime_adjust_secs, o.star_allow_cert_get, o.star_canceled_at,
+             o.star_csr_der, o.profile,
+             a.id AS authz_id
+         FROM orders o
+         LEFT JOIN authorizations a ON a.order_id = o.id
+         WHERE o.id = ?
+         ORDER BY a.id",
     )
     .bind(order_id)
-    .fetch_optional(db)
-    .await?
-    {
-        Some(o) => o,
-        None => return Ok(None),
-    };
+    .fetch_all(executor)
+    .await?;
 
-    let ids: Vec<(String,)> =
-        sqlx::query_as("SELECT id FROM authorizations WHERE order_id = ?")
-            .bind(order_id)
-            .fetch_all(db)
-            .await?;
-    let authz_ids = ids.into_iter().map(|(id,)| id).collect();
+    if rows.is_empty() {
+        return Ok(None);
+    }
+
+    let first = &rows[0];
+    let order = OrderRow {
+        id: first.id.clone(),
+        account_id: first.account_id.clone(),
+        status: first.status.clone(),
+        expires: first.expires,
+        identifiers: first.identifiers.clone(),
+        not_before: first.not_before,
+        not_after: first.not_after,
+        error: first.error.clone(),
+        certificate_id: first.certificate_id.clone(),
+        replaces: first.replaces.clone(),
+        created: first.created,
+        updated: first.updated,
+        star_start_date: first.star_start_date,
+        star_end_date: first.star_end_date,
+        star_lifetime_secs: first.star_lifetime_secs,
+        star_lifetime_adjust_secs: first.star_lifetime_adjust_secs,
+        star_allow_cert_get: first.star_allow_cert_get,
+        star_canceled_at: first.star_canceled_at,
+        star_csr_der: first.star_csr_der.clone(),
+        profile: first.profile.clone(),
+    };
+    let authz_ids: Vec<String> = rows.into_iter().filter_map(|r| r.authz_id).collect();
     Ok(Some((order, authz_ids)))
 }
 
 /// List all authorization IDs belonging to an order.
-pub async fn list_authz_ids(db: &Db, order_id: &str) -> Result<Vec<String>, AcmeError> {
-    let ids: Vec<(String,)> =
-        sqlx::query_as("SELECT id FROM authorizations WHERE order_id = ?")
-            .bind(order_id)
-            .fetch_all(db)
-            .await?;
+pub async fn list_authz_ids(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    order_id: &str,
+) -> Result<Vec<String>, AcmeError> {
+    let ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM authorizations WHERE order_id = ?")
+        .bind(order_id)
+        .fetch_all(executor)
+        .await?;
     Ok(ids.into_iter().map(|(id,)| id).collect())
 }
 
@@ -165,6 +238,7 @@ mod tests {
     use super::*;
 
     use crate::db::schema::AccountRow;
+    use crate::db::Db;
 
     async fn open_db() -> Db {
         crate::db::open(":memory:").await.unwrap()

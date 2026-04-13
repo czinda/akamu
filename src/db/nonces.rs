@@ -2,22 +2,28 @@ use crate::db::Db;
 use crate::error::AcmeError;
 
 /// Insert a new nonce (must be called before returning it to the client).
-pub async fn insert(db: &Db, nonce: &str) -> Result<(), AcmeError> {
+pub async fn insert(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    nonce: &str,
+) -> Result<(), AcmeError> {
     let now = now_secs();
     sqlx::query("INSERT INTO nonces (nonce, created) VALUES (?, ?)")
         .bind(nonce)
         .bind(now)
-        .execute(db)
+        .execute(executor)
         .await?;
     Ok(())
 }
 
 /// Consume a nonce: returns true if the nonce existed and was deleted,
 /// false if it did not exist (replay or unknown).
-pub async fn consume(db: &Db, nonce: &str) -> Result<bool, AcmeError> {
+pub async fn consume(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    nonce: &str,
+) -> Result<bool, AcmeError> {
     let n = sqlx::query("DELETE FROM nonces WHERE nonce = ?")
         .bind(nonce)
-        .execute(db)
+        .execute(executor)
         .await?
         .rows_affected();
     Ok(n > 0)
@@ -27,13 +33,20 @@ pub async fn consume(db: &Db, nonce: &str) -> Result<bool, AcmeError> {
 ///
 /// Returns `true` if the old nonce was valid (deleted and replacement stored),
 /// `false` if the old nonce was not found (replay or unknown).
+///
+/// Keeps `&Db` (not `impl Executor`) because it calls [`crate::db::begin_write`]
+/// for internal atomicity — a pool reference is required to start a transaction.
+///
+/// Uses `BEGIN IMMEDIATE` so that the DELETE + INSERT pair is atomic and the
+/// write lock is acquired up-front, preventing `SQLITE_BUSY_SNAPSHOT` when
+/// the pool has more than one connection.
 pub async fn consume_and_insert(
     db: &Db,
     old_nonce: &str,
     new_nonce: &str,
 ) -> Result<bool, AcmeError> {
     let now = now_secs();
-    let mut tx = db.begin().await?;
+    let mut tx = crate::db::begin_write(db).await?;
 
     let n = sqlx::query("DELETE FROM nonces WHERE nonce = ?")
         .bind(old_nonce)
@@ -57,11 +70,14 @@ pub async fn consume_and_insert(
 }
 
 /// Delete nonces older than `max_age_secs` seconds.
-pub async fn sweep_expired(db: &Db, max_age_secs: i64) -> Result<u64, AcmeError> {
+pub async fn sweep_expired(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    max_age_secs: i64,
+) -> Result<u64, AcmeError> {
     let cutoff = now_secs().saturating_sub(max_age_secs);
     let n = sqlx::query("DELETE FROM nonces WHERE created < ?")
         .bind(cutoff)
-        .execute(db)
+        .execute(executor)
         .await?
         .rows_affected();
     Ok(n)

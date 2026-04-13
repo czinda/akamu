@@ -1,8 +1,10 @@
 use crate::db::schema::CertificateRow;
-use crate::db::Db;
 use crate::error::AcmeError;
 
-pub async fn insert(db: &Db, row: CertificateRow) -> Result<(), AcmeError> {
+pub async fn insert(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    row: CertificateRow,
+) -> Result<(), AcmeError> {
     sqlx::query(
         "INSERT INTO certificates
          (id, order_id, account_id, serial_number, status, der, pem,
@@ -25,12 +27,15 @@ pub async fn insert(db: &Db, row: CertificateRow) -> Result<(), AcmeError> {
     .bind(row.created)
     .bind(row.suggested_window_start)
     .bind(row.suggested_window_end)
-    .execute(db)
+    .execute(executor)
     .await?;
     Ok(())
 }
 
-pub async fn get_by_id(db: &Db, id: &str) -> Result<Option<CertificateRow>, AcmeError> {
+pub async fn get_by_id(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    id: &str,
+) -> Result<Option<CertificateRow>, AcmeError> {
     let row = sqlx::query_as::<_, CertificateRow>(
         "SELECT id, order_id, account_id, serial_number, status, der, pem,
          not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
@@ -38,12 +43,15 @@ pub async fn get_by_id(db: &Db, id: &str) -> Result<Option<CertificateRow>, Acme
          FROM certificates WHERE id = ?",
     )
     .bind(id)
-    .fetch_optional(db)
+    .fetch_optional(executor)
     .await?;
     Ok(row)
 }
 
-pub async fn get_by_serial(db: &Db, serial: &str) -> Result<Option<CertificateRow>, AcmeError> {
+pub async fn get_by_serial(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    serial: &str,
+) -> Result<Option<CertificateRow>, AcmeError> {
     let row = sqlx::query_as::<_, CertificateRow>(
         "SELECT id, order_id, account_id, serial_number, status, der, pem,
          not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
@@ -51,7 +59,7 @@ pub async fn get_by_serial(db: &Db, serial: &str) -> Result<Option<CertificateRo
          FROM certificates WHERE serial_number = ?",
     )
     .bind(serial)
-    .fetch_optional(db)
+    .fetch_optional(executor)
     .await?;
     Ok(row)
 }
@@ -63,7 +71,10 @@ pub async fn get_by_serial(db: &Db, serial: &str) -> Result<Option<CertificateRo
 ///
 /// Only the serial component is used for the DB lookup; the AKI component is
 /// ignored (our CA issues one cert per serial and the AKI is always the same).
-pub async fn get_by_cert_id(db: &Db, cert_id: &str) -> Result<Option<CertificateRow>, AcmeError> {
+pub async fn get_by_cert_id(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    cert_id: &str,
+) -> Result<Option<CertificateRow>, AcmeError> {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
 
@@ -76,7 +87,7 @@ pub async fn get_by_cert_id(db: &Db, cert_id: &str) -> Result<Option<Certificate
         .map_err(|_| AcmeError::BadRequest("cert_id serial is not valid base64url".into()))?;
     // Convert bytes to lowercase hex — matches the format stored in serial_number.
     let serial_hex: String = serial_bytes.iter().map(|b| format!("{b:02x}")).collect();
-    get_by_serial(db, &serial_hex).await
+    get_by_serial(executor, &serial_hex).await
 }
 
 /// Mark a certificate as replaced by a new order.
@@ -85,7 +96,7 @@ pub async fn get_by_cert_id(db: &Db, cert_id: &str) -> Result<Option<Certificate
 /// concurrent calls are idempotent (the first writer wins).  Returns whether a
 /// row was actually updated.
 pub async fn mark_replaced(
-    db: &Db,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
     cert_uuid: &str,
     replacing_order_id: &str,
 ) -> Result<bool, AcmeError> {
@@ -95,14 +106,19 @@ pub async fn mark_replaced(
     )
     .bind(replacing_order_id)
     .bind(cert_uuid)
-    .execute(db)
+    .execute(executor)
     .await?
     .rows_affected();
     Ok(n > 0)
 }
 
 /// Set a certificate as revoked.
-pub async fn revoke(db: &Db, id: &str, reason: Option<i64>, now: i64) -> Result<bool, AcmeError> {
+pub async fn revoke(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    id: &str,
+    reason: Option<i64>,
+    now: i64,
+) -> Result<bool, AcmeError> {
     let n = sqlx::query(
         "UPDATE certificates SET status = 'revoked', revoked_at = ?, revocation_reason = ?
          WHERE id = ? AND status = 'valid'",
@@ -110,18 +126,22 @@ pub async fn revoke(db: &Db, id: &str, reason: Option<i64>, now: i64) -> Result<
     .bind(now)
     .bind(reason)
     .bind(id)
-    .execute(db)
+    .execute(executor)
     .await?
     .rows_affected();
     Ok(n > 0)
 }
 
 /// Update the MTC log index after appending the certificate to the transparency log.
-pub async fn set_mtc_log_index(db: &Db, id: &str, index: i64) -> Result<(), AcmeError> {
+pub async fn set_mtc_log_index(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    id: &str,
+    index: i64,
+) -> Result<(), AcmeError> {
     sqlx::query("UPDATE certificates SET mtc_log_index = ? WHERE id = ?")
         .bind(index)
         .bind(id)
-        .execute(db)
+        .execute(executor)
         .await?;
     Ok(())
 }
@@ -130,7 +150,7 @@ pub async fn set_mtc_log_index(db: &Db, id: &str, index: i64) -> Result<(), Acme
 ///
 /// Returns `Err` if `start >= end` — a window must be a non-empty interval.
 pub async fn set_renewal_window(
-    db: &Db,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
     id: &str,
     start: i64,
     end: i64,
@@ -147,27 +167,29 @@ pub async fn set_renewal_window(
     .bind(start)
     .bind(end)
     .bind(id)
-    .execute(db)
+    .execute(executor)
     .await?;
     Ok(())
 }
 
 /// List all revoked certificates (for CRL generation).
-pub async fn list_revoked(db: &Db) -> Result<Vec<CertificateRow>, AcmeError> {
+pub async fn list_revoked(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+) -> Result<Vec<CertificateRow>, AcmeError> {
     let rows = sqlx::query_as::<_, CertificateRow>(
         "SELECT id, order_id, account_id, serial_number, status, der, pem,
          not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
          suggested_window_start, suggested_window_end, replaced_by
          FROM certificates WHERE status = 'revoked'",
     )
-    .fetch_all(db)
+    .fetch_all(executor)
     .await?;
     Ok(rows)
 }
 
 /// List valid (non-revoked, non-expired) certificates for an account.
 pub async fn list_valid_for_account(
-    db: &Db,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
     account_id: &str,
     now: i64,
 ) -> Result<Vec<CertificateRow>, AcmeError> {
@@ -180,9 +202,32 @@ pub async fn list_valid_for_account(
     )
     .bind(account_id)
     .bind(now)
-    .fetch_all(db)
+    .fetch_all(executor)
     .await?;
     Ok(rows)
+}
+
+/// Return the most recently issued certificate for a given order.
+///
+/// Used by the STAR certificate endpoint (RFC 8739 §3.3) to serve the current
+/// certificate without embedding the query directly in the route handler.
+pub async fn get_latest_for_order(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    order_id: &str,
+) -> Result<Option<CertificateRow>, AcmeError> {
+    let row = sqlx::query_as::<_, CertificateRow>(
+        "SELECT id, order_id, account_id, serial_number, status, der, pem,
+         not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
+         suggested_window_start, suggested_window_end, replaced_by
+         FROM certificates
+         WHERE order_id = ?
+         ORDER BY created DESC
+         LIMIT 1",
+    )
+    .bind(order_id)
+    .fetch_optional(executor)
+    .await?;
+    Ok(row)
 }
 
 #[cfg(test)]
@@ -190,6 +235,7 @@ mod tests {
     use super::*;
 
     use crate::db::schema::{AccountRow, OrderRow};
+    use crate::db::Db;
 
     async fn open_db() -> Db {
         crate::db::open(":memory:").await.unwrap()
@@ -255,13 +301,7 @@ mod tests {
     }
 
     /// Helper: insert parent rows + cert together.
-    async fn insert_cert(
-        db: &Db,
-        id: &str,
-        account_id: &str,
-        status: &str,
-        not_after: i64,
-    ) {
+    async fn insert_cert(db: &Db, id: &str, account_id: &str, status: &str, not_after: i64) {
         insert_parent_rows(db, account_id, &format!("order-{id}")).await;
         insert(db, sample_cert(id, account_id, status, not_after))
             .await
@@ -618,5 +658,37 @@ mod tests {
 
         let row = get_by_id(&db, "cert-mr2").await.unwrap().unwrap();
         assert_eq!(row.replaced_by.as_deref(), Some("order-new-2"));
+    }
+
+    #[tokio::test]
+    async fn get_latest_for_order_returns_most_recent() {
+        let db = open_db().await;
+        insert_parent_rows(&db, "acct-star", "order-star").await;
+
+        // Insert two certs for the same order with different created timestamps.
+        let mut cert_old = sample_cert("cert-old", "acct-star", "valid", 1_800_000_000);
+        cert_old.order_id = "order-star".to_string();
+        cert_old.created = 1_700_000_000;
+        cert_old.serial_number = "serial-old".to_string();
+        insert(&db, cert_old).await.unwrap();
+
+        let mut cert_new = sample_cert("cert-new", "acct-star", "valid", 1_800_100_000);
+        cert_new.order_id = "order-star".to_string();
+        cert_new.created = 1_700_100_000;
+        cert_new.serial_number = "serial-new".to_string();
+        insert(&db, cert_new).await.unwrap();
+
+        let result = get_latest_for_order(&db, "order-star").await.unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().id, "cert-new");
+    }
+
+    #[tokio::test]
+    async fn get_latest_for_order_none_when_no_certs() {
+        let db = open_db().await;
+        let result = get_latest_for_order(&db, "nonexistent-order")
+            .await
+            .unwrap();
+        assert!(result.is_none());
     }
 }

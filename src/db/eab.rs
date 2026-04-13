@@ -5,7 +5,6 @@
 //! endpoint).  Config-file keys are seeded with `insert_if_absent()` on
 //! startup so they never overwrite keys that were modified at runtime.
 
-use crate::db::Db;
 use crate::error::AcmeError;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -22,7 +21,7 @@ pub struct EabKeyRow {
 /// Uses `INSERT OR IGNORE` so that a key that already exists in the DB
 /// (possibly modified or marked used by the admin endpoint) is left alone.
 pub async fn insert_if_absent(
-    db: &Db,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
     kid: &str,
     hmac_key_b64u: &str,
     now: i64,
@@ -34,7 +33,7 @@ pub async fn insert_if_absent(
     .bind(kid)
     .bind(hmac_key_b64u)
     .bind(now)
-    .execute(db)
+    .execute(executor)
     .await?;
     Ok(())
 }
@@ -42,51 +41,61 @@ pub async fn insert_if_absent(
 /// Provision a new key unconditionally (for the future admin endpoint).
 ///
 /// Returns a `Conflict` error if a key with the same `kid` already exists.
-pub async fn insert(db: &Db, kid: &str, hmac_key_b64u: &str, now: i64) -> Result<(), AcmeError> {
+pub async fn insert(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    kid: &str,
+    hmac_key_b64u: &str,
+    now: i64,
+) -> Result<(), AcmeError> {
     sqlx::query("INSERT INTO eab_keys (kid, hmac_key_b64u, created) VALUES (?, ?, ?)")
         .bind(kid)
         .bind(hmac_key_b64u)
         .bind(now)
-        .execute(db)
+        .execute(executor)
         .await?;
     Ok(())
 }
 
 /// Look up a key by its `kid`.  Returns `None` if the `kid` is unknown.
-pub async fn get_by_kid(db: &Db, kid: &str) -> Result<Option<EabKeyRow>, AcmeError> {
+pub async fn get_by_kid(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    kid: &str,
+) -> Result<Option<EabKeyRow>, AcmeError> {
     let row = sqlx::query_as::<_, EabKeyRow>(
         "SELECT kid, hmac_key_b64u, created, used_at \
          FROM eab_keys WHERE kid = ?",
     )
     .bind(kid)
-    .fetch_optional(db)
+    .fetch_optional(executor)
     .await?;
     Ok(row)
 }
 
-/// Mark a key as used *within an existing sqlx transaction*.
+/// Mark a key as used.
 ///
-/// Call this atomically with the account INSERT so that the key is consumed
-/// only when account creation fully commits, and the DB is left consistent
-/// if the transaction rolls back.
-pub async fn mark_used_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+/// Pass `&mut *tx` to call this atomically within an existing transaction,
+/// ensuring the key is consumed only when account creation fully commits.
+pub async fn mark_used(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
     kid: &str,
     now: i64,
 ) -> Result<(), AcmeError> {
     sqlx::query("UPDATE eab_keys SET used_at = ? WHERE kid = ?")
         .bind(now)
         .bind(kid)
-        .execute(&mut **tx)
+        .execute(executor)
         .await?;
     Ok(())
 }
 
 /// Delete a key entirely (for the future admin endpoint cleanup path).
-pub async fn delete(db: &Db, kid: &str) -> Result<(), AcmeError> {
+pub async fn delete(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    kid: &str,
+) -> Result<(), AcmeError> {
     sqlx::query("DELETE FROM eab_keys WHERE kid = ?")
         .bind(kid)
-        .execute(db)
+        .execute(executor)
         .await?;
     Ok(())
 }
@@ -94,6 +103,7 @@ pub async fn delete(db: &Db, kid: &str) -> Result<(), AcmeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::Db;
 
     async fn open_db() -> Db {
         crate::db::open(":memory:").await.unwrap()
@@ -130,11 +140,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mark_used_tx_sets_used_at() {
+    async fn mark_used_sets_used_at() {
         let db = open_db().await;
         insert(&db, "kid3", "key", 1_000).await.unwrap();
         let mut tx = db.begin().await.unwrap();
-        mark_used_tx(&mut tx, "kid3", 2_000).await.unwrap();
+        mark_used(&mut *tx, "kid3", 2_000).await.unwrap();
         tx.commit().await.unwrap();
         let row = get_by_kid(&db, "kid3").await.unwrap().unwrap();
         assert_eq!(row.used_at, Some(2_000));

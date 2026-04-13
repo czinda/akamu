@@ -1,8 +1,10 @@
 use crate::db::schema::AccountRow;
-use crate::db::Db;
 use crate::error::AcmeError;
 
-pub async fn insert(db: &Db, row: AccountRow) -> Result<(), AcmeError> {
+pub async fn insert(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    row: AccountRow,
+) -> Result<(), AcmeError> {
     sqlx::query(
         "INSERT INTO accounts (id, status, contact, public_key, jwk_thumbprint, created, updated)
          VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -14,24 +16,27 @@ pub async fn insert(db: &Db, row: AccountRow) -> Result<(), AcmeError> {
     .bind(&row.jwk_thumbprint)
     .bind(row.created)
     .bind(row.updated)
-    .execute(db)
+    .execute(executor)
     .await?;
     Ok(())
 }
 
-pub async fn get_by_id(db: &Db, id: &str) -> Result<Option<AccountRow>, AcmeError> {
+pub async fn get_by_id(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    id: &str,
+) -> Result<Option<AccountRow>, AcmeError> {
     let row = sqlx::query_as::<_, AccountRow>(
         "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated
          FROM accounts WHERE id = ?",
     )
     .bind(id)
-    .fetch_optional(db)
+    .fetch_optional(executor)
     .await?;
     Ok(row)
 }
 
 pub async fn get_by_thumbprint(
-    db: &Db,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
     thumbprint: &str,
 ) -> Result<Option<AccountRow>, AcmeError> {
     let row = sqlx::query_as::<_, AccountRow>(
@@ -39,13 +44,13 @@ pub async fn get_by_thumbprint(
          FROM accounts WHERE jwk_thumbprint = ?",
     )
     .bind(thumbprint)
-    .fetch_optional(db)
+    .fetch_optional(executor)
     .await?;
     Ok(row)
 }
 
 pub async fn update_contact(
-    db: &Db,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
     id: &str,
     contact: Option<String>,
     now: i64,
@@ -56,18 +61,23 @@ pub async fn update_contact(
     .bind(contact)
     .bind(now)
     .bind(id)
-    .execute(db)
+    .execute(executor)
     .await?
     .rows_affected();
     Ok(n > 0)
 }
 
-pub async fn update_status(db: &Db, id: &str, status: &str, now: i64) -> Result<bool, AcmeError> {
+pub async fn update_status(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    id: &str,
+    status: &str,
+    now: i64,
+) -> Result<bool, AcmeError> {
     let n = sqlx::query("UPDATE accounts SET status = ?, updated = ? WHERE id = ?")
         .bind(status)
         .bind(now)
         .bind(id)
-        .execute(db)
+        .execute(executor)
         .await?
         .rows_affected();
     Ok(n > 0)
@@ -75,7 +85,7 @@ pub async fn update_status(db: &Db, id: &str, status: &str, now: i64) -> Result<
 
 /// Update the account's JWK thumbprint and public key (for key rollover).
 pub async fn update_key(
-    db: &Db,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
     id: &str,
     public_key: Vec<u8>,
     jwk_thumbprint: String,
@@ -89,7 +99,7 @@ pub async fn update_key(
     .bind(&jwk_thumbprint)
     .bind(now)
     .bind(id)
-    .execute(db)
+    .execute(executor)
     .await?
     .rows_affected();
     Ok(n > 0)
@@ -98,6 +108,7 @@ pub async fn update_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::Db;
 
     async fn open_db() -> Db {
         crate::db::open(":memory:").await.unwrap()

@@ -1,8 +1,10 @@
 use crate::db::schema::{AuthorizationRow, ChallengeRow};
-use crate::db::Db;
 use crate::error::AcmeError;
 
-pub async fn insert(db: &Db, row: AuthorizationRow) -> Result<(), AcmeError> {
+pub async fn insert(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    row: AuthorizationRow,
+) -> Result<(), AcmeError> {
     sqlx::query(
         "INSERT INTO authorizations
          (id, order_id, account_id, status, identifier, expires, wildcard,
@@ -19,25 +21,28 @@ pub async fn insert(db: &Db, row: AuthorizationRow) -> Result<(), AcmeError> {
     .bind(row.subdomain_auth_allowed)
     .bind(row.created)
     .bind(row.updated)
-    .execute(db)
+    .execute(executor)
     .await?;
     Ok(())
 }
 
-pub async fn get_by_id(db: &Db, id: &str) -> Result<Option<AuthorizationRow>, AcmeError> {
+pub async fn get_by_id(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    id: &str,
+) -> Result<Option<AuthorizationRow>, AcmeError> {
     let row = sqlx::query_as::<_, AuthorizationRow>(
         "SELECT id, order_id, account_id, status, identifier, expires, wildcard,
                 subdomain_auth_allowed, created, updated
          FROM authorizations WHERE id = ?",
     )
     .bind(id)
-    .fetch_optional(db)
+    .fetch_optional(executor)
     .await?;
     Ok(row)
 }
 
 pub async fn list_by_order(
-    db: &Db,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
     order_id: &str,
 ) -> Result<Vec<AuthorizationRow>, AcmeError> {
     let rows = sqlx::query_as::<_, AuthorizationRow>(
@@ -46,93 +51,110 @@ pub async fn list_by_order(
          FROM authorizations WHERE order_id = ?",
     )
     .bind(order_id)
-    .fetch_all(db)
+    .fetch_all(executor)
     .await?;
     Ok(rows)
 }
 
-/// Fetch an authorization and all its challenges.
+/// Fetch an authorization and all its challenges in a single JOIN round-trip.
 ///
 /// Returns `None` if no authorization with `authz_id` exists.
+///
+/// Accepts `impl Executor` (single query), so callers can pass either `&pool`
+/// or `&mut *tx` — enabling transaction-scoped usage without an extra
+/// `impl Executor` bound on the two-query wrapper that existed before.
 pub async fn get_with_challenges(
-    db: &Db,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
     authz_id: &str,
 ) -> Result<Option<(AuthorizationRow, Vec<ChallengeRow>)>, AcmeError> {
-    let authz = match sqlx::query_as::<_, AuthorizationRow>(
-        "SELECT id, order_id, account_id, status, identifier, expires, wildcard,
-                subdomain_auth_allowed, created, updated
-         FROM authorizations WHERE id = ?",
+    #[derive(sqlx::FromRow)]
+    struct AuthzChallRow {
+        // Authorization columns (aliased to avoid conflicts with challenge columns)
+        authz_id: String,
+        order_id: Option<String>, // nullable for pre-authz (new-authz endpoint)
+        account_id: String,
+        authz_status: String,
+        identifier: String,
+        expires: Option<i64>,
+        wildcard: bool,
+        subdomain_auth_allowed: bool,
+        authz_created: i64,
+        authz_updated: i64,
+        // Challenge columns (all nullable: LEFT JOIN returns NULL when no challenges)
+        chall_id: Option<String>,
+        chall_type: Option<String>,
+        chall_status: Option<String>,
+        token: Option<String>,
+        validated: Option<i64>,
+        error: Option<String>,
+        chall_created: Option<i64>,
+        chall_updated: Option<i64>,
+    }
+
+    let rows = sqlx::query_as::<_, AuthzChallRow>(
+        "SELECT
+             a.id          AS authz_id,
+             a.order_id,
+             a.account_id,
+             a.status      AS authz_status,
+             a.identifier,
+             a.expires,
+             a.wildcard,
+             a.subdomain_auth_allowed,
+             a.created     AS authz_created,
+             a.updated     AS authz_updated,
+             c.id          AS chall_id,
+             c.type        AS chall_type,
+             c.status      AS chall_status,
+             c.token,
+             c.validated,
+             c.error,
+             c.created     AS chall_created,
+             c.updated     AS chall_updated
+         FROM authorizations a
+         LEFT JOIN challenges c ON c.authz_id = a.id
+         WHERE a.id = ?
+         ORDER BY c.id",
     )
     .bind(authz_id)
-    .fetch_optional(db)
-    .await?
-    {
-        Some(a) => a,
-        None => return Ok(None),
+    .fetch_all(executor)
+    .await?;
+
+    if rows.is_empty() {
+        return Ok(None);
+    }
+
+    let first = &rows[0];
+    let authz = AuthorizationRow {
+        id: first.authz_id.clone(),
+        order_id: first.order_id.clone().unwrap_or_default(),
+        account_id: first.account_id.clone(),
+        status: first.authz_status.clone(),
+        identifier: first.identifier.clone(),
+        expires: first.expires,
+        wildcard: first.wildcard,
+        subdomain_auth_allowed: first.subdomain_auth_allowed,
+        created: first.authz_created,
+        updated: first.authz_updated,
     };
 
-    let challenges = sqlx::query_as::<_, ChallengeRow>(
-        "SELECT id, authz_id, type, status, token, validated, error, created, updated
-         FROM challenges WHERE authz_id = ?",
-    )
-    .bind(authz_id)
-    .fetch_all(db)
-    .await?;
+    let challenges: Vec<ChallengeRow> = rows
+        .into_iter()
+        .filter_map(|r| {
+            Some(ChallengeRow {
+                id: r.chall_id?,
+                authz_id: authz.id.clone(),
+                r#type: r.chall_type?,
+                status: r.chall_status?,
+                token: r.token?,
+                validated: r.validated,
+                error: r.error,
+                created: r.chall_created?,
+                updated: r.chall_updated?,
+            })
+        })
+        .collect();
 
-    Ok(Some((authz, challenges)))
-}
-
-/// Fetch an authorization with its challenges and atomically mark the specified
-/// challenge type as "processing".
-///
-/// Returns `None` if no authorization with `authz_id` exists.
-pub async fn get_with_challenges_mark_processing(
-    db: &Db,
-    authz_id: &str,
-    chall_type: &str,
-    now: i64,
-) -> Result<Option<(AuthorizationRow, Vec<ChallengeRow>)>, AcmeError> {
-    let mut tx = db.begin().await?;
-
-    // Fetch authorization.
-    let authz = match sqlx::query_as::<_, AuthorizationRow>(
-        "SELECT id, order_id, account_id, status, identifier, expires, wildcard,
-                subdomain_auth_allowed, created, updated
-         FROM authorizations WHERE id = ?",
-    )
-    .bind(authz_id)
-    .fetch_optional(&mut *tx)
-    .await?
-    {
-        Some(a) => a,
-        None => {
-            tx.rollback().await?;
-            return Ok(None);
-        }
-    };
-
-    // Fetch all challenges for this authorization.
-    let challenges = sqlx::query_as::<_, ChallengeRow>(
-        "SELECT id, authz_id, type, status, token, validated, error, created, updated
-         FROM challenges WHERE authz_id = ?",
-    )
-    .bind(authz_id)
-    .fetch_all(&mut *tx)
-    .await?;
-
-    // Atomically mark the target challenge "processing". Only fires when the
-    // challenge is still "pending"; a no-op for already-active challenges.
-    sqlx::query(
-        "UPDATE challenges SET status = 'processing', updated = ?
-         WHERE authz_id = ? AND type = ? AND status = 'pending'",
-    )
-    .bind(now)
-    .bind(authz_id)
-    .bind(chall_type)
-    .execute(&mut *tx)
-    .await?;
-
-    tx.commit().await?;
     Ok(Some((authz, challenges)))
 }
 
@@ -141,7 +163,7 @@ pub async fn get_with_challenges_mark_processing(
 /// Returns the first matching row (status `pending` or `valid`, not yet expired),
 /// or `None` if no such authorization exists. Used by `new-authz` to deduplicate.
 pub async fn find_valid_by_account_and_identifier(
-    db: &Db,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
     account_id: &str,
     identifier_json: &str,
     now: i64,
@@ -159,17 +181,22 @@ pub async fn find_valid_by_account_and_identifier(
     .bind(account_id)
     .bind(identifier_json)
     .bind(now)
-    .fetch_optional(db)
+    .fetch_optional(executor)
     .await?;
     Ok(row)
 }
 
-pub async fn update_status(db: &Db, id: &str, status: &str, now: i64) -> Result<(), AcmeError> {
+pub async fn update_status(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    id: &str,
+    status: &str,
+    now: i64,
+) -> Result<(), AcmeError> {
     sqlx::query("UPDATE authorizations SET status = ?, updated = ? WHERE id = ?")
         .bind(status)
         .bind(now)
         .bind(id)
-        .execute(db)
+        .execute(executor)
         .await?;
     Ok(())
 }
@@ -179,6 +206,7 @@ mod tests {
     use super::*;
 
     use crate::db::schema::{AccountRow, OrderRow};
+    use crate::db::Db;
 
     async fn open_db() -> Db {
         crate::db::open(":memory:").await.unwrap()

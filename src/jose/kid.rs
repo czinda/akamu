@@ -24,11 +24,7 @@ pub fn account_id_from_kid(base_url: &str, kid: &str) -> Result<String, AcmeErro
 ///
 /// Returns `Err(AcmeError::Unauthorized)` if the account does not exist,
 /// is not active, or is deactivated.
-pub async fn spki_for_kid(
-    db: &Db,
-    base_url: &str,
-    kid: &str,
-) -> Result<Vec<u8>, AcmeError> {
+pub async fn spki_for_kid(db: &Db, base_url: &str, kid: &str) -> Result<Vec<u8>, AcmeError> {
     let account_id = account_id_from_kid(base_url, kid)?;
     let account = db::accounts::get_by_id(db, &account_id)
         .await?
