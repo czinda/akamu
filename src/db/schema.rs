@@ -1,7 +1,7 @@
 /// Row types that mirror the SQLite schema columns.
 /// These are plain data structs used to transfer data between the DB and application layers.
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct AccountRow {
     pub id: String,
     pub status: String,
@@ -12,7 +12,7 @@ pub struct AccountRow {
     pub updated: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct OrderRow {
     pub id: String,
     pub account_id: String,
@@ -30,7 +30,7 @@ pub struct OrderRow {
     pub star_start_date: Option<i64>,
     pub star_end_date: Option<i64>,
     pub star_lifetime_secs: Option<i64>,
-    pub star_lifetime_adjust_secs: i64, // default 0
+    pub star_lifetime_adjust_secs: i64, // NOT NULL DEFAULT 0 in schema
     pub star_allow_cert_get: bool,
     pub star_canceled_at: Option<i64>,
     pub star_csr_der: Option<Vec<u8>>, // stored CSR DER for reissuance
@@ -38,7 +38,7 @@ pub struct OrderRow {
     pub profile: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct AuthorizationRow {
     pub id: String,
     pub order_id: String,
@@ -52,10 +52,11 @@ pub struct AuthorizationRow {
     pub updated: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ChallengeRow {
     pub id: String,
     pub authz_id: String,
+    #[sqlx(rename = "type")]
     pub r#type: String,
     pub status: String,
     pub token: String,
@@ -65,7 +66,7 @@ pub struct ChallengeRow {
     pub updated: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct CertificateRow {
     pub id: String,
     pub order_id: String,

@@ -1,8 +1,7 @@
 //! Resolve a JWS `kid` URL to the account's SPKI DER bytes.
 
-use tokio_rusqlite::Connection;
-
 use crate::db;
+use crate::db::Db;
 use crate::error::AcmeError;
 
 /// Extract the account ID from a `kid` URL of the form `<base_url>/acme/account/<id>`.
@@ -26,7 +25,7 @@ pub fn account_id_from_kid(base_url: &str, kid: &str) -> Result<String, AcmeErro
 /// Returns `Err(AcmeError::Unauthorized)` if the account does not exist,
 /// is not active, or is deactivated.
 pub async fn spki_for_kid(
-    db: &Connection,
+    db: &Db,
     base_url: &str,
     kid: &str,
 ) -> Result<Vec<u8>, AcmeError> {
@@ -48,7 +47,6 @@ pub async fn spki_for_kid(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     #[test]
     fn account_id_from_kid_valid() {
@@ -83,7 +81,7 @@ mod tests {
 
     #[tokio::test]
     async fn spki_for_kid_account_not_found() {
-        let db = Arc::new(crate::db::open(":memory:").await.unwrap());
+        let db = crate::db::open(":memory:").await.unwrap();
         let result = spki_for_kid(
             &db,
             "https://acme.test",
@@ -100,7 +98,7 @@ mod tests {
     #[tokio::test]
     async fn spki_for_kid_deactivated_account_returns_error() {
         use crate::db::schema::AccountRow;
-        let db = Arc::new(crate::db::open(":memory:").await.unwrap());
+        let db = crate::db::open(":memory:").await.unwrap();
         crate::db::accounts::insert(
             &db,
             AccountRow {
@@ -132,7 +130,7 @@ mod tests {
     #[tokio::test]
     async fn spki_for_kid_valid_account_returns_spki() {
         use crate::db::schema::AccountRow;
-        let db = Arc::new(crate::db::open(":memory:").await.unwrap());
+        let db = crate::db::open(":memory:").await.unwrap();
         let spki = vec![0xDE, 0xAD, 0xBE, 0xEF];
         crate::db::accounts::insert(
             &db,

@@ -189,51 +189,46 @@ pub async fn new_authz(
         .map(|&t| (uuid::Uuid::new_v4().to_string(), t.to_string()))
         .collect();
 
-    let authz_id_clone = authz_id.clone();
-    let account_id_clone = account_id.clone();
-    let identifier_json_clone = identifier_json.clone();
-    let token_clone = token.clone();
-    let challenges_clone = challenges.clone();
     let subdomain_auth_allowed = payload.subdomain_auth_allowed;
 
-    state
-        .db
-        .call(move |conn| {
-            let tx = conn.transaction()?;
-            tx.prepare_cached(
-                "INSERT INTO authorizations
-                 (id, order_id, account_id, status, identifier, expires,
-                  wildcard, subdomain_auth_allowed, created, updated)
-                 VALUES (?1, NULL, ?2, 'pending', ?3, ?4, 0, ?5, ?6, ?6)",
-            )?
-            .execute(rusqlite::params![
-                authz_id_clone,
-                account_id_clone,
-                identifier_json_clone,
-                authz_expiry,
-                subdomain_auth_allowed as i64,
-                now
-            ])?;
-            for (chall_id, chall_type) in &challenges_clone {
-                tx.prepare_cached(
-                    "INSERT INTO challenges
-                     (id, authz_id, type, status, token, validated,
-                      error, created, updated)
-                     VALUES (?1, ?2, ?3, 'pending', ?4, NULL, NULL, ?5, ?5)",
-                )?
-                .execute(rusqlite::params![
-                    chall_id,
-                    authz_id_clone,
-                    chall_type,
-                    token_clone,
-                    now
-                ])?;
-            }
-            tx.commit()?;
-            Ok(())
-        })
+    {
+        let mut tx = state.db.begin().await.map_err(AcmeError::from)?;
+        sqlx::query(
+            "INSERT INTO authorizations
+             (id, order_id, account_id, status, identifier, expires,
+              wildcard, subdomain_auth_allowed, created, updated)
+             VALUES (?, NULL, ?, 'pending', ?, ?, 0, ?, ?, ?)",
+        )
+        .bind(&authz_id)
+        .bind(&account_id)
+        .bind(&identifier_json)
+        .bind(authz_expiry)
+        .bind(subdomain_auth_allowed as i64)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
         .await
         .map_err(AcmeError::from)?;
+
+        for (chall_id, chall_type) in &challenges {
+            sqlx::query(
+                "INSERT INTO challenges
+                 (id, authz_id, type, status, token, validated,
+                  error, created, updated)
+                 VALUES (?, ?, ?, 'pending', ?, NULL, NULL, ?, ?)",
+            )
+            .bind(chall_id)
+            .bind(&authz_id)
+            .bind(chall_type)
+            .bind(&token)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(AcmeError::from)?;
+        }
+        tx.commit().await.map_err(AcmeError::from)?;
+    }
 
     // Fetch the freshly inserted authorization and its challenges for the response.
     let (authz, chall_rows) = db::authz::get_with_challenges(&state.db, &authz_id)

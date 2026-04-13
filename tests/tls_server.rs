@@ -357,7 +357,7 @@ struct TlsTestServer {
     /// CA certificate DER — used to build the client trust store.
     ca_der: Vec<u8>,
     /// Database connection — used to bypass challenge validation in tests.
-    db: Arc<tokio_rusqlite::Connection>,
+    db: akamu::db::Db,
     /// tokio task handle — abort on drop to free the port.
     handle: tokio::task::JoinHandle<()>,
     /// Temp dir kept alive as long as the server lives.
@@ -432,7 +432,7 @@ async fn start_tls_server() -> TlsTestServer {
         );
     }
 
-    let db_conn = Arc::new(db::open(":memory:").await.unwrap());
+    let db_conn = db::open(":memory:").await.unwrap();
 
     let ca_state = Arc::new(CaState {
         key: ca_key,
@@ -457,7 +457,7 @@ async fn start_tls_server() -> TlsTestServer {
 
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
-        db: Arc::clone(&db_conn),
+        db: db_conn.clone(),
         ca: ca_state,
         mtc: Arc::new(MtcState {
             log: None,
@@ -493,7 +493,7 @@ async fn start_tls_server() -> TlsTestServer {
         addr,
         base_url,
         ca_der: ca_cert_der,
-        db: db_conn,
+        db: db_conn.clone(),
         handle,
         _dir: dir,
     }
@@ -503,36 +503,34 @@ async fn start_tls_server() -> TlsTestServer {
 
 /// Mark all challenges and authorizations for an order as `valid` and
 /// advance the order status to `ready`, bypassing actual challenge validation.
-async fn mark_order_ready(db: &tokio_rusqlite::Connection, order_id: &str) {
-    let order_id = order_id.to_string();
-    db.call(move |conn| {
-        let authz_ids: Vec<String> = {
-            let mut stmt = conn.prepare("SELECT id FROM authorizations WHERE order_id = ?1")?;
-            let ids = stmt
-                .query_map(rusqlite::params![order_id], |r| r.get(0))?
-                .collect::<Result<_, _>>()?;
-            ids
-        };
-        for authz_id in &authz_ids {
-            conn.execute(
-                "UPDATE challenges SET status='valid', validated=1700000000 \
-                 WHERE authz_id = ?1",
-                rusqlite::params![authz_id],
-            )?;
-            conn.execute(
-                "UPDATE authorizations SET status='valid', updated=1700000000 \
-                 WHERE id = ?1",
-                rusqlite::params![authz_id],
-            )?;
-        }
-        conn.execute(
-            "UPDATE orders SET status='ready', updated=1700000000 WHERE id = ?1",
-            rusqlite::params![order_id],
-        )?;
-        Ok(())
-    })
-    .await
-    .unwrap();
+async fn mark_order_ready(db: &akamu::db::Db, order_id: &str) {
+    let authz_ids: Vec<(String,)> =
+        sqlx::query_as("SELECT id FROM authorizations WHERE order_id = ?")
+            .bind(order_id)
+            .fetch_all(db)
+            .await
+            .unwrap();
+    for (aid,) in &authz_ids {
+        sqlx::query(
+            "UPDATE challenges SET status='valid', validated=1700000000 WHERE authz_id = ?",
+        )
+        .bind(aid)
+        .execute(db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE authorizations SET status='valid', updated=1700000000 WHERE id = ?",
+        )
+        .bind(aid)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+    sqlx::query("UPDATE orders SET status='ready', updated=1700000000 WHERE id = ?")
+        .bind(order_id)
+        .execute(db)
+        .await
+        .unwrap();
 }
 
 /// Build a minimal P-256 CSR for `domain` with a dNSName SAN.

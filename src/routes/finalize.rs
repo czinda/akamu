@@ -153,81 +153,81 @@ pub async fn finalize_order(
     };
 
     // Persist the certificate, update the order, and fetch authz IDs atomically
-    // in a single db.call so that (a) a crash between the two writes cannot leave
-    // the DB inconsistent, and (b) we avoid two extra channel round-trips that
-    // would otherwise be needed to re-read the order and its authorizations.
+    // in a single transaction so that a crash between writes cannot leave the DB
+    // inconsistent.
     let cert_id = issued.id.clone();
-    let order_id_clone = id.clone();
-    let acct_id = account_id.clone();
     let serial = issued.serial_hex.clone();
     let cert_der = issued.cert_der.clone();
     let cert_pem = issued.cert_pem.clone();
     let not_before = issued.not_before;
     let not_after = issued.not_after;
 
-    // The closure returns (authz_ids, pred_already_replaced) so we can signal
+    // The transaction returns (authz_ids, pred_already_replaced) so we can signal
     // a concurrent alreadyReplaced conflict (RFC 9773 §5) without a separate
     // DB round-trip.  The bool is true when the predecessor's replaced_by was
     // already set by another concurrent finalization.
-    let (authz_ids, pred_already_replaced): (Vec<String>, bool) = state
-        .db
-        .call(move |conn| {
-            let tx = conn.transaction()?;
-            tx.prepare_cached(
-                "INSERT INTO certificates
-                 (id, order_id, account_id, serial_number, status, der, pem,
-                  not_before, not_after, revoked_at, revocation_reason,
-                  mtc_log_index, created, suggested_window_start, suggested_window_end,
-                  replaced_by)
-                 VALUES (?1, ?2, ?3, ?4, 'valid', ?5, ?6, ?7, ?8,
-                         NULL, NULL, NULL, ?9, NULL, NULL, NULL)",
-            )?
-            .execute(rusqlite::params![
-                cert_id,
-                order_id_clone,
-                acct_id,
-                serial,
-                cert_der,
-                cert_pem,
-                not_before,
-                not_after,
-                now,
-            ])?;
-            tx.prepare_cached(
-                "UPDATE orders SET status = 'valid', certificate_id = ?1, updated = ?2
-                 WHERE id = ?3",
-            )?
-            .execute(rusqlite::params![cert_id, now, order_id_clone])?;
-            // Mark predecessor certificate as replaced (RFC 9773 §5).
-            // The WHERE clause is conditional on replaced_by IS NULL so that
-            // concurrent replacement orders produce 0 rows changed, which we
-            // surface as alreadyReplaced (HTTP 409) after the transaction.
-            let pred_already_replaced = if let Some(ref pred_uuid) = pred_cert_uuid {
-                let rows_changed = tx
-                    .prepare_cached(
-                        "UPDATE certificates SET replaced_by = ?1 \
-                         WHERE id = ?2 AND replaced_by IS NULL",
-                    )?
-                    .execute(rusqlite::params![order_id_clone, pred_uuid])?;
-                rows_changed == 0
-            } else {
-                false
-            };
-            // Fetch authz IDs within the same db.call to avoid a separate round-trip.
-            // drop(stmt) before tx.commit() so the borrow of tx is released.
-            let mut stmt =
-                tx.prepare_cached("SELECT id FROM authorizations WHERE order_id = ?1")?;
-            let ids: Vec<String> = stmt
-                .query_map(rusqlite::params![order_id_clone], |row| {
-                    row.get::<_, String>(0)
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            drop(stmt);
-            tx.commit()?;
-            Ok((ids, pred_already_replaced))
-        })
+    let mut tx = state.db.begin().await.map_err(AcmeError::from)?;
+
+    sqlx::query(
+        "INSERT INTO certificates
+         (id, order_id, account_id, serial_number, status, der, pem,
+          not_before, not_after, revoked_at, revocation_reason,
+          mtc_log_index, created, suggested_window_start, suggested_window_end,
+          replaced_by)
+         VALUES (?, ?, ?, ?, 'valid', ?, ?, ?, ?,
+                 NULL, NULL, NULL, ?, NULL, NULL, NULL)",
+    )
+    .bind(&cert_id)
+    .bind(&id)
+    .bind(&account_id)
+    .bind(&serial)
+    .bind(&cert_der)
+    .bind(&cert_pem)
+    .bind(not_before)
+    .bind(not_after)
+    .bind(now)
+    .execute(&mut *tx)
+    .await
+    .map_err(AcmeError::from)?;
+
+    sqlx::query(
+        "UPDATE orders SET status = 'valid', certificate_id = ?, updated = ? WHERE id = ?",
+    )
+    .bind(&cert_id)
+    .bind(now)
+    .bind(&id)
+    .execute(&mut *tx)
+    .await
+    .map_err(AcmeError::from)?;
+
+    // Mark predecessor certificate as replaced (RFC 9773 §5).
+    let pred_already_replaced = if let Some(ref pred_uuid) = pred_cert_uuid {
+        let rows_changed = sqlx::query(
+            "UPDATE certificates SET replaced_by = ? WHERE id = ? AND replaced_by IS NULL",
+        )
+        .bind(&id)
+        .bind(pred_uuid)
+        .execute(&mut *tx)
         .await
-        .map_err(AcmeError::from)?;
+        .map_err(AcmeError::from)?
+        .rows_affected();
+        rows_changed == 0
+    } else {
+        false
+    };
+
+    // Fetch authz IDs within the same transaction to avoid a separate round-trip.
+    let authz_id_rows: Vec<(String,)> =
+        sqlx::query_as("SELECT id FROM authorizations WHERE order_id = ?")
+            .bind(&id)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(AcmeError::from)?;
+    let authz_ids: Vec<String> = authz_id_rows.into_iter().map(|(aid,)| aid).collect();
+
+    tx.commit().await.map_err(AcmeError::from)?;
+
+    let (authz_ids, pred_already_replaced) = (authz_ids, pred_already_replaced);
 
     // RFC 9773 §5: return 409 alreadyReplaced if another order concurrently
     // replaced the same predecessor certificate during this finalization.
@@ -240,7 +240,7 @@ pub async fn finalize_order(
         if let Some(log) = &state.mtc.log {
             let cert_der = issued.cert_der.clone();
             let log = Arc::clone(log);
-            let db = Arc::clone(&state.db);
+            let db = state.db.clone();
             let cert_id = issued.id.clone();
             let algorithm = state.mtc.algorithm;
             tokio::spawn(async move {

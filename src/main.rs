@@ -45,7 +45,6 @@ async fn run() -> Result<(), String> {
     let db = db::open(&config.database.path)
         .await
         .map_err(|e| format!("database init: {e}"))?;
-    let db = Arc::new(db);
 
     // Sweep nonces older than 24 h at startup (best-effort).
     let _ = db::nonces::sweep_expired(&db, 86400).await;
@@ -129,7 +128,7 @@ async fn run() -> Result<(), String> {
     // ── Application state ─────────────────────────────────────────────────────
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
-        db: Arc::clone(&db),
+        db: db.clone(),
         ca,
         mtc,
         tls: tls_state,

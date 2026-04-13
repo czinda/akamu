@@ -1,146 +1,106 @@
-use tokio_rusqlite::Connection;
-
 use crate::db::schema::AccountRow;
+use crate::db::Db;
 use crate::error::AcmeError;
 
-fn row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRow> {
-    Ok(AccountRow {
-        id: row.get(0)?,
-        status: row.get(1)?,
-        contact: row.get(2)?,
-        public_key: row.get(3)?,
-        jwk_thumbprint: row.get(4)?,
-        created: row.get(5)?,
-        updated: row.get(6)?,
-    })
+pub async fn insert(db: &Db, row: AccountRow) -> Result<(), AcmeError> {
+    sqlx::query(
+        "INSERT INTO accounts (id, status, contact, public_key, jwk_thumbprint, created, updated)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&row.id)
+    .bind(&row.status)
+    .bind(&row.contact)
+    .bind(&row.public_key)
+    .bind(&row.jwk_thumbprint)
+    .bind(row.created)
+    .bind(row.updated)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
-pub async fn insert(db: &Connection, row: AccountRow) -> Result<(), AcmeError> {
-    db.call(move |conn| {
-        conn.prepare_cached(
-            "INSERT INTO accounts (id, status, contact, public_key, jwk_thumbprint, created, updated)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        )?
-        .execute(rusqlite::params![
-            row.id,
-            row.status,
-            row.contact,
-            row.public_key,
-            row.jwk_thumbprint,
-            row.created,
-            row.updated,
-        ])?;
-        Ok(())
-    })
-    .await
-    .map_err(AcmeError::from)
-}
-
-pub async fn get_by_id(db: &Connection, id: &str) -> Result<Option<AccountRow>, AcmeError> {
-    let id = id.to_string();
-    db.call(move |conn| {
-        let mut stmt = conn.prepare_cached(
-            "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated
-             FROM accounts WHERE id = ?1",
-        )?;
-        let mut rows = stmt.query(rusqlite::params![id])?;
-        if let Some(row) = rows.next()? {
-            Ok(Some(row_from(row)?))
-        } else {
-            Ok(None)
-        }
-    })
-    .await
-    .map_err(AcmeError::from)
+pub async fn get_by_id(db: &Db, id: &str) -> Result<Option<AccountRow>, AcmeError> {
+    let row = sqlx::query_as::<_, AccountRow>(
+        "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated
+         FROM accounts WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await?;
+    Ok(row)
 }
 
 pub async fn get_by_thumbprint(
-    db: &Connection,
+    db: &Db,
     thumbprint: &str,
 ) -> Result<Option<AccountRow>, AcmeError> {
-    let thumbprint = thumbprint.to_string();
-    db.call(move |conn| {
-        let mut stmt = conn.prepare_cached(
-            "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated
-             FROM accounts WHERE jwk_thumbprint = ?1",
-        )?;
-        let mut rows = stmt.query(rusqlite::params![thumbprint])?;
-        if let Some(row) = rows.next()? {
-            Ok(Some(row_from(row)?))
-        } else {
-            Ok(None)
-        }
-    })
-    .await
-    .map_err(AcmeError::from)
+    let row = sqlx::query_as::<_, AccountRow>(
+        "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated
+         FROM accounts WHERE jwk_thumbprint = ?",
+    )
+    .bind(thumbprint)
+    .fetch_optional(db)
+    .await?;
+    Ok(row)
 }
 
 pub async fn update_contact(
-    db: &Connection,
+    db: &Db,
     id: &str,
     contact: Option<String>,
     now: i64,
 ) -> Result<bool, AcmeError> {
-    let id = id.to_string();
-    db.call(move |conn| {
-        let n = conn
-            .prepare_cached(
-                "UPDATE accounts SET contact = ?1, updated = ?2 WHERE id = ?3 AND status = 'valid'",
-            )?
-            .execute(rusqlite::params![contact, now, id])?;
-        Ok(n > 0)
-    })
-    .await
-    .map_err(AcmeError::from)
+    let n = sqlx::query(
+        "UPDATE accounts SET contact = ?, updated = ? WHERE id = ? AND status = 'valid'",
+    )
+    .bind(contact)
+    .bind(now)
+    .bind(id)
+    .execute(db)
+    .await?
+    .rows_affected();
+    Ok(n > 0)
 }
 
-pub async fn update_status(
-    db: &Connection,
-    id: &str,
-    status: &str,
-    now: i64,
-) -> Result<bool, AcmeError> {
-    let id = id.to_string();
-    let status = status.to_string();
-    db.call(move |conn| {
-        let n = conn
-            .prepare_cached("UPDATE accounts SET status = ?1, updated = ?2 WHERE id = ?3")?
-            .execute(rusqlite::params![status, now, id])?;
-        Ok(n > 0)
-    })
-    .await
-    .map_err(AcmeError::from)
+pub async fn update_status(db: &Db, id: &str, status: &str, now: i64) -> Result<bool, AcmeError> {
+    let n = sqlx::query("UPDATE accounts SET status = ?, updated = ? WHERE id = ?")
+        .bind(status)
+        .bind(now)
+        .bind(id)
+        .execute(db)
+        .await?
+        .rows_affected();
+    Ok(n > 0)
 }
 
 /// Update the account's JWK thumbprint and public key (for key rollover).
 pub async fn update_key(
-    db: &Connection,
+    db: &Db,
     id: &str,
     public_key: Vec<u8>,
     jwk_thumbprint: String,
     now: i64,
 ) -> Result<bool, AcmeError> {
-    let id = id.to_string();
-    db.call(move |conn| {
-        let n = conn
-            .prepare_cached(
-                "UPDATE accounts SET public_key = ?1, jwk_thumbprint = ?2, updated = ?3
-             WHERE id = ?4 AND status = 'valid'",
-            )?
-            .execute(rusqlite::params![public_key, jwk_thumbprint, now, id])?;
-        Ok(n > 0)
-    })
-    .await
-    .map_err(AcmeError::from)
+    let n = sqlx::query(
+        "UPDATE accounts SET public_key = ?, jwk_thumbprint = ?, updated = ?
+         WHERE id = ? AND status = 'valid'",
+    )
+    .bind(&public_key)
+    .bind(&jwk_thumbprint)
+    .bind(now)
+    .bind(id)
+    .execute(db)
+    .await?
+    .rows_affected();
+    Ok(n > 0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
-    async fn open_db() -> Arc<Connection> {
-        Arc::new(crate::db::open(":memory:").await.unwrap())
+    async fn open_db() -> Db {
+        crate::db::open(":memory:").await.unwrap()
     }
 
     fn sample_account(id: &str) -> AccountRow {
@@ -302,13 +262,19 @@ mod tests {
     }
 
     /// Cover the error propagation path in each function by calling them on a
-    /// connection that has no schema (no tables).  Every DB operation inside the
-    /// closure will fail with "no such table", which exercises the `)?;` early-
-    /// return paths that are normally never triggered in happy-path tests.
+    /// pool that has no schema (no tables). Every DB operation will fail with
+    /// "no such table", which exercises the error-return paths.
     #[tokio::test]
     async fn db_error_paths_no_table() {
-        // Raw connection — no migrations run, so no tables exist.
-        let raw = Arc::new(tokio_rusqlite::Connection::open_in_memory().await.unwrap());
+        use sqlx::sqlite::SqliteConnectOptions;
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        // Raw pool — no migrations run, so no tables exist.
+        let raw: Db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(SqliteConnectOptions::new().in_memory(true))
+            .await
+            .unwrap();
 
         let row = sample_account("err-acct");
         assert!(

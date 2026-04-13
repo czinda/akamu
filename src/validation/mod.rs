@@ -12,7 +12,6 @@ mod tls_alpn01;
 
 use std::sync::Arc;
 
-use rusqlite::OptionalExtension;
 use serde_json::json;
 
 use crate::error::AcmeError;
@@ -116,65 +115,67 @@ async fn dispatch(
 /// 2. Mark the parent authorization as `valid`.
 /// 3. If all authorizations for the order are now `valid`, advance the order to `ready`.
 async fn on_valid(state: &AppState, challenge_id: &str, authz_id: &str, now: i64) {
-    let challenge_id = challenge_id.to_string();
-    let authz_id = authz_id.to_string();
-    let authz_id_log = authz_id.clone();
+    let authz_id_log = authz_id.to_string();
 
-    let result = state
-        .db
-        .call(move |conn| {
-            let tx = conn.transaction()?;
+    let result: Result<Option<(String, bool)>, sqlx::Error> = async {
+        let mut tx = state.db.begin().await?;
 
-            // 1. Mark challenge valid.
-            tx.prepare_cached(
-                "UPDATE challenges SET status = 'valid', validated = ?1, updated = ?1 WHERE id = ?2",
-            )?
-            .execute(rusqlite::params![now, challenge_id])?;
+        // 1. Mark challenge valid.
+        sqlx::query(
+            "UPDATE challenges SET status = 'valid', validated = ?, updated = ? WHERE id = ?",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(challenge_id)
+        .execute(&mut *tx)
+        .await?;
 
-            // 2. Mark authorization valid.
-            tx.prepare_cached(
-                "UPDATE authorizations SET status = 'valid', updated = ?1 WHERE id = ?2",
-            )?
-            .execute(rusqlite::params![now, authz_id])?;
+        // 2. Mark authorization valid.
+        sqlx::query("UPDATE authorizations SET status = 'valid', updated = ? WHERE id = ?")
+            .bind(now)
+            .bind(authz_id)
+            .execute(&mut *tx)
+            .await?;
 
-            // 3. Find the parent order_id.
-            let order_id: Option<String> = {
-                let mut stmt = tx.prepare_cached(
-                    "SELECT order_id FROM authorizations WHERE id = ?1",
-                )?;
-                stmt.query_row(rusqlite::params![authz_id], |row| row.get(0))
-                    .optional()?
-            };
+        // 3. Find the parent order_id.
+        let order_id_row: Option<(String,)> =
+            sqlx::query_as("SELECT order_id FROM authorizations WHERE id = ?")
+                .bind(authz_id)
+                .fetch_optional(&mut *tx)
+                .await?;
 
-            let order_id = match order_id {
-                Some(id) => id,
-                None => {
-                    // Authz disappeared (shouldn't happen, but be safe).
-                    tx.commit()?;
-                    return Ok(None);
-                }
-            };
-
-            // 4. Check whether all authzs for this order are now valid.
-            let pending_count: i64 = {
-                let mut stmt = tx.prepare_cached(
-                    "SELECT COUNT(*) FROM authorizations WHERE order_id = ?1 AND status != 'valid'",
-                )?;
-                stmt.query_row(rusqlite::params![order_id], |row| row.get(0))?
-            };
-
-            let all_valid = pending_count == 0;
-            if all_valid {
-                tx.prepare_cached(
-                    "UPDATE orders SET status = 'ready', error = NULL, updated = ?1 WHERE id = ?2",
-                )?
-                .execute(rusqlite::params![now, order_id])?;
+        let order_id = match order_id_row {
+            Some((id,)) => id,
+            None => {
+                // Authz disappeared (shouldn't happen, but be safe).
+                tx.commit().await?;
+                return Ok(None);
             }
+        };
 
-            tx.commit()?;
-            Ok(Some((order_id, all_valid)))
-        })
-        .await;
+        // 4. Check whether all authzs for this order are now valid.
+        let (pending_count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM authorizations WHERE order_id = ? AND status != 'valid'",
+        )
+        .bind(&order_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let all_valid = pending_count == 0;
+        if all_valid {
+            sqlx::query(
+                "UPDATE orders SET status = 'ready', error = NULL, updated = ? WHERE id = ?",
+            )
+            .bind(now)
+            .bind(&order_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(Some((order_id, all_valid)))
+    }
+    .await;
 
     match result {
         Ok(Some((order_id, true))) => {
@@ -210,47 +211,49 @@ async fn on_invalid(
     })
     .to_string();
 
-    let challenge_id = challenge_id.to_string();
-    let authz_id = authz_id.to_string();
-    let authz_id_log = authz_id.clone();
+    let authz_id_log = authz_id.to_string();
 
-    let result = state
-        .db
-        .call(move |conn| {
-            let tx = conn.transaction()?;
+    let result: Result<(), sqlx::Error> = async {
+        let mut tx = state.db.begin().await?;
 
-            // 1. Mark challenge invalid with the error detail.
-            tx.prepare_cached(
-                "UPDATE challenges SET status = 'invalid', error = ?1, updated = ?2 WHERE id = ?3",
-            )?
-            .execute(rusqlite::params![error_json, now, challenge_id])?;
+        // 1. Mark challenge invalid with the error detail.
+        sqlx::query(
+            "UPDATE challenges SET status = 'invalid', error = ?, updated = ? WHERE id = ?",
+        )
+        .bind(&error_json)
+        .bind(now)
+        .bind(challenge_id)
+        .execute(&mut *tx)
+        .await?;
 
-            // 2. Mark authorization invalid.
-            tx.prepare_cached(
-                "UPDATE authorizations SET status = 'invalid', updated = ?1 WHERE id = ?2",
-            )?
-            .execute(rusqlite::params![now, authz_id])?;
+        // 2. Mark authorization invalid.
+        sqlx::query("UPDATE authorizations SET status = 'invalid', updated = ? WHERE id = ?")
+            .bind(now)
+            .bind(authz_id)
+            .execute(&mut *tx)
+            .await?;
 
-            // 3. Find the parent order_id and mark it invalid.
-            let order_id: Option<String> = {
-                let mut stmt = tx.prepare_cached(
-                    "SELECT order_id FROM authorizations WHERE id = ?1",
-                )?;
-                stmt.query_row(rusqlite::params![authz_id], |row| row.get(0))
-                    .optional()?
-            };
+        // 3. Find the parent order_id and mark it invalid.
+        let order_id_row: Option<(String,)> =
+            sqlx::query_as("SELECT order_id FROM authorizations WHERE id = ?")
+                .bind(authz_id)
+                .fetch_optional(&mut *tx)
+                .await?;
 
-            if let Some(oid) = order_id {
-                tx.prepare_cached(
-                    "UPDATE orders SET status = 'invalid', error = NULL, updated = ?1 WHERE id = ?2",
-                )?
-                .execute(rusqlite::params![now, oid])?;
-            }
+        if let Some((oid,)) = order_id_row {
+            sqlx::query(
+                "UPDATE orders SET status = 'invalid', error = NULL, updated = ? WHERE id = ?",
+            )
+            .bind(now)
+            .bind(&oid)
+            .execute(&mut *tx)
+            .await?;
+        }
 
-            tx.commit()?;
-            Ok(())
-        })
-        .await;
+        tx.commit().await?;
+        Ok(())
+    }
+    .await;
 
     if let Err(e) = result {
         tracing::warn!("authz {authz_id_log}: on_invalid transaction failed: {e}");
@@ -311,11 +314,11 @@ mod tests {
         });
 
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
-        let db_conn = Arc::new(db::open(":memory:").await.unwrap());
+        let db_conn = db::open(":memory:").await.unwrap();
 
         Arc::new(AppState {
             config: Arc::clone(&config),
-            db: Arc::clone(&db_conn),
+            db: db_conn,
             ca: Arc::new(CaState {
                 key: ca_key,
                 cert_der: ca_cert_der,
@@ -738,10 +741,10 @@ mod tests {
             tls: Default::default(),
         });
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
-        let db_conn = Arc::new(db::open(":memory:").await.unwrap());
+        let db_conn = db::open(":memory:").await.unwrap();
         let state = Arc::new(AppState {
             config: Arc::clone(&config),
-            db: Arc::clone(&db_conn),
+            db: db_conn,
             ca: Arc::new(CaState {
                 key: ca_key,
                 cert_der: ca_cert_der,
@@ -868,136 +871,35 @@ mod tests {
         );
     }
 
+    /// Create a raw (no-schema) sqlx pool for error-path tests.
+    async fn raw_no_schema_pool() -> crate::db::Db {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(SqliteConnectOptions::new().in_memory(true))
+            .await
+            .unwrap()
+    }
+
     /// Call on_valid with a raw (no-schema) DB so that set_valid fails immediately.
-    /// Covers validation/mod.rs lines 65-67 (set_valid Err path → warn + return).
+    /// Covers on_valid transaction Err path → warn + return.
     #[tokio::test]
     async fn on_valid_db_error_set_valid_fails() {
-        use crate::ca;
-        use crate::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
-        use crate::state::{AppState, CaState, MtcState};
-
-        let dir = tempfile::TempDir::new().unwrap();
-        let config = Arc::new(Config {
-            listen_addr: "127.0.0.1:0".into(),
-            base_url: "https://acme.test".into(),
-            database: DatabaseConfig {
-                path: ":memory:".into(),
-            },
-            ca: CaConfig {
-                key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
-                cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
-                key_type: "ec:P-256".into(),
-                hash_alg: "sha256".into(),
-                validity_days: 90,
-                crl_url: None,
-                ocsp_url: None,
-                common_name: "Test CA".into(),
-                organization: "Test".into(),
-                ca_validity_years: 10,
-            },
-            mtc: MtcConfig {
-                log_path: "/dev/null".into(),
-                enabled: false,
-            },
-            server: ServerConfig::default(),
-            tls: Default::default(),
-        });
-        let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
-        // Raw connection — no schema — so every DB call fails immediately.
-        let raw_db = Arc::new(tokio_rusqlite::Connection::open_in_memory().await.unwrap());
-        let state = Arc::new(AppState {
-            config: Arc::clone(&config),
-            db: Arc::clone(&raw_db),
-            ca: Arc::new(CaState {
-                key: ca_key,
-                cert_der: ca_cert_der,
-                hash_alg: "sha256".into(),
-                validity_days: 90,
-                crl_url: None,
-                ocsp_url: None,
-                aki_bytes: Vec::new(),
-            }),
-            mtc: Arc::new(MtcState {
-                log: None,
-                algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
-            }),
-            tls: None,
-            spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-            link_header: Arc::new(axum::http::HeaderValue::from_static(
-                "<https://acme.test/acme/directory>;rel=\"index\"",
-            )),
-            validation_client: hyper_util::client::legacy::Client::builder(
-                hyper_util::rt::TokioExecutor::new(),
-            )
-            .build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
-        });
-        // on_valid tries set_valid first; fails on no-table DB → warn + return (lines 65-67).
+        let raw_db = raw_no_schema_pool().await;
+        let state = make_state_with_db(raw_db).await;
+        // on_valid tries to begin a transaction and execute UPDATE on challenges;
+        // fails on no-table DB → warns and returns.
         on_valid(&state, "fake-chall", "fake-authz", unix_now()).await;
     }
 
     /// Call on_invalid with a raw (no-schema) DB so set_invalid fails immediately.
-    /// Covers validation/mod.rs lines 128-135 (set_invalid + update_status Err paths).
+    /// Covers on_invalid transaction Err path → warn.
     #[tokio::test]
     async fn on_invalid_db_error_set_invalid_fails() {
-        use crate::ca;
-        use crate::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
-        use crate::state::{AppState, CaState, MtcState};
-
-        let dir = tempfile::TempDir::new().unwrap();
-        let config = Arc::new(Config {
-            listen_addr: "127.0.0.1:0".into(),
-            base_url: "https://acme.test".into(),
-            database: DatabaseConfig {
-                path: ":memory:".into(),
-            },
-            ca: CaConfig {
-                key_file: dir.path().join("ca2.key").to_string_lossy().into_owned(),
-                cert_file: dir.path().join("ca2.crt").to_string_lossy().into_owned(),
-                key_type: "ec:P-256".into(),
-                hash_alg: "sha256".into(),
-                validity_days: 90,
-                crl_url: None,
-                ocsp_url: None,
-                common_name: "Test CA".into(),
-                organization: "Test".into(),
-                ca_validity_years: 10,
-            },
-            mtc: MtcConfig {
-                log_path: "/dev/null".into(),
-                enabled: false,
-            },
-            server: ServerConfig::default(),
-            tls: Default::default(),
-        });
-        let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
-        let raw_db = Arc::new(tokio_rusqlite::Connection::open_in_memory().await.unwrap());
-        let state = Arc::new(AppState {
-            config: Arc::clone(&config),
-            db: Arc::clone(&raw_db),
-            ca: Arc::new(CaState {
-                key: ca_key,
-                cert_der: ca_cert_der,
-                hash_alg: "sha256".into(),
-                validity_days: 90,
-                crl_url: None,
-                ocsp_url: None,
-                aki_bytes: Vec::new(),
-            }),
-            mtc: Arc::new(MtcState {
-                log: None,
-                algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
-            }),
-            tls: None,
-            spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-            link_header: Arc::new(axum::http::HeaderValue::from_static(
-                "<https://acme.test/acme/directory>;rel=\"index\"",
-            )),
-            validation_client: hyper_util::client::legacy::Client::builder(
-                hyper_util::rt::TokioExecutor::new(),
-            )
-            .build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
-        });
-        // on_invalid tries set_invalid first; fails on no-table DB → warn (lines 128-135).
+        let raw_db = raw_no_schema_pool().await;
+        let state = make_state_with_db(raw_db).await;
+        // on_invalid tries to begin a transaction and execute UPDATE on challenges;
+        // fails on no-table DB → warns.
         on_invalid(
             &state,
             "fake-chall",
@@ -1008,103 +910,51 @@ mod tests {
         .await;
     }
 
-    /// on_valid where set_valid succeeds (challenges table present) but
-    /// update_status(authz) fails (authorizations table absent).
-    /// Covers validation/mod.rs lines 70-72 (update_status Err → warn + return).
+    /// on_valid where challenges table exists and authz update fails within the
+    /// same transaction (transactions are atomic in sqlx — the whole tx fails).
+    /// This test verifies that on_valid is robust when the transaction fails.
     #[tokio::test]
     async fn on_valid_set_valid_ok_but_authz_update_fails() {
-        use crate::ca;
-        use crate::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
-        use crate::state::{AppState, CaState, MtcState};
-
-        let dir = tempfile::TempDir::new().unwrap();
-        let config = Arc::new(Config {
-            listen_addr: "127.0.0.1:0".into(),
-            base_url: "https://acme.test".into(),
-            database: DatabaseConfig {
-                path: ":memory:".into(),
-            },
-            ca: CaConfig {
-                key_file: dir.path().join("ca3.key").to_string_lossy().into_owned(),
-                cert_file: dir.path().join("ca3.crt").to_string_lossy().into_owned(),
-                key_type: "ec:P-256".into(),
-                hash_alg: "sha256".into(),
-                validity_days: 90,
-                crl_url: None,
-                ocsp_url: None,
-                common_name: "Test CA".into(),
-                organization: "Test".into(),
-                ca_validity_years: 10,
-            },
-            mtc: MtcConfig {
-                log_path: "/dev/null".into(),
-                enabled: false,
-            },
-            server: ServerConfig::default(),
-            tls: Default::default(),
-        });
-        let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
-
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
         // Create a DB with only the challenges table (no authorizations/orders).
-        let partial_db = Arc::new(tokio_rusqlite::Connection::open_in_memory().await.unwrap());
-        partial_db
-            .call(|conn| {
-                conn.execute_batch(
-                    "PRAGMA foreign_keys=OFF;
-                 CREATE TABLE challenges (
-                     id TEXT PRIMARY KEY,
-                     authz_id TEXT NOT NULL,
-                     type TEXT NOT NULL,
-                     status TEXT NOT NULL DEFAULT 'pending',
-                     token TEXT NOT NULL,
-                     validated INTEGER,
-                     error TEXT,
-                     created INTEGER NOT NULL,
-                     updated INTEGER NOT NULL
-                 );
-                 INSERT INTO challenges
-                     (id, authz_id, type, status, token, created, updated)
-                 VALUES ('chall-partial', 'authz-partial', 'http-01', 'pending', 'tok', 0, 0);",
-                )?;
-                Ok(())
-            })
+        let partial_db: crate::db::Db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(SqliteConnectOptions::new().in_memory(true))
             .await
             .unwrap();
+        sqlx::query(
+            "CREATE TABLE challenges (
+                 id TEXT PRIMARY KEY,
+                 authz_id TEXT NOT NULL,
+                 type TEXT NOT NULL,
+                 status TEXT NOT NULL DEFAULT 'pending',
+                 token TEXT NOT NULL,
+                 validated INTEGER,
+                 error TEXT,
+                 created INTEGER NOT NULL,
+                 updated INTEGER NOT NULL
+             )",
+        )
+        .execute(&partial_db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO challenges (id, authz_id, type, status, token, created, updated)
+             VALUES ('chall-partial', 'authz-partial', 'http-01', 'pending', 'tok', 0, 0)",
+        )
+        .execute(&partial_db)
+        .await
+        .unwrap();
 
-        let state = Arc::new(AppState {
-            config: Arc::clone(&config),
-            db: Arc::clone(&partial_db),
-            ca: Arc::new(CaState {
-                key: ca_key,
-                cert_der: ca_cert_der,
-                hash_alg: "sha256".into(),
-                validity_days: 90,
-                crl_url: None,
-                ocsp_url: None,
-                aki_bytes: Vec::new(),
-            }),
-            mtc: Arc::new(MtcState {
-                log: None,
-                algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
-            }),
-            tls: None,
-            spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-            link_header: Arc::new(axum::http::HeaderValue::from_static(
-                "<https://acme.test/acme/directory>;rel=\"index\"",
-            )),
-            validation_client: hyper_util::client::legacy::Client::builder(
-                hyper_util::rt::TokioExecutor::new(),
-            )
-            .build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
-        });
-
-        // set_valid succeeds (challenge row exists), then update_status(authz) fails
-        // (no authorizations table) → lines 70-72 (warn + return) are covered.
+        let state = make_state_with_db(partial_db).await;
+        // Transaction begins, challenge update succeeds, then authz update fails
+        // (no authorizations table) — the whole transaction is rolled back and
+        // the error is logged as a warning.
         on_valid(&state, "chall-partial", "authz-partial", unix_now()).await;
     }
 
-    /// Helper to build a state backed by a given db connection.
-    async fn make_state_with_db(db: Arc<tokio_rusqlite::Connection>) -> Arc<AppState> {
+    /// Helper to build a state backed by a given db pool.
+    async fn make_state_with_db(db: crate::db::Db) -> Arc<AppState> {
         use crate::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
         use crate::state::{AppState, CaState, MtcState};
         let dir = tempfile::TempDir::new().unwrap();
@@ -1136,7 +986,7 @@ mod tests {
         let (ca_key, ca_cert_der) = crate::ca::init::load_or_generate(&config.ca).unwrap();
         Arc::new(AppState {
             config,
-            db: Arc::clone(&db),
+            db,
             ca: Arc::new(CaState {
                 key: ca_key,
                 cert_der: ca_cert_der,
@@ -1164,7 +1014,7 @@ mod tests {
 
     /// Insert minimal test data: account, order, authz, challenge — all with the given IDs.
     async fn insert_test_rows(
-        db: &Arc<tokio_rusqlite::Connection>,
+        db: &crate::db::Db,
         acc_id: &str,
         order_id: &str,
         authz_id: &str,
@@ -1249,50 +1099,49 @@ mod tests {
         .unwrap();
     }
 
-    /// on_valid where set_valid + update_status + get_by_id + list_by_order all
-    /// succeed, but update_status(orders "ready") fails because the orders table
-    /// was dropped.  Covers lines 97-105 (all_valid=true + orders-update Err path).
+    /// on_valid where all updates succeed but update_status(orders "ready") fails
+    /// because the orders table was dropped.
     #[tokio::test]
     async fn on_valid_orders_update_fails() {
-        let db_conn = Arc::new(crate::db::open(":memory:").await.unwrap());
+        let db_conn = crate::db::open(":memory:").await.unwrap();
         insert_test_rows(&db_conn, "acc-ov", "ord-ov", "authz-ov", "chall-ov").await;
 
         // Drop the orders table so update_status("ready") fails.
-        db_conn
-            .call(|c| {
-                c.execute_batch("PRAGMA foreign_keys=OFF; DROP TABLE orders;")?;
-                Ok(())
-            })
+        sqlx::query("PRAGMA foreign_keys=OFF")
+            .execute(&db_conn)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE orders")
+            .execute(&db_conn)
             .await
             .unwrap();
 
         let state = make_state_with_db(db_conn).await;
-        // on_valid: set_valid OK → update_status(authz) OK → get_by_id OK(Some) →
-        //   list_by_order OK([authz valid]) → all_valid=true → orders update FAIL →
-        //   lines 98-101 (warn) + line 105 (closing }) covered.
+        // on_valid: transaction tries UPDATE orders SET status = 'ready' → fails
+        // (no orders table) → transaction rolled back → error logged as warning.
         on_valid(&state, "chall-ov", "authz-ov", unix_now()).await;
     }
 
-    /// on_invalid where set_invalid + update_status(authz invalid) + get_by_id
-    /// succeed but update_status(orders invalid) fails because orders was dropped.
-    /// Covers lines 139-143 (orders-invalid Err path).
+    /// on_invalid where all updates succeed but the orders update fails because
+    /// orders table was dropped.
     #[tokio::test]
     async fn on_invalid_orders_update_fails() {
-        let db_conn = Arc::new(crate::db::open(":memory:").await.unwrap());
+        let db_conn = crate::db::open(":memory:").await.unwrap();
         insert_test_rows(&db_conn, "acc-oi", "ord-oi", "authz-oi", "chall-oi").await;
 
         // Drop orders table so the order-invalid update fails.
-        db_conn
-            .call(|c| {
-                c.execute_batch("PRAGMA foreign_keys=OFF; DROP TABLE orders;")?;
-                Ok(())
-            })
+        sqlx::query("PRAGMA foreign_keys=OFF")
+            .execute(&db_conn)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE orders")
+            .execute(&db_conn)
             .await
             .unwrap();
 
         let state = make_state_with_db(db_conn).await;
-        // on_invalid: set_invalid OK → update_status(authz invalid) OK →
-        //   get_by_id(authz) Ok(Some) → orders update FAIL → lines 140-143 covered.
+        // on_invalid: transaction tries UPDATE orders → fails (no orders table) →
+        // rolled back → error logged as warning.
         on_invalid(
             &state,
             "chall-oi",

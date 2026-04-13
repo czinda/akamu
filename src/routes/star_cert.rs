@@ -94,46 +94,20 @@ async fn serve_star_cert(
 
     // Find the most recent certificate for this order.
     let now = unix_now();
-    let order_id = order.id.clone();
-    let cert = state
-        .db
-        .call(move |conn| {
-            let mut stmt = conn.prepare_cached(
-                "SELECT id, order_id, account_id, serial_number, status, der, pem,
-                 not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-                 suggested_window_start, suggested_window_end, replaced_by
-                 FROM certificates
-                 WHERE order_id = ?1
-                 ORDER BY created DESC
-                 LIMIT 1",
-            )?;
-            let mut rows = stmt.query(rusqlite::params![order_id])?;
-            if let Some(row) = rows.next()? {
-                Ok(Some(crate::db::schema::CertificateRow {
-                    id: row.get(0)?,
-                    order_id: row.get(1)?,
-                    account_id: row.get(2)?,
-                    serial_number: row.get(3)?,
-                    status: row.get(4)?,
-                    der: row.get(5)?,
-                    pem: row.get(6)?,
-                    not_before: row.get(7)?,
-                    not_after: row.get(8)?,
-                    revoked_at: row.get(9)?,
-                    revocation_reason: row.get(10)?,
-                    mtc_log_index: row.get(11)?,
-                    created: row.get(12)?,
-                    suggested_window_start: row.get(13)?,
-                    suggested_window_end: row.get(14)?,
-                    replaced_by: row.get(15)?,
-                }))
-            } else {
-                Ok(None)
-            }
-        })
-        .await
-        .map_err(AcmeError::from)?
-        .ok_or(AcmeError::NotFound)?;
+    let cert = sqlx::query_as::<_, crate::db::schema::CertificateRow>(
+        "SELECT id, order_id, account_id, serial_number, status, der, pem,
+         not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
+         suggested_window_start, suggested_window_end, replaced_by
+         FROM certificates
+         WHERE order_id = ?
+         ORDER BY created DESC
+         LIMIT 1",
+    )
+    .bind(&order.id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(AcmeError::from)?
+    .ok_or(AcmeError::NotFound)?;
 
     // Check if the STAR period is still active.
     if let Some(end_date) = order.star_end_date {

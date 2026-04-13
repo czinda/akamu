@@ -157,10 +157,10 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
     let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();
     let ca_aki_bytes = akamu::ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
-    let db_conn = Arc::new(db::open(":memory:").await.unwrap());
+    let db_conn = db::open(":memory:").await.unwrap();
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
-        db: Arc::clone(&db_conn),
+        db: db_conn.clone(),
         ca: Arc::new(CaState {
             key: ca_key,
             cert_der: ca_cert_der,
@@ -261,34 +261,34 @@ fn location_header(headers: &axum::http::HeaderMap) -> String {
 
 // ── DB helpers ────────────────────────────────────────────────────────────────
 
-async fn mark_order_ready(db: &tokio_rusqlite::Connection, order_id: &str) {
-    let order_id = order_id.to_string();
-    db.call(move |conn| {
-        let authz_ids: Vec<String> = {
-            let mut stmt = conn.prepare("SELECT id FROM authorizations WHERE order_id = ?1")?;
-            let ids: Vec<String> = stmt
-                .query_map(rusqlite::params![order_id], |r| r.get(0))?
-                .collect::<Result<_, _>>()?;
-            ids
-        };
-        for aid in &authz_ids {
-            conn.execute(
-                "UPDATE challenges SET status='valid', validated=1700000000 WHERE authz_id = ?1",
-                rusqlite::params![aid],
-            )?;
-            conn.execute(
-                "UPDATE authorizations SET status='valid', updated=1700000000 WHERE id = ?1",
-                rusqlite::params![aid],
-            )?;
-        }
-        conn.execute(
-            "UPDATE orders SET status='ready', updated=1700000000 WHERE id = ?1",
-            rusqlite::params![order_id],
-        )?;
-        Ok(())
-    })
-    .await
-    .unwrap();
+async fn mark_order_ready(db: &akamu::db::Db, order_id: &str) {
+    let authz_ids: Vec<(String,)> =
+        sqlx::query_as("SELECT id FROM authorizations WHERE order_id = ?")
+            .bind(order_id)
+            .fetch_all(db)
+            .await
+            .unwrap();
+    for (aid,) in &authz_ids {
+        sqlx::query(
+            "UPDATE challenges SET status='valid', validated=1700000000 WHERE authz_id = ?",
+        )
+        .bind(aid)
+        .execute(db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE authorizations SET status='valid', updated=1700000000 WHERE id = ?",
+        )
+        .bind(aid)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+    sqlx::query("UPDATE orders SET status='ready', updated=1700000000 WHERE id = ?")
+        .bind(order_id)
+        .execute(db)
+        .await
+        .unwrap();
 }
 
 // ── CSR + ARI helpers ─────────────────────────────────────────────────────────
@@ -330,7 +330,7 @@ fn cert_id_from_serial_hex(serial_hex: &str, aki_bytes: &[u8]) -> String {
 /// `base64url(aki).base64url(serial)` form.
 async fn issue_cert(
     router: &axum::Router,
-    db: &tokio_rusqlite::Connection,
+    db: &akamu::db::Db,
     base_url: &str,
     key: &TestKey,
     domain: &str,
@@ -376,16 +376,13 @@ async fn issue_cert(
     assert_eq!(status, StatusCode::OK, "finalize: {final_body}");
 
     // get serial from DB → construct cert_id
-    let serial_hex: String = db
-        .call(|conn| {
-            Ok(conn.query_row(
-                "SELECT serial_number FROM certificates ORDER BY created DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let serial_hex: String = sqlx::query_as::<_, (String,)>(
+        "SELECT serial_number FROM certificates ORDER BY created DESC LIMIT 1",
+    )
+    .fetch_one(db)
+    .await
+    .unwrap()
+    .0;
     let cert_id = cert_id_from_serial_hex(&serial_hex, aki_bytes);
     (account_url, order_id, cert_id)
 }
@@ -413,7 +410,7 @@ async fn test_directory_includes_renewal_info() {
 async fn test_renewal_info_response_format() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let db = Arc::clone(&state.db);
+    let db = state.db.clone();
     let router = routes::build_router(Arc::clone(&state));
 
     let key = TestKey::generate();
@@ -457,7 +454,7 @@ async fn test_renewal_info_response_format() {
 async fn test_new_order_with_replaces_field() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let db = Arc::clone(&state.db);
+    let db = state.db.clone();
     let router = routes::build_router(Arc::clone(&state));
 
     let key = TestKey::generate();
@@ -500,7 +497,7 @@ async fn test_new_order_with_replaces_field() {
 async fn test_finalize_marks_predecessor_replaced() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let db = Arc::clone(&state.db);
+    let db = state.db.clone();
     let router = routes::build_router(Arc::clone(&state));
 
     let key = TestKey::generate();
@@ -515,16 +512,13 @@ async fn test_finalize_marks_predecessor_replaced() {
     .await;
 
     // Capture the predecessor's UUID before the second cert is issued.
-    let pred_uuid: String = db
-        .call(|conn| {
-            Ok(conn.query_row(
-                "SELECT id FROM certificates ORDER BY created ASC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let pred_uuid: String = sqlx::query_as::<_, (String,)>(
+        "SELECT id FROM certificates ORDER BY created ASC LIMIT 1",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap()
+    .0;
 
     // Issue a replacing order.
     let nonce = head_nonce(&router).await;
@@ -562,16 +556,14 @@ async fn test_finalize_marks_predecessor_replaced() {
     assert_eq!(status, StatusCode::OK, "finalize: {final_body}");
 
     // Verify the predecessor's replaced_by is now the replacing order_id.
-    let replaced_by: Option<String> = db
-        .call(move |conn| {
-            Ok(conn.query_row(
-                "SELECT replaced_by FROM certificates WHERE id = ?1",
-                rusqlite::params![pred_uuid],
-                |r| r.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let replaced_by: Option<String> = sqlx::query_as::<_, (Option<String>,)>(
+        "SELECT replaced_by FROM certificates WHERE id = ?",
+    )
+    .bind(&pred_uuid)
+    .fetch_one(&db)
+    .await
+    .unwrap()
+    .0;
     assert_eq!(
         replaced_by.as_deref(),
         Some(order_id.as_str()),
@@ -584,7 +576,7 @@ async fn test_finalize_marks_predecessor_replaced() {
 async fn test_new_order_already_replaced() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let db = Arc::clone(&state.db);
+    let db = state.db.clone();
     let router = routes::build_router(Arc::clone(&state));
 
     let key = TestKey::generate();
@@ -599,15 +591,10 @@ async fn test_new_order_already_replaced() {
     .await;
 
     // Mark the cert as replaced directly in the DB.
-    db.call(|conn| {
-        conn.execute(
-            "UPDATE certificates SET replaced_by = 'some-prior-order'",
-            [],
-        )?;
-        Ok(())
-    })
-    .await
-    .unwrap();
+    sqlx::query("UPDATE certificates SET replaced_by = 'some-prior-order'")
+        .execute(&db)
+        .await
+        .unwrap();
 
     let nonce = head_nonce(&router).await;
     let jws = key.jws_with_kid(
@@ -632,7 +619,7 @@ async fn test_new_order_already_replaced() {
 async fn test_new_order_replaces_wrong_account() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let db = Arc::clone(&state.db);
+    let db = state.db.clone();
     let router = routes::build_router(Arc::clone(&state));
 
     // Account A issues a cert.

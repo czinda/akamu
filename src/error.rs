@@ -136,14 +136,8 @@ impl From<akamu_jose::JoseError> for AcmeError {
     }
 }
 
-impl From<tokio_rusqlite::Error> for AcmeError {
-    fn from(e: tokio_rusqlite::Error) -> Self {
-        AcmeError::Database(e.to_string())
-    }
-}
-
-impl From<rusqlite::Error> for AcmeError {
-    fn from(e: rusqlite::Error) -> Self {
+impl From<sqlx::Error> for AcmeError {
+    fn from(e: sqlx::Error) -> Self {
         AcmeError::Database(e.to_string())
     }
 }
@@ -524,31 +518,9 @@ mod tests {
     }
 
     #[test]
-    fn from_rusqlite_error() {
-        let rusqlite_err = rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error {
-                code: rusqlite::ffi::ErrorCode::InternalMalfunction,
-                extended_code: 0,
-            },
-            None,
-        );
-        let acme_err = AcmeError::from(rusqlite_err);
-        assert!(matches!(acme_err, AcmeError::Database(_)));
-    }
-
-    /// Covers error.rs lines 109-111 — `impl From<tokio_rusqlite::Error> for AcmeError`.
-    #[test]
-    fn from_tokio_rusqlite_error() {
-        let rusqlite_err = rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error {
-                code: rusqlite::ffi::ErrorCode::InternalMalfunction,
-                extended_code: 0,
-            },
-            None,
-        );
-        // Wrap in tokio_rusqlite::Error to exercise the From<tokio_rusqlite::Error> impl.
-        let tk_err = tokio_rusqlite::Error::Rusqlite(rusqlite_err);
-        let acme_err = AcmeError::from(tk_err);
+    fn from_sqlx_error() {
+        let sqlx_err = sqlx::Error::RowNotFound;
+        let acme_err = AcmeError::from(sqlx_err);
         assert!(matches!(acme_err, AcmeError::Database(_)));
     }
 

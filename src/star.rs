@@ -79,44 +79,18 @@ async fn run_once(state: &Arc<AppState>) {
         };
 
         // Find the most recent certificate for this order.
-        let order_id = order.id.clone();
-        let latest_cert = match state
-            .db
-            .call(move |conn| {
-                let mut stmt = conn.prepare_cached(
-                    "SELECT id, order_id, account_id, serial_number, status, der, pem,
-                     not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-                     suggested_window_start, suggested_window_end, replaced_by
-                     FROM certificates
-                     WHERE order_id = ?1
-                     ORDER BY created DESC
-                     LIMIT 1",
-                )?;
-                let mut rows = stmt.query(rusqlite::params![order_id])?;
-                if let Some(row) = rows.next()? {
-                    Ok(Some(CertificateRow {
-                        id: row.get(0)?,
-                        order_id: row.get(1)?,
-                        account_id: row.get(2)?,
-                        serial_number: row.get(3)?,
-                        status: row.get(4)?,
-                        der: row.get(5)?,
-                        pem: row.get(6)?,
-                        not_before: row.get(7)?,
-                        not_after: row.get(8)?,
-                        revoked_at: row.get(9)?,
-                        revocation_reason: row.get(10)?,
-                        mtc_log_index: row.get(11)?,
-                        created: row.get(12)?,
-                        suggested_window_start: row.get(13)?,
-                        suggested_window_end: row.get(14)?,
-                        replaced_by: row.get(15)?,
-                    }))
-                } else {
-                    Ok(None)
-                }
-            })
-            .await
+        let latest_cert = match sqlx::query_as::<_, CertificateRow>(
+            "SELECT id, order_id, account_id, serial_number, status, der, pem,
+             not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
+             suggested_window_start, suggested_window_end, replaced_by
+             FROM certificates
+             WHERE order_id = ?
+             ORDER BY created DESC
+             LIMIT 1",
+        )
+        .bind(&order.id)
+        .fetch_optional(&state.db)
+        .await
         {
             Ok(c) => c,
             Err(e) => {
@@ -198,47 +172,46 @@ async fn run_once(state: &Arc<AppState>) {
 
         // Persist the new cert and update the order's certificate_id.
         let cert_id = issued.id.clone();
-        let order_id2 = order.id.clone();
-        let account_id = order.account_id.clone();
         let serial = issued.serial_hex.clone();
         let cert_der_bytes = issued.cert_der.clone();
         let cert_pem = issued.cert_pem.clone();
         let new_not_before = issued.not_before;
         let new_not_after = issued.not_after;
 
-        if let Err(e) = state
-            .db
-            .call(move |conn| {
-                let tx = conn.transaction()?;
-                tx.prepare_cached(
-                    "INSERT INTO certificates
-                     (id, order_id, account_id, serial_number, status, der, pem,
-                      not_before, not_after, revoked_at, revocation_reason,
-                      mtc_log_index, created, suggested_window_start, suggested_window_end,
-                      replaced_by)
-                     VALUES (?1, ?2, ?3, ?4, 'valid', ?5, ?6, ?7, ?8,
-                             NULL, NULL, NULL, ?9, NULL, NULL, NULL)",
-                )?
-                .execute(rusqlite::params![
-                    cert_id,
-                    order_id2,
-                    account_id,
-                    serial,
-                    cert_der_bytes,
-                    cert_pem,
-                    new_not_before,
-                    new_not_after,
-                    now,
-                ])?;
-                tx.prepare_cached(
-                    "UPDATE orders SET certificate_id = ?1, updated = ?2 WHERE id = ?3",
-                )?
-                .execute(rusqlite::params![cert_id, now, order_id2])?;
-                tx.commit()?;
-                Ok(())
-            })
-            .await
-        {
+        let persist_result = async {
+            let mut tx = state.db.begin().await?;
+            sqlx::query(
+                "INSERT INTO certificates
+                 (id, order_id, account_id, serial_number, status, der, pem,
+                  not_before, not_after, revoked_at, revocation_reason,
+                  mtc_log_index, created, suggested_window_start, suggested_window_end,
+                  replaced_by)
+                 VALUES (?, ?, ?, ?, 'valid', ?, ?, ?, ?,
+                         NULL, NULL, NULL, ?, NULL, NULL, NULL)",
+            )
+            .bind(&cert_id)
+            .bind(&order.id)
+            .bind(&order.account_id)
+            .bind(&serial)
+            .bind(&cert_der_bytes)
+            .bind(&cert_pem)
+            .bind(new_not_before)
+            .bind(new_not_after)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query("UPDATE orders SET certificate_id = ?, updated = ? WHERE id = ?")
+                .bind(&cert_id)
+                .bind(now)
+                .bind(&order.id)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            Ok::<_, sqlx::Error>(())
+        }
+        .await;
+
+        if let Err(e) = persist_result {
             tracing::error!(
                 "STAR order {}: failed to persist reissued certificate: {e}",
                 order.id

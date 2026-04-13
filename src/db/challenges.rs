@@ -1,106 +1,69 @@
-use tokio_rusqlite::Connection;
-
 use crate::db::schema::ChallengeRow;
+use crate::db::Db;
 use crate::error::AcmeError;
 
-pub(crate) fn row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChallengeRow> {
-    Ok(ChallengeRow {
-        id: row.get(0)?,
-        authz_id: row.get(1)?,
-        r#type: row.get(2)?,
-        status: row.get(3)?,
-        token: row.get(4)?,
-        validated: row.get(5)?,
-        error: row.get(6)?,
-        created: row.get(7)?,
-        updated: row.get(8)?,
-    })
+pub async fn insert(db: &Db, row: ChallengeRow) -> Result<(), AcmeError> {
+    sqlx::query(
+        "INSERT INTO challenges (id, authz_id, type, status, token, validated, error, created, updated)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&row.id)
+    .bind(&row.authz_id)
+    .bind(&row.r#type)
+    .bind(&row.status)
+    .bind(&row.token)
+    .bind(row.validated)
+    .bind(&row.error)
+    .bind(row.created)
+    .bind(row.updated)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
-pub async fn insert(db: &Connection, row: ChallengeRow) -> Result<(), AcmeError> {
-    db.call(move |conn| {
-        conn.prepare_cached(
-            "INSERT INTO challenges (id, authz_id, type, status, token, validated, error, created, updated)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        )?
-        .execute(rusqlite::params![
-            row.id,
-            row.authz_id,
-            row.r#type,
-            row.status,
-            row.token,
-            row.validated,
-            row.error,
-            row.created,
-            row.updated,
-        ])?;
-        Ok(())
-    })
-    .await
-    .map_err(AcmeError::from)
+pub async fn get_by_id(db: &Db, id: &str) -> Result<Option<ChallengeRow>, AcmeError> {
+    let row = sqlx::query_as::<_, ChallengeRow>(
+        "SELECT id, authz_id, type, status, token, validated, error, created, updated
+         FROM challenges WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await?;
+    Ok(row)
 }
 
-pub async fn get_by_id(db: &Connection, id: &str) -> Result<Option<ChallengeRow>, AcmeError> {
-    let id = id.to_string();
-    db.call(move |conn| {
-        let mut stmt = conn.prepare_cached(
-            "SELECT id, authz_id, type, status, token, validated, error, created, updated
-             FROM challenges WHERE id = ?1",
-        )?;
-        let mut rows = stmt.query(rusqlite::params![id])?;
-        if let Some(row) = rows.next()? {
-            Ok(Some(row_from(row)?))
-        } else {
-            Ok(None)
-        }
-    })
-    .await
-    .map_err(AcmeError::from)
+pub async fn list_by_authz(db: &Db, authz_id: &str) -> Result<Vec<ChallengeRow>, AcmeError> {
+    let rows = sqlx::query_as::<_, ChallengeRow>(
+        "SELECT id, authz_id, type, status, token, validated, error, created, updated
+         FROM challenges WHERE authz_id = ?",
+    )
+    .bind(authz_id)
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
 }
 
-pub async fn list_by_authz(
-    db: &Connection,
-    authz_id: &str,
-) -> Result<Vec<ChallengeRow>, AcmeError> {
-    let authz_id = authz_id.to_string();
-    db.call(move |conn| {
-        let mut stmt = conn.prepare_cached(
-            "SELECT id, authz_id, type, status, token, validated, error, created, updated
-             FROM challenges WHERE authz_id = ?1",
-        )?;
-        let rows = stmt
-            .query_map(rusqlite::params![authz_id], row_from)?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
-    })
-    .await
-    .map_err(AcmeError::from)
+pub async fn set_processing(db: &Db, id: &str, now: i64) -> Result<(), AcmeError> {
+    sqlx::query(
+        "UPDATE challenges SET status = 'processing', updated = ? WHERE id = ?",
+    )
+    .bind(now)
+    .bind(id)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
-pub async fn set_processing(db: &Connection, id: &str, now: i64) -> Result<(), AcmeError> {
-    let id = id.to_string();
-    db.call(move |conn| {
-        conn.prepare_cached(
-            "UPDATE challenges SET status = 'processing', updated = ?1 WHERE id = ?2",
-        )?
-        .execute(rusqlite::params![now, id])?;
-        Ok(())
-    })
-    .await
-    .map_err(AcmeError::from)
-}
-
-pub async fn set_valid(db: &Connection, id: &str, validated: i64) -> Result<(), AcmeError> {
-    let id = id.to_string();
-    db.call(move |conn| {
-        conn.prepare_cached(
-            "UPDATE challenges SET status = 'valid', validated = ?1, updated = ?1 WHERE id = ?2",
-        )?
-        .execute(rusqlite::params![validated, id])?;
-        Ok(())
-    })
-    .await
-    .map_err(AcmeError::from)
+pub async fn set_valid(db: &Db, id: &str, validated: i64) -> Result<(), AcmeError> {
+    sqlx::query(
+        "UPDATE challenges SET status = 'valid', validated = ?, updated = ? WHERE id = ?",
+    )
+    .bind(validated)
+    .bind(validated)
+    .bind(id)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 /// Return the challenge type (`"http-01"`, `"dns-01"`, etc.) of the single
@@ -109,56 +72,39 @@ pub async fn set_valid(db: &Connection, id: &str, validated: i64) -> Result<(), 
 ///
 /// Used by the finalize handler to supply a real challenge type to the CAA
 /// `validationmethods` check (RFC 8657).
-pub async fn get_validated_type(
-    db: &Connection,
-    authz_id: &str,
-) -> Result<Option<String>, AcmeError> {
-    let authz_id = authz_id.to_string();
-    db.call(move |conn| {
-        let mut stmt = conn.prepare_cached(
-            "SELECT type FROM challenges WHERE authz_id = ?1 AND status = 'valid' LIMIT 1",
-        )?;
-        let mut rows = stmt.query(rusqlite::params![authz_id])?;
-        if let Some(row) = rows.next()? {
-            Ok(Some(row.get::<_, String>(0)?))
-        } else {
-            Ok(None)
-        }
-    })
-    .await
-    .map_err(AcmeError::from)
+pub async fn get_validated_type(db: &Db, authz_id: &str) -> Result<Option<String>, AcmeError> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT type FROM challenges WHERE authz_id = ? AND status = 'valid' LIMIT 1",
+    )
+    .bind(authz_id)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.map(|(t,)| t))
 }
 
-pub async fn set_invalid(
-    db: &Connection,
-    id: &str,
-    error: String,
-    now: i64,
-) -> Result<(), AcmeError> {
-    let id = id.to_string();
-    db.call(move |conn| {
-        conn.prepare_cached(
-            "UPDATE challenges SET status = 'invalid', error = ?1, updated = ?2 WHERE id = ?3",
-        )?
-        .execute(rusqlite::params![error, now, id])?;
-        Ok(())
-    })
-    .await
-    .map_err(AcmeError::from)
+pub async fn set_invalid(db: &Db, id: &str, error: String, now: i64) -> Result<(), AcmeError> {
+    sqlx::query(
+        "UPDATE challenges SET status = 'invalid', error = ?, updated = ? WHERE id = ?",
+    )
+    .bind(&error)
+    .bind(now)
+    .bind(id)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     use crate::db::schema::{AccountRow, AuthorizationRow, OrderRow};
 
-    async fn open_db() -> Arc<Connection> {
-        Arc::new(crate::db::open(":memory:").await.unwrap())
+    async fn open_db() -> Db {
+        crate::db::open(":memory:").await.unwrap()
     }
 
-    async fn insert_parents(db: &Connection, account_id: &str, order_id: &str, authz_id: &str) {
+    async fn insert_parents(db: &Db, account_id: &str, order_id: &str, authz_id: &str) {
         crate::db::accounts::insert(
             db,
             AccountRow {
@@ -236,7 +182,7 @@ mod tests {
     }
 
     async fn insert_challenge(
-        db: &Connection,
+        db: &Db,
         id: &str,
         account_id: &str,
         order_id: &str,
@@ -390,7 +336,14 @@ mod tests {
 
     #[tokio::test]
     async fn db_error_paths_no_table() {
-        let raw = Arc::new(tokio_rusqlite::Connection::open_in_memory().await.unwrap());
+        use sqlx::sqlite::SqliteConnectOptions;
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let raw: Db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(SqliteConnectOptions::new().in_memory(true))
+            .await
+            .unwrap();
         assert!(insert(&raw, sample_challenge("err-chall", "err-authz"))
             .await
             .is_err());

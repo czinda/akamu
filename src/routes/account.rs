@@ -141,27 +141,24 @@ pub async fn new_account(
 
     // Insert the new account — atomically consume the EAB key if one was verified.
     if let Some(eab_kid) = verified_eab_kid {
-        let id_c = id.clone();
-        let contact_c = contact_json.clone();
-        let spki_c = ctx.spki_der.clone();
-        let thumb_c = thumbprint.clone();
-        state
-            .db
-            .call(move |conn| {
-                let tx = conn.transaction()?;
-                tx.prepare_cached(
-                    "INSERT INTO accounts \
-                     (id, status, contact, public_key, jwk_thumbprint, created, updated) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                )?
-                .execute(rusqlite::params![
-                    id_c, "valid", contact_c, spki_c, thumb_c, now, now
-                ])?;
-                crate::db::eab::mark_used_tx(&tx, &eab_kid, now)?;
-                Ok(tx.commit()?)
-            })
-            .await
-            .map_err(AcmeError::from)?;
+        let mut tx = state.db.begin().await.map_err(AcmeError::from)?;
+        sqlx::query(
+            "INSERT INTO accounts \
+             (id, status, contact, public_key, jwk_thumbprint, created, updated) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind("valid")
+        .bind(&contact_json)
+        .bind(&ctx.spki_der)
+        .bind(&thumbprint)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(AcmeError::from)?;
+        crate::db::eab::mark_used_tx(&mut tx, &eab_kid, now).await?;
+        tx.commit().await.map_err(AcmeError::from)?;
     } else {
         db::accounts::insert(
             &state.db,

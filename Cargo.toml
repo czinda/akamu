@@ -16,10 +16,8 @@ tokio = { version = "1", features = ["full"] }
 axum = { version = "0.8", features = ["http1", "http2"] }
 tower-http = { version = "0.6", features = ["trace"] }
 
-# Database (synchronous SQLite + async wrapper via background thread)
-rusqlite = { version = "0.31" }
-tokio-rusqlite = "0.5"
-rusqlite_migration = "1"
+# Database (async SQLite via sqlx connection pool)
+sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio", "migrate", "derive", "tls-native-tls"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

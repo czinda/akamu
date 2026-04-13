@@ -381,79 +381,74 @@ pub async fn new_order(
     // Write everything inside a single transaction so a partial failure
     // cannot leave orphaned orders, authorizations, or challenges.
     {
-        let order_id_clone = order_id.clone();
-        let account_id_clone = account_id.clone();
-        let replaces_clone = validated_replaces.clone();
-        let identifiers_json_clone = identifiers_json.clone();
-        let star_allow_cert_get_i64 = star_allow_cert_get as i64;
-        let profile_clone = order_profile.clone();
-        state
-            .db
-            .call(move |conn| {
-                let tx = conn.transaction()?;
-                tx.prepare_cached(
-                    "INSERT INTO orders
-                     (id, account_id, status, expires, identifiers,
-                      not_before, not_after, error, certificate_id, replaces, created, updated,
-                      star_start_date, star_end_date, star_lifetime_secs,
-                      star_lifetime_adjust_secs, star_allow_cert_get, profile)
-                     VALUES (?1, ?2, 'pending', ?3, ?4, ?13, ?14, NULL, NULL, ?5, ?6, ?6,
-                             ?7, ?8, ?9, ?10, ?11, ?12)",
-                )?
-                .execute(rusqlite::params![
-                    order_id_clone,
-                    account_id_clone,
-                    expiry,
-                    identifiers_json_clone,
-                    replaces_clone,
-                    now,
-                    star_start_date,
-                    star_end_date,
-                    star_lifetime_secs,
-                    star_lifetime_adjust_secs,
-                    star_allow_cert_get_i64,
-                    profile_clone,
-                    order_not_before,
-                    order_not_after,
-                ])?;
-                for plan in &authz_plans {
-                    tx.prepare_cached(
-                        "INSERT INTO authorizations
-                         (id, order_id, account_id, status, identifier, expires,
-                          wildcard, subdomain_auth_allowed, created, updated)
-                         VALUES (?1, ?2, ?3, 'pending', ?4, ?5, ?6, ?7, ?8, ?8)",
-                    )?
-                    .execute(rusqlite::params![
-                        plan.authz_id,
-                        order_id_clone,
-                        account_id_clone,
-                        plan.identifier_json,
-                        authz_expiry,
-                        plan.wildcard as i64,
-                        plan.subdomain_auth_allowed as i64,
-                        now
-                    ])?;
-                    for (chall_id, chall_type) in &plan.challenges {
-                        tx.prepare_cached(
-                            "INSERT INTO challenges
-                             (id, authz_id, type, status, token, validated,
-                              error, created, updated)
-                             VALUES (?1, ?2, ?3, 'pending', ?4, NULL, NULL, ?5, ?5)",
-                        )?
-                        .execute(rusqlite::params![
-                            chall_id,
-                            plan.authz_id,
-                            chall_type,
-                            plan.token,
-                            now
-                        ])?;
-                    }
-                }
-                tx.commit()?;
-                Ok(())
-            })
+        let mut tx = state.db.begin().await.map_err(AcmeError::from)?;
+        sqlx::query(
+            "INSERT INTO orders
+             (id, account_id, status, expires, identifiers,
+              not_before, not_after, error, certificate_id, replaces, created, updated,
+              star_start_date, star_end_date, star_lifetime_secs,
+              star_lifetime_adjust_secs, star_allow_cert_get, profile)
+             VALUES (?, ?, 'pending', ?, ?, ?, ?, NULL, NULL, ?, ?, ?,
+                     ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&order_id)
+        .bind(&account_id)
+        .bind(expiry)
+        .bind(&identifiers_json)
+        .bind(order_not_before)
+        .bind(order_not_after)
+        .bind(&validated_replaces)
+        .bind(now)
+        .bind(now)
+        .bind(star_start_date)
+        .bind(star_end_date)
+        .bind(star_lifetime_secs)
+        .bind(star_lifetime_adjust_secs)
+        .bind(star_allow_cert_get as i64)
+        .bind(&order_profile)
+        .execute(&mut *tx)
+        .await
+        .map_err(AcmeError::from)?;
+
+        for plan in &authz_plans {
+            sqlx::query(
+                "INSERT INTO authorizations
+                 (id, order_id, account_id, status, identifier, expires,
+                  wildcard, subdomain_auth_allowed, created, updated)
+                 VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&plan.authz_id)
+            .bind(&order_id)
+            .bind(&account_id)
+            .bind(&plan.identifier_json)
+            .bind(authz_expiry)
+            .bind(plan.wildcard as i64)
+            .bind(plan.subdomain_auth_allowed as i64)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
             .await
             .map_err(AcmeError::from)?;
+
+            for (chall_id, chall_type) in &plan.challenges {
+                sqlx::query(
+                    "INSERT INTO challenges
+                     (id, authz_id, type, status, token, validated,
+                      error, created, updated)
+                     VALUES (?, ?, ?, 'pending', ?, NULL, NULL, ?, ?)",
+                )
+                .bind(chall_id)
+                .bind(&plan.authz_id)
+                .bind(chall_type)
+                .bind(&plan.token)
+                .bind(now)
+                .bind(now)
+                .execute(&mut *tx)
+                .await
+                .map_err(AcmeError::from)?;
+            }
+        }
+        tx.commit().await.map_err(AcmeError::from)?;
     }
 
     let base = &state.config.base_url;

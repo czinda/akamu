@@ -219,11 +219,11 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
     let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();
     let ca_aki_bytes = ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
-    let db_conn = Arc::new(db::open(":memory:").await.unwrap());
+    let db_conn = db::open(":memory:").await.unwrap();
 
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
-        db: Arc::clone(&db_conn),
+        db: db_conn.clone(),
         ca: Arc::new(CaState {
             key: ca_key,
             cert_der: ca_cert_der,
@@ -327,42 +327,36 @@ fn location_header(headers: &axum::http::HeaderMap) -> String {
 
 /// Mark all challenges and authorizations for an order as `valid` and
 /// update the order status to `ready`, bypassing actual challenge validation.
-async fn mark_order_ready(db: &tokio_rusqlite::Connection, order_id: &str) {
-    let order_id = order_id.to_string();
-    db.call(move |conn| {
-        // Collect authorization IDs for this order.
-        let authz_ids: Vec<String> = {
-            let mut stmt = conn.prepare("SELECT id FROM authorizations WHERE order_id = ?1")?;
-            let ids: Vec<String> = stmt
-                .query_map(rusqlite::params![order_id], |r| r.get(0))?
-                .collect::<Result<_, _>>()?;
-            ids
-        };
+async fn mark_order_ready(db: &akamu::db::Db, order_id: &str) {
+    let authz_ids: Vec<(String,)> =
+        sqlx::query_as("SELECT id FROM authorizations WHERE order_id = ?")
+            .bind(order_id)
+            .fetch_all(db)
+            .await
+            .unwrap();
 
-        for authz_id in &authz_ids {
-            // Mark all challenges for this authz as valid.
-            conn.execute(
-                "UPDATE challenges SET status='valid', validated=1700000000 \
-                 WHERE authz_id = ?1",
-                rusqlite::params![authz_id],
-            )?;
-            // Mark the authz itself as valid.
-            conn.execute(
-                "UPDATE authorizations SET status='valid', updated=1700000000 \
-                 WHERE id = ?1",
-                rusqlite::params![authz_id],
-            )?;
-        }
+    for (authz_id,) in &authz_ids {
+        sqlx::query(
+            "UPDATE challenges SET status='valid', validated=1700000000 WHERE authz_id = ?",
+        )
+        .bind(authz_id)
+        .execute(db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE authorizations SET status='valid', updated=1700000000 WHERE id = ?",
+        )
+        .bind(authz_id)
+        .execute(db)
+        .await
+        .unwrap();
+    }
 
-        // Advance order to ready.
-        conn.execute(
-            "UPDATE orders SET status='ready', updated=1700000000 WHERE id = ?1",
-            rusqlite::params![order_id],
-        )?;
-        Ok(())
-    })
-    .await
-    .unwrap();
+    sqlx::query("UPDATE orders SET status='ready', updated=1700000000 WHERE id = ?")
+        .bind(order_id)
+        .execute(db)
+        .await
+        .unwrap();
 }
 
 // ── ARI cert_id helper ────────────────────────────────────────────────────────
@@ -452,7 +446,7 @@ fn make_ip_csr_der(ip_str: &str) -> Vec<u8> {
 async fn full_acme_flow() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let db = Arc::clone(&state.db);
+    let db = state.db.clone();
     let router = routes::build_router(Arc::clone(&state));
 
     // ── Step 1: GET /acme/directory ───────────────────────────────────────────
@@ -719,7 +713,7 @@ async fn test_challenge_not_found() {
 async fn test_renewal_info() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let db = Arc::clone(&state.db);
+    let db = state.db.clone();
     let router = routes::build_router(Arc::clone(&state));
     let domain = "ari-test.example";
 
@@ -746,16 +740,13 @@ async fn test_renewal_info() {
     let nonce = nonce_header(&order_headers);
 
     // Get order_id from DB
-    let order_id: String = db
-        .call(|conn| {
-            Ok(conn.query_row(
-                "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let order_id: String = sqlx::query_as::<_, (String,)>(
+        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap()
+    .0;
 
     mark_order_ready(&db, &order_id).await;
 
@@ -774,16 +765,13 @@ async fn test_renewal_info() {
     assert_eq!(status, StatusCode::OK, "finalize failed: {final_body}");
 
     // Get serial_number from DB and build RFC 9773 cert_id.
-    let serial_hex: String = db
-        .call(|conn| {
-            Ok(conn.query_row(
-                "SELECT serial_number FROM certificates ORDER BY created DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let serial_hex: String = sqlx::query_as::<_, (String,)>(
+        "SELECT serial_number FROM certificates ORDER BY created DESC LIMIT 1",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap()
+    .0;
     let cert_id = cert_id_from_serial_hex(&serial_hex, &state.ca.aki_bytes);
 
     // GET /acme/renewal-info/{cert_id}
@@ -806,7 +794,7 @@ async fn test_renewal_info() {
 async fn test_renewal_info_explicit_window() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let db = Arc::clone(&state.db);
+    let db = state.db.clone();
     let router = routes::build_router(Arc::clone(&state));
     let domain = "ari-explicit.example";
 
@@ -832,16 +820,13 @@ async fn test_renewal_info_explicit_window() {
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = db
-        .call(|conn| {
-            Ok(conn.query_row(
-                "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let order_id: String = sqlx::query_as::<_, (String,)>(
+        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap()
+    .0;
 
     mark_order_ready(&db, &order_id).await;
 
@@ -859,16 +844,12 @@ async fn test_renewal_info_explicit_window() {
         post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
     assert_eq!(status, StatusCode::OK, "finalize failed: {final_body}");
 
-    let (cert_uuid, serial_hex): (String, String) = db
-        .call(|conn| {
-            Ok(conn.query_row(
-                "SELECT id, serial_number FROM certificates ORDER BY created DESC LIMIT 1",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )?)
-        })
-        .await
-        .unwrap();
+    let (cert_uuid, serial_hex): (String, String) = sqlx::query_as::<_, (String, String)>(
+        "SELECT id, serial_number FROM certificates ORDER BY created DESC LIMIT 1",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
     let cert_id = cert_id_from_serial_hex(&serial_hex, &state.ca.aki_bytes);
 
     // Set an explicit renewal window on this certificate.
@@ -956,7 +937,7 @@ async fn issue_cert_for_domain(
     state: &Arc<AppState>,
     domain: &str,
 ) -> (axum::Router, String) {
-    let db = Arc::clone(&state.db);
+    let db = state.db.clone();
     let router = routes::build_router(Arc::clone(state));
     let key = TestKey::generate();
 
@@ -979,16 +960,13 @@ async fn issue_cert_for_domain(
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = db
-        .call(|conn| {
-            Ok(conn.query_row(
-                "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let order_id: String = sqlx::query_as::<_, (String,)>(
+        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap()
+    .0;
     mark_order_ready(&db, &order_id).await;
 
     let csr_der = make_csr_der(domain);
@@ -1345,7 +1323,7 @@ async fn test_revoke_cert_success_with_owner_account() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
     let router = routes::build_router(Arc::clone(&state));
-    let db = Arc::clone(&state.db);
+    let db = state.db.clone();
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
@@ -1368,16 +1346,13 @@ async fn test_revoke_cert_success_with_owner_account() {
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = db
-        .call(|c| {
-            Ok(c.query_row(
-                "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let order_id: String = sqlx::query_as::<_, (String,)>(
+        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap()
+    .0;
     mark_order_ready(&db, &order_id).await;
 
     let csr_der = make_csr_der("revoke-success.test");
@@ -1447,17 +1422,13 @@ async fn test_revoke_already_revoked_cert() {
     // First revoke must succeed; second must fail.
     // But we can't easily re-sign with the original account key from issue_cert_for_domain.
     // Workaround: use the DB to mark the cert as revoked directly, then try again.
-    let cert_id: String = state
-        .db
-        .call(|c| {
-            Ok(c.query_row(
-                "SELECT id FROM certificates ORDER BY created DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let cert_id: String = sqlx::query_as::<_, (String,)>(
+        "SELECT id FROM certificates ORDER BY created DESC LIMIT 1",
+    )
+    .fetch_one(&state.db)
+    .await
+    .unwrap()
+    .0;
     // Directly revoke via DB.
     akamu::db::certs::revoke(&state.db, &cert_id, Some(1), 1_700_000_000)
         .await
@@ -1624,7 +1595,7 @@ async fn test_get_order() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
     let router = routes::build_router(Arc::clone(&state));
-    let db = Arc::clone(&state.db);
+    let db = state.db.clone();
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
@@ -1646,16 +1617,13 @@ async fn test_get_order() {
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = db
-        .call(|c| {
-            Ok(c.query_row(
-                "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let order_id: String = sqlx::query_as::<_, (String,)>(
+        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap()
+    .0;
 
     // POST-as-GET to get order status.
     let order_url = format!("{base_url}/acme/order/{order_id}");
@@ -1671,7 +1639,7 @@ async fn test_finalize_wrong_account() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
     let router = routes::build_router(Arc::clone(&state));
-    let db = Arc::clone(&state.db);
+    let db = state.db.clone();
 
     // Create two accounts: owner and attacker.
     let owner_key = TestKey::generate();
@@ -1694,16 +1662,13 @@ async fn test_finalize_wrong_account() {
     );
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let _nonce = nonce_header(&order_headers);
-    let order_id: String = db
-        .call(|c| {
-            Ok(c.query_row(
-                "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let order_id: String = sqlx::query_as::<_, (String,)>(
+        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap()
+    .0;
     mark_order_ready(&db, &order_id).await;
 
     // Create attacker account.
@@ -1741,7 +1706,7 @@ async fn test_finalize_order_not_ready() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
     let router = routes::build_router(Arc::clone(&state));
-    let db = Arc::clone(&state.db);
+    let db = state.db.clone();
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
@@ -1762,16 +1727,13 @@ async fn test_finalize_order_not_ready() {
     );
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
-    let order_id: String = db
-        .call(|c| {
-            Ok(c.query_row(
-                "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let order_id: String = sqlx::query_as::<_, (String,)>(
+        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap()
+    .0;
     // Do NOT call mark_order_ready → order stays in "pending" state.
 
     let csr_der = make_csr_der("not-ready.test");
@@ -2026,7 +1988,7 @@ async fn test_get_order_wrong_account() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
     let router = routes::build_router(Arc::clone(&state));
-    let db = Arc::clone(&state.db);
+    let db = state.db.clone();
 
     // Owner creates an order.
     let owner_key = TestKey::generate();
@@ -2047,16 +2009,13 @@ async fn test_get_order_wrong_account() {
         Some(json!({"identifiers": [{"type": "dns", "value": "get-order-wrong.test"}]})),
     );
     let (_, _, _) = post_acme(&router, "/acme/new-order", jws).await;
-    let order_id: String = db
-        .call(|c| {
-            Ok(c.query_row(
-                "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let order_id: String = sqlx::query_as::<_, (String,)>(
+        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap()
+    .0;
 
     // Attacker creates account and tries to GET the order.
     let attacker_key = TestKey::generate();
@@ -2085,7 +2044,7 @@ async fn test_get_order_wrong_account() {
 async fn test_authz_challenge_with_validated_timestamp() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let db = Arc::clone(&state.db);
+    let db = state.db.clone();
 
     let (router, key, account_url, order_body, nonce) =
         setup_account_and_order(base_url, &state, "authz-validated.example").await;
@@ -2096,14 +2055,13 @@ async fn test_authz_challenge_with_validated_timestamp() {
     let authz_id = authz_url.split('/').last().unwrap().to_string();
 
     // Set challenge to 'valid' with a validated timestamp.
-    let aid = authz_id.clone();
-    db.call(move |c| {
-        c.execute(
-            "UPDATE challenges SET status='valid', validated=1700000000 WHERE authz_id=?1 AND type='http-01'",
-            rusqlite::params![aid],
-        )?;
-        Ok(())
-    }).await.unwrap();
+    sqlx::query(
+        "UPDATE challenges SET status='valid', validated=1700000000 WHERE authz_id=? AND type='http-01'",
+    )
+    .bind(&authz_id)
+    .execute(&db)
+    .await
+    .unwrap();
 
     // GET the authz — response includes challenge with validated timestamp.
     let authz_path = authz_url.trim_start_matches(base_url).to_string();
@@ -2147,7 +2105,7 @@ async fn test_authz_challenge_with_validated_timestamp() {
 async fn test_authz_challenge_with_error_field() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let db = Arc::clone(&state.db);
+    let db = state.db.clone();
 
     let (router, key, account_url, order_body, nonce) =
         setup_account_and_order(base_url, &state, "authz-error.example").await;
@@ -2159,15 +2117,12 @@ async fn test_authz_challenge_with_error_field() {
 
     // Set challenge to 'invalid' with a JSON error string.
     let error_json = r#"{"type":"urn:ietf:params:acme:error:dns","detail":"DNS lookup failed"}"#;
-    let aid = authz_id.clone();
-    let ej = error_json.to_string();
-    db.call(move |c| {
-        c.execute(
-            "UPDATE challenges SET status='invalid', error=?1 WHERE authz_id=?2 AND type='http-01'",
-            rusqlite::params![ej, aid],
-        )?;
-        Ok(())
-    })
+    sqlx::query(
+        "UPDATE challenges SET status='invalid', error=? WHERE authz_id=? AND type='http-01'",
+    )
+    .bind(error_json)
+    .bind(&authz_id)
+    .execute(&db)
     .await
     .unwrap();
 
@@ -2245,10 +2200,10 @@ async fn test_directory_with_optional_fields() {
         tls: Default::default(),
     });
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
-    let db_conn = Arc::new(db::open(":memory:").await.unwrap());
+    let db_conn = db::open(":memory:").await.unwrap();
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
-        db: db_conn,
+        db: db_conn.clone(),
         ca: Arc::new(akamu::state::CaState {
             key: ca_key,
             cert_der: ca_cert_der,
@@ -2370,7 +2325,7 @@ async fn test_challenge_authz_wrong_account() {
 async fn test_challenge_authz_not_pending() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let db = Arc::clone(&state.db);
+    let db = state.db.clone();
 
     let (router, key, account_url, order_body, nonce) =
         setup_account_and_order(base_url, &state, "chall-authz-not-pending.example").await;
@@ -2381,16 +2336,11 @@ async fn test_challenge_authz_not_pending() {
     let authz_id = authz_url.split('/').last().unwrap().to_string();
 
     // Mark the authz as 'valid' to make it non-pending.
-    let aid = authz_id.clone();
-    db.call(move |c| {
-        c.execute(
-            "UPDATE authorizations SET status='valid' WHERE id=?1",
-            rusqlite::params![aid],
-        )?;
-        Ok(())
-    })
-    .await
-    .unwrap();
+    sqlx::query("UPDATE authorizations SET status='valid' WHERE id=?")
+        .bind(&authz_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
     let chall_url = format!("{base_url}/acme/chall/{authz_id}/http-01");
     let chall_path = format!("/acme/chall/{authz_id}/http-01");
@@ -2408,7 +2358,7 @@ async fn test_challenge_authz_not_pending() {
 async fn test_challenge_already_processing() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let db = Arc::clone(&state.db);
+    let db = state.db.clone();
 
     let (router, key, account_url, order_body, nonce) =
         setup_account_and_order(base_url, &state, "chall-processing.example").await;
@@ -2419,14 +2369,11 @@ async fn test_challenge_already_processing() {
     let authz_id = authz_url.split('/').last().unwrap().to_string();
 
     // Mark the http-01 challenge as 'processing'.
-    let aid = authz_id.clone();
-    db.call(move |c| {
-        c.execute(
-            "UPDATE challenges SET status='processing' WHERE authz_id=?1 AND type='http-01'",
-            rusqlite::params![aid],
-        )?;
-        Ok(())
-    })
+    sqlx::query(
+        "UPDATE challenges SET status='processing' WHERE authz_id=? AND type='http-01'",
+    )
+    .bind(&authz_id)
+    .execute(&db)
     .await
     .unwrap();
 
@@ -2450,7 +2397,7 @@ async fn test_challenge_already_processing() {
 async fn test_revoke_cert_by_jwk() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let db = Arc::clone(&state.db);
+    let db = state.db.clone();
     let router = routes::build_router(Arc::clone(&state));
 
     // Account key used to create the account and order.
@@ -2474,16 +2421,13 @@ async fn test_revoke_cert_by_jwk() {
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = db
-        .call(|conn| {
-            Ok(conn.query_row(
-                "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let order_id: String = sqlx::query_as::<_, (String,)>(
+        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap()
+    .0;
     mark_order_ready(&db, &order_id).await;
 
     // Build CSR with a known cert key so we can use it for JWK revocation.
@@ -2598,14 +2542,14 @@ async fn test_finalize_with_mtc_enabled() {
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
-    let db_conn = Arc::new(db::open(":memory:").await.unwrap());
+    let db_conn = db::open(":memory:").await.unwrap();
     let algorithm = HashAlgorithm::Sha256;
     let mtc_log = log::open_or_create(&log_path, algorithm).unwrap();
     let shared_log = Arc::new(Mutex::new(mtc_log));
 
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
-        db: Arc::clone(&db_conn),
+        db: db_conn.clone(),
         ca: Arc::new(CaState {
             key: ca_key,
             cert_der: ca_cert_der,
@@ -2653,16 +2597,13 @@ async fn test_finalize_with_mtc_enabled() {
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = db_conn
-        .call(|c| {
-            Ok(c.query_row(
-                "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let order_id: String = sqlx::query_as::<_, (String,)>(
+        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
+    )
+    .fetch_one(&db_conn)
+    .await
+    .unwrap()
+    .0;
     mark_order_ready(&db_conn, &order_id).await;
 
     let csr_der = make_csr_der("mtc-test.example");
@@ -2693,7 +2634,7 @@ async fn test_finalize_with_mtc_enabled() {
 async fn test_finalize_ip_san() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let db = Arc::clone(&state.db);
+    let db = state.db.clone();
     let router = routes::build_router(Arc::clone(&state));
 
     let key = TestKey::generate();
@@ -2716,16 +2657,13 @@ async fn test_finalize_ip_san() {
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = db
-        .call(|c| {
-            Ok(c.query_row(
-                "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let order_id: String = sqlx::query_as::<_, (String,)>(
+        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap()
+    .0;
     mark_order_ready(&db, &order_id).await;
 
     let csr_der = make_ip_csr_der("192.0.2.1");
@@ -2831,10 +2769,10 @@ async fn test_finalize_with_aia_and_cdp() {
         tls: Default::default(),
     });
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
-    let db_conn = Arc::new(db::open(":memory:").await.unwrap());
+    let db_conn = db::open(":memory:").await.unwrap();
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
-        db: Arc::clone(&db_conn),
+        db: db_conn.clone(),
         ca: Arc::new(CaState {
             key: ca_key,
             cert_der: ca_cert_der,
@@ -2880,16 +2818,13 @@ async fn test_finalize_with_aia_and_cdp() {
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = db_conn
-        .call(|c| {
-            Ok(c.query_row(
-                "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )?)
-        })
-        .await
-        .unwrap();
+    let order_id: String = sqlx::query_as::<_, (String,)>(
+        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
+    )
+    .fetch_one(&db_conn)
+    .await
+    .unwrap()
+    .0;
     mark_order_ready(&db_conn, &order_id).await;
 
     let csr_der = make_csr_der("aia-cdp.test");

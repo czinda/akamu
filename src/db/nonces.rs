@@ -1,72 +1,70 @@
-use tokio_rusqlite::Connection;
-
+use crate::db::Db;
 use crate::error::AcmeError;
 
 /// Insert a new nonce (must be called before returning it to the client).
-pub async fn insert(db: &Connection, nonce: &str) -> Result<(), AcmeError> {
-    let nonce = nonce.to_string();
+pub async fn insert(db: &Db, nonce: &str) -> Result<(), AcmeError> {
     let now = now_secs();
-    db.call(move |conn| {
-        conn.prepare_cached("INSERT INTO nonces (nonce, created) VALUES (?1, ?2)")?
-            .execute(rusqlite::params![nonce, now])?;
-        Ok(())
-    })
-    .await
-    .map_err(AcmeError::from)
+    sqlx::query("INSERT INTO nonces (nonce, created) VALUES (?, ?)")
+        .bind(nonce)
+        .bind(now)
+        .execute(db)
+        .await?;
+    Ok(())
 }
 
 /// Consume a nonce: returns true if the nonce existed and was deleted,
 /// false if it did not exist (replay or unknown).
-pub async fn consume(db: &Connection, nonce: &str) -> Result<bool, AcmeError> {
-    let nonce = nonce.to_string();
-    db.call(move |conn| {
-        let n = conn
-            .prepare_cached("DELETE FROM nonces WHERE nonce = ?1")?
-            .execute(rusqlite::params![nonce])?;
-        Ok(n > 0)
-    })
-    .await
-    .map_err(AcmeError::from)
+pub async fn consume(db: &Db, nonce: &str) -> Result<bool, AcmeError> {
+    let n = sqlx::query("DELETE FROM nonces WHERE nonce = ?")
+        .bind(nonce)
+        .execute(db)
+        .await?
+        .rows_affected();
+    Ok(n > 0)
 }
 
-/// Consume an old nonce and atomically insert a new one in a single DB call.
+/// Consume an old nonce and atomically insert a new one in a single transaction.
 ///
 /// Returns `true` if the old nonce was valid (deleted and replacement stored),
 /// `false` if the old nonce was not found (replay or unknown).
 pub async fn consume_and_insert(
-    db: &Connection,
+    db: &Db,
     old_nonce: &str,
     new_nonce: &str,
 ) -> Result<bool, AcmeError> {
-    let old = old_nonce.to_string();
-    let new = new_nonce.to_string();
     let now = now_secs();
-    db.call(move |conn| {
-        let n = conn
-            .prepare_cached("DELETE FROM nonces WHERE nonce = ?1")?
-            .execute(rusqlite::params![old])?;
-        if n == 0 {
-            return Ok(false);
-        }
-        conn.prepare_cached("INSERT INTO nonces (nonce, created) VALUES (?1, ?2)")?
-            .execute(rusqlite::params![new, now])?;
-        Ok(true)
-    })
-    .await
-    .map_err(AcmeError::from)
+    let mut tx = db.begin().await?;
+
+    let n = sqlx::query("DELETE FROM nonces WHERE nonce = ?")
+        .bind(old_nonce)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+
+    if n == 0 {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+
+    sqlx::query("INSERT INTO nonces (nonce, created) VALUES (?, ?)")
+        .bind(new_nonce)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+    Ok(true)
 }
 
 /// Delete nonces older than `max_age_secs` seconds.
-pub async fn sweep_expired(db: &Connection, max_age_secs: i64) -> Result<u64, AcmeError> {
+pub async fn sweep_expired(db: &Db, max_age_secs: i64) -> Result<u64, AcmeError> {
     let cutoff = now_secs().saturating_sub(max_age_secs);
-    db.call(move |conn| {
-        let n = conn
-            .prepare_cached("DELETE FROM nonces WHERE created < ?1")?
-            .execute(rusqlite::params![cutoff])?;
-        Ok(n as u64)
-    })
-    .await
-    .map_err(AcmeError::from)
+    let n = sqlx::query("DELETE FROM nonces WHERE created < ?")
+        .bind(cutoff)
+        .execute(db)
+        .await?
+        .rows_affected();
+    Ok(n)
 }
 
 fn now_secs() -> i64 {
@@ -79,10 +77,9 @@ fn now_secs() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
-    async fn open_db() -> Arc<Connection> {
-        Arc::new(crate::db::open(":memory:").await.unwrap())
+    async fn open_db() -> Db {
+        crate::db::open(":memory:").await.unwrap()
     }
 
     #[tokio::test]
@@ -138,7 +135,14 @@ mod tests {
 
     #[tokio::test]
     async fn db_error_paths_no_table() {
-        let raw = Arc::new(tokio_rusqlite::Connection::open_in_memory().await.unwrap());
+        use sqlx::sqlite::SqliteConnectOptions;
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let raw: Db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(SqliteConnectOptions::new().in_memory(true))
+            .await
+            .unwrap();
         assert!(insert(&raw, "any-nonce").await.is_err());
         assert!(consume(&raw, "any-nonce").await.is_err());
         assert!(sweep_expired(&raw, 3600).await.is_err());

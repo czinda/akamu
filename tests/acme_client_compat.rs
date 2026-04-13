@@ -144,10 +144,10 @@ async fn start_plain_server(http_validation_port: u16) -> PlainServer {
         "CA initialised"
     );
 
-    let db_conn = Arc::new(db::open(":memory:").await.unwrap());
+    let db_conn = db::open(":memory:").await.unwrap();
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
-        db: db_conn,
+        db: db_conn.clone(),
         ca: Arc::new(CaState {
             key: ca_key,
             cert_der: ca_cert_der,

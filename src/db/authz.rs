@@ -1,183 +1,139 @@
-use tokio_rusqlite::Connection;
-
 use crate::db::schema::{AuthorizationRow, ChallengeRow};
+use crate::db::Db;
 use crate::error::AcmeError;
 
-fn row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuthorizationRow> {
-    Ok(AuthorizationRow {
-        id: row.get(0)?,
-        order_id: row.get(1)?,
-        account_id: row.get(2)?,
-        status: row.get(3)?,
-        identifier: row.get(4)?,
-        expires: row.get(5)?,
-        wildcard: row.get::<_, i64>(6)? != 0,
-        subdomain_auth_allowed: row.get::<_, i64>(7)? != 0,
-        created: row.get(8)?,
-        updated: row.get(9)?,
-    })
+pub async fn insert(db: &Db, row: AuthorizationRow) -> Result<(), AcmeError> {
+    sqlx::query(
+        "INSERT INTO authorizations
+         (id, order_id, account_id, status, identifier, expires, wildcard,
+          subdomain_auth_allowed, created, updated)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&row.id)
+    .bind(&row.order_id)
+    .bind(&row.account_id)
+    .bind(&row.status)
+    .bind(&row.identifier)
+    .bind(row.expires)
+    .bind(row.wildcard)
+    .bind(row.subdomain_auth_allowed)
+    .bind(row.created)
+    .bind(row.updated)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
-pub async fn insert(db: &Connection, row: AuthorizationRow) -> Result<(), AcmeError> {
-    db.call(move |conn| {
-        conn.prepare_cached(
-            "INSERT INTO authorizations
-             (id, order_id, account_id, status, identifier, expires, wildcard,
-              subdomain_auth_allowed, created, updated)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-        )?
-        .execute(rusqlite::params![
-            row.id,
-            row.order_id,
-            row.account_id,
-            row.status,
-            row.identifier,
-            row.expires,
-            row.wildcard as i64,
-            row.subdomain_auth_allowed as i64,
-            row.created,
-            row.updated,
-        ])?;
-        Ok(())
-    })
-    .await
-    .map_err(AcmeError::from)
-}
-
-pub async fn get_by_id(db: &Connection, id: &str) -> Result<Option<AuthorizationRow>, AcmeError> {
-    let id = id.to_string();
-    db.call(move |conn| {
-        let mut stmt = conn.prepare_cached(
-            "SELECT id, order_id, account_id, status, identifier, expires, wildcard,
-                    subdomain_auth_allowed, created, updated
-             FROM authorizations WHERE id = ?1",
-        )?;
-        let mut rows = stmt.query(rusqlite::params![id])?;
-        if let Some(row) = rows.next()? {
-            Ok(Some(row_from(row)?))
-        } else {
-            Ok(None)
-        }
-    })
-    .await
-    .map_err(AcmeError::from)
+pub async fn get_by_id(db: &Db, id: &str) -> Result<Option<AuthorizationRow>, AcmeError> {
+    let row = sqlx::query_as::<_, AuthorizationRow>(
+        "SELECT id, order_id, account_id, status, identifier, expires, wildcard,
+                subdomain_auth_allowed, created, updated
+         FROM authorizations WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await?;
+    Ok(row)
 }
 
 pub async fn list_by_order(
-    db: &Connection,
+    db: &Db,
     order_id: &str,
 ) -> Result<Vec<AuthorizationRow>, AcmeError> {
-    let order_id = order_id.to_string();
-    db.call(move |conn| {
-        let mut stmt = conn.prepare_cached(
-            "SELECT id, order_id, account_id, status, identifier, expires, wildcard,
-                    subdomain_auth_allowed, created, updated
-             FROM authorizations WHERE order_id = ?1",
-        )?;
-        let rows = stmt
-            .query_map(rusqlite::params![order_id], row_from)?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
-    })
-    .await
-    .map_err(AcmeError::from)
+    let rows = sqlx::query_as::<_, AuthorizationRow>(
+        "SELECT id, order_id, account_id, status, identifier, expires, wildcard,
+                subdomain_auth_allowed, created, updated
+         FROM authorizations WHERE order_id = ?",
+    )
+    .bind(order_id)
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
 }
 
-/// Fetch an authorization and all its challenges in a single database call.
+/// Fetch an authorization and all its challenges.
 ///
 /// Returns `None` if no authorization with `authz_id` exists.
 pub async fn get_with_challenges(
-    db: &Connection,
+    db: &Db,
     authz_id: &str,
 ) -> Result<Option<(AuthorizationRow, Vec<ChallengeRow>)>, AcmeError> {
-    let authz_id = authz_id.to_string();
-    db.call(move |conn| {
-        let authz = {
-            let mut stmt = conn.prepare_cached(
-                "SELECT id, order_id, account_id, status, identifier, expires, wildcard,
-                        subdomain_auth_allowed, created, updated
-                 FROM authorizations WHERE id = ?1",
-            )?;
-            let mut rows = stmt.query(rusqlite::params![authz_id])?;
-            if let Some(row) = rows.next()? {
-                row_from(row)?
-            } else {
-                return Ok(None);
-            }
-        };
-        let challenges = {
-            let mut stmt = conn.prepare_cached(
-                "SELECT id, authz_id, type, status, token, validated, error, created, updated
-                 FROM challenges WHERE authz_id = ?1",
-            )?;
-            let rows: Vec<ChallengeRow> = stmt
-                .query_map(rusqlite::params![authz_id], crate::db::challenges::row_from)?
-                .collect::<Result<Vec<_>, _>>()?;
-            drop(stmt);
-            rows
-        };
-        Ok(Some((authz, challenges)))
-    })
-    .await
-    .map_err(AcmeError::from)
+    let authz = match sqlx::query_as::<_, AuthorizationRow>(
+        "SELECT id, order_id, account_id, status, identifier, expires, wildcard,
+                subdomain_auth_allowed, created, updated
+         FROM authorizations WHERE id = ?",
+    )
+    .bind(authz_id)
+    .fetch_optional(db)
+    .await?
+    {
+        Some(a) => a,
+        None => return Ok(None),
+    };
+
+    let challenges = sqlx::query_as::<_, ChallengeRow>(
+        "SELECT id, authz_id, type, status, token, validated, error, created, updated
+         FROM challenges WHERE authz_id = ?",
+    )
+    .bind(authz_id)
+    .fetch_all(db)
+    .await?;
+
+    Ok(Some((authz, challenges)))
 }
 
 /// Fetch an authorization with its challenges and atomically mark the specified
-/// challenge type as "processing" — all in a single database call.
+/// challenge type as "processing".
 ///
-/// Returns `None` if no authorization with `authz_id` exists. If the challenge
-/// matching `chall_type` is already "processing" or "valid", the UPDATE is a
-/// no-op; the caller inspects the returned `ChallengeRow.status` to decide
-/// whether to proceed or return the current state.
+/// Returns `None` if no authorization with `authz_id` exists.
 pub async fn get_with_challenges_mark_processing(
-    db: &Connection,
+    db: &Db,
     authz_id: &str,
     chall_type: &str,
     now: i64,
 ) -> Result<Option<(AuthorizationRow, Vec<ChallengeRow>)>, AcmeError> {
-    let authz_id_s = authz_id.to_string();
-    let chall_type_s = chall_type.to_string();
-    db.call(move |conn| {
-        // Fetch authorization.
-        let authz = {
-            let mut stmt = conn.prepare_cached(
-                "SELECT id, order_id, account_id, status, identifier, expires, wildcard,
-                        subdomain_auth_allowed, created, updated
-                 FROM authorizations WHERE id = ?1",
-            )?;
-            let mut rows = stmt.query(rusqlite::params![authz_id_s])?;
-            if let Some(row) = rows.next()? {
-                row_from(row)?
-            } else {
-                return Ok(None);
-            }
-        };
-        // Fetch all challenges for this authorization.
-        let challenges = {
-            let mut stmt = conn.prepare_cached(
-                "SELECT id, authz_id, type, status, token, validated, error, created, updated
-                 FROM challenges WHERE authz_id = ?1",
-            )?;
-            let rows: Vec<ChallengeRow> = stmt
-                .query_map(
-                    rusqlite::params![authz_id_s],
-                    crate::db::challenges::row_from,
-                )?
-                .collect::<Result<Vec<_>, _>>()?;
-            drop(stmt);
-            rows
-        };
-        // Atomically mark the target challenge "processing". Only fires when the
-        // challenge is still "pending"; a no-op for already-active challenges.
-        conn.prepare_cached(
-            "UPDATE challenges SET status = 'processing', updated = ?1
-             WHERE authz_id = ?2 AND type = ?3 AND status = 'pending'",
-        )?
-        .execute(rusqlite::params![now, authz_id_s, chall_type_s])?;
-        Ok(Some((authz, challenges)))
-    })
-    .await
-    .map_err(AcmeError::from)
+    let mut tx = db.begin().await?;
+
+    // Fetch authorization.
+    let authz = match sqlx::query_as::<_, AuthorizationRow>(
+        "SELECT id, order_id, account_id, status, identifier, expires, wildcard,
+                subdomain_auth_allowed, created, updated
+         FROM authorizations WHERE id = ?",
+    )
+    .bind(authz_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    {
+        Some(a) => a,
+        None => {
+            tx.rollback().await?;
+            return Ok(None);
+        }
+    };
+
+    // Fetch all challenges for this authorization.
+    let challenges = sqlx::query_as::<_, ChallengeRow>(
+        "SELECT id, authz_id, type, status, token, validated, error, created, updated
+         FROM challenges WHERE authz_id = ?",
+    )
+    .bind(authz_id)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    // Atomically mark the target challenge "processing". Only fires when the
+    // challenge is still "pending"; a no-op for already-active challenges.
+    sqlx::query(
+        "UPDATE challenges SET status = 'processing', updated = ?
+         WHERE authz_id = ? AND type = ? AND status = 'pending'",
+    )
+    .bind(now)
+    .bind(authz_id)
+    .bind(chall_type)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(Some((authz, challenges)))
 }
 
 /// Find a valid, unexpired authorization for a given account and identifier JSON string.
@@ -185,64 +141,50 @@ pub async fn get_with_challenges_mark_processing(
 /// Returns the first matching row (status `pending` or `valid`, not yet expired),
 /// or `None` if no such authorization exists. Used by `new-authz` to deduplicate.
 pub async fn find_valid_by_account_and_identifier(
-    db: &Connection,
+    db: &Db,
     account_id: &str,
     identifier_json: &str,
     now: i64,
 ) -> Result<Option<AuthorizationRow>, AcmeError> {
-    let account_id = account_id.to_string();
-    let identifier_json = identifier_json.to_string();
-    db.call(move |conn| {
-        let mut stmt = conn.prepare_cached(
-            "SELECT id, order_id, account_id, status, identifier, expires, wildcard,
-                    subdomain_auth_allowed, created, updated
-             FROM authorizations
-             WHERE account_id = ?1
-               AND identifier = ?2
-               AND status IN ('pending', 'valid')
-               AND (expires IS NULL OR expires > ?3)
-             LIMIT 1",
-        )?;
-        let mut rows = stmt.query(rusqlite::params![account_id, identifier_json, now])?;
-        if let Some(row) = rows.next()? {
-            Ok(Some(row_from(row)?))
-        } else {
-            Ok(None)
-        }
-    })
-    .await
-    .map_err(AcmeError::from)
+    let row = sqlx::query_as::<_, AuthorizationRow>(
+        "SELECT id, order_id, account_id, status, identifier, expires, wildcard,
+                subdomain_auth_allowed, created, updated
+         FROM authorizations
+         WHERE account_id = ?
+           AND identifier = ?
+           AND status IN ('pending', 'valid')
+           AND (expires IS NULL OR expires > ?)
+         LIMIT 1",
+    )
+    .bind(account_id)
+    .bind(identifier_json)
+    .bind(now)
+    .fetch_optional(db)
+    .await?;
+    Ok(row)
 }
 
-pub async fn update_status(
-    db: &Connection,
-    id: &str,
-    status: &str,
-    now: i64,
-) -> Result<(), AcmeError> {
-    let id = id.to_string();
-    let status = status.to_string();
-    db.call(move |conn| {
-        conn.prepare_cached("UPDATE authorizations SET status = ?1, updated = ?2 WHERE id = ?3")?
-            .execute(rusqlite::params![status, now, id])?;
-        Ok(())
-    })
-    .await
-    .map_err(AcmeError::from)
+pub async fn update_status(db: &Db, id: &str, status: &str, now: i64) -> Result<(), AcmeError> {
+    sqlx::query("UPDATE authorizations SET status = ?, updated = ? WHERE id = ?")
+        .bind(status)
+        .bind(now)
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     use crate::db::schema::{AccountRow, OrderRow};
 
-    async fn open_db() -> Arc<Connection> {
-        Arc::new(crate::db::open(":memory:").await.unwrap())
+    async fn open_db() -> Db {
+        crate::db::open(":memory:").await.unwrap()
     }
 
-    async fn insert_parents(db: &Connection, account_id: &str, order_id: &str) {
+    async fn insert_parents(db: &Db, account_id: &str, order_id: &str) {
         crate::db::accounts::insert(
             db,
             AccountRow {
@@ -383,7 +325,14 @@ mod tests {
 
     #[tokio::test]
     async fn db_error_paths_no_table() {
-        let raw = Arc::new(tokio_rusqlite::Connection::open_in_memory().await.unwrap());
+        use sqlx::sqlite::SqliteConnectOptions;
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let raw: Db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(SqliteConnectOptions::new().in_memory(true))
+            .await
+            .unwrap();
         let row = sample_authz("err-authz", "err-order", "err-acct");
         assert!(insert(&raw, row).await.is_err());
         assert!(get_by_id(&raw, "any").await.is_err());

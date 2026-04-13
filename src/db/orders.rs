@@ -1,240 +1,176 @@
-use tokio_rusqlite::Connection;
-
 use crate::db::schema::OrderRow;
+use crate::db::Db;
 use crate::error::AcmeError;
 
-fn row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<OrderRow> {
-    Ok(OrderRow {
-        id: row.get(0)?,
-        account_id: row.get(1)?,
-        status: row.get(2)?,
-        expires: row.get(3)?,
-        identifiers: row.get(4)?,
-        not_before: row.get(5)?,
-        not_after: row.get(6)?,
-        error: row.get(7)?,
-        certificate_id: row.get(8)?,
-        replaces: row.get(9)?,
-        created: row.get(10)?,
-        updated: row.get(11)?,
-        star_start_date: row.get(12)?,
-        star_end_date: row.get(13)?,
-        star_lifetime_secs: row.get(14)?,
-        star_lifetime_adjust_secs: row.get::<_, Option<i64>>(15)?.unwrap_or(0),
-        star_allow_cert_get: row.get::<_, i64>(16).map(|v| v != 0).unwrap_or(false),
-        star_canceled_at: row.get(17)?,
-        star_csr_der: row.get(18)?,
-        profile: row.get(19)?,
-    })
-}
-
-pub async fn insert(db: &Connection, row: OrderRow) -> Result<(), AcmeError> {
-    db.call(move |conn| {
-        conn.prepare_cached(
-            "INSERT INTO orders (id, account_id, status, expires, identifiers,
-             not_before, not_after, error, certificate_id, replaces, created, updated,
-             star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs,
-             star_allow_cert_get, star_canceled_at, star_csr_der, profile)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                     ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
-        )?
-        .execute(rusqlite::params![
-            row.id,
-            row.account_id,
-            row.status,
-            row.expires,
-            row.identifiers,
-            row.not_before,
-            row.not_after,
-            row.error,
-            row.certificate_id,
-            row.replaces,
-            row.created,
-            row.updated,
-            row.star_start_date,
-            row.star_end_date,
-            row.star_lifetime_secs,
-            row.star_lifetime_adjust_secs,
-            row.star_allow_cert_get as i64,
-            row.star_canceled_at,
-            row.star_csr_der,
-            row.profile,
-        ])?;
-        Ok(())
-    })
-    .await
-    .map_err(AcmeError::from)
+pub async fn insert(db: &Db, row: OrderRow) -> Result<(), AcmeError> {
+    sqlx::query(
+        "INSERT INTO orders (id, account_id, status, expires, identifiers,
+         not_before, not_after, error, certificate_id, replaces, created, updated,
+         star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs,
+         star_allow_cert_get, star_canceled_at, star_csr_der, profile)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&row.id)
+    .bind(&row.account_id)
+    .bind(&row.status)
+    .bind(row.expires)
+    .bind(&row.identifiers)
+    .bind(row.not_before)
+    .bind(row.not_after)
+    .bind(&row.error)
+    .bind(&row.certificate_id)
+    .bind(&row.replaces)
+    .bind(row.created)
+    .bind(row.updated)
+    .bind(row.star_start_date)
+    .bind(row.star_end_date)
+    .bind(row.star_lifetime_secs)
+    .bind(row.star_lifetime_adjust_secs)
+    .bind(row.star_allow_cert_get)
+    .bind(row.star_canceled_at)
+    .bind(&row.star_csr_der)
+    .bind(&row.profile)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 /// Cancel a STAR order by setting star_canceled_at to the current timestamp.
-pub async fn cancel_star(db: &Connection, id: &str, now: i64) -> Result<(), AcmeError> {
-    let id = id.to_string();
-    db.call(move |conn| {
-        conn.prepare_cached("UPDATE orders SET star_canceled_at = ?1, updated = ?2 WHERE id = ?3")?
-            .execute(rusqlite::params![now, now, id])?;
-        Ok(())
-    })
-    .await
-    .map_err(AcmeError::from)
+pub async fn cancel_star(db: &Db, id: &str, now: i64) -> Result<(), AcmeError> {
+    sqlx::query("UPDATE orders SET star_canceled_at = ?, updated = ? WHERE id = ?")
+        .bind(now)
+        .bind(now)
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
 }
 
 /// List all active STAR orders (star_end_date set, not canceled, status = 'valid').
-pub async fn list_active_star(db: &Connection) -> Result<Vec<OrderRow>, AcmeError> {
-    db.call(move |conn| {
-        let mut stmt = conn.prepare_cached(
-            "SELECT id, account_id, status, expires, identifiers,
-             not_before, not_after, error, certificate_id, replaces, created, updated,
-             star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs,
-             star_allow_cert_get, star_canceled_at, star_csr_der, profile
-             FROM orders
-             WHERE star_end_date IS NOT NULL AND star_canceled_at IS NULL AND status = 'valid'",
-        )?;
-        let rows = stmt
-            .query_map([], row_from)?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
-    })
-    .await
-    .map_err(AcmeError::from)
+pub async fn list_active_star(db: &Db) -> Result<Vec<OrderRow>, AcmeError> {
+    let rows = sqlx::query_as::<_, OrderRow>(
+        "SELECT id, account_id, status, expires, identifiers,
+         not_before, not_after, error, certificate_id, replaces, created, updated,
+         star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs,
+         star_allow_cert_get, star_canceled_at, star_csr_der, profile
+         FROM orders
+         WHERE star_end_date IS NOT NULL AND star_canceled_at IS NULL AND status = 'valid'",
+    )
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
 }
 
 /// Store the CSR DER on an order (set during finalize for STAR orders).
-pub async fn set_star_csr(db: &Connection, id: &str, csr_der: Vec<u8>) -> Result<(), AcmeError> {
-    let id = id.to_string();
-    db.call(move |conn| {
-        conn.prepare_cached("UPDATE orders SET star_csr_der = ?1 WHERE id = ?2")?
-            .execute(rusqlite::params![csr_der, id])?;
-        Ok(())
-    })
-    .await
-    .map_err(AcmeError::from)
+pub async fn set_star_csr(db: &Db, id: &str, csr_der: Vec<u8>) -> Result<(), AcmeError> {
+    sqlx::query("UPDATE orders SET star_csr_der = ? WHERE id = ?")
+        .bind(&csr_der)
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
 }
 
-pub async fn get_by_id(db: &Connection, id: &str) -> Result<Option<OrderRow>, AcmeError> {
-    let id = id.to_string();
-    db.call(move |conn| {
-        let mut stmt = conn.prepare_cached(
-            "SELECT id, account_id, status, expires, identifiers,
-             not_before, not_after, error, certificate_id, replaces, created, updated,
-             star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs,
-             star_allow_cert_get, star_canceled_at, star_csr_der, profile
-             FROM orders WHERE id = ?1",
-        )?;
-        let mut rows = stmt.query(rusqlite::params![id])?;
-        if let Some(row) = rows.next()? {
-            Ok(Some(row_from(row)?))
-        } else {
-            Ok(None)
-        }
-    })
-    .await
-    .map_err(AcmeError::from)
+pub async fn get_by_id(db: &Db, id: &str) -> Result<Option<OrderRow>, AcmeError> {
+    let row = sqlx::query_as::<_, OrderRow>(
+        "SELECT id, account_id, status, expires, identifiers,
+         not_before, not_after, error, certificate_id, replaces, created, updated,
+         star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs,
+         star_allow_cert_get, star_canceled_at, star_csr_der, profile
+         FROM orders WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await?;
+    Ok(row)
 }
 
 pub async fn update_status(
-    db: &Connection,
+    db: &Db,
     id: &str,
     status: &str,
     error: Option<String>,
     now: i64,
 ) -> Result<(), AcmeError> {
-    let id = id.to_string();
-    let status = status.to_string();
-    db.call(move |conn| {
-        conn.prepare_cached(
-            "UPDATE orders SET status = ?1, error = ?2, updated = ?3 WHERE id = ?4",
-        )?
-        .execute(rusqlite::params![status, error, now, id])?;
-        Ok(())
-    })
-    .await
-    .map_err(AcmeError::from)
+    sqlx::query("UPDATE orders SET status = ?, error = ?, updated = ? WHERE id = ?")
+        .bind(status)
+        .bind(error)
+        .bind(now)
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
 }
 
 pub async fn set_certificate(
-    db: &Connection,
+    db: &Db,
     id: &str,
     certificate_id: &str,
     now: i64,
 ) -> Result<(), AcmeError> {
-    let id = id.to_string();
-    let certificate_id = certificate_id.to_string();
-    db.call(move |conn| {
-        conn.prepare_cached(
-            "UPDATE orders SET status = 'valid', certificate_id = ?1, updated = ?2 WHERE id = ?3",
-        )?
-        .execute(rusqlite::params![certificate_id, now, id])?;
-        Ok(())
-    })
-    .await
-    .map_err(AcmeError::from)
+    sqlx::query(
+        "UPDATE orders SET status = 'valid', certificate_id = ?, updated = ? WHERE id = ?",
+    )
+    .bind(certificate_id)
+    .bind(now)
+    .bind(id)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
-/// Fetch an order and its authorization IDs in a single database call.
+/// Fetch an order and its authorization IDs.
 ///
 /// Returns `None` if no order with `order_id` exists.
 pub async fn get_with_authz_ids(
-    db: &Connection,
+    db: &Db,
     order_id: &str,
 ) -> Result<Option<(OrderRow, Vec<String>)>, AcmeError> {
-    let id = order_id.to_string();
-    db.call(move |conn| {
-        let order = {
-            let mut stmt = conn.prepare_cached(
-                "SELECT id, account_id, status, expires, identifiers,
-                 not_before, not_after, error, certificate_id, replaces, created, updated,
-                 star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs,
-                 star_allow_cert_get, star_canceled_at, star_csr_der, profile
-                 FROM orders WHERE id = ?1",
-            )?;
-            let mut rows = stmt.query(rusqlite::params![id])?;
-            if let Some(row) = rows.next()? {
-                row_from(row)?
-            } else {
-                return Ok(None);
-            }
-        };
-        let authz_ids = {
-            let mut stmt =
-                conn.prepare_cached("SELECT id FROM authorizations WHERE order_id = ?1")?;
-            let ids = stmt
-                .query_map(rusqlite::params![id], |row| row.get::<_, String>(0))?
-                .collect::<Result<Vec<_>, _>>()?;
-            drop(stmt);
-            ids
-        };
-        Ok(Some((order, authz_ids)))
-    })
-    .await
-    .map_err(AcmeError::from)
+    let order = match sqlx::query_as::<_, OrderRow>(
+        "SELECT id, account_id, status, expires, identifiers,
+         not_before, not_after, error, certificate_id, replaces, created, updated,
+         star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs,
+         star_allow_cert_get, star_canceled_at, star_csr_der, profile
+         FROM orders WHERE id = ?",
+    )
+    .bind(order_id)
+    .fetch_optional(db)
+    .await?
+    {
+        Some(o) => o,
+        None => return Ok(None),
+    };
+
+    let ids: Vec<(String,)> =
+        sqlx::query_as("SELECT id FROM authorizations WHERE order_id = ?")
+            .bind(order_id)
+            .fetch_all(db)
+            .await?;
+    let authz_ids = ids.into_iter().map(|(id,)| id).collect();
+    Ok(Some((order, authz_ids)))
 }
 
 /// List all authorization IDs belonging to an order.
-pub async fn list_authz_ids(db: &Connection, order_id: &str) -> Result<Vec<String>, AcmeError> {
-    let order_id = order_id.to_string();
-    db.call(move |conn| {
-        let mut stmt = conn.prepare_cached("SELECT id FROM authorizations WHERE order_id = ?1")?;
-        let ids = stmt
-            .query_map(rusqlite::params![order_id], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(ids)
-    })
-    .await
-    .map_err(AcmeError::from)
+pub async fn list_authz_ids(db: &Db, order_id: &str) -> Result<Vec<String>, AcmeError> {
+    let ids: Vec<(String,)> =
+        sqlx::query_as("SELECT id FROM authorizations WHERE order_id = ?")
+            .bind(order_id)
+            .fetch_all(db)
+            .await?;
+    Ok(ids.into_iter().map(|(id,)| id).collect())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     use crate::db::schema::AccountRow;
 
-    async fn open_db() -> Arc<Connection> {
-        Arc::new(crate::db::open(":memory:").await.unwrap())
+    async fn open_db() -> Db {
+        crate::db::open(":memory:").await.unwrap()
     }
 
-    async fn insert_account(db: &Connection, account_id: &str) {
+    async fn insert_account(db: &Db, account_id: &str) {
         crate::db::accounts::insert(
             db,
             AccountRow {
@@ -399,7 +335,14 @@ mod tests {
 
     #[tokio::test]
     async fn db_error_paths_no_table() {
-        let raw = Arc::new(tokio_rusqlite::Connection::open_in_memory().await.unwrap());
+        use sqlx::sqlite::SqliteConnectOptions;
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let raw: Db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(SqliteConnectOptions::new().in_memory(true))
+            .await
+            .unwrap();
         assert!(insert(&raw, sample_order("err-order", "err-acct"))
             .await
             .is_err());

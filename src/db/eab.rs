@@ -5,11 +5,10 @@
 //! endpoint).  Config-file keys are seeded with `insert_if_absent()` on
 //! startup so they never overwrite keys that were modified at runtime.
 
-use tokio_rusqlite::Connection;
-
+use crate::db::Db;
 use crate::error::AcmeError;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct EabKeyRow {
     pub kid: String,
     pub hmac_key_b64u: String,
@@ -23,101 +22,81 @@ pub struct EabKeyRow {
 /// Uses `INSERT OR IGNORE` so that a key that already exists in the DB
 /// (possibly modified or marked used by the admin endpoint) is left alone.
 pub async fn insert_if_absent(
-    db: &Connection,
+    db: &Db,
     kid: &str,
     hmac_key_b64u: &str,
     now: i64,
 ) -> Result<(), AcmeError> {
-    let kid = kid.to_string();
-    let key = hmac_key_b64u.to_string();
-    db.call(move |conn| {
-        conn.prepare_cached(
-            "INSERT OR IGNORE INTO eab_keys (kid, hmac_key_b64u, created) \
-             VALUES (?1, ?2, ?3)",
-        )?
-        .execute(rusqlite::params![kid, key, now])?;
-        Ok(())
-    })
-    .await
-    .map_err(AcmeError::from)
+    sqlx::query(
+        "INSERT OR IGNORE INTO eab_keys (kid, hmac_key_b64u, created) \
+         VALUES (?, ?, ?)",
+    )
+    .bind(kid)
+    .bind(hmac_key_b64u)
+    .bind(now)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 /// Provision a new key unconditionally (for the future admin endpoint).
 ///
 /// Returns a `Conflict` error if a key with the same `kid` already exists.
-pub async fn insert(
-    db: &Connection,
-    kid: &str,
-    hmac_key_b64u: &str,
-    now: i64,
-) -> Result<(), AcmeError> {
-    let kid = kid.to_string();
-    let key = hmac_key_b64u.to_string();
-    db.call(move |conn| {
-        conn.prepare_cached(
-            "INSERT INTO eab_keys (kid, hmac_key_b64u, created) VALUES (?1, ?2, ?3)",
-        )?
-        .execute(rusqlite::params![kid, key, now])?;
-        Ok(())
-    })
-    .await
-    .map_err(AcmeError::from)
+pub async fn insert(db: &Db, kid: &str, hmac_key_b64u: &str, now: i64) -> Result<(), AcmeError> {
+    sqlx::query("INSERT INTO eab_keys (kid, hmac_key_b64u, created) VALUES (?, ?, ?)")
+        .bind(kid)
+        .bind(hmac_key_b64u)
+        .bind(now)
+        .execute(db)
+        .await?;
+    Ok(())
 }
 
 /// Look up a key by its `kid`.  Returns `None` if the `kid` is unknown.
-pub async fn get_by_kid(db: &Connection, kid: &str) -> Result<Option<EabKeyRow>, AcmeError> {
-    let kid = kid.to_string();
-    db.call(move |conn| {
-        let mut stmt = conn.prepare_cached(
-            "SELECT kid, hmac_key_b64u, created, used_at \
-             FROM eab_keys WHERE kid = ?1",
-        )?;
-        let mut rows = stmt.query(rusqlite::params![kid])?;
-        if let Some(row) = rows.next()? {
-            Ok(Some(EabKeyRow {
-                kid: row.get(0)?,
-                hmac_key_b64u: row.get(1)?,
-                created: row.get(2)?,
-                used_at: row.get(3)?,
-            }))
-        } else {
-            Ok(None)
-        }
-    })
-    .await
-    .map_err(AcmeError::from)
+pub async fn get_by_kid(db: &Db, kid: &str) -> Result<Option<EabKeyRow>, AcmeError> {
+    let row = sqlx::query_as::<_, EabKeyRow>(
+        "SELECT kid, hmac_key_b64u, created, used_at \
+         FROM eab_keys WHERE kid = ?",
+    )
+    .bind(kid)
+    .fetch_optional(db)
+    .await?;
+    Ok(row)
 }
 
-/// Mark a key as used *within an existing rusqlite transaction*.
+/// Mark a key as used *within an existing sqlx transaction*.
 ///
 /// Call this atomically with the account INSERT so that the key is consumed
 /// only when account creation fully commits, and the DB is left consistent
 /// if the transaction rolls back.
-pub fn mark_used_tx(tx: &rusqlite::Transaction<'_>, kid: &str, now: i64) -> rusqlite::Result<()> {
-    tx.prepare_cached("UPDATE eab_keys SET used_at = ?1 WHERE kid = ?2")?
-        .execute(rusqlite::params![now, kid])?;
+pub async fn mark_used_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    kid: &str,
+    now: i64,
+) -> Result<(), AcmeError> {
+    sqlx::query("UPDATE eab_keys SET used_at = ? WHERE kid = ?")
+        .bind(now)
+        .bind(kid)
+        .execute(&mut **tx)
+        .await?;
     Ok(())
 }
 
 /// Delete a key entirely (for the future admin endpoint cleanup path).
-pub async fn delete(db: &Connection, kid: &str) -> Result<(), AcmeError> {
-    let kid = kid.to_string();
-    db.call(move |conn| {
-        conn.prepare_cached("DELETE FROM eab_keys WHERE kid = ?1")?
-            .execute(rusqlite::params![kid])?;
-        Ok(())
-    })
-    .await
-    .map_err(AcmeError::from)
+pub async fn delete(db: &Db, kid: &str) -> Result<(), AcmeError> {
+    sqlx::query("DELETE FROM eab_keys WHERE kid = ?")
+        .bind(kid)
+        .execute(db)
+        .await?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
-    async fn open_db() -> Arc<Connection> {
-        Arc::new(crate::db::open(":memory:").await.unwrap())
+    async fn open_db() -> Db {
+        crate::db::open(":memory:").await.unwrap()
     }
 
     #[tokio::test]
@@ -154,13 +133,9 @@ mod tests {
     async fn mark_used_tx_sets_used_at() {
         let db = open_db().await;
         insert(&db, "kid3", "key", 1_000).await.unwrap();
-        db.call(|conn| {
-            let tx = conn.transaction()?;
-            mark_used_tx(&tx, "kid3", 2_000)?;
-            Ok(tx.commit()?)
-        })
-        .await
-        .unwrap();
+        let mut tx = db.begin().await.unwrap();
+        mark_used_tx(&mut tx, "kid3", 2_000).await.unwrap();
+        tx.commit().await.unwrap();
         let row = get_by_kid(&db, "kid3").await.unwrap().unwrap();
         assert_eq!(row.used_at, Some(2_000));
     }

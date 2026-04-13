@@ -1,102 +1,59 @@
-use tokio_rusqlite::Connection;
-
 use crate::db::schema::CertificateRow;
+use crate::db::Db;
 use crate::error::AcmeError;
 
-fn row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<CertificateRow> {
-    Ok(CertificateRow {
-        id: row.get(0)?,
-        order_id: row.get(1)?,
-        account_id: row.get(2)?,
-        serial_number: row.get(3)?,
-        status: row.get(4)?,
-        der: row.get(5)?,
-        pem: row.get(6)?,
-        not_before: row.get(7)?,
-        not_after: row.get(8)?,
-        revoked_at: row.get(9)?,
-        revocation_reason: row.get(10)?,
-        mtc_log_index: row.get(11)?,
-        created: row.get(12)?,
-        suggested_window_start: row.get(13)?,
-        suggested_window_end: row.get(14)?,
-        replaced_by: row.get(15)?,
-    })
+pub async fn insert(db: &Db, row: CertificateRow) -> Result<(), AcmeError> {
+    sqlx::query(
+        "INSERT INTO certificates
+         (id, order_id, account_id, serial_number, status, der, pem,
+          not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
+          suggested_window_start, suggested_window_end, replaced_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+    )
+    .bind(&row.id)
+    .bind(&row.order_id)
+    .bind(&row.account_id)
+    .bind(&row.serial_number)
+    .bind(&row.status)
+    .bind(&row.der)
+    .bind(&row.pem)
+    .bind(row.not_before)
+    .bind(row.not_after)
+    .bind(row.revoked_at)
+    .bind(row.revocation_reason)
+    .bind(row.mtc_log_index)
+    .bind(row.created)
+    .bind(row.suggested_window_start)
+    .bind(row.suggested_window_end)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
-pub async fn insert(db: &Connection, row: CertificateRow) -> Result<(), AcmeError> {
-    db.call(move |conn| {
-        conn.prepare_cached(
-            "INSERT INTO certificates
-             (id, order_id, account_id, serial_number, status, der, pem,
-              not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-              suggested_window_start, suggested_window_end, replaced_by)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, NULL)",
-        )?
-        .execute(rusqlite::params![
-            row.id,
-            row.order_id,
-            row.account_id,
-            row.serial_number,
-            row.status,
-            row.der,
-            row.pem,
-            row.not_before,
-            row.not_after,
-            row.revoked_at,
-            row.revocation_reason,
-            row.mtc_log_index,
-            row.created,
-            row.suggested_window_start,
-            row.suggested_window_end,
-        ])?;
-        Ok(())
-    })
-    .await
-    .map_err(AcmeError::from)
+pub async fn get_by_id(db: &Db, id: &str) -> Result<Option<CertificateRow>, AcmeError> {
+    let row = sqlx::query_as::<_, CertificateRow>(
+        "SELECT id, order_id, account_id, serial_number, status, der, pem,
+         not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
+         suggested_window_start, suggested_window_end, replaced_by
+         FROM certificates WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await?;
+    Ok(row)
 }
 
-pub async fn get_by_id(db: &Connection, id: &str) -> Result<Option<CertificateRow>, AcmeError> {
-    let id = id.to_string();
-    db.call(move |conn| {
-        let mut stmt = conn.prepare_cached(
-            "SELECT id, order_id, account_id, serial_number, status, der, pem,
-             not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-             suggested_window_start, suggested_window_end, replaced_by
-             FROM certificates WHERE id = ?1",
-        )?;
-        let mut rows = stmt.query(rusqlite::params![id])?;
-        if let Some(row) = rows.next()? {
-            Ok(Some(row_from(row)?))
-        } else {
-            Ok(None)
-        }
-    })
-    .await
-    .map_err(AcmeError::from)
-}
-
-pub async fn get_by_serial(
-    db: &Connection,
-    serial: &str,
-) -> Result<Option<CertificateRow>, AcmeError> {
-    let serial = serial.to_string();
-    db.call(move |conn| {
-        let mut stmt = conn.prepare_cached(
-            "SELECT id, order_id, account_id, serial_number, status, der, pem,
-             not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-             suggested_window_start, suggested_window_end, replaced_by
-             FROM certificates WHERE serial_number = ?1",
-        )?;
-        let mut rows = stmt.query(rusqlite::params![serial])?;
-        if let Some(row) = rows.next()? {
-            Ok(Some(row_from(row)?))
-        } else {
-            Ok(None)
-        }
-    })
-    .await
-    .map_err(AcmeError::from)
+pub async fn get_by_serial(db: &Db, serial: &str) -> Result<Option<CertificateRow>, AcmeError> {
+    let row = sqlx::query_as::<_, CertificateRow>(
+        "SELECT id, order_id, account_id, serial_number, status, der, pem,
+         not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
+         suggested_window_start, suggested_window_end, replaced_by
+         FROM certificates WHERE serial_number = ?",
+    )
+    .bind(serial)
+    .fetch_optional(db)
+    .await?;
+    Ok(row)
 }
 
 /// Look up a certificate by RFC 9773 ARI cert_id.
@@ -106,10 +63,7 @@ pub async fn get_by_serial(
 ///
 /// Only the serial component is used for the DB lookup; the AKI component is
 /// ignored (our CA issues one cert per serial and the AKI is always the same).
-pub async fn get_by_cert_id(
-    db: &Connection,
-    cert_id: &str,
-) -> Result<Option<CertificateRow>, AcmeError> {
+pub async fn get_by_cert_id(db: &Db, cert_id: &str) -> Result<Option<CertificateRow>, AcmeError> {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
 
@@ -131,63 +85,52 @@ pub async fn get_by_cert_id(
 /// concurrent calls are idempotent (the first writer wins).  Returns whether a
 /// row was actually updated.
 pub async fn mark_replaced(
-    db: &Connection,
+    db: &Db,
     cert_uuid: &str,
     replacing_order_id: &str,
 ) -> Result<bool, AcmeError> {
-    let cert_uuid = cert_uuid.to_string();
-    let replacing_order_id = replacing_order_id.to_string();
-    db.call(move |conn| {
-        let n = conn
-            .prepare_cached(
-                "UPDATE certificates SET replaced_by = ?1 \
-                 WHERE id = ?2 AND replaced_by IS NULL",
-            )?
-            .execute(rusqlite::params![replacing_order_id, cert_uuid])?;
-        Ok(n > 0)
-    })
-    .await
-    .map_err(AcmeError::from)
+    let n = sqlx::query(
+        "UPDATE certificates SET replaced_by = ? \
+         WHERE id = ? AND replaced_by IS NULL",
+    )
+    .bind(replacing_order_id)
+    .bind(cert_uuid)
+    .execute(db)
+    .await?
+    .rows_affected();
+    Ok(n > 0)
 }
 
 /// Set a certificate as revoked.
-pub async fn revoke(
-    db: &Connection,
-    id: &str,
-    reason: Option<i64>,
-    now: i64,
-) -> Result<bool, AcmeError> {
-    let id = id.to_string();
-    db.call(move |conn| {
-        let n = conn
-            .prepare_cached(
-                "UPDATE certificates SET status = 'revoked', revoked_at = ?1, revocation_reason = ?2
-             WHERE id = ?3 AND status = 'valid'",
-            )?
-            .execute(rusqlite::params![now, reason, id])?;
-        Ok(n > 0)
-    })
-    .await
-    .map_err(AcmeError::from)
+pub async fn revoke(db: &Db, id: &str, reason: Option<i64>, now: i64) -> Result<bool, AcmeError> {
+    let n = sqlx::query(
+        "UPDATE certificates SET status = 'revoked', revoked_at = ?, revocation_reason = ?
+         WHERE id = ? AND status = 'valid'",
+    )
+    .bind(now)
+    .bind(reason)
+    .bind(id)
+    .execute(db)
+    .await?
+    .rows_affected();
+    Ok(n > 0)
 }
 
 /// Update the MTC log index after appending the certificate to the transparency log.
-pub async fn set_mtc_log_index(db: &Connection, id: &str, index: i64) -> Result<(), AcmeError> {
-    let id = id.to_string();
-    db.call(move |conn| {
-        conn.prepare_cached("UPDATE certificates SET mtc_log_index = ?1 WHERE id = ?2")?
-            .execute(rusqlite::params![index, id])?;
-        Ok(())
-    })
-    .await
-    .map_err(AcmeError::from)
+pub async fn set_mtc_log_index(db: &Db, id: &str, index: i64) -> Result<(), AcmeError> {
+    sqlx::query("UPDATE certificates SET mtc_log_index = ? WHERE id = ?")
+        .bind(index)
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
 }
 
 /// Set renewal window (RFC 9773 ARI).
 ///
 /// Returns `Err` if `start >= end` — a window must be a non-empty interval.
 pub async fn set_renewal_window(
-    db: &Connection,
+    db: &Db,
     id: &str,
     start: i64,
     end: i64,
@@ -197,74 +140,63 @@ pub async fn set_renewal_window(
             "renewal window start ({start}) must be before end ({end})"
         )));
     }
-    let id = id.to_string();
-    db.call(move |conn| {
-        conn.prepare_cached(
-            "UPDATE certificates SET suggested_window_start = ?1, suggested_window_end = ?2
-             WHERE id = ?3",
-        )?
-        .execute(rusqlite::params![start, end, id])?;
-        Ok(())
-    })
-    .await
-    .map_err(AcmeError::from)
+    sqlx::query(
+        "UPDATE certificates SET suggested_window_start = ?, suggested_window_end = ?
+         WHERE id = ?",
+    )
+    .bind(start)
+    .bind(end)
+    .bind(id)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 /// List all revoked certificates (for CRL generation).
-pub async fn list_revoked(db: &Connection) -> Result<Vec<CertificateRow>, AcmeError> {
-    db.call(move |conn| {
-        let mut stmt = conn.prepare_cached(
-            "SELECT id, order_id, account_id, serial_number, status, der, pem,
-             not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-             suggested_window_start, suggested_window_end, replaced_by
-             FROM certificates WHERE status = 'revoked'",
-        )?;
-        let rows = stmt
-            .query_map([], row_from)?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
-    })
-    .await
-    .map_err(AcmeError::from)
+pub async fn list_revoked(db: &Db) -> Result<Vec<CertificateRow>, AcmeError> {
+    let rows = sqlx::query_as::<_, CertificateRow>(
+        "SELECT id, order_id, account_id, serial_number, status, der, pem,
+         not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
+         suggested_window_start, suggested_window_end, replaced_by
+         FROM certificates WHERE status = 'revoked'",
+    )
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
 }
 
 /// List valid (non-revoked, non-expired) certificates for an account.
 pub async fn list_valid_for_account(
-    db: &Connection,
+    db: &Db,
     account_id: &str,
     now: i64,
 ) -> Result<Vec<CertificateRow>, AcmeError> {
-    let account_id = account_id.to_string();
-    db.call(move |conn| {
-        let mut stmt = conn.prepare_cached(
-            "SELECT id, order_id, account_id, serial_number, status, der, pem,
-             not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-             suggested_window_start, suggested_window_end, replaced_by
-             FROM certificates
-             WHERE account_id = ?1 AND status = 'valid' AND not_after > ?2",
-        )?;
-        let rows = stmt
-            .query_map(rusqlite::params![account_id, now], row_from)?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
-    })
-    .await
-    .map_err(AcmeError::from)
+    let rows = sqlx::query_as::<_, CertificateRow>(
+        "SELECT id, order_id, account_id, serial_number, status, der, pem,
+         not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
+         suggested_window_start, suggested_window_end, replaced_by
+         FROM certificates
+         WHERE account_id = ? AND status = 'valid' AND not_after > ?",
+    )
+    .bind(account_id)
+    .bind(now)
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     use crate::db::schema::{AccountRow, OrderRow};
 
-    async fn open_db() -> Arc<Connection> {
-        Arc::new(crate::db::open(":memory:").await.unwrap())
+    async fn open_db() -> Db {
+        crate::db::open(":memory:").await.unwrap()
     }
 
     /// Insert a minimal account + order so that foreign-key constraints pass.
-    async fn insert_parent_rows(db: &Connection, account_id: &str, order_id: &str) {
+    async fn insert_parent_rows(db: &Db, account_id: &str, order_id: &str) {
         let acct = AccountRow {
             id: account_id.to_string(),
             status: "valid".to_string(),
@@ -324,7 +256,7 @@ mod tests {
 
     /// Helper: insert parent rows + cert together.
     async fn insert_cert(
-        db: &Connection,
+        db: &Db,
         id: &str,
         account_id: &str,
         status: &str,
@@ -555,7 +487,14 @@ mod tests {
 
     #[tokio::test]
     async fn db_error_paths_no_table() {
-        let raw = Arc::new(tokio_rusqlite::Connection::open_in_memory().await.unwrap());
+        use sqlx::sqlite::SqliteConnectOptions;
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let raw: Db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(SqliteConnectOptions::new().in_memory(true))
+            .await
+            .unwrap();
         let now = 1_700_000_000i64;
         let row = CertificateRow {
             id: "err-cert".into(),
