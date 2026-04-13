@@ -8,6 +8,12 @@ version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 
+[features]
+default = ["backend-sqlite"]
+backend-sqlite   = ["sqlx/sqlite"]
+backend-postgres = ["sqlx/postgres"]
+backend-mariadb  = ["sqlx/mysql"]
+
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -16,8 +22,8 @@ tokio = { version = "1", features = ["full"] }
 axum = { version = "0.8", features = ["http1", "http2"] }
 tower-http = { version = "0.6", features = ["trace"] }
 
-# Database (async SQLite via sqlx connection pool)
-sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio", "migrate", "derive", "tls-native-tls"] }
+# Database (sqlx with runtime-dispatch Any backend; concrete drivers enabled via features)
+sqlx = { version = "0.8", default-features = false, features = ["any", "runtime-tokio", "migrate", "derive", "tls-native-tls"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
