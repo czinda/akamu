@@ -175,7 +175,31 @@ EOF
 
 # ── Generate BuildRequires ─────────────────────────────────────────────────────
 %generate_buildrequires
-%cargo_generate_buildrequires
+# The full vendor tarball (Source1) bundles every Rust crate dependency,
+# including axum-server 0.8, sqlx 0.8, hickory-resolver 0.24, toml 0.8, and
+# the openssl pqc-prs fork — none of which are available in RHEL 10 / EPEL 10
+# at the required versions.
+#
+# %cargo_generate_buildrequires is intentionally NOT called here.  It emits
+# crate(...) RPM requirements for every registry dependency resolved from
+# Cargo.lock.  In a normal (non-vendored) Fedora build those requirements are
+# satisfied by installed rust-*-devel packages.  In this fully-vendored build
+# the vendor tarball satisfies all crate deps at cargo build time, but the RPM
+# dependency solver has no visibility into the tarball, so unresolvable
+# crate(...) requirements would be generated and the build would fail during
+# the dependency resolution phase.
+#
+# All non-crate build requirements (system libraries, Rust toolchain) are
+# declared statically in the BuildRequires: lines above.
+#
+# NOTE: rust-synta-certificate-devel must be rebuilt with --features pqc
+# enabled (the pqc feature is required by akamu's Cargo.toml).  Without it,
+# %cargo_generate_buildrequires would emit crate(synta-certificate/pqc) which
+# cannot be satisfied by a synta-certificate package built without that feature.
+# Since we bypass %cargo_generate_buildrequires entirely this is moot for the
+# build resolver, but the actual cargo compile will still require the pqc
+# feature's code to be present — which it is, via the vendor tarball.
+rust >= 1.56
 
 
 # ── Build ──────────────────────────────────────────────────────────────────────
