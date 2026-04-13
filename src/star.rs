@@ -3,7 +3,10 @@
 //! Spawned once at startup; wakes every 60 seconds (configurable) and:
 //! 1. Queries all active STAR orders (valid, not canceled, end_date in the future).
 //! 2. For each order: if the current cert is in the second half of its validity
-//!    period, issues a new certificate from the stored CSR DER.
+//!    period, issues a new certificate from the stored CSR DER.  The new cert's
+//!    `notBefore` is set to `previous_notAfter - lifetime_adjust_secs` when the
+//!    order carries a non-zero `lifetime-adjust` (RFC 8739 §3.1.1), creating a
+//!    renewal overlap window; otherwise `notBefore` is the current time.
 //! 3. Inserts the new cert and updates the order's certificate_id.
 //!
 //! Any errors are logged with `tracing::error!` — the task never panics.
@@ -146,9 +149,18 @@ async fn run_once(state: &Arc<AppState>) {
         };
 
         // Calculate the validity window for the new cert.
-        // notBefore = now, notAfter = min(now + lifetime_secs, end_date).
-        let not_before = Some(now);
-        let not_after_raw = now + lifetime_secs;
+        // RFC 8739 §3.1.1: when lifetime-adjust is non-zero, pre-date notBefore
+        // relative to the previous certificate's notAfter to create a renewal
+        // overlap window (both old and new cert are valid simultaneously).
+        // When lifetime-adjust is 0 (the default), use "now" as notBefore.
+        let adjust = order.star_lifetime_adjust_secs;
+        let not_before_ts = if adjust > 0 {
+            cert.not_after - adjust
+        } else {
+            now
+        };
+        let not_before = Some(not_before_ts);
+        let not_after_raw = not_before_ts + lifetime_secs;
         let not_after = Some(not_after_raw.min(end_date));
 
         let ca = &state.ca;
