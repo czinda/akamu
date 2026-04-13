@@ -1,9 +1,9 @@
-use crate::db::Db;
+use crate::db::{Db, DbKind};
 use crate::error::AcmeError;
 
 /// Insert a new nonce (must be called before returning it to the client).
 pub async fn insert(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     nonce: &str,
 ) -> Result<(), AcmeError> {
     let now = now_secs();
@@ -18,7 +18,7 @@ pub async fn insert(
 /// Consume a nonce: returns true if the nonce existed and was deleted,
 /// false if it did not exist (replay or unknown).
 pub async fn consume(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     nonce: &str,
 ) -> Result<bool, AcmeError> {
     let n = sqlx::query("DELETE FROM nonces WHERE nonce = ?")
@@ -36,17 +36,14 @@ pub async fn consume(
 ///
 /// Keeps `&Db` (not `impl Executor`) because it calls [`crate::db::begin_write`]
 /// for internal atomicity — a pool reference is required to start a transaction.
-///
-/// Uses `BEGIN IMMEDIATE` so that the DELETE + INSERT pair is atomic and the
-/// write lock is acquired up-front, preventing `SQLITE_BUSY_SNAPSHOT` when
-/// the pool has more than one connection.
 pub async fn consume_and_insert(
     db: &Db,
+    kind: DbKind,
     old_nonce: &str,
     new_nonce: &str,
 ) -> Result<bool, AcmeError> {
     let now = now_secs();
-    let mut tx = crate::db::begin_write(db).await?;
+    let mut tx = crate::db::begin_write(db, kind).await?;
 
     let n = sqlx::query("DELETE FROM nonces WHERE nonce = ?")
         .bind(old_nonce)
@@ -71,7 +68,7 @@ pub async fn consume_and_insert(
 
 /// Delete nonces older than `max_age_secs` seconds.
 pub async fn sweep_expired(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     max_age_secs: i64,
 ) -> Result<u64, AcmeError> {
     let cutoff = now_secs().saturating_sub(max_age_secs);
@@ -95,7 +92,10 @@ mod tests {
     use super::*;
 
     async fn open_db() -> Db {
-        crate::db::open(":memory:").await.unwrap()
+        crate::db::install_drivers();
+        crate::db::open("sqlite::memory:", 1, "./migrations/sqlite")
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
@@ -151,12 +151,10 @@ mod tests {
 
     #[tokio::test]
     async fn db_error_paths_no_table() {
-        use sqlx::sqlite::SqliteConnectOptions;
-        use sqlx::sqlite::SqlitePoolOptions;
-
-        let raw: Db = SqlitePoolOptions::new()
+        crate::db::install_drivers();
+        let raw: Db = sqlx::any::AnyPoolOptions::new()
             .max_connections(1)
-            .connect_with(SqliteConnectOptions::new().in_memory(true))
+            .connect("sqlite::memory:")
             .await
             .unwrap();
         assert!(insert(&raw, "any-nonce").await.is_err());

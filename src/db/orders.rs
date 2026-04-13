@@ -2,7 +2,7 @@ use crate::db::schema::OrderRow;
 use crate::error::AcmeError;
 
 pub async fn insert(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     row: OrderRow,
 ) -> Result<(), AcmeError> {
     sqlx::query(
@@ -39,7 +39,7 @@ pub async fn insert(
 
 /// Cancel a STAR order by setting star_canceled_at to the current timestamp.
 pub async fn cancel_star(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
     now: i64,
 ) -> Result<(), AcmeError> {
@@ -54,7 +54,7 @@ pub async fn cancel_star(
 
 /// List all active STAR orders (star_end_date set, not canceled, status = 'valid').
 pub async fn list_active_star(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
 ) -> Result<Vec<OrderRow>, AcmeError> {
     let rows = sqlx::query_as::<_, OrderRow>(
         "SELECT id, account_id, status, expires, identifiers,
@@ -71,7 +71,7 @@ pub async fn list_active_star(
 
 /// Store the CSR DER on an order (set during finalize for STAR orders).
 pub async fn set_star_csr(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
     csr_der: Vec<u8>,
 ) -> Result<(), AcmeError> {
@@ -84,7 +84,7 @@ pub async fn set_star_csr(
 }
 
 pub async fn get_by_id(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
 ) -> Result<Option<OrderRow>, AcmeError> {
     let row = sqlx::query_as::<_, OrderRow>(
@@ -101,7 +101,7 @@ pub async fn get_by_id(
 }
 
 pub async fn update_status(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
     status: &str,
     error: Option<String>,
@@ -118,7 +118,7 @@ pub async fn update_status(
 }
 
 pub async fn set_certificate(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
     certificate_id: &str,
     now: i64,
@@ -139,7 +139,7 @@ pub async fn set_certificate(
 /// Accepts `impl Executor` (single query), so callers can pass either `&pool`
 /// or `&mut *tx`.  The previous two-query implementation required `&Db`.
 pub async fn get_with_authz_ids(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     order_id: &str,
 ) -> Result<Option<(OrderRow, Vec<String>)>, AcmeError> {
     // One LEFT JOIN returns N rows (one per authz, or 1 row with NULL authz_id
@@ -164,7 +164,7 @@ pub async fn get_with_authz_ids(
         star_end_date: Option<i64>,
         star_lifetime_secs: Option<i64>,
         star_lifetime_adjust_secs: i64,
-        star_allow_cert_get: bool,
+        star_allow_cert_get: i64,
         star_canceled_at: Option<i64>,
         star_csr_der: Option<Vec<u8>>,
         profile: Option<String>,
@@ -223,7 +223,7 @@ pub async fn get_with_authz_ids(
 
 /// List all authorization IDs belonging to an order.
 pub async fn list_authz_ids(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     order_id: &str,
 ) -> Result<Vec<String>, AcmeError> {
     let ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM authorizations WHERE order_id = ?")
@@ -241,7 +241,10 @@ mod tests {
     use crate::db::Db;
 
     async fn open_db() -> Db {
-        crate::db::open(":memory:").await.unwrap()
+        crate::db::install_drivers();
+        crate::db::open("sqlite::memory:", 1, "./migrations/sqlite")
+            .await
+            .unwrap()
     }
 
     async fn insert_account(db: &Db, account_id: &str) {
@@ -279,7 +282,7 @@ mod tests {
             star_end_date: None,
             star_lifetime_secs: None,
             star_lifetime_adjust_secs: 0,
-            star_allow_cert_get: false,
+            star_allow_cert_get: 0,
             star_canceled_at: None,
             star_csr_der: None,
             profile: None,
@@ -394,8 +397,8 @@ mod tests {
                 status: "pending".to_string(),
                 identifier: "{\"type\":\"dns\",\"value\":\"example.com\"}".to_string(),
                 expires: None,
-                wildcard: false,
-                subdomain_auth_allowed: false,
+                wildcard: 0,
+                subdomain_auth_allowed: 0,
                 created: 1_700_000_000,
                 updated: 1_700_000_000,
             },
@@ -409,12 +412,10 @@ mod tests {
 
     #[tokio::test]
     async fn db_error_paths_no_table() {
-        use sqlx::sqlite::SqliteConnectOptions;
-        use sqlx::sqlite::SqlitePoolOptions;
-
-        let raw: Db = SqlitePoolOptions::new()
+        crate::db::install_drivers();
+        let raw: Db = sqlx::any::AnyPoolOptions::new()
             .max_connections(1)
-            .connect_with(SqliteConnectOptions::new().in_memory(true))
+            .connect("sqlite::memory:")
             .await
             .unwrap();
         assert!(insert(&raw, sample_order("err-order", "err-acct"))

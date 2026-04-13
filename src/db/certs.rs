@@ -2,7 +2,7 @@ use crate::db::schema::CertificateRow;
 use crate::error::AcmeError;
 
 pub async fn insert(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     row: CertificateRow,
 ) -> Result<(), AcmeError> {
     sqlx::query(
@@ -33,7 +33,7 @@ pub async fn insert(
 }
 
 pub async fn get_by_id(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
 ) -> Result<Option<CertificateRow>, AcmeError> {
     let row = sqlx::query_as::<_, CertificateRow>(
@@ -49,7 +49,7 @@ pub async fn get_by_id(
 }
 
 pub async fn get_by_serial(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     serial: &str,
 ) -> Result<Option<CertificateRow>, AcmeError> {
     let row = sqlx::query_as::<_, CertificateRow>(
@@ -72,7 +72,7 @@ pub async fn get_by_serial(
 /// Only the serial component is used for the DB lookup; the AKI component is
 /// ignored (our CA issues one cert per serial and the AKI is always the same).
 pub async fn get_by_cert_id(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     cert_id: &str,
 ) -> Result<Option<CertificateRow>, AcmeError> {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -96,7 +96,7 @@ pub async fn get_by_cert_id(
 /// concurrent calls are idempotent (the first writer wins).  Returns whether a
 /// row was actually updated.
 pub async fn mark_replaced(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     cert_uuid: &str,
     replacing_order_id: &str,
 ) -> Result<bool, AcmeError> {
@@ -114,7 +114,7 @@ pub async fn mark_replaced(
 
 /// Set a certificate as revoked.
 pub async fn revoke(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
     reason: Option<i64>,
     now: i64,
@@ -134,7 +134,7 @@ pub async fn revoke(
 
 /// Update the MTC log index after appending the certificate to the transparency log.
 pub async fn set_mtc_log_index(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
     index: i64,
 ) -> Result<(), AcmeError> {
@@ -150,7 +150,7 @@ pub async fn set_mtc_log_index(
 ///
 /// Returns `Err` if `start >= end` — a window must be a non-empty interval.
 pub async fn set_renewal_window(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
     start: i64,
     end: i64,
@@ -174,7 +174,7 @@ pub async fn set_renewal_window(
 
 /// List all revoked certificates (for CRL generation).
 pub async fn list_revoked(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
 ) -> Result<Vec<CertificateRow>, AcmeError> {
     let rows = sqlx::query_as::<_, CertificateRow>(
         "SELECT id, order_id, account_id, serial_number, status, der, pem,
@@ -189,7 +189,7 @@ pub async fn list_revoked(
 
 /// List valid (non-revoked, non-expired) certificates for an account.
 pub async fn list_valid_for_account(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     account_id: &str,
     now: i64,
 ) -> Result<Vec<CertificateRow>, AcmeError> {
@@ -212,7 +212,7 @@ pub async fn list_valid_for_account(
 /// Used by the STAR certificate endpoint (RFC 8739 §3.3) to serve the current
 /// certificate without embedding the query directly in the route handler.
 pub async fn get_latest_for_order(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     order_id: &str,
 ) -> Result<Option<CertificateRow>, AcmeError> {
     let row = sqlx::query_as::<_, CertificateRow>(
@@ -238,7 +238,10 @@ mod tests {
     use crate::db::Db;
 
     async fn open_db() -> Db {
-        crate::db::open(":memory:").await.unwrap()
+        crate::db::install_drivers();
+        crate::db::open("sqlite::memory:", 1, "./migrations/sqlite")
+            .await
+            .unwrap()
     }
 
     /// Insert a minimal account + order so that foreign-key constraints pass.
@@ -271,7 +274,7 @@ mod tests {
             star_end_date: None,
             star_lifetime_secs: None,
             star_lifetime_adjust_secs: 0,
-            star_allow_cert_get: false,
+            star_allow_cert_get: 0,
             star_canceled_at: None,
             star_csr_der: None,
             profile: None,
@@ -527,12 +530,10 @@ mod tests {
 
     #[tokio::test]
     async fn db_error_paths_no_table() {
-        use sqlx::sqlite::SqliteConnectOptions;
-        use sqlx::sqlite::SqlitePoolOptions;
-
-        let raw: Db = SqlitePoolOptions::new()
+        crate::db::install_drivers();
+        let raw: Db = sqlx::any::AnyPoolOptions::new()
             .max_connections(1)
-            .connect_with(SqliteConnectOptions::new().in_memory(true))
+            .connect("sqlite::memory:")
             .await
             .unwrap();
         let now = 1_700_000_000i64;

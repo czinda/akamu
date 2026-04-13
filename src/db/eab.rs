@@ -18,21 +18,24 @@ pub struct EabKeyRow {
 
 /// Seed a key from the config file.
 ///
-/// Uses `INSERT OR IGNORE` so that a key that already exists in the DB
-/// (possibly modified or marked used by the admin endpoint) is left alone.
+/// Uses a portable `WHERE NOT EXISTS` subquery so that a key that already
+/// exists in the DB (possibly modified or marked used by the admin endpoint)
+/// is left alone.  This replaces `INSERT OR IGNORE` which is SQLite-specific.
 pub async fn insert_if_absent(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     kid: &str,
     hmac_key_b64u: &str,
     now: i64,
 ) -> Result<(), AcmeError> {
     sqlx::query(
-        "INSERT OR IGNORE INTO eab_keys (kid, hmac_key_b64u, created) \
-         VALUES (?, ?, ?)",
+        "INSERT INTO eab_keys (kid, hmac_key_b64u, created) \
+         SELECT ?, ?, ? \
+         WHERE NOT EXISTS (SELECT 1 FROM eab_keys WHERE kid = ?)",
     )
     .bind(kid)
     .bind(hmac_key_b64u)
     .bind(now)
+    .bind(kid)
     .execute(executor)
     .await?;
     Ok(())
@@ -42,7 +45,7 @@ pub async fn insert_if_absent(
 ///
 /// Returns a `Conflict` error if a key with the same `kid` already exists.
 pub async fn insert(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     kid: &str,
     hmac_key_b64u: &str,
     now: i64,
@@ -58,7 +61,7 @@ pub async fn insert(
 
 /// Look up a key by its `kid`.  Returns `None` if the `kid` is unknown.
 pub async fn get_by_kid(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     kid: &str,
 ) -> Result<Option<EabKeyRow>, AcmeError> {
     let row = sqlx::query_as::<_, EabKeyRow>(
@@ -76,7 +79,7 @@ pub async fn get_by_kid(
 /// Pass `&mut *tx` to call this atomically within an existing transaction,
 /// ensuring the key is consumed only when account creation fully commits.
 pub async fn mark_used(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     kid: &str,
     now: i64,
 ) -> Result<(), AcmeError> {
@@ -90,7 +93,7 @@ pub async fn mark_used(
 
 /// Delete a key entirely (for the future admin endpoint cleanup path).
 pub async fn delete(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     kid: &str,
 ) -> Result<(), AcmeError> {
     sqlx::query("DELETE FROM eab_keys WHERE kid = ?")
@@ -106,7 +109,10 @@ mod tests {
     use crate::db::Db;
 
     async fn open_db() -> Db {
-        crate::db::open(":memory:").await.unwrap()
+        crate::db::install_drivers();
+        crate::db::open("sqlite::memory:", 1, "./migrations/sqlite")
+            .await
+            .unwrap()
     }
 
     #[tokio::test]

@@ -2,7 +2,7 @@ use crate::db::schema::AccountRow;
 use crate::error::AcmeError;
 
 pub async fn insert(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     row: AccountRow,
 ) -> Result<(), AcmeError> {
     sqlx::query(
@@ -22,7 +22,7 @@ pub async fn insert(
 }
 
 pub async fn get_by_id(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
 ) -> Result<Option<AccountRow>, AcmeError> {
     let row = sqlx::query_as::<_, AccountRow>(
@@ -36,7 +36,7 @@ pub async fn get_by_id(
 }
 
 pub async fn get_by_thumbprint(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     thumbprint: &str,
 ) -> Result<Option<AccountRow>, AcmeError> {
     let row = sqlx::query_as::<_, AccountRow>(
@@ -50,7 +50,7 @@ pub async fn get_by_thumbprint(
 }
 
 pub async fn update_contact(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
     contact: Option<String>,
     now: i64,
@@ -68,7 +68,7 @@ pub async fn update_contact(
 }
 
 pub async fn update_status(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
     status: &str,
     now: i64,
@@ -85,7 +85,7 @@ pub async fn update_status(
 
 /// Update the account's JWK thumbprint and public key (for key rollover).
 pub async fn update_key(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
     public_key: Vec<u8>,
     jwk_thumbprint: String,
@@ -111,7 +111,10 @@ mod tests {
     use crate::db::Db;
 
     async fn open_db() -> Db {
-        crate::db::open(":memory:").await.unwrap()
+        crate::db::install_drivers();
+        crate::db::open("sqlite::memory:", 1, "./migrations/sqlite")
+            .await
+            .unwrap()
     }
 
     fn sample_account(id: &str) -> AccountRow {
@@ -277,13 +280,11 @@ mod tests {
     /// "no such table", which exercises the error-return paths.
     #[tokio::test]
     async fn db_error_paths_no_table() {
-        use sqlx::sqlite::SqliteConnectOptions;
-        use sqlx::sqlite::SqlitePoolOptions;
-
+        crate::db::install_drivers();
         // Raw pool — no migrations run, so no tables exist.
-        let raw: Db = SqlitePoolOptions::new()
+        let raw: Db = sqlx::any::AnyPoolOptions::new()
             .max_connections(1)
-            .connect_with(SqliteConnectOptions::new().in_memory(true))
+            .connect("sqlite::memory:")
             .await
             .unwrap();
 

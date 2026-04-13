@@ -2,7 +2,7 @@ use crate::db::schema::{AuthorizationRow, ChallengeRow};
 use crate::error::AcmeError;
 
 pub async fn insert(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     row: AuthorizationRow,
 ) -> Result<(), AcmeError> {
     sqlx::query(
@@ -27,7 +27,7 @@ pub async fn insert(
 }
 
 pub async fn get_by_id(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
 ) -> Result<Option<AuthorizationRow>, AcmeError> {
     let row = sqlx::query_as::<_, AuthorizationRow>(
@@ -42,7 +42,7 @@ pub async fn get_by_id(
 }
 
 pub async fn list_by_order(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     order_id: &str,
 ) -> Result<Vec<AuthorizationRow>, AcmeError> {
     let rows = sqlx::query_as::<_, AuthorizationRow>(
@@ -64,7 +64,7 @@ pub async fn list_by_order(
 /// or `&mut *tx` — enabling transaction-scoped usage without an extra
 /// `impl Executor` bound on the two-query wrapper that existed before.
 pub async fn get_with_challenges(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     authz_id: &str,
 ) -> Result<Option<(AuthorizationRow, Vec<ChallengeRow>)>, AcmeError> {
     #[derive(sqlx::FromRow)]
@@ -76,8 +76,8 @@ pub async fn get_with_challenges(
         authz_status: String,
         identifier: String,
         expires: Option<i64>,
-        wildcard: bool,
-        subdomain_auth_allowed: bool,
+        wildcard: i64,
+        subdomain_auth_allowed: i64,
         authz_created: i64,
         authz_updated: i64,
         // Challenge columns (all nullable: LEFT JOIN returns NULL when no challenges)
@@ -163,7 +163,7 @@ pub async fn get_with_challenges(
 /// Returns the first matching row (status `pending` or `valid`, not yet expired),
 /// or `None` if no such authorization exists. Used by `new-authz` to deduplicate.
 pub async fn find_valid_by_account_and_identifier(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     account_id: &str,
     identifier_json: &str,
     now: i64,
@@ -187,7 +187,7 @@ pub async fn find_valid_by_account_and_identifier(
 }
 
 pub async fn update_status(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
     status: &str,
     now: i64,
@@ -209,7 +209,10 @@ mod tests {
     use crate::db::Db;
 
     async fn open_db() -> Db {
-        crate::db::open(":memory:").await.unwrap()
+        crate::db::install_drivers();
+        crate::db::open("sqlite::memory:", 1, "./migrations/sqlite")
+            .await
+            .unwrap()
     }
 
     async fn insert_parents(db: &Db, account_id: &str, order_id: &str) {
@@ -247,7 +250,7 @@ mod tests {
                 star_end_date: None,
                 star_lifetime_secs: None,
                 star_lifetime_adjust_secs: 0,
-                star_allow_cert_get: false,
+                star_allow_cert_get: 0,
                 star_canceled_at: None,
                 star_csr_der: None,
                 profile: None,
@@ -265,8 +268,8 @@ mod tests {
             status: "pending".to_string(),
             identifier: "{\"type\":\"dns\",\"value\":\"example.com\"}".to_string(),
             expires: None,
-            wildcard: false,
-            subdomain_auth_allowed: false,
+            wildcard: 0,
+            subdomain_auth_allowed: 0,
             created: 1_700_000_000,
             updated: 1_700_000_000,
         }
@@ -283,7 +286,7 @@ mod tests {
         let row = get_by_id(&db, "authz-1").await.unwrap().unwrap();
         assert_eq!(row.id, "authz-1");
         assert_eq!(row.status, "pending");
-        assert!(!row.wildcard);
+        assert_eq!(row.wildcard, 0);
     }
 
     #[tokio::test]
@@ -309,8 +312,8 @@ mod tests {
                 status: "valid".to_string(),
                 identifier: "{\"type\":\"dns\",\"value\":\"other.com\"}".to_string(),
                 expires: None,
-                wildcard: true,
-                subdomain_auth_allowed: false,
+                wildcard: 1,
+                subdomain_auth_allowed: 0,
                 created: 1_700_000_000,
                 updated: 1_700_000_000,
             },
@@ -353,12 +356,10 @@ mod tests {
 
     #[tokio::test]
     async fn db_error_paths_no_table() {
-        use sqlx::sqlite::SqliteConnectOptions;
-        use sqlx::sqlite::SqlitePoolOptions;
-
-        let raw: Db = SqlitePoolOptions::new()
+        crate::db::install_drivers();
+        let raw: Db = sqlx::any::AnyPoolOptions::new()
             .max_connections(1)
-            .connect_with(SqliteConnectOptions::new().in_memory(true))
+            .connect("sqlite::memory:")
             .await
             .unwrap();
         let row = sample_authz("err-authz", "err-order", "err-acct");

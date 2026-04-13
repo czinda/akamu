@@ -2,7 +2,7 @@ use crate::db::schema::ChallengeRow;
 use crate::error::AcmeError;
 
 pub async fn insert(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     row: ChallengeRow,
 ) -> Result<(), AcmeError> {
     sqlx::query(
@@ -24,7 +24,7 @@ pub async fn insert(
 }
 
 pub async fn get_by_id(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
 ) -> Result<Option<ChallengeRow>, AcmeError> {
     let row = sqlx::query_as::<_, ChallengeRow>(
@@ -38,7 +38,7 @@ pub async fn get_by_id(
 }
 
 pub async fn list_by_authz(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     authz_id: &str,
 ) -> Result<Vec<ChallengeRow>, AcmeError> {
     let rows = sqlx::query_as::<_, ChallengeRow>(
@@ -52,7 +52,7 @@ pub async fn list_by_authz(
 }
 
 pub async fn set_processing(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
     now: i64,
 ) -> Result<(), AcmeError> {
@@ -65,7 +65,7 @@ pub async fn set_processing(
 }
 
 pub async fn set_valid(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
     validated: i64,
 ) -> Result<(), AcmeError> {
@@ -85,7 +85,7 @@ pub async fn set_valid(
 /// Used by the finalize handler to supply a real challenge type to the CAA
 /// `validationmethods` check (RFC 8657).
 pub async fn get_validated_type(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     authz_id: &str,
 ) -> Result<Option<String>, AcmeError> {
     let row: Option<(String,)> = sqlx::query_as(
@@ -98,7 +98,7 @@ pub async fn get_validated_type(
 }
 
 pub async fn set_invalid(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Sqlite>,
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
     error: String,
     now: i64,
@@ -120,7 +120,10 @@ mod tests {
     use crate::db::Db;
 
     async fn open_db() -> Db {
-        crate::db::open(":memory:").await.unwrap()
+        crate::db::install_drivers();
+        crate::db::open("sqlite::memory:", 1, "./migrations/sqlite")
+            .await
+            .unwrap()
     }
 
     async fn insert_parents(db: &Db, account_id: &str, order_id: &str, authz_id: &str) {
@@ -158,7 +161,7 @@ mod tests {
                 star_end_date: None,
                 star_lifetime_secs: None,
                 star_lifetime_adjust_secs: 0,
-                star_allow_cert_get: false,
+                star_allow_cert_get: 0,
                 star_canceled_at: None,
                 star_csr_der: None,
                 profile: None,
@@ -176,8 +179,8 @@ mod tests {
                 status: "pending".to_string(),
                 identifier: "{\"type\":\"dns\",\"value\":\"example.com\"}".to_string(),
                 expires: None,
-                wildcard: false,
-                subdomain_auth_allowed: false,
+                wildcard: 0,
+                subdomain_auth_allowed: 0,
                 created: 1_700_000_000,
                 updated: 1_700_000_000,
             },
@@ -349,12 +352,10 @@ mod tests {
 
     #[tokio::test]
     async fn db_error_paths_no_table() {
-        use sqlx::sqlite::SqliteConnectOptions;
-        use sqlx::sqlite::SqlitePoolOptions;
-
-        let raw: Db = SqlitePoolOptions::new()
+        crate::db::install_drivers();
+        let raw: Db = sqlx::any::AnyPoolOptions::new()
             .max_connections(1)
-            .connect_with(SqliteConnectOptions::new().in_memory(true))
+            .connect("sqlite::memory:")
             .await
             .unwrap();
         assert!(insert(&raw, sample_challenge("err-chall", "err-authz"))
