@@ -114,6 +114,44 @@ pub struct RenewalInfo {
     pub retry_after_secs: Option<u64>,
 }
 
+/// Parameters for a STAR (Short-Term, Automatically Renewed) order (RFC 8739 §3.1).
+///
+/// At minimum, `end_date` and `lifetime_secs` must be provided.
+pub struct StarOrderParams<'a> {
+    /// Identifiers to certify (same as a normal order).
+    pub identifiers: &'a [Identifier],
+    /// The latest acceptable `notAfter` of the last automatically renewed certificate
+    /// (RFC 8739 §3.1, RFC 3339 string).  The server MUST NOT issue certificates
+    /// whose `notAfter` exceeds this value.
+    pub end_date: &'a str,
+    /// Validity period of each certificate, in seconds.
+    pub lifetime_secs: u64,
+    /// Earliest `notBefore` of the first certificate (RFC 3339 string). Defaults to
+    /// when the order becomes ready when absent.
+    pub start_date: Option<&'a str>,
+    /// Pre-date each certificate's `notBefore` by this many seconds for clock-skew
+    /// tolerance (RFC 8739 §3.1.1). Default: 0.
+    pub lifetime_adjust_secs: u64,
+    /// When `true`, the rolling `star-certificate` URL may be fetched with an
+    /// unauthenticated GET (RFC 8739 §3.1.3).
+    pub allow_certificate_get: bool,
+}
+
+/// A STAR order response.  Returned by `AcmeClient::star_order()` after finalization.
+#[derive(Debug, Clone)]
+pub struct StarOrder {
+    /// URL of the order object.
+    pub url: String,
+    /// Status of the order (`"pending"`, `"ready"`, `"valid"`, `"canceled"`).
+    pub status: String,
+    /// Finalize URL (for submitting the CSR).
+    pub finalize: String,
+    /// Authorization URLs.
+    pub authorizations: Vec<String>,
+    /// Rolling certificate URL (present when status is `"valid"`).
+    pub star_certificate: Option<String>,
+}
+
 /// Options for account registration; passed to `AcmeClient::new_account()`.
 pub struct AccountOptions<'a> {
     /// Contact URIs (e.g. `"mailto:admin@example.com"`).

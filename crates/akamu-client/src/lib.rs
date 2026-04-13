@@ -18,4 +18,5 @@ pub use onion::build_onion_csr;
 pub use synta_certificate::pem_to_der;
 pub use types::{
     AccountOptions, Authorization, Challenge, EabOptions, Identifier, Order, RenewalInfo,
+    StarOrder, StarOrderParams,
 };
