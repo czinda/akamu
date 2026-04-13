@@ -20,7 +20,6 @@ This page documents every RFC that is relevant to `Akāmu`, explaining what each
 | [RFC 9773](#rfc-9773-acme-renewal-information-ari) | ACME Renewal Information (ARI) | Full |
 | [RFC 9799](#rfc-9799-acme-for-onion-domains) | ACME Extensions for .onion Special-Use Domain Names | Full |
 | [RFC 5280](#rfc-5280-x509-certificate-profile) | X.509 Certificate and CRL Profile | Full |
-| [RFC 7807](#rfc-7807-problem-details-for-http-apis) | Problem Details for HTTP APIs | Full |
 | [RFC 8823](#rfc-8823-smime-certificates-informational) | ACME Extensions for S/MIME Certificates | Not implemented |
 | [RFC 9115](#rfc-9115-acme-profile-for-delegated-certificates) | ACME Profile for Delegated Certificates | Not implemented |
 | [RFC 9345](#rfc-9345-delegated-credentials-for-tls) | Delegated Credentials for TLS | Not implemented |
