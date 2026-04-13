@@ -393,7 +393,8 @@ async fn start_tls_server() -> TlsTestServer {
         listen_addr: format!("127.0.0.1:{}", addr.port()),
         base_url: base_url.clone(),
         database: DatabaseConfig {
-            path: ":memory:".into(),
+            url: "sqlite::memory:".into(),
+            max_connections: None,
         },
         ca: CaConfig {
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
@@ -432,7 +433,10 @@ async fn start_tls_server() -> TlsTestServer {
         );
     }
 
-    let db_conn = db::open(":memory:").await.unwrap();
+    db::install_drivers();
+    let db_conn = db::open("sqlite::memory:", 1, "./migrations/sqlite")
+        .await
+        .unwrap();
 
     let ca_state = Arc::new(CaState {
         key: ca_key,
@@ -458,6 +462,7 @@ async fn start_tls_server() -> TlsTestServer {
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db_conn.clone(),
+        db_kind: db::DbKind::Sqlite,
         ca: ca_state,
         mtc: Arc::new(MtcState {
             log: None,

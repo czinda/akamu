@@ -194,7 +194,8 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         listen_addr: "127.0.0.1:0".into(),
         base_url: base_url.into(),
         database: DatabaseConfig {
-            path: ":memory:".into(),
+            url: "sqlite::memory:".into(),
+            max_connections: None,
         },
         ca: CaConfig {
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
@@ -219,11 +220,15 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
     let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();
     let ca_aki_bytes = ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
-    let db_conn = db::open(":memory:").await.unwrap();
+    db::install_drivers();
+    let db_conn = db::open("sqlite::memory:", 1, "./migrations/sqlite")
+        .await
+        .unwrap();
 
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db_conn.clone(),
+        db_kind: db::DbKind::Sqlite,
         ca: Arc::new(CaState {
             key: ca_key,
             cert_der: ca_cert_der,
@@ -2163,7 +2168,8 @@ async fn test_directory_with_optional_fields() {
         listen_addr: "127.0.0.1:0".into(),
         base_url: base_url.into(),
         database: DatabaseConfig {
-            path: ":memory:".into(),
+            url: "sqlite::memory:".into(),
+            max_connections: None,
         },
         ca: CaConfig {
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
@@ -2191,10 +2197,14 @@ async fn test_directory_with_optional_fields() {
         tls: Default::default(),
     });
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
-    let db_conn = db::open(":memory:").await.unwrap();
+    db::install_drivers();
+    let db_conn = db::open("sqlite::memory:", 1, "./migrations/sqlite")
+        .await
+        .unwrap();
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db_conn.clone(),
+        db_kind: db::DbKind::Sqlite,
         ca: Arc::new(akamu::state::CaState {
             key: ca_key,
             cert_der: ca_cert_der,
@@ -2508,7 +2518,8 @@ async fn test_finalize_with_mtc_enabled() {
         listen_addr: "127.0.0.1:0".into(),
         base_url: base_url.into(),
         database: DatabaseConfig {
-            path: ":memory:".into(),
+            url: "sqlite::memory:".into(),
+            max_connections: None,
         },
         ca: CaConfig {
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
@@ -2531,7 +2542,10 @@ async fn test_finalize_with_mtc_enabled() {
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
-    let db_conn = db::open(":memory:").await.unwrap();
+    db::install_drivers();
+    let db_conn = db::open("sqlite::memory:", 1, "./migrations/sqlite")
+        .await
+        .unwrap();
     let algorithm = HashAlgorithm::Sha256;
     let mtc_log = log::open_or_create(&log_path, algorithm).unwrap();
     let shared_log = Arc::new(Mutex::new(mtc_log));
@@ -2539,6 +2553,7 @@ async fn test_finalize_with_mtc_enabled() {
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db_conn.clone(),
+        db_kind: db::DbKind::Sqlite,
         ca: Arc::new(CaState {
             key: ca_key,
             cert_der: ca_cert_der,
@@ -2735,7 +2750,8 @@ async fn test_finalize_with_aia_and_cdp() {
         listen_addr: "127.0.0.1:0".into(),
         base_url: base_url.into(),
         database: DatabaseConfig {
-            path: ":memory:".into(),
+            url: "sqlite::memory:".into(),
+            max_connections: None,
         },
         ca: CaConfig {
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
@@ -2757,10 +2773,14 @@ async fn test_finalize_with_aia_and_cdp() {
         tls: Default::default(),
     });
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
-    let db_conn = db::open(":memory:").await.unwrap();
+    db::install_drivers();
+    let db_conn = db::open("sqlite::memory:", 1, "./migrations/sqlite")
+        .await
+        .unwrap();
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db_conn.clone(),
+        db_kind: db::DbKind::Sqlite,
         ca: Arc::new(CaState {
             key: ca_key,
             cert_der: ca_cert_der,

@@ -206,8 +206,9 @@ struct Args {
     #[arg(long, default_value = "ec:P-256")]
     ca_key_type: String,
 
-    /// SQLite database path — :memory: or a file path
-    #[arg(long, default_value = ":memory:")]
+    /// Database URL — `sqlite::memory:`, `sqlite://path/to/db`,
+    /// `postgres://user:pass@host/db`, or `mariadb://user:pass@host/db`
+    #[arg(long, default_value = "sqlite::memory:")]
     db: String,
 
     /// SQLite connection pool size.  Ignored (clamped to 1) when --db is :memory:,
@@ -674,7 +675,8 @@ async fn start_server(args: &Args) -> BenchServer {
         listen_addr: addr.to_string(),
         base_url: base_url.clone(),
         database: DatabaseConfig {
-            path: args.db.clone(),
+            url: args.db.clone(),
+            max_connections: None,
         },
         ca: CaConfig {
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
@@ -706,18 +708,26 @@ async fn start_server(args: &Args) -> BenchServer {
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
     let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();
     let ca_aki_bytes = akamu::ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
-    // Clamp pool size to 1 for :memory: (each connection gets its own DB).
-    let effective_pool = if args.db == ":memory:" {
+    db::install_drivers();
+    let db_kind = db::DbKind::from_url(&args.db);
+    // Clamp pool size to 1 for sqlite::memory: (each connection gets its own DB).
+    let effective_pool = if db_kind == db::DbKind::Sqlite && args.db.contains(":memory:") {
         1
     } else {
         args.pool_connections.max(1)
     };
-    let db_conn = db::open_with_connections(&args.db, effective_pool)
+    let migrations_dir = match db_kind {
+        db::DbKind::Sqlite => "migrations/sqlite",
+        db::DbKind::Postgres => "migrations/postgres",
+        db::DbKind::MariaDb => "migrations/mariadb",
+    };
+    let db_conn = db::open(&args.db, effective_pool, migrations_dir)
         .await
         .unwrap();
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db_conn,
+        db_kind,
         ca: Arc::new(CaState {
             key: ca_key,
             cert_der: ca_cert_der,
@@ -1296,7 +1306,7 @@ fn text_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64, mem: &M
     };
 
     println!("\nACME Benchmark");
-    let effective_pool = if args.db == ":memory:" {
+    let effective_pool = if args.db.contains(":memory:") {
         1
     } else {
         args.pool_connections.max(1)
@@ -1446,7 +1456,7 @@ fn json_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64, mem: &M
             "clients": args.clients, "requests": args.requests, "warmup": args.warmup,
             "challenge": args.challenge, "key_type": args.key_type,
             "ca_key_type": args.ca_key_type, "db": args.db, "wildcard": args.wildcard,
-            "pool_connections": if args.db == ":memory:" { 1 } else { args.pool_connections.max(1) },
+            "pool_connections": if args.db.contains(":memory:") { 1 } else { args.pool_connections.max(1) },
         },
         "summary": {
             "ok": n_ok, "err": n_err, "total": n_ok + n_err,

@@ -103,7 +103,8 @@ async fn start_plain_server(http_validation_port: u16) -> PlainServer {
         listen_addr: addr.to_string(),
         base_url: base_url.clone(),
         database: DatabaseConfig {
-            path: ":memory:".into(),
+            url: "sqlite::memory:".into(),
+            max_connections: None,
         },
         ca: CaConfig {
             key_file: ca_key_path,
@@ -144,10 +145,14 @@ async fn start_plain_server(http_validation_port: u16) -> PlainServer {
         "CA initialised"
     );
 
-    let db_conn = db::open(":memory:").await.unwrap();
+    db::install_drivers();
+    let db_conn = db::open("sqlite::memory:", 1, "./migrations/sqlite")
+        .await
+        .unwrap();
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db_conn.clone(),
+        db_kind: db::DbKind::Sqlite,
         ca: Arc::new(CaState {
             key: ca_key,
             cert_der: ca_cert_der,
