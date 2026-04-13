@@ -25,33 +25,35 @@ given client.
 > contention error that bypasses the busy handler and cannot be retried — sqlx
 > attempts to reuse connection read-snapshots across pool round-trips, and when a
 > concurrent writer commits between those round-trips the stale snapshot triggers
-> the error.  All ~20 SQL operations per issuance are serialised through this one
-> pool connection; throughput plateaus at ≈ 860 iss/s regardless of concurrent
-> client count or database backend — determined by how fast the single sqlx
-> connection can process queries, not by crypto, network, or storage speed.  See
-> the [Database scalability](#database-scalability) section for guidance on
-> exceeding this ceiling.
+> the error.  Approximately 24 SQL round-trips are needed per issuance (reduced
+> from ~55 by moving anti-replay nonces to an in-memory store and using JOIN
+> queries to collapse read pairs into single round-trips); throughput plateaus at
+> ≈ 1350–1500 iss/s at 25 concurrent clients, determined by how fast the single
+> sqlx connection can process queries rather than by crypto, network, or storage
+> speed.  See the [Database scalability](#database-scalability) section for
+> guidance on exceeding this ceiling.
 
 ---
 
 ## Concurrency scaling
 
-With EC P-256 certificates and an EC P-256 CA, throughput scales up to ~5
+With EC P-256 certificates and an EC P-256 CA, throughput scales up to ~10
 concurrent clients and then plateaus as the single-connection pool becomes
 the bottleneck:
 
 | Concurrent clients | Throughput (iss/s) | Mean latency (ms) | p95 (ms) |
 |-------------------:|-------------------:|------------------:|---------:|
-|  1                 |   198              |  5.0              |  5.9     |
-|  5                 |   797              |  6.2              |  7.6     |
-| 10                 |   854              | 11.5              | 14.7     |
-| 25                 |   864              | 25.8              | 28.2     |
-| 50                 |   822              | 52.9              | 58.1     |
+|  1                 |   231              |  4.3              |  5.3     |
+|  5                 |  1086              |  4.6              |  5.6     |
+| 10                 |  1445              |  6.8              |  7.7     |
+| 25                 |  1501              | 15.2              | 17.7     |
+| 50                 |  1356              | 30.8              | 34.7     |
 
-Throughput peaks around 10–25 concurrent clients at ~855–865 iss/s and is stable
-thereafter; latency grows roughly linearly with client count, consistent with a
-single serialised resource.  The practical bottleneck is the in-memory SQLite
-single connection; crypto and network are not limiting factors at these rates.
+Throughput peaks around 10–25 concurrent clients at ~1500 iss/s and remains
+stable at 25–50 clients (≈ 1350–1500 iss/s); latency grows roughly linearly with
+client count, consistent with a single serialised resource.  The practical
+bottleneck is the in-memory SQLite single connection; crypto and network are not
+limiting factors at these rates.
 
 ---
 
@@ -62,35 +64,36 @@ The table below compares issuance performance for different CSR key types at
 
 | CSR key type | Throughput (iss/s) | Mean latency (ms) | p95 (ms) | Finalize phase (ms) |
 |:-------------|-------------------:|------------------:|---------:|--------------------:|
-| ec:P-256     |   757              | 28.2              | 31.4     |   7.0               |
-| ed25519      |   782              | 27.0              | 31.4     |   6.0               |
-| ec:P-384     |   715              | 28.5              | 32.1     |   8.1               |
-| ml-dsa-44    |   812              | 26.5              | 29.7     |   6.5               |
-| ml-dsa-65    |   741              | 27.9              | 33.3     |   7.2               |
-| ml-dsa-87    |   750              | 28.4              | 32.6     |   8.1               |
-| rsa:2048     |   165              | 126.2             | 204.4    |  97.9               |
-| rsa:4096     |    12              | 1 015             | —        | 949                 |
+| ec:P-256     |  1419              | 15.0              | 17.0     |   3.4               |
+| ed25519      |  1265              | 15.9              | 17.2     |   3.7               |
+| ec:P-384     |  1311              | 16.3              | 19.4     |   5.2               |
+| ml-dsa-44    |  1332              | 16.2              | 18.8     |   4.7               |
+| ml-dsa-65    |  1149              | 18.2              | 21.2     |   5.7               |
+| ml-dsa-87    |  1216              | 17.7              | 20.9     |   5.8               |
+| rsa:2048     |   142              | 137.6             | 246.3    | 104.0               |
+| rsa:4096     |    14              | 993               | —        | 915                 |
 
-All classical and post-quantum key types cluster around 715–812 iss/s because
+All classical and post-quantum key types cluster around 1150–1420 iss/s because
 throughput is bounded by the single-connection database pool, not by crypto.
 Finalize-phase latency (CSR verification + certificate issuance) still reflects
 relative signing cost: EC and Ed25519 are fastest, ML-DSA adds ~1–2 ms, and RSA
 adds tens to hundreds of milliseconds.
 
-RSA is the outlier: RSA 2048 adds ~95 ms to finalize, and RSA 4096 adds ~950 ms.
+RSA is the outlier: RSA 2048 adds ~100 ms to finalize, and RSA 4096 adds ~900 ms.
 
 ### RSA 4096 saturation
 
 | Clients | Throughput (iss/s) | Finalize mean (ms) | p99 (ms) |
 |--------:|-------------------:|-------------------:|---------:|
-|  1      |    2               |   392              |  1 053   |
-| 10      |   12               |   605              |  3 252   |
-| 25      |   16               |   949              |  3 055   |
-| 50      |   16               |  1 275             |  3 086   |
+|  1      |    3               |   353              |   974    |
+| 10      |   12               |   484              |  1188    |
+| 25      |   14               |   915              |  2021    |
+| 50      |    9               |  1118              |  3271    |
 
-Throughput is limited by RSA 4096 key generation time regardless of concurrency.
-Avoid RSA 4096 in any configuration where more than a handful of concurrent ACME
-clients are expected.
+Throughput is limited by RSA 4096 key generation time.  At 50 clients the
+additional queuing raises both finalize latency and overall contention, reducing
+aggregate throughput below the 25-client figure.  Avoid RSA 4096 in any
+configuration where more than a handful of concurrent ACME clients are expected.
 
 ---
 
@@ -102,15 +105,18 @@ chain (ML-DSA CA + ML-DSA leaf, with `--verify-cert`) at 25 concurrent clients:
 
 | Parameter set | NIST category | Throughput (iss/s) | Alloc pressure (MiB/iss) |
 |:--------------|:-------------:|-------------------:|-------------------------:|
-| ML-DSA-44     | 2             |   713              | 0.62                     |
-| ML-DSA-65     | 3             |   626              | 0.72                     |
-| ML-DSA-87     | 5             |   638              | 0.85                     |
-| EC P-256      | —             |   828              | 0.37                     |
+| ML-DSA-44     | 2             |  1366              | 0.54                     |
+| ML-DSA-65     | 3             |  1093              | 0.64                     |
+| ML-DSA-87     | 5             |  1067              | 0.77                     |
+| EC P-256      | —             |  1365              | 0.33                     |
 
-ML-DSA allocation pressure is 70–130% higher than EC P-256 per issuance,
+ML-DSA allocation pressure is 60–130% higher than EC P-256 per issuance,
 reflecting the larger key and signature structures.  Throughput difference between
-ML-DSA and EC P-256 is 14–24% because the database single-connection
-bottleneck dominates over crypto cost at 25 clients.
+ML-DSA and EC P-256 varies by parameter set: ML-DSA-44 matches EC P-256 closely
+(1366 vs 1365 iss/s) because the database single-connection bottleneck dominates
+over crypto cost at 25 clients.  ML-DSA-65 and ML-DSA-87 trail by ~20–25% due
+to their larger certificate structures consuming more of the single connection's
+capacity during signing and serialisation.
 
 ML-DSA requires OpenSSL 3.5 or later.  Akāmu will report a startup error if the
 requested key type is unavailable on the installed OpenSSL version.
@@ -119,14 +125,15 @@ requested key type is unavailable on the installed OpenSSL version.
 
 | CA key    | Throughput (iss/s) | Mean latency (ms) | Finalize (ms) |
 |:----------|-------------------:|------------------:|--------------:|
-| ec:P-256  |   795              | 26.6              |  6.4          |
-| ec:P-384  |   769              | 26.7              |  6.6          |
-| rsa:2048  |   631              | 34.5              |  8.8          |
-| rsa:4096  |   599              | 35.3              | 13.0          |
+| ec:P-256  |  1255              | 16.3              |  3.7          |
+| ec:P-384  |  1333              | 14.7              |  3.3          |
+| rsa:2048  |  1293              | 15.5              |  4.0          |
+| rsa:4096  |   832              | 23.8              | 11.4          |
 
-EC and Ed25519 CA keys deliver the highest throughput.  RSA 2048 as the CA key
-is acceptable (finalize ~9 ms).  RSA 4096 as the CA key reduces throughput by
-~25% vs EC P-256 due to slower signing; avoid it for performance-sensitive
+EC and RSA 2048 CA keys deliver equivalent throughput in the optimised server
+(all are database-bottlenecked at 25 clients).  RSA 4096 as the CA key reduces
+throughput by ~35% vs EC P-256 due to slower signing raising finalize latency
+above the per-query DB round-trip time; avoid it for performance-sensitive
 deployments.
 
 ---
@@ -135,13 +142,13 @@ deployments.
 
 | Challenge type    | Throughput (iss/s) | Challenge phase (ms) | Alloc pressure (MiB/iss) |
 |:------------------|-------------------:|---------------------:|-------------------------:|
-| http-01           |   836              | 10.2                 | 0.38                     |
-| dns-persist-01    |   814              | 10.7                 | 0.41                     |
+| http-01           |  1456              |  5.5                 | 0.33                     |
+| dns-persist-01    |  1252              |  6.8                 | 0.37                     |
 
-`http-01` and `dns-persist-01` deliver equivalent throughput on loopback.
+`http-01` delivers ~15% higher throughput than `dns-persist-01` on loopback.
 Both challenge phases reflect the adaptive poll backoff (starts at 1 ms, caps at
-`--poll-ms`) rather than network latency, so the 10 ms figure is dominated by
-polling overhead.
+`--poll-ms`) rather than network latency; the 5–7 ms figure is dominated by
+polling overhead and background validation round-trips.
 
 ---
 
@@ -162,10 +169,11 @@ polling overhead.
 ## Database scalability
 
 Both in-memory (`:memory:`) and file-backed databases use a single-connection
-pool, so the throughput ceiling of ≈ 860 iss/s applies to both.  The ceiling is
-set by how fast the sqlx SQLite worker thread can process one query at a time —
-each query requires a channel round-trip to the background thread, and ~20 such
-round-trips are needed per issuance.
+pool, so the throughput ceiling of ≈ 1350–1500 iss/s applies to both.  The ceiling
+is set by how fast the sqlx SQLite worker thread can process one query at a time —
+each query requires a channel round-trip to the background thread, and ~24 such
+round-trips are needed per issuance (reduced from ~55 by moving anti-replay nonces
+to an in-memory store and using JOIN queries to collapse read pairs).
 
 ### Backend comparison (tmpfs vs in-memory)
 
@@ -176,13 +184,13 @@ is within run-to-run noise.
 
 | Concurrent clients | In-memory (iss/s) | tmpfs WAL (iss/s) |
 |-------------------:|------------------:|------------------:|
-|  1                 |   198             |   211             |
-|  5                 |   797             |   828             |
-| 10                 |   854             |   886             |
-| 25                 |   864             |   855             |
-| 50                 |   822             |   806             |
+|  1                 |   231             |   220             |
+|  5                 |  1086             |  1108             |
+| 10                 |  1445             |  1380             |
+| 25                 |  1501             |  1321             |
+| 50                 |  1356             |  1250             |
 
-Both backends plateau around 855–886 iss/s at 10–25 concurrent clients.  The
+Both backends plateau around 1350–1500 iss/s at 10–25 concurrent clients.  The
 bottleneck is the sqlx connection round-trip per query, not storage speed;
 switching from in-memory to a tmpfs-backed file provides durability without a
 throughput penalty.
@@ -195,7 +203,61 @@ For sustained high-throughput targets consider:
   Throughput matches in-memory while providing crash durability.
 - **Sharding** — multiple Akāmu instances behind a load balancer, each with its
   own database — for production-scale deployments requiring higher aggregate
-  issuance rates above the ≈ 860 iss/s per-instance ceiling.
+  issuance rates above the ≈ 1500 iss/s per-instance ceiling.
+
+### Connection pool size and `BEGIN IMMEDIATE`
+
+`SQLITE_BUSY_SNAPSHOT` (error 517) occurs in WAL mode when a deferred
+transaction (`BEGIN`) captures a read snapshot that becomes stale after another
+connection commits — even when the two transactions write to completely different
+rows.  Unlike `SQLITE_BUSY` (error 5), error 517 bypasses the busy handler
+entirely, so `busy_timeout` has no effect on it.
+
+Akāmu resolves this by using `BEGIN IMMEDIATE` for every write transaction
+(`db::begin_write`).  `BEGIN IMMEDIATE` acquires the write lock at transaction
+start, so the snapshot is always current.  Any resulting `SQLITE_BUSY`
+contention is handled transparently by the `busy_timeout = 5 s` already
+configured on the pool.
+
+The table below shows that after this fix, pool > 1 produces **zero errors**
+at every concurrency level.  Write throughput is unchanged because `BEGIN
+IMMEDIATE` still serialises writers — only one connection can hold the write
+lock at a time — but errors are eliminated.
+
+**Throughput (iss/s) and error count (out of 200 requests) on tmpfs WAL with `BEGIN IMMEDIATE`:**
+
+| Concurrent clients | Pool = 1          | Pool = 2          | Pool = 4          | Pool = 8          |
+|-------------------:|------------------:|------------------:|------------------:|------------------:|
+|  1                 |  208 / 0 err      |  206 / 0 err      |  202 / 0 err      |  220 / 0 err      |
+|  5                 | 1092 / 0 err      |  959 / 0 err      |  707 / 0 err      |  617 / 0 err      |
+| 10                 | 1389 / 0 err      | 1372 / 0 err      | 1247 / 0 err      |  821 / 0 err      |
+| 25                 | 1307 / 0 err      | 1164 / 0 err      | 1096 / 0 err      |  998 / 0 err      |
+| 50                 | 1197 / 0 err      | 1119 / 0 err      | 1041 / 0 err      |  996 / 0 err      |
+
+All pool sizes produce **zero errors** — `BEGIN IMMEDIATE` eliminates
+`SQLITE_BUSY_SNAPSHOT` regardless of how many connections are in the pool.
+Pool = 1 consistently delivers the highest throughput because all requests
+share a single serialised connection channel with no lock-acquisition contention.
+Pool = 2 and above pay increasingly for BEGIN IMMEDIATE wait time as multiple
+connections compete for the WAL write lock; the gap widens at medium concurrency
+(5–10 clients) where lock contention is highest relative to available parallelism.
+
+For the single-connection production default (`open`) this has no observable
+effect: with one connection there is never a concurrent writer, so `BEGIN
+IMMEDIATE` and `BEGIN DEFERRED` behave identically.
+
+The `--pool-connections` benchmark option can be used to measure pool behaviour:
+
+```bash
+# Pool comparison on tmpfs with BEGIN IMMEDIATE (zero errors expected)
+for p in 1 2 4 8; do
+  DB=$(mktemp /dev/shm/bench_pool_XXXXXX.db)
+  cargo bench --bench acme_bench -- \
+    --db "$DB" --pool-connections "$p" \
+    --clients 25 --requests 200 --warmup 20 --poll-ms 5
+  rm -f "$DB" "${DB}-wal" "${DB}-shm"
+done
+```
 
 ---
 
@@ -232,6 +294,7 @@ cargo bench --bench acme_bench -- --challenge dns-persist-01 --clients 25 --requ
 
 # JSON output for scripting
 cargo bench --bench acme_bench -- --output json --clients 25 --requests 200 --poll-ms 5 | jq .summary
+
 ```
 
 ### Available options
@@ -246,6 +309,7 @@ cargo bench --bench acme_bench -- --output json --clients 25 --requests 200 --po
 | `--key-type TYPE` | `ec:P-256` | CSR key type (see table above) |
 | `--ca-key-type TYPE` | `ec:P-256` | CA key type (same syntax) |
 | `--db PATH` | `:memory:` | SQLite path — `:memory:` or a file path |
+| `--pool-connections N` | `1` | SQLite pool size; ignored (clamped to 1) when `--db :memory:`; see [Connection pool size](#connection-pool-size-why-max_connections--1-is-mandatory) |
 | `--wildcard` | off | Issue `*.bench-N.acme-bench.test` (dns-persist-01 only) |
 | `--output FORMAT` | `text` | `text` or `json` |
 | `--verify-cert` | off | Parse and verify the SAN of every issued certificate |
@@ -328,13 +392,14 @@ The `"memory"` key is present in JSON output when `--output json` is used:
 At 25 concurrent clients with 200 measured issuances (EC P-256, `:memory:` DB,
 5 ms poll cap):
 
-- Server overhead: ~1.2 MiB live (router tables, DB connection pool, CA state, HTTP client)
-- Per-issuance heap growth: ~5 KiB (request-scoped state retained by tokio workers)
-- Peak during issuances: ~3.6 MiB (25 in-flight requests simultaneously)
-- Allocation pressure: ~395 KiB per issuance (JWS buffers, JSON serialisation, cert DER/PEM)
+- Server overhead: ~0.3 MiB live (router tables, DB connection pool, CA state, HTTP client)
+- Per-issuance heap growth: ~1 KiB (request-scoped state retained by tokio workers)
+- Peak during issuances: ~2.7 MiB (25 in-flight requests simultaneously)
+- Allocation pressure: ~335 KiB per issuance (JWS buffers, JSON serialisation, cert DER/PEM)
 
-For ML-DSA key types allocation pressure rises to ~635–870 KiB per issuance
-due to larger key and certificate structures.
+For ML-DSA key types allocation pressure rises to ~550–790 KiB per issuance
+due to larger key and certificate structures (lower end with EC P-256 CA, higher
+end with a matching ML-DSA CA).
 
 These figures confirm that Akāmu has a stable heap footprint at steady state.
 Per-issuance live growth is small and bounded by the number of concurrent workers,
