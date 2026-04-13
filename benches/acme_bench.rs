@@ -698,7 +698,7 @@ async fn start_server(args: &Args) -> BenchServer {
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
     let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();
     let ca_aki_bytes = akamu::ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
-    let db_conn = Arc::new(db::open(&args.db).await.unwrap());
+    let db_conn = db::open(&args.db).await.unwrap();
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db_conn,
