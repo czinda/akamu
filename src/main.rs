@@ -41,8 +41,19 @@ async fn run() -> Result<(), String> {
     let config = Arc::new(config);
 
     // ── Database ──────────────────────────────────────────────────────────────
-    tracing::info!("opening database '{}'", config.database.path);
-    let db = db::open(&config.database.path)
+    db::install_drivers();
+    let db_kind = db::DbKind::from_url(&config.database.url);
+    let max_connections = config.database.max_connections.unwrap_or(match db_kind {
+        db::DbKind::Sqlite => 1,
+        _ => 10,
+    });
+    let migrations_dir = match db_kind {
+        db::DbKind::Sqlite => "migrations/sqlite",
+        db::DbKind::Postgres => "migrations/postgres",
+        db::DbKind::MariaDb => "migrations/mariadb",
+    };
+    tracing::info!("opening database '{}'", config.database.url);
+    let db = db::open(&config.database.url, max_connections, migrations_dir)
         .await
         .map_err(|e| format!("database init: {e}"))?;
 
@@ -131,6 +142,7 @@ async fn run() -> Result<(), String> {
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db.clone(),
+        db_kind,
         ca,
         mtc,
         tls: tls_state,
