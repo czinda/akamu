@@ -293,7 +293,8 @@ mod tests {
             listen_addr: "127.0.0.1:0".into(),
             base_url: "https://acme.test".into(),
             database: DatabaseConfig {
-                path: ":memory:".into(),
+                url: "sqlite::memory:".into(),
+                max_connections: None,
             },
             ca: CaConfig {
                 key_file: "/tmp/val-test-ca.key".into(),
@@ -316,11 +317,15 @@ mod tests {
         });
 
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
-        let db_conn = db::open(":memory:").await.unwrap();
+        db::install_drivers();
+        let db_conn = db::open("sqlite::memory:", 1, "./migrations/sqlite")
+            .await
+            .unwrap();
 
         Arc::new(AppState {
             config: Arc::clone(&config),
             db: db_conn,
+            db_kind: crate::db::DbKind::Sqlite,
             ca: Arc::new(CaState {
                 key: ca_key,
                 cert_der: ca_cert_der,
@@ -503,7 +508,7 @@ mod tests {
                 star_end_date: None,
                 star_lifetime_secs: None,
                 star_lifetime_adjust_secs: 0,
-                star_allow_cert_get: false,
+                star_allow_cert_get: 0,
                 star_canceled_at: None,
                 star_csr_der: None,
                 profile: None,
@@ -521,8 +526,8 @@ mod tests {
                 status: "pending".to_string(),
                 identifier: r#"{"type":"dns","value":"example.com"}"#.to_string(),
                 expires: Some(now + 3600),
-                wildcard: false,
-                subdomain_auth_allowed: false,
+                wildcard: 0,
+                subdomain_auth_allowed: 0,
                 created: now,
                 updated: now,
             },
@@ -617,7 +622,7 @@ mod tests {
                 star_end_date: None,
                 star_lifetime_secs: None,
                 star_lifetime_adjust_secs: 0,
-                star_allow_cert_get: false,
+                star_allow_cert_get: 0,
                 star_canceled_at: None,
                 star_csr_der: None,
                 profile: None,
@@ -635,8 +640,8 @@ mod tests {
                 status: "pending".to_string(),
                 identifier: r#"{"type":"dns","value":"example.com"}"#.to_string(),
                 expires: Some(now + 3600),
-                wildcard: false,
-                subdomain_auth_allowed: false,
+                wildcard: 0,
+                subdomain_auth_allowed: 0,
                 created: now,
                 updated: now,
             },
@@ -721,7 +726,8 @@ mod tests {
             listen_addr: "127.0.0.1:0".into(),
             base_url: "https://acme.test".into(),
             database: DatabaseConfig {
-                path: ":memory:".into(),
+                url: "sqlite::memory:".into(),
+                max_connections: None,
             },
             ca: CaConfig {
                 key_file: "/tmp/val-test-http01-ca.key".into(),
@@ -746,10 +752,14 @@ mod tests {
             tls: Default::default(),
         });
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
-        let db_conn = db::open(":memory:").await.unwrap();
+        db::install_drivers();
+        let db_conn = db::open("sqlite::memory:", 1, "./migrations/sqlite")
+            .await
+            .unwrap();
         let state = Arc::new(AppState {
             config: Arc::clone(&config),
             db: db_conn,
+            db_kind: crate::db::DbKind::Sqlite,
             ca: Arc::new(CaState {
                 key: ca_key,
                 cert_der: ca_cert_der,
@@ -817,7 +827,7 @@ mod tests {
                 star_end_date: None,
                 star_lifetime_secs: None,
                 star_lifetime_adjust_secs: 0,
-                star_allow_cert_get: false,
+                star_allow_cert_get: 0,
                 star_canceled_at: None,
                 star_csr_der: None,
                 profile: None,
@@ -835,8 +845,8 @@ mod tests {
                 status: "pending".to_string(),
                 identifier: format!(r#"{{"type":"ip","value":"{}"}}"#, id_value),
                 expires: Some(now + 3600),
-                wildcard: false,
-                subdomain_auth_allowed: false,
+                wildcard: 0,
+                subdomain_auth_allowed: 0,
                 created: now,
                 updated: now,
             },
@@ -880,10 +890,10 @@ mod tests {
 
     /// Create a raw (no-schema) sqlx pool for error-path tests.
     async fn raw_no_schema_pool() -> crate::db::Db {
-        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-        SqlitePoolOptions::new()
+        crate::db::install_drivers();
+        sqlx::any::AnyPoolOptions::new()
             .max_connections(1)
-            .connect_with(SqliteConnectOptions::new().in_memory(true))
+            .connect("sqlite::memory:")
             .await
             .unwrap()
     }
@@ -922,11 +932,11 @@ mod tests {
     /// This test verifies that on_valid is robust when the transaction fails.
     #[tokio::test]
     async fn on_valid_set_valid_ok_but_authz_update_fails() {
-        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        crate::db::install_drivers();
         // Create a DB with only the challenges table (no authorizations/orders).
-        let partial_db: crate::db::Db = SqlitePoolOptions::new()
+        let partial_db: crate::db::Db = sqlx::any::AnyPoolOptions::new()
             .max_connections(1)
-            .connect_with(SqliteConnectOptions::new().in_memory(true))
+            .connect("sqlite::memory:")
             .await
             .unwrap();
         sqlx::query(
@@ -976,7 +986,8 @@ mod tests {
             listen_addr: "127.0.0.1:0".into(),
             base_url: "https://acme.test".into(),
             database: DatabaseConfig {
-                path: ":memory:".into(),
+                url: "sqlite::memory:".into(),
+                max_connections: None,
             },
             ca: CaConfig {
                 key_file: dir.path().join("ca-p.key").to_string_lossy().into_owned(),
@@ -1001,6 +1012,7 @@ mod tests {
         Arc::new(AppState {
             config,
             db,
+            db_kind: crate::db::DbKind::Sqlite,
             ca: Arc::new(CaState {
                 key: ca_key,
                 cert_der: ca_cert_der,
@@ -1071,7 +1083,7 @@ mod tests {
                 star_end_date: None,
                 star_lifetime_secs: None,
                 star_lifetime_adjust_secs: 0,
-                star_allow_cert_get: false,
+                star_allow_cert_get: 0,
                 star_canceled_at: None,
                 star_csr_der: None,
                 profile: None,
@@ -1088,8 +1100,8 @@ mod tests {
                 status: "pending".into(),
                 identifier: r#"{"type":"dns","value":"x.test"}"#.into(),
                 expires: None,
-                wildcard: false,
-                subdomain_auth_allowed: false,
+                wildcard: 0,
+                subdomain_auth_allowed: 0,
                 created: now,
                 updated: now,
             },
@@ -1118,7 +1130,10 @@ mod tests {
     /// because the orders table was dropped.
     #[tokio::test]
     async fn on_valid_orders_update_fails() {
-        let db_conn = crate::db::open(":memory:").await.unwrap();
+        crate::db::install_drivers();
+        let db_conn = crate::db::open("sqlite::memory:", 1, "./migrations/sqlite")
+            .await
+            .unwrap();
         insert_test_rows(&db_conn, "acc-ov", "ord-ov", "authz-ov", "chall-ov").await;
 
         // Both DDL statements must run on the same connection: PRAGMA is
@@ -1144,7 +1159,10 @@ mod tests {
     /// orders table was dropped.
     #[tokio::test]
     async fn on_invalid_orders_update_fails() {
-        let db_conn = crate::db::open(":memory:").await.unwrap();
+        crate::db::install_drivers();
+        let db_conn = crate::db::open("sqlite::memory:", 1, "./migrations/sqlite")
+            .await
+            .unwrap();
         insert_test_rows(&db_conn, "acc-oi", "ord-oi", "authz-oi", "chall-oi").await;
 
         // Both DDL statements must run on the same connection (PRAGMA is
