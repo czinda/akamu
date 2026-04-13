@@ -1,0 +1,69 @@
+# ACME server configuration — copy to config.toml and adjust as needed.
+
+# Address and port to listen on.  TLS termination is expected upstream
+# (e.g. nginx or a load balancer); the server speaks plain HTTP internally.
+listen_addr = "0.0.0.0:8080"
+
+# Public base URL of the ACME server, used in all URLs returned to clients.
+base_url = "https://acme.example.com"
+
+[database]
+# Path to the SQLite database file.  Will be created on first run.
+path = "/var/lib/akamu/acme.db"
+
+[ca]
+# Paths to the CA private key and certificate PEM files.
+# Both files are auto-generated on first run if neither exists.
+key_file  = "/etc/akamu/ca.key.pem"
+cert_file = "/etc/akamu/ca.cert.pem"
+
+# Key algorithm for auto-generated CA key.
+# Choices: "ec:P-256", "ec:P-384", "ec:P-521", "rsa:2048", "rsa:3072", "rsa:4096", "ed25519"
+key_type = "ec:P-256"
+
+# Hash algorithm for certificate/CRL signing.
+# Choices: "sha256", "sha384", "sha512"
+hash_alg = "sha256"
+
+# Default validity of issued end-entity certificates (days).
+validity_days = 90
+
+# CA key pair validity when auto-generating (years).
+ca_validity_years = 10
+
+# Distinguished name for the auto-generated CA certificate.
+common_name  = "Example ACME CA"
+organization = "Example Org"
+
+# Optional CRL distribution point URL (omit to skip the CDP extension).
+# crl_url = "http://acme.example.com/crl/ca.crl"
+
+# Optional OCSP responder URL (omit to skip the AIA OCSP extension).
+# ocsp_url = "http://ocsp.example.com"
+
+[mtc]
+# Path for the MTC (Merkle Tree Certificate) transparency log.
+log_path = "/var/lib/akamu/mtc.log"
+
+# Set to true to append issued certificates to the MTC log.
+enabled = false
+
+[server]
+# Optional Terms of Service URL advertised in /acme/directory.
+# terms_of_service_url = "https://acme.example.com/tos.html"
+
+# Optional website URL advertised in /acme/directory.
+# website_url = "https://acme.example.com"
+
+# CAA identity strings.  Clients may check CAA records for these identifiers.
+# caa_identities = ["acme.example.com"]
+
+# Set to true to require External Account Binding (EAB) for new accounts.
+external_account_required = false
+
+# Order and authorization expiry (seconds).
+order_expiry_secs = 86400   # 1 day
+authz_expiry_secs = 86400   # 1 day
+
+# Maximum JOSE+JSON request body size (bytes).
+max_body_bytes = 65536

@@ -1,8 +1,9 @@
 [package]
-# FIXME: Replace this placeholder with the actual forge release URL before
-# submitting to Fedora.  Expected form:
-#   https://<forge>/<org>/akamu/archive/v{version}.tar.gz
-url = "https://PLACEHOLDER.example.com/akamu/archive/v{version}.tar.gz"
+# Source tarball produced with:
+#   git archive --format=tar.gz --prefix=akamu-{version}/ HEAD \
+#       -o akamu-{version}.tar.gz
+# Until the crate is published to crates.io, use the Codeberg forge URL:
+url = "https://codeberg.org/abbra/akamu/archive/v{version}.tar.gz"
 
 summary = "ACME server with post-quantum certificate support"
 
@@ -16,43 +17,47 @@ compressed certificate delivery.
 
 license = "GPL-3.0-or-later"
 
-# This crate has both src/lib.rs and src/main.rs.  The library is only used
-# internally by the binary; install the binary only.
-cargo-install-bin = true
-cargo-install-lib = false
+# The workspace root has both src/lib.rs (server library) and src/main.rs
+# (server binary).  Install only the server binary; the library is internal.
+install_bin = true
+install_lib = false
 
 [requires]
 build = [
     "openssl-devel",
     "sqlite-devel",
     "clang-devel",
+    "pkgconfig(libsqlite3)",
 ]
-
-[tests]
 comments = [
-    "Vendoring is required because [patch.crates-io] in Cargo.toml overrides",
-    "openssl and openssl-sys with a git fork (pqc-prs branch from",
-    "https://github.com/abbra/rust-openssl.git) for ML-DSA/ML-KEM/PQC",
-    "support.  This fork is not published to crates.io.",
-    "A vendor tarball (Source1) must be generated with 'cargo vendor' and",
-    "added alongside the forge source tarball before submission.",
-    "",
     "Rebuild this package whenever openssl-devel is updated in Fedora.",
     "The project uses an OpenSSL fork (pqc-prs) for ML-DSA/PQ support;",
     "verify compatibility when the system OpenSSL major version changes.",
     "",
-    "PREREQUISITE: the synta* path-dependencies are not part of this package",
-    "and must be installed into the mock chroot before this SRPM can build:",
+    "A full vendor tarball (Source1) is required because:",
+    "  1. [patch.crates-io] in Cargo.toml overrides openssl and openssl-sys",
+    "     with a git fork (pqc-prs branch of",
+    "     https://github.com/abbra/rust-openssl.git) for ML-DSA/ML-KEM/PQC",
+    "     support.  This fork is not published to crates.io.",
+    "  2. axum-server 0.8 is required but Fedora (as of 2026-04) ships 0.7.3.",
+    "  3. tokio-rusqlite and rusqlite_migration are not yet packaged in Fedora.",
+    "  4. rusqlite 0.31 is required; Fedora ships 0.38 (incompatible API).",
+    "  5. hickory-resolver 0.24 is required; Fedora ships 0.25 (incompatible).",
+    "  6. toml 0.8 is required; Fedora ships 1.1 (incompatible).",
+    "Generate the vendor tarball with:",
+    "  cargo vendor --versioned-dirs vendor/",
+    "  tar czf akamu-{version}-vendor.tar.gz -C vendor --transform ...",
+    "",
+    "PREREQUISITE: the synta* crates must be installed into the mock chroot",
+    "before this SRPM can build:",
     "  rust-synta-devel, rust-synta-certificate-devel,",
     "  rust-synta-x509-verification-devel, rust-synta-mtc-devel",
-    "Run 'mock --install' for each of those packages in dependency order",
-    "before running 'mock --rebuild' on this SRPM.",
-    "",
-    "NOTE: tokio-rusqlite and rusqlite_migration are not yet packaged in",
-    "Fedora (as of 2026-04-11) and are included in the vendor tarball.",
-    "File separate Fedora review requests for those crates.",
-    "",
-    "NOTE: axum-server 0.8 is required but only 0.7.3 is available in",
-    "Fedora (as of 2026-04-11).  axum-server 0.8 is also in the vendor",
-    "tarball.  A Fedora package update or new review may be needed.",
+    "Run 'mock --install' for each in dependency order before 'mock --rebuild'.",
+]
+
+[tests]
+skip = ["doc"]
+comments = [
+    "Documentation tests require external infrastructure (live ACME endpoints,",
+    "DNS resolver, TLS server) not available inside the mock build environment.",
 ]
