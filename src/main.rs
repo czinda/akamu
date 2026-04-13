@@ -47,11 +47,7 @@ async fn run() -> Result<(), String> {
         .map_err(|e| format!("database init: {e}"))?;
 
     // Sweep nonces older than 24 h at startup (best-effort).
-    {
-        if let Ok(mut conn) = db.acquire().await {
-            let _ = db::nonces::sweep_expired(&mut *conn, 86400).await;
-        }
-    }
+    let _ = db::nonces::sweep_expired(&db, 86400).await;
 
     // Seed EAB keys from config into the DB (INSERT OR IGNORE — never overwrites
     // keys that were provisioned or consumed by the runtime admin endpoint).
@@ -59,16 +55,12 @@ async fn run() -> Result<(), String> {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64;
-    if !config.server.eab_keys.is_empty() {
-        if let Ok(mut conn) = db.acquire().await {
-            for (kid, hmac_key_b64u) in &config.server.eab_keys {
-                if let Err(e) =
-                    db::eab::insert_if_absent(&mut *conn, kid, hmac_key_b64u, now_ts).await
-                {
-                    tracing::warn!("failed to seed EAB key '{kid}': {e}");
-                }
-            }
+    for (kid, hmac_key_b64u) in &config.server.eab_keys {
+        if let Err(e) = db::eab::insert_if_absent(&db, kid, hmac_key_b64u, now_ts).await {
+            tracing::warn!("failed to seed EAB key '{kid}': {e}");
         }
+    }
+    if !config.server.eab_keys.is_empty() {
         tracing::info!(
             "seeded {} EAB key(s) from config",
             config.server.eab_keys.len()
@@ -136,7 +128,7 @@ async fn run() -> Result<(), String> {
     // ── Application state ─────────────────────────────────────────────────────
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
-        db,
+        db: db.clone(),
         ca,
         mtc,
         tls: tls_state,

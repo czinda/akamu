@@ -45,8 +45,7 @@ pub async fn revoke_cert(
     // Find the certificate by its DER content.
     // We identify the cert by extracting its serial from the DER and looking it up.
     let serial_hex = extract_serial_hex(&cert_der)?;
-    let mut conn = state.db.acquire().await?;
-    let cert = db::certs::get_by_serial(&mut *conn, &serial_hex)
+    let cert = db::certs::get_by_serial(&state.db, &serial_hex)
         .await?
         .ok_or(AcmeError::NotFound)?;
 
@@ -77,7 +76,7 @@ pub async fn revoke_cert(
 
     let now = unix_now();
     let revoked =
-        db::certs::revoke(&mut *conn, &cert.id, payload.reason.map(|r| r as i64), now).await?;
+        db::certs::revoke(&state.db, &cert.id, payload.reason.map(|r| r as i64), now).await?;
 
     if !revoked {
         return Err(AcmeError::AlreadyRevoked);

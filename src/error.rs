@@ -519,7 +519,6 @@ mod tests {
 
     #[test]
     fn from_sqlx_error() {
-        // sqlx::Error::RowNotFound is a simple variant that requires no external deps.
         let sqlx_err = sqlx::Error::RowNotFound;
         let acme_err = AcmeError::from(sqlx_err);
         assert!(matches!(acme_err, AcmeError::Database(_)));

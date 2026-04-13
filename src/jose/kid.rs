@@ -1,8 +1,7 @@
 //! Resolve a JWS `kid` URL to the account's SPKI DER bytes.
 
-use sqlx::SqliteConnection;
-
 use crate::db;
+use crate::db::Db;
 use crate::error::AcmeError;
 
 /// Extract the account ID from a `kid` URL of the form `<base_url>/acme/account/<id>`.
@@ -26,12 +25,12 @@ pub fn account_id_from_kid(base_url: &str, kid: &str) -> Result<String, AcmeErro
 /// Returns `Err(AcmeError::Unauthorized)` if the account does not exist,
 /// is not active, or is deactivated.
 pub async fn spki_for_kid(
-    conn: &mut SqliteConnection,
+    db: &Db,
     base_url: &str,
     kid: &str,
 ) -> Result<Vec<u8>, AcmeError> {
     let account_id = account_id_from_kid(base_url, kid)?;
-    let account = db::accounts::get_by_id(conn, &account_id)
+    let account = db::accounts::get_by_id(db, &account_id)
         .await?
         .ok_or_else(|| AcmeError::Unauthorized("account not found".into()))?;
 
@@ -83,9 +82,8 @@ mod tests {
     #[tokio::test]
     async fn spki_for_kid_account_not_found() {
         let db = crate::db::open(":memory:").await.unwrap();
-        let mut conn = db.acquire().await.unwrap();
         let result = spki_for_kid(
-            &mut *conn,
+            &db,
             "https://acme.test",
             "https://acme.test/acme/account/nonexistent",
         )
@@ -101,9 +99,8 @@ mod tests {
     async fn spki_for_kid_deactivated_account_returns_error() {
         use crate::db::schema::AccountRow;
         let db = crate::db::open(":memory:").await.unwrap();
-        let mut conn = db.acquire().await.unwrap();
         crate::db::accounts::insert(
-            &mut *conn,
+            &db,
             AccountRow {
                 id: "deact-acct".to_string(),
                 status: "deactivated".to_string(),
@@ -118,7 +115,7 @@ mod tests {
         .unwrap();
 
         let result = spki_for_kid(
-            &mut *conn,
+            &db,
             "https://acme.test",
             "https://acme.test/acme/account/deact-acct",
         )
@@ -134,10 +131,9 @@ mod tests {
     async fn spki_for_kid_valid_account_returns_spki() {
         use crate::db::schema::AccountRow;
         let db = crate::db::open(":memory:").await.unwrap();
-        let mut conn = db.acquire().await.unwrap();
         let spki = vec![0xDE, 0xAD, 0xBE, 0xEF];
         crate::db::accounts::insert(
-            &mut *conn,
+            &db,
             AccountRow {
                 id: "valid-acct".to_string(),
                 status: "valid".to_string(),
@@ -152,7 +148,7 @@ mod tests {
         .unwrap();
 
         let result = spki_for_kid(
-            &mut *conn,
+            &db,
             "https://acme.test",
             "https://acme.test/acme/account/valid-acct",
         )

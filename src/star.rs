@@ -11,8 +11,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use sqlx::Connection as _;
-
 use crate::ca;
 use crate::ca::csr::validate_csr;
 use crate::db;
@@ -38,20 +36,11 @@ async fn run_loop(state: Arc<AppState>) {
 
 /// Run one iteration of the STAR reissuance check.
 async fn run_once(state: &Arc<AppState>) {
-    let orders = {
-        let mut conn = match state.db.acquire().await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::error!("STAR reissuance: failed to acquire db connection: {e}");
-                return;
-            }
-        };
-        match db::orders::list_active_star(&mut *conn).await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::error!("STAR reissuance: failed to list active STAR orders: {e}");
-                return;
-            }
+    let orders = match db::orders::list_active_star(&state.db).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("STAR reissuance: failed to list active STAR orders: {e}");
+            return;
         }
     };
 
@@ -90,38 +79,23 @@ async fn run_once(state: &Arc<AppState>) {
         };
 
         // Find the most recent certificate for this order.
-        let latest_cert: Option<CertificateRow> = {
-            let mut conn = match state.db.acquire().await {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::error!(
-                        "STAR order {}: failed to acquire db connection: {e}",
-                        order.id
-                    );
-                    continue;
-                }
-            };
-            match sqlx::query_as::<_, CertificateRow>(
-                "SELECT id, order_id, account_id, serial_number, status, der, pem,
-                 not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-                 suggested_window_start, suggested_window_end, replaced_by
-                 FROM certificates
-                 WHERE order_id = ?1
-                 ORDER BY created DESC
-                 LIMIT 1",
-            )
-            .bind(&order.id)
-            .fetch_optional(&mut *conn)
-            .await
-            {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::error!(
-                        "STAR order {}: failed to fetch latest cert: {e}",
-                        order.id
-                    );
-                    continue;
-                }
+        let latest_cert = match sqlx::query_as::<_, CertificateRow>(
+            "SELECT id, order_id, account_id, serial_number, status, der, pem,
+             not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
+             suggested_window_start, suggested_window_end, replaced_by
+             FROM certificates
+             WHERE order_id = ?
+             ORDER BY created DESC
+             LIMIT 1",
+        )
+        .bind(&order.id)
+        .fetch_optional(&state.db)
+        .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("STAR order {}: failed to fetch latest cert: {e}", order.id);
+                continue;
             }
         };
 
@@ -198,37 +172,26 @@ async fn run_once(state: &Arc<AppState>) {
 
         // Persist the new cert and update the order's certificate_id.
         let cert_id = issued.id.clone();
-        let order_id2 = order.id.clone();
-        let account_id = order.account_id.clone();
         let serial = issued.serial_hex.clone();
         let cert_der_bytes = issued.cert_der.clone();
         let cert_pem = issued.cert_pem.clone();
         let new_not_before = issued.not_before;
         let new_not_after = issued.not_after;
 
-        let persist_result: Result<(), crate::error::AcmeError> = async {
-            let mut conn = state
-                .db
-                .acquire()
-                .await
-                .map_err(|e| crate::error::AcmeError::Database(e.to_string()))?;
-            let mut tx = conn
-                .begin()
-                .await
-                .map_err(|e| crate::error::AcmeError::Database(e.to_string()))?;
-
+        let persist_result = async {
+            let mut tx = state.db.begin().await?;
             sqlx::query(
                 "INSERT INTO certificates
                  (id, order_id, account_id, serial_number, status, der, pem,
                   not_before, not_after, revoked_at, revocation_reason,
                   mtc_log_index, created, suggested_window_start, suggested_window_end,
                   replaced_by)
-                 VALUES (?1, ?2, ?3, ?4, 'valid', ?5, ?6, ?7, ?8,
-                         NULL, NULL, NULL, ?9, NULL, NULL, NULL)",
+                 VALUES (?, ?, ?, ?, 'valid', ?, ?, ?, ?,
+                         NULL, NULL, NULL, ?, NULL, NULL, NULL)",
             )
             .bind(&cert_id)
-            .bind(&order_id2)
-            .bind(&account_id)
+            .bind(&order.id)
+            .bind(&order.account_id)
             .bind(&serial)
             .bind(&cert_der_bytes)
             .bind(&cert_pem)
@@ -236,41 +199,30 @@ async fn run_once(state: &Arc<AppState>) {
             .bind(new_not_after)
             .bind(now)
             .execute(&mut *tx)
-            .await
-            .map_err(|e| crate::error::AcmeError::Database(e.to_string()))?;
-
-            sqlx::query(
-                "UPDATE orders SET certificate_id = ?1, updated = ?2 WHERE id = ?3",
-            )
-            .bind(&cert_id)
-            .bind(now)
-            .bind(&order_id2)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| crate::error::AcmeError::Database(e.to_string()))?;
-
-            tx.commit()
-                .await
-                .map_err(|e| crate::error::AcmeError::Database(e.to_string()))?;
-            Ok(())
+            .await?;
+            sqlx::query("UPDATE orders SET certificate_id = ?, updated = ? WHERE id = ?")
+                .bind(&cert_id)
+                .bind(now)
+                .bind(&order.id)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            Ok::<_, sqlx::Error>(())
         }
         .await;
 
-        match persist_result {
-            Err(e) => {
-                tracing::error!(
-                    "STAR order {}: failed to persist reissued certificate: {e}",
-                    order.id
-                );
-            }
-            Ok(()) => {
-                tracing::info!(
-                    "STAR order {}: reissued certificate {} (valid until {})",
-                    order.id,
-                    issued.serial_hex,
-                    new_not_after
-                );
-            }
+        if let Err(e) = persist_result {
+            tracing::error!(
+                "STAR order {}: failed to persist reissued certificate: {e}",
+                order.id
+            );
+        } else {
+            tracing::info!(
+                "STAR order {}: reissued certificate {} (valid until {})",
+                order.id,
+                issued.serial_hex,
+                new_not_after
+            );
         }
     }
 }

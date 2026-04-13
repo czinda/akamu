@@ -13,7 +13,6 @@ mod tls_alpn01;
 use std::sync::Arc;
 
 use serde_json::json;
-use sqlx::Connection as _;
 
 use crate::error::AcmeError;
 use crate::state::AppState;
@@ -118,76 +117,62 @@ async fn dispatch(
 async fn on_valid(state: &AppState, challenge_id: &str, authz_id: &str, now: i64) {
     let authz_id_log = authz_id.to_string();
 
-    let result: Result<Option<(String, bool)>, AcmeError> = async {
-        let mut conn = state.db.acquire().await?;
-        let mut tx = conn
-            .begin()
-            .await
-            .map_err(|e| AcmeError::Database(e.to_string()))?;
+    let result: Result<Option<(String, bool)>, sqlx::Error> = async {
+        let mut tx = state.db.begin().await?;
 
         // 1. Mark challenge valid.
         sqlx::query(
-            "UPDATE challenges SET status = 'valid', validated = ?1, updated = ?1 WHERE id = ?2",
+            "UPDATE challenges SET status = 'valid', validated = ?, updated = ? WHERE id = ?",
         )
+        .bind(now)
         .bind(now)
         .bind(challenge_id)
         .execute(&mut *tx)
-        .await
-        .map_err(|e| AcmeError::Database(e.to_string()))?;
+        .await?;
 
         // 2. Mark authorization valid.
-        sqlx::query(
-            "UPDATE authorizations SET status = 'valid', updated = ?1 WHERE id = ?2",
-        )
-        .bind(now)
-        .bind(authz_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| AcmeError::Database(e.to_string()))?;
+        sqlx::query("UPDATE authorizations SET status = 'valid', updated = ? WHERE id = ?")
+            .bind(now)
+            .bind(authz_id)
+            .execute(&mut *tx)
+            .await?;
 
         // 3. Find the parent order_id.
-        let order_id: Option<(String,)> =
-            sqlx::query_as("SELECT order_id FROM authorizations WHERE id = ?1")
+        let order_id_row: Option<(String,)> =
+            sqlx::query_as("SELECT order_id FROM authorizations WHERE id = ?")
                 .bind(authz_id)
                 .fetch_optional(&mut *tx)
-                .await
-                .map_err(|e| AcmeError::Database(e.to_string()))?;
+                .await?;
 
-        let order_id = match order_id {
+        let order_id = match order_id_row {
             Some((id,)) => id,
             None => {
                 // Authz disappeared (shouldn't happen, but be safe).
-                tx.commit()
-                    .await
-                    .map_err(|e| AcmeError::Database(e.to_string()))?;
+                tx.commit().await?;
                 return Ok(None);
             }
         };
 
         // 4. Check whether all authzs for this order are now valid.
-        let pending_count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM authorizations WHERE order_id = ?1 AND status != 'valid'",
+        let (pending_count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM authorizations WHERE order_id = ? AND status != 'valid'",
         )
         .bind(&order_id)
         .fetch_one(&mut *tx)
-        .await
-        .map_err(|e| AcmeError::Database(e.to_string()))?;
+        .await?;
 
-        let all_valid = pending_count.0 == 0;
+        let all_valid = pending_count == 0;
         if all_valid {
             sqlx::query(
-                "UPDATE orders SET status = 'ready', error = NULL, updated = ?1 WHERE id = ?2",
+                "UPDATE orders SET status = 'ready', error = NULL, updated = ? WHERE id = ?",
             )
             .bind(now)
             .bind(&order_id)
             .execute(&mut *tx)
-            .await
-            .map_err(|e| AcmeError::Database(e.to_string()))?;
+            .await?;
         }
 
-        tx.commit()
-            .await
-            .map_err(|e| AcmeError::Database(e.to_string()))?;
+        tx.commit().await?;
         Ok(Some((order_id, all_valid)))
     }
     .await;
@@ -228,56 +213,44 @@ async fn on_invalid(
 
     let authz_id_log = authz_id.to_string();
 
-    let result: Result<(), AcmeError> = async {
-        let mut conn = state.db.acquire().await?;
-        let mut tx = conn
-            .begin()
-            .await
-            .map_err(|e| AcmeError::Database(e.to_string()))?;
+    let result: Result<(), sqlx::Error> = async {
+        let mut tx = state.db.begin().await?;
 
         // 1. Mark challenge invalid with the error detail.
         sqlx::query(
-            "UPDATE challenges SET status = 'invalid', error = ?1, updated = ?2 WHERE id = ?3",
+            "UPDATE challenges SET status = 'invalid', error = ?, updated = ? WHERE id = ?",
         )
         .bind(&error_json)
         .bind(now)
         .bind(challenge_id)
         .execute(&mut *tx)
-        .await
-        .map_err(|e| AcmeError::Database(e.to_string()))?;
+        .await?;
 
         // 2. Mark authorization invalid.
-        sqlx::query(
-            "UPDATE authorizations SET status = 'invalid', updated = ?1 WHERE id = ?2",
-        )
-        .bind(now)
-        .bind(authz_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| AcmeError::Database(e.to_string()))?;
+        sqlx::query("UPDATE authorizations SET status = 'invalid', updated = ? WHERE id = ?")
+            .bind(now)
+            .bind(authz_id)
+            .execute(&mut *tx)
+            .await?;
 
         // 3. Find the parent order_id and mark it invalid.
-        let order_id: Option<(String,)> =
-            sqlx::query_as("SELECT order_id FROM authorizations WHERE id = ?1")
+        let order_id_row: Option<(String,)> =
+            sqlx::query_as("SELECT order_id FROM authorizations WHERE id = ?")
                 .bind(authz_id)
                 .fetch_optional(&mut *tx)
-                .await
-                .map_err(|e| AcmeError::Database(e.to_string()))?;
+                .await?;
 
-        if let Some((oid,)) = order_id {
+        if let Some((oid,)) = order_id_row {
             sqlx::query(
-                "UPDATE orders SET status = 'invalid', error = NULL, updated = ?1 WHERE id = ?2",
+                "UPDATE orders SET status = 'invalid', error = NULL, updated = ? WHERE id = ?",
             )
             .bind(now)
-            .bind(oid)
+            .bind(&oid)
             .execute(&mut *tx)
-            .await
-            .map_err(|e| AcmeError::Database(e.to_string()))?;
+            .await?;
         }
 
-        tx.commit()
-            .await
-            .map_err(|e| AcmeError::Database(e.to_string()))?;
+        tx.commit().await?;
         Ok(())
     }
     .await;
@@ -491,9 +464,8 @@ mod tests {
         let authz_id = "authz-val-001".to_string();
         let chall_id = "chall-val-001".to_string();
 
-        let mut conn = state.db.acquire().await.unwrap();
         db::accounts::insert(
-            &mut *conn,
+            &state.db,
             AccountRow {
                 id: acc_id.clone(),
                 status: "valid".to_string(),
@@ -508,7 +480,7 @@ mod tests {
         .unwrap();
 
         db::orders::insert(
-            &mut *conn,
+            &state.db,
             OrderRow {
                 id: order_id.clone(),
                 account_id: acc_id.clone(),
@@ -536,7 +508,7 @@ mod tests {
         .unwrap();
 
         db::authz::insert(
-            &mut *conn,
+            &state.db,
             AuthorizationRow {
                 id: authz_id.clone(),
                 order_id: order_id.clone(),
@@ -554,7 +526,7 @@ mod tests {
         .unwrap();
 
         db::challenges::insert(
-            &mut *conn,
+            &state.db,
             ChallengeRow {
                 id: chall_id.clone(),
                 authz_id: authz_id.clone(),
@@ -569,26 +541,24 @@ mod tests {
         )
         .await
         .unwrap();
-        drop(conn);
 
         // Call on_valid — should update challenge, authz, and order status.
         on_valid(&state, &chall_id, &authz_id, now).await;
 
-        let mut conn = state.db.acquire().await.unwrap();
-        let chall = db::challenges::get_by_id(&mut *conn, &chall_id)
+        let chall = db::challenges::get_by_id(&state.db, &chall_id)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(chall.status, "valid");
 
-        let authz = db::authz::get_by_id(&mut *conn, &authz_id)
+        let authz = db::authz::get_by_id(&state.db, &authz_id)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(authz.status, "valid");
 
         // Single authz now valid → order → ready.
-        let order = db::orders::get_by_id(&mut *conn, &order_id)
+        let order = db::orders::get_by_id(&state.db, &order_id)
             .await
             .unwrap()
             .unwrap();
@@ -608,9 +578,8 @@ mod tests {
         let authz_id = "authz-inv-001".to_string();
         let chall_id = "chall-inv-001".to_string();
 
-        let mut conn = state.db.acquire().await.unwrap();
         db::accounts::insert(
-            &mut *conn,
+            &state.db,
             AccountRow {
                 id: acc_id.clone(),
                 status: "valid".to_string(),
@@ -625,7 +594,7 @@ mod tests {
         .unwrap();
 
         db::orders::insert(
-            &mut *conn,
+            &state.db,
             OrderRow {
                 id: order_id.clone(),
                 account_id: acc_id.clone(),
@@ -653,7 +622,7 @@ mod tests {
         .unwrap();
 
         db::authz::insert(
-            &mut *conn,
+            &state.db,
             AuthorizationRow {
                 id: authz_id.clone(),
                 order_id: order_id.clone(),
@@ -671,7 +640,7 @@ mod tests {
         .unwrap();
 
         db::challenges::insert(
-            &mut *conn,
+            &state.db,
             ChallengeRow {
                 id: chall_id.clone(),
                 authz_id: authz_id.clone(),
@@ -686,7 +655,6 @@ mod tests {
         )
         .await
         .unwrap();
-        drop(conn);
 
         on_invalid(
             &state,
@@ -697,20 +665,19 @@ mod tests {
         )
         .await;
 
-        let mut conn = state.db.acquire().await.unwrap();
-        let chall = db::challenges::get_by_id(&mut *conn, &chall_id)
+        let chall = db::challenges::get_by_id(&state.db, &chall_id)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(chall.status, "invalid");
 
-        let authz = db::authz::get_by_id(&mut *conn, &authz_id)
+        let authz = db::authz::get_by_id(&state.db, &authz_id)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(authz.status, "invalid");
 
-        let order = db::orders::get_by_id(&mut *conn, &order_id)
+        let order = db::orders::get_by_id(&state.db, &order_id)
             .await
             .unwrap()
             .unwrap();
@@ -810,9 +777,8 @@ mod tests {
         let authz_id = "authz-http01-001".to_string();
         let chall_id = "chall-http01-001".to_string();
 
-        let mut conn = state.db.acquire().await.unwrap();
         db::accounts::insert(
-            &mut *conn,
+            &state.db,
             AccountRow {
                 id: acc_id.clone(),
                 status: "valid".to_string(),
@@ -827,7 +793,7 @@ mod tests {
         .unwrap();
 
         db::orders::insert(
-            &mut *conn,
+            &state.db,
             OrderRow {
                 id: order_id.clone(),
                 account_id: acc_id.clone(),
@@ -855,7 +821,7 @@ mod tests {
         .unwrap();
 
         db::authz::insert(
-            &mut *conn,
+            &state.db,
             AuthorizationRow {
                 id: authz_id.clone(),
                 order_id: order_id.clone(),
@@ -873,7 +839,7 @@ mod tests {
         .unwrap();
 
         db::challenges::insert(
-            &mut *conn,
+            &state.db,
             ChallengeRow {
                 id: chall_id.clone(),
                 authz_id: authz_id.clone(),
@@ -888,7 +854,6 @@ mod tests {
         )
         .await
         .unwrap();
-        drop(conn);
 
         validate_challenge(
             &state, &chall_id, &authz_id, "http-01", "ip", &id_value, &key_auth, token, None,
@@ -896,8 +861,7 @@ mod tests {
         .await;
 
         // Covers Ok(()) => on_valid branch in validate_challenge.
-        let mut conn = state.db.acquire().await.unwrap();
-        let chall = db::challenges::get_by_id(&mut *conn, &chall_id)
+        let chall = db::challenges::get_by_id(&state.db, &chall_id)
             .await
             .unwrap()
             .unwrap();
@@ -907,20 +871,35 @@ mod tests {
         );
     }
 
-    /// Call on_valid with a non-existent authz — on_valid is infallible.
+    /// Create a raw (no-schema) sqlx pool for error-path tests.
+    async fn raw_no_schema_pool() -> crate::db::Db {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(SqliteConnectOptions::new().in_memory(true))
+            .await
+            .unwrap()
+    }
+
+    /// Call on_valid with a raw (no-schema) DB so that set_valid fails immediately.
+    /// Covers on_valid transaction Err path → warn + return.
     #[tokio::test]
     async fn on_valid_db_error_set_valid_fails() {
-        let state = make_state().await;
-        // on_valid tries to update a non-existent challenge — the transaction will
-        // succeed (0 rows affected) without error, since SQLite UPDATE of 0 rows is OK.
-        // The function must not panic.
+        let raw_db = raw_no_schema_pool().await;
+        let state = make_state_with_db(raw_db).await;
+        // on_valid tries to begin a transaction and execute UPDATE on challenges;
+        // fails on no-table DB → warns and returns.
         on_valid(&state, "fake-chall", "fake-authz", unix_now()).await;
     }
 
-    /// Call on_invalid with a non-existent authz — on_invalid is infallible.
+    /// Call on_invalid with a raw (no-schema) DB so set_invalid fails immediately.
+    /// Covers on_invalid transaction Err path → warn.
     #[tokio::test]
     async fn on_invalid_db_error_set_invalid_fails() {
-        let state = make_state().await;
+        let raw_db = raw_no_schema_pool().await;
+        let state = make_state_with_db(raw_db).await;
+        // on_invalid tries to begin a transaction and execute UPDATE on challenges;
+        // fails on no-table DB → warns.
         on_invalid(
             &state,
             "fake-chall",
@@ -931,9 +910,111 @@ mod tests {
         .await;
     }
 
+    /// on_valid where challenges table exists and authz update fails within the
+    /// same transaction (transactions are atomic in sqlx — the whole tx fails).
+    /// This test verifies that on_valid is robust when the transaction fails.
+    #[tokio::test]
+    async fn on_valid_set_valid_ok_but_authz_update_fails() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        // Create a DB with only the challenges table (no authorizations/orders).
+        let partial_db: crate::db::Db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(SqliteConnectOptions::new().in_memory(true))
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE challenges (
+                 id TEXT PRIMARY KEY,
+                 authz_id TEXT NOT NULL,
+                 type TEXT NOT NULL,
+                 status TEXT NOT NULL DEFAULT 'pending',
+                 token TEXT NOT NULL,
+                 validated INTEGER,
+                 error TEXT,
+                 created INTEGER NOT NULL,
+                 updated INTEGER NOT NULL
+             )",
+        )
+        .execute(&partial_db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO challenges (id, authz_id, type, status, token, created, updated)
+             VALUES ('chall-partial', 'authz-partial', 'http-01', 'pending', 'tok', 0, 0)",
+        )
+        .execute(&partial_db)
+        .await
+        .unwrap();
+
+        let state = make_state_with_db(partial_db).await;
+        // Transaction begins, challenge update succeeds, then authz update fails
+        // (no authorizations table) — the whole transaction is rolled back and
+        // the error is logged as a warning.
+        on_valid(&state, "chall-partial", "authz-partial", unix_now()).await;
+    }
+
+    /// Helper to build a state backed by a given db pool.
+    async fn make_state_with_db(db: crate::db::Db) -> Arc<AppState> {
+        use crate::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
+        use crate::state::{AppState, CaState, MtcState};
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = Arc::new(Config {
+            listen_addr: "127.0.0.1:0".into(),
+            base_url: "https://acme.test".into(),
+            database: DatabaseConfig {
+                path: ":memory:".into(),
+            },
+            ca: CaConfig {
+                key_file: dir.path().join("ca-p.key").to_string_lossy().into_owned(),
+                cert_file: dir.path().join("ca-p.crt").to_string_lossy().into_owned(),
+                key_type: "ec:P-256".into(),
+                hash_alg: "sha256".into(),
+                validity_days: 90,
+                crl_url: None,
+                ocsp_url: None,
+                common_name: "Test CA".into(),
+                organization: "Test".into(),
+                ca_validity_years: 10,
+            },
+            mtc: MtcConfig {
+                log_path: "/dev/null".into(),
+                enabled: false,
+            },
+            server: ServerConfig::default(),
+            tls: Default::default(),
+        });
+        let (ca_key, ca_cert_der) = crate::ca::init::load_or_generate(&config.ca).unwrap();
+        Arc::new(AppState {
+            config,
+            db,
+            ca: Arc::new(CaState {
+                key: ca_key,
+                cert_der: ca_cert_der,
+                hash_alg: "sha256".into(),
+                validity_days: 90,
+                crl_url: None,
+                ocsp_url: None,
+                aki_bytes: Vec::new(),
+            }),
+            mtc: Arc::new(MtcState {
+                log: None,
+                algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
+            }),
+            tls: None,
+            spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+            link_header: Arc::new(axum::http::HeaderValue::from_static(
+                "<https://acme.test/acme/directory>;rel=\"index\"",
+            )),
+            validation_client: hyper_util::client::legacy::Client::builder(
+                hyper_util::rt::TokioExecutor::new(),
+            )
+            .build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
+        })
+    }
+
     /// Insert minimal test data: account, order, authz, challenge — all with the given IDs.
     async fn insert_test_rows(
-        state: &Arc<AppState>,
+        db: &crate::db::Db,
         acc_id: &str,
         order_id: &str,
         authz_id: &str,
@@ -942,9 +1023,8 @@ mod tests {
         use crate::db;
         use crate::db::schema::{AccountRow, AuthorizationRow, ChallengeRow, OrderRow};
         let now = unix_now();
-        let mut conn = state.db.acquire().await.unwrap();
         db::accounts::insert(
-            &mut *conn,
+            db,
             AccountRow {
                 id: acc_id.to_string(),
                 status: "valid".into(),
@@ -958,7 +1038,7 @@ mod tests {
         .await
         .unwrap();
         db::orders::insert(
-            &mut *conn,
+            db,
             OrderRow {
                 id: order_id.to_string(),
                 account_id: acc_id.to_string(),
@@ -985,7 +1065,7 @@ mod tests {
         .await
         .unwrap();
         db::authz::insert(
-            &mut *conn,
+            db,
             AuthorizationRow {
                 id: authz_id.to_string(),
                 order_id: order_id.to_string(),
@@ -1002,7 +1082,7 @@ mod tests {
         .await
         .unwrap();
         db::challenges::insert(
-            &mut *conn,
+            db,
             ChallengeRow {
                 id: chall_id.to_string(),
                 authz_id: authz_id.to_string(),
@@ -1019,26 +1099,55 @@ mod tests {
         .unwrap();
     }
 
-    /// on_valid where all DB calls succeed: challenge, authz, order all updated.
+    /// on_valid where all updates succeed but update_status(orders "ready") fails
+    /// because the orders table was dropped.
     #[tokio::test]
-    async fn on_valid_orders_update_succeeds() {
-        let state = make_state().await;
-        insert_test_rows(&state, "acc-ov", "ord-ov", "authz-ov", "chall-ov").await;
-        on_valid(&state, "chall-ov", "authz-ov", unix_now()).await;
+    async fn on_valid_orders_update_fails() {
+        let db_conn = crate::db::open(":memory:").await.unwrap();
+        insert_test_rows(&db_conn, "acc-ov", "ord-ov", "authz-ov", "chall-ov").await;
 
-        let mut conn = state.db.acquire().await.unwrap();
-        let order = db::orders::get_by_id(&mut *conn, "ord-ov")
+        // Both DDL statements must run on the same connection: PRAGMA is
+        // connection-local, so foreign_keys=OFF must be visible to the DROP TABLE.
+        let mut conn = db_conn.acquire().await.unwrap();
+        sqlx::query("PRAGMA foreign_keys=OFF")
+            .execute(&mut *conn)
             .await
-            .unwrap()
             .unwrap();
-        assert_eq!(order.status, "ready");
+        sqlx::query("DROP TABLE orders")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        drop(conn);
+
+        let state = make_state_with_db(db_conn).await;
+        // on_valid: transaction tries UPDATE orders SET status = 'ready' → fails
+        // (no orders table) → transaction rolled back → error logged as warning.
+        on_valid(&state, "chall-ov", "authz-ov", unix_now()).await;
     }
 
-    /// on_invalid where all DB calls succeed.
+    /// on_invalid where all updates succeed but the orders update fails because
+    /// orders table was dropped.
     #[tokio::test]
-    async fn on_invalid_orders_update_succeeds() {
-        let state = make_state().await;
-        insert_test_rows(&state, "acc-oi", "ord-oi", "authz-oi", "chall-oi").await;
+    async fn on_invalid_orders_update_fails() {
+        let db_conn = crate::db::open(":memory:").await.unwrap();
+        insert_test_rows(&db_conn, "acc-oi", "ord-oi", "authz-oi", "chall-oi").await;
+
+        // Both DDL statements must run on the same connection (PRAGMA is
+        // connection-local).
+        let mut conn = db_conn.acquire().await.unwrap();
+        sqlx::query("PRAGMA foreign_keys=OFF")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE orders")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        drop(conn);
+
+        let state = make_state_with_db(db_conn).await;
+        // on_invalid: transaction tries UPDATE orders → fails (no orders table) →
+        // rolled back → error logged as warning.
         on_invalid(
             &state,
             "chall-oi",
@@ -1047,12 +1156,5 @@ mod tests {
             unix_now(),
         )
         .await;
-
-        let mut conn = state.db.acquire().await.unwrap();
-        let order = db::orders::get_by_id(&mut *conn, "ord-oi")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(order.status, "invalid");
     }
 }

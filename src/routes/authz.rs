@@ -10,8 +10,6 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use sqlx::Connection as _;
-
 use crate::db;
 use crate::db::schema::{AuthorizationRow, ChallengeRow};
 use crate::error::AcmeError;
@@ -128,11 +126,9 @@ pub async fn new_authz(
 
     let now = unix_now();
 
-    let mut conn = state.db.acquire().await?;
-
     // Check for an existing valid unexpired authorization for this account+identifier.
     if let Some(existing_authz) = db::authz::find_valid_by_account_and_identifier(
-        &mut *conn,
+        &state.db,
         &account_id,
         &identifier_json,
         now,
@@ -140,7 +136,7 @@ pub async fn new_authz(
     .await?
     {
         // Return the existing authorization.
-        let (authz, challenges) = db::authz::get_with_challenges(&mut *conn, &existing_authz.id)
+        let (authz, challenges) = db::authz::get_with_challenges(&state.db, &existing_authz.id)
             .await?
             .ok_or(AcmeError::NotFound)?;
         let base = &state.config.base_url;
@@ -196,48 +192,46 @@ pub async fn new_authz(
     let subdomain_auth_allowed = payload.subdomain_auth_allowed;
 
     {
-        let mut tx = conn
-            .begin()
-            .await
-            .map_err(|e| AcmeError::Database(e.to_string()))?;
+        let mut tx = state.db.begin().await.map_err(AcmeError::from)?;
         sqlx::query(
             "INSERT INTO authorizations
              (id, order_id, account_id, status, identifier, expires,
               wildcard, subdomain_auth_allowed, created, updated)
-             VALUES (?1, NULL, ?2, 'pending', ?3, ?4, 0, ?5, ?6, ?6)",
+             VALUES (?, NULL, ?, 'pending', ?, ?, 0, ?, ?, ?)",
         )
         .bind(&authz_id)
         .bind(&account_id)
         .bind(&identifier_json)
         .bind(authz_expiry)
-        .bind(subdomain_auth_allowed)
+        .bind(subdomain_auth_allowed as i64)
+        .bind(now)
         .bind(now)
         .execute(&mut *tx)
         .await
-        .map_err(|e| AcmeError::Database(e.to_string()))?;
+        .map_err(AcmeError::from)?;
+
         for (chall_id, chall_type) in &challenges {
             sqlx::query(
                 "INSERT INTO challenges
                  (id, authz_id, type, status, token, validated,
                   error, created, updated)
-                 VALUES (?1, ?2, ?3, 'pending', ?4, NULL, NULL, ?5, ?5)",
+                 VALUES (?, ?, ?, 'pending', ?, NULL, NULL, ?, ?)",
             )
             .bind(chall_id)
             .bind(&authz_id)
             .bind(chall_type)
             .bind(&token)
             .bind(now)
+            .bind(now)
             .execute(&mut *tx)
             .await
-            .map_err(|e| AcmeError::Database(e.to_string()))?;
+            .map_err(AcmeError::from)?;
         }
-        tx.commit()
-            .await
-            .map_err(|e| AcmeError::Database(e.to_string()))?;
+        tx.commit().await.map_err(AcmeError::from)?;
     }
 
     // Fetch the freshly inserted authorization and its challenges for the response.
-    let (authz, chall_rows) = db::authz::get_with_challenges(&mut *conn, &authz_id)
+    let (authz, chall_rows) = db::authz::get_with_challenges(&state.db, &authz_id)
         .await?
         .ok_or(AcmeError::NotFound)?;
 
@@ -327,8 +321,7 @@ pub async fn get_authz(
         .account_id
         .ok_or(AcmeError::Unauthorized("kid required".into()))?;
 
-    let mut conn = state.db.acquire().await?;
-    let (authz, challenges) = db::authz::get_with_challenges(&mut *conn, &id)
+    let (authz, challenges) = db::authz::get_with_challenges(&state.db, &id)
         .await?
         .ok_or(AcmeError::NotFound)?;
     if authz.account_id != account_id {

@@ -30,7 +30,7 @@ pub struct OrderRow {
     pub star_start_date: Option<i64>,
     pub star_end_date: Option<i64>,
     pub star_lifetime_secs: Option<i64>,
-    pub star_lifetime_adjust_secs: i64, // default 0
+    pub star_lifetime_adjust_secs: i64, // NOT NULL DEFAULT 0 in schema
     pub star_allow_cert_get: bool,
     pub star_canceled_at: Option<i64>,
     pub star_csr_der: Option<Vec<u8>>, // stored CSR DER for reissuance

@@ -11,7 +11,6 @@ use synta_certificate::BackendPrivateKey;
 use synta_mtc::crypto::HashAlgorithm;
 
 use crate::config::Config;
-use crate::db::Db;
 use crate::mtc::log::SharedLog;
 
 /// Shared HTTP client for outbound challenge validation requests.
@@ -24,7 +23,7 @@ pub type ValidationClient = Client<HttpConnector, Empty<hyper::body::Bytes>>;
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
-    pub db: Db,
+    pub db: sqlx::SqlitePool,
     pub ca: Arc<CaState>,
     pub mtc: Arc<MtcState>,
     /// Present when `[tls]` is enabled and client auth is configured.

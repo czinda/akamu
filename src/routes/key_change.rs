@@ -82,10 +82,8 @@ pub async fn key_change(
         ));
     }
 
-    let mut conn = state.db.acquire().await?;
-
     // Verify the new key is not already in use.
-    if db::accounts::get_by_thumbprint(&mut *conn, &new_thumbprint)
+    if db::accounts::get_by_thumbprint(&state.db, &new_thumbprint)
         .await?
         .is_some()
     {
@@ -97,10 +95,10 @@ pub async fn key_change(
     // Update the account key and evict from the SPKI cache so the next
     // request re-loads the new key from the database.
     let now = unix_now();
-    db::accounts::update_key(&mut *conn, &account_id, new_spki, new_thumbprint, now).await?;
+    db::accounts::update_key(&state.db, &account_id, new_spki, new_thumbprint, now).await?;
     state.spki_cache.write().unwrap().remove(&account_id);
 
-    let account = db::accounts::get_by_id(&mut *conn, &account_id)
+    let account = db::accounts::get_by_id(&state.db, &account_id)
         .await?
         .ok_or(AcmeError::AccountDoesNotExist)?;
 
