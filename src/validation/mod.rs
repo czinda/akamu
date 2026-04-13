@@ -1106,15 +1106,18 @@ mod tests {
         let db_conn = crate::db::open(":memory:").await.unwrap();
         insert_test_rows(&db_conn, "acc-ov", "ord-ov", "authz-ov", "chall-ov").await;
 
-        // Drop the orders table so update_status("ready") fails.
+        // Both DDL statements must run on the same connection: PRAGMA is
+        // connection-local, so foreign_keys=OFF must be visible to the DROP TABLE.
+        let mut conn = db_conn.acquire().await.unwrap();
         sqlx::query("PRAGMA foreign_keys=OFF")
-            .execute(&db_conn)
+            .execute(&mut *conn)
             .await
             .unwrap();
         sqlx::query("DROP TABLE orders")
-            .execute(&db_conn)
+            .execute(&mut *conn)
             .await
             .unwrap();
+        drop(conn);
 
         let state = make_state_with_db(db_conn).await;
         // on_valid: transaction tries UPDATE orders SET status = 'ready' → fails
@@ -1129,15 +1132,18 @@ mod tests {
         let db_conn = crate::db::open(":memory:").await.unwrap();
         insert_test_rows(&db_conn, "acc-oi", "ord-oi", "authz-oi", "chall-oi").await;
 
-        // Drop orders table so the order-invalid update fails.
+        // Both DDL statements must run on the same connection (PRAGMA is
+        // connection-local).
+        let mut conn = db_conn.acquire().await.unwrap();
         sqlx::query("PRAGMA foreign_keys=OFF")
-            .execute(&db_conn)
+            .execute(&mut *conn)
             .await
             .unwrap();
         sqlx::query("DROP TABLE orders")
-            .execute(&db_conn)
+            .execute(&mut *conn)
             .await
             .unwrap();
+        drop(conn);
 
         let state = make_state_with_db(db_conn).await;
         // on_invalid: transaction tries UPDATE orders → fails (no orders table) →

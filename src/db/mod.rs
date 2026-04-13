@@ -7,6 +7,8 @@ pub mod nonces;
 pub mod orders;
 pub mod schema;
 
+use std::time::Duration;
+
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::SqlitePool;
 
@@ -16,29 +18,42 @@ use crate::error::AcmeError;
 pub type Db = sqlx::SqlitePool;
 
 /// Initialise the database connection pool and run pending migrations.
+///
+/// # Connection pool sizing
+///
+/// SQLite serialises all writes, so for write-heavy workloads the practical
+/// concurrency is determined by how fast SQLite can process writes, not by the
+/// number of connections.  `max_connections(1)` is used for `:memory:` databases
+/// because each connection would otherwise see its own private empty database.
+/// For file-backed databases, WAL mode is enabled so readers do not block
+/// writers; a small pool (`max_connections(4)`) lets multiple readers proceed
+/// concurrently while writes still queue through SQLite's internal lock, with
+/// `busy_timeout` preventing immediate SQLITE_BUSY errors under contention.
 pub async fn open(path: &str) -> Result<Db, AcmeError> {
-    let opts = if path == ":memory:" {
-        SqliteConnectOptions::new()
-            .filename(":memory:")
-            .foreign_keys(true)
-    } else {
-        SqliteConnectOptions::new()
-            .filename(path)
-            .create_if_missing(true)
-            .foreign_keys(true)
-            .journal_mode(SqliteJournalMode::Wal)
-    };
-
     let pool = if path == ":memory:" {
-        // In-memory databases require max_connections(1) so all operations
-        // share the same connection (each connection would have its own empty DB).
+        // In-memory databases require max_connections(1): every SQLite in-memory
+        // connection opens its own private database, so a pool with N > 1
+        // connections would produce N independent empty databases.
+        let opts = SqliteConnectOptions::new()
+            .filename(":memory:")
+            .foreign_keys(true);
         SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(opts)
             .await
-            .map_err(|e| AcmeError::Database(format!("open database '{}': {}", path, e)))?
+            .map_err(|e| AcmeError::Database(format!("open in-memory database: {}", e)))?
     } else {
-        SqlitePool::connect_with(opts)
+        // File-backed database: WAL mode allows concurrent readers while writes
+        // are serialised; busy_timeout makes writers queue rather than error.
+        let opts = SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(true)
+            .foreign_keys(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        SqlitePoolOptions::new()
+            .max_connections(4)
+            .connect_with(opts)
             .await
             .map_err(|e| AcmeError::Database(format!("open database '{}': {}", path, e)))?
     };

@@ -17,30 +17,37 @@ end-to-end wall time from the start of `new-order` through certificate download;
 account creation is excluded because it is amortised across all orders from a
 given client.
 
+> **Note — database layer (sqlx).**  Akāmu uses sqlx 0.8 for SQLite access.
+> The in-memory database path (`db = ":memory:"`, the benchmark default) uses a
+> single-connection pool (`max_connections = 1`), because every SQLite in-memory
+> connection opens its own private, empty database.  All ~20 SQL operations per
+> issuance are serialised through this one pool connection.  As a result,
+> throughput for the in-memory configuration plateaus at ≈ 850 iss/s regardless
+> of concurrent-client count — determined by how fast the single connection can
+> process queries, not by crypto or network speed.  File-backed databases use a
+> 4-connection WAL-mode pool and do not have this ceiling; see the
+> [Database scalability](#database-scalability) section for guidance.
+
 ---
 
 ## Concurrency scaling
 
-With EC P-256 certificates and an EC P-256 CA, throughput scales near-linearly
-with the number of concurrent clients up to the SQLite write-serialisation
-ceiling:
+With EC P-256 certificates and an EC P-256 CA, throughput scales up to ~5
+concurrent clients and then plateaus as the single-connection pool becomes
+the bottleneck:
 
 | Concurrent clients | Throughput (iss/s) | Mean latency (ms) | p95 (ms) |
 |-------------------:|-------------------:|------------------:|---------:|
-|  1                 |   225              | 4.4               | 5.2      |
-|  5                 | 1 114              | 4.5               | 5.1      |
-| 10                 | 2 116              | 4.7               | 5.5      |
-| 25                 | 2 822              | 7.1               | 8.1      |
-| 50                 | 3 256              | 11.6              | 13.8     |
+|  1                 |   208              |  4.8              |  5.8     |
+|  5                 |   760              |  6.5              |  8.5     |
+| 10                 |   880              | 11.2              | 14.9     |
+| 25                 |   846              | 26.1              | 29.3     |
+| 50                 |   808              | 53.9              | 60.2     |
 
-Throughput rises 14× from 1 to 50 clients.  Latency climbs as the SQLite write
-lock is increasingly contended above ~10 concurrent clients, but remains in the
-single-digit millisecond range through 25 clients.
-
-The practical ceiling is the SQLite write lock and the minimum round-trip time
-of the challenge-validation loop.  With in-memory SQLite and fast crypto
-(EC P-256, Ed25519, ML-DSA) the bottleneck is network/scheduling jitter rather
-than CPU.
+Throughput peaks around 10 concurrent clients at ~880 iss/s and is stable
+thereafter; latency grows roughly linearly with client count, consistent with a
+single serialised resource.  The practical bottleneck is the in-memory SQLite
+single connection; crypto and network are not limiting factors at these rates.
 
 ---
 
@@ -51,78 +58,72 @@ The table below compares issuance performance for different CSR key types at
 
 | CSR key type | Throughput (iss/s) | Mean latency (ms) | p95 (ms) | Finalize phase (ms) |
 |:-------------|-------------------:|------------------:|---------:|--------------------:|
-| ed25519      | 2 914              |  6.6              |  7.6     |  1.6                |
-| ec:P-256     | 2 903              |  6.6              |  8.5     |  1.5                |
-| ec:P-384     | 2 266              |  8.6              | 10.5     |  3.3                |
-| ml-dsa-44    | 2 211              |  8.4              | 10.3     |  2.6                |
-| ml-dsa-65    | 2 125              |  8.7              | 10.6     |  3.2                |
-| ml-dsa-87    | 1 930              |  9.6              | 11.7     |  4.0                |
-| rsa:2048     |   175              | 121.8             | 256.0    | 100.7               |
-| rsa:4096     |    16              | 1 298             | 2 521    | 1 094               |
+| ec:P-256     |   807              | 24.5              | 32.0     |   5.7               |
+| ed25519      |   762              | 26.5              | 38.1     |   5.9               |
+| ec:P-384     |   735              | 27.1              | 40.0     |   6.5               |
+| ml-dsa-44    |   749              | 26.4              | 31.9     |   6.4               |
+| ml-dsa-65    |   769              | 26.1              | 32.7     |   6.7               |
+| ml-dsa-87    |   725              | 27.9              | 41.3     |   7.4               |
+| rsa:2048     |   167              | 119.9             | 220.3    |  93.2               |
+| rsa:4096     |    12              | 1 015             | 2 187    | 868                 |
 
-EC P-256 and Ed25519 are the fastest options.  ML-DSA post-quantum key types
-(FIPS 204) are 25–35% slower than EC P-256 due to larger CSR and certificate
-sizes, but remain well above 1 000 iss/s at 25 clients.
+All classical and post-quantum key types cluster around 725–810 iss/s because
+throughput is bounded by the single-connection database pool, not by crypto.
+Finalize-phase latency (CSR verification + certificate issuance) still reflects
+relative signing cost: EC and Ed25519 are fastest, ML-DSA adds ~1–2 ms, and RSA
+adds tens to hundreds of milliseconds.
 
-RSA is the outlier: RSA 2048 adds ~100 ms to the finalize phase (key generation
-+ CA signing), and RSA 4096 adds ~1 100 ms — a 730× penalty compared with EC
-P-256 on the finalize phase.
+RSA is the outlier: RSA 2048 adds ~90 ms to finalize, and RSA 4096 adds ~870 ms.
 
 ### RSA 4096 saturation
 
-RSA 4096 key generation is CPU-intensive and happens inside the finalize handler.
-Under concurrency the SQLite write lock queues behind the signing time and
-throughput stops growing:
-
 | Clients | Throughput (iss/s) | Finalize mean (ms) | p99 (ms) |
 |--------:|-------------------:|-------------------:|---------:|
-|  1      |   2                |  294               |  630     |
-| 10      |  16                | 1 094              | 3 829    |
-| 25      |  16                | 1 094              | 3 829    |
-| 50      |  13                | 1 960              | 6 480    |
+|  1      |    3               |   381              |   828    |
+| 10      |   12               |   712              |  1 158   |
+| 25      |   13               |   835              |  1 587   |
+| 50      |   19               |   749              |  1 061   |
 
-Throughput plateaus at ≈16 iss/s regardless of client count while latency grows
-without bound.  Avoid RSA 4096 in any configuration where more than a handful
-of concurrent ACME clients are expected.
+Throughput is limited by RSA 4096 key generation time regardless of concurrency.
+Avoid RSA 4096 in any configuration where more than a handful of concurrent ACME
+clients are expected.
 
 ---
 
 ## Post-quantum cryptography
 
 Akāmu supports ML-DSA (FIPS 204 / RFC 9881) for both CA keys and certificate
-keys.  Three security levels are available:
+keys.  Three security levels are available.  The table uses a full post-quantum
+chain (ML-DSA CA + ML-DSA leaf, with `--verify-cert`) at 25 concurrent clients:
 
 | Parameter set | NIST category | Throughput (iss/s) | Alloc pressure (MiB/iss) |
 |:--------------|:-------------:|-------------------:|-------------------------:|
-| ML-DSA-44     | 2             | 2 211              | 0.43                     |
-| ML-DSA-65     | 3             | 2 125              | 0.48                     |
-| ML-DSA-87     | 5             | 1 930              | 0.53                     |
-| EC P-256      | —             | 2 903              | 0.28                     |
+| ML-DSA-44     | 2             |   685              | 0.64                     |
+| ML-DSA-65     | 3             |   708              | 0.69                     |
+| ML-DSA-87     | 5             |   715              | 0.84                     |
+| EC P-256      | —             |   807              | 0.38                     |
 
-ML-DSA allocation pressure is 50–90% higher than EC P-256 per issuance,
-reflecting the larger key and signature structures.  Heap footprint at steady
-state remains under 5 MiB for any key type at 25 concurrent clients.
+ML-DSA allocation pressure is 70–120% higher than EC P-256 per issuance,
+reflecting the larger key and signature structures.  Throughput difference between
+ML-DSA and EC P-256 is small (10–15%) because the database single-connection
+bottleneck dominates over crypto cost at 25 clients.
 
 ML-DSA requires OpenSSL 3.5 or later.  Akāmu will report a startup error if the
 requested key type is unavailable on the installed OpenSSL version.
 
 ### CA key type impact
 
-The CA key controls how fast the server signs each issued certificate.  EC CA
-keys are recommended.  RSA 4096 as the CA key limits throughput:
-
 | CA key    | Throughput (iss/s) | Mean latency (ms) | Finalize (ms) |
 |:----------|-------------------:|------------------:|--------------:|
-| ec:P-256  | 2 386              |  7.0              |  1.5          |
-| ec:P-384  | 2 435              |  7.5              |  2.1          |
-| rsa:2048  | 2 700              |  7.9              |  2.5          |
-| rsa:4096  | 1 085              | 17.7              | 10.8          |
+| ec:P-256  |   795              | 25.5              |  5.8          |
+| ec:P-384  |   804              | 24.9              |  5.7          |
+| rsa:2048  |   685              | 29.6              |  6.7          |
+| rsa:4096  |   607              | 31.9              | 12.1          |
 
-RSA 2048 as the CA key is acceptable (finalize ~2.5 ms).  RSA 4096 as the CA
-key reduces throughput by ~55% vs EC P-256 due to slower signing.
-
-A full post-quantum deployment (ML-DSA CA + ML-DSA leaf keys) achieves
->1 500 iss/s at 25 concurrent clients with allocation pressure ~0.5 MiB/iss.
+EC and Ed25519 CA keys deliver the highest throughput.  RSA 2048 as the CA key
+is acceptable (finalize ~6.7 ms).  RSA 4096 as the CA key reduces throughput by
+~24% vs EC P-256 due to slower signing; avoid it for performance-sensitive
+deployments.
 
 ---
 
@@ -130,12 +131,13 @@ A full post-quantum deployment (ML-DSA CA + ML-DSA leaf keys) achieves
 
 | Challenge type    | Throughput (iss/s) | Challenge phase (ms) | Alloc pressure (MiB/iss) |
 |:------------------|-------------------:|---------------------:|-------------------------:|
-| http-01           | 2 822              | 3.2                  | 0.28                     |
-| dns-persist-01    | 2 768              | 3.7                  | 0.31                     |
+| http-01           |   790              | 10.1                 | 0.38                     |
+| dns-persist-01    |   861              | 10.0                 | 0.41                     |
 
 `http-01` and `dns-persist-01` deliver equivalent throughput on loopback.
-`dns-persist-01` shows slightly higher latency because DNS validation incurs one
-extra UDP round-trip compared with the HTTP challenge responder.
+Both challenge phases reflect the adaptive poll backoff (starts at 1 ms, caps at
+`--poll-ms`) rather than network latency, so the 10 ms figure is dominated by
+polling overhead.
 
 ---
 
@@ -155,19 +157,22 @@ extra UDP round-trip compared with the HTTP challenge responder.
 
 ## Database scalability
 
-All benchmarks above use an in-memory SQLite database (`:memory:`).  A
-file-backed database on a local SSD introduces a small write-sync overhead but
-does not change the throughput ceiling for EC or ML-DSA workloads at typical
-client counts.
+The benchmark default is an in-memory SQLite database (`:memory:`), which uses a
+single pool connection.  A file-backed database on a local SSD with WAL mode
+enables a 4-connection pool: readers do not block writers, and multiple reads can
+proceed concurrently.  This removes the single-connection ceiling for
+read-intensive phases (authz fetch, cert download) while writes remain serialised
+by SQLite.
 
 For sustained high-throughput targets consider:
 
-- Running with an in-memory database if durability across restarts is not
-  required (lab or internal CA use cases).
-- Placing the SQLite file on a RAM-backed filesystem (`tmpfs`) for a middle
-  ground.
-- Sharding load across multiple Akāmu instances behind a load balancer, each
-  with its own database, for production-scale deployments.
+- **File-backed WAL database** on a fast SSD or RAM-backed filesystem (`tmpfs`).
+  The 4-connection pool removes the in-memory ceiling while retaining durability.
+- **In-memory database** if restart-durability is not required (lab or internal CA
+  use cases); throughput is bounded at ≈ 850 iss/s by the single-connection pool.
+- **Sharding** — multiple Akāmu instances behind a load balancer, each with its
+  own database — for production-scale deployments requiring higher aggregate
+  issuance rates.
 
 ---
 
@@ -251,10 +256,10 @@ only the issuance window, not server startup allocations.
 ```
   Heap (allocator counters):
     process start:        0.1 MiB  live
-    server ready:         0.2 MiB  live   (server overhead: +1.5 MiB)
-    after  220 iss.:      1.6 MiB  live   (issuance growth: +1.4 MiB, 6.7 KiB/iss.)
-    peak live:            3.9 MiB         (high-water mark during issuances)
-    alloc pressure:      61.2 MiB  total  (0.278 MiB/iss. requested, incl. freed)
+    server ready:         0.2 MiB  live   (server overhead: +0.5 MiB)
+    after  220 iss.:      0.6 MiB  live   (issuance growth: +0.4 MiB, 1.9 KiB/iss.)
+    peak live:            1.5 MiB         (high-water mark during issuances)
+    alloc pressure:      83.5 MiB  total  (0.379 MiB/iss. requested, incl. freed)
 ```
 
 **live** — bytes currently held on the heap (footprint).
@@ -272,14 +277,14 @@ The `"memory"` key is present in JSON output when `--output json` is used:
   "memory": {
     "start_live_bytes":           102400,
     "server_ready_live_bytes":    204800,
-    "after_bench_live_bytes":    1677722,
-    "peak_live_bytes":           4089446,
-    "server_overhead_bytes":     1572864,
-    "issuance_growth_bytes":     1472922,
-    "per_issuance_growth_bytes":    6695,
-    "issuance_alloc_bytes":     64174080,
-    "per_issuance_alloc_bytes":   291700,
-    "total_alloc_count":         950000
+    "after_bench_live_bytes":     614400,
+    "peak_live_bytes":           1572864,
+    "server_overhead_bytes":      512000,
+    "issuance_growth_bytes":      409600,
+    "per_issuance_growth_bytes":    1900,
+    "issuance_alloc_bytes":     87523328,
+    "per_issuance_alloc_bytes":   397833,
+    "total_alloc_count":         700000
   }
 }
 ```
@@ -300,12 +305,12 @@ The `"memory"` key is present in JSON output when `--output json` is used:
 At 25 concurrent clients with 200 measured issuances (EC P-256, `:memory:` DB,
 5 ms poll cap):
 
-- Server overhead: ~1.5 MiB live (router tables, DB connection, CA state, HTTP client pool)
-- Per-issuance heap growth: ~7 KiB (request-scoped state retained by tokio workers)
-- Peak during issuances: ~4 MiB (25 in-flight requests simultaneously)
-- Allocation pressure: ~280 KiB per issuance (JWS buffers, JSON serialisation, cert DER/PEM)
+- Server overhead: ~0.5 MiB live (router tables, DB connection pool, CA state, HTTP client)
+- Per-issuance heap growth: ~2 KiB (request-scoped state retained by tokio workers)
+- Peak during issuances: ~1.5 MiB (25 in-flight requests simultaneously)
+- Allocation pressure: ~380 KiB per issuance (JWS buffers, JSON serialisation, cert DER/PEM)
 
-For ML-DSA key types allocation pressure rises to ~430–530 KiB per issuance
+For ML-DSA key types allocation pressure rises to ~640–840 KiB per issuance
 due to larger key and certificate structures.
 
 These figures confirm that Akāmu has a stable heap footprint at steady state.
