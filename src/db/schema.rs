@@ -31,7 +31,7 @@ pub struct OrderRow {
     pub star_end_date: Option<i64>,
     pub star_lifetime_secs: Option<i64>,
     pub star_lifetime_adjust_secs: i64, // NOT NULL DEFAULT 0 in schema
-    pub star_allow_cert_get: bool,
+    pub star_allow_cert_get: i64,       // 0=false, 1=true
     pub star_canceled_at: Option<i64>,
     pub star_csr_der: Option<Vec<u8>>, // stored CSR DER for reissuance
     // draft-aaron-acme-profiles-01
@@ -46,8 +46,8 @@ pub struct AuthorizationRow {
     pub status: String,
     pub identifier: String, // JSON {"type":..,"value":..}
     pub expires: Option<i64>,
-    pub wildcard: bool,
-    pub subdomain_auth_allowed: bool,
+    pub wildcard: i64,               // 0=false, 1=true
+    pub subdomain_auth_allowed: i64, // 0=false, 1=true (RFC 9444)
     pub created: i64,
     pub updated: i64,
 }
