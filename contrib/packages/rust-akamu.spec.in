@@ -1,32 +1,37 @@
 # Spec for the akamu ACME server workspace.
 #
-# Source tarball:
-#   git archive --format=tar.gz --prefix=akamu-%%{version}/ HEAD \
-#       -o akamu-%%{version}.tar.gz
+# DO NOT edit rust-akamu.spec directly — it is generated from this file by
+# 'make srpm'.  Edit rust-akamu.spec.in and run 'make srpm' to regenerate.
 #
-# Vendor tarball (full — required because of [patch.crates-io] for the
-# openssl pqc-prs fork and several crates not yet in Fedora):
+# Source tarball ('make tarball'):
+#   git archive --format=tar.gz --prefix=akamu-{version}/ HEAD \
+#       -o akamu-{version}.tar.gz
 #
-#   To include optional PostgreSQL and MariaDB sqlx drivers in the vendor
-#   tarball, resolve the lockfile with all features before vendoring:
+# Vendor tarball ('make vendor'):
+#   Resolves all optional backend features first so that postgres/mariadb
+#   driver crates are included, then vendors with --versioned-dirs:
 #     cargo check --features backend-sqlite,backend-postgres,backend-mariadb
-#   Then vendor as usual:
-#     cargo vendor --versioned-dirs /tmp/v/
-#     tar czf akamu-%%{version}-vendor.tar.gz \
-#         --exclude='*.profraw' \
-#         -C /tmp/v --transform 's|^\./|vendor/|' --transform 's|^\.|vendor|' .
+#     cargo vendor --versioned-dirs vendor/
+#     tar czf akamu-{version}-vendor.tar.gz \
+#         --exclude='*.profraw' -C . vendor/ Cargo.lock
 #
 # Crates in the vendor tarball absent from Fedora or at incompatible versions:
 #   openssl / openssl-sys  — pqc-prs git fork for ML-DSA/ML-KEM/PQC support
 #   axum-server 0.8        — Fedora ships 0.7.3 (incompatible API)
 #   hickory-resolver 0.24  — Fedora ships 0.25 (incompatible API)
 #   toml 0.8               — Fedora ships 1.1 (incompatible API)
-#   sqlx-postgres + deps   — needed when %%{with backend_postgres} (not in Fedora)
-#   sqlx-mysql + deps      — needed when %%{with backend_mariadb}  (not in Fedora)
+#   sqlx + drivers 0.8     — not packaged in Fedora / RHEL 10
+#   sqlx-postgres + deps   — needed when %%{with backend_postgres}
+#   sqlx-mysql + deps      — needed when %%{with backend_mariadb}
 #
 # PREREQUISITE: install synta* into the mock chroot before rebuilding:
 #   mock --install rust-synta-devel rust-synta-certificate-devel \
 #                  rust-synta-x509-verification-devel rust-synta-mtc-devel
+
+# Snapshot release identifiers — substituted by 'make srpm' via sed.
+# Do not edit these lines manually; the sed pattern matches the whole line.
+%global snapdate    0
+%global snapcommit  0000000
 
 %bcond check 1
 # Optional database backends (in addition to the always-on SQLite default).
@@ -51,13 +56,13 @@
 
 Name:           rust-akamu
 Version:        0.1.0
-Release:        1%{?dist}
+Release:        1.%{snapdate}.git%{snapcommit}%{?dist}
 Summary:        ACME server with post-quantum certificate support
 
 License:        GPL-3.0-or-later
 URL:            https://codeberg.org/abbra/akamu
-# git archive --format=tar.gz --prefix=akamu-%%{version}/ HEAD \
-#     -o akamu-%%{version}.tar.gz
+# git archive --format=tar.gz --prefix=akamu-{version}/ HEAD \
+#     -o akamu-{version}.tar.gz
 Source0:        akamu-%{version}.tar.gz
 # Full vendor tarball — see the generation instructions at the top of this spec.
 # Contains all Cargo dependencies, including the openssl pqc-prs fork and
@@ -89,7 +94,8 @@ BuildRequires:  mariadb-connector-c-devel
 # The openssl-sys build script generates FFI bindings via bindgen, which
 # requires libclang.  Rebuild this package whenever openssl-devel changes.
 BuildRequires:  clang-devel
-# synta* crates are packaged in Fedora; install them into the mock chroot first:
+# synta* crates are packaged separately (COPR); install them into the mock
+# chroot before rebuilding this SRPM:
 #   mock --install rust-synta-devel rust-synta-certificate-devel \
 #                  rust-synta-x509-verification-devel rust-synta-mtc-devel
 BuildRequires:  rust-synta-devel

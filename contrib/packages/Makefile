@@ -1,0 +1,220 @@
+# Makefile — helpers for preparing Fedora package sources and building SRPMs.
+#
+# Quick start:
+#   make sources   # create all source files (tarball + vendor; requires network)
+#   make srpm      # build an SRPM in the current directory (no ~/rpmbuild needed)
+#   make mock      # rebuild SRPM in a clean mock chroot
+#
+# Override GIT_REF to build from a tag:
+#   make sources GIT_REF=v0.1.0
+#
+# Requires: git, cargo, rpmbuild, rpmlint
+# For 'mock': mock package + your user in the 'mock' group
+#   sudo usermod -aG mock $$USER   (then log out and back in)
+# For 'copr-build': copr-cli configured with your API token
+
+# Enable pipefail so that a failed 'git archive | gzip' pipe is not silently
+# swallowed (gzip always exits 0, which would make Make think the tarball
+# target succeeded and leave an empty .tar.gz behind).
+SHELL       := /bin/bash
+.SHELLFLAGS := -eu -o pipefail -c
+
+# Delete the target file when a recipe exits with a non-zero status.
+.DELETE_ON_ERROR:
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Variables
+# ──────────────────────────────────────────────────────────────────────────────
+
+SPEC     := rust-akamu.spec.in
+SPEC_TMP := rust-akamu.spec
+
+# NAME is defined via "%global crate akamu" in the spec; read it from there.
+NAME    := $(shell awk '/^%global[[:space:]]+crate[[:space:]]/{print $$3; exit}' $(SPEC))
+VERSION := $(shell awk '/^Version:/{print $$2; exit}' $(SPEC))
+
+# Absolute path to the git repository root (two levels above this Makefile).
+REPOROOT := $(abspath $(dir $(abspath $(lastword $(MAKEFILE_LIST))))/../..)
+
+TARBALL        := $(NAME)-$(VERSION).tar.gz
+VENDOR_TARBALL := $(NAME)-$(VERSION)-vendor.tar.gz
+
+# Absolute path to the crate dependency checker script.
+CHECKDEPS := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))check-crate-deps.sh
+
+ALL_SOURCES := $(TARBALL) $(VENDOR_TARBALL)
+
+# Git ref used for the tarball and snapshot release identifiers.
+# Defaults to HEAD so snapshots reflect the current branch tip.
+# Override to a release tag for stable builds:
+#   make sources GIT_REF=v0.1.0
+GIT_REF ?= HEAD
+
+# Snapshot release identifiers derived from GIT_REF.
+# SNAPDATE   — commit date+time of GIT_REF in YYYYMMDDhhmm format.
+#              The time component ensures multiple builds on the same day sort
+#              correctly when the Release field is used for EVR comparison.
+# SNAPCOMMIT — abbreviated commit hash of GIT_REF (7 hex digits).
+# RELEASE    — full RPM Release value (without %{?dist}),
+#              e.g. 1.202604101215.gitabc1234
+SNAPDATE   := $(shell git -C "$(REPOROOT)" log -1 --format=%cd --date=format:%Y%m%d%H%M $(GIT_REF) 2>/dev/null)
+SNAPCOMMIT := $(shell git -C "$(REPOROOT)" rev-parse --short $(GIT_REF) 2>/dev/null)
+RELEASE    := 1.$(SNAPDATE).git$(SNAPCOMMIT)
+
+# Mock chroot configuration for 'make mock'.
+# Override on the command line:  make mock MOCK_CONFIG=fedora-42-x86_64
+MOCK_CONFIG ?= fedora-rawhide-x86_64
+
+# ──────────────────────────────────────────────────────────────────────────────
+
+.PHONY: all sources tarball vendor srpm mock lint check-deps clean help copr-build
+
+all: sources
+
+help:
+	@echo "Targets:"
+	@echo "  sources     prepare all source files (tarball + vendor)"
+	@echo "  tarball     create $(TARBALL) from GIT_REF=$(GIT_REF)"
+	@echo "  vendor      create $(VENDOR_TARBALL)  [needs network]"
+	@echo "  srpm        build SRPM (Release: $(RELEASE)%{?dist})"
+	@echo "  mock        rebuild SRPM in mock chroot (MOCK_CONFIG=$(MOCK_CONFIG))"
+	@echo "  lint        run rpmlint on $(SPEC)"
+	@echo "  check-deps  check which Cargo.lock crates are available as system packages"
+	@echo "  copr-build  submit SRPM to COPR  (COPR=project required)"
+	@echo "              example: make copr-build COPR=@mygroup/akamu"
+	@echo "  clean       remove generated source files and the temporary spec"
+	@echo ""
+	@echo "Snapshot: GIT_REF=$(GIT_REF)  date=$(SNAPDATE)  commit=$(SNAPCOMMIT)"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SOURCE PREPARATION
+# ══════════════════════════════════════════════════════════════════════════════
+
+sources: tarball vendor
+
+# ── tarball ───────────────────────────────────────────────────────────────────
+
+tarball: $(TARBALL)
+
+$(TARBALL):
+	@echo "==> Creating $@ from $(GIT_REF)"
+	git -C "$(REPOROOT)" archive \
+	    --prefix=$(NAME)-$(VERSION)/ \
+	    $(GIT_REF) \
+	| gzip -9 > $@
+
+# ── vendor ────────────────────────────────────────────────────────────────────
+#
+# The vendor tarball must include all optional backend crates (postgres, mariadb)
+# so that the spec can be built with --with backend_postgres / --with backend_mariadb
+# without network access.  We resolve the lock file with all three backends first,
+# then vendor with --versioned-dirs so each crate directory carries its version
+# (e.g. vendor/axum-0.8.8/ rather than vendor/axum/).
+#
+# The [patch.crates-io] override in Cargo.toml redirects openssl and openssl-sys
+# to the PQC-capable rust-openssl fork (pqc-prs branch); cargo vendor follows
+# this patch and includes the fork in vendor/ automatically.
+
+vendor: $(VENDOR_TARBALL)
+
+$(VENDOR_TARBALL):
+	@echo "==> Creating $@ — resolving all backends and vendoring (includes PQC rust-openssl fork)"
+	@# Resolve the lock file with all optional backends enabled.
+	@# This ensures postgres/mariadb driver crates are present in Cargo.lock
+	@# and will be included in the vendor directory.
+	cd "$(REPOROOT)" && cargo check --quiet \
+	    --features backend-sqlite,backend-postgres,backend-mariadb 2>/dev/null || true
+	@# Vendor with versioned directory names into the repo root vendor/.
+	@# cargo vendor outputs the [source.*] redirect stanzas that %prep appends
+	@# to .cargo/config.toml; we discard that output here because the spec
+	@# handles the git-source redirect (for the PQC openssl fork) directly.
+	cd "$(REPOROOT)" && cargo vendor --versioned-dirs vendor >/dev/null
+	@# Archive vendor/ and Cargo.lock (pinned versions for reproducible builds).
+	tar -czf "$(CURDIR)/$@" \
+	    --exclude='*.profraw' \
+	    -C "$(REPOROOT)" vendor/ Cargo.lock
+	rm -rf "$(REPOROOT)/vendor"
+	@echo "==> $@ ready"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SRPM / MOCK / LINT
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── srpm ──────────────────────────────────────────────────────────────────────
+#
+# Substitute the snapshot release globals into a temporary .spec file and
+# build the SRPM into the current directory (no ~/rpmbuild tree needed).
+
+srpm: sources
+	@echo "==> Building SRPM (rust-$(NAME)-$(VERSION)-$(RELEASE))"
+	sed \
+	    -e "s/^%global snapdate[[:space:]].*/%global snapdate    $(SNAPDATE)/" \
+	    -e "s/^%global snapcommit[[:space:]].*/%global snapcommit  $(SNAPCOMMIT)/" \
+	    "$(SPEC)" > "$(SPEC_TMP)"
+	rpmbuild -bs \
+	    --define "_sourcedir $(CURDIR)" \
+	    --define "_specdir   $(CURDIR)" \
+	    --define "_srcrpmdir $(CURDIR)" \
+	    "$(SPEC_TMP)"
+	rm -f "$(SPEC_TMP)"
+
+# ── mock ──────────────────────────────────────────────────────────────────────
+
+mock: srpm
+	$(eval SRPM := $(shell ls -1t "$(CURDIR)"/rust-$(NAME)-$(VERSION)-*.src.rpm 2>/dev/null | head -1))
+	@if [ -z "$(SRPM)" ]; then \
+	    echo "ERROR: no SRPM found in $(CURDIR) for rust-$(NAME)-$(VERSION)"; \
+	    exit 1; \
+	fi
+	@echo "==> Rebuilding $(SRPM) in mock ($(MOCK_CONFIG))"
+	mock -r "$(MOCK_CONFIG)" --rebuild "$(SRPM)"
+
+# ── lint ──────────────────────────────────────────────────────────────────────
+
+lint:
+	rpmlint "$(SPEC)"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DEPENDENCY CHECKING
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Advisory check — reports which Cargo.lock crates are available as system RPMs
+# and which must be satisfied by the vendor tarball.  Exit code 1 (some missing)
+# is suppressed because missing crates are expected (they are vendored); only
+# unexpected errors (exit code 2+) propagate.
+
+check-deps:
+	@rc=0; bash "$(CHECKDEPS)" "$(REPOROOT)/Cargo.lock" || rc=$$?; \
+	exit $$((rc > 1 ? rc : 0))
+
+# ══════════════════════════════════════════════════════════════════════════════
+# COPR SUBMISSION
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Submit the latest SRPM to a COPR project.
+#
+# Usage:
+#   make copr-build COPR=@mygroup/akamu
+#   make copr-build COPR=myuser/akamu-staging COPR_OPTS="--chroot fedora-42-x86_64 --wait"
+#
+# COPR      — required: the COPR project (e.g. @mygroup/akamu)
+# COPR_OPTS — optional: extra flags passed directly to copr-chain-build.sh
+
+COPR      ?=
+COPR_OPTS ?=
+
+copr-build:
+	@test -n "$(COPR)" || \
+	    { echo "ERROR: set COPR=<project>  e.g. make copr-build COPR=@mygroup/akamu" >&2; exit 1; }
+	bash "$(dir $(abspath $(lastword $(MAKEFILE_LIST))))copr-chain-build.sh" \
+	    --srpm-dir "$(CURDIR)" \
+	    $(COPR_OPTS) \
+	    "$(COPR)"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CLEAN
+# ══════════════════════════════════════════════════════════════════════════════
+
+clean:
+	rm -f $(ALL_SOURCES) "$(SPEC_TMP)"
+	rm -rf "$(REPOROOT)/vendor"
