@@ -36,7 +36,7 @@ pub async fn respond_challenge(
     // all within one transaction.
     let now = unix_now();
     let (authz, challenge) = {
-        let mut tx = db::begin_write(&state.db).await?;
+        let mut tx = db::begin_write(&state.db, state.db_kind).await?;
         let (authz, challenges) = db::authz::get_with_challenges(&mut *tx, &authz_id)
             .await?
             .ok_or(AcmeError::NotFound)?;

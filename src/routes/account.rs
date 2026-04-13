@@ -142,7 +142,7 @@ pub async fn new_account(
     // Insert the new account — atomically consume the EAB key if one was verified.
     // Both paths use a transaction so the insert is atomic with any EAB mark.
     {
-        let mut tx = db::begin_write(&state.db).await?;
+        let mut tx = db::begin_write(&state.db, state.db_kind).await?;
         db::accounts::insert(
             &mut *tx,
             AccountRow {

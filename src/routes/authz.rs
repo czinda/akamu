@@ -192,7 +192,7 @@ pub async fn new_authz(
     let subdomain_auth_allowed = payload.subdomain_auth_allowed;
 
     {
-        let mut tx = db::begin_write(&state.db).await?;
+        let mut tx = db::begin_write(&state.db, state.db_kind).await?;
         sqlx::query(
             "INSERT INTO authorizations
              (id, order_id, account_id, status, identifier, expires,
@@ -294,8 +294,8 @@ fn build_authz_json<'a>(
         status: &authz.status,
         identifier,
         challenges: challs,
-        wildcard: authz.wildcard,
-        subdomain_auth_allowed: authz.subdomain_auth_allowed,
+        wildcard: authz.wildcard != 0,
+        subdomain_auth_allowed: authz.subdomain_auth_allowed != 0,
         expires: authz.expires.map(fmt_time),
     }
 }
@@ -348,8 +348,8 @@ mod tests {
             status: status.to_string(),
             identifier: "{\"type\":\"dns\",\"value\":\"example.com\"}".to_string(),
             expires,
-            wildcard,
-            subdomain_auth_allowed: false,
+            wildcard: i64::from(wildcard),
+            subdomain_auth_allowed: 0,
             created: 1_700_000_000,
             updated: 1_700_000_000,
         }
@@ -456,8 +456,8 @@ mod tests {
             status: &authz.status,
             identifier,
             challenges: chall_jsons,
-            wildcard: authz.wildcard,
-            subdomain_auth_allowed: authz.subdomain_auth_allowed,
+            wildcard: authz.wildcard != 0,
+            subdomain_auth_allowed: authz.subdomain_auth_allowed != 0,
             expires: authz.expires.map(super::super::fmt_time),
         };
         let val = serde_json::to_value(body).unwrap();

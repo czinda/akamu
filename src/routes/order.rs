@@ -259,10 +259,10 @@ pub async fn new_order(
             Some(end_ts),
             Some(ar.lifetime as i64),
             ar.lifetime_adjust,
-            ar.allow_certificate_get,
+            i64::from(ar.allow_certificate_get),
         )
     } else {
-        (None, None, None, 0, false)
+        (None, None, None, 0, 0_i64)
     };
 
     let now = unix_now();
@@ -381,7 +381,7 @@ pub async fn new_order(
     // Write everything inside a single transaction so a partial failure
     // cannot leave orphaned orders, authorizations, or challenges.
     {
-        let mut tx = db::begin_write(&state.db).await?;
+        let mut tx = db::begin_write(&state.db, state.db_kind).await?;
 
         db::orders::insert(
             &mut *tx,
@@ -420,8 +420,8 @@ pub async fn new_order(
                     status: "pending".to_string(),
                     identifier: plan.identifier_json.clone(),
                     expires: Some(authz_expiry),
-                    wildcard: plan.wildcard,
-                    subdomain_auth_allowed: plan.subdomain_auth_allowed,
+                    wildcard: i64::from(plan.wildcard),
+                    subdomain_auth_allowed: i64::from(plan.subdomain_auth_allowed),
                     created: now,
                     updated: now,
                 },
@@ -633,7 +633,7 @@ pub(crate) fn order_json<'a>(
         } else {
             None
         },
-        allow_certificate_get: if order.star_allow_cert_get {
+        allow_certificate_get: if order.star_allow_cert_get != 0 {
             Some(true)
         } else {
             None
@@ -714,7 +714,7 @@ mod tests {
             star_end_date: None,
             star_lifetime_secs: None,
             star_lifetime_adjust_secs: 0,
-            star_allow_cert_get: false,
+            star_allow_cert_get: 0,
             star_canceled_at: None,
             star_csr_der: None,
             profile: None,
@@ -810,7 +810,7 @@ mod tests {
         let mut order = make_order("valid", None, Some("cert-xyz"), None);
         order.star_end_date = Some(1_800_000_000);
         order.star_lifetime_secs = Some(86400);
-        order.star_allow_cert_get = true;
+        order.star_allow_cert_get = 1;
         let json = to_val(order_json(&order, &[], "https://acme.test"));
         assert_eq!(json["status"], "valid");
         // star-certificate should be present, not regular certificate

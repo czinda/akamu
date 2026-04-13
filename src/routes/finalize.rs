@@ -165,7 +165,7 @@ pub async fn finalize_order(
     // DB round-trip.  The bool is true when the predecessor's replaced_by was
     // already set by another concurrent finalization.
     let (authz_ids, pred_already_replaced) = {
-        let mut tx = db::begin_write(&state.db).await?;
+        let mut tx = db::begin_write(&state.db, state.db_kind).await?;
 
         db::certs::insert(
             &mut *tx,

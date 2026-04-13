@@ -34,7 +34,7 @@ pub async fn star_cert_get(
         .await?
         .ok_or(AcmeError::NotFound)?;
 
-    if !order.star_allow_cert_get {
+    if order.star_allow_cert_get == 0 {
         return Err(AcmeError::Unauthorized(
             "unauthenticated GET not allowed for this STAR order".into(),
         ));
