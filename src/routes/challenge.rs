@@ -31,13 +31,26 @@ pub async fn respond_challenge(
         .account_id
         .ok_or(AcmeError::Unauthorized("kid required".into()))?;
 
-    // Load the authorization and its challenges, and atomically mark the target
-    // challenge as "processing" — all in one db.call instead of two.
+    // Load the authorization and its challenges atomically (single JOIN round-trip),
+    // and mark the target challenge as "processing" if it is still "pending" —
+    // all within one transaction.
     let now = unix_now();
-    let (authz, challenges) =
-        db::authz::get_with_challenges_mark_processing(&state.db, &authz_id, &chall_type, now)
+    let (authz, challenge) = {
+        let mut tx = db::begin_write(&state.db).await?;
+        let (authz, challenges) = db::authz::get_with_challenges(&mut *tx, &authz_id)
             .await?
             .ok_or(AcmeError::NotFound)?;
+        let challenge = challenges
+            .into_iter()
+            .find(|c| c.r#type == chall_type)
+            .ok_or(AcmeError::NotFound)?;
+        if challenge.status == "pending" {
+            db::challenges::set_processing(&mut *tx, &challenge.id, now).await?;
+        }
+        tx.commit().await.map_err(AcmeError::from)?;
+        (authz, challenge)
+    };
+
     if authz.account_id != account_id {
         return Err(AcmeError::Unauthorized(
             "authorization belongs to different account".into(),
@@ -50,17 +63,11 @@ pub async fn respond_challenge(
         )));
     }
 
-    // Find the specific challenge (status is the pre-UPDATE value from the SELECT).
-    let challenge = challenges
-        .into_iter()
-        .find(|c| c.r#type == chall_type)
-        .ok_or(AcmeError::NotFound)?;
-
     if challenge.status != "pending" {
-        // Already processing or completed; the UPDATE was a no-op. Return current state.
+        // Already processing or completed; return current state.
         return challenge_response(&state, &challenge, &ctx.next_nonce);
     }
-    // challenge.status was "pending" — the DB already flipped it to "processing".
+    // challenge.status was "pending" — the DB has now flipped it to "processing".
 
     // Extract identifier.
     let identifier: serde_json::Value =
@@ -115,8 +122,12 @@ pub async fn respond_challenge(
 
     // Spawn background validation task. The JoinHandle is observed so that a
     // panic inside the task is logged rather than silently swallowed.
+    //
+    // `authz.order_id` is passed to avoid a redundant
+    // `SELECT order_id FROM authorizations` inside the on_valid transaction.
     let state_clone = Arc::clone(&state);
     let challenge_id = challenge.id.clone();
+    let order_id = authz.order_id.clone();
     let token = challenge.token.clone();
     let chall_type_clone = chall_type.clone();
     let authz_id_clone = authz_id.clone();
@@ -127,6 +138,7 @@ pub async fn respond_challenge(
             &state_clone,
             &challenge_id,
             &authz_id_clone,
+            &order_id,
             &chall_type_clone,
             &id_type,
             &id_value,

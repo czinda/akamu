@@ -22,6 +22,13 @@ use crate::state::AppState;
 /// This function is intentionally infallible — all errors are recorded in the
 /// database rather than propagated.
 ///
+/// Returns the final challenge status: `"valid"` on success, `"invalid"` on
+/// failure.  The caller can use this to return the definitive challenge state
+/// in the HTTP response without a separate DB re-fetch.
+///
+/// `order_id` is passed in to avoid a redundant `SELECT order_id FROM
+/// authorizations` query inside the `on_valid` transaction.
+///
 /// `onion_csr_der` carries the DER-encoded CSR submitted by the client for
 /// `onion-csr-01` challenges; it is `None` for all other challenge types.
 #[allow(clippy::too_many_arguments)]
@@ -29,13 +36,14 @@ pub async fn validate_challenge(
     state: &Arc<AppState>,
     challenge_id: &str,
     authz_id: &str,
+    order_id: &str,
     chall_type: &str,
     id_type: &str,
     id_value: &str,
     key_auth: &str,
     token: &str,
     onion_csr_der: Option<&[u8]>,
-) {
+) -> &'static str {
     let http_port = state.config.server.http_validation_port;
     let issuer_domain = state.config.dns_persist_issuer_domain();
     let dns_resolver_addr = state
@@ -60,8 +68,14 @@ pub async fn validate_challenge(
 
     let now = unix_now();
     match result {
-        Ok(()) => on_valid(state, challenge_id, authz_id, now).await,
-        Err(e) => on_invalid(state, challenge_id, authz_id, e, now).await,
+        Ok(()) => {
+            on_valid(state, challenge_id, authz_id, order_id, now).await;
+            "valid"
+        }
+        Err(e) => {
+            on_invalid(state, challenge_id, authz_id, e, now).await;
+            "invalid"
+        }
     }
 }
 
@@ -114,10 +128,14 @@ async fn dispatch(
 /// 1. Mark challenge as `valid`.
 /// 2. Mark the parent authorization as `valid`.
 /// 3. If all authorizations for the order are now `valid`, advance the order to `ready`.
-async fn on_valid(state: &AppState, challenge_id: &str, authz_id: &str, now: i64) {
+///
+/// `order_id` is provided by the caller (from the already-loaded authz row)
+/// to avoid a redundant `SELECT order_id FROM authorizations` inside the
+/// transaction.
+async fn on_valid(state: &AppState, challenge_id: &str, authz_id: &str, order_id: &str, now: i64) {
     let authz_id_log = authz_id.to_string();
 
-    let result: Result<Option<(String, bool)>, sqlx::Error> = async {
+    let result: Result<bool, sqlx::Error> = async {
         let mut tx = state.db.begin().await?;
 
         // 1. Mark challenge valid.
@@ -137,51 +155,35 @@ async fn on_valid(state: &AppState, challenge_id: &str, authz_id: &str, now: i64
             .execute(&mut *tx)
             .await?;
 
-        // 3. Find the parent order_id.
-        let order_id_row: Option<(String,)> =
-            sqlx::query_as("SELECT order_id FROM authorizations WHERE id = ?")
-                .bind(authz_id)
-                .fetch_optional(&mut *tx)
-                .await?;
-
-        let order_id = match order_id_row {
-            Some((id,)) => id,
-            None => {
-                // Authz disappeared (shouldn't happen, but be safe).
-                tx.commit().await?;
-                return Ok(None);
-            }
-        };
-
-        // 4. Check whether all authzs for this order are now valid.
-        let (pending_count,): (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM authorizations WHERE order_id = ? AND status != 'valid'",
+        // 3. Advance order to 'ready' only when all its authorizations are now
+        // valid.  A single conditional UPDATE replaces the previous
+        // SELECT COUNT(*) + conditional UPDATE — saves one DB round-trip on
+        // the common (single-identifier) path.
+        let rows = sqlx::query(
+            "UPDATE orders SET status = 'ready', error = NULL, updated = ?
+             WHERE id = ?
+               AND NOT EXISTS (
+                   SELECT 1 FROM authorizations
+                   WHERE order_id = ? AND status != 'valid'
+               )",
         )
-        .bind(&order_id)
-        .fetch_one(&mut *tx)
-        .await?;
-
-        let all_valid = pending_count == 0;
-        if all_valid {
-            sqlx::query(
-                "UPDATE orders SET status = 'ready', error = NULL, updated = ? WHERE id = ?",
-            )
-            .bind(now)
-            .bind(&order_id)
-            .execute(&mut *tx)
-            .await?;
-        }
+        .bind(now)
+        .bind(order_id)
+        .bind(order_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
 
         tx.commit().await?;
-        Ok(Some((order_id, all_valid)))
+        Ok(rows > 0)
     }
     .await;
 
     match result {
-        Ok(Some((order_id, true))) => {
+        Ok(true) => {
             tracing::info!("order {order_id} is now ready");
         }
-        Ok(_) => {}
+        Ok(false) => {}
         Err(e) => {
             tracing::warn!("authz {authz_id_log}: on_valid transaction failed: {e}");
         }
@@ -427,6 +429,7 @@ mod tests {
             &state,
             "nonexistent-challenge",
             "nonexistent-authz",
+            "nonexistent-order",
             unix_now(),
         )
         .await;
@@ -440,6 +443,7 @@ mod tests {
             &state,
             "fake-challenge-id",
             "fake-authz-id",
+            "fake-order-id",
             "bogus-01", // unsupported type → dispatch returns Err
             "dns",
             "example.com",
@@ -543,7 +547,7 @@ mod tests {
         .unwrap();
 
         // Call on_valid — should update challenge, authz, and order status.
-        on_valid(&state, &chall_id, &authz_id, now).await;
+        on_valid(&state, &chall_id, &authz_id, &order_id, now).await;
 
         let chall = db::challenges::get_by_id(&state.db, &chall_id)
             .await
@@ -856,7 +860,8 @@ mod tests {
         .unwrap();
 
         validate_challenge(
-            &state, &chall_id, &authz_id, "http-01", "ip", &id_value, &key_auth, token, None,
+            &state, &chall_id, &authz_id, &order_id, "http-01", "ip", &id_value, &key_auth, token,
+            None,
         )
         .await;
 
@@ -889,7 +894,7 @@ mod tests {
         let state = make_state_with_db(raw_db).await;
         // on_valid tries to begin a transaction and execute UPDATE on challenges;
         // fails on no-table DB → warns and returns.
-        on_valid(&state, "fake-chall", "fake-authz", unix_now()).await;
+        on_valid(&state, "fake-chall", "fake-authz", "fake-order", unix_now()).await;
     }
 
     /// Call on_invalid with a raw (no-schema) DB so set_invalid fails immediately.
@@ -950,7 +955,14 @@ mod tests {
         // Transaction begins, challenge update succeeds, then authz update fails
         // (no authorizations table) — the whole transaction is rolled back and
         // the error is logged as a warning.
-        on_valid(&state, "chall-partial", "authz-partial", unix_now()).await;
+        on_valid(
+            &state,
+            "chall-partial",
+            "authz-partial",
+            "order-partial",
+            unix_now(),
+        )
+        .await;
     }
 
     /// Helper to build a state backed by a given db pool.
@@ -1122,7 +1134,7 @@ mod tests {
         let state = make_state_with_db(db_conn).await;
         // on_valid: transaction tries UPDATE orders SET status = 'ready' → fails
         // (no orders table) → transaction rolled back → error logged as warning.
-        on_valid(&state, "chall-ov", "authz-ov", unix_now()).await;
+        on_valid(&state, "chall-ov", "authz-ov", "ord-ov", unix_now()).await;
     }
 
     /// on_invalid where all updates succeed but the orders update fails because
