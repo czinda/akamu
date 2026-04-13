@@ -18,15 +18,19 @@ account creation is excluded because it is amortised across all orders from a
 given client.
 
 > **Note — database layer (sqlx).**  Akāmu uses sqlx 0.8 for SQLite access.
-> The in-memory database path (`db = ":memory:"`, the benchmark default) uses a
-> single-connection pool (`max_connections = 1`), because every SQLite in-memory
-> connection opens its own private, empty database.  All ~20 SQL operations per
-> issuance are serialised through this one pool connection.  As a result,
-> throughput for the in-memory configuration plateaus at ≈ 860 iss/s regardless
-> of concurrent-client count — determined by how fast the single connection can
-> process queries, not by crypto or network speed.  File-backed databases use a
-> 4-connection WAL-mode pool and do not have this ceiling; see the
-> [Database scalability](#database-scalability) section for guidance.
+> Both in-memory (`:memory:`) and file-backed databases use a single-connection
+> pool (`max_connections = 1`).  In-memory databases require this because every
+> SQLite in-memory connection opens its own private, empty database.  File-backed
+> databases use it to avoid `SQLITE_BUSY_SNAPSHOT` (error 517), a WAL-mode
+> contention error that bypasses the busy handler and cannot be retried — sqlx
+> attempts to reuse connection read-snapshots across pool round-trips, and when a
+> concurrent writer commits between those round-trips the stale snapshot triggers
+> the error.  All ~20 SQL operations per issuance are serialised through this one
+> pool connection; throughput plateaus at ≈ 860 iss/s regardless of concurrent
+> client count or database backend — determined by how fast the single sqlx
+> connection can process queries, not by crypto, network, or storage speed.  See
+> the [Database scalability](#database-scalability) section for guidance on
+> exceeding this ceiling.
 
 ---
 
@@ -157,22 +161,41 @@ polling overhead.
 
 ## Database scalability
 
-The benchmark default is an in-memory SQLite database (`:memory:`), which uses a
-single pool connection.  A file-backed database on a local SSD with WAL mode
-enables a 4-connection pool: readers do not block writers, and multiple reads can
-proceed concurrently.  This removes the single-connection ceiling for
-read-intensive phases (authz fetch, cert download) while writes remain serialised
-by SQLite.
+Both in-memory (`:memory:`) and file-backed databases use a single-connection
+pool, so the throughput ceiling of ≈ 860 iss/s applies to both.  The ceiling is
+set by how fast the sqlx SQLite worker thread can process one query at a time —
+each query requires a channel round-trip to the background thread, and ~20 such
+round-trips are needed per issuance.
+
+### Backend comparison (tmpfs vs in-memory)
+
+The table below shows that file-backed SQLite on a RAM-backed filesystem (`tmpfs`
+/ `/dev/shm`) produces equivalent throughput to an in-memory database.  WAL
+journal mode adds a small amount of write bookkeeping overhead; the difference
+is within run-to-run noise.
+
+| Concurrent clients | In-memory (iss/s) | tmpfs WAL (iss/s) |
+|-------------------:|------------------:|------------------:|
+|  1                 |   198             |   211             |
+|  5                 |   797             |   828             |
+| 10                 |   854             |   886             |
+| 25                 |   864             |   855             |
+| 50                 |   822             |   806             |
+
+Both backends plateau around 855–886 iss/s at 10–25 concurrent clients.  The
+bottleneck is the sqlx connection round-trip per query, not storage speed;
+switching from in-memory to a tmpfs-backed file provides durability without a
+throughput penalty.
 
 For sustained high-throughput targets consider:
 
-- **File-backed WAL database** on a fast SSD or RAM-backed filesystem (`tmpfs`).
-  The 4-connection pool removes the in-memory ceiling while retaining durability.
-- **In-memory database** if restart-durability is not required (lab or internal CA
-  use cases); throughput is bounded at ≈ 860 iss/s by the single-connection pool.
+- **In-memory database** for lab, CI, or ephemeral CA use cases.  Fastest
+  startup; data is lost on restart.
+- **File-backed WAL database** on a fast SSD or RAM-backed filesystem.
+  Throughput matches in-memory while providing crash durability.
 - **Sharding** — multiple Akāmu instances behind a load balancer, each with its
   own database — for production-scale deployments requiring higher aggregate
-  issuance rates.
+  issuance rates above the ≈ 860 iss/s per-instance ceiling.
 
 ---
 

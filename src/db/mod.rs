@@ -10,7 +10,6 @@ pub mod schema;
 use std::time::Duration;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
-use sqlx::SqlitePool;
 
 use crate::error::AcmeError;
 
@@ -23,17 +22,27 @@ pub type Db = sqlx::SqlitePool;
 ///
 /// SQLite serialises all writes, so for write-heavy workloads the practical
 /// concurrency is determined by how fast SQLite can process writes, not by the
-/// number of connections.  `max_connections(1)` is used for `:memory:` databases
-/// because each connection would otherwise see its own private empty database.
-/// For file-backed databases, WAL mode is enabled so readers do not block
-/// writers; a small pool (`max_connections(4)`) lets multiple readers proceed
-/// concurrently while writes still queue through SQLite's internal lock, with
-/// `busy_timeout` preventing immediate SQLITE_BUSY errors under contention.
+/// number of connections.  `max_connections(1)` is used for both `:memory:` and
+/// file-backed databases:
+///
+/// - `:memory:` databases require it: every SQLite in-memory connection opens
+///   its own private database, so N > 1 connections would produce N independent
+///   empty databases.
+/// - File-backed databases with WAL mode and multiple connections encounter
+///   `SQLITE_BUSY_SNAPSHOT` (error code 517) under concurrent write load.  This
+///   extended error is returned when sqlx tries to reuse a read-transaction
+///   snapshot that has become stale after another connection committed new data.
+///   Unlike `SQLITE_BUSY` (code 5), `SQLITE_BUSY_SNAPSHOT` bypasses the busy
+///   handler entirely, so `busy_timeout` has no effect on it.  With a single
+///   connection the snapshot is always current and no contention occurs.
+///
+/// WAL mode is still enabled for file-backed databases: it allows `PRAGMA
+/// wal_checkpoint` to run without blocking readers, gives better write
+/// throughput for single-writer workloads, and is the recommended mode for
+/// concurrent-access scenarios if multiple processes (rather than multiple
+/// pool connections) access the file.
 pub async fn open(path: &str) -> Result<Db, AcmeError> {
     let pool = if path == ":memory:" {
-        // In-memory databases require max_connections(1): every SQLite in-memory
-        // connection opens its own private database, so a pool with N > 1
-        // connections would produce N independent empty databases.
         let opts = SqliteConnectOptions::new()
             .filename(":memory:")
             .foreign_keys(true);
@@ -43,8 +52,8 @@ pub async fn open(path: &str) -> Result<Db, AcmeError> {
             .await
             .map_err(|e| AcmeError::Database(format!("open in-memory database: {}", e)))?
     } else {
-        // File-backed database: WAL mode allows concurrent readers while writes
-        // are serialised; busy_timeout makes writers queue rather than error.
+        // File-backed database: WAL mode for better write throughput; single
+        // connection to avoid SQLITE_BUSY_SNAPSHOT contention (see above).
         let opts = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
@@ -52,7 +61,7 @@ pub async fn open(path: &str) -> Result<Db, AcmeError> {
             .journal_mode(SqliteJournalMode::Wal)
             .busy_timeout(Duration::from_secs(5));
         SqlitePoolOptions::new()
-            .max_connections(4)
+            .max_connections(1)
             .connect_with(opts)
             .await
             .map_err(|e| AcmeError::Database(format!("open database '{}': {}", path, e)))?
