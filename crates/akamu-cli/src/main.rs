@@ -234,7 +234,7 @@ struct IssueArgs {
     poll_timeout: u64,
 
     /// PEM file for the certificate private key.
-    /// Generated and saved as <out>.key.pem if absent; supply to reuse an existing key.
+    /// Generated and saved as `<out>.key.pem` if absent; supply to reuse an existing key.
     #[arg(long)]
     cert_key: Option<PathBuf>,
 
