@@ -2,9 +2,11 @@
 //!
 //! Opens a TLS connection to `{domain}:443` with ALPN "acme-tls/1", captures
 //! the presented certificate, and verifies:
-//!   1. The certificate contains a SAN that matches the identifier.
+//!   1. The SAN extension contains an entry matching the identifier: dNSName for
+//!      DNS identifiers, iPAddress for IP identifiers (RFC 8738 §4).
 //!   2. The id-pe-acmeIdentifier extension (OID 1.3.6.1.5.5.7.1.31, critical)
 //!      is present and its value equals `SHA-256(keyAuthorization)`.
+//!   3. The SAN extension contains exactly one GeneralName entry (RFC 8737 §3).
 
 use std::sync::Arc;
 
@@ -131,6 +133,7 @@ fn ip_to_reverse_dns(ip_str: &str) -> Result<String, AcmeError> {
 /// 3. Extension value = `OCTET STRING { expected_hash }`.
 ///    (The extnValue OCTET STRING wrapper is already stripped by the time we
 ///    see `ext_content`.)
+/// 4. The SAN extension contains exactly one GeneralName entry (RFC 8737 §3).
 fn verify_acme_cert(
     id_type: &str,
     identifier: &str,
@@ -184,6 +187,15 @@ fn verify_acme_cert(
             ))
         })?;
 
+    // RFC 8737 §3: the certificate MUST contain exactly one entry in the SAN extension.
+    let san_count = count_san_entries(san_value)
+        .map_err(|e| AcmeError::Tls(format!("cert SAN count for '{identifier}': {e}")))?;
+    if san_count != 1 {
+        return Err(AcmeError::IncorrectResponse(format!(
+            "tls-alpn-01: certificate for '{identifier}' must have exactly one SAN entry, found {san_count}"
+        )));
+    }
+
     if id_type == "ip" {
         verify_san_contains_ip(identifier, san_value).map_err(|reason| {
             AcmeError::IncorrectResponse(format!(
@@ -199,6 +211,22 @@ fn verify_acme_cert(
     }
 
     Ok(())
+}
+
+/// Count the total number of GeneralName entries in a SAN extension value.
+///
+/// Used to enforce RFC 8737 §3's requirement that the certificate contains
+/// exactly one SAN entry.
+fn count_san_entries(san_seq: &[u8]) -> Result<usize, &'static str> {
+    let seq_content = strip_sequence(san_seq)?;
+    let mut remaining = seq_content;
+    let mut count = 0usize;
+    while !remaining.is_empty() {
+        let (_, rest, _) = read_tlv(remaining)?;
+        remaining = rest;
+        count += 1;
+    }
+    Ok(count)
 }
 
 /// Check that `domain` appears as a dNSName ([2] IMPLICIT IA5String, tag 0x82)
