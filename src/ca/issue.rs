@@ -81,7 +81,11 @@ pub fn issue_certificate(
     let mut serial_bytes = [0u8; 16];
     getrandom::getrandom(&mut serial_bytes)
         .map_err(|e| AcmeError::Internal(format!("random serial: {e}")))?;
-    serial_bytes[0] &= 0x7f; // ensure positive (clear sign bit)
+    // Clear the sign bit (positive) and set the low bit so the first byte is
+    // always in 0x01..0x7f — DER INTEGER must be minimal (no unnecessary leading
+    // 0x00), and a zero first byte would be unnecessary when the next byte's MSB
+    // is clear.  Forcing bit 0 avoids that case without reducing serial length.
+    serial_bytes[0] = (serial_bytes[0] & 0x7f) | 0x01;
     let serial = synta::Integer::from_bytes(&serial_bytes);
     let serial_hex = hex_encode(&serial_bytes);
 
@@ -304,7 +308,7 @@ pub fn sign_server_cert(
     let mut serial_bytes = [0u8; 16];
     getrandom::getrandom(&mut serial_bytes)
         .map_err(|e| AcmeError::Internal(format!("random serial: {e}")))?;
-    serial_bytes[0] &= 0x7f;
+    serial_bytes[0] = (serial_bytes[0] & 0x7f) | 0x01; // positive, non-zero first byte
     let serial = synta::Integer::from_bytes(&serial_bytes);
 
     // Validity window.
