@@ -42,26 +42,82 @@ pub type Db = sqlx::SqlitePool;
 /// concurrent-access scenarios if multiple processes (rather than multiple
 /// pool connections) access the file.
 pub async fn open(path: &str) -> Result<Db, AcmeError> {
+    open_with_connections(path, 1).await
+}
+
+/// Like [`open`] but with a configurable connection pool size.
+///
+/// `max_connections = 1` is the correct choice for production use (see [`open`]).
+/// This variant exists for benchmarking scenarios where the caller wants to
+/// measure the effect of a larger pool on file-backed databases.
+///
+/// **In-memory databases always use `max_connections = 1`** regardless of the
+/// value passed: every SQLite in-memory connection opens its own private,
+/// empty database, so multiple connections do not share any state.  The
+/// `max_connections` argument is silently clamped to `1` when `path == ":memory:"`.
+///
+/// **When using `max_connections > 1`** all write transactions must be started
+/// with [`begin_write`] (`BEGIN IMMEDIATE`) rather than `pool.begin()`
+/// (`BEGIN DEFERRED`).  Deferred transactions capture a WAL read snapshot that
+/// can become stale after another connection commits, causing
+/// `SQLITE_BUSY_SNAPSHOT` (error 517), which bypasses the busy handler and
+/// cannot be retried.  `BEGIN IMMEDIATE` acquires the write lock up-front so
+/// the snapshot is always current; any resulting `SQLITE_BUSY` (error 5) is
+/// handled transparently by the `busy_timeout` configured on the pool.
+/// Begin a write transaction using `BEGIN IMMEDIATE`.
+///
+/// Unlike `pool.begin()` which issues `BEGIN DEFERRED`, this acquires the
+/// SQLite write lock at transaction start so the WAL snapshot is always
+/// current.  This prevents `SQLITE_BUSY_SNAPSHOT` (error 517) that otherwise
+/// occurs in WAL mode when a deferred transaction's read snapshot becomes
+/// stale after another connection commits — even when the two transactions
+/// write to completely different rows.
+///
+/// Any `SQLITE_BUSY` (error 5) contention caused by serialising concurrent
+/// writers is absorbed transparently by the `busy_timeout` configured on the
+/// pool (5 s by default).
+///
+/// Use this for every transaction that performs writes.  Read-only queries
+/// that never write can continue to use `&pool` directly (each query acquires
+/// and immediately releases its own implicit read snapshot).
+pub async fn begin_write(pool: &Db) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>, AcmeError> {
+    pool.begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| AcmeError::Database(format!("begin write transaction: {e}")))
+}
+
+pub async fn open_with_connections(path: &str, max_connections: u32) -> Result<Db, AcmeError> {
+    let max_connections = max_connections.max(1);
     let pool = if path == ":memory:" {
         let opts = SqliteConnectOptions::new()
             .filename(":memory:")
             .foreign_keys(true);
         SqlitePoolOptions::new()
-            .max_connections(1)
+            .max_connections(1) // always 1 for :memory: — see module doc
             .connect_with(opts)
             .await
             .map_err(|e| AcmeError::Database(format!("open in-memory database: {}", e)))?
     } else {
-        // File-backed database: WAL mode for better write throughput; single
-        // connection to avoid SQLITE_BUSY_SNAPSHOT contention (see above).
+        // File-backed database: WAL mode for better write throughput.
+        //
+        // PRAGMA tuning:
+        // - synchronous=NORMAL: in WAL mode only checkpoints sync to disk, not
+        //   individual writes. Safe against application crash; the WAL file
+        //   protects against OS crash. Reduces per-write latency vs FULL.
+        // - mmap_size: map up to 128 MiB of the database file into virtual
+        //   memory; reduces pread(2) syscalls for read-heavy workloads.
+        // - cache_size: 64 MiB page cache (negative value = KB, not pages).
         let opts = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
             .foreign_keys(true)
             .journal_mode(SqliteJournalMode::Wal)
-            .busy_timeout(Duration::from_secs(5));
+            .busy_timeout(Duration::from_secs(5))
+            .pragma("synchronous", "NORMAL")
+            .pragma("mmap_size", "134217728")
+            .pragma("cache_size", "-65536");
         SqlitePoolOptions::new()
-            .max_connections(1)
+            .max_connections(max_connections)
             .connect_with(opts)
             .await
             .map_err(|e| AcmeError::Database(format!("open database '{}': {}", path, e)))?
@@ -85,10 +141,7 @@ mod tests {
     async fn open_in_memory_succeeds() {
         let pool = open(":memory:").await.unwrap();
         // Basic sanity: can issue a query.
-        let row: (i64,) = sqlx::query_as("SELECT 1")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let row: (i64,) = sqlx::query_as("SELECT 1").fetch_one(&pool).await.unwrap();
         assert_eq!(row.0, 1);
     }
 
