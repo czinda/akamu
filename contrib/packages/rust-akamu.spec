@@ -6,31 +6,48 @@
 #
 # Vendor tarball (full — required because of [patch.crates-io] for the
 # openssl pqc-prs fork and several crates not yet in Fedora):
-#   cargo vendor --versioned-dirs /tmp/v/
-#   tar czf akamu-%%{version}-vendor.tar.gz \
-#       --exclude='*.profraw' \
-#       -C /tmp/v --transform 's|^\./|vendor/|' --transform 's|^\.|vendor|' .
+#
+#   To include optional PostgreSQL and MariaDB sqlx drivers in the vendor
+#   tarball, resolve the lockfile with all features before vendoring:
+#     cargo check --features backend-sqlite,backend-postgres,backend-mariadb
+#   Then vendor as usual:
+#     cargo vendor --versioned-dirs /tmp/v/
+#     tar czf akamu-%%{version}-vendor.tar.gz \
+#         --exclude='*.profraw' \
+#         -C /tmp/v --transform 's|^\./|vendor/|' --transform 's|^\.|vendor|' .
 #
 # Crates in the vendor tarball absent from Fedora or at incompatible versions:
 #   openssl / openssl-sys  — pqc-prs git fork for ML-DSA/ML-KEM/PQC support
 #   axum-server 0.8        — Fedora ships 0.7.3 (incompatible API)
-#   tokio-rusqlite 0.5     — not yet packaged in Fedora
-#   rusqlite_migration 1.2 — not yet packaged in Fedora
-#   rusqlite 0.31          — Fedora ships 0.38 (incompatible API)
 #   hickory-resolver 0.24  — Fedora ships 0.25 (incompatible API)
 #   toml 0.8               — Fedora ships 1.1 (incompatible API)
+#   sqlx-postgres + deps   — needed when %%{with backend_postgres} (not in Fedora)
+#   sqlx-mysql + deps      — needed when %%{with backend_mariadb}  (not in Fedora)
 #
 # PREREQUISITE: install synta* into the mock chroot before rebuilding:
 #   mock --install rust-synta-devel rust-synta-certificate-devel \
 #                  rust-synta-x509-verification-devel rust-synta-mtc-devel
 
 %bcond check 1
+# Optional database backends (in addition to the always-on SQLite default).
+# Enable with: rpmbuild --with backend_postgres  or  --with backend_mariadb
+%bcond backend_postgres 0
+%bcond backend_mariadb  0
 
 %global crate akamu
 
 # The akamu workspace root has both src/lib.rs and src/main.rs.
 # The library is internal; only the binary is packaged.
 %global cargo_install_lib 0
+
+# Feature list passed to cargo: sqlite is always on; postgres/mariadb are opt-in.
+%global _akamu_features backend-sqlite
+%if %{with backend_postgres}
+%global _akamu_features %{_akamu_features},backend-postgres
+%endif
+%if %{with backend_mariadb}
+%global _akamu_features %{_akamu_features},backend-mariadb
+%endif
 
 Name:           rust-akamu
 Version:        0.1.0
@@ -57,8 +74,18 @@ BuildRequires:  cargo-rpm-macros >= 26
 # System libraries
 BuildRequires:  pkgconfig(openssl)
 BuildRequires:  openssl-devel
-BuildRequires:  pkgconfig(libsqlite3)
+BuildRequires:  pkgconfig(sqlite3)
 BuildRequires:  sqlite-devel
+# Optional backend: PostgreSQL (libpq)
+%if %{with backend_postgres}
+BuildRequires:  pkgconfig(libpq)
+BuildRequires:  libpq-devel
+%endif
+# Optional backend: MariaDB / MySQL (Connector/C)
+%if %{with backend_mariadb}
+BuildRequires:  pkgconfig(libmariadb)
+BuildRequires:  mariadb-connector-c-devel
+%endif
 # The openssl-sys build script generates FFI bindings via bindgen, which
 # requires libclang.  Rebuild this package whenever openssl-devel changes.
 BuildRequires:  clang-devel
@@ -154,7 +181,9 @@ EOF
 # ── Build ──────────────────────────────────────────────────────────────────────
 %build
 # Build the entire workspace: the server binary (akamu) and the CLI (akamu-cli).
-%cargo_build -- --workspace
+# Pass the feature list explicitly; --no-default-features keeps the set minimal
+# (only what %{_akamu_features} requests, always at least backend-sqlite).
+%cargo_build -- --workspace --no-default-features --features %{_akamu_features}
 # Generate the bundled-dependency license summary required by Fedora policy.
 %{cargo_license_summary}
 %{cargo_license} > LICENSE.dependencies
@@ -184,7 +213,7 @@ install -Dpm 0644 %{SOURCE3} %{buildroot}%{_sysconfdir}/akamu/config.toml.exampl
 %check
 # Documentation tests require external infrastructure (live ACME endpoints,
 # DNS resolver, TLS server) not available inside the mock build environment.
-%cargo_test -- --lib --bins --tests
+%cargo_test -- --lib --bins --tests --no-default-features --features %{_akamu_features}
 %endif
 
 
