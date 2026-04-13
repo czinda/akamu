@@ -1,13 +1,13 @@
-//! CAA record checking (RFC 8659 + RFC 8657 validationmethods parameter).
+//! CAA record checking (RFC 8659 + RFC 8657 validationmethods/accounturi parameters).
 //!
 //! Before issuing a certificate the CA MUST query CAA records starting at the
 //! domain being certified and walk up to the root until records are found.
 //! If a record set is found, the CA must appear in at least one `issue` property
 //! (or `issuewild` for wildcard certificates).
 //!
-//! RFC 8657 adds the `validationmethods` parameter: if present in a matching
-//! record, the challenge type used must appear in the comma-separated list.
-//! The `accounturi` parameter is recognised but not enforced (logged only).
+//! RFC 8657 adds two optional parameters enforced by this implementation:
+//! - `validationmethods`: the challenge type used must appear in the list.
+//! - `accounturi`: the requesting ACME account URL must match the parameter value.
 
 use hickory_resolver::config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts};
 use hickory_resolver::proto::rr::RData;
@@ -25,12 +25,14 @@ use crate::error::AcmeError;
 ///   If empty, the check is skipped (open policy).
 /// * `is_wildcard`     — `true` if the cert covers a wildcard (`*.<domain>`).
 /// * `challenge_type`  — e.g. `"http-01"`, `"dns-01"` — for `validationmethods` checking.
+/// * `account_url`     — The full ACME account URL for `accounturi` enforcement (RFC 8657 §4).
 /// * `resolver_addr`   — Optional DNS resolver override from config.
 pub async fn check_caa(
     domain: &str,
     ca_identities: &[String],
     is_wildcard: bool,
     challenge_type: &str,
+    account_url: Option<&str>,
     resolver_addr: Option<&str>,
 ) -> Result<(), AcmeError> {
     // Step 1: If ca_identities is empty → no-op (open policy).
@@ -39,15 +41,27 @@ pub async fn check_caa(
     }
 
     let resolver = build_resolver(resolver_addr)?;
-    check_caa_with_resolver(domain, ca_identities, is_wildcard, challenge_type, resolver).await
+    check_caa_with_resolver(
+        domain,
+        ca_identities,
+        is_wildcard,
+        challenge_type,
+        account_url,
+        resolver,
+    )
+    .await
 }
 
 /// Inner implementation that takes a custom resolver for testability.
+///
+/// `account_url` is the full ACME account URL passed through to
+/// `evaluate_caa_record_set` for RFC 8657 §4 `accounturi` enforcement.
 pub(crate) async fn check_caa_with_resolver(
     domain: &str,
     ca_identities: &[String],
     is_wildcard: bool,
     challenge_type: &str,
+    account_url: Option<&str>,
     resolver: TokioAsyncResolver,
 ) -> Result<(), AcmeError> {
     // Step 2: Build a list of DNS names to check, walking up to (but not including) the TLD.
@@ -93,6 +107,7 @@ pub(crate) async fn check_caa_with_resolver(
                     ca_identities,
                     is_wildcard,
                     challenge_type,
+                    account_url,
                 );
             }
             Err(e) => {
@@ -179,12 +194,18 @@ fn build_name_walk(domain: &str) -> Vec<String> {
 ///
 /// Returns `Ok(())` if at least one `issue` (or `issuewild` for wildcards) record
 /// authorises issuance, `Err(AcmeError::Caa(...))` if the set denies issuance.
+///
+/// `challenge_type` is matched against the `validationmethods` parameter when
+/// present (RFC 8657 §3).  `account_url` is matched against the `accounturi`
+/// parameter when present (RFC 8657 §4); a `None` value causes any record that
+/// carries `accounturi` to be rejected.
 fn evaluate_caa_record_set(
     records: &[&hickory_resolver::proto::rr::rdata::CAA],
     domain: &str,
     ca_identities: &[String],
     is_wildcard: bool,
     challenge_type: &str,
+    account_url: Option<&str>,
 ) -> Result<(), AcmeError> {
     use hickory_resolver::proto::rr::rdata::caa::Value;
 
@@ -240,9 +261,9 @@ fn evaluate_caa_record_set(
                 continue;
             }
 
-            // We have a matching identity. Now check `validationmethods` (RFC 8657).
+            // We have a matching identity. Now check RFC 8657 parameters.
             let mut validationmethods_ok = true;
-            let mut has_accounturi = false;
+            let mut accounturi_ok = true;
 
             for kv in key_values {
                 match kv.key() {
@@ -257,7 +278,28 @@ fn evaluate_caa_record_set(
                         }
                     }
                     "accounturi" => {
-                        has_accounturi = true;
+                        // RFC 8657 §4: the requesting account's URL must match.
+                        match account_url {
+                            Some(url) => {
+                                if kv.value() != url {
+                                    tracing::debug!(
+                                        domain,
+                                        record_accounturi = kv.value(),
+                                        request_accounturi = url,
+                                        "caa: accounturi mismatch — this record does not authorise this account"
+                                    );
+                                    accounturi_ok = false;
+                                }
+                            }
+                            None => {
+                                // Account URL not supplied to the check — deny this record.
+                                tracing::warn!(
+                                    domain,
+                                    "caa: accounturi parameter present but no account URL provided; denying this record"
+                                );
+                                accounturi_ok = false;
+                            }
+                        }
                     }
                     _ => {
                         // Unknown parameters: ignore unless critical bit is set.
@@ -268,14 +310,7 @@ fn evaluate_caa_record_set(
                 }
             }
 
-            if has_accounturi {
-                tracing::warn!(
-                    domain,
-                    "caa: accounturi parameter present but not enforced (not yet implemented)"
-                );
-            }
-
-            if validationmethods_ok {
+            if validationmethods_ok && accounturi_ok {
                 tracing::info!(
                     domain,
                     ca = tag_name,
@@ -361,7 +396,7 @@ mod tests {
     #[tokio::test]
     async fn empty_ca_identities_returns_ok() {
         // When ca_identities is empty, check_caa is a no-op regardless of anything else.
-        let result = check_caa("example.com", &[], false, "http-01", None).await;
+        let result = check_caa("example.com", &[], false, "http-01", None, None).await;
         assert!(
             result.is_ok(),
             "empty identities should always return Ok: {result:?}"
@@ -487,6 +522,7 @@ mod tests {
             &["ca.example.com".to_string()],
             false,
             "http-01",
+            None,
             resolver,
         )
         .await;
@@ -509,6 +545,7 @@ mod tests {
             &["ca.example.com".to_string()],
             false,
             "http-01",
+            None,
             resolver,
         )
         .await;
@@ -531,6 +568,7 @@ mod tests {
             &["ca.example.com".to_string()],
             false,
             "http-01",
+            None,
             resolver,
         )
         .await;
@@ -556,6 +594,7 @@ mod tests {
             &["ca.example.com".to_string()],
             true, // wildcard
             "dns-01",
+            None,
             resolver,
         )
         .await;
@@ -579,6 +618,7 @@ mod tests {
             &["ca.example.com".to_string()],
             true, // wildcard
             "dns-01",
+            None,
             resolver,
         )
         .await;
@@ -601,6 +641,7 @@ mod tests {
             &["ca.example.com".to_string()],
             true, // wildcard
             "dns-01",
+            None,
             resolver,
         )
         .await;
@@ -629,6 +670,7 @@ mod tests {
             &["ca.example.com".to_string()],
             false,
             "http-01",
+            None,
             resolver,
         )
         .await;
@@ -652,6 +694,7 @@ mod tests {
             &["ca.example.com".to_string()],
             false,
             "http-01", // not in validationmethods
+            None,
             resolver,
         )
         .await;
@@ -675,6 +718,7 @@ mod tests {
             &["ca.example.com".to_string()],
             false,
             "http-01",
+            None,
             resolver,
         )
         .await;
@@ -699,12 +743,69 @@ mod tests {
             &["ca.example.com".to_string()],
             false,
             "http-01",
+            None,
             resolver,
         )
         .await;
         assert!(
             result.is_ok(),
             "CA identity matching should be case-insensitive: {result:?}"
+        );
+    }
+
+    /// RFC 8657 §4: `accounturi` param matches the requesting account URL → Ok.
+    #[tokio::test]
+    async fn accounturi_matching_returns_ok() {
+        let port = start_mock_dns(vec![Box::new(|q: &[u8]| {
+            build_caa_dns_response(
+                q,
+                0,
+                "issue",
+                "ca.example.com; accounturi=https://acme.example.com/acme/account/42",
+            )
+        })])
+        .await;
+        let resolver = local_resolver(port);
+        let result = check_caa_with_resolver(
+            "example.com",
+            &["ca.example.com".to_string()],
+            false,
+            "http-01",
+            Some("https://acme.example.com/acme/account/42"),
+            resolver,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "matching accounturi should return Ok: {result:?}"
+        );
+    }
+
+    /// RFC 8657 §4: `accounturi` param does not match the requesting account URL → Err(Caa).
+    #[tokio::test]
+    async fn accounturi_mismatch_returns_err() {
+        let port = start_mock_dns(vec![Box::new(|q: &[u8]| {
+            build_caa_dns_response(
+                q,
+                0,
+                "issue",
+                "ca.example.com; accounturi=https://acme.example.com/acme/account/42",
+            )
+        })])
+        .await;
+        let resolver = local_resolver(port);
+        let result = check_caa_with_resolver(
+            "example.com",
+            &["ca.example.com".to_string()],
+            false,
+            "http-01",
+            Some("https://acme.example.com/acme/account/99"), // different account
+            resolver,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(AcmeError::Caa(_))),
+            "mismatched accounturi should return Err(Caa): {result:?}"
         );
     }
 }

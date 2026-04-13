@@ -83,7 +83,8 @@ pub async fn finalize_order(
 
     // CAA check (RFC 8659 + RFC 8657): only when caa_identities is configured.
     // The authz lookup is deferred inside this block so that deployments without
-    // CAA pay zero extra DB round-trips during finalization.
+    // CAA pay zero extra DB round-trips during finalization.  The account URL is
+    // constructed here and passed to check_caa for RFC 8657 §4 accounturi enforcement.
     if !state.config.server.caa_identities.is_empty() {
         // Build identifier → authz_id map to look up the validated challenge type
         // for each authorization (RFC 8657 validationmethods check).
@@ -115,11 +116,13 @@ pub async fn finalize_order(
                 } else {
                     String::new()
                 };
+                let account_url = format!("{}/acme/account/{}", state.config.base_url, account_id);
                 crate::validation::caa::check_caa(
                     domain,
                     &state.config.server.caa_identities,
                     is_wildcard,
                     &challenge_type,
+                    Some(account_url.as_str()),
                     state.config.server.dns_resolver_addr.as_deref(),
                 )
                 .await?;
