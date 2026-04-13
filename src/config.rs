@@ -133,6 +133,14 @@ pub struct ServerConfig {
     /// so runtime-provisioned or consumed keys are never overwritten.
     #[serde(default)]
     pub eab_keys: HashMap<String, String>,
+    /// Whether this CA has Tor network connectivity (RFC 9799 §4).
+    ///
+    /// When `false` (the default), `http-01` and `tls-alpn-01` are NOT offered
+    /// for `.onion` identifiers — only `onion-csr-01` is offered.
+    /// Set to `true` only when the server can reach the Tor network and
+    /// successfully perform outbound connections to `.onion` hidden services.
+    #[serde(default)]
+    pub tor_connectivity_enabled: bool,
 }
 
 /// Server-side TLS configuration.  Absent or `enabled = false` → plain HTTP (no change).

@@ -337,11 +337,16 @@ pub async fn new_order(
         } else {
             &["dns-01"]
         };
-        // RFC 9799 §3.1.1: for .onion domains MUST offer onion-csr-01 and
-        // MUST NOT offer dns-01.  http-01 and tls-alpn-01 are allowed but
-        // require Tor-network connectivity for actual validation; we include
-        // them so that Tor-capable CAs can use them.
-        let onion_types: &[&str] = &["onion-csr-01", "http-01", "tls-alpn-01"];
+        // RFC 9799 §4: for .onion domains MUST offer onion-csr-01 and MUST NOT
+        // offer dns-01.  http-01 and tls-alpn-01 MUST NOT be offered unless the
+        // CA has Tor network connectivity (controlled by tor_connectivity_enabled).
+        let onion_types_with_tor: &[&str] = &["onion-csr-01", "http-01", "tls-alpn-01"];
+        let onion_types_no_tor: &[&str] = &["onion-csr-01"];
+        let onion_types: &[&str] = if state.config.server.tor_connectivity_enabled {
+            onion_types_with_tor
+        } else {
+            onion_types_no_tor
+        };
         let challenge_types: &[&str] = match authz_type {
             "dns" if is_onion_domain(authz_value) => onion_types,
             "dns" if authz_value.starts_with("*.") => wildcard_dns_types,
