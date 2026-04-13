@@ -37,7 +37,7 @@ use tokio::{net::UdpSocket, sync::RwLock};
 use tower::ServiceExt;
 
 use akamu::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
-use akamu::state::{AppState, CaState, MtcState};
+use akamu::state::{AppState, CaState, MtcState, NonceBucket};
 use akamu::{ca, db, routes};
 
 // ── Tracing ───────────────────────────────────────────────────────────────────
@@ -194,6 +194,7 @@ async fn build_state(
         }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        nonces: Arc::new(NonceBucket::new()),
         link_header: Arc::new(axum::http::HeaderValue::from_static(
             "<https://acme.test/acme/directory>;rel=\"index\"",
         )),

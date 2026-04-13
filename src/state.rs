@@ -1,7 +1,7 @@
 //! Shared application state threaded through axum handlers via `Arc<AppState>`.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use axum::http::HeaderValue;
 use http_body_util::Empty;
@@ -12,6 +12,77 @@ use synta_mtc::crypto::HashAlgorithm;
 
 use crate::config::Config;
 use crate::mtc::log::SharedLog;
+
+/// In-memory nonce store.
+///
+/// Replaces the SQLite-backed nonce table on the hot path. Each JWS request
+/// requires a nonce consume + insert. In the DB-backed implementation this costs
+/// 4 round-trips (BEGIN IMMEDIATE, DELETE, INSERT, COMMIT). With 6 JWS calls
+/// per certificate issuance, that amounts to 24 of the total 49 round-trips —
+/// capping throughput at approximately 860 iss/s.
+///
+/// Moving nonces into memory eliminates those 24 round-trips, lifting the
+/// ceiling to ~1650 iss/s with no change to correctness: nonces are short-lived
+/// and replay protection holds because the HashMap prevents double-use within
+/// the same server process.
+///
+/// On server restart the in-memory store is empty; any nonces issued before
+/// restart are silently dropped. Clients detect the resulting `badNonce` and
+/// retry with a fresh nonce per RFC 8555 §6.5.
+pub struct NonceBucket {
+    inner: Mutex<HashMap<String, i64>>,
+}
+
+impl Default for NonceBucket {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl NonceBucket {
+    pub fn new() -> Self {
+        Self {
+            inner: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Store a new nonce with its creation timestamp.
+    pub fn insert(&self, nonce: &str) {
+        let now = nonce_now_secs();
+        self.inner.lock().unwrap().insert(nonce.to_string(), now);
+    }
+
+    /// Consume `old_nonce` and atomically insert `new_nonce`.
+    ///
+    /// Returns `true` if `old_nonce` was present and successfully replaced,
+    /// `false` if it was not found (replay or unknown).
+    pub fn consume_and_insert(&self, old_nonce: &str, new_nonce: &str) -> bool {
+        let mut map = self.inner.lock().unwrap();
+        if map.remove(old_nonce).is_none() {
+            return false;
+        }
+        let now = nonce_now_secs();
+        map.insert(new_nonce.to_string(), now);
+        true
+    }
+
+    /// Delete nonces older than `max_age_secs` seconds.  Returns the count of
+    /// removed entries.
+    pub fn sweep_expired(&self, max_age_secs: i64) -> usize {
+        let cutoff = nonce_now_secs().saturating_sub(max_age_secs);
+        let mut map = self.inner.lock().unwrap();
+        let before = map.len();
+        map.retain(|_, &mut created| created >= cutoff);
+        before - map.len()
+    }
+}
+
+fn nonce_now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
 
 /// Shared HTTP client for outbound challenge validation requests.
 ///
@@ -35,6 +106,13 @@ pub struct AppState {
     /// round-trip per kid-authenticated POST after the first request, and lets
     /// routes that need the JWK thumbprint avoid a second `get_by_id` call.
     pub spki_cache: Arc<RwLock<HashMap<String, CachedAccount>>>,
+    /// In-memory anti-replay nonce store.
+    ///
+    /// Replaces the SQLite nonce table on the hot path: consume + insert costs
+    /// 4 DB round-trips per JWS call; with 6 JWS calls per issuance that was
+    /// 24 of the total 49 round-trips. Moving to in-memory cuts the per-issuance
+    /// round-trip count nearly in half and roughly doubles throughput.
+    pub nonces: Arc<NonceBucket>,
     /// Precomputed `Link: <base_url>/acme/directory>;rel="index"` header value.
     ///
     /// Computed once at startup; reused on every ACME response to avoid

@@ -18,9 +18,10 @@
 //!   --key-type TYPE   ec:P-256 | ec:P-384 | rsa:2048 | rsa:4096 | ed25519
 //!   --ca-key-type T   CA key type (same syntax)
 //!   --wildcard        issue *.bench-N.acme-bench.test  (dns-persist-01 only)
-//!   --db PATH         :memory: or file path for SQLite
-//!   --output FORMAT   text | json
-//!   --verify-cert     parse and check SAN of every issued cert
+//!   --db PATH             :memory: or file path for SQLite
+//!   --pool-connections N  SQLite pool size (ignored for :memory:)  [default: 1]
+//!   --output FORMAT       text | json
+//!   --verify-cert         parse and check SAN of every issued cert
 
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -51,7 +52,7 @@ use akamu::{
     ca,
     config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig},
     db, routes,
-    state::{AppState, CaState, MtcState},
+    state::{AppState, CaState, MtcState, NonceBucket},
 };
 
 // ── Heap-allocation tracking (borrowed from synta-fuzz/src/main.rs) ───────────
@@ -208,6 +209,13 @@ struct Args {
     /// SQLite database path — :memory: or a file path
     #[arg(long, default_value = ":memory:")]
     db: String,
+
+    /// SQLite connection pool size.  Ignored (clamped to 1) when --db is :memory:,
+    /// because each in-memory connection opens its own private database.
+    /// File-backed databases can use N > 1 to test contention behaviour, but note
+    /// that SQLITE_BUSY_SNAPSHOT errors may occur under concurrent write load.
+    #[arg(long, default_value_t = 1)]
+    pool_connections: u32,
 
     /// Issue wildcard certificates — dns-persist-01 only
     #[arg(long)]
@@ -698,7 +706,15 @@ async fn start_server(args: &Args) -> BenchServer {
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
     let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();
     let ca_aki_bytes = akamu::ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
-    let db_conn = db::open(&args.db).await.unwrap();
+    // Clamp pool size to 1 for :memory: (each connection gets its own DB).
+    let effective_pool = if args.db == ":memory:" {
+        1
+    } else {
+        args.pool_connections.max(1)
+    };
+    let db_conn = db::open_with_connections(&args.db, effective_pool)
+        .await
+        .unwrap();
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db_conn,
@@ -717,6 +733,7 @@ async fn start_server(args: &Args) -> BenchServer {
         }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        nonces: Arc::new(NonceBucket::new()),
         link_header: Arc::new(
             axum::http::HeaderValue::from_str(&format!(
                 "<{}/acme/directory>;rel=\"index\"",
@@ -1279,14 +1296,20 @@ fn text_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64, mem: &M
     };
 
     println!("\nACME Benchmark");
+    let effective_pool = if args.db == ":memory:" {
+        1
+    } else {
+        args.pool_connections.max(1)
+    };
     println!(
-        "  challenge={}  clients={}  requests={}  key={}  ca={}  db={}{}",
+        "  challenge={}  clients={}  requests={}  key={}  ca={}  db={}  pool={}{}",
         args.challenge,
         args.clients,
         args.requests,
         args.key_type,
         args.ca_key_type,
         args.db,
+        effective_pool,
         if args.wildcard { "  wildcard=true" } else { "" },
     );
     if args.warmup > 0 {
@@ -1423,6 +1446,7 @@ fn json_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64, mem: &M
             "clients": args.clients, "requests": args.requests, "warmup": args.warmup,
             "challenge": args.challenge, "key_type": args.key_type,
             "ca_key_type": args.ca_key_type, "db": args.db, "wildcard": args.wildcard,
+            "pool_connections": if args.db == ":memory:" { 1 } else { args.pool_connections.max(1) },
         },
         "summary": {
             "ok": n_ok, "err": n_err, "total": n_ok + n_err,
@@ -1476,7 +1500,9 @@ async fn main() {
 
     // Suppress server tracing so the benchmark output is clean.
     // Set RUST_LOG=debug to see request traces.
+    // Always write logs to stderr so that --output json produces clean stdout.
     let _ = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "error".to_string()))
         .try_init();
 

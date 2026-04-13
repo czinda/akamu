@@ -22,7 +22,7 @@ use synta_certificate::{
 use tower::ServiceExt;
 
 use akamu::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
-use akamu::state::{AppState, CaState, MtcState};
+use akamu::state::{AppState, CaState, MtcState, NonceBucket};
 use akamu::{ca, db, routes};
 
 // ── JWS test client (derived from acme_flow.rs) ───────────────────────────────
@@ -176,6 +176,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        nonces: Arc::new(NonceBucket::new()),
         link_header: Arc::new(axum::http::HeaderValue::from_static(
             "<https://acme.test/acme/directory>;rel=\"index\"",
         )),
@@ -276,13 +277,11 @@ async fn mark_order_ready(db: &akamu::db::Db, order_id: &str) {
         .execute(db)
         .await
         .unwrap();
-        sqlx::query(
-            "UPDATE authorizations SET status='valid', updated=1700000000 WHERE id = ?",
-        )
-        .bind(aid)
-        .execute(db)
-        .await
-        .unwrap();
+        sqlx::query("UPDATE authorizations SET status='valid', updated=1700000000 WHERE id = ?")
+            .bind(aid)
+            .execute(db)
+            .await
+            .unwrap();
     }
     sqlx::query("UPDATE orders SET status='ready', updated=1700000000 WHERE id = ?")
         .bind(order_id)
@@ -512,13 +511,12 @@ async fn test_finalize_marks_predecessor_replaced() {
     .await;
 
     // Capture the predecessor's UUID before the second cert is issued.
-    let pred_uuid: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM certificates ORDER BY created ASC LIMIT 1",
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap()
-    .0;
+    let pred_uuid: String =
+        sqlx::query_as::<_, (String,)>("SELECT id FROM certificates ORDER BY created ASC LIMIT 1")
+            .fetch_one(&db)
+            .await
+            .unwrap()
+            .0;
 
     // Issue a replacing order.
     let nonce = head_nonce(&router).await;
@@ -556,14 +554,13 @@ async fn test_finalize_marks_predecessor_replaced() {
     assert_eq!(status, StatusCode::OK, "finalize: {final_body}");
 
     // Verify the predecessor's replaced_by is now the replacing order_id.
-    let replaced_by: Option<String> = sqlx::query_as::<_, (Option<String>,)>(
-        "SELECT replaced_by FROM certificates WHERE id = ?",
-    )
-    .bind(&pred_uuid)
-    .fetch_one(&db)
-    .await
-    .unwrap()
-    .0;
+    let replaced_by: Option<String> =
+        sqlx::query_as::<_, (Option<String>,)>("SELECT replaced_by FROM certificates WHERE id = ?")
+            .bind(&pred_uuid)
+            .fetch_one(&db)
+            .await
+            .unwrap()
+            .0;
     assert_eq!(
         replaced_by.as_deref(),
         Some(order_id.as_str()),

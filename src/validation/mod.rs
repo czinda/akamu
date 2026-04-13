@@ -285,7 +285,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
-    use crate::state::{AppState, CaState, MtcState};
+    use crate::state::{AppState, CaState, MtcState, NonceBucket};
     use crate::{ca, db};
 
     async fn make_state() -> Arc<AppState> {
@@ -336,6 +336,7 @@ mod tests {
             }),
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+            nonces: Arc::new(NonceBucket::new()),
             link_header: Arc::new(axum::http::HeaderValue::from_static(
                 "<https://acme.test/acme/directory>;rel=\"index\"",
             )),
@@ -764,6 +765,7 @@ mod tests {
             }),
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+            nonces: Arc::new(NonceBucket::new()),
             link_header: Arc::new(axum::http::HeaderValue::from_static(
                 "<https://acme.test/acme/directory>;rel=\"index\"",
             )),
@@ -968,7 +970,7 @@ mod tests {
     /// Helper to build a state backed by a given db pool.
     async fn make_state_with_db(db: crate::db::Db) -> Arc<AppState> {
         use crate::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
-        use crate::state::{AppState, CaState, MtcState};
+        use crate::state::{AppState, CaState, MtcState, NonceBucket};
         let dir = tempfile::TempDir::new().unwrap();
         let config = Arc::new(Config {
             listen_addr: "127.0.0.1:0".into(),
@@ -1014,6 +1016,7 @@ mod tests {
             }),
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+            nonces: Arc::new(NonceBucket::new()),
             link_header: Arc::new(axum::http::HeaderValue::from_static(
                 "<https://acme.test/acme/directory>;rel=\"index\"",
             )),

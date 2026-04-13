@@ -31,7 +31,7 @@ use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 
 use akamu::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig, TlsConfig};
-use akamu::state::{AppState, CaState, MtcState};
+use akamu::state::{AppState, CaState, MtcState, NonceBucket};
 use akamu::{ca, db, routes, tls};
 
 // ── Tracing initialisation ────────────────────────────────────────────────────
@@ -465,6 +465,7 @@ async fn start_tls_server() -> TlsTestServer {
         }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        nonces: Arc::new(NonceBucket::new()),
         link_header: Arc::new(axum::http::HeaderValue::from_static(
             "<https://acme.test/acme/directory>;rel=\"index\"",
         )),
@@ -518,13 +519,11 @@ async fn mark_order_ready(db: &akamu::db::Db, order_id: &str) {
         .execute(db)
         .await
         .unwrap();
-        sqlx::query(
-            "UPDATE authorizations SET status='valid', updated=1700000000 WHERE id = ?",
-        )
-        .bind(aid)
-        .execute(db)
-        .await
-        .unwrap();
+        sqlx::query("UPDATE authorizations SET status='valid', updated=1700000000 WHERE id = ?")
+            .bind(aid)
+            .execute(db)
+            .await
+            .unwrap();
     }
     sqlx::query("UPDATE orders SET status='ready', updated=1700000000 WHERE id = ?")
         .bind(order_id)

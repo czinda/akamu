@@ -124,16 +124,14 @@ pub(crate) async fn parse_jws(
         )));
     }
 
-    // Generate the response nonce and consume the incoming nonce atomically in
-    // one DB call — saves one channel round-trip compared to separate consume + insert.
+    // Generate the response nonce and consume the incoming nonce atomically.
+    // Uses the in-memory NonceBucket to avoid 4 DB round-trips per JWS call
+    // (BEGIN IMMEDIATE + DELETE + INSERT + COMMIT).
     let mut nonce_bytes = [0u8; 16];
     getrandom::getrandom(&mut nonce_bytes)
         .map_err(|e| AcmeError::Internal(format!("nonce rng: {e}")))?;
     let next_nonce = URL_SAFE_NO_PAD.encode(nonce_bytes);
-    let nonce_valid = db::nonces::consume_and_insert(&state.db, &header.nonce, &next_nonce)
-        .await
-        .map_err(|e| AcmeError::Internal(format!("nonce check: {e}")))?;
-    if !nonce_valid {
+    if !state.nonces.consume_and_insert(&header.nonce, &next_nonce) {
         return Err(AcmeError::BadNonce);
     }
 
@@ -198,19 +196,19 @@ pub(crate) async fn parse_jws(
 
 // ── Response helpers ──────────────────────────────────────────────────────────
 
-/// Generate a fresh anti-replay nonce, store it in the DB, and return it.
-pub(crate) async fn new_nonce(state: &AppState) -> Result<String, AcmeError> {
+/// Generate a fresh anti-replay nonce, store it in the in-memory bucket, and return it.
+pub(crate) fn new_nonce(state: &AppState) -> Result<String, AcmeError> {
     let mut bytes = [0u8; 16];
     getrandom::getrandom(&mut bytes).map_err(|e| AcmeError::Internal(format!("nonce rng: {e}")))?;
     let nonce = URL_SAFE_NO_PAD.encode(bytes);
-    db::nonces::insert(&state.db, &nonce).await?;
+    state.nonces.insert(&nonce);
     Ok(nonce)
 }
 
 /// Build standard ACME response headers using a pre-generated nonce.
 ///
 /// The nonce was already consumed and the new one inserted atomically in
-/// `parse_jws` via `db::nonces::consume_and_insert`, so no DB call is needed here.
+/// `parse_jws` via `state.nonces.consume_and_insert`, so no DB call is needed here.
 pub(crate) fn acme_headers(state: &AppState, nonce: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(

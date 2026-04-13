@@ -12,15 +12,15 @@ use crate::state::AppState;
 use super::new_nonce;
 
 pub async fn new_nonce_head(State(state): State<Arc<AppState>>) -> Result<Response, AcmeError> {
-    nonce_response(&state, StatusCode::OK).await
+    nonce_response(&state, StatusCode::OK)
 }
 
 pub async fn new_nonce_get(State(state): State<Arc<AppState>>) -> Result<Response, AcmeError> {
-    nonce_response(&state, StatusCode::NO_CONTENT).await
+    nonce_response(&state, StatusCode::NO_CONTENT)
 }
 
-async fn nonce_response(state: &AppState, status: StatusCode) -> Result<Response, AcmeError> {
-    let nonce = new_nonce(state).await?;
+fn nonce_response(state: &AppState, status: StatusCode) -> Result<Response, AcmeError> {
+    let nonce = new_nonce(state)?;
     let mut resp = status.into_response();
     resp.headers_mut().insert(
         HeaderName::from_static("replay-nonce"),

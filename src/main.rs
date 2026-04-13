@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
 use akamu::config::Config;
-use akamu::state::{AppState, CaState, MtcState, TlsState};
+use akamu::state::{AppState, CaState, MtcState, NonceBucket, TlsState};
 use akamu::{ca, db, mtc, routes, star};
 
 use http_body_util::Empty;
@@ -46,7 +46,8 @@ async fn run() -> Result<(), String> {
         .await
         .map_err(|e| format!("database init: {e}"))?;
 
-    // Sweep nonces older than 24 h at startup (best-effort).
+    // Sweep DB nonces older than 24 h at startup (best-effort; handles any
+    // nonces written by a previous process that used the DB-backed store).
     let _ = db::nonces::sweep_expired(&db, 86400).await;
 
     // Seed EAB keys from config into the DB (INSERT OR IGNORE — never overwrites
@@ -126,6 +127,7 @@ async fn run() -> Result<(), String> {
     };
 
     // ── Application state ─────────────────────────────────────────────────────
+    let nonces = Arc::new(NonceBucket::new());
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db.clone(),
@@ -133,6 +135,7 @@ async fn run() -> Result<(), String> {
         mtc,
         tls: tls_state,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        nonces: Arc::clone(&nonces),
         link_header: Arc::new(
             axum::http::HeaderValue::from_str(&format!(
                 "<{}/acme/directory>;rel=\"index\"",
@@ -142,6 +145,16 @@ async fn run() -> Result<(), String> {
         ),
         validation_client: Client::builder(TokioExecutor::new())
             .build_http::<Empty<hyper::body::Bytes>>(),
+    });
+
+    // Periodically sweep expired in-memory nonces (every 15 minutes, 24 h TTL).
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(900));
+        interval.tick().await; // skip immediate first tick
+        loop {
+            interval.tick().await;
+            nonces.sweep_expired(86400);
+        }
     });
 
     // ── STAR background reissuance task ──────────────────────────────────────

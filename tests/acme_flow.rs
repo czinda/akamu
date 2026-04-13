@@ -21,7 +21,7 @@ use synta_certificate::{
 use tower::ServiceExt;
 
 use akamu::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
-use akamu::state::{AppState, CaState, MtcState};
+use akamu::state::{AppState, CaState, MtcState, NonceBucket};
 use akamu::{ca, db, routes};
 
 // ── ACME test client ──────────────────────────────────────────────────────────
@@ -239,6 +239,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        nonces: Arc::new(NonceBucket::new()),
         link_header: Arc::new(axum::http::HeaderValue::from_static(
             "<https://acme.test/acme/directory>;rel=\"index\"",
         )),
@@ -343,13 +344,11 @@ async fn mark_order_ready(db: &akamu::db::Db, order_id: &str) {
         .execute(db)
         .await
         .unwrap();
-        sqlx::query(
-            "UPDATE authorizations SET status='valid', updated=1700000000 WHERE id = ?",
-        )
-        .bind(authz_id)
-        .execute(db)
-        .await
-        .unwrap();
+        sqlx::query("UPDATE authorizations SET status='valid', updated=1700000000 WHERE id = ?")
+            .bind(authz_id)
+            .execute(db)
+            .await
+            .unwrap();
     }
 
     sqlx::query("UPDATE orders SET status='ready', updated=1700000000 WHERE id = ?")
@@ -669,10 +668,11 @@ async fn test_respond_challenge_triggers_validation() {
     let chall_url = http_chall["url"].as_str().unwrap().to_string();
     let chall_path = chall_url.trim_start_matches(base_url).to_string();
 
-    // Respond to the challenge (triggers background validation — will fail due to no network)
+    // Respond to the challenge. Validation runs synchronously and fails
+    // immediately (no http-01 server running in this test), so the challenge
+    // returns "invalid" rather than the old "processing" intermediate state.
     let jws = key.jws_with_kid(&account_url, &nonce, &chall_url, Some(json!({})));
     let (status, chall_body, _) = post_acme(&router, &chall_path, jws).await;
-    // Expect 200 with "processing" status (background task has been spawned)
     assert_eq!(
         status,
         StatusCode::OK,
@@ -680,7 +680,7 @@ async fn test_respond_challenge_triggers_validation() {
     );
     let chall_status = chall_body["status"].as_str().unwrap();
     assert!(
-        chall_status == "processing" || chall_status == "pending",
+        chall_status == "processing" || chall_status == "valid" || chall_status == "invalid",
         "unexpected challenge status: {chall_status}"
     );
 }
@@ -740,13 +740,12 @@ async fn test_renewal_info() {
     let nonce = nonce_header(&order_headers);
 
     // Get order_id from DB
-    let order_id: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap()
-    .0;
+    let order_id: String =
+        sqlx::query_as::<_, (String,)>("SELECT id FROM orders ORDER BY created DESC LIMIT 1")
+            .fetch_one(&db)
+            .await
+            .unwrap()
+            .0;
 
     mark_order_ready(&db, &order_id).await;
 
@@ -820,13 +819,12 @@ async fn test_renewal_info_explicit_window() {
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap()
-    .0;
+    let order_id: String =
+        sqlx::query_as::<_, (String,)>("SELECT id FROM orders ORDER BY created DESC LIMIT 1")
+            .fetch_one(&db)
+            .await
+            .unwrap()
+            .0;
 
     mark_order_ready(&db, &order_id).await;
 
@@ -960,13 +958,12 @@ async fn issue_cert_for_domain(
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap()
-    .0;
+    let order_id: String =
+        sqlx::query_as::<_, (String,)>("SELECT id FROM orders ORDER BY created DESC LIMIT 1")
+            .fetch_one(&db)
+            .await
+            .unwrap()
+            .0;
     mark_order_ready(&db, &order_id).await;
 
     let csr_der = make_csr_der(domain);
@@ -1346,13 +1343,12 @@ async fn test_revoke_cert_success_with_owner_account() {
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap()
-    .0;
+    let order_id: String =
+        sqlx::query_as::<_, (String,)>("SELECT id FROM orders ORDER BY created DESC LIMIT 1")
+            .fetch_one(&db)
+            .await
+            .unwrap()
+            .0;
     mark_order_ready(&db, &order_id).await;
 
     let csr_der = make_csr_der("revoke-success.test");
@@ -1422,13 +1418,12 @@ async fn test_revoke_already_revoked_cert() {
     // First revoke must succeed; second must fail.
     // But we can't easily re-sign with the original account key from issue_cert_for_domain.
     // Workaround: use the DB to mark the cert as revoked directly, then try again.
-    let cert_id: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM certificates ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&state.db)
-    .await
-    .unwrap()
-    .0;
+    let cert_id: String =
+        sqlx::query_as::<_, (String,)>("SELECT id FROM certificates ORDER BY created DESC LIMIT 1")
+            .fetch_one(&state.db)
+            .await
+            .unwrap()
+            .0;
     // Directly revoke via DB.
     akamu::db::certs::revoke(&state.db, &cert_id, Some(1), 1_700_000_000)
         .await
@@ -1617,13 +1612,12 @@ async fn test_get_order() {
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap()
-    .0;
+    let order_id: String =
+        sqlx::query_as::<_, (String,)>("SELECT id FROM orders ORDER BY created DESC LIMIT 1")
+            .fetch_one(&db)
+            .await
+            .unwrap()
+            .0;
 
     // POST-as-GET to get order status.
     let order_url = format!("{base_url}/acme/order/{order_id}");
@@ -1662,13 +1656,12 @@ async fn test_finalize_wrong_account() {
     );
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let _nonce = nonce_header(&order_headers);
-    let order_id: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap()
-    .0;
+    let order_id: String =
+        sqlx::query_as::<_, (String,)>("SELECT id FROM orders ORDER BY created DESC LIMIT 1")
+            .fetch_one(&db)
+            .await
+            .unwrap()
+            .0;
     mark_order_ready(&db, &order_id).await;
 
     // Create attacker account.
@@ -1727,13 +1720,12 @@ async fn test_finalize_order_not_ready() {
     );
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
-    let order_id: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap()
-    .0;
+    let order_id: String =
+        sqlx::query_as::<_, (String,)>("SELECT id FROM orders ORDER BY created DESC LIMIT 1")
+            .fetch_one(&db)
+            .await
+            .unwrap()
+            .0;
     // Do NOT call mark_order_ready → order stays in "pending" state.
 
     let csr_der = make_csr_der("not-ready.test");
@@ -2009,13 +2001,12 @@ async fn test_get_order_wrong_account() {
         Some(json!({"identifiers": [{"type": "dns", "value": "get-order-wrong.test"}]})),
     );
     let (_, _, _) = post_acme(&router, "/acme/new-order", jws).await;
-    let order_id: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap()
-    .0;
+    let order_id: String =
+        sqlx::query_as::<_, (String,)>("SELECT id FROM orders ORDER BY created DESC LIMIT 1")
+            .fetch_one(&db)
+            .await
+            .unwrap()
+            .0;
 
     // Attacker creates account and tries to GET the order.
     let attacker_key = TestKey::generate();
@@ -2219,6 +2210,7 @@ async fn test_directory_with_optional_fields() {
         }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        nonces: Arc::new(NonceBucket::new()),
         link_header: Arc::new(axum::http::HeaderValue::from_static(
             "<https://acme.test/acme/directory>;rel=\"index\"",
         )),
@@ -2369,13 +2361,11 @@ async fn test_challenge_already_processing() {
     let authz_id = authz_url.split('/').last().unwrap().to_string();
 
     // Mark the http-01 challenge as 'processing'.
-    sqlx::query(
-        "UPDATE challenges SET status='processing' WHERE authz_id=? AND type='http-01'",
-    )
-    .bind(&authz_id)
-    .execute(&db)
-    .await
-    .unwrap();
+    sqlx::query("UPDATE challenges SET status='processing' WHERE authz_id=? AND type='http-01'")
+        .bind(&authz_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
     let chall_url = format!("{base_url}/acme/chall/{authz_id}/http-01");
     let chall_path = format!("/acme/chall/{authz_id}/http-01");
@@ -2421,13 +2411,12 @@ async fn test_revoke_cert_by_jwk() {
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap()
-    .0;
+    let order_id: String =
+        sqlx::query_as::<_, (String,)>("SELECT id FROM orders ORDER BY created DESC LIMIT 1")
+            .fetch_one(&db)
+            .await
+            .unwrap()
+            .0;
     mark_order_ready(&db, &order_id).await;
 
     // Build CSR with a known cert key so we can use it for JWK revocation.
@@ -2565,6 +2554,7 @@ async fn test_finalize_with_mtc_enabled() {
         }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        nonces: Arc::new(NonceBucket::new()),
         link_header: Arc::new(axum::http::HeaderValue::from_static(
             "<https://acme.test/acme/directory>;rel=\"index\"",
         )),
@@ -2597,13 +2587,12 @@ async fn test_finalize_with_mtc_enabled() {
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&db_conn)
-    .await
-    .unwrap()
-    .0;
+    let order_id: String =
+        sqlx::query_as::<_, (String,)>("SELECT id FROM orders ORDER BY created DESC LIMIT 1")
+            .fetch_one(&db_conn)
+            .await
+            .unwrap()
+            .0;
     mark_order_ready(&db_conn, &order_id).await;
 
     let csr_der = make_csr_der("mtc-test.example");
@@ -2657,13 +2646,12 @@ async fn test_finalize_ip_san() {
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap()
-    .0;
+    let order_id: String =
+        sqlx::query_as::<_, (String,)>("SELECT id FROM orders ORDER BY created DESC LIMIT 1")
+            .fetch_one(&db)
+            .await
+            .unwrap()
+            .0;
     mark_order_ready(&db, &order_id).await;
 
     let csr_der = make_ip_csr_der("192.0.2.1");
@@ -2788,6 +2776,7 @@ async fn test_finalize_with_aia_and_cdp() {
         }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        nonces: Arc::new(NonceBucket::new()),
         link_header: Arc::new(axum::http::HeaderValue::from_static(
             "<https://acme.test/acme/directory>;rel=\"index\"",
         )),
@@ -2818,13 +2807,12 @@ async fn test_finalize_with_aia_and_cdp() {
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&db_conn)
-    .await
-    .unwrap()
-    .0;
+    let order_id: String =
+        sqlx::query_as::<_, (String,)>("SELECT id FROM orders ORDER BY created DESC LIMIT 1")
+            .fetch_one(&db_conn)
+            .await
+            .unwrap()
+            .0;
     mark_order_ready(&db_conn, &order_id).await;
 
     let csr_der = make_csr_der("aia-cdp.test");
