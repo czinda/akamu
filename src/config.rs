@@ -20,8 +20,14 @@ pub struct Config {
 
 #[derive(Debug, Deserialize)]
 pub struct DatabaseConfig {
-    /// Path to the SQLite database file
-    pub path: String,
+    /// Database URL.  SQLite: `sqlite://path/to/db` or `sqlite::memory:`.
+    /// PostgreSQL: `postgres://user:pass@host/dbname`.
+    /// MariaDB/MySQL: `mariadb://user:pass@host/dbname` or `mysql://…`.
+    pub url: String,
+    /// Maximum number of pooled connections.
+    /// Defaults to 1 for SQLite (multiple connections cause SQLITE_BUSY_SNAPSHOT),
+    /// 10 for PostgreSQL/MariaDB.
+    pub max_connections: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -285,7 +291,7 @@ listen_addr = "127.0.0.1:8080"
 base_url = "https://acme.example.com"
 
 [database]
-path = "/tmp/test.db"
+url = "sqlite:///tmp/test.db"
 
 [ca]
 key_file = "/tmp/ca.key"
@@ -302,7 +308,8 @@ enabled = false
         let cfg: Config = toml::from_str(minimal_toml()).unwrap();
         assert_eq!(cfg.listen_addr, "127.0.0.1:8080");
         assert_eq!(cfg.base_url, "https://acme.example.com");
-        assert_eq!(cfg.database.path, "/tmp/test.db");
+        assert_eq!(cfg.database.url, "sqlite:///tmp/test.db");
+        assert!(cfg.database.max_connections.is_none());
         assert_eq!(cfg.ca.key_file, "/tmp/ca.key");
         assert_eq!(cfg.ca.cert_file, "/tmp/ca.crt");
         assert_eq!(cfg.mtc.log_path, "/tmp/mtc.log");
@@ -362,7 +369,7 @@ enabled = false
 listen_addr = "127.0.0.1:8080"
 base_url = "https://acme.example.com:8443"
 [database]
-path = ":memory:"
+url = "sqlite::memory:"
 [ca]
 key_file = "/tmp/ca.key"
 cert_file = "/tmp/ca.crt"
@@ -381,7 +388,7 @@ listen_addr = "0.0.0.0:443"
 base_url = "https://ca.example.org"
 
 [database]
-path = ":memory:"
+url = "sqlite::memory:"
 
 [ca]
 key_file = "/etc/ca.key"
