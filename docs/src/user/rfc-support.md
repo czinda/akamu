@@ -12,7 +12,7 @@ This page documents every RFC that is relevant to `Akāmu`, explaining what each
 | [draft-ietf-lamps-pq-composite-sigs](#draft-ietf-lamps-pq-composite-sigs) | ML-DSA Composite TLS Signature Schemes | Partial (provisional code points) |
 | [RFC 8555](#rfc-8555-core-acme) | Automatic Certificate Management Environment (ACME) | Full |
 | [RFC 8659](#rfc-8659-caa-dns-resource-record) | DNS Certification Authority Authorization (CAA) | Full |
-| [RFC 8657](#rfc-8657-caa-accounturi-and-validationmethods) | CAA Extensions: accounturi and validationmethods | Partial (validationmethods: full; accounturi: not enforced) |
+| [RFC 8657](#rfc-8657-caa-accounturi-and-validationmethods) | CAA Extensions: accounturi and validationmethods | Full |
 | [RFC 8737](#rfc-8737-tls-alpn-01-challenge) | ACME TLS-ALPN-01 Challenge Extension | Full |
 | [RFC 8738](#rfc-8738-ip-identifier-validation) | ACME IP Identifier Validation | Full |
 | [RFC 8739](#rfc-8739-acme-star) | ACME Short-Term, Automatically Renewed (STAR) Certificates | Full |
@@ -163,7 +163,14 @@ With this record, an http-01-validated order for `example.com` would be denied a
 
 ### accounturi
 
-Akāmu recognises the `accounturi` parameter in CAA records and logs a warning if it is present, but does not enforce it. Full `accounturi` enforcement requires correlating ACME account URLs during the CA's validation phase; this is planned for a future release.
+When a matching `issue` or `issuewild` CAA record contains an `accounturi` parameter, Akāmu enforces it: the full ACME account URL of the requesting client (e.g. `https://acme.example.com/acme/account/42`) must match the parameter value exactly. If it does not match, the record is treated as non-authorizing and issuance is denied unless another record in the set authorizes it without an `accounturi` constraint.
+
+**Example:**
+
+```dns
+; Only the named account may obtain a certificate from this CA
+example.com. IN CAA 0 issue "acme.example.com; accounturi=https://acme.example.com/acme/account/42"
+```
 
 ---
 
@@ -185,6 +192,7 @@ Akāmu recognises the `accounturi` parameter in CAA records and logs a warning i
 - Port 443 must be reachable from the Akāmu server.
 - Wildcard identifiers cannot be validated with `tls-alpn-01`.
 - Both TLS 1.2 and TLS 1.3 are accepted.
+- RFC 8737 §3 requires exactly one SAN entry in the validation certificate. Certificates with multiple SANs are rejected.
 
 ---
 
@@ -401,9 +409,20 @@ ari_retry_after_secs = 21600  # 6 hours between renewal-info polls (default)
 | Challenge | Supported | Notes |
 |-----------|-----------|-------|
 | `onion-csr-01` | Yes | Key validation via CSR; no Tor network access needed server-side |
-| `http-01` | Offered | Requires Tor connectivity from the Akāmu server |
-| `tls-alpn-01` | Offered | Requires Tor connectivity from the Akāmu server |
+| `http-01` | Conditional | Only offered when `server.tor_connectivity_enabled = true` |
+| `tls-alpn-01` | Conditional | Only offered when `server.tor_connectivity_enabled = true` |
 | `dns-01` | No | MUST NOT be used for .onion identifiers |
+
+### Tor connectivity configuration
+
+RFC 9799 §4 prohibits offering `http-01` or `tls-alpn-01` for `.onion` identifiers unless the CA can actually reach the Tor network. By default, Akāmu offers only `onion-csr-01`. To enable the additional challenge types, set:
+
+```toml
+[server]
+tor_connectivity_enabled = true
+```
+
+Only set this when the Akāmu server process can make outbound Tor connections to hidden services (e.g. via `torsocks` or a SOCKS5 proxy configured at the OS level).
 
 ### onion-csr-01 challenge
 

@@ -47,6 +47,8 @@ ari_retry_after_secs   = 21600
 allow_subdomain_auth   = false
 star_min_lifetime_secs = 86400
 star_max_duration_secs = 31536000
+star_allow_certificate_get = true
+tor_connectivity_enabled  = false
 
 [server.profiles]
 "tls-server-auth" = "https://acme.example.com/docs/profiles/tls-server-auth"
@@ -273,7 +275,7 @@ website_url = "https://acme.example.com"
 
 List of CA domain names for CAA record verification (RFC 8659). When set, Akāmu queries CAA DNS records before issuing each certificate and verifies that at least one `issue` (or `issuewild` for wildcard) record authorises one of these CA domain names. The values also appear in `meta.caaIdentities` of the directory response.
 
-When the list is empty (the default), CAA checking is skipped entirely.
+When the list is empty (the default), CAA checking is skipped entirely — including RFC 8657 `accounturi` enforcement, because `accounturi` is evaluated as part of the CAA record check.
 
 ```toml
 caa_identities = ["acme.example.com"]
@@ -414,6 +416,26 @@ Maximum total renewal duration in seconds for ACME STAR orders. When set, it is 
 
 ```toml
 star_max_duration_secs = 31536000   # 1 year maximum
+```
+
+### `star_allow_certificate_get`
+
+**Optional. Default: `true`.**
+
+Controls whether the rolling STAR certificate URL (`/acme/cert/star/<order-id>`) can be fetched with an unauthenticated `GET` request. When `true`, the directory `meta.auto-renewal` object includes `"allow-certificate-get": true` and clients may request this capability per order by including `"allow-certificate-get": true` in the `auto-renewal` object of `newOrder`. When `false`, the capability is not advertised and unauthenticated GET requests are rejected.
+
+```toml
+star_allow_certificate_get = true
+```
+
+### `tor_connectivity_enabled`
+
+**Optional. Default: `false`.**
+
+Controls whether the server offers `http-01` and `tls-alpn-01` challenge types for `.onion` identifiers. RFC 9799 §4 prohibits offering those challenge types unless the CA can actually reach the Tor network. When `false` (the default), only `onion-csr-01` is offered for `.onion` identifiers. Set to `true` only when the Akāmu server process can make outbound Tor connections to hidden services (for example, via `torsocks` or a SOCKS5 proxy configured at the OS level).
+
+```toml
+tor_connectivity_enabled = true
 ```
 
 ### `profiles`

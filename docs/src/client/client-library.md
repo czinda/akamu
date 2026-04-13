@@ -372,6 +372,65 @@ println!("Renew between {} and {}", info.window_start, info.window_end);
 
 Returns `Err` if the server does not advertise a `renewalInfo` endpoint.
 
+## STAR order API (RFC 8739)
+
+ACME STAR (Short-Term, Automatically Renewed) orders let a client place a single order and receive a continuous stream of short-lived certificates without repeating domain validation. Use `StarOrderParams` to describe the order and `AcmeClient::new_star_order()` to place it.
+
+### Placing a STAR order
+
+```rust
+use akamu_client::{StarOrderParams, Identifier};
+
+let params = StarOrderParams {
+    identifiers: &[Identifier::dns("example.com")],
+    end_date: "2026-12-31T00:00:00Z",   // RFC 3339
+    lifetime_secs: 86400,               // each cert is valid for 1 day
+    start_date: None,                   // start when order becomes ready
+    lifetime_adjust_secs: 0,            // no clock-skew pre-dating
+    allow_certificate_get: true,        // allow unauthenticated rolling GET
+};
+
+let star_order = client.new_star_order(&account, &params).await?;
+// star_order.status         — "pending"
+// star_order.authorizations — authz URLs to solve, same as a regular order
+// star_order.finalize       — finalize URL
+```
+
+After placing the order, solve the authorizations and finalize using the standard `get_authorization`, `trigger_challenge`, and `finalize` calls. The server then automatically reissues a new certificate before each one expires.
+
+### `StarOrderParams` fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `identifiers` | Yes | Identifiers to certify. |
+| `end_date` | Yes | RFC 3339 timestamp; the last certificate's `notBefore` must not exceed this. |
+| `lifetime_secs` | Yes | Validity period of each automatically issued certificate, in seconds. |
+| `start_date` | No | RFC 3339 timestamp for the earliest `notBefore` of the first certificate. Defaults to when the order becomes ready. |
+| `lifetime_adjust_secs` | No | Pre-dates each certificate's `notBefore` by this many seconds to create an overlap window (RFC 8739 §3.1.1). Default: `0`. |
+| `allow_certificate_get` | No | When `true`, the rolling certificate URL can be fetched without authentication. |
+
+### Downloading the rolling certificate
+
+After finalization `star_order.star_certificate` contains the rolling URL. Download it either with an authenticated POST-as-GET or (when `allow_certificate_get` was requested) an unauthenticated GET:
+
+```rust
+// Authenticated download (always works):
+let pem = client.download_star_certificate(&account, &star_cert_url).await?;
+
+// Unauthenticated GET (only when allow_certificate_get was true):
+let pem = client.get_star_certificate(&star_cert_url).await?;
+```
+
+Both methods return the current PEM certificate chain.
+
+### Canceling a STAR order
+
+```rust
+client.cancel_star_order(&account, &star_order.url).await?;
+```
+
+After cancellation the rolling certificate URL returns HTTP 403 (`autoRenewalCanceled`). The currently active short-lived certificate remains usable until it expires.
+
 ## Identifier constructors
 
 ```rust

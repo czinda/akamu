@@ -25,6 +25,11 @@ classical and post-quantum (ML-DSA) account keys.
   TXT records.  DNS provisioning is the caller's responsibility.
 - **`build_csr(domains, key)`** — build a DER-encoded CSR.  The first domain
   becomes the Common Name; all domains are added as dNSName SANs.
+- **STAR order API** — `new_star_order()`, `cancel_star_order()`,
+  `get_star_certificate()`, and `download_star_certificate()` implement RFC 8739
+  Short-Term, Automatically Renewed (STAR) certificate orders.  Use
+  `StarOrderParams` to configure the end date, per-certificate lifetime, and
+  optional `lifetime-adjust` clock-skew window.
 - **`ClientError`** — unified error type wrapping `JoseError`, HTTP errors,
   ACME problem document errors, crypto errors, and I/O errors.
 

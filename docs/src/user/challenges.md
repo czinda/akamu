@@ -192,6 +192,7 @@ The validator accepts both TLS 1.2 and TLS 1.3 connections.
 - Port 443 must be reachable from the ACME server.
 - Wildcard identifiers are not supported by tls-alpn-01.
 - IP address identifiers (`ip` type) are supported; the server connects to the IP address directly.
+- RFC 8737 §3 requires exactly one SAN entry in the validation certificate. Certificates that contain more than one SAN are rejected.
 
 ---
 
