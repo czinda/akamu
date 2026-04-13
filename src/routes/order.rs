@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::db;
-use crate::db::schema::OrderRow;
+use crate::db::schema::{AuthorizationRow, OrderRow};
 use crate::error::AcmeError;
 use crate::state::AppState;
 
@@ -381,71 +381,73 @@ pub async fn new_order(
     // Write everything inside a single transaction so a partial failure
     // cannot leave orphaned orders, authorizations, or challenges.
     {
-        let mut tx = state.db.begin().await.map_err(AcmeError::from)?;
-        sqlx::query(
-            "INSERT INTO orders
-             (id, account_id, status, expires, identifiers,
-              not_before, not_after, error, certificate_id, replaces, created, updated,
-              star_start_date, star_end_date, star_lifetime_secs,
-              star_lifetime_adjust_secs, star_allow_cert_get, profile)
-             VALUES (?, ?, 'pending', ?, ?, ?, ?, NULL, NULL, ?, ?, ?,
-                     ?, ?, ?, ?, ?, ?)",
+        let mut tx = db::begin_write(&state.db).await?;
+
+        db::orders::insert(
+            &mut *tx,
+            OrderRow {
+                id: order_id.clone(),
+                account_id: account_id.clone(),
+                status: "pending".to_string(),
+                expires: Some(expiry),
+                identifiers: identifiers_json.clone(),
+                not_before: order_not_before,
+                not_after: order_not_after,
+                error: None,
+                certificate_id: None,
+                replaces: validated_replaces.clone(),
+                created: now,
+                updated: now,
+                star_start_date,
+                star_end_date,
+                star_lifetime_secs,
+                star_lifetime_adjust_secs,
+                star_allow_cert_get,
+                star_canceled_at: None,
+                star_csr_der: None,
+                profile: order_profile.clone(),
+            },
         )
-        .bind(&order_id)
-        .bind(&account_id)
-        .bind(expiry)
-        .bind(&identifiers_json)
-        .bind(order_not_before)
-        .bind(order_not_after)
-        .bind(&validated_replaces)
-        .bind(now)
-        .bind(now)
-        .bind(star_start_date)
-        .bind(star_end_date)
-        .bind(star_lifetime_secs)
-        .bind(star_lifetime_adjust_secs)
-        .bind(star_allow_cert_get as i64)
-        .bind(&order_profile)
-        .execute(&mut *tx)
-        .await
-        .map_err(AcmeError::from)?;
+        .await?;
 
         for plan in &authz_plans {
-            sqlx::query(
-                "INSERT INTO authorizations
-                 (id, order_id, account_id, status, identifier, expires,
-                  wildcard, subdomain_auth_allowed, created, updated)
-                 VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)",
+            db::authz::insert(
+                &mut *tx,
+                AuthorizationRow {
+                    id: plan.authz_id.clone(),
+                    order_id: order_id.clone(),
+                    account_id: account_id.clone(),
+                    status: "pending".to_string(),
+                    identifier: plan.identifier_json.clone(),
+                    expires: Some(authz_expiry),
+                    wildcard: plan.wildcard,
+                    subdomain_auth_allowed: plan.subdomain_auth_allowed,
+                    created: now,
+                    updated: now,
+                },
             )
-            .bind(&plan.authz_id)
-            .bind(&order_id)
-            .bind(&account_id)
-            .bind(&plan.identifier_json)
-            .bind(authz_expiry)
-            .bind(plan.wildcard as i64)
-            .bind(plan.subdomain_auth_allowed as i64)
-            .bind(now)
-            .bind(now)
-            .execute(&mut *tx)
-            .await
-            .map_err(AcmeError::from)?;
+            .await?;
 
-            for (chall_id, chall_type) in &plan.challenges {
-                sqlx::query(
-                    "INSERT INTO challenges
-                     (id, authz_id, type, status, token, validated,
-                      error, created, updated)
-                     VALUES (?, ?, ?, 'pending', ?, NULL, NULL, ?, ?)",
-                )
-                .bind(chall_id)
-                .bind(&plan.authz_id)
-                .bind(chall_type)
-                .bind(&plan.token)
-                .bind(now)
-                .bind(now)
-                .execute(&mut *tx)
-                .await
-                .map_err(AcmeError::from)?;
+            if !plan.challenges.is_empty() {
+                // Batch all challenge rows for this authz into a single INSERT
+                // VALUES (...),(...),(...) statement — one DB round-trip instead
+                // of one per challenge type (typically 3 for dns/http/tls-alpn).
+                let mut qb = sqlx::QueryBuilder::new(
+                    "INSERT INTO challenges \
+                     (id, authz_id, type, status, token, validated, error, created, updated) ",
+                );
+                qb.push_values(plan.challenges.iter(), |mut b, (chall_id, chall_type)| {
+                    b.push_bind(chall_id)
+                        .push_bind(&plan.authz_id)
+                        .push_bind(chall_type)
+                        .push_bind("pending")
+                        .push_bind(&plan.token)
+                        .push_bind(None::<i64>) // validated
+                        .push_bind(None::<String>) // error
+                        .push_bind(now)
+                        .push_bind(now);
+                });
+                qb.build().execute(&mut *tx).await?;
             }
         }
         tx.commit().await.map_err(AcmeError::from)?;

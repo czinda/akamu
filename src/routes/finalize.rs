@@ -12,6 +12,7 @@ use serde::Deserialize;
 
 use crate::ca;
 use crate::db;
+use crate::db::schema::CertificateRow;
 use crate::error::AcmeError;
 use crate::state::AppState;
 
@@ -80,21 +81,23 @@ pub async fn finalize_order(
         }
     }
 
-    // Build identifier → authz_id map so we can look up the validated challenge
-    // type for each authorization during the CAA validationmethods check (RFC 8657).
-    let authz_rows = db::authz::list_by_order(&state.db, &id).await?;
-    let mut identifier_to_authz: std::collections::HashMap<(String, String), String> =
-        std::collections::HashMap::new();
-    for authz in &authz_rows {
-        if let Ok(id_obj) = serde_json::from_str::<serde_json::Value>(&authz.identifier) {
-            if let (Some(t), Some(v)) = (id_obj["type"].as_str(), id_obj["value"].as_str()) {
-                identifier_to_authz.insert((t.to_string(), v.to_string()), authz.id.clone());
+    // CAA check (RFC 8659 + RFC 8657): only when caa_identities is configured.
+    // The authz lookup is deferred inside this block so that deployments without
+    // CAA pay zero extra DB round-trips during finalization.
+    if !state.config.server.caa_identities.is_empty() {
+        // Build identifier → authz_id map to look up the validated challenge type
+        // for each authorization (RFC 8657 validationmethods check).
+        let authz_rows = db::authz::list_by_order(&state.db, &id).await?;
+        let mut identifier_to_authz: std::collections::HashMap<(String, String), String> =
+            std::collections::HashMap::new();
+        for authz in &authz_rows {
+            if let Ok(id_obj) = serde_json::from_str::<serde_json::Value>(&authz.identifier) {
+                if let (Some(t), Some(v)) = (id_obj["type"].as_str(), id_obj["value"].as_str()) {
+                    identifier_to_authz.insert((t.to_string(), v.to_string()), authz.id.clone());
+                }
             }
         }
-    }
 
-    // CAA check (RFC 8659 + RFC 8657): only when caa_identities is configured.
-    if !state.config.server.caa_identities.is_empty() {
         for (id_type, id_value) in &allowed {
             if *id_type == "dns" {
                 let is_wildcard = id_value.starts_with("*.");
@@ -156,78 +159,52 @@ pub async fn finalize_order(
     // in a single transaction so that a crash between writes cannot leave the DB
     // inconsistent.
     let cert_id = issued.id.clone();
-    let serial = issued.serial_hex.clone();
-    let cert_der = issued.cert_der.clone();
-    let cert_pem = issued.cert_pem.clone();
-    let not_before = issued.not_before;
-    let not_after = issued.not_after;
 
     // The transaction returns (authz_ids, pred_already_replaced) so we can signal
     // a concurrent alreadyReplaced conflict (RFC 9773 §5) without a separate
     // DB round-trip.  The bool is true when the predecessor's replaced_by was
     // already set by another concurrent finalization.
-    let mut tx = state.db.begin().await.map_err(AcmeError::from)?;
+    let (authz_ids, pred_already_replaced) = {
+        let mut tx = db::begin_write(&state.db).await?;
 
-    sqlx::query(
-        "INSERT INTO certificates
-         (id, order_id, account_id, serial_number, status, der, pem,
-          not_before, not_after, revoked_at, revocation_reason,
-          mtc_log_index, created, suggested_window_start, suggested_window_end,
-          replaced_by)
-         VALUES (?, ?, ?, ?, 'valid', ?, ?, ?, ?,
-                 NULL, NULL, NULL, ?, NULL, NULL, NULL)",
-    )
-    .bind(&cert_id)
-    .bind(&id)
-    .bind(&account_id)
-    .bind(&serial)
-    .bind(&cert_der)
-    .bind(&cert_pem)
-    .bind(not_before)
-    .bind(not_after)
-    .bind(now)
-    .execute(&mut *tx)
-    .await
-    .map_err(AcmeError::from)?;
-
-    sqlx::query(
-        "UPDATE orders SET status = 'valid', certificate_id = ?, updated = ? WHERE id = ?",
-    )
-    .bind(&cert_id)
-    .bind(now)
-    .bind(&id)
-    .execute(&mut *tx)
-    .await
-    .map_err(AcmeError::from)?;
-
-    // Mark predecessor certificate as replaced (RFC 9773 §5).
-    let pred_already_replaced = if let Some(ref pred_uuid) = pred_cert_uuid {
-        let rows_changed = sqlx::query(
-            "UPDATE certificates SET replaced_by = ? WHERE id = ? AND replaced_by IS NULL",
+        db::certs::insert(
+            &mut *tx,
+            CertificateRow {
+                id: issued.id.clone(),
+                order_id: id.clone(),
+                account_id: account_id.clone(),
+                serial_number: issued.serial_hex.clone(),
+                status: "valid".to_string(),
+                der: issued.cert_der.clone(),
+                pem: issued.cert_pem.clone(),
+                not_before: issued.not_before,
+                not_after: issued.not_after,
+                revoked_at: None,
+                revocation_reason: None,
+                mtc_log_index: None,
+                created: now,
+                suggested_window_start: None,
+                suggested_window_end: None,
+                replaced_by: None,
+            },
         )
-        .bind(&id)
-        .bind(pred_uuid)
-        .execute(&mut *tx)
-        .await
-        .map_err(AcmeError::from)?
-        .rows_affected();
-        rows_changed == 0
-    } else {
-        false
+        .await?;
+
+        db::orders::set_certificate(&mut *tx, &id, &cert_id, now).await?;
+
+        // Mark predecessor certificate as replaced (RFC 9773 §5).
+        let pred_already_replaced = if let Some(ref pred_uuid) = pred_cert_uuid {
+            !db::certs::mark_replaced(&mut *tx, pred_uuid, &id).await?
+        } else {
+            false
+        };
+
+        // Fetch authz IDs within the same transaction to avoid a separate round-trip.
+        let authz_ids = db::orders::list_authz_ids(&mut *tx, &id).await?;
+
+        tx.commit().await.map_err(AcmeError::from)?;
+        (authz_ids, pred_already_replaced)
     };
-
-    // Fetch authz IDs within the same transaction to avoid a separate round-trip.
-    let authz_id_rows: Vec<(String,)> =
-        sqlx::query_as("SELECT id FROM authorizations WHERE order_id = ?")
-            .bind(&id)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(AcmeError::from)?;
-    let authz_ids: Vec<String> = authz_id_rows.into_iter().map(|(aid,)| aid).collect();
-
-    tx.commit().await.map_err(AcmeError::from)?;
-
-    let (authz_ids, pred_already_replaced) = (authz_ids, pred_already_replaced);
 
     // RFC 9773 §5: return 409 alreadyReplaced if another order concurrently
     // replaced the same predecessor certificate during this finalization.

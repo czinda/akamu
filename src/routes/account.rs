@@ -140,28 +140,11 @@ pub async fn new_account(
         .map(|c| serde_json::to_string(c).unwrap());
 
     // Insert the new account — atomically consume the EAB key if one was verified.
-    if let Some(eab_kid) = verified_eab_kid {
-        let mut tx = state.db.begin().await.map_err(AcmeError::from)?;
-        sqlx::query(
-            "INSERT INTO accounts \
-             (id, status, contact, public_key, jwk_thumbprint, created, updated) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind("valid")
-        .bind(&contact_json)
-        .bind(&ctx.spki_der)
-        .bind(&thumbprint)
-        .bind(now)
-        .bind(now)
-        .execute(&mut *tx)
-        .await
-        .map_err(AcmeError::from)?;
-        crate::db::eab::mark_used_tx(&mut tx, &eab_kid, now).await?;
-        tx.commit().await.map_err(AcmeError::from)?;
-    } else {
+    // Both paths use a transaction so the insert is atomic with any EAB mark.
+    {
+        let mut tx = db::begin_write(&state.db).await?;
         db::accounts::insert(
-            &state.db,
+            &mut *tx,
             AccountRow {
                 id: id.clone(),
                 status: "valid".into(),
@@ -173,6 +156,10 @@ pub async fn new_account(
             },
         )
         .await?;
+        if let Some(eab_kid) = verified_eab_kid {
+            db::eab::mark_used(&mut *tx, &eab_kid, now).await?;
+        }
+        tx.commit().await.map_err(AcmeError::from)?;
     }
 
     let row = AccountRow {

@@ -94,20 +94,9 @@ async fn serve_star_cert(
 
     // Find the most recent certificate for this order.
     let now = unix_now();
-    let cert = sqlx::query_as::<_, crate::db::schema::CertificateRow>(
-        "SELECT id, order_id, account_id, serial_number, status, der, pem,
-         not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-         suggested_window_start, suggested_window_end, replaced_by
-         FROM certificates
-         WHERE order_id = ?
-         ORDER BY created DESC
-         LIMIT 1",
-    )
-    .bind(&order.id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(AcmeError::from)?
-    .ok_or(AcmeError::NotFound)?;
+    let cert = db::certs::get_latest_for_order(&state.db, &order.id)
+        .await?
+        .ok_or(AcmeError::NotFound)?;
 
     // Check if the STAR period is still active.
     if let Some(end_date) = order.star_end_date {

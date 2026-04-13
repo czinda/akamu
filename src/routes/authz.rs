@@ -192,7 +192,7 @@ pub async fn new_authz(
     let subdomain_auth_allowed = payload.subdomain_auth_allowed;
 
     {
-        let mut tx = state.db.begin().await.map_err(AcmeError::from)?;
+        let mut tx = db::begin_write(&state.db).await?;
         sqlx::query(
             "INSERT INTO authorizations
              (id, order_id, account_id, status, identifier, expires,

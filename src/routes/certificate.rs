@@ -22,7 +22,10 @@ pub async fn download_cert(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Response, AcmeError> {
-    serve_cert_pem(&state, &id).await
+    let cert = db::certs::get_by_id(&state.db, &id)
+        .await?
+        .ok_or(AcmeError::NotFound)?;
+    Ok(cert_pem_response(cert))
 }
 
 /// POST-as-GET handler for certificate download (RFC 8555 §6.3 + §7.4.2).
@@ -61,18 +64,14 @@ pub async fn download_cert_post(
         ));
     }
 
-    serve_cert_pem(&state, &id).await
+    Ok(cert_pem_response(cert))
 }
 
-async fn serve_cert_pem(state: &AppState, id: &str) -> Result<Response, AcmeError> {
-    let cert = db::certs::get_by_id(&state.db, id)
-        .await?
-        .ok_or(AcmeError::NotFound)?;
-
+fn cert_pem_response(cert: crate::db::schema::CertificateRow) -> Response {
     let mut resp = (StatusCode::OK, cert.pem.into_bytes()).into_response();
     resp.headers_mut().insert(
         axum::http::header::CONTENT_TYPE,
         HeaderValue::from_static("application/pem-certificate-chain"),
     );
-    Ok(resp)
+    resp
 }
