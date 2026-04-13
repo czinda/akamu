@@ -11,6 +11,7 @@ use synta_certificate::BackendPrivateKey;
 use synta_mtc::crypto::HashAlgorithm;
 
 use crate::config::Config;
+use crate::db::DbKind;
 use crate::mtc::log::SharedLog;
 
 /// In-memory nonce store.
@@ -94,7 +95,8 @@ pub type ValidationClient = Client<HttpConnector, Empty<hyper::body::Bytes>>;
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
-    pub db: sqlx::SqlitePool,
+    pub db: crate::db::Db,
+    pub db_kind: DbKind,
     pub ca: Arc<CaState>,
     pub mtc: Arc<MtcState>,
     /// Present when `[tls]` is enabled and client auth is configured.
