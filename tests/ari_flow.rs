@@ -25,6 +25,9 @@ use akamu::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
 use akamu::state::{AppState, CaState, MtcState};
 use akamu::{ca, db, routes};
 
+#[allow(unused_imports)]
+use sqlx::Connection as _;
+
 // ── JWS test client (derived from acme_flow.rs) ───────────────────────────────
 
 struct TestKey {
@@ -262,31 +265,31 @@ fn location_header(headers: &axum::http::HeaderMap) -> String {
 // ── DB helpers ────────────────────────────────────────────────────────────────
 
 async fn mark_order_ready(db: &akamu::db::Db, order_id: &str) {
-    let authz_ids: Vec<(String,)> =
-        sqlx::query_as("SELECT id FROM authorizations WHERE order_id = ?")
-            .bind(order_id)
-            .fetch_all(db)
-            .await
-            .unwrap();
+    let mut conn = db.acquire().await.unwrap();
+    let authz_ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM authorizations WHERE order_id = ?1")
+        .bind(order_id)
+        .fetch_all(&mut *conn)
+        .await
+        .unwrap();
     for (aid,) in &authz_ids {
         sqlx::query(
-            "UPDATE challenges SET status='valid', validated=1700000000 WHERE authz_id = ?",
+            "UPDATE challenges SET status='valid', validated=1700000000 WHERE authz_id = ?1",
         )
         .bind(aid)
-        .execute(db)
+        .execute(&mut *conn)
         .await
         .unwrap();
         sqlx::query(
-            "UPDATE authorizations SET status='valid', updated=1700000000 WHERE id = ?",
+            "UPDATE authorizations SET status='valid', updated=1700000000 WHERE id = ?1",
         )
         .bind(aid)
-        .execute(db)
+        .execute(&mut *conn)
         .await
         .unwrap();
     }
-    sqlx::query("UPDATE orders SET status='ready', updated=1700000000 WHERE id = ?")
+    sqlx::query("UPDATE orders SET status='ready', updated=1700000000 WHERE id = ?1")
         .bind(order_id)
-        .execute(db)
+        .execute(&mut *conn)
         .await
         .unwrap();
 }
@@ -376,13 +379,16 @@ async fn issue_cert(
     assert_eq!(status, StatusCode::OK, "finalize: {final_body}");
 
     // get serial from DB → construct cert_id
-    let serial_hex: String = sqlx::query_as::<_, (String,)>(
-        "SELECT serial_number FROM certificates ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(db)
-    .await
-    .unwrap()
-    .0;
+    let serial_hex: String = {
+        let mut conn = db.acquire().await.unwrap();
+        let row: (String,) = sqlx::query_as(
+            "SELECT serial_number FROM certificates ORDER BY created DESC LIMIT 1",
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+        row.0
+    };
     let cert_id = cert_id_from_serial_hex(&serial_hex, aki_bytes);
     (account_url, order_id, cert_id)
 }
@@ -512,13 +518,16 @@ async fn test_finalize_marks_predecessor_replaced() {
     .await;
 
     // Capture the predecessor's UUID before the second cert is issued.
-    let pred_uuid: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM certificates ORDER BY created ASC LIMIT 1",
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap()
-    .0;
+    let pred_uuid: String = {
+        let mut conn = db.acquire().await.unwrap();
+        let row: (String,) = sqlx::query_as(
+            "SELECT id FROM certificates ORDER BY created ASC LIMIT 1",
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+        row.0
+    };
 
     // Issue a replacing order.
     let nonce = head_nonce(&router).await;
@@ -556,14 +565,17 @@ async fn test_finalize_marks_predecessor_replaced() {
     assert_eq!(status, StatusCode::OK, "finalize: {final_body}");
 
     // Verify the predecessor's replaced_by is now the replacing order_id.
-    let replaced_by: Option<String> = sqlx::query_as::<_, (Option<String>,)>(
-        "SELECT replaced_by FROM certificates WHERE id = ?",
-    )
-    .bind(&pred_uuid)
-    .fetch_one(&db)
-    .await
-    .unwrap()
-    .0;
+    let replaced_by: Option<String> = {
+        let mut conn = db.acquire().await.unwrap();
+        let row: (Option<String>,) = sqlx::query_as(
+            "SELECT replaced_by FROM certificates WHERE id = ?1",
+        )
+        .bind(&pred_uuid)
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+        row.0
+    };
     assert_eq!(
         replaced_by.as_deref(),
         Some(order_id.as_str()),
@@ -591,10 +603,13 @@ async fn test_new_order_already_replaced() {
     .await;
 
     // Mark the cert as replaced directly in the DB.
-    sqlx::query("UPDATE certificates SET replaced_by = 'some-prior-order'")
-        .execute(&db)
-        .await
-        .unwrap();
+    {
+        let mut conn = db.acquire().await.unwrap();
+        sqlx::query("UPDATE certificates SET replaced_by = 'some-prior-order'")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+    }
 
     let nonce = head_nonce(&router).await;
     let jws = key.jws_with_kid(

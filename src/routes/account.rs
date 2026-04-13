@@ -13,6 +13,9 @@ use serde_json::json;
 use crate::db;
 use crate::db::schema::AccountRow;
 use crate::error::AcmeError;
+
+// sqlx is used for the EAB+account atomic transaction.
+use sqlx::Connection as _;
 use crate::jose::jws::JwsKeyRef;
 use crate::state::AppState;
 
@@ -51,7 +54,8 @@ pub async fn new_account(
 
     // Check if an account with this key already exists.
     // EAB checks only apply to new account creation, not returning clients.
-    if let Some(existing) = db::accounts::get_by_thumbprint(&state.db, &thumbprint).await? {
+    let mut conn = state.db.acquire().await?;
+    if let Some(existing) = db::accounts::get_by_thumbprint(&mut *conn, &thumbprint).await? {
         let account_url = format!("{}/acme/account/{}", state.config.base_url, existing.id);
         let contacts = parse_contacts(&existing.contact);
         let mut resp = json_response(
@@ -110,7 +114,7 @@ pub async fn new_account(
 
         // Extract kid from EAB protected header → look it up in the DB.
         let kid = crate::jose::eab::parse_eab_kid(eab_val)?;
-        let key_row = db::eab::get_by_kid(&state.db, &kid)
+        let key_row = db::eab::get_by_kid(&mut *conn, &kid)
             .await?
             .ok_or_else(|| AcmeError::Unauthorized(format!("EAB: unknown kid '{kid}'")))?;
 
@@ -141,11 +145,14 @@ pub async fn new_account(
 
     // Insert the new account — atomically consume the EAB key if one was verified.
     if let Some(eab_kid) = verified_eab_kid {
-        let mut tx = state.db.begin().await.map_err(AcmeError::from)?;
+        let mut tx = conn
+            .begin()
+            .await
+            .map_err(|e| AcmeError::Database(e.to_string()))?;
         sqlx::query(
             "INSERT INTO accounts \
              (id, status, contact, public_key, jwk_thumbprint, created, updated) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         )
         .bind(&id)
         .bind("valid")
@@ -156,12 +163,14 @@ pub async fn new_account(
         .bind(now)
         .execute(&mut *tx)
         .await
-        .map_err(AcmeError::from)?;
+        .map_err(|e| AcmeError::Database(e.to_string()))?;
         crate::db::eab::mark_used_tx(&mut tx, &eab_kid, now).await?;
-        tx.commit().await.map_err(AcmeError::from)?;
+        tx.commit()
+            .await
+            .map_err(|e| AcmeError::Database(e.to_string()))?;
     } else {
         db::accounts::insert(
-            &state.db,
+            &mut *conn,
             AccountRow {
                 id: id.clone(),
                 status: "valid".into(),
@@ -217,7 +226,8 @@ pub async fn update_account(
         ));
     }
 
-    let account = db::accounts::get_by_id(&state.db, &id)
+    let mut conn = state.db.acquire().await?;
+    let account = db::accounts::get_by_id(&mut *conn, &id)
         .await?
         .ok_or(AcmeError::AccountDoesNotExist)?;
 
@@ -243,7 +253,7 @@ pub async fn update_account(
 
     // Handle deactivation.
     if payload.status.as_deref() == Some("deactivated") {
-        db::accounts::update_status(&state.db, &id, "deactivated", unix_now()).await?;
+        db::accounts::update_status(&mut *conn, &id, "deactivated", unix_now()).await?;
         state.spki_cache.write().unwrap().remove(&id);
         let mut deactivated = account.clone();
         deactivated.status = "deactivated".into();
@@ -260,10 +270,10 @@ pub async fn update_account(
     if let Some(new_contacts) = &payload.contact {
         validate_contacts(new_contacts)?;
         let contact_json = serde_json::to_string(new_contacts).unwrap();
-        db::accounts::update_contact(&state.db, &id, Some(contact_json), unix_now()).await?;
+        db::accounts::update_contact(&mut *conn, &id, Some(contact_json), unix_now()).await?;
     }
 
-    let updated = db::accounts::get_by_id(&state.db, &id)
+    let updated = db::accounts::get_by_id(&mut *conn, &id)
         .await?
         .ok_or(AcmeError::AccountDoesNotExist)?;
     let contacts = parse_contacts(&updated.contact);

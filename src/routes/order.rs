@@ -9,6 +9,8 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use sqlx::Connection as _;
+
 use crate::db;
 use crate::db::schema::OrderRow;
 use crate::error::AcmeError;
@@ -174,9 +176,11 @@ pub async fn new_order(
         }
     }
 
+    let mut conn = state.db.acquire().await?;
+
     // Validate the optional `replaces` cert_id (RFC 9773 §5).
     let validated_replaces: Option<String> = if let Some(ref cert_id) = payload.replaces {
-        let pred = db::certs::get_by_cert_id(&state.db, cert_id)
+        let pred = db::certs::get_by_cert_id(&mut *conn, cert_id)
             .await?
             .ok_or(AcmeError::NotFound)?;
         if pred.account_id != account_id {
@@ -381,15 +385,19 @@ pub async fn new_order(
     // Write everything inside a single transaction so a partial failure
     // cannot leave orphaned orders, authorizations, or challenges.
     {
-        let mut tx = state.db.begin().await.map_err(AcmeError::from)?;
+        let mut tx = conn
+            .begin()
+            .await
+            .map_err(|e| AcmeError::Database(e.to_string()))?;
+
         sqlx::query(
             "INSERT INTO orders
              (id, account_id, status, expires, identifiers,
               not_before, not_after, error, certificate_id, replaces, created, updated,
               star_start_date, star_end_date, star_lifetime_secs,
               star_lifetime_adjust_secs, star_allow_cert_get, profile)
-             VALUES (?, ?, 'pending', ?, ?, ?, ?, NULL, NULL, ?, ?, ?,
-                     ?, ?, ?, ?, ?, ?)",
+             VALUES (?1, ?2, 'pending', ?3, ?4, ?5, ?6, NULL, NULL, ?7, ?8, ?8,
+                     ?9, ?10, ?11, ?12, ?13, ?14)",
         )
         .bind(&order_id)
         .bind(&account_id)
@@ -399,56 +407,56 @@ pub async fn new_order(
         .bind(order_not_after)
         .bind(&validated_replaces)
         .bind(now)
-        .bind(now)
         .bind(star_start_date)
         .bind(star_end_date)
         .bind(star_lifetime_secs)
         .bind(star_lifetime_adjust_secs)
-        .bind(star_allow_cert_get as i64)
+        .bind(star_allow_cert_get)
         .bind(&order_profile)
         .execute(&mut *tx)
         .await
-        .map_err(AcmeError::from)?;
+        .map_err(|e| AcmeError::Database(e.to_string()))?;
 
         for plan in &authz_plans {
             sqlx::query(
                 "INSERT INTO authorizations
                  (id, order_id, account_id, status, identifier, expires,
                   wildcard, subdomain_auth_allowed, created, updated)
-                 VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)",
+                 VALUES (?1, ?2, ?3, 'pending', ?4, ?5, ?6, ?7, ?8, ?8)",
             )
             .bind(&plan.authz_id)
             .bind(&order_id)
             .bind(&account_id)
             .bind(&plan.identifier_json)
             .bind(authz_expiry)
-            .bind(plan.wildcard as i64)
-            .bind(plan.subdomain_auth_allowed as i64)
-            .bind(now)
+            .bind(plan.wildcard)
+            .bind(plan.subdomain_auth_allowed)
             .bind(now)
             .execute(&mut *tx)
             .await
-            .map_err(AcmeError::from)?;
+            .map_err(|e| AcmeError::Database(e.to_string()))?;
 
             for (chall_id, chall_type) in &plan.challenges {
                 sqlx::query(
                     "INSERT INTO challenges
                      (id, authz_id, type, status, token, validated,
                       error, created, updated)
-                     VALUES (?, ?, ?, 'pending', ?, NULL, NULL, ?, ?)",
+                     VALUES (?1, ?2, ?3, 'pending', ?4, NULL, NULL, ?5, ?5)",
                 )
                 .bind(chall_id)
                 .bind(&plan.authz_id)
                 .bind(chall_type)
                 .bind(&plan.token)
                 .bind(now)
-                .bind(now)
                 .execute(&mut *tx)
                 .await
-                .map_err(AcmeError::from)?;
+                .map_err(|e| AcmeError::Database(e.to_string()))?;
             }
         }
-        tx.commit().await.map_err(AcmeError::from)?;
+
+        tx.commit()
+            .await
+            .map_err(|e| AcmeError::Database(e.to_string()))?;
     }
 
     let base = &state.config.base_url;
@@ -507,8 +515,10 @@ pub async fn get_order(
         .account_id
         .ok_or(AcmeError::Unauthorized("kid required".into()))?;
 
+    let mut conn = state.db.acquire().await?;
+
     // Fetch order and its authz IDs in one DB call.
-    let (mut order, authz_ids) = db::orders::get_with_authz_ids(&state.db, &id)
+    let (mut order, authz_ids) = db::orders::get_with_authz_ids(&mut *conn, &id)
         .await?
         .ok_or(AcmeError::NotFound)?;
     if order.account_id != account_id {
@@ -534,7 +544,7 @@ pub async fn get_order(
                 return Err(AcmeError::AutoRenewalCancellationInvalid);
             }
             let now = unix_now();
-            db::orders::cancel_star(&state.db, &id, now).await?;
+            db::orders::cancel_star(&mut *conn, &id, now).await?;
             order.star_canceled_at = Some(now);
             order.status = "canceled".to_string();
             order.updated = now;

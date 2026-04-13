@@ -35,7 +35,8 @@ pub async fn get_renewal_info(
         }
     }
 
-    let cert = db::certs::get_by_cert_id(&state.db, &cert_id)
+    let mut conn = state.db.acquire().await?;
+    let cert = db::certs::get_by_cert_id(&mut *conn, &cert_id)
         .await?
         .ok_or(AcmeError::NotFound)?;
 

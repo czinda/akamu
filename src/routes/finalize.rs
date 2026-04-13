@@ -10,6 +10,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde::Deserialize;
 
+use sqlx::Connection as _;
+
 use crate::ca;
 use crate::db;
 use crate::error::AcmeError;
@@ -35,7 +37,9 @@ pub async fn finalize_order(
         .account_id
         .ok_or(AcmeError::Unauthorized("kid required".into()))?;
 
-    let order = db::orders::get_by_id(&state.db, &id)
+    let mut conn = state.db.acquire().await?;
+
+    let order = db::orders::get_by_id(&mut *conn, &id)
         .await?
         .ok_or(AcmeError::NotFound)?;
 
@@ -82,7 +86,7 @@ pub async fn finalize_order(
 
     // Build identifier → authz_id map so we can look up the validated challenge
     // type for each authorization during the CAA validationmethods check (RFC 8657).
-    let authz_rows = db::authz::list_by_order(&state.db, &id).await?;
+    let authz_rows = db::authz::list_by_order(&mut *conn, &id).await?;
     let mut identifier_to_authz: std::collections::HashMap<(String, String), String> =
         std::collections::HashMap::new();
     for authz in &authz_rows {
@@ -106,7 +110,7 @@ pub async fn finalize_order(
                 let challenge_type = if let Some(authz_id) =
                     identifier_to_authz.get(&(id_type.to_string(), id_value.to_string()))
                 {
-                    db::challenges::get_validated_type(&state.db, authz_id)
+                    db::challenges::get_validated_type(&mut *conn, authz_id)
                         .await?
                         .unwrap_or_default()
                 } else {
@@ -145,89 +149,97 @@ pub async fn finalize_order(
     // If this order carries a `replaces` cert_id, resolve the predecessor UUID
     // before entering the DB transaction (we need an async call for this).
     let pred_cert_uuid: Option<String> = if let Some(ref cid) = order.replaces {
-        db::certs::get_by_cert_id(&state.db, cid)
+        db::certs::get_by_cert_id(&mut *conn, cid)
             .await?
             .map(|c| c.id)
     } else {
         None
     };
 
-    // Persist the certificate, update the order, and fetch authz IDs atomically
-    // in a single transaction so that a crash between writes cannot leave the DB
-    // inconsistent.
+    // Persist the certificate, update the order, and fetch authz IDs atomically.
     let cert_id = issued.id.clone();
+    let order_id_clone = id.clone();
     let serial = issued.serial_hex.clone();
     let cert_der = issued.cert_der.clone();
     let cert_pem = issued.cert_pem.clone();
     let not_before = issued.not_before;
     let not_after = issued.not_after;
 
-    // The transaction returns (authz_ids, pred_already_replaced) so we can signal
-    // a concurrent alreadyReplaced conflict (RFC 9773 §5) without a separate
-    // DB round-trip.  The bool is true when the predecessor's replaced_by was
-    // already set by another concurrent finalization.
-    let mut tx = state.db.begin().await.map_err(AcmeError::from)?;
+    // The transaction returns (authz_ids, pred_already_replaced) so we can detect
+    // a concurrent alreadyReplaced conflict (RFC 9773 §5) without a separate round-trip.
+    let (authz_ids, pred_already_replaced): (Vec<String>, bool) = {
+        let mut tx = conn
+            .begin()
+            .await
+            .map_err(|e| AcmeError::Database(e.to_string()))?;
 
-    sqlx::query(
-        "INSERT INTO certificates
-         (id, order_id, account_id, serial_number, status, der, pem,
-          not_before, not_after, revoked_at, revocation_reason,
-          mtc_log_index, created, suggested_window_start, suggested_window_end,
-          replaced_by)
-         VALUES (?, ?, ?, ?, 'valid', ?, ?, ?, ?,
-                 NULL, NULL, NULL, ?, NULL, NULL, NULL)",
-    )
-    .bind(&cert_id)
-    .bind(&id)
-    .bind(&account_id)
-    .bind(&serial)
-    .bind(&cert_der)
-    .bind(&cert_pem)
-    .bind(not_before)
-    .bind(not_after)
-    .bind(now)
-    .execute(&mut *tx)
-    .await
-    .map_err(AcmeError::from)?;
-
-    sqlx::query(
-        "UPDATE orders SET status = 'valid', certificate_id = ?, updated = ? WHERE id = ?",
-    )
-    .bind(&cert_id)
-    .bind(now)
-    .bind(&id)
-    .execute(&mut *tx)
-    .await
-    .map_err(AcmeError::from)?;
-
-    // Mark predecessor certificate as replaced (RFC 9773 §5).
-    let pred_already_replaced = if let Some(ref pred_uuid) = pred_cert_uuid {
-        let rows_changed = sqlx::query(
-            "UPDATE certificates SET replaced_by = ? WHERE id = ? AND replaced_by IS NULL",
+        sqlx::query(
+            "INSERT INTO certificates
+             (id, order_id, account_id, serial_number, status, der, pem,
+              not_before, not_after, revoked_at, revocation_reason,
+              mtc_log_index, created, suggested_window_start, suggested_window_end,
+              replaced_by)
+             VALUES (?1, ?2, ?3, ?4, 'valid', ?5, ?6, ?7, ?8,
+                     NULL, NULL, NULL, ?9, NULL, NULL, NULL)",
         )
-        .bind(&id)
-        .bind(pred_uuid)
+        .bind(&cert_id)
+        .bind(&order_id_clone)
+        .bind(&account_id)
+        .bind(&serial)
+        .bind(&cert_der)
+        .bind(&cert_pem)
+        .bind(not_before)
+        .bind(not_after)
+        .bind(now)
         .execute(&mut *tx)
         .await
-        .map_err(AcmeError::from)?
-        .rows_affected();
-        rows_changed == 0
-    } else {
-        false
-    };
+        .map_err(|e| AcmeError::Database(e.to_string()))?;
 
-    // Fetch authz IDs within the same transaction to avoid a separate round-trip.
-    let authz_id_rows: Vec<(String,)> =
-        sqlx::query_as("SELECT id FROM authorizations WHERE order_id = ?")
-            .bind(&id)
-            .fetch_all(&mut *tx)
+        sqlx::query(
+            "UPDATE orders SET status = 'valid', certificate_id = ?1, updated = ?2 WHERE id = ?3",
+        )
+        .bind(&cert_id)
+        .bind(now)
+        .bind(&order_id_clone)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AcmeError::Database(e.to_string()))?;
+
+        // Mark predecessor certificate as replaced (RFC 9773 §5).
+        // WHERE replaced_by IS NULL ensures a concurrent replacement produces 0 rows.
+        let pred_already_replaced = if let Some(ref pred_uuid) = pred_cert_uuid {
+            let result = sqlx::query(
+                "UPDATE certificates SET replaced_by = ?1 \
+                 WHERE id = ?2 AND replaced_by IS NULL",
+            )
+            .bind(&order_id_clone)
+            .bind(pred_uuid)
+            .execute(&mut *tx)
             .await
-            .map_err(AcmeError::from)?;
-    let authz_ids: Vec<String> = authz_id_rows.into_iter().map(|(aid,)| aid).collect();
+            .map_err(|e| AcmeError::Database(e.to_string()))?;
+            result.rows_affected() == 0
+        } else {
+            false
+        };
 
-    tx.commit().await.map_err(AcmeError::from)?;
+        // Fetch authz IDs within the same transaction.
+        let ids: Vec<(String,)> =
+            sqlx::query_as("SELECT id FROM authorizations WHERE order_id = ?1")
+                .bind(&order_id_clone)
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(|e| AcmeError::Database(e.to_string()))?;
 
-    let (authz_ids, pred_already_replaced) = (authz_ids, pred_already_replaced);
+        tx.commit()
+            .await
+            .map_err(|e| AcmeError::Database(e.to_string()))?;
+
+        (ids.into_iter().map(|(id,)| id).collect(), pred_already_replaced)
+    };
+    // All work using `conn` is done; drop it now so subsequent acquire() calls in
+    // this handler (STAR CSR storage) and in spawned tasks (MTC logging) don't deadlock
+    // against the in-memory Mutex<SqliteConnection>.
+    drop(conn);
 
     // RFC 9773 §5: return 409 alreadyReplaced if another order concurrently
     // replaced the same predecessor certificate during this finalization.
@@ -246,12 +258,25 @@ pub async fn finalize_order(
             tokio::spawn(async move {
                 match crate::mtc::log::append_cert_to_log(&log, cert_der, algorithm).await {
                     Ok(index) => {
-                        if let Err(e) =
-                            db::certs::set_mtc_log_index(&db, &cert_id, index as i64).await
-                        {
-                            tracing::warn!(
-                                "cert {cert_id}: MTC log index {index} not saved to DB: {e}"
-                            );
+                        match db.acquire().await {
+                            Ok(mut c) => {
+                                if let Err(e) = db::certs::set_mtc_log_index(
+                                    &mut *c,
+                                    &cert_id,
+                                    index as i64,
+                                )
+                                .await
+                                {
+                                    tracing::warn!(
+                                        "cert {cert_id}: MTC log index {index} not saved to DB: {e}"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "cert {cert_id}: db acquire for MTC index failed: {e}"
+                                );
+                            }
                         }
                     }
                     Err(e) => {
@@ -264,8 +289,15 @@ pub async fn finalize_order(
 
     // For STAR orders, persist the CSR DER so the background task can reissue.
     if order.star_end_date.is_some() {
-        if let Err(e) = db::orders::set_star_csr(&state.db, &id, csr_der.clone()).await {
-            tracing::warn!("STAR order {id}: failed to store CSR DER: {e}");
+        match state.db.acquire().await {
+            Ok(mut c) => {
+                if let Err(e) = db::orders::set_star_csr(&mut *c, &id, csr_der.clone()).await {
+                    tracing::warn!("STAR order {id}: failed to store CSR DER: {e}");
+                }
+            }
+            Err(e) => {
+                tracing::warn!("STAR order {id}: db acquire for CSR DER failed: {e}");
+            }
         }
     }
 

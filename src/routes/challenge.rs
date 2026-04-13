@@ -34,10 +34,12 @@ pub async fn respond_challenge(
     // Load the authorization and its challenges, and atomically mark the target
     // challenge as "processing" — all in one db.call instead of two.
     let now = unix_now();
+    let mut conn = state.db.acquire().await?;
     let (authz, challenges) =
-        db::authz::get_with_challenges_mark_processing(&state.db, &authz_id, &chall_type, now)
+        db::authz::get_with_challenges_mark_processing(&mut *conn, &authz_id, &chall_type, now)
             .await?
             .ok_or(AcmeError::NotFound)?;
+    drop(conn);
     if authz.account_id != account_id {
         return Err(AcmeError::Unauthorized(
             "authorization belongs to different account".into(),

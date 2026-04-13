@@ -30,7 +30,8 @@ pub async fn star_cert_get(
     }
 
     // Check order exists and has allow_certificate_get enabled.
-    let order = db::orders::get_by_id(&state.db, &order_id)
+    let mut conn = state.db.acquire().await?;
+    let order = db::orders::get_by_id(&mut *conn, &order_id)
         .await?
         .ok_or(AcmeError::NotFound)?;
 
@@ -39,6 +40,7 @@ pub async fn star_cert_get(
             "unauthenticated GET not allowed for this STAR order".into(),
         ));
     }
+    drop(conn);
     serve_star_cert(&state, &order).await
 }
 
@@ -62,7 +64,8 @@ pub async fn star_cert_post(
         .account_id
         .ok_or_else(|| AcmeError::Unauthorized("kid required".into()))?;
 
-    let order = db::orders::get_by_id(&state.db, &order_id)
+    let mut conn = state.db.acquire().await?;
+    let order = db::orders::get_by_id(&mut *conn, &order_id)
         .await?
         .ok_or(AcmeError::NotFound)?;
 
@@ -71,7 +74,7 @@ pub async fn star_cert_post(
             "order belongs to a different account".into(),
         ));
     }
-
+    drop(conn);
     serve_star_cert(&state, &order).await
 }
 
@@ -94,19 +97,20 @@ async fn serve_star_cert(
 
     // Find the most recent certificate for this order.
     let now = unix_now();
+    let mut conn = state.db.acquire().await?;
     let cert = sqlx::query_as::<_, crate::db::schema::CertificateRow>(
         "SELECT id, order_id, account_id, serial_number, status, der, pem,
          not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
          suggested_window_start, suggested_window_end, replaced_by
          FROM certificates
-         WHERE order_id = ?
+         WHERE order_id = ?1
          ORDER BY created DESC
          LIMIT 1",
     )
     .bind(&order.id)
-    .fetch_optional(&state.db)
+    .fetch_optional(&mut *conn)
     .await
-    .map_err(AcmeError::from)?
+    .map_err(|e| AcmeError::Database(e.to_string()))?
     .ok_or(AcmeError::NotFound)?;
 
     // Check if the STAR period is still active.

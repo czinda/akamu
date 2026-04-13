@@ -7,65 +7,108 @@ pub mod nonces;
 pub mod orders;
 pub mod schema;
 
+use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
-use sqlx::SqlitePool;
+use sqlx::{SqliteConnection, SqlitePool};
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::error::AcmeError;
 
-/// Type alias for the shared SQLite connection pool.
-pub type Db = sqlx::SqlitePool;
+/// Unified database handle.
+#[derive(Clone)]
+pub struct Db(DbInner);
 
-/// Initialise the database connection pool and run pending migrations.
-///
-/// # Connection pool sizing
-///
-/// SQLite serialises all writes, so for write-heavy workloads the practical
-/// concurrency is determined by how fast SQLite can process writes, not by the
-/// number of connections.  `max_connections(1)` is used for `:memory:` databases
-/// because each connection would otherwise see its own private empty database.
-/// For file-backed databases, WAL mode is enabled so readers do not block
-/// writers; a small pool (`max_connections(4)`) lets multiple readers proceed
-/// concurrently while writes still queue through SQLite's internal lock, with
-/// `busy_timeout` preventing immediate SQLITE_BUSY errors under contention.
+#[derive(Clone)]
+enum DbInner {
+    /// In-memory: one connection behind an async Tokio mutex.
+    /// Mutex lock ≈ 100 ns; 400× cheaper than pool-semaphore acquire.
+    Memory(Arc<Mutex<SqliteConnection>>),
+    /// File-backed: WAL-mode pool, multiple concurrent readers.
+    Pool(SqlitePool),
+}
+
+/// An acquired database connection.  Derefs to `&mut SqliteConnection`.
+/// Drop to release back to the pool / unlock the mutex.
+pub struct OwnedConn(OwnedConnInner);
+
+enum OwnedConnInner {
+    Memory(OwnedMutexGuard<SqliteConnection>),
+    Pool(sqlx::pool::PoolConnection<sqlx::Sqlite>),
+}
+
+impl Deref for OwnedConn {
+    type Target = SqliteConnection;
+    fn deref(&self) -> &Self::Target {
+        match &self.0 {
+            OwnedConnInner::Memory(g) => g.deref(),
+            OwnedConnInner::Pool(c) => c.deref(),
+        }
+    }
+}
+
+impl DerefMut for OwnedConn {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match &mut self.0 {
+            OwnedConnInner::Memory(g) => g.deref_mut(),
+            OwnedConnInner::Pool(c) => c.deref_mut(),
+        }
+    }
+}
+
+impl Db {
+    /// Acquire a connection.  For in-memory databases this locks the mutex;
+    /// for file-backed databases this borrows one connection from the pool.
+    pub async fn acquire(&self) -> Result<OwnedConn, AcmeError> {
+        match &self.0 {
+            DbInner::Memory(m) => Ok(OwnedConn(OwnedConnInner::Memory(
+                Arc::clone(m).lock_owned().await,
+            ))),
+            DbInner::Pool(p) => Ok(OwnedConn(OwnedConnInner::Pool(
+                p.acquire().await.map_err(|e| AcmeError::Database(e.to_string()))?,
+            ))),
+        }
+    }
+}
+
 pub async fn open(path: &str) -> Result<Db, AcmeError> {
-    let pool = if path == ":memory:" {
-        // In-memory databases require max_connections(1): every SQLite in-memory
-        // connection opens its own private database, so a pool with N > 1
-        // connections would produce N independent empty databases.
+    if path == ":memory:" {
         let opts = SqliteConnectOptions::new()
             .filename(":memory:")
             .foreign_keys(true);
-        SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(opts)
+        use sqlx::Connection as _;
+        let mut conn = SqliteConnection::connect_with(&opts)
             .await
-            .map_err(|e| AcmeError::Database(format!("open in-memory database: {}", e)))?
+            .map_err(|e| AcmeError::Database(format!("open in-memory database: {}", e)))?;
+        sqlx::migrate::Migrator::new(std::path::Path::new("./migrations"))
+            .await
+            .map_err(|e| AcmeError::Database(format!("migration source: {}", e)))?
+            .run(&mut conn)
+            .await
+            .map_err(|e| AcmeError::Database(format!("migration failed: {}", e)))?;
+        Ok(Db(DbInner::Memory(Arc::new(Mutex::new(conn)))))
     } else {
-        // File-backed database: WAL mode allows concurrent readers while writes
-        // are serialised; busy_timeout makes writers queue rather than error.
         let opts = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
             .foreign_keys(true)
             .journal_mode(SqliteJournalMode::Wal)
             .busy_timeout(Duration::from_secs(5));
-        SqlitePoolOptions::new()
+        let pool = SqlitePoolOptions::new()
             .max_connections(4)
             .connect_with(opts)
             .await
-            .map_err(|e| AcmeError::Database(format!("open database '{}': {}", path, e)))?
-    };
-
-    sqlx::migrate::Migrator::new(std::path::Path::new("./migrations"))
-        .await
-        .map_err(|e| AcmeError::Database(format!("migration source: {}", e)))?
-        .run(&pool)
-        .await
-        .map_err(|e| AcmeError::Database(format!("migration failed: {}", e)))?;
-
-    Ok(pool)
+            .map_err(|e| AcmeError::Database(format!("open database '{}': {}", path, e)))?;
+        sqlx::migrate::Migrator::new(std::path::Path::new("./migrations"))
+            .await
+            .map_err(|e| AcmeError::Database(format!("migration source: {}", e)))?
+            .run(&pool)
+            .await
+            .map_err(|e| AcmeError::Database(format!("migration failed: {}", e)))?;
+        Ok(Db(DbInner::Pool(pool)))
+    }
 }
 
 #[cfg(test)]
@@ -74,10 +117,10 @@ mod tests {
 
     #[tokio::test]
     async fn open_in_memory_succeeds() {
-        let pool = open(":memory:").await.unwrap();
-        // Basic sanity: can issue a query.
+        let db = open(":memory:").await.unwrap();
+        let mut conn = db.acquire().await.unwrap();
         let row: (i64,) = sqlx::query_as("SELECT 1")
-            .fetch_one(&pool)
+            .fetch_one(&mut *conn)
             .await
             .unwrap();
         assert_eq!(row.0, 1);
@@ -87,13 +130,12 @@ mod tests {
     async fn open_file_path_creates_and_migrates() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db").to_string_lossy().into_owned();
-        // Opens a real file — covers the file-path branch.
-        let pool = open(&path).await.unwrap();
-        // Verify the schema was created by checking that the accounts table exists.
+        let db = open(&path).await.unwrap();
+        let mut conn = db.acquire().await.unwrap();
         let row: (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='accounts'",
         )
-        .fetch_one(&pool)
+        .fetch_one(&mut *conn)
         .await
         .unwrap();
         assert_eq!(row.0, 1);

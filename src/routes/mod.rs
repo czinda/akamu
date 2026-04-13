@@ -124,13 +124,20 @@ pub(crate) async fn parse_jws(
         )));
     }
 
+    // Acquire one connection for the nonce + optional account lookup.
+    let mut conn = state
+        .db
+        .acquire()
+        .await
+        .map_err(|e| AcmeError::Internal(format!("db acquire: {e}")))?;
+
     // Generate the response nonce and consume the incoming nonce atomically in
-    // one DB call — saves one channel round-trip compared to separate consume + insert.
+    // one DB transaction — saves one round-trip compared to separate consume + insert.
     let mut nonce_bytes = [0u8; 16];
     getrandom::getrandom(&mut nonce_bytes)
         .map_err(|e| AcmeError::Internal(format!("nonce rng: {e}")))?;
     let next_nonce = URL_SAFE_NO_PAD.encode(nonce_bytes);
-    let nonce_valid = db::nonces::consume_and_insert(&state.db, &header.nonce, &next_nonce)
+    let nonce_valid = db::nonces::consume_and_insert(&mut *conn, &header.nonce, &next_nonce)
         .await
         .map_err(|e| AcmeError::Internal(format!("nonce check: {e}")))?;
     if !nonce_valid {
@@ -156,7 +163,7 @@ pub(crate) async fn parse_jws(
                 }
                 acc
             } else {
-                let account = db::accounts::get_by_id(&state.db, &id)
+                let account = db::accounts::get_by_id(&mut *conn, &id)
                     .await?
                     .ok_or_else(|| AcmeError::Unauthorized("account not found".into()))?;
                 if account.status != "valid" {
@@ -203,7 +210,8 @@ pub(crate) async fn new_nonce(state: &AppState) -> Result<String, AcmeError> {
     let mut bytes = [0u8; 16];
     getrandom::getrandom(&mut bytes).map_err(|e| AcmeError::Internal(format!("nonce rng: {e}")))?;
     let nonce = URL_SAFE_NO_PAD.encode(bytes);
-    db::nonces::insert(&state.db, &nonce).await?;
+    let mut conn = state.db.acquire().await?;
+    db::nonces::insert(&mut *conn, &nonce).await?;
     Ok(nonce)
 }
 

@@ -1,11 +1,12 @@
+use sqlx::SqliteConnection;
+
 use crate::db::schema::ChallengeRow;
-use crate::db::Db;
 use crate::error::AcmeError;
 
-pub async fn insert(db: &Db, row: ChallengeRow) -> Result<(), AcmeError> {
+pub async fn insert(conn: &mut SqliteConnection, row: ChallengeRow) -> Result<(), AcmeError> {
     sqlx::query(
         "INSERT INTO challenges (id, authz_id, type, status, token, validated, error, created, updated)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
     )
     .bind(&row.id)
     .bind(&row.authz_id)
@@ -16,81 +17,105 @@ pub async fn insert(db: &Db, row: ChallengeRow) -> Result<(), AcmeError> {
     .bind(&row.error)
     .bind(row.created)
     .bind(row.updated)
-    .execute(db)
-    .await?;
+    .execute(&mut *conn)
+    .await
+    .map_err(|e| AcmeError::Database(e.to_string()))?;
     Ok(())
 }
 
-pub async fn get_by_id(db: &Db, id: &str) -> Result<Option<ChallengeRow>, AcmeError> {
+pub async fn get_by_id(
+    conn: &mut SqliteConnection,
+    id: &str,
+) -> Result<Option<ChallengeRow>, AcmeError> {
     let row = sqlx::query_as::<_, ChallengeRow>(
         "SELECT id, authz_id, type, status, token, validated, error, created, updated
-         FROM challenges WHERE id = ?",
+         FROM challenges WHERE id = ?1",
     )
     .bind(id)
-    .fetch_optional(db)
-    .await?;
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(|e| AcmeError::Database(e.to_string()))?;
     Ok(row)
 }
 
-pub async fn list_by_authz(db: &Db, authz_id: &str) -> Result<Vec<ChallengeRow>, AcmeError> {
+pub async fn list_by_authz(
+    conn: &mut SqliteConnection,
+    authz_id: &str,
+) -> Result<Vec<ChallengeRow>, AcmeError> {
     let rows = sqlx::query_as::<_, ChallengeRow>(
         "SELECT id, authz_id, type, status, token, validated, error, created, updated
-         FROM challenges WHERE authz_id = ?",
+         FROM challenges WHERE authz_id = ?1",
     )
     .bind(authz_id)
-    .fetch_all(db)
-    .await?;
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|e| AcmeError::Database(e.to_string()))?;
     Ok(rows)
 }
 
-pub async fn set_processing(db: &Db, id: &str, now: i64) -> Result<(), AcmeError> {
+pub async fn set_processing(
+    conn: &mut SqliteConnection,
+    id: &str,
+    now: i64,
+) -> Result<(), AcmeError> {
     sqlx::query(
-        "UPDATE challenges SET status = 'processing', updated = ? WHERE id = ?",
+        "UPDATE challenges SET status = 'processing', updated = ?1 WHERE id = ?2",
     )
     .bind(now)
     .bind(id)
-    .execute(db)
-    .await?;
+    .execute(&mut *conn)
+    .await
+    .map_err(|e| AcmeError::Database(e.to_string()))?;
     Ok(())
 }
 
-pub async fn set_valid(db: &Db, id: &str, validated: i64) -> Result<(), AcmeError> {
+pub async fn set_valid(
+    conn: &mut SqliteConnection,
+    id: &str,
+    validated: i64,
+) -> Result<(), AcmeError> {
     sqlx::query(
-        "UPDATE challenges SET status = 'valid', validated = ?, updated = ? WHERE id = ?",
+        "UPDATE challenges SET status = 'valid', validated = ?1, updated = ?1 WHERE id = ?2",
     )
-    .bind(validated)
     .bind(validated)
     .bind(id)
-    .execute(db)
-    .await?;
+    .execute(&mut *conn)
+    .await
+    .map_err(|e| AcmeError::Database(e.to_string()))?;
     Ok(())
 }
 
-/// Return the challenge type (`"http-01"`, `"dns-01"`, etc.) of the single
-/// validated challenge for an authorization, or `None` if no challenge is
-/// in the `"valid"` state yet.
-///
-/// Used by the finalize handler to supply a real challenge type to the CAA
-/// `validationmethods` check (RFC 8657).
-pub async fn get_validated_type(db: &Db, authz_id: &str) -> Result<Option<String>, AcmeError> {
+/// Return the challenge type of the single validated challenge for an
+/// authorization, or `None` if no challenge is in the `"valid"` state yet.
+pub async fn get_validated_type(
+    conn: &mut SqliteConnection,
+    authz_id: &str,
+) -> Result<Option<String>, AcmeError> {
     let row: Option<(String,)> = sqlx::query_as(
-        "SELECT type FROM challenges WHERE authz_id = ? AND status = 'valid' LIMIT 1",
+        "SELECT type FROM challenges WHERE authz_id = ?1 AND status = 'valid' LIMIT 1",
     )
     .bind(authz_id)
-    .fetch_optional(db)
-    .await?;
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(|e| AcmeError::Database(e.to_string()))?;
     Ok(row.map(|(t,)| t))
 }
 
-pub async fn set_invalid(db: &Db, id: &str, error: String, now: i64) -> Result<(), AcmeError> {
+pub async fn set_invalid(
+    conn: &mut SqliteConnection,
+    id: &str,
+    error: String,
+    now: i64,
+) -> Result<(), AcmeError> {
     sqlx::query(
-        "UPDATE challenges SET status = 'invalid', error = ?, updated = ? WHERE id = ?",
+        "UPDATE challenges SET status = 'invalid', error = ?1, updated = ?2 WHERE id = ?3",
     )
     .bind(&error)
     .bind(now)
     .bind(id)
-    .execute(db)
-    .await?;
+    .execute(&mut *conn)
+    .await
+    .map_err(|e| AcmeError::Database(e.to_string()))?;
     Ok(())
 }
 
@@ -100,13 +125,19 @@ mod tests {
 
     use crate::db::schema::{AccountRow, AuthorizationRow, OrderRow};
 
-    async fn open_db() -> Db {
+    async fn open_db() -> crate::db::Db {
         crate::db::open(":memory:").await.unwrap()
     }
 
-    async fn insert_parents(db: &Db, account_id: &str, order_id: &str, authz_id: &str) {
+    macro_rules! conn {
+        ($db:expr) => {
+            &mut *$db.acquire().await.unwrap()
+        };
+    }
+
+    async fn insert_parents(db: &crate::db::Db, account_id: &str, order_id: &str, authz_id: &str) {
         crate::db::accounts::insert(
-            db,
+            conn!(db),
             AccountRow {
                 id: account_id.to_string(),
                 status: "valid".to_string(),
@@ -121,7 +152,7 @@ mod tests {
         .unwrap();
 
         crate::db::orders::insert(
-            db,
+            conn!(db),
             OrderRow {
                 id: order_id.to_string(),
                 account_id: account_id.to_string(),
@@ -149,7 +180,7 @@ mod tests {
         .unwrap();
 
         crate::db::authz::insert(
-            db,
+            conn!(db),
             AuthorizationRow {
                 id: authz_id.to_string(),
                 order_id: order_id.to_string(),
@@ -182,14 +213,14 @@ mod tests {
     }
 
     async fn insert_challenge(
-        db: &Db,
+        db: &crate::db::Db,
         id: &str,
         account_id: &str,
         order_id: &str,
         authz_id: &str,
     ) {
         insert_parents(db, account_id, order_id, authz_id).await;
-        insert(db, sample_challenge(id, authz_id)).await.unwrap();
+        insert(conn!(db), sample_challenge(id, authz_id)).await.unwrap();
     }
 
     #[tokio::test]
@@ -197,7 +228,7 @@ mod tests {
         let db = open_db().await;
         insert_challenge(&db, "chall-1", "acct-1", "order-1", "authz-1").await;
 
-        let row = get_by_id(&db, "chall-1").await.unwrap().unwrap();
+        let row = get_by_id(conn!(db), "chall-1").await.unwrap().unwrap();
         assert_eq!(row.id, "chall-1");
         assert_eq!(row.status, "pending");
         assert_eq!(row.r#type, "http-01");
@@ -206,7 +237,7 @@ mod tests {
     #[tokio::test]
     async fn get_by_id_missing_returns_none() {
         let db = open_db().await;
-        let result = get_by_id(&db, "nonexistent").await.unwrap();
+        let result = get_by_id(conn!(db), "nonexistent").await.unwrap();
         assert!(result.is_none());
     }
 
@@ -214,11 +245,11 @@ mod tests {
     async fn list_by_authz_returns_challenges() {
         let db = open_db().await;
         insert_parents(&db, "acct-2", "order-2", "authz-2").await;
-        insert(&db, sample_challenge("chall-2a", "authz-2"))
+        insert(conn!(db), sample_challenge("chall-2a", "authz-2"))
             .await
             .unwrap();
         insert(
-            &db,
+            conn!(db),
             ChallengeRow {
                 id: "chall-2b".to_string(),
                 authz_id: "authz-2".to_string(),
@@ -234,7 +265,7 @@ mod tests {
         .await
         .unwrap();
 
-        let challenges = list_by_authz(&db, "authz-2").await.unwrap();
+        let challenges = list_by_authz(conn!(db), "authz-2").await.unwrap();
         assert_eq!(challenges.len(), 2);
         let types: Vec<_> = challenges.iter().map(|c| c.r#type.as_str()).collect();
         assert!(types.contains(&"http-01"));
@@ -246,7 +277,7 @@ mod tests {
         let db = open_db().await;
         insert_parents(&db, "acct-3", "order-3", "authz-3").await;
 
-        let challenges = list_by_authz(&db, "authz-3").await.unwrap();
+        let challenges = list_by_authz(conn!(db), "authz-3").await.unwrap();
         assert!(challenges.is_empty());
     }
 
@@ -255,9 +286,9 @@ mod tests {
         let db = open_db().await;
         insert_challenge(&db, "chall-4", "acct-4", "order-4", "authz-4").await;
 
-        set_processing(&db, "chall-4", 1_700_000_001).await.unwrap();
+        set_processing(conn!(db), "chall-4", 1_700_000_001).await.unwrap();
 
-        let row = get_by_id(&db, "chall-4").await.unwrap().unwrap();
+        let row = get_by_id(conn!(db), "chall-4").await.unwrap().unwrap();
         assert_eq!(row.status, "processing");
         assert_eq!(row.updated, 1_700_000_001);
     }
@@ -267,9 +298,9 @@ mod tests {
         let db = open_db().await;
         insert_challenge(&db, "chall-5", "acct-5", "order-5", "authz-5").await;
 
-        set_valid(&db, "chall-5", 1_700_000_002).await.unwrap();
+        set_valid(conn!(db), "chall-5", 1_700_000_002).await.unwrap();
 
-        let row = get_by_id(&db, "chall-5").await.unwrap().unwrap();
+        let row = get_by_id(conn!(db), "chall-5").await.unwrap().unwrap();
         assert_eq!(row.status, "valid");
         assert_eq!(row.validated, Some(1_700_000_002));
     }
@@ -280,7 +311,7 @@ mod tests {
         insert_challenge(&db, "chall-6", "acct-6", "order-6", "authz-6").await;
 
         set_invalid(
-            &db,
+            conn!(db),
             "chall-6",
             "{\"type\":\"connection\"}".into(),
             1_700_000_003,
@@ -288,7 +319,7 @@ mod tests {
         .await
         .unwrap();
 
-        let row = get_by_id(&db, "chall-6").await.unwrap().unwrap();
+        let row = get_by_id(conn!(db), "chall-6").await.unwrap().unwrap();
         assert_eq!(row.status, "invalid");
         assert_eq!(row.error, Some("{\"type\":\"connection\"}".to_string()));
     }
@@ -298,7 +329,7 @@ mod tests {
         let db = open_db().await;
         insert_challenge(&db, "chall-v1", "acct-v1", "order-v1", "authz-v1").await;
         // Challenge is still "pending" — no valid type yet.
-        let result = get_validated_type(&db, "authz-v1").await.unwrap();
+        let result = get_validated_type(conn!(db), "authz-v1").await.unwrap();
         assert!(result.is_none());
     }
 
@@ -307,7 +338,7 @@ mod tests {
         let db = open_db().await;
         insert_parents(&db, "acct-v2", "order-v2", "authz-v2").await;
         insert(
-            &db,
+            conn!(db),
             ChallengeRow {
                 id: "chall-v2".to_string(),
                 authz_id: "authz-v2".to_string(),
@@ -322,35 +353,30 @@ mod tests {
         )
         .await
         .unwrap();
-        set_valid(&db, "chall-v2", 1_700_000_099).await.unwrap();
-        let result = get_validated_type(&db, "authz-v2").await.unwrap();
+        set_valid(conn!(db), "chall-v2", 1_700_000_099).await.unwrap();
+        let result = get_validated_type(conn!(db), "authz-v2").await.unwrap();
         assert_eq!(result, Some("dns-01".to_string()));
     }
 
     #[tokio::test]
     async fn get_validated_type_no_such_authz_returns_none() {
         let db = open_db().await;
-        let result = get_validated_type(&db, "nonexistent-authz").await.unwrap();
+        let result = get_validated_type(conn!(db), "nonexistent-authz").await.unwrap();
         assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn db_error_paths_no_table() {
-        use sqlx::sqlite::SqliteConnectOptions;
-        use sqlx::sqlite::SqlitePoolOptions;
-
-        let raw: Db = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(SqliteConnectOptions::new().in_memory(true))
-            .await
-            .unwrap();
-        assert!(insert(&raw, sample_challenge("err-chall", "err-authz"))
+        use sqlx::Connection as _;
+        let mut raw: sqlx::SqliteConnection =
+            sqlx::SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        assert!(insert(&mut raw, sample_challenge("err-chall", "err-authz"))
             .await
             .is_err());
-        assert!(get_by_id(&raw, "any").await.is_err());
-        assert!(list_by_authz(&raw, "any").await.is_err());
-        assert!(set_processing(&raw, "any", 0).await.is_err());
-        assert!(set_valid(&raw, "any", 0).await.is_err());
-        assert!(set_invalid(&raw, "any", "{}".into(), 0).await.is_err());
+        assert!(get_by_id(&mut raw, "any").await.is_err());
+        assert!(list_by_authz(&mut raw, "any").await.is_err());
+        assert!(set_processing(&mut raw, "any", 0).await.is_err());
+        assert!(set_valid(&mut raw, "any", 0).await.is_err());
+        assert!(set_invalid(&mut raw, "any", "{}".into(), 0).await.is_err());
     }
 }

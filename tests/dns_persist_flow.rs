@@ -178,7 +178,7 @@ async fn build_state(
     let db_conn = db::open(":memory:").await.unwrap();
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
-        db: db_conn.clone(),
+        db: db_conn,
         ca: Arc::new(CaState {
             key: ca_key,
             cert_der: ca_cert_der,

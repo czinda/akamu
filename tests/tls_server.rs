@@ -34,6 +34,9 @@ use akamu::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig, T
 use akamu::state::{AppState, CaState, MtcState};
 use akamu::{ca, db, routes, tls};
 
+#[allow(unused_imports)]
+use sqlx::Connection as _;
+
 // ── Tracing initialisation ────────────────────────────────────────────────────
 
 /// Initialise the global tracing subscriber for test output.
@@ -356,7 +359,7 @@ struct TlsTestServer {
     base_url: String,
     /// CA certificate DER — used to build the client trust store.
     ca_der: Vec<u8>,
-    /// Database connection — used to bypass challenge validation in tests.
+    /// Database handle — used to bypass challenge validation in tests.
     db: akamu::db::Db,
     /// tokio task handle — abort on drop to free the port.
     handle: tokio::task::JoinHandle<()>,
@@ -493,7 +496,7 @@ async fn start_tls_server() -> TlsTestServer {
         addr,
         base_url,
         ca_der: ca_cert_der,
-        db: db_conn.clone(),
+        db: db_conn,
         handle,
         _dir: dir,
     }
@@ -504,31 +507,31 @@ async fn start_tls_server() -> TlsTestServer {
 /// Mark all challenges and authorizations for an order as `valid` and
 /// advance the order status to `ready`, bypassing actual challenge validation.
 async fn mark_order_ready(db: &akamu::db::Db, order_id: &str) {
-    let authz_ids: Vec<(String,)> =
-        sqlx::query_as("SELECT id FROM authorizations WHERE order_id = ?")
-            .bind(order_id)
-            .fetch_all(db)
-            .await
-            .unwrap();
-    for (aid,) in &authz_ids {
+    let mut conn = db.acquire().await.unwrap();
+    let authz_ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM authorizations WHERE order_id = ?1")
+        .bind(order_id)
+        .fetch_all(&mut *conn)
+        .await
+        .unwrap();
+    for (authz_id,) in &authz_ids {
         sqlx::query(
-            "UPDATE challenges SET status='valid', validated=1700000000 WHERE authz_id = ?",
+            "UPDATE challenges SET status='valid', validated=1700000000 WHERE authz_id = ?1",
         )
-        .bind(aid)
-        .execute(db)
+        .bind(authz_id)
+        .execute(&mut *conn)
         .await
         .unwrap();
         sqlx::query(
-            "UPDATE authorizations SET status='valid', updated=1700000000 WHERE id = ?",
+            "UPDATE authorizations SET status='valid', updated=1700000000 WHERE id = ?1",
         )
-        .bind(aid)
-        .execute(db)
+        .bind(authz_id)
+        .execute(&mut *conn)
         .await
         .unwrap();
     }
-    sqlx::query("UPDATE orders SET status='ready', updated=1700000000 WHERE id = ?")
+    sqlx::query("UPDATE orders SET status='ready', updated=1700000000 WHERE id = ?1")
         .bind(order_id)
-        .execute(db)
+        .execute(&mut *conn)
         .await
         .unwrap();
 }

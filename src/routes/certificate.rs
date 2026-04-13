@@ -51,7 +51,8 @@ pub async fn download_cert_post(
         .account_id
         .ok_or_else(|| AcmeError::Unauthorized("kid required".into()))?;
 
-    let cert = db::certs::get_by_id(&state.db, &id)
+    let mut conn = state.db.acquire().await?;
+    let cert = db::certs::get_by_id(&mut *conn, &id)
         .await?
         .ok_or(AcmeError::NotFound)?;
 
@@ -60,12 +61,20 @@ pub async fn download_cert_post(
             "certificate belongs to a different account".into(),
         ));
     }
-
-    serve_cert_pem(&state, &id).await
+    // Use the already-fetched cert directly; calling serve_cert_pem would deadlock
+    // because conn still holds the mutex and serve_cert_pem also calls acquire().
+    drop(conn);
+    let mut resp = (StatusCode::OK, cert.pem.into_bytes()).into_response();
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        HeaderValue::from_static("application/pem-certificate-chain"),
+    );
+    Ok(resp)
 }
 
 async fn serve_cert_pem(state: &AppState, id: &str) -> Result<Response, AcmeError> {
-    let cert = db::certs::get_by_id(&state.db, id)
+    let mut conn = state.db.acquire().await?;
+    let cert = db::certs::get_by_id(&mut *conn, id)
         .await?
         .ok_or(AcmeError::NotFound)?;
 

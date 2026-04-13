@@ -24,6 +24,9 @@ use akamu::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
 use akamu::state::{AppState, CaState, MtcState};
 use akamu::{ca, db, routes};
 
+// sqlx re-export for test DB helpers.
+use sqlx::Connection as _;
+
 // ── ACME test client ──────────────────────────────────────────────────────────
 
 /// Wraps an EC P-256 key pair and provides helpers for building JWS requests.
@@ -328,35 +331,85 @@ fn location_header(headers: &axum::http::HeaderMap) -> String {
 /// Mark all challenges and authorizations for an order as `valid` and
 /// update the order status to `ready`, bypassing actual challenge validation.
 async fn mark_order_ready(db: &akamu::db::Db, order_id: &str) {
-    let authz_ids: Vec<(String,)> =
-        sqlx::query_as("SELECT id FROM authorizations WHERE order_id = ?")
-            .bind(order_id)
-            .fetch_all(db)
-            .await
-            .unwrap();
-
-    for (authz_id,) in &authz_ids {
-        sqlx::query(
-            "UPDATE challenges SET status='valid', validated=1700000000 WHERE authz_id = ?",
-        )
-        .bind(authz_id)
-        .execute(db)
+    let mut conn = db.acquire().await.unwrap();
+    // Collect authorization IDs for this order.
+    let authz_ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM authorizations WHERE order_id = ?1")
+        .bind(order_id)
+        .fetch_all(&mut *conn)
         .await
         .unwrap();
+
+    for (authz_id,) in &authz_ids {
+        // Mark all challenges for this authz as valid.
         sqlx::query(
-            "UPDATE authorizations SET status='valid', updated=1700000000 WHERE id = ?",
+            "UPDATE challenges SET status='valid', validated=1700000000 WHERE authz_id = ?1",
         )
         .bind(authz_id)
-        .execute(db)
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        // Mark the authz itself as valid.
+        sqlx::query(
+            "UPDATE authorizations SET status='valid', updated=1700000000 WHERE id = ?1",
+        )
+        .bind(authz_id)
+        .execute(&mut *conn)
         .await
         .unwrap();
     }
 
-    sqlx::query("UPDATE orders SET status='ready', updated=1700000000 WHERE id = ?")
+    // Advance order to ready.
+    sqlx::query("UPDATE orders SET status='ready', updated=1700000000 WHERE id = ?1")
         .bind(order_id)
-        .execute(db)
+        .execute(&mut *conn)
         .await
         .unwrap();
+}
+
+// ── DB query helpers ──────────────────────────────────────────────────────────
+
+/// Fetch the most recently created order's `id` column.
+async fn latest_order_id(db: &akamu::db::Db) -> String {
+    let mut conn = db.acquire().await.unwrap();
+    let row: (String,) = sqlx::query_as("SELECT id FROM orders ORDER BY created DESC LIMIT 1")
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+    row.0
+}
+
+/// Fetch the most recently created certificate's `id` column.
+async fn latest_cert_id_db(db: &akamu::db::Db) -> String {
+    let mut conn = db.acquire().await.unwrap();
+    let row: (String,) = sqlx::query_as("SELECT id FROM certificates ORDER BY created DESC LIMIT 1")
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+    row.0
+}
+
+/// Fetch the most recently created certificate's `serial_number` column.
+async fn latest_cert_serial(db: &akamu::db::Db) -> String {
+    let mut conn = db.acquire().await.unwrap();
+    let row: (String,) = sqlx::query_as(
+        "SELECT serial_number FROM certificates ORDER BY created DESC LIMIT 1",
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    row.0
+}
+
+/// Fetch the most recently created certificate's `(id, serial_number)` columns.
+async fn latest_cert_id_and_serial(db: &akamu::db::Db) -> (String, String) {
+    let mut conn = db.acquire().await.unwrap();
+    let row: (String, String) = sqlx::query_as(
+        "SELECT id, serial_number FROM certificates ORDER BY created DESC LIMIT 1",
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    row
 }
 
 // ── ARI cert_id helper ────────────────────────────────────────────────────────
@@ -740,13 +793,7 @@ async fn test_renewal_info() {
     let nonce = nonce_header(&order_headers);
 
     // Get order_id from DB
-    let order_id: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap()
-    .0;
+    let order_id = latest_order_id(&db).await;
 
     mark_order_ready(&db, &order_id).await;
 
@@ -765,13 +812,7 @@ async fn test_renewal_info() {
     assert_eq!(status, StatusCode::OK, "finalize failed: {final_body}");
 
     // Get serial_number from DB and build RFC 9773 cert_id.
-    let serial_hex: String = sqlx::query_as::<_, (String,)>(
-        "SELECT serial_number FROM certificates ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap()
-    .0;
+    let serial_hex = latest_cert_serial(&db).await;
     let cert_id = cert_id_from_serial_hex(&serial_hex, &state.ca.aki_bytes);
 
     // GET /acme/renewal-info/{cert_id}
@@ -820,13 +861,7 @@ async fn test_renewal_info_explicit_window() {
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap()
-    .0;
+    let order_id = latest_order_id(&db).await;
 
     mark_order_ready(&db, &order_id).await;
 
@@ -844,20 +879,18 @@ async fn test_renewal_info_explicit_window() {
         post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
     assert_eq!(status, StatusCode::OK, "finalize failed: {final_body}");
 
-    let (cert_uuid, serial_hex): (String, String) = sqlx::query_as::<_, (String, String)>(
-        "SELECT id, serial_number FROM certificates ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap();
+    let (cert_uuid, serial_hex) = latest_cert_id_and_serial(&db).await;
     let cert_id = cert_id_from_serial_hex(&serial_hex, &state.ca.aki_bytes);
 
     // Set an explicit renewal window on this certificate.
     let window_start: i64 = 1_800_000_000; // 2027-01-15
     let window_end: i64 = 1_800_086_400; // 2027-01-16
-    db::certs::set_renewal_window(&db, &cert_uuid, window_start, window_end)
-        .await
-        .unwrap();
+    {
+        let mut conn = db.acquire().await.unwrap();
+        db::certs::set_renewal_window(&mut *conn, &cert_uuid, window_start, window_end)
+            .await
+            .unwrap();
+    }
 
     // GET /acme/renewal-info/{cert_id} — must use the explicit window, not the computed default.
     let (status, ari_body, _) = get(&router, &format!("/acme/renewal-info/{cert_id}")).await;
@@ -960,13 +993,7 @@ async fn issue_cert_for_domain(
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap()
-    .0;
+    let order_id = latest_order_id(&db).await;
     mark_order_ready(&db, &order_id).await;
 
     let csr_der = make_csr_der(domain);
@@ -1346,13 +1373,7 @@ async fn test_revoke_cert_success_with_owner_account() {
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap()
-    .0;
+    let order_id = latest_order_id(&db).await;
     mark_order_ready(&db, &order_id).await;
 
     let csr_der = make_csr_der("revoke-success.test");
@@ -1422,17 +1443,14 @@ async fn test_revoke_already_revoked_cert() {
     // First revoke must succeed; second must fail.
     // But we can't easily re-sign with the original account key from issue_cert_for_domain.
     // Workaround: use the DB to mark the cert as revoked directly, then try again.
-    let cert_id: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM certificates ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&state.db)
-    .await
-    .unwrap()
-    .0;
+    let cert_id = latest_cert_id_db(&state.db).await;
     // Directly revoke via DB.
-    akamu::db::certs::revoke(&state.db, &cert_id, Some(1), 1_700_000_000)
-        .await
-        .unwrap();
+    {
+        let mut conn = state.db.acquire().await.unwrap();
+        akamu::db::certs::revoke(&mut *conn, &cert_id, Some(1), 1_700_000_000)
+            .await
+            .unwrap();
+    }
 
     // Now try to revoke via HTTP using a JWK that doesn't own the cert (will hit AlreadyRevoked before Unauthorized).
     let key = TestKey::generate();
@@ -1617,13 +1635,7 @@ async fn test_get_order() {
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap()
-    .0;
+    let order_id = latest_order_id(&db).await;
 
     // POST-as-GET to get order status.
     let order_url = format!("{base_url}/acme/order/{order_id}");
@@ -1662,13 +1674,7 @@ async fn test_finalize_wrong_account() {
     );
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let _nonce = nonce_header(&order_headers);
-    let order_id: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap()
-    .0;
+    let order_id = latest_order_id(&db).await;
     mark_order_ready(&db, &order_id).await;
 
     // Create attacker account.
@@ -1727,13 +1733,7 @@ async fn test_finalize_order_not_ready() {
     );
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
-    let order_id: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap()
-    .0;
+    let order_id = latest_order_id(&db).await;
     // Do NOT call mark_order_ready → order stays in "pending" state.
 
     let csr_der = make_csr_der("not-ready.test");
@@ -2009,13 +2009,7 @@ async fn test_get_order_wrong_account() {
         Some(json!({"identifiers": [{"type": "dns", "value": "get-order-wrong.test"}]})),
     );
     let (_, _, _) = post_acme(&router, "/acme/new-order", jws).await;
-    let order_id: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap()
-    .0;
+    let order_id = latest_order_id(&db).await;
 
     // Attacker creates account and tries to GET the order.
     let attacker_key = TestKey::generate();
@@ -2055,13 +2049,16 @@ async fn test_authz_challenge_with_validated_timestamp() {
     let authz_id = authz_url.split('/').last().unwrap().to_string();
 
     // Set challenge to 'valid' with a validated timestamp.
-    sqlx::query(
-        "UPDATE challenges SET status='valid', validated=1700000000 WHERE authz_id=? AND type='http-01'",
-    )
-    .bind(&authz_id)
-    .execute(&db)
-    .await
-    .unwrap();
+    {
+        let mut conn = db.acquire().await.unwrap();
+        sqlx::query(
+            "UPDATE challenges SET status='valid', validated=1700000000 WHERE authz_id=?1 AND type='http-01'",
+        )
+        .bind(&authz_id)
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    }
 
     // GET the authz — response includes challenge with validated timestamp.
     let authz_path = authz_url.trim_start_matches(base_url).to_string();
@@ -2117,14 +2114,17 @@ async fn test_authz_challenge_with_error_field() {
 
     // Set challenge to 'invalid' with a JSON error string.
     let error_json = r#"{"type":"urn:ietf:params:acme:error:dns","detail":"DNS lookup failed"}"#;
-    sqlx::query(
-        "UPDATE challenges SET status='invalid', error=? WHERE authz_id=? AND type='http-01'",
-    )
-    .bind(error_json)
-    .bind(&authz_id)
-    .execute(&db)
-    .await
-    .unwrap();
+    {
+        let mut conn = db.acquire().await.unwrap();
+        sqlx::query(
+            "UPDATE challenges SET status='invalid', error=?1 WHERE authz_id=?2 AND type='http-01'",
+        )
+        .bind(error_json)
+        .bind(&authz_id)
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    }
 
     // GET the authz — response includes challenge error.
     let authz_path = authz_url.trim_start_matches(base_url).to_string();
@@ -2203,7 +2203,7 @@ async fn test_directory_with_optional_fields() {
     let db_conn = db::open(":memory:").await.unwrap();
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
-        db: db_conn.clone(),
+        db: db_conn,
         ca: Arc::new(akamu::state::CaState {
             key: ca_key,
             cert_der: ca_cert_der,
@@ -2336,11 +2336,14 @@ async fn test_challenge_authz_not_pending() {
     let authz_id = authz_url.split('/').last().unwrap().to_string();
 
     // Mark the authz as 'valid' to make it non-pending.
-    sqlx::query("UPDATE authorizations SET status='valid' WHERE id=?")
-        .bind(&authz_id)
-        .execute(&db)
-        .await
-        .unwrap();
+    {
+        let mut conn = db.acquire().await.unwrap();
+        sqlx::query("UPDATE authorizations SET status='valid' WHERE id=?1")
+            .bind(&authz_id)
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+    }
 
     let chall_url = format!("{base_url}/acme/chall/{authz_id}/http-01");
     let chall_path = format!("/acme/chall/{authz_id}/http-01");
@@ -2369,13 +2372,16 @@ async fn test_challenge_already_processing() {
     let authz_id = authz_url.split('/').last().unwrap().to_string();
 
     // Mark the http-01 challenge as 'processing'.
-    sqlx::query(
-        "UPDATE challenges SET status='processing' WHERE authz_id=? AND type='http-01'",
-    )
-    .bind(&authz_id)
-    .execute(&db)
-    .await
-    .unwrap();
+    {
+        let mut conn = db.acquire().await.unwrap();
+        sqlx::query(
+            "UPDATE challenges SET status='processing' WHERE authz_id=?1 AND type='http-01'",
+        )
+        .bind(&authz_id)
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    }
 
     let chall_url = format!("{base_url}/acme/chall/{authz_id}/http-01");
     let chall_path = format!("/acme/chall/{authz_id}/http-01");
@@ -2421,13 +2427,7 @@ async fn test_revoke_cert_by_jwk() {
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap()
-    .0;
+    let order_id = latest_order_id(&db).await;
     mark_order_ready(&db, &order_id).await;
 
     // Build CSR with a known cert key so we can use it for JWK revocation.
@@ -2597,13 +2597,7 @@ async fn test_finalize_with_mtc_enabled() {
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&db_conn)
-    .await
-    .unwrap()
-    .0;
+    let order_id = latest_order_id(&db_conn).await;
     mark_order_ready(&db_conn, &order_id).await;
 
     let csr_der = make_csr_der("mtc-test.example");
@@ -2657,13 +2651,7 @@ async fn test_finalize_ip_san() {
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&db)
-    .await
-    .unwrap()
-    .0;
+    let order_id = latest_order_id(&db).await;
     mark_order_ready(&db, &order_id).await;
 
     let csr_der = make_ip_csr_der("192.0.2.1");
@@ -2772,7 +2760,7 @@ async fn test_finalize_with_aia_and_cdp() {
     let db_conn = db::open(":memory:").await.unwrap();
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
-        db: db_conn.clone(),
+        db: db_conn,
         ca: Arc::new(CaState {
             key: ca_key,
             cert_der: ca_cert_der,
@@ -2818,14 +2806,8 @@ async fn test_finalize_with_aia_and_cdp() {
     let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
     let nonce = nonce_header(&order_headers);
 
-    let order_id: String = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM orders ORDER BY created DESC LIMIT 1",
-    )
-    .fetch_one(&db_conn)
-    .await
-    .unwrap()
-    .0;
-    mark_order_ready(&db_conn, &order_id).await;
+    let order_id = latest_order_id(&state.db).await;
+    mark_order_ready(&state.db, &order_id).await;
 
     let csr_der = make_csr_der("aia-cdp.test");
     let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
