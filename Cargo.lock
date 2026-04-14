@@ -2213,31 +2213,41 @@ dependencies = [
 [[package]]
 name = "synta"
 version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7367834721267ba01617213cf8cb1b4c18ddefe83c905ce8586915a1b30207cb"
 dependencies = [
  "smallvec",
- "synta-derive",
+ "synta-derive 0.1.6",
 ]
 
 [[package]]
 name = "synta-certificate"
 version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a6e31af7264873889507a37cf481e7683c821c44ffb84a84de6a68525388b20"
 dependencies = [
+ "foreign-types",
  "openssl",
  "openssl-sys",
  "synta",
- "synta-codegen",
- "synta-derive",
+ "synta-codegen 0.1.6",
+ "synta-derive 0.1.6",
 ]
+
+[[package]]
+name = "synta-codegen"
+version = "0.1.6"
 
 [[package]]
 name = "synta-codegen"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c403cf9e1c5d6b216595039ad909c4b5cff5652bdfc0292c8431b79a7db94e33"
+
+[[package]]
+name = "synta-derive"
+version = "0.1.6"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "synta-derive"
@@ -2259,8 +2269,8 @@ dependencies = [
  "smallvec",
  "synta",
  "synta-certificate",
- "synta-codegen",
- "synta-derive",
+ "synta-codegen 0.1.6 (registry+https://github.com/rust-lang/crates.io-index)",
+ "synta-derive 0.1.6 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]

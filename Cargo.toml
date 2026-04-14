@@ -97,3 +97,7 @@ harness = false
 # consistent OpenSSL bindings (including ML-DSA / ML-KEM / PQC support).
 openssl-sys = { git = "https://github.com/abbra/rust-openssl.git", branch = "pqc-prs" }
 openssl     = { git = "https://github.com/abbra/rust-openssl.git", branch = "pqc-prs" }
+# Use the local synta worktree (branch pkcs11-uri-support) that includes
+# BackendPrivateKey::from_pkcs11_uri and PKCS#11 URI key loading support.
+synta             = { path = "/var/home/abokovoy/workspace/synta-pkcs11" }
+synta-certificate = { path = "/var/home/abokovoy/workspace/synta-pkcs11/synta-certificate" }
