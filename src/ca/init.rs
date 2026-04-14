@@ -19,18 +19,38 @@ use crate::error::AcmeError;
 /// Load or auto-generate the CA key pair and certificate.
 ///
 /// Returns `(key, cert_der)` where `cert_der` is the DER-encoded CA certificate.
+///
+/// For file-based keys both the key file and the certificate file must either
+/// both exist (load path) or both be absent (auto-generate path).
+///
+/// For PKCS#11 URI keys the key lives in the token and is never written to
+/// disk.  If the certificate file is also absent a self-signed CA certificate
+/// is generated and written to `cert_file` on the first run.
 pub fn load_or_generate(config: &CaConfig) -> Result<(BackendPrivateKey, Vec<u8>), AcmeError> {
-    let key_exists = Path::new(&config.key_file).exists();
+    use crate::ca::key_loader::CaKeyLoader;
+
+    let loader = CaKeyLoader::new(config);
     let cert_exists = Path::new(&config.cert_file).exists();
 
-    if key_exists && cert_exists {
-        load(config)
-    } else if !key_exists && !cert_exists {
-        generate(config)
+    if loader.can_generate() {
+        // File-based key: both files must exist together or be absent together.
+        let key_exists = Path::new(&config.key_file).exists();
+        if key_exists && cert_exists {
+            load(config)
+        } else if !key_exists && !cert_exists {
+            generate(config)
+        } else {
+            Err(AcmeError::Internal(
+                "CA key and certificate files must both exist or both be absent".into(),
+            ))
+        }
     } else {
-        Err(AcmeError::Internal(
-            "CA key and certificate files must both exist or both be absent".into(),
-        ))
+        // PKCS#11 key: key lives in the token; only the certificate is on disk.
+        if cert_exists {
+            load_pkcs11(config, &loader)
+        } else {
+            generate_cert_for_hsm_key(config, &loader)
+        }
     }
 }
 
@@ -131,6 +151,99 @@ fn generate(config: &CaConfig) -> Result<(BackendPrivateKey, Vec<u8>), AcmeError
     tracing::info!(
         "Generated CA certificate ({}, {} years)",
         config.key_type,
+        config.ca_validity_years
+    );
+
+    Ok((backend_key, cert_der))
+}
+
+/// Load a PKCS#11-backed CA key and its corresponding certificate from disk.
+fn load_pkcs11(
+    config: &CaConfig,
+    loader: &crate::ca::key_loader::CaKeyLoader<'_>,
+) -> Result<(BackendPrivateKey, Vec<u8>), AcmeError> {
+    let key = loader.load_key()?;
+
+    let cert_pem = std::fs::read(&config.cert_file)
+        .map_err(|e| AcmeError::Internal(format!("read CA cert '{}': {}", config.cert_file, e)))?;
+    let cert_der = synta_certificate::pem_to_der(&cert_pem)
+        .into_iter()
+        .next()
+        .ok_or_else(|| AcmeError::Internal("CA certificate PEM has no blocks".into()))?;
+
+    tracing::info!("Loaded CA key via PKCS#11 URI {}", config.key_file);
+    Ok((key, cert_der))
+}
+
+/// Generate and write a self-signed CA certificate for a key that already
+/// exists in a PKCS#11 token.  The key itself is never extracted from the token.
+fn generate_cert_for_hsm_key(
+    config: &CaConfig,
+    loader: &crate::ca::key_loader::CaKeyLoader<'_>,
+) -> Result<(BackendPrivateKey, Vec<u8>), AcmeError> {
+    tracing::info!(
+        "Generating CA certificate for PKCS#11 key {} — writing to {}",
+        config.key_file,
+        config.cert_file
+    );
+
+    let backend_key = loader.load_key()?;
+
+    let spki_der = backend_key
+        .public_key()
+        .map_err(|e| AcmeError::Crypto(format!("PKCS#11 key public: {}", e)))?
+        .spki_der()
+        .to_vec();
+
+    // Build CA distinguished name.
+    let name_der = NameBuilder::new()
+        .common_name(&config.common_name)
+        .organization(&config.organization)
+        .build()
+        .map_err(|e| AcmeError::Builder(format!("CA name: {}", e)))?;
+
+    // Validity dates.
+    let years = config.ca_validity_years as i64;
+    let now_str = format_now();
+    let exp_str = format_future_years(years);
+    let not_before =
+        parse_time(&now_str).map_err(|e| AcmeError::Builder(format!("CA notBefore: {}", e)))?;
+    let not_after =
+        parse_time(&exp_str).map_err(|e| AcmeError::Builder(format!("CA notAfter: {}", e)))?;
+
+    // Extensions.
+    let hasher = default_key_id_hasher();
+    let bc_der = encode_basic_constraints(true, None)
+        .ok_or_else(|| AcmeError::Builder("encode BasicConstraints".into()))?;
+    let ku_der = encode_key_usage((1u16 << KEY_USAGE_KEY_CERT_SIGN) | (1u16 << KEY_USAGE_C_RLSIGN))
+        .ok_or_else(|| AcmeError::Builder("encode KeyUsage".into()))?;
+    let ski_der = encode_subject_key_identifier(&spki_der, KeyIdMethod::Rfc5280Sha1, &hasher)
+        .ok_or_else(|| AcmeError::Builder("encode SKI".into()))?;
+    let aki_der = encode_authority_key_identifier(&spki_der, KeyIdMethod::Rfc5280Sha1, &hasher)
+        .ok_or_else(|| AcmeError::Builder("encode AKI".into()))?;
+
+    let signer = backend_key.as_signer(&config.hash_alg);
+    let cert_der = CertificateBuilder::new()
+        .issuer_name(&name_der)
+        .subject_name(&name_der)
+        .public_key_der(&spki_der)
+        .serial_number(synta::Integer::from_i64(1))
+        .not_valid_before(not_before)
+        .not_valid_after(not_after)
+        .add_extension_oid(oids::BASIC_CONSTRAINTS, true, &bc_der)
+        .add_extension_oid(oids::KEY_USAGE, true, &ku_der)
+        .add_extension_oid(oids::SUBJECT_KEY_IDENTIFIER, false, &ski_der)
+        .add_extension_oid(oids::AUTHORITY_KEY_IDENTIFIER, false, &aki_der)
+        .sign(&signer)
+        .map_err(|e| AcmeError::Builder(format!("sign CA cert: {}", e)))?;
+
+    // Write certificate PEM only (key stays in the token).
+    let cert_pem = der_to_pem("CERTIFICATE", &cert_der);
+    std::fs::write(&config.cert_file, &cert_pem)
+        .map_err(|e| AcmeError::Internal(format!("write CA cert '{}': {}", config.cert_file, e)))?;
+
+    tracing::info!(
+        "Generated CA certificate for PKCS#11 key ({} years)",
         config.ca_validity_years
     );
 
