@@ -15,7 +15,7 @@ graph TB
 
     subgraph akamu["Akāmu Server"]
         direction TB
-        tls["TLS layer<br/>rustls + axum-server<br/>(optional — Mode 2/3/4)"]
+        tls["TLS layer<br/>rustls + tokio-rustls<br/>(optional)"]
         acme["ACME endpoints<br/>new-account · new-order · finalize<br/>revoke · ARI · key-change"]
         jose["akamu-jose<br/>JWK / JWS verification<br/>EAB HMAC check"]
         ca["CA module<br/>CSR validation<br/>certificate issuance<br/>CRL generation"]
@@ -108,7 +108,8 @@ The `src/` directory is organized as follows:
 src/
   main.rs          Entry point; parses config, initializes subsystems, starts axum
   lib.rs           Re-exports public modules for integration tests
-  config.rs        TOML configuration structs (Config, CaConfig, MtcConfig, ServerConfig)
+  config.rs        TOML configuration structs (Config, CaConfig, MtcConfig, ServerConfig,
+                   ProfilesConfig, ProviderConfig, BuiltinProviderConfig, …)
   state.rs         Shared application state (AppState, CaState, MtcState)
   error.rs         AcmeError enum with HTTP mapping and problem+json serialization
 
@@ -140,8 +141,15 @@ src/
     mod.rs         Re-exports ca submodules
     init.rs        CA key and certificate load-or-generate
     csr.rs         PKCS#10 CSR parsing and validation
-    issue.rs       End-entity certificate issuance
+    issue.rs       End-entity certificate issuance (issue_certificate + issue_with_params)
     revoke.rs      CRL generation
+
+  profiles/
+    mod.rs         ProfileRegistry — in-memory cache, background refresh, resolve()
+    builtin.rs     Builtin provider: inline TOML profile declarations
+    cfg.rs         Dogtag Java-properties .cfg parser and translator
+    dogtag.rs      Dogtag PKI provider (filesystem; LDAP stub)
+    ipa.rs         FreeIPA/IPAThinCA provider (filesystem; GSSAPI LDAP stub)
 
   validation/
     mod.rs         Challenge dispatch and DB state transitions (validate_challenge)
@@ -167,6 +175,9 @@ Defined in `src/state.rs`. Every axum handler receives an `Arc<AppState>` via ax
 - `db: Arc<Connection>` — shared tokio-rusqlite connection. All database access goes through this.
 - `ca: Arc<CaState>` — CA private key, certificate, and signing policy.
 - `mtc: Arc<MtcState>` — MTC log handle and algorithm (or `None` if disabled).
+- `profiles: Arc<ProfileRegistry>` — in-memory certificate profile cache; empty when no providers are configured, in which case every order falls back to CA defaults.
+- `nonces: Arc<NonceBucket>` — in-memory anti-replay nonce store.
+- `spki_cache: Arc<RwLock<HashMap<…>>>` — per-account SPKI/thumbprint cache to avoid a DB round-trip per authenticated request after the first.
 
 `AppState` is `Clone` because `Arc<T>` is `Clone`. Cloning is cheap (reference count bump). All mutable state (the database and MTC log) is protected at a lower level by tokio-rusqlite's internal background thread and a `tokio::sync::Mutex<DiskBackedLog>`, respectively.
 
@@ -244,6 +255,8 @@ Challenge validation does not block the HTTP response. When a challenge is trigg
 4. Returns immediately with the `processing` status.
 
 Similarly, MTC log appends are spawned as background tasks after certificate issuance.
+
+A third background task (`ProfileRegistry::spawn_refresh_task`) wakes every `refresh_interval_secs` seconds, re-loads all configured profile providers, and atomically replaces the in-memory `ProfileCache` under a write lock. It holds a weak `Arc` reference to the registry so that dropping the server's strong reference causes the task to exit cleanly on shutdown.
 
 ## Database access model
 

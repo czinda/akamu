@@ -15,6 +15,7 @@
 - [Orders](user/orders.md)
 - [Challenges](user/challenges.md)
 - [Certificates](user/certificates.md)
+- [Certificate Profiles](user/profiles.md)
 - [CRL and OCSP](user/crl-ocsp.md)
 - [Merkle Tree Certificate Log](user/mtc.md)
 - [TLS Configuration](user/tls.md)

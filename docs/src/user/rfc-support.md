@@ -6,6 +6,7 @@ This page documents every RFC that is relevant to `Akāmu`, explaining what each
 
 | Specification | Title | Status |
 |---------------|-------|--------|
+| [CA/B Forum BR](#cab-forum-baseline-requirements) | CA/Browser Forum Baseline Requirements v2.x | Partial |
 | [dns-persist-01](#lets-encrypt-dns-persist-01) | Let's Encrypt Persistent DNS Challenge | Full |
 | [draft-aaron-acme-profiles-01](#draft-aaron-acme-profiles-01) | ACME Certificate Profiles | Full |
 | [draft-ietf-cose-dilithium-11](#draft-ietf-cose-dilithium-11) | ML-DSA (Dilithium) for JOSE (JWK + JWS) | Full |
@@ -466,6 +467,82 @@ Conformance includes:
 
 ---
 
+## CA/B Forum Baseline Requirements
+
+The [CA/Browser Forum Baseline Requirements for TLS Server Certificates](https://cabforum.org/working-groups/server/baseline-requirements/requirements/) (BR) is not an RFC but a policy document maintained by the CA/Browser Forum and enforced by browser trust-store membership. Any CA intending to issue publicly-trusted TLS certificates must comply with it. Akāmu enforces several BR requirements at startup and at certificate-issuance time.
+
+### Compliance status
+
+| Requirement | Section | Deadline | Status | Implementation |
+|-------------|---------|----------|--------|----------------|
+| Maximum validity 200 days | §6.3.2 | 2026-03-15 | Enforced (warning) | Startup warning when `ca.validity_days > 200` |
+| Maximum validity 100 days | §6.3.2 | 2027-03-15 | Enforced (warning) | Startup warning when `ca.validity_days > 100` |
+| SHA-1 prohibited in signatures | §7.1.3.2.1 | 2026-09-15 | Enforced (hard error) | Startup hard error when `ca.hash_alg` is `sha1` or `sha-1` |
+| DNSSEC validation for DNS challenges | §3.2.2.4, §3.2.2.8.1 | 2026-03-15 | Enforced by default | `server.validate_dnssec` (default `true`) |
+| Pre-issuance linting | §4.3.1.2 | 2025-03-15 | Enforced | Every issued certificate is verified via `synta-x509-verification` before delivery |
+| Multi-perspective validation | §3.2.2.9 | 2025-03-15 | To do, not a priority | Requires validation from multiple network vantage points |
+
+### §6.3.2 — Certificate Validity Period
+
+The CA/B Forum has progressively shortened the maximum certificate validity period:
+
+- **200 days** — hard limit since 2026-03-15
+- **100 days** — hard limit from 2027-03-15
+
+Akāmu enforces these limits as startup **warnings** rather than hard errors, because the restriction applies only to publicly-trusted WebPKI certificates. Private or enterprise deployments may legitimately use longer validity periods when not chaining to a public root. The warning makes the misconfiguration visible without breaking private-CA use cases.
+
+Configure `ca.validity_days` in your `config.toml`:
+
+```toml
+[ca]
+validity_days = 90   # ≤ 100 is fully compliant through 2027-03-15
+```
+
+### §7.1.3.2.1 — SHA-1 Sunset
+
+SHA-1 signatures in certificates and CRLs are prohibited from 2026-09-15. Akāmu enforces this as a **startup hard error**: if `ca.hash_alg` is set to `sha1` or `sha-1`, the server refuses to start with an explicit error message citing the BR section.
+
+Compliant hash algorithms: `sha256`, `sha384`, `sha512`.
+
+### §3.2.2.4 / §3.2.2.8.1 — DNSSEC Validation
+
+DNS-based challenge validation (dns-01, dns-persist-01) and CAA record checking must use DNSSEC-validated answers as of 2026-03-15.
+
+Akāmu enables DNSSEC validation by default. The behaviour is controlled by `server.validate_dnssec`:
+
+```toml
+[server]
+validate_dnssec = true   # default — required for BR compliance
+```
+
+Set `validate_dnssec = false` only for testing environments or private deployments where the DNS infrastructure is not DNSSEC-signed. **Disabling DNSSEC makes the server non-compliant with CA/B Forum BR and ineligible for public WebPKI inclusion.**
+
+### §4.3.1.2 — Pre-Issuance Linting
+
+CAs must programmatically verify every certificate before signing and delivering it, using a linting tool that checks structural and policy conformance. Akāmu satisfies this requirement by running the `synta-x509-verification` policy engine against every issued certificate immediately after signing and before delivering it to the client.
+
+The linter checks:
+
+- X.509 version = v3
+- Serial number: ≤ 20 octets, positive integer
+- Validity window present and well-formed
+- SPKI algorithm on the WebPKI allowlist (no SHA-1, no weak RSA)
+- RSA keys: minimum 2048 bits; EC keys: named curves only
+- Signature algorithm on the WebPKI allowlist (includes ML-DSA / composite post-quantum)
+- `AuthorityKeyIdentifier` extension present
+- `BasicConstraints: cA=FALSE` on end-entity certificates
+- CA signature is cryptographically valid over the certificate body
+
+If linting fails, the certificate is **not delivered** and the order moves to the `invalid` state with an internal error. The malformed certificate is never exposed to the client.
+
+### §3.2.2.9 — Multi-Perspective Issuance Corroboration (MPIC)
+
+As of 2025-03-15, CAs are required to validate domain control from multiple network vantage points — at minimum two remote perspectives in addition to the primary validation — to mitigate BGP hijacking attacks against ACME challenge responses.
+
+**To do, not a priority.** Satisfying this requirement demands either integration with a set of geographically distributed MPIC agents or reliance on an external MPIC service. Akāmu is intended for private and enterprise deployments where the network topology is controlled; public CAs using Akāmu as a backend must implement MPIC at the infrastructure layer until this is supported natively.
+
+---
+
 ## RFC 7807 — Problem Details for HTTP APIs
 
 **[RFC 7807](https://www.rfc-editor.org/rfc/rfc7807)** defines a JSON format for HTTP error responses. All Akāmu error responses use this format with `Content-Type: application/problem+json`:
@@ -539,13 +616,13 @@ Akāmu queries the `_validation-persist.<domain>` TXT record, verifies the issue
 
 ### Directory advertisement
 
-When `server.profiles` is configured, the directory `meta` includes a `profiles` object:
+When `[profiles]` providers are configured, the directory `meta` includes a `profiles` object mapping each profile name to its description:
 
 ```json
 "meta": {
   "profiles": {
-    "tls-server-auth": "https://acme.example.com/docs/profiles/tls-server-auth",
-    "client-auth":     "https://acme.example.com/docs/profiles/client-auth"
+    "tlsserver":  "Standard TLS server certificate",
+    "clientauth": "Client authentication certificate"
   }
 }
 ```
@@ -557,35 +634,40 @@ Clients include the `profile` field in the `newOrder` payload:
 ```json
 {
   "identifiers": [{ "type": "dns", "value": "example.com" }],
-  "profile": "tls-server-auth"
+  "profile": "tlsserver"
 }
 ```
 
-The server validates that the requested profile is in the configured map. If not, it returns:
+The server validates that the requested profile is loaded in the registry. If not, it returns:
 
 ```json
 {
   "type": "urn:ietf:params:acme:error:invalidProfile",
   "status": 400,
-  "detail": "profile 'unknown-profile' is not advertised by this server"
+  "detail": "profile 'unknown-profile' is not served by any configured provider"
 }
 ```
 
 The `profile` field is echoed back in every subsequent order response so that clients can confirm which profile applies.
 
-### Finalize-time re-validation
+### Finalize-time enforcement
 
-If a profile is removed from the server's configuration after an order has been placed but before it is finalized, the `finalize` endpoint rejects the request with `invalidProfile`. This prevents silent issuance under a policy the server no longer supports.
+At finalize time the server resolves the profile's `CertificateParameters` (key usage bits, EKU OIDs, validity, CRL/OCSP URLs, certificate policies) and issues the certificate with those exact extension values. If the profile is no longer loaded (e.g. removed since the order was placed), the request is rejected with `invalidProfile`.
 
 ### Configuration
 
 ```toml
-[server.profiles]
-"tls-server-auth" = "https://acme.example.com/docs/profiles/tls-server-auth"
-"client-auth"     = "https://acme.example.com/docs/profiles/client-auth"
+[profiles.providers.local]
+type = "builtin"
+
+[profiles.providers.local.profiles.tlsserver]
+description   = "Standard TLS server certificate"
+validity_days = 90
+key_usage     = ["digital_signature", "key_encipherment"]
+eku           = ["server_auth"]
 ```
 
-When `profiles` is empty (the default), profile selection is not advertised. A `profile` field in `newOrder` is accepted but ignored — the server issues under its default policy.
+See [Certificate Profiles](profiles.md) for the full configuration reference including Dogtag and IPA providers. When no providers are configured, the `profile` field in `newOrder` is accepted but ignored — the server issues under its default policy.
 
 ---
 

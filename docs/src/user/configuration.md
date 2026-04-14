@@ -50,9 +50,17 @@ star_max_duration_secs = 31536000
 star_allow_certificate_get = true
 tor_connectivity_enabled  = false
 
-[server.profiles]
-"tls-server-auth" = "https://acme.example.com/docs/profiles/tls-server-auth"
-"client-auth"     = "https://acme.example.com/docs/profiles/client-auth"
+[profiles]
+refresh_interval_secs = 3600
+
+[profiles.providers.local]
+type = "builtin"
+
+[profiles.providers.local.profiles.tlsserver]
+description   = "Standard TLS server certificate"
+validity_days = 90
+key_usage     = ["digital_signature", "key_encipherment"]
+eku           = ["server_auth"]
 ```
 
 ---
@@ -438,18 +446,55 @@ Controls whether the server offers `http-01` and `tls-alpn-01` challenge types f
 tor_connectivity_enabled = true
 ```
 
-### `profiles`
+---
 
-**Optional. Default: empty (profiles not advertised).**
+## `[profiles]`
 
-A table mapping certificate profile identifiers to human-readable descriptions or documentation URLs, per [draft-aaron-acme-profiles-01](https://datatracker.ietf.org/doc/draft-aaron-acme-profiles-01/). When non-empty, the directory `meta` includes a `"profiles"` object with these entries, and clients may select a profile by name in `newOrder`.
+The `[profiles]` section configures the certificate profile subsystem. Profiles are loaded from one or more *providers* at startup, cached in memory, and refreshed periodically by a background task. `Akāmu`'s own CA always signs; profiles only control which extensions are included and with what values. When no providers are configured, every order falls back to CA defaults (`digitalSignature` KeyUsage, `serverAuth` EKU, and the `[ca]` validity/URL settings).
 
-Requests for a profile name not present in this table are rejected with `urn:ietf:params:acme:error:invalidProfile` (HTTP 400).
+See [Certificate Profiles](profiles.md) for the complete reference including all provider types, key usage names, EKU OIDs, and three-state URL semantics.
+
+### `refresh_interval_secs`
+
+**Optional. Default: `3600` (1 hour).**
+
+How often the background task re-reads profiles from all providers. Set to `0` to disable automatic refresh (profiles are loaded once at startup and never refreshed).
 
 ```toml
-[server.profiles]
-"tls-server-auth" = "https://acme.example.com/docs/profiles/tls-server-auth"
-"client-auth"     = "https://acme.example.com/docs/profiles/client-auth"
+[profiles]
+refresh_interval_secs = 1800   # refresh every 30 minutes
 ```
 
-When `profiles` is empty (the default), the `profile` field in `newOrder` is accepted but ignored — the server issues under its default policy.
+### `[profiles.providers.<name>]`
+
+Each key under `[profiles.providers]` names a provider. The required `type` field selects the backend:
+
+| `type` | Source |
+|--------|--------|
+| `"builtin"` | Inline TOML profile declarations in `config.toml` |
+| `"dogtag"` | Dogtag PKI `.cfg` files — filesystem (LDAP not yet implemented) |
+| `"ipa"` | FreeIPA/IPAThinCA — filesystem or GSSAPI LDAP (not yet implemented) |
+
+```toml
+# Builtin provider: inline declarations
+[profiles.providers.local]
+type = "builtin"
+
+[profiles.providers.local.profiles.tlsserver]
+description   = "Standard TLS server certificate"
+validity_days = 90
+key_usage     = ["digital_signature", "key_encipherment"]
+eku           = ["server_auth"]
+
+# Dogtag provider: load .cfg files from a directory
+[profiles.providers.dogtag_prod]
+type        = "dogtag"
+profile_dir = "/etc/pki/pki-tomcat/ca/profiles/ca"
+profiles    = ["caServerCert"]   # empty = all .cfg files
+
+# IPA provider: filesystem fallback (LDAP not yet implemented)
+[profiles.providers.ipa_prod]
+type        = "ipa"
+profile_dir = "/etc/pki/pki-tomcat/ca/profiles/ca"
+profiles    = ["caIPAserviceCert"]
+```

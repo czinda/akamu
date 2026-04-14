@@ -16,7 +16,8 @@ flowchart TD
     D -->|OK| E{"SAN set equals<br/>order identifiers?"}
     E -->|Mismatch| FAIL
     E -->|Match| F["Generate random 16-byte serial<br/>clear high bit for positive integer"]
-    F --> G["Build X.509 v3 end-entity cert<br/>KeyUsage=digitalSignature<br/>EKU=serverAuth"]
+    F --> P["Resolve profile parameters<br/>(registry lookup or CA defaults)"]
+    P --> G["Build X.509 v3 end-entity cert<br/>extensions from resolved profile"]
     G --> H[Sign with CA private key]
     H --> I["Store DER + PEM bundle<br/>in certificates table"]
     I --> J["Update order: status=valid<br/>certificate_id set"]
@@ -36,22 +37,24 @@ The server:
 3. Checks that the CSR does not request CA authority (`cA=TRUE` in BasicConstraints is rejected).
 4. Verifies that the CSR's SubjectAlternativeName extension contains exactly the identifiers from the order — no more, no fewer.
 5. Generates a random 16-byte serial number (positive two's complement, high bit cleared).
-6. Issues an X.509 v3 certificate with the following profile:
+6. Resolves the certificate parameters from the profile registry (or CA defaults if no profile was requested).
+7. Issues an X.509 v3 certificate. The extensions depend on the active profile:
 
-| Extension | Value |
-|---|---|
-| BasicConstraints | Not critical; `cA=FALSE` |
-| KeyUsage | Critical; `digitalSignature` |
-| ExtendedKeyUsage | Not critical; `serverAuth` |
-| SubjectKeyIdentifier | RFC 5280 SHA-1 method |
-| AuthorityKeyIdentifier | RFC 5280 SHA-1 method, from CA key |
-| SubjectAlternativeName | Rebuilt from validated CSR SANs |
-| AuthorityInfoAccess (OCSP) | Present if `ocsp_url` is configured |
-| CRLDistributionPoints | Present if `crl_url` is configured |
+| Extension | Critical | Default (no profile) | With profile |
+|---|---|---|---|
+| BasicConstraints | No | `cA=FALSE` | `cA=FALSE` |
+| KeyUsage | Yes | `digitalSignature` | As configured in profile |
+| ExtendedKeyUsage | No | `serverAuth` | As configured in profile |
+| SubjectKeyIdentifier | No | RFC 5280 SHA-1 method | RFC 5280 SHA-1 method |
+| AuthorityKeyIdentifier | No | RFC 5280 SHA-1 method | RFC 5280 SHA-1 method |
+| SubjectAlternativeName | No | Rebuilt from validated CSR SANs | Rebuilt from validated CSR SANs |
+| AuthorityInfoAccess (OCSP) | No | If `ocsp_url` configured | If profile or `ocsp_url` set |
+| CRLDistributionPoints | No | If `crl_url` configured | If profile or `crl_url` set |
+| CertificatePolicies | No | Absent | If profile includes policies |
 
 The Subject Name from the CSR is copied verbatim into the issued certificate.
 
-The validity period runs from the moment of issuance for `validity_days` days (default 90).
+The validity period runs from the moment of issuance for `validity_days` days (default 90), or the profile-specific validity if a profile is active. See [Certificate Profiles](profiles.md) for how to configure per-profile extension content.
 
 ## Downloading a certificate
 
