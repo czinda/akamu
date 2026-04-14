@@ -413,6 +413,7 @@ async fn start_tls_server() -> TlsTestServer {
             enabled: false,
         },
         server: ServerConfig::default(),
+        profiles: Default::default(),
         tls: TlsConfig {
             enabled: true,
             cert_file: cert_file.clone(),
@@ -465,6 +466,7 @@ async fn start_tls_server() -> TlsTestServer {
         config: Arc::clone(&config),
         db: db_conn.clone(),
         db_kind: db::DbKind::Sqlite,
+        profiles: akamu::profiles::ProfileRegistry::empty(&ca_state),
         ca: ca_state,
         mtc: Arc::new(MtcState {
             log: None,

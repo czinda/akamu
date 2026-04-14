@@ -314,6 +314,7 @@ mod tests {
             },
             server: ServerConfig::default(),
             tls: Default::default(),
+            profiles: Default::default(),
         });
 
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
@@ -322,19 +323,21 @@ mod tests {
             .await
             .unwrap();
 
+        let ca = Arc::new(CaState {
+            key: ca_key,
+            cert_der: ca_cert_der,
+            hash_alg: "sha256".into(),
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            aki_bytes: Vec::new(),
+        });
         Arc::new(AppState {
             config: Arc::clone(&config),
             db: db_conn,
             db_kind: crate::db::DbKind::Sqlite,
-            ca: Arc::new(CaState {
-                key: ca_key,
-                cert_der: ca_cert_der,
-                hash_alg: "sha256".into(),
-                validity_days: 90,
-                crl_url: None,
-                ocsp_url: None,
-                aki_bytes: Vec::new(),
-            }),
+            profiles: crate::profiles::ProfileRegistry::empty(&ca),
+            ca,
             mtc: Arc::new(MtcState {
                 log: None,
                 algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
@@ -750,25 +753,28 @@ mod tests {
                 ..ServerConfig::default()
             },
             tls: Default::default(),
+            profiles: Default::default(),
         });
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
         db::install_drivers();
         let db_conn = db::open("sqlite::memory:", 1, "./migrations/sqlite")
             .await
             .unwrap();
+        let ca = Arc::new(CaState {
+            key: ca_key,
+            cert_der: ca_cert_der,
+            hash_alg: "sha256".into(),
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            aki_bytes: Vec::new(),
+        });
         let state = Arc::new(AppState {
             config: Arc::clone(&config),
             db: db_conn,
             db_kind: crate::db::DbKind::Sqlite,
-            ca: Arc::new(CaState {
-                key: ca_key,
-                cert_der: ca_cert_der,
-                hash_alg: "sha256".into(),
-                validity_days: 90,
-                crl_url: None,
-                ocsp_url: None,
-                aki_bytes: Vec::new(),
-            }),
+            profiles: crate::profiles::ProfileRegistry::empty(&ca),
+            ca,
             mtc: Arc::new(MtcState {
                 log: None,
                 algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
@@ -1007,21 +1013,24 @@ mod tests {
             },
             server: ServerConfig::default(),
             tls: Default::default(),
+            profiles: Default::default(),
         });
         let (ca_key, ca_cert_der) = crate::ca::init::load_or_generate(&config.ca).unwrap();
+        let ca = Arc::new(CaState {
+            key: ca_key,
+            cert_der: ca_cert_der,
+            hash_alg: "sha256".into(),
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            aki_bytes: Vec::new(),
+        });
         Arc::new(AppState {
             config,
             db,
             db_kind: crate::db::DbKind::Sqlite,
-            ca: Arc::new(CaState {
-                key: ca_key,
-                cert_der: ca_cert_der,
-                hash_alg: "sha256".into(),
-                validity_days: 90,
-                crl_url: None,
-                ocsp_url: None,
-                aki_bytes: Vec::new(),
-            }),
+            profiles: crate::profiles::ProfileRegistry::empty(&ca),
+            ca,
             mtc: Arc::new(MtcState {
                 log: None,
                 algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
