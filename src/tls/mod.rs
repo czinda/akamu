@@ -21,8 +21,8 @@ use std::sync::Arc;
 
 /// Build a `rustls::ServerConfig` from the `[tls]` configuration section.
 ///
-/// Called once at startup; the resulting config is handed to
-/// `axum_server::tls_rustls::RustlsConfig::from_config`.
+/// Called once at startup; the resulting config is passed to
+/// `tokio_rustls::TlsAcceptor::from`.
 pub fn build_rustls_server_config(
     tls: &crate::config::TlsConfig,
 ) -> Result<rustls::ServerConfig, String> {

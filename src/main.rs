@@ -176,23 +176,60 @@ async fn run() -> Result<(), String> {
     let router = routes::build_router(Arc::clone(&state));
 
     if config.tls.enabled {
+        let mut server_cfg = akamu::tls::build_rustls_server_config(&config.tls)
+            .map_err(|e| format!("TLS config: {e}"))?;
+        server_cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_cfg));
+        let addr: std::net::SocketAddr = config
+            .listen_addr
+            .parse()
+            .map_err(|e| format!("parse listen addr '{}': {e}", config.listen_addr))?;
+        let listener = tokio::net::TcpListener::bind(addr)
+            .await
+            .map_err(|e| format!("bind '{}': {e}", config.listen_addr))?;
         tracing::info!(
             "ACME server listening on {} with TLS (base_url={})",
             config.listen_addr,
             config.base_url
         );
-        let server_cfg = akamu::tls::build_rustls_server_config(&config.tls)
-            .map_err(|e| format!("TLS config: {e}"))?;
-        let rustls_config =
-            axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(server_cfg));
-        let addr: std::net::SocketAddr = config
-            .listen_addr
-            .parse()
-            .map_err(|e| format!("parse listen addr '{}': {e}", config.listen_addr))?;
-        axum_server::bind_rustls(addr, rustls_config)
-            .serve(router.into_make_service_with_connect_info::<std::net::SocketAddr>())
-            .await
-            .map_err(|e| format!("server error: {e}"))?;
+        loop {
+            let (stream, _) = listener
+                .accept()
+                .await
+                .map_err(|e| format!("accept: {e}"))?;
+            let acceptor = acceptor.clone();
+            let router = router.clone();
+            tokio::spawn(async move {
+                let tls = match acceptor.accept(stream).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!("TLS handshake failed: {e}");
+                        return;
+                    }
+                };
+                let io = hyper_util::rt::TokioIo::new(tls);
+                use tower::ServiceExt as _;
+                let svc = hyper::service::service_fn(
+                    move |req: hyper::Request<hyper::body::Incoming>| {
+                        let router = router.clone();
+                        async move {
+                            let req = req.map(axum::body::Body::new);
+                            Ok::<_, std::convert::Infallible>(
+                                router.oneshot(req).await.unwrap(),
+                            )
+                        }
+                    },
+                );
+                if let Err(e) = hyper_util::server::conn::auto::Builder::new(
+                    hyper_util::rt::TokioExecutor::new(),
+                )
+                .serve_connection(io, svc)
+                .await
+                {
+                    tracing::warn!("TLS connection error: {e}");
+                }
+            });
+        }
     } else {
         let listener = tokio::net::TcpListener::bind(&config.listen_addr)
             .await

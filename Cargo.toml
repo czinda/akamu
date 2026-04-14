@@ -47,13 +47,13 @@ rustls = { version = "0.23", default-features = false, features = ["std", "tls12
 tokio-rustls = "0.26"
 rustls-pki-types = "1"
 
-# Native TLS server (axum-server manages the accept loop; rustls 0.23 compatible)
-axum-server = { version = "0.8", features = ["tls-rustls"] }
-
 # HTTP client for http-01 challenge validation (hyper is already pulled by axum)
 hyper = { version = "1", features = ["client", "http1"] }
-hyper-util = { version = "0.1", features = ["tokio", "client-legacy"] }
+hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "server-auto", "service"] }
 http-body-util = "0.1"
+
+# Service utilities (tower::ServiceExt used in TLS accept loop)
+tower = { version = "0.5", features = ["util"] }
 
 # Error handling
 thiserror = "2"
@@ -82,7 +82,6 @@ synta-mtc = { version = "0.1.6", features = ["std"] }
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 tempfile = "3"
-tower = { version = "0.5", features = ["util"] }
 # (instant-acme 0.4 removed: it pulled hyper 0.14 as a transitive dependency,
 # which is not available in RHEL 10 / EPEL 10.  The acme_client_compat
 # integration test that used it has been removed along with this dependency.)

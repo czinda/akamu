@@ -17,7 +17,6 @@
 #
 # Crates in the vendor tarball absent from Fedora or at incompatible versions:
 #   openssl / openssl-sys  — pqc-prs git fork for ML-DSA/ML-KEM/PQC support
-#   axum-server 0.8        — Fedora ships 0.7.3 (incompatible API)
 #   hickory-resolver 0.24  — Fedora ships 0.25 (incompatible API)
 #   toml 0.8               — Fedora ships 1.1 (incompatible API)
 #   sqlx + drivers 0.8     — not packaged in Fedora / RHEL 10

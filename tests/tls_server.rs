@@ -456,8 +456,10 @@ async fn start_tls_server() -> TlsTestServer {
     tls::init::load_or_generate(&config.tls, &ca_state).unwrap();
     tracing::info!("TLS server certificate written: {}", cert_file);
 
-    let server_cfg = tls::build_rustls_server_config(&config.tls).unwrap();
-    let rustls_cfg = axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(server_cfg));
+    let mut server_cfg = tls::build_rustls_server_config(&config.tls).unwrap();
+    server_cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    let tls_acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_cfg));
+    let listener = tokio::net::TcpListener::from_std(listener).unwrap();
 
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
@@ -484,11 +486,48 @@ async fn start_tls_server() -> TlsTestServer {
 
     tracing::info!("Binding TLS server on {}", addr);
     let handle = tokio::spawn(async move {
-        axum_server::from_tcp_rustls(listener, rustls_cfg)
-            .expect("bind TLS listener")
-            .serve(router.into_make_service_with_connect_info::<std::net::SocketAddr>())
-            .await
-            .unwrap();
+        loop {
+            match listener.accept().await {
+                Ok((stream, _)) => {
+                    let acceptor = tls_acceptor.clone();
+                    let router = router.clone();
+                    tokio::spawn(async move {
+                        let tls = match acceptor.accept(stream).await {
+                            Ok(s) => s,
+                            Err(e) => {
+                                tracing::warn!("TLS handshake error: {e}");
+                                return;
+                            }
+                        };
+                        let io = hyper_util::rt::TokioIo::new(tls);
+                        use tower::ServiceExt as _;
+                        let svc = hyper::service::service_fn(
+                            move |req: hyper::Request<hyper::body::Incoming>| {
+                                let router = router.clone();
+                                async move {
+                                    let req = req.map(axum::body::Body::new);
+                                    Ok::<_, std::convert::Infallible>(
+                                        router.oneshot(req).await.unwrap(),
+                                    )
+                                }
+                            },
+                        );
+                        if let Err(e) = hyper_util::server::conn::auto::Builder::new(
+                            hyper_util::rt::TokioExecutor::new(),
+                        )
+                        .serve_connection(io, svc)
+                        .await
+                        {
+                            tracing::warn!("TLS connection error: {e}");
+                        }
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("accept error: {e}");
+                    break;
+                }
+            }
+        }
     });
 
     // Give the server a moment to start accepting.
