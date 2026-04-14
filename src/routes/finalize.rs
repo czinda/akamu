@@ -122,6 +122,7 @@ pub async fn finalize_order(
                     &challenge_type,
                     Some(account_url.as_str()),
                     state.config.server.dns_resolver_addr.as_deref(),
+                    state.config.server.validate_dnssec,
                 )
                 .await?;
             }

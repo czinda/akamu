@@ -34,13 +34,14 @@ pub async fn check_caa(
     challenge_type: &str,
     account_url: Option<&str>,
     resolver_addr: Option<&str>,
+    validate_dnssec: bool,
 ) -> Result<(), AcmeError> {
     // Step 1: If ca_identities is empty → no-op (open policy).
     if ca_identities.is_empty() {
         return Ok(());
     }
 
-    let resolver = build_resolver(resolver_addr)?;
+    let resolver = build_resolver(resolver_addr, validate_dnssec)?;
     check_caa_with_resolver(
         domain,
         ca_identities,
@@ -328,7 +329,12 @@ fn evaluate_caa_record_set(
 }
 
 /// Build a resolver, optionally using an override address.
-fn build_resolver(resolver_addr: Option<&str>) -> Result<TokioAsyncResolver, AcmeError> {
+fn build_resolver(
+    resolver_addr: Option<&str>,
+    validate_dnssec: bool,
+) -> Result<TokioAsyncResolver, AcmeError> {
+    let mut opts = ResolverOpts::default();
+    opts.validate = validate_dnssec;
     let resolver = match resolver_addr {
         Some(addr) => {
             let socket_addr = addr.parse::<std::net::SocketAddr>().map_err(|e| {
@@ -336,9 +342,9 @@ fn build_resolver(resolver_addr: Option<&str>) -> Result<TokioAsyncResolver, Acm
             })?;
             let mut config = ResolverConfig::new();
             config.add_name_server(NameServerConfig::new(socket_addr, Protocol::Udp));
-            TokioAsyncResolver::tokio(config, ResolverOpts::default())
+            TokioAsyncResolver::tokio(config, opts)
         }
-        None => TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default()),
+        None => TokioAsyncResolver::tokio(ResolverConfig::default(), opts),
     };
     Ok(resolver)
 }
@@ -396,7 +402,7 @@ mod tests {
     #[tokio::test]
     async fn empty_ca_identities_returns_ok() {
         // When ca_identities is empty, check_caa is a no-op regardless of anything else.
-        let result = check_caa("example.com", &[], false, "http-01", None, None).await;
+        let result = check_caa("example.com", &[], false, "http-01", None, None, false).await;
         assert!(
             result.is_ok(),
             "empty identities should always return Ok: {result:?}"

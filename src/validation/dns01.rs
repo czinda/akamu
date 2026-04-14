@@ -13,11 +13,18 @@ use crate::error::AcmeError;
 
 /// Validate a dns-01 challenge.
 ///
-/// * `domain`   — the identifier value; any leading `*.` wildcard is stripped
+/// * `domain`          — the identifier value; any leading `*.` wildcard is stripped
 ///   before querying.
-/// * `key_auth` — `{token}.{jwk_thumbprint}`.
-pub async fn validate(domain: &str, key_auth: &str) -> Result<(), AcmeError> {
-    let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
+/// * `key_auth`        — `{token}.{jwk_thumbprint}`.
+/// * `validate_dnssec` — require DNSSEC-validated answers (CA/B Forum BR §3.2.2.4).
+pub async fn validate(
+    domain: &str,
+    key_auth: &str,
+    validate_dnssec: bool,
+) -> Result<(), AcmeError> {
+    let mut opts = ResolverOpts::default();
+    opts.validate = validate_dnssec;
+    let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), opts);
     validate_with_resolver(domain, key_auth, resolver).await
 }
 
@@ -166,6 +173,7 @@ mod tests {
         let result = validate(
             "invalid.localhost.acme-test-nonexistent.invalid",
             "token.thumbprint",
+            false,
         )
         .await;
         // Should return a Dns error or IncorrectResponse
@@ -177,7 +185,7 @@ mod tests {
         // Wildcard domain "*.example.invalid" should query "_acme-challenge.example.invalid",
         // not "_acme-challenge.*.example.invalid". The DNS lookup will fail (domain doesn't exist),
         // but the error message should reference the stripped domain.
-        let result = validate("*.acme-test-nonexistent.invalid", "token.thumbprint").await;
+        let result = validate("*.acme-test-nonexistent.invalid", "token.thumbprint", false).await;
         assert!(result.is_err());
         // The error must reference "acme-test-nonexistent.invalid" (stripped domain)
         let msg = result.unwrap_err().to_string();

@@ -33,14 +33,17 @@ pub async fn validate(
     account_uri: &str,
     issuer_domain: &str,
     resolver_addr: Option<std::net::SocketAddr>,
+    validate_dnssec: bool,
 ) -> Result<(), AcmeError> {
+    let mut opts = ResolverOpts::default();
+    opts.validate = validate_dnssec;
     let resolver = match resolver_addr {
         Some(addr) => {
             let mut config = ResolverConfig::new();
             config.add_name_server(NameServerConfig::new(addr, Protocol::Udp));
-            TokioAsyncResolver::tokio(config, ResolverOpts::default())
+            TokioAsyncResolver::tokio(config, opts)
         }
-        None => TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default()),
+        None => TokioAsyncResolver::tokio(ResolverConfig::default(), opts),
     };
     validate_with_resolver(domain, account_uri, issuer_domain, resolver).await
 }
@@ -586,6 +589,7 @@ mod tests {
             "uri",
             "issuer",
             None,
+            false,
         )
         .await;
         assert!(result.is_err());

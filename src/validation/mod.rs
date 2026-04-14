@@ -52,6 +52,7 @@ pub async fn validate_challenge(
         .dns_resolver_addr
         .as_deref()
         .and_then(|s| s.parse::<std::net::SocketAddr>().ok());
+    let validate_dnssec = state.config.server.validate_dnssec;
     let result = dispatch(
         chall_type,
         id_type,
@@ -61,6 +62,7 @@ pub async fn validate_challenge(
         http_port,
         &issuer_domain,
         dns_resolver_addr,
+        validate_dnssec,
         &state.validation_client,
         onion_csr_der,
     )
@@ -93,6 +95,7 @@ async fn dispatch(
     http_port: u16,
     issuer_domain: &str,
     dns_resolver_addr: Option<std::net::SocketAddr>,
+    validate_dnssec: bool,
     validation_client: &crate::state::ValidationClient,
     onion_csr_der: Option<&[u8]>,
 ) -> Result<(), AcmeError> {
@@ -100,10 +103,17 @@ async fn dispatch(
         "http-01" => {
             http01::validate(id_value, token, key_auth, http_port, validation_client).await
         }
-        "dns-01" => dns01::validate(id_value, key_auth).await,
+        "dns-01" => dns01::validate(id_value, key_auth, validate_dnssec).await,
         "tls-alpn-01" => tls_alpn01::validate(id_type, id_value, key_auth).await,
         "dns-persist-01" => {
-            dns_persist_01::validate(id_value, key_auth, issuer_domain, dns_resolver_addr).await
+            dns_persist_01::validate(
+                id_value,
+                key_auth,
+                issuer_domain,
+                dns_resolver_addr,
+                validate_dnssec,
+            )
+            .await
         }
         "onion-csr-01" => {
             let csr_der = onion_csr_der.ok_or_else(|| {
@@ -403,6 +413,7 @@ mod tests {
             80,
             "acme.test",
             None,
+            false,
             &client,
             None,
         )
