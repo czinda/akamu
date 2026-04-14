@@ -44,6 +44,14 @@
 # The library is internal; only the binary is packaged.
 %global cargo_install_lib 0
 
+# Force --locked for all cargo invocations.  Without it, cargo install
+# re-resolves the dependency graph from scratch in the offline build
+# environment, fails to match the [patch.crates-io] git source for openssl
+# against the vendor directory, and aborts.  --locked tells cargo to use the
+# Cargo.lock from the source tarball as-is, which already has the git revision
+# pinned and is consistent with the vendor tree.
+%global __cargo_common_opts %{?_smp_mflags} -Z avoid-dev-deps --locked
+
 # Feature list passed to cargo: sqlite is always on; postgres/mariadb are opt-in.
 %global _akamu_features backend-sqlite
 %if %{with backend_postgres}
