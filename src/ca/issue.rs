@@ -6,10 +6,12 @@ use synta::{Decoder, Encoding};
 use synta_certificate::{
     default_key_id_hasher, der_to_pem, encode_authority_key_identifier, encode_basic_constraints,
     encode_key_usage, encode_subject_key_identifier, oids, AuthorityInformationAccessBuilder,
-    CRLDistributionPointsBuilder, Certificate, CertificateBuilder, ExtendedKeyUsageBuilder,
-    KeyIdMethod, NameBuilder, PrivateKey, SubjectAlternativeNameBuilder,
+    CRLDistributionPointsBuilder, Certificate, CertificateBuilder, CertificatePoliciesBuilder,
+    ExtendedKeyUsageBuilder, KeyIdMethod, NameBuilder, PrivateKey, SubjectAlternativeNameBuilder,
     KEY_USAGE_DIGITAL_SIGNATURE,
 };
+
+use crate::profiles::CertificateParameters;
 
 use crate::error::AcmeError;
 use crate::state::CaState;
@@ -239,6 +241,65 @@ pub fn issue_certificate(
     })
 }
 
+// ── Profile-aware extension builders ─────────────────────────────────────────
+
+/// Build an ExtendedKeyUsage DER value from a list of short names or OID strings.
+///
+/// Recognised short names: `server_auth`, `client_auth`, `code_signing`,
+/// `email_protection`, `time_stamping`, `ocsp_signing`.
+/// Dotted-decimal OID strings (e.g. `"1.3.6.1.5.5.7.3.1"`) are also accepted.
+fn build_eku(ekus: &[String]) -> Result<Vec<u8>, AcmeError> {
+    let mut builder = ExtendedKeyUsageBuilder::new();
+    for eku in ekus {
+        builder = match eku.as_str() {
+            "server_auth" => builder.server_auth(),
+            "client_auth" => builder.client_auth(),
+            "code_signing" => builder.code_signing(),
+            "email_protection" => builder.email_protection(),
+            "time_stamping" => builder.time_stamping(),
+            "ocsp_signing" => builder.ocsp_signing(),
+            dotted => {
+                // Parse dotted-decimal OID string into component array.
+                let comps = parse_oid_str(dotted).ok_or_else(|| {
+                    AcmeError::Builder(format!("invalid EKU OID string '{dotted}'"))
+                })?;
+                builder.add_oid(&comps)
+            }
+        };
+    }
+    builder
+        .build()
+        .map_err(|e| AcmeError::Builder(format!("EKU build: {e}")))
+}
+
+/// Build a CertificatePolicies DER value from `(OID, CPS URI)` pairs.
+fn build_certificate_policies(
+    policies: &[(String, Option<String>)],
+) -> Result<Vec<u8>, AcmeError> {
+    let mut builder = CertificatePoliciesBuilder::new();
+    for (oid_str, cps_uri) in policies {
+        let comps = parse_oid_str(oid_str)
+            .ok_or_else(|| AcmeError::Builder(format!("invalid policy OID '{oid_str}'")))?;
+        builder = match cps_uri.as_deref() {
+            Some(uri) if !uri.is_empty() => builder.add_policy_cps(&comps, uri),
+            _ => builder.add_policy(&comps),
+        };
+    }
+    builder
+        .build()
+        .map_err(|e| AcmeError::Builder(format!("CertificatePolicies build: {e}")))
+}
+
+/// Parse a dotted-decimal OID string into a `Vec<u32>` component array.
+///
+/// Returns `None` when any component fails to parse as `u32`.
+fn parse_oid_str(s: &str) -> Option<Vec<u32>> {
+    s.split('.')
+        .map(|part| part.parse::<u32>().ok())
+        .collect::<Option<Vec<u32>>>()
+        .filter(|v| !v.is_empty())
+}
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 /// Extract the DER-encoded subject Name from a DER-encoded certificate.
@@ -271,6 +332,187 @@ fn ip_string_to_bytes(s: &str) -> Option<Vec<u8>> {
         Ok(IpAddr::V6(v6)) => Some(v6.octets().to_vec()),
         Err(_) => None,
     }
+}
+
+/// Issue an end-entity certificate using parameters derived from a profile.
+///
+/// This is the primary issuance path when the `[profiles]` subsystem is
+/// configured.  The caller resolves a [`CertificateParameters`] from
+/// [`crate::profiles::ProfileRegistry::resolve`] and passes it here;
+/// `CaState` provides only the signing key and CA certificate — all issuance
+/// policy comes from `params`.
+///
+/// For orders without a `profile` field, pass
+/// `CertificateParameters::from_ca(ca)` to reproduce the pre-profile
+/// behaviour (digitalSignature + serverAuth, CA validity).
+pub fn issue_with_params(
+    ca: &CaState,
+    csr: &ValidatedCsr,
+    params: &CertificateParameters,
+    not_before_override: Option<i64>,
+    not_after_override: Option<i64>,
+) -> Result<IssuedCert, AcmeError> {
+    // ── Extract CA name and SPKI DER ─────────────────────────────────────────
+    let ca_name_der = extract_ca_subject_der(&ca.cert_der)?;
+    let ca_spki_der = ca
+        .key
+        .public_key()
+        .map_err(|e| AcmeError::Crypto(format!("CA public key: {e}")))?
+        .spki_der()
+        .to_vec();
+
+    // ── Random serial ────────────────────────────────────────────────────────
+    let mut serial_bytes = [0u8; 16];
+    getrandom::getrandom(&mut serial_bytes)
+        .map_err(|e| AcmeError::Internal(format!("random serial: {e}")))?;
+    serial_bytes[0] = (serial_bytes[0] & 0x7f) | 0x01;
+    let serial = synta::Integer::from_bytes(&serial_bytes);
+    let serial_hex = hex_encode(&serial_bytes);
+
+    // ── Validity window ──────────────────────────────────────────────────────
+    let now = unix_now();
+    let raw_not_before = not_before_override.unwrap_or(now);
+    let earliest_allowed = now - 300;
+    let not_before_unix = if raw_not_before < earliest_allowed {
+        tracing::warn!(
+            "issue_with_params: notBefore {} before now-300 ({}); clamping",
+            raw_not_before,
+            earliest_allowed
+        );
+        earliest_allowed
+    } else {
+        raw_not_before
+    };
+    let raw_not_after =
+        not_after_override.unwrap_or(not_before_unix + params.validity_days as i64 * 86400);
+    let not_after_unix = if raw_not_after <= not_before_unix {
+        let fallback = not_before_unix + params.validity_days as i64 * 86400;
+        tracing::warn!(
+            "issue_with_params: notAfter {} not after notBefore {}; using fallback {}",
+            raw_not_after,
+            not_before_unix,
+            fallback,
+        );
+        fallback
+    } else {
+        raw_not_after
+    };
+    let not_before = synta_certificate::parse_time(&super::init::unix_to_generalized_time(not_before_unix))
+        .map_err(|e| AcmeError::Builder(format!("notBefore: {e}")))?;
+    let not_after = synta_certificate::parse_time(&super::init::unix_to_generalized_time(not_after_unix))
+        .map_err(|e| AcmeError::Builder(format!("notAfter: {e}")))?;
+
+    // ── Extensions ───────────────────────────────────────────────────────────
+    let hasher = default_key_id_hasher();
+
+    let bc_der = encode_basic_constraints(false, None)
+        .ok_or_else(|| AcmeError::Builder("BasicConstraints encode".into()))?;
+
+    // KeyUsage from profile parameters (zero bits → omit the extension).
+    let ku_der = if params.key_usage_bits != 0 {
+        Some(
+            encode_key_usage(params.key_usage_bits)
+                .ok_or_else(|| AcmeError::Builder("KeyUsage encode".into()))?,
+        )
+    } else {
+        None
+    };
+
+    // ExtendedKeyUsage from the profile's EKU list.
+    let eku_der = if !params.extended_key_usages.is_empty() {
+        Some(build_eku(&params.extended_key_usages)?)
+    } else {
+        None
+    };
+
+    let ski_der = encode_subject_key_identifier(&csr.spki_der, KeyIdMethod::Rfc5280Sha1, &hasher)
+        .ok_or_else(|| AcmeError::Builder("SKI encode".into()))?;
+    let aki_der = encode_authority_key_identifier(&ca_spki_der, KeyIdMethod::Rfc5280Sha1, &hasher)
+        .ok_or_else(|| AcmeError::Builder("AKI encode".into()))?;
+
+    let mut san_builder = SubjectAlternativeNameBuilder::new();
+    for san in &csr.sans {
+        match san.san_type.as_str() {
+            "dns" => {
+                san_builder = san_builder.dns_name(&san.value);
+            }
+            "ip" => {
+                let ip_bytes = ip_string_to_bytes(&san.value)
+                    .ok_or_else(|| AcmeError::Builder(format!("invalid IP SAN: {}", san.value)))?;
+                san_builder = san_builder.ip_address(&ip_bytes);
+            }
+            other => {
+                tracing::warn!("issue_with_params: unrecognised SAN type '{}' — skipped", other);
+            }
+        }
+    }
+    let san_der = san_builder
+        .build()
+        .map_err(|e| AcmeError::Builder(format!("SAN: {e}")))?;
+
+    // ── Assemble certificate ─────────────────────────────────────────────────
+    let signer = ca.key.as_signer(&params.hash_alg);
+
+    let mut builder = CertificateBuilder::new()
+        .issuer_name(&ca_name_der)
+        .subject_name(&csr.subject_der)
+        .public_key_der(&csr.spki_der)
+        .serial_number(serial)
+        .not_valid_before(not_before)
+        .not_valid_after(not_after)
+        .add_extension_oid(oids::BASIC_CONSTRAINTS, false, &bc_der);
+
+    if let Some(ku) = &ku_der {
+        builder = builder.add_extension_oid(oids::KEY_USAGE, true, ku);
+    }
+    if let Some(eku) = &eku_der {
+        builder = builder.add_extension_oid(oids::EXTENDED_KEY_USAGE, false, eku);
+    }
+
+    builder = builder
+        .add_extension_oid(oids::SUBJECT_KEY_IDENTIFIER, false, &ski_der)
+        .add_extension_oid(oids::AUTHORITY_KEY_IDENTIFIER, false, &aki_der)
+        .add_extension_oid(oids::SUBJECT_ALT_NAME, false, &san_der);
+
+    if let Some(ocsp) = &params.ocsp_url {
+        let aia_der = AuthorityInformationAccessBuilder::new()
+            .ocsp(ocsp)
+            .build()
+            .map_err(|e| AcmeError::Builder(format!("AIA: {e}")))?;
+        builder = builder.add_extension_oid(oids::AUTHORITY_INFO_ACCESS, false, &aia_der);
+    }
+    if let Some(crl) = &params.crl_url {
+        let cdp_der = CRLDistributionPointsBuilder::new()
+            .full_name_uri(crl)
+            .build()
+            .map_err(|e| AcmeError::Builder(format!("CDP: {e}")))?;
+        builder = builder.add_extension_oid(oids::CRL_DISTRIBUTION_POINTS, false, &cdp_der);
+    }
+
+    // CertificatePolicies — only added when the profile specifies at least one entry.
+    if !params.certificate_policies.is_empty() {
+        let cp_der = build_certificate_policies(&params.certificate_policies)?;
+        builder = builder.add_extension_oid(oids::CERTIFICATE_POLICIES, false, &cp_der);
+    }
+
+    let cert_der = builder
+        .sign(&signer)
+        .map_err(|e| AcmeError::Builder(format!("sign: {e}")))?;
+
+    let mut pem_bytes = der_to_pem("CERTIFICATE", &cert_der);
+    pem_bytes.extend_from_slice(&der_to_pem("CERTIFICATE", &ca.cert_der));
+    let cert_pem = String::from_utf8(pem_bytes)
+        .map_err(|_| AcmeError::Internal("PEM contains invalid UTF-8".into()))?;
+
+    Ok(IssuedCert {
+        id: uuid::Uuid::new_v4().to_string(),
+        serial_hex,
+        serial_bytes: serial_bytes.to_vec(),
+        cert_der,
+        cert_pem,
+        not_before: not_before_unix,
+        not_after: not_after_unix,
+    })
 }
 
 /// Issue a server TLS certificate for Akāmu itself (bootstrap / self-hosted TLS).
