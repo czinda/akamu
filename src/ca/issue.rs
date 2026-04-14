@@ -7,8 +7,16 @@ use synta_certificate::{
     default_key_id_hasher, der_to_pem, encode_authority_key_identifier, encode_basic_constraints,
     encode_key_usage, encode_subject_key_identifier, oids, AuthorityInformationAccessBuilder,
     CRLDistributionPointsBuilder, Certificate, CertificateBuilder, CertificatePoliciesBuilder,
-    ExtendedKeyUsageBuilder, KeyIdMethod, NameBuilder, PrivateKey, SubjectAlternativeNameBuilder,
-    KEY_USAGE_DIGITAL_SIGNATURE,
+    ExtendedKeyUsageBuilder, KeyIdMethod, NameBuilder, OpensslSignatureVerifier, PrivateKey,
+    SubjectAlternativeNameBuilder, KEY_USAGE_DIGITAL_SIGNATURE,
+};
+use synta_x509_verification::{
+    ops::VerificationCertificate,
+    policy::{
+        PolicyDefinition, WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS_WITH_PQ,
+        WEBPKI_PERMITTED_SPKI_ALGORITHMS_WITH_PQ,
+    },
+    OwnedStore, RevocationChecks,
 };
 
 use crate::profiles::CertificateParameters;
@@ -155,12 +163,14 @@ pub fn issue_certificate(
         .map_err(|e| AcmeError::Builder(format!("EKU: {e}")))?;
 
     // SubjectKeyIdentifier (from the end-entity public key in the CSR).
-    let ski_der = encode_subject_key_identifier(&csr.spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
-        .ok_or_else(|| AcmeError::Builder("SKI encode".into()))?;
+    let ski_der =
+        encode_subject_key_identifier(&csr.spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
+            .ok_or_else(|| AcmeError::Builder("SKI encode".into()))?;
 
     // AuthorityKeyIdentifier (from the CA's public key).
-    let aki_der = encode_authority_key_identifier(&ca_spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
-        .ok_or_else(|| AcmeError::Builder("AKI encode".into()))?;
+    let aki_der =
+        encode_authority_key_identifier(&ca_spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
+            .ok_or_else(|| AcmeError::Builder("AKI encode".into()))?;
 
     // SubjectAlternativeName: rebuild from the validated SANs.
     let mut san_builder = SubjectAlternativeNameBuilder::new();
@@ -223,6 +233,9 @@ pub fn issue_certificate(
         .sign(&signer)
         .map_err(|e| AcmeError::Builder(format!("sign: {e}")))?;
 
+    // Pre-issuance policy lint (CA/B Forum BR §4.3.1.2).
+    lint_issued_cert(&cert_der, ca_cert_der, now)?;
+
     // ── Build PEM bundle: leaf + CA ────────────────────────────────────────────
     // der_to_pem returns Vec<u8> (ASCII PEM bytes); concatenate and convert.
     let mut pem_bytes = der_to_pem("CERTIFICATE", &cert_der);
@@ -280,9 +293,7 @@ fn build_eku(ekus: &[String]) -> Result<Vec<u8>, AcmeError> {
 /// When the CPS URI is `None` or an empty string, the policy is encoded
 /// with no qualifiers.  Returns `Err` when any OID string fails to parse
 /// as dotted-decimal, or when the underlying DER encoder fails.
-fn build_certificate_policies(
-    policies: &[(String, Option<String>)],
-) -> Result<Vec<u8>, AcmeError> {
+fn build_certificate_policies(policies: &[(String, Option<String>)]) -> Result<Vec<u8>, AcmeError> {
     let mut builder = CertificatePoliciesBuilder::new();
     for (oid_str, cps_uri) in policies {
         let comps = parse_oid_str(oid_str)
@@ -355,7 +366,7 @@ fn ip_string_to_bytes(s: &str) -> Option<Vec<u8>> {
 ///   Zero bits means the extension is omitted entirely.
 /// - **ExtendedKeyUsage**: encoded when `params.extended_key_usages` is
 ///   non-empty; non-critical.  Short names and raw OID strings are both
-///   supported (see [`build_eku`]).
+///   supported (see `build_eku`).
 /// - **CRLDistributionPoints**: encoded only when `params.crl_url` is
 ///   `Some`; non-critical.
 /// - **AuthorityInfoAccess**: encoded only when `params.ocsp_url` is
@@ -421,10 +432,12 @@ pub fn issue_with_params(
     } else {
         raw_not_after
     };
-    let not_before = synta_certificate::parse_time(&super::init::unix_to_generalized_time(not_before_unix))
-        .map_err(|e| AcmeError::Builder(format!("notBefore: {e}")))?;
-    let not_after = synta_certificate::parse_time(&super::init::unix_to_generalized_time(not_after_unix))
-        .map_err(|e| AcmeError::Builder(format!("notAfter: {e}")))?;
+    let not_before =
+        synta_certificate::parse_time(&super::init::unix_to_generalized_time(not_before_unix))
+            .map_err(|e| AcmeError::Builder(format!("notBefore: {e}")))?;
+    let not_after =
+        synta_certificate::parse_time(&super::init::unix_to_generalized_time(not_after_unix))
+            .map_err(|e| AcmeError::Builder(format!("notAfter: {e}")))?;
 
     // ── Extensions ───────────────────────────────────────────────────────────
     let hasher = default_key_id_hasher();
@@ -449,10 +462,12 @@ pub fn issue_with_params(
         None
     };
 
-    let ski_der = encode_subject_key_identifier(&csr.spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
-        .ok_or_else(|| AcmeError::Builder("SKI encode".into()))?;
-    let aki_der = encode_authority_key_identifier(&ca_spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
-        .ok_or_else(|| AcmeError::Builder("AKI encode".into()))?;
+    let ski_der =
+        encode_subject_key_identifier(&csr.spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
+            .ok_or_else(|| AcmeError::Builder("SKI encode".into()))?;
+    let aki_der =
+        encode_authority_key_identifier(&ca_spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
+            .ok_or_else(|| AcmeError::Builder("AKI encode".into()))?;
 
     let mut san_builder = SubjectAlternativeNameBuilder::new();
     for san in &csr.sans {
@@ -466,7 +481,10 @@ pub fn issue_with_params(
                 san_builder = san_builder.ip_address(&ip_bytes);
             }
             other => {
-                tracing::warn!("issue_with_params: unrecognised SAN type '{}' — skipped", other);
+                tracing::warn!(
+                    "issue_with_params: unrecognised SAN type '{}' — skipped",
+                    other
+                );
             }
         }
     }
@@ -522,6 +540,9 @@ pub fn issue_with_params(
     let cert_der = builder
         .sign(&signer)
         .map_err(|e| AcmeError::Builder(format!("sign: {e}")))?;
+
+    // Pre-issuance policy lint (CA/B Forum BR §4.3.1.2).
+    lint_issued_cert(&cert_der, &ca.cert_der, now)?;
 
     let mut pem_bytes = der_to_pem("CERTIFICATE", &cert_der);
     pem_bytes.extend_from_slice(&der_to_pem("CERTIFICATE", &ca.cert_der));
@@ -606,11 +627,13 @@ pub fn sign_server_cert(
         .build()
         .map_err(|e| AcmeError::Builder(format!("EKU: {e}")))?;
 
-    let ski_der = encode_subject_key_identifier(&spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
-        .ok_or_else(|| AcmeError::Builder("SKI".into()))?;
+    let ski_der =
+        encode_subject_key_identifier(&spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
+            .ok_or_else(|| AcmeError::Builder("SKI".into()))?;
 
-    let aki_der = encode_authority_key_identifier(&ca_spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
-        .ok_or_else(|| AcmeError::Builder("AKI".into()))?;
+    let aki_der =
+        encode_authority_key_identifier(&ca_spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
+            .ok_or_else(|| AcmeError::Builder("AKI".into()))?;
 
     let san_der = SubjectAlternativeNameBuilder::new()
         .dns_name(server_name)
@@ -634,6 +657,44 @@ pub fn sign_server_cert(
         .add_extension_oid(oids::SUBJECT_ALT_NAME, false, &san_der)
         .sign(&signer)
         .map_err(|e| AcmeError::Builder(format!("sign server cert: {e}")))
+}
+
+/// Apply CA/B Forum BR §4.3.1.2 pre-issuance policy linting to a just-signed certificate.
+///
+/// Validates the DER-encoded leaf against the WebPKI profile (CABF BR) using
+/// `synta_x509_verification::verify`.  The check covers:
+/// - Algorithm compliance: no SHA-1, RSA ≥ 2048, EC named curves, PQ parameter rules.
+/// - Structural: AKI present, `basicConstraints.cA=FALSE`, serial ≤ 20 octets, v3.
+/// - Validity window: `notBefore ≤ now ≤ notAfter`.
+/// - Signature: the CA signature on the leaf is re-verified against `ca_cert_der`.
+///
+/// SAN matching and EKU content checks are intentionally skipped — those are validated
+/// during CSR processing and may be profile-specific (non-serverAuth EKUs are valid).
+///
+/// Returns `AcmeError::Internal` if any check fails.
+fn lint_issued_cert(cert_der: &[u8], ca_cert_der: &[u8], now: i64) -> Result<(), AcmeError> {
+    // Build a trust store containing the single CA trust anchor.
+    let store = OwnedStore::try_new(std::iter::once(ca_cert_der))
+        .map_err(|e| AcmeError::Internal(format!("lint: parse CA cert: {e}")))?;
+
+    // Parse the just-issued leaf.
+    let mut dec = Decoder::new(cert_der, Encoding::Der);
+    let cert: Certificate = dec
+        .decode()
+        .map_err(|e| AcmeError::Internal(format!("lint: parse cert: {e}")))?;
+    let leaf = VerificationCertificate::new(cert, cert_der);
+
+    // WebPKI policy: PQ-extended algorithm lists; no SAN matching; no EKU enforcement.
+    let mut policy = PolicyDefinition::new_server_pq(OpensslSignatureVerifier, vec![], now);
+    // Profiles may use non-serverAuth EKUs — skip the EKU presence/content check.
+    policy.extended_key_usage = None;
+    policy.permitted_spki_algorithms = WEBPKI_PERMITTED_SPKI_ALGORITHMS_WITH_PQ;
+    policy.permitted_signature_algorithms = WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS_WITH_PQ;
+
+    store
+        .verify(&leaf, &[], &policy, RevocationChecks::default())
+        .map(|_| ())
+        .map_err(|e| AcmeError::Internal(format!("pre-issuance lint failed: {e}")))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -684,9 +745,11 @@ mod tests {
         let bc = encode_basic_constraints(true, None).unwrap();
         let ku = encode_key_usage((1u16 << KEY_USAGE_KEY_CERT_SIGN) | (1u16 << KEY_USAGE_C_RLSIGN))
             .unwrap();
-        let ski = encode_subject_key_identifier(&spki, KeyIdMethod::Rfc7093Method1Sha256, &hasher).unwrap();
+        let ski = encode_subject_key_identifier(&spki, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
+            .unwrap();
         let aki =
-            encode_authority_key_identifier(&spki, KeyIdMethod::Rfc7093Method1Sha256, &hasher).unwrap();
+            encode_authority_key_identifier(&spki, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
+                .unwrap();
         let signer = key.as_signer("sha256");
         let cert_der = CertificateBuilder::new()
             .issuer_name(&name_der)
