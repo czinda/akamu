@@ -137,6 +137,11 @@ $(VENDOR_TARBALL):
 	@find "$(REPOROOT)/vendor" -name '*.profraw' -delete
 	@find "$(REPOROOT)/vendor" -name '.cargo-checksum.json' \
 	    -exec python3 -c "import json,sys;[open(p,'w').write(json.dumps(dict(d,files={k:v for k,v in d['files'].items() if not k.endswith('.profraw')}),separators=(',',':'))) for p in sys.argv[1:] for d in [json.load(open(p))]]" {} +
+	@# synta-codegen's build script resolves ASN.1 schemas via ../asn1 relative to
+	@# each crate's CARGO_MANIFEST_DIR.  In the vendored layout that path resolves
+	@# to vendor/asn1/, but the schemas live inside vendor/synta-0.1.6/asn1/.
+	@# Copy them to the expected sibling location so the build script finds them.
+	cp -a "$(REPOROOT)/vendor/synta-0.1.6/asn1" "$(REPOROOT)/vendor/asn1"
 	@# Archive vendor/ and Cargo.lock (pinned versions for reproducible builds).
 	tar -czf "$(CURDIR)/$@" \
 	    -C "$(REPOROOT)" vendor/ Cargo.lock
