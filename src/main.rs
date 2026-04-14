@@ -101,6 +101,20 @@ async fn run() -> Result<(), String> {
         aki_bytes: ca_aki_bytes,
     });
 
+    // ── Certificate profile registry ──────────────────────────────────────────
+    let profile_registry = if config.profiles.providers.is_empty() {
+        tracing::info!("profiles: no providers configured; using CA defaults for all orders");
+        akamu::profiles::ProfileRegistry::empty(&ca)
+    } else {
+        tracing::info!(
+            "profiles: loading from {} provider(s)",
+            config.profiles.providers.len()
+        );
+        akamu::profiles::ProfileRegistry::new(&config.profiles, &ca)
+            .await
+            .map_err(|e| format!("profile registry init: {e}"))?
+    };
+
     // ── TLS bootstrap (auto-generate cert/key if absent) ─────────────────────
     if config.tls.enabled {
         akamu::tls::init::load_or_generate(&config.tls, &ca)
@@ -145,6 +159,7 @@ async fn run() -> Result<(), String> {
         db_kind,
         ca,
         mtc,
+        profiles: profile_registry.clone(),
         tls: tls_state,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         nonces: Arc::clone(&nonces),
@@ -158,6 +173,9 @@ async fn run() -> Result<(), String> {
         validation_client: Client::builder(TokioExecutor::new())
             .build_http::<Empty<hyper::body::Bytes>>(),
     });
+
+    // Spawn background profile refresh task (no-op when no providers configured).
+    profile_registry.spawn_refresh_task();
 
     // Periodically sweep expired in-memory nonces (every 15 minutes, 24 h TTL).
     tokio::spawn(async move {
