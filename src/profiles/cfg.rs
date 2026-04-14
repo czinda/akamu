@@ -30,7 +30,7 @@
 //! # Translation
 //!
 //! [`parse_and_translate`] converts the properties map to
-//! [`CertificateParameters`][crate::profiles::CertificateParameters] by
+//! [`CertificateParameters`] by
 //! walking the policy set entries and handling the plugin classes that affect
 //! certificate content.  Unrecognised policy classes are silently ignored —
 //! they may control Dogtag-specific behaviour that has no equivalent in akamu.
@@ -98,7 +98,17 @@ pub fn parse_properties(content: &str) -> HashMap<String, String> {
 
 // ── Translator ────────────────────────────────────────────────────────────────
 
-/// Translate a parsed properties map into [`CertificateParameters`].
+/// Translate a parsed Dogtag Java-properties map into [`CertificateParameters`].
+///
+/// Walks the policy set entries and extracts parameters from the recognised
+/// policy plugin classes.  Starts from CA defaults and overrides individual
+/// fields as each matching class is encountered.  Unrecognised class IDs are
+/// silently skipped — they may govern Dogtag-internal behaviour that has no
+/// equivalent in akamu.
+///
+/// The `policyset.list` property must be present; if it is missing or empty
+/// the function returns `Err`.  Only the first policy set listed is processed
+/// (real-world Dogtag profiles use exactly one policy set).
 fn translate(
     props: &HashMap<String, String>,
     profile_id: &str,
@@ -125,9 +135,7 @@ fn translate(
         }
     };
     if set_name.is_empty() {
-        return Err(format!(
-            "profile '{profile_id}': 'policyset.list' is empty"
-        ));
+        return Err(format!("profile '{profile_id}': 'policyset.list' is empty"));
     }
 
     let policy_nums_key = format!("policyset.{set_name}.list");
@@ -215,10 +223,7 @@ fn translate(
                     let loc_key = format!("{pfx}.authInfoAccessADLocation_{i}");
                     let enable_key = format!("{pfx}.authInfoAccessADEnable_{i}");
 
-                    let enabled = props
-                        .get(&enable_key)
-                        .map(|v| v == "true")
-                        .unwrap_or(false);
+                    let enabled = props.get(&enable_key).map(|v| v == "true").unwrap_or(false);
                     if !enabled {
                         continue;
                     }
@@ -232,7 +237,11 @@ fn translate(
                             let loc = loc.trim();
                             // A non-empty URL overrides the CA default;
                             // an empty one suppresses the AIA extension.
-                            ocsp_url = if loc.is_empty() { None } else { Some(loc.to_string()) };
+                            ocsp_url = if loc.is_empty() {
+                                None
+                            } else {
+                                Some(loc.to_string())
+                            };
                         }
                         break;
                     }
@@ -245,7 +254,11 @@ fn translate(
                 let pt_key = format!("{pfx}.crlDistPointsPointName_0");
                 if let Some(uri) = props.get(&pt_key) {
                     let uri = uri.trim();
-                    crl_url = if uri.is_empty() { None } else { Some(uri.to_string()) };
+                    crl_url = if uri.is_empty() {
+                        None
+                    } else {
+                        Some(uri.to_string())
+                    };
                 }
             }
 
@@ -281,8 +294,13 @@ fn translate(
         extended_key_usages,
         crl_url,
         ocsp_url,
-        allowed_key_types: vec![],       // not expressible in Dogtag profile format
-        certificate_policies: vec![],    // TODO: certificatePoliciesExtDefaultImpl
+        // Dogtag profile files express no key-type constraint on the subscriber
+        // CSR; any algorithm is accepted by akamu's CSR validation logic.
+        allowed_key_types: vec![],
+        // `certificatePoliciesExtDefaultImpl` is not yet translated.
+        // When needed, parse `policyset.<set>.<n>.default.params.PolicyQualifiers*`
+        // from the properties map and populate this field accordingly.
+        certificate_policies: vec![],
     })
 }
 
@@ -332,9 +350,14 @@ policyset.serverCertSet.4.default.params.exKeyUsageOIDs=1.3.6.1.5.5.7.3.1,1.3.6.
     #[test]
     fn parse_properties_basic() {
         let props = parse_properties(SAMPLE_CFG);
-        assert_eq!(props.get("name").map(String::as_str), Some("Server Certificate Enrollment"));
         assert_eq!(
-            props.get("policyset.serverCertSet.2.default.params.range").map(String::as_str),
+            props.get("name").map(String::as_str),
+            Some("Server Certificate Enrollment")
+        );
+        assert_eq!(
+            props
+                .get("policyset.serverCertSet.2.default.params.range")
+                .map(String::as_str),
             Some("180")
         );
     }
@@ -349,7 +372,8 @@ policyset.serverCertSet.4.default.params.exKeyUsageOIDs=1.3.6.1.5.5.7.3.1,1.3.6.
 
     #[test]
     fn translate_sample_cfg() {
-        let (desc, params) = parse_and_translate(SAMPLE_CFG, "caServerCert", &default_ca()).unwrap();
+        let (desc, params) =
+            parse_and_translate(SAMPLE_CFG, "caServerCert", &default_ca()).unwrap();
         assert_eq!(desc, "Server Certificate Enrollment");
         assert_eq!(params.validity_days, 180);
 
@@ -359,8 +383,14 @@ policyset.serverCertSet.4.default.params.exKeyUsageOIDs=1.3.6.1.5.5.7.3.1,1.3.6.
         assert!(params.key_usage_bits & (1u16 << KEY_USAGE_KEY_ENCIPHERMENT) != 0);
 
         // serverAuth + clientAuth OIDs
-        assert!(params.extended_key_usages.iter().any(|e| e == "1.3.6.1.5.5.7.3.1"));
-        assert!(params.extended_key_usages.iter().any(|e| e == "1.3.6.1.5.5.7.3.2"));
+        assert!(params
+            .extended_key_usages
+            .iter()
+            .any(|e| e == "1.3.6.1.5.5.7.3.1"));
+        assert!(params
+            .extended_key_usages
+            .iter()
+            .any(|e| e == "1.3.6.1.5.5.7.3.2"));
     }
 
     #[test]
@@ -406,7 +436,10 @@ policyset.serverCertSet.4.default.params.exKeyUsageOIDs=1.3.6.1.5.5.7.3.1,1.3.6.
         // Falls back to CA defaults
         assert_eq!(params.validity_days, 42);
         assert_eq!(params.hash_alg, "sha384");
-        assert_eq!(params.crl_url.as_deref(), Some("http://crl.example.com/ca.crl"));
+        assert_eq!(
+            params.crl_url.as_deref(),
+            Some("http://crl.example.com/ca.crl")
+        );
         assert_eq!(params.ocsp_url.as_deref(), Some("http://ocsp.example.com"));
     }
 }

@@ -101,8 +101,14 @@ pub struct AppState {
     pub ca: Arc<CaState>,
     pub mtc: Arc<MtcState>,
     /// Certificate profile registry.  Profiles are cached in memory and
-    /// refreshed by a background task; no external system is queried at
-    /// issuance time.
+    /// refreshed periodically by a background task started via
+    /// [`ProfileRegistry::spawn_refresh_task`]; no external system is
+    /// queried at certificate issuance time.
+    ///
+    /// When no `[profiles]` providers are configured, this holds an empty
+    /// registry ([`ProfileRegistry::empty`]) and all issuance falls back to
+    /// [`CertificateParameters::from_ca`] (`digitalSignature` KeyUsage,
+    /// `serverAuth` EKU, CA validity and URL defaults).
     pub profiles: Arc<ProfileRegistry>,
     /// Present when `[tls]` is enabled and client auth is configured.
     pub tls: Option<Arc<TlsState>>,

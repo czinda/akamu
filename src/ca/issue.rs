@@ -273,6 +273,13 @@ fn build_eku(ekus: &[String]) -> Result<Vec<u8>, AcmeError> {
 }
 
 /// Build a CertificatePolicies DER value from `(OID, CPS URI)` pairs.
+///
+/// Each pair produces one `PolicyInformation` element in the extension.
+/// When the CPS URI is `Some(uri)` and non-empty, an `id-qt-cps`
+/// qualifier (OID 1.3.6.1.5.5.7.2.1) is attached to that policy entry.
+/// When the CPS URI is `None` or an empty string, the policy is encoded
+/// with no qualifiers.  Returns `Err` when any OID string fails to parse
+/// as dotted-decimal, or when the underlying DER encoder fails.
 fn build_certificate_policies(
     policies: &[(String, Option<String>)],
 ) -> Result<Vec<u8>, AcmeError> {
@@ -340,11 +347,28 @@ fn ip_string_to_bytes(s: &str) -> Option<Vec<u8>> {
 /// configured.  The caller resolves a [`CertificateParameters`] from
 /// [`crate::profiles::ProfileRegistry::resolve`] and passes it here;
 /// `CaState` provides only the signing key and CA certificate — all issuance
-/// policy comes from `params`.
+/// policy (validity, key usage, EKU, CRL/OCSP URLs, certificate policies)
+/// comes from `params`.
+///
+/// Extension building decisions:
+/// - **KeyUsage**: encoded when `params.key_usage_bits != 0`; marked critical.
+///   Zero bits means the extension is omitted entirely.
+/// - **ExtendedKeyUsage**: encoded when `params.extended_key_usages` is
+///   non-empty; non-critical.  Short names and raw OID strings are both
+///   supported (see [`build_eku`]).
+/// - **CRLDistributionPoints**: encoded only when `params.crl_url` is
+///   `Some`; non-critical.
+/// - **AuthorityInfoAccess**: encoded only when `params.ocsp_url` is
+///   `Some`; non-critical.
+/// - **CertificatePolicies**: encoded only when `params.certificate_policies`
+///   is non-empty; non-critical.
+///
+/// Validity window resolution and notBefore clamping follow the same rules
+/// as [`issue_certificate`].
 ///
 /// For orders without a `profile` field, pass
 /// `CertificateParameters::from_ca(ca)` to reproduce the pre-profile
-/// behaviour (digitalSignature + serverAuth, CA validity).
+/// behaviour (`digitalSignature` KeyUsage, `serverAuth` EKU, CA validity).
 pub fn issue_with_params(
     ca: &CaState,
     csr: &ValidatedCsr,

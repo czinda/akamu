@@ -28,7 +28,7 @@
 //!
 //! 1. Add a variant to [`crate::config::ProviderConfig`].
 //! 2. Implement a `load_<type>` function in a new submodule.
-//! 3. Call it from [`load_all_providers`].
+//! 3. Call it from `load_all_providers`.
 
 pub mod builtin;
 pub mod cfg;
@@ -49,13 +49,26 @@ use crate::state::CaState;
 /// `CaState`.
 #[derive(Clone, Debug)]
 pub struct CaDefaults {
+    /// Default validity period in days, copied from `[ca].validity_days`.
     pub validity_days: u32,
+    /// Signing hash algorithm string, copied from `[ca].hash_alg`
+    /// (e.g. `"sha256"`, `"sha384"`, `"sha512"`).
     pub hash_alg: String,
+    /// CRL distribution point URL, copied from `[ca].crl_url`.  `None` means
+    /// the CA has no CRL URL; profiles that do not override this value will
+    /// emit no CRLDistributionPoints extension.
     pub crl_url: Option<String>,
+    /// OCSP responder URL, copied from `[ca].ocsp_url`.  `None` means the CA
+    /// has no OCSP URL; profiles that do not override this value will emit no
+    /// AuthorityInfoAccess extension.
     pub ocsp_url: Option<String>,
 }
 
 impl CaDefaults {
+    /// Snapshot the CA-level defaults from `CaState` for use during profile loading.
+    ///
+    /// Called once when [`ProfileRegistry::new`] is constructed so that the
+    /// background refresh task does not need to retain a reference to `CaState`.
     pub fn from_ca(ca: &CaState) -> Self {
         Self {
             validity_days: ca.validity_days,
@@ -85,15 +98,23 @@ pub struct CertificateParameters {
     /// `"time_stamping"`, `"ocsp_signing"`) and raw dotted-decimal OID
     /// strings are both accepted.
     pub extended_key_usages: Vec<String>,
-    /// CRL distribution point URL.  `None` → no CDP extension.
+    /// CRL distribution point URL.  `None` means no CRLDistributionPoints
+    /// extension is included in the issued certificate.  This is a fully
+    /// resolved value — the three-state inheritance semantics from
+    /// `BuiltinProfileConfig` (`None` = inherit, `""` = suppress,
+    /// `Some(url)` = override) have already been applied by the provider
+    /// loading function before this struct is populated.
     pub crl_url: Option<String>,
-    /// OCSP responder URL.  `None` → no AIA extension.
+    /// OCSP responder URL.  `None` means no AuthorityInfoAccess extension is
+    /// included in the issued certificate.  Fully resolved, same as `crl_url`.
     pub ocsp_url: Option<String>,
     /// Allowed subscriber CSR key types.  Empty = any key type accepted.
     /// Format: `"ec:P-256"`, `"rsa:2048"`, etc.
     pub allowed_key_types: Vec<String>,
-    /// Certificate policy `(OID, CPS URI)` pairs.
-    /// Empty = no CertificatePolicies extension.
+    /// Certificate policy `(OID, CPS URI)` pairs for the CertificatePolicies
+    /// extension.  Empty = no CertificatePolicies extension is included.
+    /// The inner `Option<String>` is `None` when no `id-qt-cps` qualifier
+    /// (OID 1.3.6.1.5.5.7.2.1) is needed for that policy OID.
     pub certificate_policies: Vec<(String, Option<String>)>,
 }
 
@@ -146,6 +167,12 @@ pub struct ProfileRegistry {
 
 impl ProfileRegistry {
     /// Build the registry and perform the initial profile load.
+    ///
+    /// Iterates all configured providers and loads their profiles.  Providers
+    /// may perform filesystem or network I/O.  Returns `Err` if any provider
+    /// returns a fatal error (for example, when the `dogtag` or `ipa` LDAP
+    /// backend is configured but LDAP loading is not yet implemented).
+    /// A provider that finds zero matching profiles is not an error.
     pub async fn new(cfg: &ProfilesConfig, ca: &CaState) -> Result<Arc<Self>, String> {
         let ca_defaults = CaDefaults::from_ca(ca);
         let profiles = load_all_providers(cfg, &ca_defaults).await?;
@@ -256,8 +283,14 @@ impl ProfileRegistry {
 
 /// Load all providers and merge their profiles into a single map.
 ///
-/// When the same profile ID appears in multiple providers, the first one in
-/// HashMap iteration order wins.
+/// Providers are iterated in `HashMap` iteration order, which is not
+/// deterministic across runs.  When the same profile ID appears in multiple
+/// providers, the first provider encountered during this iteration wins and
+/// later providers cannot overwrite it.  Keep profile IDs unique across
+/// providers to avoid ambiguity, or treat one provider as the authoritative
+/// source for each profile ID.
+///
+/// Returns `Err` if any provider returns a fatal loading error.
 async fn load_all_providers(
     cfg: &ProfilesConfig,
     ca: &CaDefaults,

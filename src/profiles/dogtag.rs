@@ -50,6 +50,18 @@ pub async fn load_dogtag(
 
 // ── Filesystem loader ─────────────────────────────────────────────────────────
 
+/// Load Dogtag certificate profiles from a directory of `.cfg` files.
+///
+/// Each file named `<profile_id>.cfg` in `profile_dir` is read and parsed by
+/// [`crate::profiles::cfg::parse_and_translate`].  When `filter` is non-empty,
+/// only profile IDs listed in `filter` are loaded; an empty `filter` loads all
+/// `.cfg` files found.  Files that cannot be read or that fail to parse are
+/// logged at `WARN` level and skipped — they do not cause the entire load to
+/// fail.
+///
+/// This function is `pub(crate)` so that the `ipa` provider can reuse it for
+/// its filesystem fallback path, because IPA profile `.cfg` files use the same
+/// Dogtag Java-properties format.
 pub(crate) fn load_from_filesystem(
     provider_name: &str,
     profile_dir: &str,
@@ -129,12 +141,8 @@ pub(crate) fn load_from_filesystem(
 
 /// Load profiles from Dogtag's LDAP store.
 ///
-/// LDAP layout:
-/// - Container: `ou=certificateProfiles,ou=ca,<base_dn>`
-/// - Object class: `certProfile`
-/// - Config attribute: `certProfileConfig` (raw `.cfg` bytes)
+/// When fully implemented this function will perform a one-level LDAP search:
 ///
-/// Search performed:
 /// ```text
 /// base:   ou=certificateProfiles,ou=ca,<base_dn>
 /// scope:  one
@@ -142,21 +150,25 @@ pub(crate) fn load_from_filesystem(
 /// attrs:  cn, certProfileConfig
 /// ```
 ///
-/// # Not yet implemented
+/// The `certProfileConfig` attribute contains the raw `.cfg` file bytes, which
+/// are parsed with [`crate::profiles::cfg::parse_and_translate`].
+/// Authentication uses simple bind (`bind_dn` + `bind_password_file` from
+/// [`LdapConfig`][crate::config::LdapConfig]).
 ///
-/// LDAP profile loading requires an async LDAP client (e.g. `ldap3`) with
-/// SASL support.  The dependency has not been added yet; configure
-/// `profile_dir` as a filesystem fallback in the meantime.
+/// # Status
+///
+/// **Not yet implemented.**  LDAP profile loading requires an async LDAP
+/// client (e.g. the `ldap3` crate) that is not yet a project dependency.
+/// Until this is implemented, configure `profile_dir` as a filesystem
+/// fallback in the `[profiles.providers.<name>]` block.
+/// Calling this function always returns `Err`.
 async fn load_from_ldap(
     provider_name: &str,
     ldap_cfg: &crate::config::LdapConfig,
     _filter: &[String],
     _ca: &CaDefaults,
 ) -> Result<HashMap<String, (String, CertificateParameters)>, String> {
-    let container_dn = format!(
-        "ou=certificateProfiles,ou=ca,{}",
-        ldap_cfg.base_dn
-    );
+    let container_dn = format!("ou=certificateProfiles,ou=ca,{}", ldap_cfg.base_dn);
     Err(format!(
         "profiles provider '{provider_name}' (dogtag): \
          LDAP profile loading is not yet implemented \

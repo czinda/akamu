@@ -63,39 +63,40 @@ pub async fn load_ipa(
 
 /// Load profiles from the IPA Dogtag LDAP store via GSSAPI.
 ///
-/// LDAP layout:
-/// - Container: `ou=certificateProfiles,ou=ca,<base_dn>` (typically `o=ipaca`)
-/// - Object class: `certProfile`
-/// - Config attribute: `certProfileConfig` (raw `.cfg` bytes)
+/// When fully implemented this function will perform a one-level LDAP search
+/// against the IPA-embedded Dogtag LDAP instance (default port 7389):
 ///
-/// Search performed:
 /// ```text
-/// base:   ou=certificateProfiles,ou=ca,<base_dn>
+/// base:   ou=certificateProfiles,ou=ca,o=ipaca
 /// scope:  one
 /// filter: (objectClass=certProfile)
 /// attrs:  cn, certProfileConfig
 /// ```
 ///
-/// Authentication: SASL GSSAPI.  If `keytab_file` and `principal` are set in
-/// [`LdapConfig`][crate::config::LdapConfig], a TGT is obtained from the
-/// keytab before connecting; otherwise the current ccache is used.
+/// The `certProfileConfig` attribute contains the raw `.cfg` file bytes, which
+/// are parsed with [`crate::profiles::cfg::parse_and_translate`].
 ///
-/// # Not yet implemented
+/// Authentication is SASL GSSAPI (Kerberos).  When `keytab_file` and
+/// `principal` are set in [`LdapConfig`][crate::config::LdapConfig], a TGT
+/// is obtained from the keytab before connecting; otherwise the current
+/// Kerberos credential cache (ccache) is used.  The ccache is typically
+/// populated by `kinit` or a system keytab renewal daemon.
 ///
-/// GSSAPI LDAP requires an async LDAP client (e.g. `ldap3`) compiled with
-/// SASL/GSSAPI support and linked against `libsasl2` + `libgssapi_krb5`.
-/// The dependency has not been added yet; use `profile_dir` as a filesystem
-/// fallback in the meantime.
+/// # Status
+///
+/// **Not yet implemented.**  GSSAPI LDAP requires an async LDAP client
+/// (e.g. the `ldap3` crate) compiled with SASL/GSSAPI support and linked
+/// against `libsasl2` and `libgssapi_krb5`.  These dependencies have not been
+/// added yet; use `profile_dir` as a filesystem fallback in the
+/// `[profiles.providers.<name>]` block.
+/// Calling this function always returns `Err`.
 async fn load_from_ldap(
     provider_name: &str,
     ldap_cfg: &crate::config::LdapConfig,
     _filter: &[String],
     _ca: &CaDefaults,
 ) -> Result<HashMap<String, (String, CertificateParameters)>, String> {
-    let container_dn = format!(
-        "ou=certificateProfiles,ou=ca,{}",
-        ldap_cfg.base_dn
-    );
+    let container_dn = format!("ou=certificateProfiles,ou=ca,{}", ldap_cfg.base_dn);
     let auth_method = if ldap_cfg.gssapi {
         "SASL GSSAPI (Kerberos)"
     } else {
