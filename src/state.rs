@@ -13,6 +13,7 @@ use synta_mtc::crypto::HashAlgorithm;
 use crate::config::Config;
 use crate::db::DbKind;
 use crate::mtc::log::SharedLog;
+use crate::profiles::ProfileRegistry;
 
 /// In-memory nonce store.
 ///
@@ -99,6 +100,10 @@ pub struct AppState {
     pub db_kind: DbKind,
     pub ca: Arc<CaState>,
     pub mtc: Arc<MtcState>,
+    /// Certificate profile registry.  Profiles are cached in memory and
+    /// refreshed by a background task; no external system is queried at
+    /// issuance time.
+    pub profiles: Arc<ProfileRegistry>,
     /// Present when `[tls]` is enabled and client auth is configured.
     pub tls: Option<Arc<TlsState>>,
     /// In-memory cache of account key material keyed by account ID.
