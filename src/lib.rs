@@ -9,6 +9,7 @@ pub mod db;
 pub mod error;
 pub mod jose;
 pub mod mtc;
+pub mod profiles;
 pub mod routes;
 pub mod star;
 pub mod state;
