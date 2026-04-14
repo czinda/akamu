@@ -37,8 +37,9 @@ pub async fn get_directory(State(state): State<Arc<AppState>>) -> impl IntoRespo
         }
         meta["auto-renewal"] = auto_renewal;
     }
-    if !state.config.server.profiles.is_empty() {
-        meta["profiles"] = json!(state.config.server.profiles);
+    let loaded_profiles = state.profiles.all_profiles();
+    if !loaded_profiles.is_empty() {
+        meta["profiles"] = json!(loaded_profiles);
     }
 
     let dir = json!({
