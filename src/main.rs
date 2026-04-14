@@ -38,6 +38,16 @@ async fn run() -> Result<(), String> {
 
     tracing::info!("loading config from '{config_path}'");
     let config = Config::from_file(&config_path)?;
+
+    // CA/B Forum BR §6.3.2 validity caps: 200 days since 2026-03-15, 100 from 2027-03-15.
+    if config.ca.validity_days > 200 {
+        tracing::warn!(
+            "ca.validity_days={} exceeds the 200-day CA/B Forum BR limit (§6.3.2); \
+             certificates issued by this CA cannot be used in public WebPKI chains",
+            config.ca.validity_days
+        );
+    }
+
     let config = Arc::new(config);
 
     // ── Database ──────────────────────────────────────────────────────────────

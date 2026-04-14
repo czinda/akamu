@@ -384,6 +384,14 @@ pub struct ServerConfig {
     /// successfully perform outbound connections to `.onion` hidden services.
     #[serde(default)]
     pub tor_connectivity_enabled: bool,
+    /// Enable DNSSEC validation for DNS-based challenge verification.
+    ///
+    /// Applies to dns-01, dns-persist-01, and CAA record lookups.
+    /// Required by CA/B Forum BR §3.2.2.4 / §3.2.2.8.1 since 2026-03-15.
+    /// Defaults to `true`.  Set to `false` only for testing or in deployments
+    /// where the DNS infrastructure is not yet DNSSEC-signed (non-compliant).
+    #[serde(default = "default_validate_dnssec")]
+    pub validate_dnssec: bool,
 }
 
 /// Server-side TLS configuration.  Absent or `enabled = false` → plain HTTP (no change).
@@ -498,6 +506,10 @@ fn default_authz_expiry_secs() -> u64 {
 
 fn default_max_body_bytes() -> usize {
     65536
+}
+
+fn default_validate_dnssec() -> bool {
+    true
 }
 
 fn default_star_allow_certificate_get() -> bool {
