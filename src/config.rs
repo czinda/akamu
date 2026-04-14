@@ -16,6 +16,249 @@ pub struct Config {
     /// Server-side TLS. Absent or `enabled = false` → plain HTTP, no behavior change.
     #[serde(default)]
     pub tls: TlsConfig,
+    /// Certificate profile providers.  When absent, orders without a `profile`
+    /// field fall back to CA defaults; the deprecated `server.profiles` map
+    /// still governs directory advertisement in that case.
+    #[serde(default)]
+    pub profiles: ProfilesConfig,
+}
+
+// ── Profile subsystem configuration ──────────────────────────────────────────
+
+/// Top-level `[profiles]` configuration section.
+///
+/// Each key under `providers` is a provider name; the `type` field selects
+/// the backend:
+///
+/// ```toml
+/// # Refresh all profiles every 30 minutes
+/// [profiles]
+/// refresh_interval_secs = 1800
+///
+/// # Built-in profiles defined inline
+/// [profiles.providers.local]
+/// type = "builtin"
+///
+/// [profiles.providers.local.profiles.tlsserver]
+/// description = "TLS server certificate"
+/// validity_days = 90
+/// key_usage  = ["digital_signature", "key_encipherment"]
+/// eku        = ["server_auth"]
+///
+/// # Dogtag PKI profiles from the filesystem
+/// [profiles.providers.dogtag_prod]
+/// type        = "dogtag"
+/// profile_dir = "/etc/pki/pki-tomcat/ca/profiles/ca"
+/// profiles    = ["caServerCert", "caIPAserviceCert"]   # empty = all
+///
+/// # FreeIPA/IPAThinCA profiles via GSSAPI LDAP
+/// [profiles.providers.ipa_prod]
+/// type     = "ipa"
+/// profiles = ["caIPAserviceCert", "IECUserRoles"]
+///
+/// [profiles.providers.ipa_prod.ldap]
+/// uri          = "ldap://ipa.example.com:7389"
+/// base_dn      = "o=ipaca"
+/// gssapi       = true
+/// keytab_file  = "/etc/akamu/akamu.keytab"
+/// principal    = "akamu/akamu.example.com@EXAMPLE.COM"
+/// ```
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct ProfilesConfig {
+    /// How often the background task re-reads profiles from all providers.
+    /// Profiles are cached in memory; this controls how long a stale cache
+    /// can be served before a fresh load is attempted.  Default: 3600 (1 hour).
+    /// Builtin (TOML) profiles never change between refreshes.
+    #[serde(default = "default_profile_refresh_secs")]
+    pub refresh_interval_secs: u64,
+    /// Named providers.  When the same profile ID exists in multiple providers,
+    /// the first one in HashMap iteration order wins.  Keep profile IDs unique
+    /// across providers to avoid ambiguity.
+    #[serde(default)]
+    pub providers: HashMap<String, ProviderConfig>,
+}
+
+fn default_profile_refresh_secs() -> u64 {
+    3600 // 1 hour
+}
+
+/// Per-provider configuration, discriminated by the `type` field.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum ProviderConfig {
+    /// Profiles declared inline in `config.toml`; akamu's local CA signs.
+    Builtin(BuiltinProviderConfig),
+    /// Profiles read from Dogtag PKI `.cfg` files (filesystem or LDAP).
+    ///
+    /// LDAP layout: `cn=<id>,ou=certificateProfiles,ou=ca,<base_dn>`
+    /// with object class `certProfile` and config in `certProfileConfig`.
+    Dogtag(DogtagProviderConfig),
+    /// Profiles read from a FreeIPA / IPAThinCA deployment.
+    ///
+    /// IPAThinCA stores profiles in the same Dogtag LDAP format at
+    /// `ou=certificateProfiles,ou=ca,o=ipaca` on the IPA-embedded Dogtag
+    /// LDAP instance (default port 7389).  LDAP access uses GSSAPI/Kerberos.
+    Ipa(IpaProviderConfig),
+}
+
+// ── builtin ───────────────────────────────────────────────────────────────────
+
+/// Configuration for the `builtin` provider.
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct BuiltinProviderConfig {
+    /// Profile definitions keyed by profile identifier.
+    #[serde(default)]
+    pub profiles: HashMap<String, BuiltinProfileConfig>,
+}
+
+/// A single profile entry under a `builtin` provider.
+#[derive(Debug, Deserialize, Clone)]
+pub struct BuiltinProfileConfig {
+    /// Human-readable label or URL; advertised in the ACME directory.
+    pub description: String,
+    /// Certificate validity in days.  `None` inherits from `[ca].validity_days`.
+    pub validity_days: Option<u32>,
+    /// Signing hash algorithm (`"sha256"`, `"sha384"`, `"sha512"`).
+    /// `None` inherits from `[ca].hash_alg`.
+    pub hash_alg: Option<String>,
+    /// Key usage bit names.  Recognised values: `"digital_signature"`,
+    /// `"non_repudiation"`, `"key_encipherment"`, `"data_encipherment"`,
+    /// `"key_agreement"`, `"key_cert_sign"`, `"crl_sign"`,
+    /// `"encipher_only"`, `"decipher_only"`.
+    #[serde(default = "default_profile_key_usage")]
+    pub key_usage: Vec<String>,
+    /// Extended key usage entries.  Short names: `"server_auth"`,
+    /// `"client_auth"`, `"code_signing"`, `"email_protection"`,
+    /// `"time_stamping"`, `"ocsp_signing"`.  Dotted-decimal OID strings
+    /// (e.g. `"1.3.6.1.5.5.7.3.1"`) are also accepted.
+    #[serde(default = "default_profile_eku")]
+    pub eku: Vec<String>,
+    /// CRL distribution point URL.  `None` inherits from `[ca].crl_url`.
+    /// Empty string `""` suppresses the CDP extension for this profile.
+    pub crl_url: Option<String>,
+    /// OCSP responder URL.  Same inheritance / suppression semantics as `crl_url`.
+    pub ocsp_url: Option<String>,
+    /// Restrict subscriber CSR key algorithms.  Empty = any key type accepted.
+    /// Same format as `[ca].key_type`: `"ec:P-256"`, `"rsa:2048"`, etc.
+    #[serde(default)]
+    pub allowed_key_types: Vec<String>,
+    /// Certificate policy OIDs to include in the CertificatePolicies extension.
+    /// Empty = no CertificatePolicies extension.
+    #[serde(default)]
+    pub certificate_policies: Vec<PolicyEntry>,
+}
+
+/// A certificate policy OID with an optional CPS URI qualifier.
+#[derive(Debug, Deserialize, Clone)]
+pub struct PolicyEntry {
+    /// Dotted-decimal OID string, e.g. `"2.23.140.1.2.1"` (BR DV-SSL).
+    pub oid: String,
+    /// Optional CPS URI pointer (`id-qt-cps`, OID 1.3.6.1.5.5.7.2.1).
+    pub cps_uri: Option<String>,
+}
+
+fn default_profile_key_usage() -> Vec<String> {
+    vec!["digital_signature".to_string()]
+}
+
+fn default_profile_eku() -> Vec<String> {
+    vec!["server_auth".to_string()]
+}
+
+// ── dogtag ────────────────────────────────────────────────────────────────────
+
+/// Configuration for the `dogtag` provider.
+///
+/// Reads Dogtag PKI certificate profile definitions.  When `ldap` is present
+/// it takes priority over `profile_dir`; at least one must be configured.
+///
+/// Dogtag `.cfg` files are Java-properties files named `<profile_id>.cfg`.
+/// The default filesystem location is `/etc/pki/<instance>/ca/profiles/ca/`.
+#[derive(Debug, Deserialize, Clone)]
+pub struct DogtagProviderConfig {
+    /// Directory containing Dogtag `.cfg` profile files (filesystem source).
+    pub profile_dir: Option<String>,
+    /// LDAP connection for reading profiles from Dogtag's internal LDAP store.
+    /// Profiles are searched at `ou=certificateProfiles,ou=ca,<ldap.base_dn>`.
+    pub ldap: Option<LdapConfig>,
+    /// Restrict loading to these profile IDs.  Empty = load all profiles found.
+    #[serde(default)]
+    pub profiles: Vec<String>,
+}
+
+// ── ipa ───────────────────────────────────────────────────────────────────────
+
+/// Configuration for the `ipa` provider.
+///
+/// Reads certificate profile definitions from a FreeIPA / IPAThinCA deployment.
+/// IPAThinCA stores profiles in Dogtag's LDAP format under
+/// `ou=certificateProfiles,ou=ca,o=ipaca` on the IPA-embedded Dogtag LDAP
+/// instance.  LDAP authentication is done via GSSAPI (Kerberos).
+///
+/// Filesystem fallback: profiles exported as `.cfg` files in `profile_dir`.
+#[derive(Debug, Deserialize, Clone)]
+pub struct IpaProviderConfig {
+    /// Directory containing IPA/Dogtag `.cfg` profile files (filesystem fallback).
+    pub profile_dir: Option<String>,
+    /// LDAP connection to the IPA Dogtag LDAP instance.
+    /// Typical URI: `ldap://ipa.example.com:7389`; `base_dn` = `o=ipaca`.
+    /// Authentication is expected to be GSSAPI (`gssapi = true`).
+    pub ldap: Option<LdapConfig>,
+    /// Restrict loading to these profile IDs.  Empty = load all profiles found.
+    #[serde(default)]
+    pub profiles: Vec<String>,
+}
+
+// ── shared LDAP config ────────────────────────────────────────────────────────
+
+/// LDAP connection parameters shared by the `dogtag` and `ipa` providers.
+///
+/// Two mutually exclusive authentication methods are supported:
+///
+/// **Simple bind** — set `bind_dn` and `bind_password_file`.
+///
+/// **GSSAPI / Kerberos** — set `gssapi = true`.  If `keytab_file` and
+/// `principal` are set, a TGT is obtained from the keytab before connecting;
+/// otherwise the current Kerberos credential cache (ccache) is used.  This
+/// is the expected method for IPA LDAP access.
+#[derive(Debug, Deserialize, Clone)]
+pub struct LdapConfig {
+    /// LDAP URI, e.g. `ldap://host:389`, `ldaps://host:636`,
+    /// `ldap://ipa.example.com:7389`.
+    pub uri: String,
+    /// LDAP base DN under which profiles are searched.
+    /// Dogtag: directory root suffix (e.g. `dc=example,dc=com`).
+    /// IPA:    `o=ipaca`.
+    pub base_dn: String,
+
+    // ── Simple bind ────────────────────────────────────────────────────────
+    /// Bind DN for simple authentication (mutually exclusive with `gssapi`).
+    pub bind_dn: Option<String>,
+    /// Path to a file containing the bind password (one line, no trailing newline
+    /// required).  Required when `bind_dn` is set.
+    pub bind_password_file: Option<String>,
+
+    // ── GSSAPI / Kerberos ──────────────────────────────────────────────────
+    /// Use SASL GSSAPI (Kerberos) authentication.  Default: `false`.
+    /// Mutually exclusive with `bind_dn` / `bind_password_file`.
+    #[serde(default)]
+    pub gssapi: bool,
+    /// Path to a Kerberos keytab file.  When set together with `principal`,
+    /// a TGT is obtained from the keytab before connecting.  When absent,
+    /// the current credential cache (ccache) is used.
+    pub keytab_file: Option<String>,
+    /// Kerberos principal for keytab-based authentication,
+    /// e.g. `akamu/akamu.example.com@EXAMPLE.COM`.
+    pub principal: Option<String>,
+
+    // ── TLS ────────────────────────────────────────────────────────────────
+    /// PEM file for LDAP server certificate verification.
+    /// `None` = use the system trust store.
+    pub tls_ca_cert_file: Option<String>,
+    /// Upgrade a plain `ldap://` connection to TLS via STARTTLS before binding.
+    /// Ignored for `ldaps://` URIs.
+    #[serde(default)]
+    pub starttls: bool,
 }
 
 #[derive(Debug, Deserialize)]
