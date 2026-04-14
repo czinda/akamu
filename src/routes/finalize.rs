@@ -69,14 +69,12 @@ pub async fn finalize_order(
     // Validate CSR.
     let validated_csr = ca::csr::validate_csr(&csr_der, &allowed)?;
 
-    // draft-aaron-acme-profiles-01: if the order carries a profile that the server
-    // no longer advertises, reject at finalize time rather than issuing silently.
+    // draft-aaron-acme-profiles-01: if the order carries a profile name that the
+    // registry does not recognise, reject at finalize time.
     if let Some(ref p) = order.profile {
-        if !state.config.server.profiles.is_empty()
-            && !state.config.server.profiles.contains_key(p.as_str())
-        {
+        if !state.profiles.is_empty() && state.profiles.resolve(p).is_none() {
             return Err(AcmeError::InvalidProfile(format!(
-                "profile '{p}' is no longer issued by this server"
+                "profile '{p}' is not served by any configured provider"
             )));
         }
     }
@@ -131,17 +129,22 @@ pub async fn finalize_order(
         }
     }
 
-    // Issue certificate, honouring any notBefore/notAfter requested in the order
-    // (RFC 8555 §7.1.3).
-    let ca = &state.ca;
-    let issued = ca::issue::issue_certificate(
-        &ca.key,
-        &ca.cert_der,
-        &ca.hash_alg,
-        ca.validity_days,
-        ca.crl_url.as_deref(),
-        ca.ocsp_url.as_deref(),
+    // Resolve certificate parameters from the profile registry (or fall back to
+    // CA defaults when no profile is requested or the registry is empty).
+    let cert_params = match &order.profile {
+        Some(p) if !state.profiles.is_empty() => state
+            .profiles
+            .resolve(p)
+            .unwrap_or_else(|| crate::profiles::CertificateParameters::from_ca(&state.ca)),
+        _ => crate::profiles::CertificateParameters::from_ca(&state.ca),
+    };
+
+    // Issue the certificate using the resolved parameters.  akamu's own CA
+    // signs in all cases; the profile only governs extension content and validity.
+    let issued = ca::issue::issue_with_params(
+        &state.ca,
         &validated_csr,
+        &cert_params,
         order.not_before,
         order.not_after,
     )?;
