@@ -107,7 +107,7 @@ pub struct AppState {
     ///
     /// When no `[profiles]` providers are configured, this holds an empty
     /// registry ([`ProfileRegistry::empty`]) and all issuance falls back to
-    /// [`CertificateParameters::from_ca`] (`digitalSignature` KeyUsage,
+    /// `CertificateParameters::from_ca` (`digitalSignature` KeyUsage,
     /// `serverAuth` EKU, CA validity and URL defaults).
     pub profiles: Arc<ProfileRegistry>,
     /// Present when `[tls]` is enabled and client auth is configured.
@@ -169,9 +169,10 @@ pub struct CaState {
     pub crl_url: Option<String>,
     /// Optional OCSP responder URL.
     pub ocsp_url: Option<String>,
-    /// RFC 5280 §4.2.1.1 key identifier bytes (SHA-1 of the CA public key
-    /// BIT STRING value).  Used to validate the AKI component of ARI cert-ids
-    /// (RFC 9773 §4.1) — a cert-id whose AKI does not match returns 404.
+    /// RFC 7093 §2 Method 1 key identifier bytes (leftmost 20 bytes of the
+    /// SHA-256 of the CA public key BIT STRING value).  Used to validate the
+    /// AKI component of ARI cert-ids (RFC 9773 §4.1) — a cert-id whose AKI
+    /// does not match returns 404.
     pub aki_bytes: Vec<u8>,
 }
 

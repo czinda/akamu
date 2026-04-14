@@ -101,10 +101,12 @@ fn generate(config: &CaConfig) -> Result<(BackendPrivateKey, Vec<u8>), AcmeError
     // keyUsage: keyCertSign + cRLSign
     let ku_der = encode_key_usage((1u16 << KEY_USAGE_KEY_CERT_SIGN) | (1u16 << KEY_USAGE_C_RLSIGN))
         .ok_or_else(|| AcmeError::Builder("encode KeyUsage".into()))?;
-    let ski_der = encode_subject_key_identifier(&spki_der, KeyIdMethod::Rfc5280Sha1, &hasher)
-        .ok_or_else(|| AcmeError::Builder("encode SKI".into()))?;
-    let aki_der = encode_authority_key_identifier(&spki_der, KeyIdMethod::Rfc5280Sha1, &hasher)
-        .ok_or_else(|| AcmeError::Builder("encode AKI".into()))?;
+    let ski_der =
+        encode_subject_key_identifier(&spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
+            .ok_or_else(|| AcmeError::Builder("encode SKI".into()))?;
+    let aki_der =
+        encode_authority_key_identifier(&spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
+            .ok_or_else(|| AcmeError::Builder("encode AKI".into()))?;
 
     let signer = backend_key.as_signer(&config.hash_alg);
     let cert_der = CertificateBuilder::new()
@@ -137,10 +139,11 @@ fn generate(config: &CaConfig) -> Result<(BackendPrivateKey, Vec<u8>), AcmeError
 
 /// Compute the AKI key-identifier bytes for the given SubjectPublicKeyInfo DER.
 ///
-/// Uses RFC 5280 §4.2.1.1 method 1: SHA-1 of the BIT STRING value of the
-/// public key.  This matches the `KeyIdMethod::Rfc5280Sha1` method used when
-/// encoding the CA certificate's SKI / AKI extensions, so the result equals
-/// the `keyIdentifier` stored in every issued certificate's AKI extension.
+/// Uses RFC 7093 §2 Method 1: the leftmost 20 bytes of the SHA-256 hash of
+/// the BIT STRING value of the public key.  This matches the
+/// `KeyIdMethod::Rfc7093Method1Sha256` method used when encoding the CA
+/// certificate's SKI / AKI extensions, so the result equals the
+/// `keyIdentifier` stored in every issued certificate's AKI extension.
 ///
 /// The value is used by the ARI (RFC 9773) handler to validate the first
 /// component of the `cert_id` path parameter.
@@ -149,11 +152,12 @@ pub fn compute_aki_from_spki(spki_der: &[u8]) -> Option<Vec<u8>> {
     // encode_subject_key_identifier returns the DER-encoded extension value,
     // which is a KeyIdentifier ::= OCTET STRING { hash }.
     // Wire format: 0x04 | length_bytes | hash_bytes
-    let ski_val = encode_subject_key_identifier(spki_der, KeyIdMethod::Rfc5280Sha1, &hasher)?;
+    let ski_val =
+        encode_subject_key_identifier(spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)?;
     if ski_val.len() < 2 || ski_val[0] != 0x04 {
         return None;
     }
-    // Parse DER length (short-form for SHA-1; long-form handled generically).
+    // Parse DER length (20-byte output is always short-form; long-form handled generically).
     let (hash_start, hash_len) = if ski_val[1] & 0x80 == 0 {
         (2usize, ski_val[1] as usize)
     } else {

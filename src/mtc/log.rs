@@ -147,7 +147,8 @@ mod tests {
         );
         let hasher = default_key_id_hasher();
         let bc = encode_basic_constraints(false, None).unwrap();
-        let ski = encode_subject_key_identifier(&spki, KeyIdMethod::Rfc5280Sha1, &hasher).unwrap();
+        let ski = encode_subject_key_identifier(&spki, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
+            .unwrap();
         let signer = key.as_signer("sha256");
         CertificateBuilder::new()
             .issuer_name(&name_der)

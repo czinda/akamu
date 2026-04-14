@@ -155,11 +155,11 @@ pub fn issue_certificate(
         .map_err(|e| AcmeError::Builder(format!("EKU: {e}")))?;
 
     // SubjectKeyIdentifier (from the end-entity public key in the CSR).
-    let ski_der = encode_subject_key_identifier(&csr.spki_der, KeyIdMethod::Rfc5280Sha1, &hasher)
+    let ski_der = encode_subject_key_identifier(&csr.spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
         .ok_or_else(|| AcmeError::Builder("SKI encode".into()))?;
 
     // AuthorityKeyIdentifier (from the CA's public key).
-    let aki_der = encode_authority_key_identifier(&ca_spki_der, KeyIdMethod::Rfc5280Sha1, &hasher)
+    let aki_der = encode_authority_key_identifier(&ca_spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
         .ok_or_else(|| AcmeError::Builder("AKI encode".into()))?;
 
     // SubjectAlternativeName: rebuild from the validated SANs.
@@ -449,9 +449,9 @@ pub fn issue_with_params(
         None
     };
 
-    let ski_der = encode_subject_key_identifier(&csr.spki_der, KeyIdMethod::Rfc5280Sha1, &hasher)
+    let ski_der = encode_subject_key_identifier(&csr.spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
         .ok_or_else(|| AcmeError::Builder("SKI encode".into()))?;
-    let aki_der = encode_authority_key_identifier(&ca_spki_der, KeyIdMethod::Rfc5280Sha1, &hasher)
+    let aki_der = encode_authority_key_identifier(&ca_spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
         .ok_or_else(|| AcmeError::Builder("AKI encode".into()))?;
 
     let mut san_builder = SubjectAlternativeNameBuilder::new();
@@ -606,10 +606,10 @@ pub fn sign_server_cert(
         .build()
         .map_err(|e| AcmeError::Builder(format!("EKU: {e}")))?;
 
-    let ski_der = encode_subject_key_identifier(&spki_der, KeyIdMethod::Rfc5280Sha1, &hasher)
+    let ski_der = encode_subject_key_identifier(&spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
         .ok_or_else(|| AcmeError::Builder("SKI".into()))?;
 
-    let aki_der = encode_authority_key_identifier(&ca_spki_der, KeyIdMethod::Rfc5280Sha1, &hasher)
+    let aki_der = encode_authority_key_identifier(&ca_spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
         .ok_or_else(|| AcmeError::Builder("AKI".into()))?;
 
     let san_der = SubjectAlternativeNameBuilder::new()
@@ -684,9 +684,9 @@ mod tests {
         let bc = encode_basic_constraints(true, None).unwrap();
         let ku = encode_key_usage((1u16 << KEY_USAGE_KEY_CERT_SIGN) | (1u16 << KEY_USAGE_C_RLSIGN))
             .unwrap();
-        let ski = encode_subject_key_identifier(&spki, KeyIdMethod::Rfc5280Sha1, &hasher).unwrap();
+        let ski = encode_subject_key_identifier(&spki, KeyIdMethod::Rfc7093Method1Sha256, &hasher).unwrap();
         let aki =
-            encode_authority_key_identifier(&spki, KeyIdMethod::Rfc5280Sha1, &hasher).unwrap();
+            encode_authority_key_identifier(&spki, KeyIdMethod::Rfc7093Method1Sha256, &hasher).unwrap();
         let signer = key.as_signer("sha256");
         let cert_der = CertificateBuilder::new()
             .issuer_name(&name_der)

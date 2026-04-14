@@ -158,9 +158,11 @@ mod tests {
             .build()
             .unwrap();
         let ski =
-            encode_subject_key_identifier(&ca_spki, KeyIdMethod::Rfc5280Sha1, &hasher).unwrap();
+            encode_subject_key_identifier(&ca_spki, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
+                .unwrap();
         let aki =
-            encode_authority_key_identifier(&ca_spki, KeyIdMethod::Rfc5280Sha1, &hasher).unwrap();
+            encode_authority_key_identifier(&ca_spki, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
+                .unwrap();
         let san_der = SubjectAlternativeNameBuilder::new()
             .dns_name("test.example.com")
             .build()
