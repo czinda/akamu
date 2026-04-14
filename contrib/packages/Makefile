@@ -129,9 +129,16 @@ $(VENDOR_TARBALL):
 	@# to .cargo/config.toml; we discard that output here because the spec
 	@# handles the git-source redirect (for the PQC openssl fork) directly.
 	cd "$(REPOROOT)" && cargo vendor --versioned-dirs vendor >/dev/null
+	@# Remove .profraw coverage artefacts that may be present in vendored crate
+	@# sources (e.g. synta built from a dirty checkout that had a coverage/ dir).
+	@# We must delete the files AND scrub their entries from each crate's
+	@# .cargo-checksum.json; cargo verifies all listed files during the build
+	@# and fails with "No such file or directory" if any are missing.
+	@find "$(REPOROOT)/vendor" -name '*.profraw' -delete
+	@find "$(REPOROOT)/vendor" -name '.cargo-checksum.json' \
+	    -exec python3 -c "import json,sys;[open(p,'w').write(json.dumps(dict(d,files={k:v for k,v in d['files'].items() if not k.endswith('.profraw')}),separators=(',',':'))) for p in sys.argv[1:] for d in [json.load(open(p))]]" {} +
 	@# Archive vendor/ and Cargo.lock (pinned versions for reproducible builds).
 	tar -czf "$(CURDIR)/$@" \
-	    --exclude='*.profraw' \
 	    -C "$(REPOROOT)" vendor/ Cargo.lock
 	rm -rf "$(REPOROOT)/vendor"
 	@echo "==> $@ ready"
