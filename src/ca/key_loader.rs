@@ -24,6 +24,12 @@ pub struct CaKeyLoader<'a> {
 }
 
 impl<'a> CaKeyLoader<'a> {
+    /// Create a loader bound to `config`.
+    ///
+    /// Does not open any files or connect to any token; call [`load_key`] to
+    /// perform the actual I/O.
+    ///
+    /// [`load_key`]: CaKeyLoader::load_key
     pub fn new(config: &'a CaConfig) -> Self {
         Self { config }
     }

@@ -1,8 +1,15 @@
 //! CA key and certificate initialisation.
 //!
-//! On first run: generate a new CA key + self-signed certificate and write
-//! them to the configured PEM files. On subsequent runs: load the existing
-//! PEM files.
+//! Handles three distinct start-up scenarios:
+//!
+//! - **File key, first run** (neither key file nor cert file exists): generate
+//!   a new CA private key and self-signed certificate, write both to disk.
+//! - **File key, subsequent runs** (both files exist): load key and cert from
+//!   disk.
+//! - **PKCS#11 key** (key lives in an HSM token): if the cert file is absent
+//!   generate a self-signed CA certificate signed by the token key and write
+//!   it to `cert_file`; otherwise load the cert from disk.  Key material is
+//!   never extracted from the token.
 
 use std::path::Path;
 
@@ -54,6 +61,13 @@ pub fn load_or_generate(config: &CaConfig) -> Result<(BackendPrivateKey, Vec<u8>
     }
 }
 
+/// Load an existing file-based CA key and certificate from disk.
+///
+/// Reads `config.key_file` as an unencrypted PEM private key and
+/// `config.cert_file` as a PEM certificate, returning the first PEM block
+/// from the certificate file as DER bytes.
+///
+/// Called only when both files already exist (verified by the caller).
 fn load(config: &CaConfig) -> Result<(BackendPrivateKey, Vec<u8>), AcmeError> {
     let key_pem = std::fs::read(&config.key_file)
         .map_err(|e| AcmeError::Internal(format!("read CA key '{}': {}", config.key_file, e)))?;
@@ -73,6 +87,14 @@ fn load(config: &CaConfig) -> Result<(BackendPrivateKey, Vec<u8>), AcmeError> {
     Ok((key, cert_der))
 }
 
+/// Generate a new file-based CA private key and self-signed certificate.
+///
+/// Writes the private key to `config.key_file` (unencrypted PKCS#8 PEM) and
+/// the self-signed CA certificate to `config.cert_file` (PEM) before
+/// returning.  Key type is taken from `config.key_type` (`"ec:P-256"`,
+/// `"rsa:2048"`, `"ed25519"`, `"ml-dsa-44"`, etc.).
+///
+/// Called only when neither file exists (verified by the caller).
 fn generate(config: &CaConfig) -> Result<(BackendPrivateKey, Vec<u8>), AcmeError> {
     tracing::info!(
         "Generating new CA key ({}) — writing to {} and {}",
@@ -318,7 +340,7 @@ pub(crate) fn generate_backend_key(key_type: &str) -> Result<BackendPrivateKey, 
     }
 }
 
-/// Format the current time as a GeneralizedTime string `YYYYMMDDHHmmssZ`.
+/// Return the current UTC time as a GeneralizedTime string `YYYYMMDDHHmmssZ`.
 fn format_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
@@ -328,7 +350,9 @@ fn format_now() -> String {
     unix_to_generalized_time(secs as i64)
 }
 
-/// Format a time `years` years in the future.
+/// Return a UTC time `years` years in the future as a GeneralizedTime string `YYYYMMDDHHmmssZ`.
+///
+/// Uses the approximation of 365.25 days/year (31 557 600 seconds/year).
 fn format_future_years(years: i64) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()

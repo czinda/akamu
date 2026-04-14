@@ -277,8 +277,17 @@ pub struct DatabaseConfig {
 pub struct CaConfig {
     /// Path to the CA private key PEM file, or a PKCS#11 URI
     /// (`pkcs11:token=…;object=…;type=private`) for HSM-backed keys.
-    /// PEM file keys are generated on first run if absent; PKCS#11 keys must
-    /// exist in the token before the server starts.
+    ///
+    /// PEM file keys are generated on first run if absent.  PKCS#11 keys must
+    /// already exist in the token before the server starts.
+    ///
+    /// **OpenSSL backend**: the `pkcs11-provider` must be loaded via `openssl.cnf`
+    /// or the `OPENSSL_CONF` environment variable before the server starts.
+    ///
+    /// **NSS backend**: the PKCS#11 module must be registered in the NSS secmod
+    /// database.  The URI must include a non-empty `token=` attribute — the NSS
+    /// path uses `PK11_ListPrivKeysInSlot`, which requires a slot handle obtained
+    /// by `PK11_FindSlotByName` from the token label.
     pub key_file: String,
     /// Path to the CA certificate PEM file (generated on first run if absent)
     pub cert_file: String,
