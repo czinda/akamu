@@ -275,7 +275,10 @@ pub struct DatabaseConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct CaConfig {
-    /// Path to the CA private key PEM file (generated on first run if absent)
+    /// Path to the CA private key PEM file, or a PKCS#11 URI
+    /// (`pkcs11:token=…;object=…;type=private`) for HSM-backed keys.
+    /// PEM file keys are generated on first run if absent; PKCS#11 keys must
+    /// exist in the token before the server starts.
     pub key_file: String,
     /// Path to the CA certificate PEM file (generated on first run if absent)
     pub cert_file: String,
