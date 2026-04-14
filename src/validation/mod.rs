@@ -299,6 +299,7 @@ mod tests {
     use crate::{ca, db};
 
     async fn make_state() -> Arc<AppState> {
+        let dir = tempfile::TempDir::new().unwrap();
         let config = Arc::new(Config {
             listen_addr: "127.0.0.1:0".into(),
             base_url: "https://acme.test".into(),
@@ -307,8 +308,8 @@ mod tests {
                 max_connections: None,
             },
             ca: CaConfig {
-                key_file: "/tmp/val-test-ca.key".into(),
-                cert_file: "/tmp/val-test-ca.crt".into(),
+                key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
+                cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
                 key_type: "ec:P-256".into(),
                 hash_alg: "sha256".into(),
                 validity_days: 90,
@@ -736,6 +737,7 @@ mod tests {
         });
 
         // Build state with http_validation_port pointing at our test responder.
+        let dir = tempfile::TempDir::new().unwrap();
         let config = Arc::new(Config {
             listen_addr: "127.0.0.1:0".into(),
             base_url: "https://acme.test".into(),
@@ -744,8 +746,8 @@ mod tests {
                 max_connections: None,
             },
             ca: CaConfig {
-                key_file: "/tmp/val-test-http01-ca.key".into(),
-                cert_file: "/tmp/val-test-http01-ca.crt".into(),
+                key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
+                cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
                 key_type: "ec:P-256".into(),
                 hash_alg: "sha256".into(),
                 validity_days: 90,
