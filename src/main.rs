@@ -39,11 +39,29 @@ async fn run() -> Result<(), String> {
     tracing::info!("loading config from '{config_path}'");
     let config = Config::from_file(&config_path)?;
 
+    // CA/B Forum BR §7.1.3.2.1: SHA-1 prohibited in certificate/CRL signatures since 2026-09-15.
+    {
+        let alg = config.ca.hash_alg.to_lowercase();
+        if alg == "sha1" || alg == "sha-1" {
+            return Err(format!(
+                "ca.hash_alg='{}' is prohibited by CA/B Forum BR §7.1.3.2.1 \
+                 (SHA-1 sunset 2026-09-15); use 'sha256', 'sha384', or 'sha512'",
+                config.ca.hash_alg
+            ));
+        }
+    }
+
     // CA/B Forum BR §6.3.2 validity caps: 200 days since 2026-03-15, 100 from 2027-03-15.
     if config.ca.validity_days > 200 {
         tracing::warn!(
-            "ca.validity_days={} exceeds the 200-day CA/B Forum BR limit (§6.3.2); \
+            "ca.validity_days={} exceeds the 200-day CA/B Forum BR limit (§6.3.2, since 2026-03-15); \
              certificates issued by this CA cannot be used in public WebPKI chains",
+            config.ca.validity_days
+        );
+    } else if config.ca.validity_days > 100 {
+        tracing::warn!(
+            "ca.validity_days={} will exceed the upcoming 100-day CA/B Forum BR limit \
+             (§6.3.2, from 2027-03-15)",
             config.ca.validity_days
         );
     }
@@ -242,9 +260,7 @@ async fn run() -> Result<(), String> {
                         let router = router.clone();
                         async move {
                             let req = req.map(axum::body::Body::new);
-                            Ok::<_, std::convert::Infallible>(
-                                router.oneshot(req).await.unwrap(),
-                            )
+                            Ok::<_, std::convert::Infallible>(router.oneshot(req).await.unwrap())
                         }
                     },
                 );
