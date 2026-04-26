@@ -79,6 +79,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/acme/mtc/inclusion-proof/{cert_id}",
             get(mtc::get_inclusion_proof),
         )
+        .route(
+            "/acme/mtc/cert/{cert_id}/standalone",
+            get(mtc::get_standalone),
+        )
         .layer(
             TraceLayer::new_for_http()
                 // Suppress "started processing request" — the response line already

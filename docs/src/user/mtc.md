@@ -122,6 +122,18 @@ Returns a Merkle inclusion proof for the certificate identified by `cert_id` (th
 
 `proof` is the ordered list of sibling hashes from the leaf up to the root, each encoded as a lowercase hex string.  The position of each sibling (left or right) can be derived from the bits of `leafIndex`.
 
+### `GET /acme/mtc/cert/{cert_id}/standalone`
+
+Returns the DER-encoded `StandaloneCertificate` (§6.1) for the given certificate, with `Content-Type: application/pkix-cert`.
+
+Returns 404 when:
+- MTC is disabled
+- The certificate does not exist
+- The certificate has no MTC log index (the log append failed at issuance)
+- A checkpoint covering the certificate has not yet been produced (standalone DER is built during the next checkpoint cycle)
+
+The standalone certificate embeds the `TBSCertificate`, a Merkle inclusion proof, and a signature from the MTC signing key.  Relying parties can verify the certificate's presence in the log without querying the CA.
+
 ## Concurrency
 
 The `DiskBackedLog` is not thread-safe internally. The server wraps it in a `tokio::sync::Mutex<DiskBackedLog>` (the `SharedLog` type alias in `src/mtc/log.rs`). All leaf appends and reads acquire this mutex, serializing concurrent operations at the async level.
@@ -135,4 +147,4 @@ The log is append-only by design. Once a leaf is appended it cannot be removed o
 - For a log with zero leaves the root is undefined.
 - For a log with one or more leaves the root is the SHA-256 Merkle root of all leaf hashes.
 
-> **Scope note:** Akāmu implements the issuance-log and checkpoint portions of the MTC draft (draft-ietf-plants-merkle-tree-certs).  The following CA operations are intentionally out of scope for now: cosignature gathering from external cosigners (§6.2), MTC proof certificate construction with `id-alg-mtcProof` (§6.1), and landmark management (§6.3.1).
+> **Scope note:** Akāmu implements the issuance-log, checkpoint, and standalone certificate portions of the MTC draft (draft-ietf-plants-merkle-tree-certs).  The following CA operations are intentionally out of scope for now: cosignature gathering from external cosigners (§6.2) and landmark management (§6.3.1).

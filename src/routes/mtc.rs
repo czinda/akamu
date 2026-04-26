@@ -1,6 +1,6 @@
 //! Read-only HTTP endpoints for the MTC transparency log.
 //!
-//! All three endpoints return 404 when MTC logging is disabled.
+//! All endpoints return 404 when MTC logging is disabled.
 
 use std::sync::Arc;
 
@@ -66,6 +66,35 @@ pub async fn get_inclusion_proof(
             "treeSize": size,
             "proof": proof,
         })),
+    )
+        .into_response())
+}
+
+/// GET /acme/mtc/cert/{cert_id}/standalone
+///
+/// Returns the DER-encoded `StandaloneCertificate` for the given certificate,
+/// or 404 if the certificate is not found, has no MTC log index, or its
+/// standalone cert has not yet been built (waiting for the next checkpoint).
+pub async fn get_standalone(
+    State(state): State<Arc<AppState>>,
+    Path(cert_id): Path<String>,
+) -> Result<Response, AcmeError> {
+    // MTC must be enabled.
+    if state.mtc.log.is_none() {
+        return Err(AcmeError::NotFound);
+    }
+
+    let der = db::certs::get_mtc_standalone_der(&state.db, &cert_id)
+        .await?
+        .ok_or(AcmeError::NotFound)?;
+
+    Ok((
+        StatusCode::OK,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("application/pkix-cert"),
+        )],
+        der,
     )
         .into_response())
 }

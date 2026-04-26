@@ -1,10 +1,11 @@
-//! Periodic MTC checkpoint production.
+//! Periodic MTC checkpoint production and standalone certificate construction.
 //!
 //! A checkpoint captures the current Merkle root and tree size, signed by the
 //! dedicated MTC signing key (distinct from the X.509 CA key as required by
 //! §5.5 of draft-ietf-plants-merkle-tree-certs).  Checkpoints are stored in
-//! the `mtc_checkpoints` table and serve as the prerequisite for standalone
-//! MTC certificate construction (TODO 3).
+//! the `mtc_checkpoints` table.  After each checkpoint, Merkle inclusion proofs
+//! are generated for all newly covered certificates and used to build
+//! `StandaloneCertificate` DER blobs (§6.1), stored in `certificates.mtc_standalone_der`.
 
 use std::sync::Arc;
 
@@ -16,7 +17,8 @@ use crate::error::AcmeError;
 use crate::mtc::log::SharedLog;
 use crate::state::AppState;
 
-/// Produce and persist a checkpoint for the current log state.
+/// Produce and persist a checkpoint for the current log state, then build
+/// `StandaloneCertificate` DER for every certificate newly covered by the checkpoint.
 ///
 /// No-op when the log is empty or when the latest stored checkpoint already
 /// covers the current tree size.
@@ -49,46 +51,97 @@ pub async fn produce_checkpoint(
 
     let now_unix = unix_now_secs();
 
+    // Fetch certs covered by this checkpoint that still need a standalone DER.
+    // This must happen before spawn_blocking so we can do async DB I/O.
+    let pending_certs = db::certs::get_pending_standalone(db, tree_size as i64).await?;
+
     // Clone the key so it can be moved into spawn_blocking.
     // BackendPrivateKey is Clone + Send (OpenSSL Pkey<Private> is ref-counted).
     let key = signing_key.clone();
     let hash_alg_str = signing_hash_alg.to_string();
     let log_clone = Arc::clone(log);
 
-    let (root_bytes, signature) = tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, Vec<u8>), AcmeError> {
-        // Obtain the signing key's SubjectPublicKeyInfo DER.
-        let spki_der = key
-            .public_key()
-            .map_err(|e| AcmeError::Crypto(format!("MTC signing key public: {e}")))?
-            .spki_der()
-            .to_vec();
+    let (root_bytes, signature, standalone_defs) = tokio::task::spawn_blocking(
+        move || -> Result<(Vec<u8>, Vec<u8>, Vec<(String, Vec<u8>)>), AcmeError> {
+            // Obtain the signing key's SubjectPublicKeyInfo DER.
+            let spki_der = key
+                .public_key()
+                .map_err(|e| AcmeError::Crypto(format!("MTC signing key public: {e}")))?
+                .spki_der()
+                .to_vec();
 
-        // Read all leaf hashes and compute the Merkle root (sequential disk I/O).
-        let root_bytes = {
-            let mut guard = log_clone.blocking_lock();
-            guard
-                .compute_root()
-                .map_err(|e| AcmeError::Mtc(format!("compute_root: {e}")))?
-        };
+            // Lock the log ONCE for both compute_root and generate_proof so that
+            // all proofs are consistent with the same tree_size used for the root.
+            let (root_bytes, cert_proofs) = {
+                let mut guard = log_clone.blocking_lock();
+                let root = guard
+                    .compute_root()
+                    .map_err(|e| AcmeError::Mtc(format!("compute_root: {e}")))?;
+                let mut proofs: Vec<(String, Vec<u8>, u64, Vec<(bool, Vec<u8>)>)> = Vec::new();
+                for cert in &pending_certs {
+                    match guard.generate_proof(cert.mtc_log_index as u64) {
+                        Ok(proof) => proofs.push((
+                            cert.id.clone(),
+                            cert.der.clone(),
+                            cert.mtc_log_index as u64,
+                            proof,
+                        )),
+                        Err(e) => tracing::warn!(
+                            cert_id = %cert.id,
+                            "generate_proof for standalone cert: {e}"
+                        ),
+                    }
+                }
+                (root, proofs)
+            };
+            // Log mutex released here.
 
-        // Build the DER-encoded Checkpoint structure.
-        let checkpoint_der =
-            build_checkpoint_der(&spki_der, tree_size, root_bytes.clone(), now_unix, log_algorithm)?;
+            // Build the DER-encoded Checkpoint structure.
+            let checkpoint_der =
+                build_checkpoint_der(&spki_der, tree_size, root_bytes.clone(), now_unix, log_algorithm)?;
 
-        // Sign the DER-encoded checkpoint.
-        let signer = key.as_signer(&hash_alg_str);
-        let signature = signer
-            .sign_tbs(&checkpoint_der)
-            .map_err(|e| AcmeError::Mtc(format!("sign checkpoint: {e}")))?;
+            // Sign the DER-encoded checkpoint.
+            let signer = key.as_signer(&hash_alg_str);
+            let signature = signer
+                .sign_tbs(&checkpoint_der)
+                .map_err(|e| AcmeError::Mtc(format!("sign checkpoint: {e}")))?;
 
-        Ok::<_, AcmeError>((root_bytes, signature))
-    })
+            // Build standalone certificate DERs (signing key reused; no log access needed).
+            let mut standalone_defs: Vec<(String, Vec<u8>)> = Vec::new();
+            for (cert_id, cert_der, leaf_idx, proof) in cert_proofs {
+                match crate::mtc::standalone::build_standalone_der(
+                    &cert_der,
+                    leaf_idx,
+                    proof,
+                    tree_size,
+                    &key,
+                    &hash_alg_str,
+                    log_algorithm,
+                ) {
+                    Ok(der) => standalone_defs.push((cert_id, der)),
+                    Err(e) => tracing::warn!(cert_id = %cert_id, "build standalone cert: {e}"),
+                }
+            }
+
+            Ok::<_, AcmeError>((root_bytes, signature, standalone_defs))
+        },
+    )
     .await
     .map_err(|e| AcmeError::Mtc(format!("checkpoint blocking task panicked: {e}")))??;
 
     let root_hex: String = root_bytes.iter().map(|b| format!("{b:02x}")).collect();
     db::checkpoints::upsert(db, tree_size as i64, &root_hex, &signature, now_unix as i64).await?;
     tracing::info!(tree_size, root_hex, "MTC checkpoint produced");
+
+    // Persist standalone DERs built during this checkpoint cycle.
+    for (cert_id, der) in standalone_defs {
+        if let Err(e) = db::certs::set_mtc_standalone_der(db, &cert_id, &der).await {
+            tracing::warn!(cert_id = %cert_id, "store standalone DER: {e}");
+        } else {
+            tracing::debug!(cert_id = %cert_id, "MTC standalone certificate stored");
+        }
+    }
+
     Ok(())
 }
 

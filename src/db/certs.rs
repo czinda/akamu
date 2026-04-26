@@ -1,6 +1,14 @@
 use crate::db::schema::CertificateRow;
 use crate::error::AcmeError;
 
+/// Minimal certificate projection used for standalone MTC cert construction.
+#[derive(sqlx::FromRow)]
+pub struct CertForStandalone {
+    pub id: String,
+    pub der: Vec<u8>,
+    pub mtc_log_index: i64,
+}
+
 pub async fn insert(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     row: CertificateRow,
@@ -228,6 +236,52 @@ pub async fn get_latest_for_order(
     .fetch_optional(executor)
     .await?;
     Ok(row)
+}
+
+/// Return certificates whose leaf index is covered by a checkpoint but that do not
+/// yet have a standalone DER built.  Only certs with `mtc_log_index < max_leaf_index`
+/// are returned so the results are consistent with a specific checkpoint boundary.
+pub async fn get_pending_standalone(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    max_leaf_index: i64,
+) -> Result<Vec<CertForStandalone>, AcmeError> {
+    let rows = sqlx::query_as::<_, CertForStandalone>(
+        "SELECT id, der, mtc_log_index FROM certificates
+         WHERE mtc_log_index IS NOT NULL
+           AND mtc_log_index < ?
+           AND mtc_standalone_der IS NULL",
+    )
+    .bind(max_leaf_index)
+    .fetch_all(executor)
+    .await?;
+    Ok(rows)
+}
+
+/// Persist the DER-encoded `StandaloneCertificate` for a certificate row.
+pub async fn set_mtc_standalone_der(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    id: &str,
+    der: &[u8],
+) -> Result<(), AcmeError> {
+    sqlx::query("UPDATE certificates SET mtc_standalone_der = ? WHERE id = ?")
+        .bind(der)
+        .bind(id)
+        .execute(executor)
+        .await?;
+    Ok(())
+}
+
+/// Retrieve the DER-encoded `StandaloneCertificate` for a certificate, if built.
+pub async fn get_mtc_standalone_der(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    id: &str,
+) -> Result<Option<Vec<u8>>, AcmeError> {
+    let row: Option<(Vec<u8>,)> =
+        sqlx::query_as("SELECT mtc_standalone_der FROM certificates WHERE id = ? AND mtc_standalone_der IS NOT NULL")
+            .bind(id)
+            .fetch_optional(executor)
+            .await?;
+    Ok(row.map(|(der,)| der))
 }
 
 #[cfg(test)]
