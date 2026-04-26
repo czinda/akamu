@@ -4,8 +4,8 @@
 //! proof, and a signature, allowing relying parties to verify that the
 //! certificate is present in the MTC log without querying the CA.
 
-use synta::{Decoder, Encoder, Encoding};
 use synta::traits::Encode;
+use synta::{Decoder, Encoder, Encoding};
 use synta_certificate::{BackendPrivateKey, Certificate, CertificateSigner as _, PrivateKey as _};
 use synta_mtc::builder::cert::StandaloneCertificateBuilder;
 use synta_mtc::crypto::HashAlgorithm;
@@ -13,7 +13,7 @@ use synta_mtc::types::SubtreeSignature;
 
 use crate::error::AcmeError;
 
-/// Build and DER-encode a `StandaloneCertificate` for the given certificate DER.
+/// All inputs required to build a `StandaloneCertificate`.
 ///
 /// `proof` must have been generated against a Merkle tree of exactly `tree_size`
 /// leaves — the caller is responsible for this invariant (generate the proof
@@ -23,16 +23,29 @@ use crate::error::AcmeError;
 /// `cosignature_ders` is a slice of DER-encoded `SubtreeSignature` values collected
 /// from external cosigners.  An empty slice produces a standalone cert without
 /// any cosignatures; decoding failures for individual entries are logged and skipped.
-pub fn build_standalone_der(
-    cert_der: &[u8],
-    leaf_index: u64,
-    proof: Vec<(bool, Vec<u8>)>,
-    tree_size: u64,
-    signing_key: &BackendPrivateKey,
-    hash_alg_str: &str,
-    log_algorithm: HashAlgorithm,
-    cosignature_ders: &[Vec<u8>],
-) -> Result<Vec<u8>, AcmeError> {
+pub struct StandaloneParams<'a> {
+    pub cert_der: &'a [u8],
+    pub leaf_index: u64,
+    pub proof: Vec<(bool, Vec<u8>)>,
+    pub tree_size: u64,
+    pub signing_key: &'a BackendPrivateKey,
+    pub hash_alg_str: &'a str,
+    pub log_algorithm: HashAlgorithm,
+    pub cosignature_ders: &'a [Vec<u8>],
+}
+
+/// Build and DER-encode a `StandaloneCertificate` for the given certificate DER.
+pub fn build_standalone_der(p: StandaloneParams<'_>) -> Result<Vec<u8>, AcmeError> {
+    let StandaloneParams {
+        cert_der,
+        leaf_index,
+        proof,
+        tree_size,
+        signing_key,
+        hash_alg_str,
+        log_algorithm,
+        cosignature_ders,
+    } = p;
     use synta::types::string::BitString;
 
     // Parse the full certificate to extract TBSCertificate (borrows from cert_der).
