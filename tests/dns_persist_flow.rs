@@ -207,6 +207,7 @@ async fn build_state(
             algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
             signing_key: None,
             signing_hash_alg: "sha256".into(),
+            cosigner_clients: vec![],
         }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),

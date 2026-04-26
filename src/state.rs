@@ -12,6 +12,7 @@ use synta_mtc::crypto::HashAlgorithm;
 
 use crate::config::Config;
 use crate::db::DbKind;
+use crate::mtc::cosign::CosignerClient;
 use crate::mtc::log::SharedLog;
 use crate::profiles::ProfileRegistry;
 
@@ -195,6 +196,10 @@ pub struct MtcState {
     pub signing_key: Option<BackendPrivateKey>,
     /// Hash algorithm string for checkpoint signing (e.g. `"sha256"`).
     pub signing_hash_alg: String,
+    /// Pre-built HTTPS clients for external cosigners, one per `[[mtc.cosigners]]`
+    /// entry.  Built once at startup so TLS config errors surface immediately
+    /// and PEM files are not re-read on every checkpoint.
+    pub cosigner_clients: Vec<CosignerClient>,
 }
 
 impl MtcState {

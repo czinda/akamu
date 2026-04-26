@@ -12,9 +12,9 @@ use std::sync::Arc;
 use synta_certificate::{BackendPrivateKey, CertificateSigner as _, PrivateKey as _};
 use synta_mtc::crypto::HashAlgorithm;
 
-use crate::config::CosignerConfig;
 use crate::db::{self, Db};
 use crate::error::AcmeError;
+use crate::mtc::cosign::CosignerClient;
 use crate::mtc::log::SharedLog;
 use crate::state::AppState;
 
@@ -33,7 +33,7 @@ pub async fn produce_checkpoint(
     signing_hash_alg: &str,
     log_algorithm: HashAlgorithm,
     db: &Db,
-    cosigners: &[CosignerConfig],
+    cosigners: &[CosignerClient],
 ) -> Result<(), AcmeError> {
     // Get current tree size (O(1) file stat — very fast, OK in async context).
     let tree_size = {
@@ -289,7 +289,7 @@ pub fn spawn_checkpoint_task(state: Arc<AppState>) {
                 &mtc.signing_hash_alg,
                 mtc.algorithm,
                 &state.db,
-                &state.config.mtc.cosigners,
+                &mtc.cosigner_clients,
             )
             .await
             {

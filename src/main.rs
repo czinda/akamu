@@ -193,6 +193,22 @@ async fn run() -> Result<(), String> {
         (None, "sha256".to_string())
     };
 
+    // Pre-build cosigner HTTPS clients so TLS config errors surface at startup
+    // rather than silently at checkpoint time, and to avoid re-reading PEM files
+    // on every checkpoint interval.
+    let cosigner_clients: Vec<_> = config
+        .mtc
+        .cosigners
+        .iter()
+        .filter_map(|c| match mtc::cosign::build_cosigner_client(c) {
+            Ok(client) => Some(client),
+            Err(e) => {
+                tracing::warn!(url = %c.url, "build cosigner client at startup: {e}");
+                None
+            }
+        })
+        .collect();
+
     let mtc = if config.mtc.enabled {
         tracing::info!("opening MTC log at '{}'", config.mtc.log_path);
         let log = mtc::log::open_or_create(&config.mtc.log_path, mtc_algorithm)
@@ -203,6 +219,7 @@ async fn run() -> Result<(), String> {
             algorithm: mtc_algorithm,
             signing_key: mtc_signing_key,
             signing_hash_alg: mtc_signing_hash_alg,
+            cosigner_clients,
         })
     } else {
         tracing::info!("MTC logging disabled");
@@ -211,6 +228,7 @@ async fn run() -> Result<(), String> {
             algorithm: mtc_algorithm,
             signing_key: mtc_signing_key,
             signing_hash_alg: mtc_signing_hash_alg,
+            cosigner_clients,
         })
     };
 
