@@ -75,8 +75,10 @@ Source0:        akamu-%{version}.tar.gz
 # Contains all Cargo dependencies, including the openssl pqc-prs fork and
 # several crates not yet available in Fedora.
 Source1:        akamu-%{version}-vendor.tar.gz
-# Minimal systemd service unit for the akamu ACME server
+# Systemd service units (from contrib/systemd/ in the source tree; copied into
+# _sourcedir by the 'make srpm' target before rpmbuild is invoked).
 Source2:        akamu.service
+Source4:        akamu-cosigner.service
 # Example configuration file; installed as %%{_sysconfdir}/akamu/config.toml.example
 Source3:        config.toml.example
 
@@ -143,6 +145,29 @@ License:        GPL-3.0-or-later
 %{_unitdir}/akamu.service
 %dir %{_sysconfdir}/akamu
 %config(noreplace) %{_sysconfdir}/akamu/config.toml.example
+
+
+# ── Subpackage: MTC cosigner daemon ───────────────────────────────────────────
+%package -n akamu-cosigner
+Summary:        MTC cosigner daemon for akamu
+License:        GPL-3.0-or-later
+%{?systemd_requires}
+
+%description -n akamu-cosigner
+akamu-cosigner is a lightweight daemon that implements the Merkle Tree
+Certificates (MTC) cosigner REST API (POST /sign).  It signs checkpoints
+produced by the akamu CA and returns DER-encoded SubtreeSignature blobs,
+adding an independent trust layer to the MTC ecosystem.  Supports optional
+ACME EAB bootstrap (http-01, dns-01, tls-alpn-01) to obtain a WebPKI
+identity certificate at first run.
+
+%files -n akamu-cosigner
+%license LICENSE
+%license LICENSE.dependencies
+%license cargo-vendor.txt
+%{_bindir}/akamu-cosigner
+%{_unitdir}/akamu-cosigner.service
+%dir %{_sysconfdir}/akamu-cosigner
 
 
 # ── Subpackage: CLI client binary ──────────────────────────────────────────────
@@ -221,11 +246,21 @@ EOF
   %cargo_install
 )
 
-# Systemd service unit
+# Install the cosigner daemon binary from the crates/akamu-cosigner workspace member.
+(
+  cd crates/akamu-cosigner
+  %cargo_install
+)
+
+# Systemd service units
 install -Dpm 0644 %{SOURCE2} %{buildroot}%{_unitdir}/akamu.service
+install -Dpm 0644 %{SOURCE4} %{buildroot}%{_unitdir}/akamu-cosigner.service
 
 # Example configuration file
 install -Dpm 0644 %{SOURCE3} %{buildroot}%{_sysconfdir}/akamu/config.toml.example
+
+# Create the cosigner configuration directory
+install -dm 0755 %{buildroot}%{_sysconfdir}/akamu-cosigner
 
 
 # ── Check ──────────────────────────────────────────────────────────────────────
@@ -249,6 +284,19 @@ install -Dpm 0644 %{SOURCE3} %{buildroot}%{_sysconfdir}/akamu/config.toml.exampl
 
 %postun -n %{crate}
 %systemd_postun_with_restart akamu.service
+
+
+%pre -n akamu-cosigner
+%systemd_pre akamu-cosigner.service
+
+%post -n akamu-cosigner
+%systemd_post akamu-cosigner.service
+
+%preun -n akamu-cosigner
+%systemd_preun akamu-cosigner.service
+
+%postun -n akamu-cosigner
+%systemd_postun_with_restart akamu-cosigner.service
 
 
 %changelog

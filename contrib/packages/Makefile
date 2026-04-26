@@ -163,12 +163,16 @@ srpm: sources
 	    -e "s/^%global snapdate[[:space:]].*/%global snapdate    $(SNAPDATE)/" \
 	    -e "s/^%global snapcommit[[:space:]].*/%global snapcommit  $(SNAPCOMMIT)/" \
 	    "$(SPEC)" > "$(SPEC_TMP)"
+	@# Service units now live in contrib/systemd/; copy them into _sourcedir
+	@# so rpmbuild can locate Source2 and Source4 in the offline build.
+	cp "$(REPOROOT)/contrib/systemd/akamu.service" .
+	cp "$(REPOROOT)/contrib/systemd/akamu-cosigner.service" .
 	rpmbuild -bs \
 	    --define "_sourcedir $(CURDIR)" \
 	    --define "_specdir   $(CURDIR)" \
 	    --define "_srcrpmdir $(CURDIR)" \
 	    "$(SPEC_TMP)"
-	rm -f "$(SPEC_TMP)"
+	rm -f "$(SPEC_TMP)" akamu.service akamu-cosigner.service
 
 # ── mock ──────────────────────────────────────────────────────────────────────
 

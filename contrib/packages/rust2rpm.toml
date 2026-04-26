@@ -13,12 +13,22 @@ post-quantum cryptography via an ML-DSA/PQC-capable OpenSSL fork.  It
 implements the full ACME protocol including http-01, dns-01, and tls-alpn-01
 challenge types, and supports Merkle Tree Certificates (MTC) for
 compressed certificate delivery.
+
+This SRPM produces three binary packages from the workspace:
+  akamu          — the main ACME CA server daemon
+  akamu-cosigner — the MTC cosigner daemon (POST /sign endpoint)
+  akamu-client   — the command-line ACME client (akamu-cli binary)
+
+Systemd service units for akamu and akamu-cosigner are installed from
+contrib/systemd/ in the source tree.
 """
 
 license = "GPL-3.0-or-later"
 
 # The workspace root has both src/lib.rs (server library) and src/main.rs
 # (server binary).  Install only the server binary; the library is internal.
+# The akamu-cosigner and akamu-client binaries are installed via explicit
+# %cargo_install calls in the spec %install section (see rust-akamu.spec.in).
 install_bin = true
 install_lib = false
 
