@@ -257,11 +257,16 @@ pub async fn set_mtc_standalone_der(
     id: &str,
     der: &[u8],
 ) -> Result<(), AcmeError> {
-    sqlx::query("UPDATE certificates SET mtc_standalone_der = ? WHERE id = ?")
+    let result = sqlx::query("UPDATE certificates SET mtc_standalone_der = ? WHERE id = ?")
         .bind(der)
         .bind(id)
         .execute(executor)
         .await?;
+    if result.rows_affected() == 0 {
+        return Err(AcmeError::Database(format!(
+            "set_mtc_standalone_der: certificate '{id}' not found"
+        )));
+    }
     Ok(())
 }
 

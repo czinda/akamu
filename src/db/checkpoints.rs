@@ -55,16 +55,35 @@ pub async fn upsert(
 ) -> Result<(), AcmeError> {
     sqlx::query(
         "INSERT INTO mtc_checkpoints (tree_size, root_hex, signature, created)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(tree_size) DO NOTHING",
+         SELECT ?, ?, ?, ?
+         WHERE NOT EXISTS (SELECT 1 FROM mtc_checkpoints WHERE tree_size = ?)",
     )
     .bind(tree_size)
     .bind(root_hex)
     .bind(signature)
     .bind(created)
+    .bind(tree_size)
     .execute(executor)
     .await?;
     Ok(())
+}
+
+/// Return the checkpoint with the given `tree_size`, or `None` if not found.
+///
+/// Prefer this over `get_latest` when you know the exact tree size (e.g. after
+/// an upsert), to avoid a race with concurrent checkpoint inserts.
+pub async fn get_by_tree_size(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    tree_size: i64,
+) -> Result<Option<CheckpointRow>, AcmeError> {
+    let row = sqlx::query_as::<_, CheckpointRow>(
+        "SELECT id, tree_size, root_hex, signature, created
+         FROM mtc_checkpoints WHERE tree_size = ?",
+    )
+    .bind(tree_size)
+    .fetch_optional(executor)
+    .await?;
+    Ok(row)
 }
 
 #[cfg(test)]

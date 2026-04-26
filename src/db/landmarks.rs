@@ -80,11 +80,16 @@ pub async fn set_cert_der(
     id: i64,
     cert_der: &[u8],
 ) -> Result<(), AcmeError> {
-    sqlx::query("UPDATE mtc_landmarks SET cert_der = ? WHERE id = ?")
+    let result = sqlx::query("UPDATE mtc_landmarks SET cert_der = ? WHERE id = ?")
         .bind(cert_der)
         .bind(id)
         .execute(executor)
         .await?;
+    if result.rows_affected() == 0 {
+        return Err(AcmeError::Database(format!(
+            "set_cert_der: landmark id {id} not found"
+        )));
+    }
     Ok(())
 }
 

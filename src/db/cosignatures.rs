@@ -3,26 +3,47 @@ use crate::error::AcmeError;
 
 /// Upsert a cosignature row.  If the same cosigner returns a new signature for
 /// an already-stored checkpoint, the stored signature is updated in place.
+///
+/// Uses a two-step UPDATE + conditional INSERT to stay compatible with MariaDB,
+/// which does not support `ON CONFLICT … DO UPDATE SET`.
 pub async fn upsert(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    pool: &sqlx::AnyPool,
     checkpoint_id: i64,
     cosigner_url: &str,
     signature_der: &[u8],
     created: i64,
 ) -> Result<(), AcmeError> {
-    sqlx::query(
-        "INSERT INTO mtc_cosignatures (checkpoint_id, cosigner_url, signature_der, created)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(checkpoint_id, cosigner_url) DO UPDATE SET
-             signature_der = excluded.signature_der,
-             created = excluded.created",
+    let updated = sqlx::query(
+        "UPDATE mtc_cosignatures SET signature_der = ?, created = ?
+         WHERE checkpoint_id = ? AND cosigner_url = ?",
     )
-    .bind(checkpoint_id)
-    .bind(cosigner_url)
     .bind(signature_der)
     .bind(created)
-    .execute(executor)
-    .await?;
+    .bind(checkpoint_id)
+    .bind(cosigner_url)
+    .execute(pool)
+    .await?
+    .rows_affected();
+
+    if updated == 0 {
+        sqlx::query(
+            "INSERT INTO mtc_cosignatures (checkpoint_id, cosigner_url, signature_der, created)
+             SELECT ?, ?, ?, ?
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM mtc_cosignatures
+                 WHERE checkpoint_id = ? AND cosigner_url = ?
+             )",
+        )
+        .bind(checkpoint_id)
+        .bind(cosigner_url)
+        .bind(signature_der)
+        .bind(created)
+        .bind(checkpoint_id)
+        .bind(cosigner_url)
+        .execute(pool)
+        .await?;
+    }
+
     Ok(())
 }
 
