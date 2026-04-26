@@ -4,8 +4,8 @@
 //! re-used across all connections — no DER re-parsing per handshake.
 //!
 //! Composite ML-DSA+classical TLS 1.3 `CertificateVerify` signatures are routed
-//! through the OpenSSL EVP interface (pqc-prs fork).  Classical schemes delegate
-//! to the ring crypto provider.
+//! through the native-ossl EVP interface.  Classical schemes delegate to the ring
+//! crypto provider.
 
 use std::sync::Arc;
 
@@ -172,7 +172,7 @@ impl ClientCertVerifier for SyntaClientCertVerifier {
     /// TLS 1.3 `CertificateVerify`.
     ///
     /// Classical schemes delegate to ring.
-    /// Composite ML-DSA+classical schemes route through OpenSSL (pqc-prs fork).
+    /// Composite ML-DSA+classical schemes route through native-ossl.
     fn verify_tls13_signature(
         &self,
         message: &[u8],
@@ -218,7 +218,7 @@ impl ClientCertVerifier for SyntaClientCertVerifier {
 /// Verify a composite ML-DSA+classical `CertificateVerify` signature.
 ///
 /// Extracts the composite public key from the leaf certificate DER using synta,
-/// then calls the OpenSSL EVP interface (pqc-prs fork) which handles both
+/// then calls the native-ossl EVP DigestVerify interface which handles both
 /// the classical and ML-DSA components with "and" semantics.
 fn verify_composite_tls13_signature(
     message: &[u8],
@@ -238,31 +238,30 @@ fn verify_composite_tls13_signature(
         .map_err(|e| TlsError::General(format!("composite signature verification failed: {e}")))
 }
 
-/// Verify a composite ML-DSA+classical signature using the OpenSSL EVP interface.
+/// Verify a composite ML-DSA+classical signature using native-ossl EVP DigestVerify.
 ///
-/// `PKey::public_key_from_der(spki_der)` loads the composite key via the
-/// pqc-prs fork's d2i_PUBKEY path. `Verifier::verify` validates both components
-/// in one call — OpenSSL handles the "and" semantics internally.
-///
-/// If the pqc-prs fork does not yet expose composite NIDs via the Rust binding,
-/// this will return an error at runtime; the fix is to extend the Rust openssl
-/// bindings in the pqc-prs fork, not this crate.
+/// `Pkey::<Public>::from_der(spki_der)` loads the composite key via d2i_PUBKEY.
+/// `Verifier::verify` validates both components in one streaming call — the
+/// underlying OpenSSL provider handles the "and" semantics internally.
 fn verify_composite_via_openssl(
     scheme: SignatureScheme,
     message: &[u8],
     spki_der: &[u8],
     sig_bytes: &[u8],
 ) -> Result<(), String> {
-    use openssl::pkey::PKey;
-    use openssl::sign::Verifier as OpenSslVerifier;
+    use native_ossl::pkey::{Pkey, Public, SignInit, Verifier};
 
-    let pkey = PKey::public_key_from_der(spki_der)
+    let pkey = Pkey::<Public>::from_der(spki_der)
         .map_err(|e| format!("load composite public key: {e}"))?;
-
     let digest = composite_digest(scheme)?;
-
-    let mut verifier = OpenSslVerifier::new(digest, &pkey)
-        .map_err(|e| format!("create composite verifier: {e}"))?;
+    let mut verifier = Verifier::new(
+        &pkey,
+        &SignInit {
+            digest: Some(&digest),
+            params: None,
+        },
+    )
+    .map_err(|e| format!("create composite verifier: {e}"))?;
     verifier
         .update(message)
         .map_err(|e| format!("verifier update: {e}"))?;
@@ -274,22 +273,23 @@ fn verify_composite_via_openssl(
 }
 
 /// Select the message digest for a composite ML-DSA TLS scheme.
-fn composite_digest(scheme: SignatureScheme) -> Result<openssl::hash::MessageDigest, String> {
+fn composite_digest(scheme: SignatureScheme) -> Result<native_ossl::digest::DigestAlg, String> {
     use crate::tls::schemes::*;
-    use openssl::hash::MessageDigest;
-    match scheme {
-        SignatureScheme::Unknown(MLDSA44_ECDSA_P256_SHA256) => Ok(MessageDigest::sha256()),
-        SignatureScheme::Unknown(MLDSA44_RSA2048_PKCS15_SHA256) => Ok(MessageDigest::sha256()),
-        SignatureScheme::Unknown(MLDSA44_RSA2048_PSS_SHA256) => Ok(MessageDigest::sha256()),
-        SignatureScheme::Unknown(MLDSA44_ED25519_SHA512) => Ok(MessageDigest::sha512()),
-        SignatureScheme::Unknown(MLDSA65_ECDSA_P256_SHA512) => Ok(MessageDigest::sha512()),
-        SignatureScheme::Unknown(MLDSA65_ECDSA_P384_SHA512) => Ok(MessageDigest::sha512()),
-        SignatureScheme::Unknown(MLDSA65_RSA3072_PKCS15_SHA384) => Ok(MessageDigest::sha384()),
-        SignatureScheme::Unknown(MLDSA65_RSA3072_PSS_SHA384) => Ok(MessageDigest::sha384()),
-        SignatureScheme::Unknown(MLDSA65_ED25519_SHA512) => Ok(MessageDigest::sha512()),
-        SignatureScheme::Unknown(MLDSA87_ECDSA_P384_SHA512) => Ok(MessageDigest::sha512()),
-        SignatureScheme::Unknown(MLDSA87_ECDSA_P521_SHA512) => Ok(MessageDigest::sha512()),
-        SignatureScheme::Unknown(MLDSA87_ED448_SHA512) => Ok(MessageDigest::sha512()),
-        other => Err(format!("unknown composite scheme {other:?}")),
-    }
+    let name = match scheme {
+        SignatureScheme::Unknown(MLDSA44_ECDSA_P256_SHA256) => c"SHA2-256",
+        SignatureScheme::Unknown(MLDSA44_RSA2048_PKCS15_SHA256) => c"SHA2-256",
+        SignatureScheme::Unknown(MLDSA44_RSA2048_PSS_SHA256) => c"SHA2-256",
+        SignatureScheme::Unknown(MLDSA44_ED25519_SHA512) => c"SHA2-512",
+        SignatureScheme::Unknown(MLDSA65_ECDSA_P256_SHA512) => c"SHA2-512",
+        SignatureScheme::Unknown(MLDSA65_ECDSA_P384_SHA512) => c"SHA2-512",
+        SignatureScheme::Unknown(MLDSA65_RSA3072_PKCS15_SHA384) => c"SHA2-384",
+        SignatureScheme::Unknown(MLDSA65_RSA3072_PSS_SHA384) => c"SHA2-384",
+        SignatureScheme::Unknown(MLDSA65_ED25519_SHA512) => c"SHA2-512",
+        SignatureScheme::Unknown(MLDSA87_ECDSA_P384_SHA512) => c"SHA2-512",
+        SignatureScheme::Unknown(MLDSA87_ECDSA_P521_SHA512) => c"SHA2-512",
+        SignatureScheme::Unknown(MLDSA87_ED448_SHA512) => c"SHA2-512",
+        other => return Err(format!("unknown composite scheme {other:?}")),
+    };
+    native_ossl::digest::DigestAlg::fetch(name, None)
+        .map_err(|e| format!("fetch digest for composite scheme: {e}"))
 }
