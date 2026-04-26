@@ -1,13 +1,5 @@
-use crate::db::schema::CertificateRow;
+use crate::db::schema::{CertForStandalone, CertificateRow};
 use crate::error::AcmeError;
-
-/// Minimal certificate projection used for standalone MTC cert construction.
-#[derive(sqlx::FromRow)]
-pub struct CertForStandalone {
-    pub id: String,
-    pub der: Vec<u8>,
-    pub mtc_log_index: i64,
-}
 
 pub async fn insert(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
@@ -249,7 +241,9 @@ pub async fn get_pending_standalone(
         "SELECT id, der, mtc_log_index FROM certificates
          WHERE mtc_log_index IS NOT NULL
            AND mtc_log_index < ?
-           AND mtc_standalone_der IS NULL",
+           AND mtc_standalone_der IS NULL
+         ORDER BY mtc_log_index ASC
+         LIMIT 500",
     )
     .bind(max_leaf_index)
     .fetch_all(executor)
@@ -269,6 +263,29 @@ pub async fn set_mtc_standalone_der(
         .execute(executor)
         .await?;
     Ok(())
+}
+
+/// Return any certificate whose `mtc_log_index` is strictly less than `max_leaf_index`.
+///
+/// Used by landmark allocation to pick a representative leaf for `LandmarkCertificateBuilder`.
+/// Returns `None` when no certificate has been appended to the MTC log yet.
+pub async fn get_representative_for_landmark(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    max_leaf_index: i64,
+) -> Result<Option<CertificateRow>, AcmeError> {
+    let row = sqlx::query_as::<_, CertificateRow>(
+        "SELECT id, order_id, account_id, serial_number, status, der, pem,
+         not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
+         suggested_window_start, suggested_window_end, replaced_by
+         FROM certificates
+         WHERE mtc_log_index IS NOT NULL AND mtc_log_index < ?
+         ORDER BY mtc_log_index ASC
+         LIMIT 1",
+    )
+    .bind(max_leaf_index)
+    .fetch_optional(executor)
+    .await?;
+    Ok(row)
 }
 
 /// Retrieve the DER-encoded `StandaloneCertificate` for a certificate, if built.

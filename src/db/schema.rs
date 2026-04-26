@@ -88,6 +88,14 @@ pub struct CheckpointRow {
     pub created: i64,
 }
 
+/// Minimal certificate projection for standalone MTC cert construction.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct CertForStandalone {
+    pub id: String,
+    pub der: Vec<u8>,
+    pub mtc_log_index: i64,
+}
+
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct CertificateRow {
     pub id: String,

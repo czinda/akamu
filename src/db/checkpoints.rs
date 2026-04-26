@@ -1,6 +1,33 @@
 use crate::db::schema::CheckpointRow;
 use crate::error::AcmeError;
 
+/// Delete the oldest checkpoints, keeping only the most recent `keep_count`.
+///
+/// Call `cosignatures::prune_orphaned` after this to remove cosignatures whose
+/// checkpoint row has been deleted.  Returns the number of deleted rows.
+pub async fn prune_oldest(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    keep_count: u32,
+) -> Result<u64, AcmeError> {
+    if keep_count == 0 {
+        return Ok(0);
+    }
+    let result = sqlx::query(
+        "DELETE FROM mtc_checkpoints
+         WHERE id NOT IN (
+             SELECT id FROM (
+                 SELECT id FROM mtc_checkpoints
+                 ORDER BY tree_size DESC
+                 LIMIT ?
+             ) _keep
+         )",
+    )
+    .bind(keep_count as i64)
+    .execute(executor)
+    .await?;
+    Ok(result.rows_affected())
+}
+
 /// Return the checkpoint with the highest `tree_size`, or `None` if no
 /// checkpoint has been produced yet.
 pub async fn get_latest(
