@@ -4,7 +4,6 @@
 
 - Rust toolchain 1.75 or later (install via [rustup](https://rustup.rs))
 - OpenSSL development headers (required by `synta-certificate`'s cryptography backend)
-- The `synta` family of crates, which are path dependencies and must be checked out alongside this repository
 
 ### Fedora / RHEL
 
@@ -20,23 +19,11 @@ sudo apt install libssl-dev
 
 ## Checking out the source
 
-`Akāmu` depends on three path-based crates from the `synta` workspace. Both repositories must be present on the local filesystem:
-
 ```
 git clone <akamu-repo> akamu
-git clone <synta-repo> synta
 ```
 
-The `Cargo.toml` in `Akāmu` contains:
-
-```toml
-synta            = { path = "/home/abokovoy/src/upstream/synta" }
-synta-certificate = { path = "/home/abokovoy/src/upstream/synta/synta-certificate" }
-synta-x509-verification = { path = "/home/abokovoy/src/upstream/synta/synta-x509-verification" }
-synta-mtc        = { path = "/home/abokovoy/src/upstream/synta/synta-mtc" }
-```
-
-Adjust the paths to match where you cloned `synta` before building.
+All `synta` dependencies are fetched automatically from [crates.io](https://crates.io) — no manual checkout required.
 
 ## Building from source
 
@@ -63,7 +50,7 @@ To build only the CLI:
 cargo build --bin akamu-cli --release
 ```
 
-> **Note:** The first build downloads and compiles all dependencies including bundled SQLite and the OpenSSL fork used by `synta-certificate`. It can take several minutes on a first run.
+> **Note:** The first build downloads and compiles all dependencies including bundled SQLite. It can take several minutes on a first run.
 
 ## Verifying the build
 
