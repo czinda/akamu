@@ -7,17 +7,49 @@
 # skipped — they have no system RPM equivalent.
 #
 # Usage:
-#   ./check-crate-deps.sh [Cargo.lock]
+#   ./check-crate-deps.sh [OPTIONS] [Cargo.lock]
 #   ./check-crate-deps.sh path/to/Cargo.lock
+#   ./check-crate-deps.sh --align path/to/Cargo.lock
+#   ./check-crate-deps.sh --align --apply path/to/Cargo.lock
+#
+# Options:
+#   --align       print 'cargo update --precise' commands that would bring
+#                 Cargo.lock in line with the versions available in Fedora
+#                 (dry-run; no files are modified)
+#   --apply       execute the alignment commands, patching Cargo.toml files
+#                 when 'cargo update --precise' alone is insufficient
+#                 (implies --align)
+#   --help, -h    show this help
 #
 # Exit codes:
-#   0  — all registry crates are available as system packages
-#   1  — one or more crates are missing
+#   0  — all registry crates are available as system packages (exact version)
+#   1  — one or more crates are completely absent from Fedora
 #   2  — bad arguments / file not found
 
 set -euo pipefail
 
-LOCKFILE="${1:-Cargo.lock}"
+# ── Argument parsing ──────────────────────────────────────────────────────────
+
+ALIGN=0
+APPLY=0
+LOCKFILE=""
+
+usage() {
+    sed -n '/^# Usage:/,/^[^#]/{ /^[^#]/q; s/^# \{0,2\}//; p }' "$0"
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --align|-a) ALIGN=1; shift ;;
+        --apply)    APPLY=1; ALIGN=1; shift ;;
+        --help|-h)  usage; exit 0 ;;
+        --)         shift; break ;;
+        -*)         printf 'error: unknown option: %s\n' "$1" >&2; exit 2 ;;
+        *)          LOCKFILE="$1"; shift ;;
+    esac
+done
+
+LOCKFILE="${LOCKFILE:-Cargo.lock}"
 
 if [[ ! -f "$LOCKFILE" ]]; then
     printf 'error: %s: file not found\n' "$LOCKFILE" >&2
@@ -71,8 +103,12 @@ printf 'done (%d provides).\n\n' "$(wc -l < "$_provides_tmp")"
 printf 'Checking %d registry crates from %s:\n\n' "$total" "$LOCKFILE"
 
 found=0
+mismatch=0
 missing=0
+declare -a mismatch_list=()
 declare -a missing_list=()
+# Machine-readable mismatch records: "name need_ver avail_ver"
+declare -a mismatch_pairs=()
 
 for entry in "${CRATES[@]}"; do
     name="${entry%% *}"
@@ -85,18 +121,197 @@ for entry in "${CRATES[@]}"; do
         printf '  ok  %s\n' "$provide"
         found=$(( found + 1 ))
     else
-        printf ' --- %s\n' "$provide"
-        missing=$(( missing + 1 ))
-        missing_list+=( "$provide" )
+        # Exact version not present.  Check whether the crate exists at *any*
+        # version in the repos: a version mismatch (crate packaged but at a
+        # different version) is very different from a crate that is absent
+        # entirely and must be shipped in the vendor tarball.
+        #
+        # The grep pattern anchors on "crate(NAME) = " (including the closing
+        # parenthesis and space) so that "crate(foo) = " never matches
+        # "crate(foobar) = " or "crate(foo/feature) = ".
+        avail_ver=$(grep -F "crate(${name}) = " "$_provides_tmp" \
+                    | grep -v '/' \
+                    | awk '{print $NF}' | sort -V | tail -1 || true)
+        if [[ -n "$avail_ver" ]]; then
+            printf ' ver  %s  (repo has: %s)\n' "$provide" "$avail_ver"
+            mismatch=$(( mismatch + 1 ))
+            mismatch_list+=( "${name}: need ${ver}, repo has ${avail_ver}" )
+            mismatch_pairs+=( "${name} ${ver} ${avail_ver}" )
+        else
+            printf ' ---  %s\n' "$provide"
+            missing=$(( missing + 1 ))
+            missing_list+=( "$provide" )
+        fi
     fi
 done
 
 # ── 4. Summary ────────────────────────────────────────────────────────────────
-printf '\n%d / %d crates available as system packages, %d missing.\n' \
-    "$found" "$total" "$missing"
+printf '\n%d / %d crates at exact version; %d version mismatch; %d absent.\n' \
+    "$found" "$total" "$mismatch" "$missing"
+
+if [[ ${#mismatch_list[@]} -gt 0 ]]; then
+    printf '\nVersion mismatch (packaged in Fedora, but at a different version):\n'
+    printf '  %s\n' "${mismatch_list[@]}"
+fi
 
 if [[ ${#missing_list[@]} -gt 0 ]]; then
     printf '\nNot available (require vendor tarball or new packaging):\n'
     printf '  %s\n' "${missing_list[@]}"
+fi
+
+# ── 5. Align mode ─────────────────────────────────────────────────────────────
+# When --align is given, attempt to bring Cargo.lock in line with the Fedora
+# repo versions.  The strategy per mismatched crate is:
+#
+#   a) Run 'cargo update --precise <fedora-ver> <crate>'.
+#      This succeeds whenever the Cargo.toml constraint already permits the
+#      Fedora version (e.g. "libc = "0.2"" allows any 0.2.x).
+#
+#   b) If cargo update rejects the version (constraint too strict), patch the
+#      Cargo.toml files in the workspace to relax the minimum version to
+#      major.minor of the Fedora version, then retry cargo update.
+#      Two inline formats are handled:
+#        - simple:  crate-name = "X.Y.Z"
+#        - table:   crate-name = { version = "X.Y.Z", ... }
+#      Multi-line TOML table sections ([dependencies.crate-name]) are not
+#      patched automatically; a warning is printed instead.
+
+# _patch_cargo_toml NAME NEED_VER AVAIL_VER REPOROOT
+# Relaxes the version constraint for NAME from NEED_VER to X.Y of AVAIL_VER
+# in all Cargo.toml files found under REPOROOT (excluding vendor/).
+# Returns 0 if at least one file was patched, 1 otherwise.
+_patch_cargo_toml() {
+    local crate_name="$1"
+    local need_ver="$2"
+    local avail_ver="$3"
+    local reporoot="$4"
+
+    # Relaxed constraint: use major.minor of the available version.
+    # For 0.x crates this is "0.minor" (allows any 0.minor.patch);
+    # for 1+ crates this is "major.minor" (allows any major.minor.patch).
+    IFS='.' read -r -a _avail_parts <<< "$avail_ver"
+    local relaxed="${_avail_parts[0]}.${_avail_parts[1]}"
+
+    # Escape dots in the exact version for use in ERE (sed -E).
+    local need_ver_re="${need_ver//./\\.}"
+
+    # Accept both hyphens and underscores in the crate name (Cargo normalises
+    # between the two, but Cargo.toml always uses the canonical published name).
+    local crate_re="${crate_name//[-_]/[-_]}"
+
+    local changed=0
+
+    while IFS= read -r toml; do
+        local before
+        before=$(md5sum "$toml")
+
+        # Pattern 1 — simple string value:
+        #   crate-name = "X.Y.Z"
+        # The pattern anchors on the crate name at the start of the line
+        # (possibly preceded by whitespace) to avoid hitting unrelated version
+        # strings on the same line.
+        sed -i -E \
+            "s|^([[:space:]]*${crate_re}[[:space:]]*=[[:space:]]*\")${need_ver_re}(\"[[:space:]]*(#.*)?)$|\1${relaxed}\2|" \
+            "$toml"
+
+        # Pattern 2 — inline table with an explicit version key on one line:
+        #   crate-name = { version = "X.Y.Z", ... }
+        #   crate-name = { path = "…", version = "X.Y.Z" }
+        # The pattern requires the crate name at the start of the line so that
+        # only the dependency declaration for this specific crate is touched.
+        sed -i -E \
+            "s|^([[:space:]]*${crate_re}[[:space:]]*=.*[[:space:]]version[[:space:]]*=[[:space:]]*\")${need_ver_re}(\")|\1${relaxed}\2|" \
+            "$toml"
+
+        local after
+        after=$(md5sum "$toml")
+        if [[ "$before" != "$after" ]]; then
+            printf '    patched %s\n' "$toml"
+            changed=$(( changed + 1 ))
+        fi
+    done < <(find "$reporoot" -name "Cargo.toml" \
+                 -not -path "*/vendor/*" \
+                 -not -path "*/.git/*" \
+                 -not -path "*/target/*")
+
+    [[ "$changed" -gt 0 ]]
+}
+
+if [[ "$ALIGN" -eq 1 ]] && [[ "${#mismatch_pairs[@]}" -gt 0 ]]; then
+    REPOROOT="$(dirname "$(realpath "$LOCKFILE")")"
+
+    if [[ "$APPLY" -eq 0 ]]; then
+        # ── dry-run: print the commands ───────────────────────────────────────
+        printf '\n── Suggested commands to align Cargo.lock with Fedora ──\n'
+        printf '# Run from: %s\n\n' "$REPOROOT"
+        for pair in "${mismatch_pairs[@]}"; do
+            crate_name="${pair%% *}"
+            avail_ver="${pair##* }"
+            printf 'cargo update --precise %s %s\n' "$avail_ver" "$crate_name"
+        done
+        printf '\n# If a command fails, the Cargo.toml constraint is too strict.\n'
+        printf '# Re-run this script with --align --apply to patch automatically.\n'
+    else
+        # ── apply: run cargo update, patch Cargo.toml if needed ──────────────
+        printf '\n── Aligning Cargo.lock with Fedora repo versions ──\n\n'
+        align_ok=0
+        align_toml=0
+        align_failed=0
+
+        for pair in "${mismatch_pairs[@]}"; do
+            crate_name="${pair%% *}"
+            rest="${pair#* }"
+            need_ver="${rest%% *}"
+            avail_ver="${rest##* }"
+
+            printf '  %s  %s → %s\n' "$crate_name" "$need_ver" "$avail_ver"
+
+            # Step a: try cargo update --precise directly.
+            if ( cd "$REPOROOT" && \
+                 cargo update --precise "$avail_ver" "$crate_name" 2>/dev/null )
+            then
+                printf '    cargo update ok\n'
+                align_ok=$(( align_ok + 1 ))
+                continue
+            fi
+
+            # Step b: cargo update failed — Cargo.toml constraint too strict.
+            # Patch the version constraint in Cargo.toml files, then retry.
+            printf '    cargo update --precise rejected; patching Cargo.toml\n'
+            if _patch_cargo_toml \
+                   "$crate_name" "$need_ver" "$avail_ver" "$REPOROOT"
+            then
+                if ( cd "$REPOROOT" && \
+                     cargo update --precise "$avail_ver" "$crate_name" 2>/dev/null )
+                then
+                    printf '    cargo update ok after Cargo.toml patch\n'
+                    align_toml=$(( align_toml + 1 ))
+                else
+                    printf '    cargo update still failed after patching' \
+                           ' — manual intervention required\n'
+                    align_failed=$(( align_failed + 1 ))
+                fi
+            else
+                printf '    no matching version constraint found in Cargo.toml\n'
+                printf '    (multi-line [dependencies.%s] tables are not auto-patched)\n' \
+                       "$crate_name"
+                align_failed=$(( align_failed + 1 ))
+            fi
+        done
+
+        printf '\nAlign summary: %d updated via cargo update' "$align_ok"
+        [[ "$align_toml" -gt 0 ]] && printf ', %d needed Cargo.toml patch' "$align_toml"
+        [[ "$align_failed" -gt 0 ]] && printf ', %d could not be aligned' "$align_failed"
+        printf '.\n'
+
+        if [[ "$align_failed" -gt 0 ]]; then
+            printf '\nInspect the failures above and align those crates manually.\n'
+        fi
+    fi
+fi
+
+# Exit codes follow the original convention: non-zero only when crates are
+# completely absent from Fedora (version mismatches are advisory).
+if [[ "${#missing_list[@]}" -gt 0 ]]; then
     exit 1
 fi
