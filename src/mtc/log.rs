@@ -11,6 +11,7 @@ use synta::traits::Encode;
 use synta::{Decoder, Encoder, Encoding};
 use synta_certificate::Certificate;
 use synta_mtc::{
+    builder::IssuanceLogBuilder,
     crypto::{hash_leaf, HashAlgorithm},
     integration::tbs_certificate_to_log_entry,
     storage::DiskBackedLog,
@@ -33,7 +34,22 @@ pub type SharedLog = Arc<Mutex<DiskBackedLog>>;
 /// exclusion at that level (e.g. via a file lock or single-process guarantee).
 pub fn open_or_create(path: &str, algorithm: HashAlgorithm) -> Result<DiskBackedLog, AcmeError> {
     match DiskBackedLog::create(path, algorithm) {
-        Ok(log) => Ok(log),
+        Ok(mut log) => {
+            // §5.3 of draft-ietf-plants-merkle-tree-certs: entry zero of every
+            // issuance log MUST be of type null_entry.  Seed it immediately so
+            // that the first real certificate receives index ≥ 1 and never gets
+            // a zero serial number in the MTC proof.
+            let null_hash = IssuanceLogBuilder::new()
+                .hash_algorithm(algorithm)
+                .compute_leaf_hashes()
+                .map_err(|e| AcmeError::Mtc(format!("compute null_entry hash: {e}")))?
+                .into_iter()
+                .next()
+                .ok_or_else(|| AcmeError::Mtc("IssuanceLogBuilder yielded no hashes".into()))?;
+            log.append_leaf(&null_hash)
+                .map_err(|e| AcmeError::Mtc(format!("seed null_entry at index 0: {e}")))?;
+            Ok(log)
+        }
         Err(_) => {
             // Creation failed — assume the file already exists and open it.
             DiskBackedLog::open(path).map_err(|e| AcmeError::Mtc(format!("open MTC log: {e}")))
@@ -172,21 +188,22 @@ mod tests {
         let log = open_or_create(&path, algorithm).unwrap();
         let shared = Arc::new(Mutex::new(log));
 
-        assert_eq!(tree_size(&shared).await.unwrap(), 0);
+        // A fresh log already has the null_entry at index 0 (§5.3).
+        assert_eq!(tree_size(&shared).await.unwrap(), 1);
 
         let cert_der = test_cert_der();
         let idx = append_cert_to_log(&shared, cert_der.clone(), algorithm)
             .await
             .unwrap();
-        assert_eq!(idx, 0);
-        assert_eq!(tree_size(&shared).await.unwrap(), 1);
+        assert_eq!(idx, 1);
+        assert_eq!(tree_size(&shared).await.unwrap(), 2);
 
         // Append a second leaf.
         let idx2 = append_cert_to_log(&shared, cert_der, algorithm)
             .await
             .unwrap();
-        assert_eq!(idx2, 1);
-        assert_eq!(tree_size(&shared).await.unwrap(), 2);
+        assert_eq!(idx2, 2);
+        assert_eq!(tree_size(&shared).await.unwrap(), 3);
     }
 
     #[tokio::test]
@@ -206,9 +223,10 @@ mod tests {
         }
 
         // Re-open the existing file (covers the `DiskBackedLog::open` branch).
+        // null_entry (index 0) + one cert (index 1) = 2 leaves.
         let log = open_or_create(&path, algorithm).unwrap();
         let shared = Arc::new(Mutex::new(log));
-        assert_eq!(tree_size(&shared).await.unwrap(), 1);
+        assert_eq!(tree_size(&shared).await.unwrap(), 2);
     }
 
     #[tokio::test]
