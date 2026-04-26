@@ -556,6 +556,16 @@ Controls whether the server offers `http-01` and `tls-alpn-01` challenge types f
 tor_connectivity_enabled = true
 ```
 
+### `validate_dnssec`
+
+**Optional. Default: `true`.**
+
+Controls whether DNSSEC validation is enforced during DNS-based challenge verification (dns-01, dns-persist-01) and CAA record lookups. CA/B Forum BR §3.2.2.4 and §3.2.2.8.1 require DNSSEC validation for publicly trusted CAs as of 2026-03-15. Set to `false` only for testing environments or deployments where the DNS infrastructure is not yet DNSSEC-signed; doing so makes the CA non-compliant.
+
+```toml
+validate_dnssec = true
+```
+
 ---
 
 ## `[profiles]`
