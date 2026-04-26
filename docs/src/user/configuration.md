@@ -476,7 +476,7 @@ http_validation_port = 80
 
 The issuer domain placed in the `issuer-domain-names` field of `dns-persist-01` challenge objects and matched against the first token of TXT records during validation. When this field is set, the server offers `dns-persist-01` as an additional challenge type for all `dns` identifiers. When absent, `dns-persist-01` is not offered and existing clients are unaffected.
 
-See [dns-persist-01 Challenge](dns-persist-01.md) for the full description of the challenge type and TXT record format.
+See [dns-persist-01 Challenge](challenges.md#dns-persist-01) for the full description of the challenge type and TXT record format.
 
 ```toml
 dns_persist_issuer_domain = "acme.example.com"

@@ -137,17 +137,17 @@ Returns a Merkle inclusion proof for the certificate identified by `cert_id` (th
   "leafIndex": 7,
   "treeSize": 42,
   "proof": [
-    "a1b2c3...",
-    "d4e5f6..."
+    { "left": true,  "hash": "a1b2c3..." },
+    { "left": false, "hash": "d4e5f6..." }
   ]
 }
 ```
 
-`proof` is the ordered list of sibling hashes from the leaf up to the root, each encoded as a lowercase hex string.  The position of each sibling (left or right) can be derived from the bits of `leafIndex`.
+Each element of `proof` is an object with two fields: `"left"` (a boolean indicating whether the sibling is to the left of the current node) and `"hash"` (the sibling hash as a lowercase hex string).  The proof is ordered from the leaf up to the root.
 
 ### `GET /acme/mtc/cert/{cert_id}/standalone`
 
-Returns the DER-encoded `StandaloneCertificate` (§6.1) for the given certificate, with `Content-Type: application/pkix-cert`.
+Returns the DER-encoded `StandaloneCertificate` (§6.1) for the given certificate, with `Content-Type: application/octet-stream`.
 
 Returns 404 when:
 - MTC is disabled
@@ -172,7 +172,7 @@ Returns 404 when MTC is disabled.
 
 ### `GET /acme/mtc/landmarks/{seq}/cert`
 
-Returns the DER-encoded `LandmarkCertificate` (§6.3.1) for the landmark with sequence number `seq`, with `Content-Type: application/pkix-cert`.
+Returns the DER-encoded `LandmarkCertificate` (§6.3.1) for the landmark with sequence number `seq`, with `Content-Type: application/octet-stream`.
 
 Returns 404 when:
 - MTC is disabled
@@ -191,7 +191,7 @@ When `[mtc.signing_key]` is configured, a background task fires every `landmark_
 4. A `LandmarkCertificate` is built using `LandmarkCertificateBuilder`: it embeds the representative `TBSCertificate`, the leaf's log index, all leaf hashes (for internal inclusion proof generation), the `LandmarkID` (log identity + frozen tree size), and a signature from the MTC signing key.
 5. The DER-encoded certificate is stored in the `cert_der` column of the landmark row.
 
-`max_active_landmarks` (default: 100) is stored in config for operator reference; landmark rows are not automatically pruned — operators can manage retention via direct database access.
+After each new landmark is built, rows beyond the `max_active_landmarks` limit (default: 100) are pruned automatically, removing the oldest landmarks by sequence number.
 
 ## Concurrency
 

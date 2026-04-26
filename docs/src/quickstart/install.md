@@ -27,16 +27,17 @@ All `synta` dependencies are fetched automatically from [crates.io](https://crat
 
 ## Building from source
 
-The repository is a Cargo workspace with four members: the `akamu` server binary, `akamu-jose`, `akamu-client`, and `akamu-cli`.
+The repository is a Cargo workspace with five members: the `akamu` server binary, `akamu-jose`, `akamu-client`, `akamu-cli`, and `akamu-cosigner`.
 
 ```
 cd akamu
 cargo build --release
 ```
 
-This compiles all four workspace members. The binaries are placed at:
+This compiles all five workspace members. The binaries are placed at:
 - `target/release/akamu` — the ACME server
 - `target/release/akamu-cli` — the command-line client
+- `target/release/akamu-cosigner` — the MTC cosigner daemon
 
 To build only the server:
 

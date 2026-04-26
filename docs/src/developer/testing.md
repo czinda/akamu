@@ -3,7 +3,7 @@
 `Akāmu` uses Rust's built-in test framework (`cargo test`). Tests are organized at three levels:
 
 - **Unit tests** inside each source file (`#[cfg(test)] mod tests`).
-- **Integration tests** in `tests/acme_flow.rs`, which test the full HTTP stack.
+- **Integration tests** in `tests/`, which test the full HTTP stack.
 
 ## Running tests
 
@@ -192,11 +192,17 @@ Tests verify contact validation and `account_json` structure.
 
 Tests verify `order_json` for pending, valid, invalid, and expired orders.
 
-## Integration tests (`tests/acme_flow.rs`)
+## Integration tests
 
-The integration tests build a full `AppState` with an in-memory database, a generated CA, and a real axum router. They use `tower::ServiceExt::oneshot` to send HTTP requests directly to the router without binding a TCP port.
+All integration test files live under `tests/`.  Each builds a full `AppState` with an in-memory database, a generated CA, and a real axum router.  They use `tower::ServiceExt::oneshot` to send HTTP requests directly to the router without binding a TCP port, except where a live TCP port is required by the protocol (tls-alpn-01 validation, cosigner HTTP server).
 
-The test suite covers multi-step ACME flows including account creation, order creation, challenge signaling, and verification that status transitions occur correctly.
+| File | What it covers |
+|---|---|
+| `tests/acme_flow.rs` | Core ACME lifecycle: account creation, order creation, challenge signaling, status transitions, and certificate download |
+| `tests/ari_flow.rs` | ACME Renewal Information (RFC 9773) query and renewal window logic |
+| `tests/dns_persist_flow.rs` | Full dns-persist-01 challenge flow against a local DNS stub server |
+| `tests/mtc_cosigner_flow.rs` | End-to-end ACME issuance followed by MTC checkpoint production, cosignature gathering from an inline cosigner HTTP server, and `StandaloneCertificate` verification |
+| `tests/tls_server.rs` | Helper module providing a local TLS server for tls-alpn-01 integration tests |
 
 ## Adding new tests
 
