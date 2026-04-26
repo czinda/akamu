@@ -58,7 +58,7 @@ pub async fn maybe_allocate_landmark(
         }
     }
 
-    let now_unix = crate::routes::unix_now() as i64;
+    let now_unix = crate::routes::unix_now();
 
     // Atomically insert the landmark row inside a write transaction so that
     // sequence_no assignment is serialised even under concurrent access.
@@ -90,7 +90,10 @@ pub async fn maybe_allocate_landmark(
     let key = signing_key.clone();
     let hash_alg_str = signing_hash_alg.to_string();
     let log_clone = Arc::clone(log);
-    let leaf_index = cert_row.mtc_log_index.unwrap_or(0) as u64;
+    let leaf_index = cert_row
+        .mtc_log_index
+        .ok_or_else(|| AcmeError::Mtc("representative cert has no mtc_log_index".into()))?
+        as u64;
 
     // Build the LandmarkCertificate in a blocking thread (disk I/O + crypto).
     //
@@ -146,6 +149,7 @@ pub async fn maybe_allocate_landmark(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_landmark_cert_der(
     cert_der: &[u8],
     leaf_index: u64,
@@ -234,7 +238,10 @@ fn build_landmark_cert_der(
 ///
 /// Fires every `config.mtc.landmark_interval_secs` seconds.  No-op when the
 /// MTC signing key is not configured.
-pub fn spawn_landmark_task(state: Arc<AppState>) {
+///
+/// The returned `JoinHandle` should be retained by the caller; dropping it
+/// detaches the task silently, making panics undetectable.
+pub fn spawn_landmark_task(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     let interval_secs = state.config.mtc.landmark_interval_secs;
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
@@ -260,5 +267,5 @@ pub fn spawn_landmark_task(state: Arc<AppState>) {
                 tracing::error!("MTC landmark allocation failed: {e}");
             }
         }
-    });
+    })
 }

@@ -280,10 +280,10 @@ async fn run() -> Result<(), String> {
     });
 
     // ── MTC checkpoint background task ───────────────────────────────────────
-    mtc::checkpoint::spawn_checkpoint_task(Arc::clone(&state));
+    let _checkpoint_task = mtc::checkpoint::spawn_checkpoint_task(Arc::clone(&state));
 
     // ── MTC landmark allocation background task ──────────────────────────────
-    mtc::landmark::spawn_landmark_task(Arc::clone(&state));
+    let _landmark_task = mtc::landmark::spawn_landmark_task(Arc::clone(&state));
 
     // ── STAR background reissuance task ──────────────────────────────────────
     let _star_task = star::spawn(Arc::clone(&state));

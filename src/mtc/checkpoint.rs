@@ -76,69 +76,68 @@ pub async fn produce_checkpoint(
     }
 
     // ── Phase 1 (blocking): compute root, generate proofs, build + sign checkpoint ──
+    type Phase1Result = Result<(u64, Vec<u8>, Vec<u8>, Vec<u8>, Vec<CertProofEntry>), AcmeError>;
     let (actual_tree_size, root_bytes, checkpoint_der, signature, cert_proofs) =
-        tokio::task::spawn_blocking(
-            move || -> Result<(u64, Vec<u8>, Vec<u8>, Vec<u8>, Vec<CertProofEntry>), AcmeError> {
-                // Obtain the signing key's SubjectPublicKeyInfo DER.
-                let spki_der = key
-                    .public_key()
-                    .map_err(|e| AcmeError::Crypto(format!("MTC signing key public: {e}")))?
-                    .spki_der()
-                    .to_vec();
+        tokio::task::spawn_blocking(move || -> Phase1Result {
+            // Obtain the signing key's SubjectPublicKeyInfo DER.
+            let spki_der = key
+                .public_key()
+                .map_err(|e| AcmeError::Crypto(format!("MTC signing key public: {e}")))?
+                .spki_der()
+                .to_vec();
 
-                // Lock the log ONCE for tree_size, compute_root, and generate_proof so
-                // that the checkpoint covers the exact tree state at the root computation.
-                // Reading tree_size outside this guard (as an early-exit hint) is fine;
-                // the value here is the authoritative size embedded in the checkpoint DER.
-                let (actual_tree_size, root_bytes, cert_proofs) = {
-                    let mut guard = log_clone.blocking_lock();
-                    let actual_tree_size = guard
-                        .tree_size()
-                        .map_err(|e| AcmeError::Mtc(format!("locked tree_size: {e}")))?;
-                    let root = guard
-                        .compute_root()
-                        .map_err(|e| AcmeError::Mtc(format!("compute_root: {e}")))?;
-                    let mut proofs: Vec<CertProofEntry> = Vec::new();
-                    for cert in &pending_certs {
-                        match guard.generate_proof(cert.mtc_log_index as u64) {
-                            Ok(proof) => proofs.push(CertProofEntry {
-                                cert_id: cert.id.clone(),
-                                cert_der: cert.der.clone(),
-                                leaf_index: cert.mtc_log_index as u64,
-                                proof,
-                            }),
-                            Err(e) => tracing::error!(
-                                cert_id = %cert.id,
-                                "generate_proof for standalone cert: {e}"
-                            ),
-                        }
+            // Lock the log ONCE for tree_size, compute_root, and generate_proof so
+            // that the checkpoint covers the exact tree state at the root computation.
+            // Reading tree_size outside this guard (as an early-exit hint) is fine;
+            // the value here is the authoritative size embedded in the checkpoint DER.
+            let (actual_tree_size, root_bytes, cert_proofs) = {
+                let mut guard = log_clone.blocking_lock();
+                let actual_tree_size = guard
+                    .tree_size()
+                    .map_err(|e| AcmeError::Mtc(format!("locked tree_size: {e}")))?;
+                let root = guard
+                    .compute_root()
+                    .map_err(|e| AcmeError::Mtc(format!("compute_root: {e}")))?;
+                let mut proofs: Vec<CertProofEntry> = Vec::new();
+                for cert in &pending_certs {
+                    match guard.generate_proof(cert.mtc_log_index as u64) {
+                        Ok(proof) => proofs.push(CertProofEntry {
+                            cert_id: cert.id.clone(),
+                            cert_der: cert.der.clone(),
+                            leaf_index: cert.mtc_log_index as u64,
+                            proof,
+                        }),
+                        Err(e) => tracing::error!(
+                            cert_id = %cert.id,
+                            "generate_proof for standalone cert: {e}"
+                        ),
                     }
-                    (actual_tree_size, root, proofs)
-                };
-                // Log mutex released here.
+                }
+                (actual_tree_size, root, proofs)
+            };
+            // Log mutex released here.
 
-                // Build and sign the DER-encoded Checkpoint structure.
-                let checkpoint_der = build_checkpoint_der(
-                    &spki_der,
-                    actual_tree_size,
-                    &root_bytes,
-                    now_unix,
-                    log_algorithm,
-                )?;
-                let signer = key.as_signer(&hash_alg_str);
-                let signature = signer
-                    .sign_tbs(&checkpoint_der)
-                    .map_err(|e| AcmeError::Mtc(format!("sign checkpoint: {e}")))?;
+            // Build and sign the DER-encoded Checkpoint structure.
+            let checkpoint_der = build_checkpoint_der(
+                &spki_der,
+                actual_tree_size,
+                &root_bytes,
+                now_unix,
+                log_algorithm,
+            )?;
+            let signer = key.as_signer(&hash_alg_str);
+            let signature = signer
+                .sign_tbs(&checkpoint_der)
+                .map_err(|e| AcmeError::Mtc(format!("sign checkpoint: {e}")))?;
 
-                Ok::<_, AcmeError>((
-                    actual_tree_size,
-                    root_bytes,
-                    checkpoint_der,
-                    signature,
-                    cert_proofs,
-                ))
-            },
-        )
+            Ok::<_, AcmeError>((
+                actual_tree_size,
+                root_bytes,
+                checkpoint_der,
+                signature,
+                cert_proofs,
+            ))
+        })
         .await
         .map_err(|e| AcmeError::Mtc(format!("checkpoint blocking task panicked: {e}")))??;
 
@@ -146,7 +145,10 @@ pub async fn produce_checkpoint(
     let root_hex: String = root_bytes.iter().map(|b| format!("{b:02x}")).collect();
     db::checkpoints::upsert(db, actual_tree_size as i64, &root_hex, &signature, now_unix).await?;
     tracing::info!(actual_tree_size, root_hex, "MTC checkpoint produced");
-    let checkpoint_id = db::checkpoints::get_latest(db).await?.map(|r| r.id);
+    // Query by tree_size (UNIQUE) — safe against concurrent checkpoint inserts.
+    let checkpoint_id = db::checkpoints::get_by_tree_size(db, actual_tree_size as i64)
+        .await?
+        .map(|r| r.id);
 
     // ── Async: gather cosignatures from external cosigners ────────────────────
     let cosig_results = if cosigners.is_empty() {
@@ -163,14 +165,16 @@ pub async fn produce_checkpoint(
         let mut out = Vec::new();
         for entry in cert_proofs {
             match crate::mtc::standalone::build_standalone_der(
-                &entry.cert_der,
-                entry.leaf_index,
-                entry.proof,
-                actual_tree_size,
-                &key2,
-                &hash_alg2,
-                log_algorithm,
-                &cosig_ders,
+                crate::mtc::standalone::StandaloneParams {
+                    cert_der: &entry.cert_der,
+                    leaf_index: entry.leaf_index,
+                    proof: entry.proof,
+                    tree_size: actual_tree_size,
+                    signing_key: &key2,
+                    hash_alg_str: &hash_alg2,
+                    log_algorithm,
+                    cosignature_ders: &cosig_ders,
+                },
             ) {
                 Ok(der) => out.push((entry.cert_id, der)),
                 Err(e) => tracing::warn!(cert_id = %entry.cert_id, "build standalone cert: {e}"),
@@ -184,7 +188,7 @@ pub async fn produce_checkpoint(
     // Persist standalone DERs.
     for (cert_id, der) in standalone_defs {
         if let Err(e) = db::certs::set_mtc_standalone_der(db, &cert_id, &der).await {
-            tracing::warn!(cert_id = %cert_id, "store standalone DER: {e}");
+            tracing::error!(cert_id = %cert_id, "store standalone DER: {e}");
         } else {
             tracing::debug!(cert_id = %cert_id, "MTC standalone certificate stored");
         }
@@ -270,7 +274,10 @@ fn build_checkpoint_der(
 /// The task fires every `config.mtc.checkpoint_interval_secs` seconds.
 /// It is a no-op when the signing key is not configured or when the log is
 /// not enabled, so callers may call it unconditionally.
-pub fn spawn_checkpoint_task(state: Arc<AppState>) {
+///
+/// The returned `JoinHandle` should be retained by the caller; dropping it
+/// detaches the task silently, making panics undetectable.
+pub fn spawn_checkpoint_task(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     let interval_secs = state.config.mtc.checkpoint_interval_secs;
     let retention_count = state.config.mtc.checkpoint_retention_count;
     tokio::spawn(async move {
@@ -296,14 +303,10 @@ pub fn spawn_checkpoint_task(state: Arc<AppState>) {
                 tracing::error!("MTC checkpoint failed: {e}");
                 continue;
             }
-            // Prune old cosignatures first (from previously deleted checkpoints),
-            // then prune old checkpoints to stay within the retention window.
-            if let Err(e) = db::cosignatures::prune_orphaned(&state.db).await {
-                tracing::warn!("prune orphaned MTC cosignatures: {e}");
-            }
+            // Prune old checkpoints; CASCADE deletes their cosignatures automatically.
             if let Err(e) = db::checkpoints::prune_oldest(&state.db, retention_count).await {
                 tracing::warn!("prune old MTC checkpoints: {e}");
             }
         }
-    });
+    })
 }
