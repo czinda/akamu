@@ -102,6 +102,21 @@ pub async fn append_cert_to_log(
         .map_err(|e| AcmeError::Mtc(format!("append_leaf: {e}")))
 }
 
+/// Compute a Merkle inclusion proof for the leaf at `leaf_index`.
+///
+/// Returns the ordered sibling hashes along the path from the leaf to the root,
+/// paired with a boolean that is `true` when the sibling is a left child.
+/// Leaf index 0 is the null_entry; real certificates begin at index 1.
+pub async fn generate_proof(
+    log: &SharedLog,
+    leaf_index: u64,
+) -> Result<Vec<(bool, Vec<u8>)>, AcmeError> {
+    let mut guard = log.lock().await;
+    guard
+        .generate_proof(leaf_index)
+        .map_err(|e| AcmeError::Mtc(format!("generate_proof: {e}")))
+}
+
 /// Return the current number of leaves in the log.
 pub async fn tree_size(log: &SharedLog) -> Result<u64, AcmeError> {
     let guard = log.lock().await;

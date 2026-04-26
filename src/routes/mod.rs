@@ -23,6 +23,7 @@ pub mod challenge;
 pub mod directory;
 pub mod finalize;
 pub mod key_change;
+pub mod mtc;
 pub mod nonce;
 pub mod order;
 pub mod renewal_info;
@@ -70,6 +71,13 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route(
             "/acme/renewal-info/{cert_id}",
             get(renewal_info::get_renewal_info),
+        )
+        // MTC log state (read-only; 404 when MTC is disabled)
+        .route("/acme/mtc/tree-size", get(mtc::get_tree_size))
+        .route("/acme/mtc/root", get(mtc::get_root))
+        .route(
+            "/acme/mtc/inclusion-proof/{cert_id}",
+            get(mtc::get_inclusion_proof),
         )
         .layer(
             TraceLayer::new_for_http()

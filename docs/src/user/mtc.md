@@ -59,6 +59,43 @@ ORDER BY mtc_log_index;
 
 A `NULL` index means the certificate was either issued before MTC logging was enabled, or the log append failed.
 
+## HTTP API
+
+Three read-only endpoints expose the log state.  All return 404 when MTC is disabled (`enabled = false`).
+
+### `GET /acme/mtc/tree-size`
+
+Returns the current number of leaves (including the null_entry at index 0).
+
+```json
+{ "treeSize": 42 }
+```
+
+### `GET /acme/mtc/root`
+
+Returns the current tree size and the SHA-256 Merkle root as a lowercase hex string.
+
+```json
+{ "treeSize": 42, "rootHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" }
+```
+
+### `GET /acme/mtc/inclusion-proof/{cert_id}`
+
+Returns a Merkle inclusion proof for the certificate identified by `cert_id` (the internal UUID stored in the `certificates` table).  Returns 404 if the certificate does not exist or has no log index.
+
+```json
+{
+  "leafIndex": 7,
+  "treeSize": 42,
+  "proof": [
+    "a1b2c3...",
+    "d4e5f6..."
+  ]
+}
+```
+
+`proof` is the ordered list of sibling hashes from the leaf up to the root, each encoded as a lowercase hex string.  The position of each sibling (left or right) can be derived from the bits of `leafIndex`.
+
 ## Concurrency
 
 The `DiskBackedLog` is not thread-safe internally. The server wraps it in a `tokio::sync::Mutex<DiskBackedLog>` (the `SharedLog` type alias in `src/mtc/log.rs`). All leaf appends and reads acquire this mutex, serializing concurrent operations at the async level.
@@ -72,4 +109,4 @@ The log is append-only by design. Once a leaf is appended it cannot be removed o
 - For a log with zero leaves the root is undefined.
 - For a log with one or more leaves the root is the SHA-256 Merkle root of all leaf hashes.
 
-> **Scope note:** Akāmu implements the issuance-log portion of the MTC draft (draft-ietf-plants-merkle-tree-certs).  The following CA operations are intentionally out of scope for now: checkpoint signing and cosignature gathering (§6.2), MTC proof certificate construction with `id-alg-mtcProof` (§6.1), and landmark management (§6.3.1).  The log root, tree size, and inclusion proofs are not yet exposed over HTTP.  The log currently functions as an internal audit trail that satisfies the append-only and null-entry-at-index-zero invariants required by the draft.
+> **Scope note:** Akāmu implements the issuance-log portion of the MTC draft (draft-ietf-plants-merkle-tree-certs).  The following CA operations are intentionally out of scope for now: checkpoint signing and cosignature gathering (§6.2), MTC proof certificate construction with `id-alg-mtcProof` (§6.1), and landmark management (§6.3.1).  The log currently functions as an internal audit trail that satisfies the append-only and null-entry-at-index-zero invariants required by the draft; the HTTP API above exposes the tree state for external verification.
