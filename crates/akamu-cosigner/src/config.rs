@@ -91,7 +91,7 @@ pub struct AcmeBootstrapConfig {
     pub eab_hmac: String,
     /// DNS name to certify (must be publicly resolvable for the chosen challenge).
     pub domain: String,
-    /// ACME challenge type: `"http-01"`, `"dns-01"`, or `"tls-alpn-01"`.
+    /// ACME challenge type: `"http-01"`, `"dns-01"`, `"dns-persist-01"`, or `"tls-alpn-01"`.
     #[serde(default = "default_challenge_type")]
     pub challenge_type: String,
     /// Shell command called for dns-01 DNS provisioning.
@@ -101,6 +101,14 @@ pub struct AcmeBootstrapConfig {
     /// an operator must set it manually before akamu-cosigner can proceed.
     #[serde(default)]
     pub dns_hook: Option<String>,
+    /// Shell command called for dns-persist-01 DNS provisioning.
+    ///
+    /// Invoked with `ACME_DOMAIN`, `ACME_TXT_NAME` (`_validation-persist.<domain>`),
+    /// `ACME_TXT_VALUE` (`"<issuer>; accounturi=<uri>"`), `ACME_ACCOUNT_URI`, and
+    /// `ACME_ISSUER_DOMAIN` env vars set.
+    /// Exit 0 = record provisioned.
+    #[serde(default)]
+    pub dns_persist_hook: Option<String>,
     /// Where to write the issued certificate PEM chain.
     pub cert_file: String,
     /// Where to write the private key PEM for the issued certificate.

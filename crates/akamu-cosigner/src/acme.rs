@@ -109,21 +109,22 @@ pub async fn run_bootstrap(
             .find_challenge(&cfg.challenge_type)
             .ok_or_else(|| CosignerError::NoChallengeType(cfg.challenge_type.clone()))?;
 
-        let token = challenge
-            .token
-            .as_deref()
-            .ok_or_else(|| CosignerError::BadRequest("challenge has no token".into()))?;
-
-        let key_auth = acct.key_authorization(token);
-
         match cfg.challenge_type.as_str() {
             "http-01" => {
+                let token = challenge.token.as_deref().ok_or_else(|| {
+                    CosignerError::BadRequest("http-01 challenge has no token".into())
+                })?;
+                let key_auth = acct.key_authorization(token);
                 challenge_tokens
                     .write()
                     .unwrap()
-                    .insert(token.to_owned(), key_auth.clone());
+                    .insert(token.to_owned(), key_auth);
             }
             "dns-01" => {
+                let token = challenge.token.as_deref().ok_or_else(|| {
+                    CosignerError::BadRequest("dns-01 challenge has no token".into())
+                })?;
+                let key_auth = acct.key_authorization(token);
                 let txt = Dns01Helper::txt_value(&key_auth)?;
                 tracing::info!(
                     domain = %cfg.domain,
@@ -157,7 +158,62 @@ pub async fn run_bootstrap(
                     ));
                 }
             }
+            "dns-persist-01" => {
+                let issuer_domain = challenge
+                    .issuer_domain_names
+                    .as_deref()
+                    .and_then(|v| v.first())
+                    .map(String::as_str)
+                    .ok_or_else(|| {
+                        CosignerError::Acme(
+                            "dns-persist-01 challenge has no issuer-domain-names".into(),
+                        )
+                    })?;
+                let account_uri = &acct.url;
+                let base_domain = cfg.domain.trim_start_matches("*.");
+                let txt_name = format!("_validation-persist.{base_domain}");
+                let txt_value = format!("{issuer_domain}; accounturi={account_uri}");
+                tracing::info!(
+                    domain = %cfg.domain,
+                    txt_name = %txt_name,
+                    txt_value = %txt_value,
+                    "dns-persist-01: set TXT record {} = {}",
+                    txt_name,
+                    txt_value
+                );
+                if let Some(hook) = &cfg.dns_persist_hook {
+                    let status = tokio::process::Command::new(hook)
+                        .env("ACME_DOMAIN", &cfg.domain)
+                        .env("ACME_TXT_NAME", &txt_name)
+                        .env("ACME_TXT_VALUE", &txt_value)
+                        .env("ACME_ACCOUNT_URI", account_uri.as_str())
+                        .env("ACME_ISSUER_DOMAIN", issuer_domain)
+                        .status()
+                        .await
+                        .map_err(|e| {
+                            CosignerError::Acme(format!("dns_persist_hook '{}' failed: {e}", hook))
+                        })?;
+                    if !status.success() {
+                        return Err(CosignerError::Acme(format!(
+                            "dns_persist_hook '{}' exited with {}",
+                            hook, status
+                        )));
+                    }
+                } else {
+                    tracing::warn!(
+                        "dns-persist-01: no dns_persist_hook configured — set the TXT record \
+                         manually ({txt_name} = \"{txt_value}\"), then restart akamu-cosigner"
+                    );
+                    return Err(CosignerError::Acme(
+                        "dns-persist-01 requires dns_persist_hook or manual DNS setup".into(),
+                    ));
+                }
+            }
             "tls-alpn-01" => {
+                let token = challenge.token.as_deref().ok_or_else(|| {
+                    CosignerError::BadRequest("tls-alpn-01 challenge has no token".into())
+                })?;
+                let key_auth = acct.key_authorization(token);
                 if let Some(ref solver) = tls_alpn_solver {
                     solver
                         .present(&auth.identifier.value, &auth.identifier.r#type, &key_auth)

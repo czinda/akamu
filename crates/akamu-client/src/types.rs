@@ -101,6 +101,9 @@ pub struct Challenge {
     pub status: String,
     #[serde(default)]
     pub token: Option<String>,
+    /// Issuer domain names sent by the server for `dns-persist-01` challenges.
+    #[serde(default, rename = "issuer-domain-names")]
+    pub issuer_domain_names: Option<Vec<String>>,
 }
 
 /// Renewal information from the ACME server (RFC 9773).
