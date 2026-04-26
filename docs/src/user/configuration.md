@@ -271,6 +271,96 @@ When `true`, each issued certificate is appended as a leaf to the MTC transparen
 enabled = false
 ```
 
+### `checkpoint_interval_secs`
+
+**Optional. Default: `3600` (1 hour).**
+
+How often the checkpoint background task fires, in seconds. A checkpoint is produced only when the log has grown since the last one; if the tree size has not changed the task is a no-op. Requires `[mtc.signing_key]` to be configured.
+
+```toml
+checkpoint_interval_secs = 3600
+```
+
+### `checkpoint_retention_count`
+
+**Optional. Default: `1000`.**
+
+Maximum number of checkpoint rows to retain in the `mtc_checkpoints` database table. After each new checkpoint is produced, rows beyond this limit are pruned (oldest first). Their associated cosignature rows in `mtc_cosignatures` are also deleted via the foreign-key `ON DELETE CASCADE` constraint.
+
+```toml
+checkpoint_retention_count = 1000
+```
+
+### `landmark_interval_secs`
+
+**Optional. Default: `86400` (1 day).**
+
+How often the landmark background task fires, in seconds. A new landmark is allocated only when the tree has grown since the last landmark; otherwise the task is a no-op. Requires `[mtc.signing_key]` to be configured.
+
+```toml
+landmark_interval_secs = 86400
+```
+
+### `max_active_landmarks`
+
+**Optional. Default: `100`.**
+
+Maximum number of landmark rows to retain in the `mtc_landmarks` table. After each new landmark is built, rows beyond this limit are pruned (oldest first by sequence number).
+
+```toml
+max_active_landmarks = 100
+```
+
+### `[mtc.signing_key]`
+
+Optional subsection. When present, enables checkpoint production and standalone/landmark certificate construction. The signing key **must** be distinct from the X.509 CA key (§5.5 of draft-ietf-plants-merkle-tree-certs).
+
+#### `key_file`
+
+**Required within `[mtc.signing_key]`.** Path to the MTC signing key PEM file. If absent on disk, a new key of `key_type` is generated and written here on startup.
+
+#### `key_type`
+
+**Optional. Default: `"ec:P-256"`.**
+
+Key algorithm for auto-generation. Accepts the same values as `[ca].key_type`. Per §5.4.2 of the draft, only ECDSA P-256/P-384, Ed25519, and ML-DSA are valid MTC signing algorithms; prefer EC or EdDSA.
+
+#### `hash_alg`
+
+**Optional. Default: `"sha256"`.**
+
+Hash algorithm used for ECDSA/RSA signing: `"sha256"`, `"sha384"`, `"sha512"`. Ignored for EdDSA and ML-DSA.
+
+```toml
+[mtc.signing_key]
+key_file = "/var/lib/akamu/mtc-signing.key"
+key_type = "ec:P-256"
+hash_alg = "sha256"
+```
+
+### `[[mtc.cosigners]]`
+
+Optional array of external cosigner entries. After each checkpoint is produced, Akāmu POSTs the DER-encoded `Checkpoint` to each cosigner URL and stores the returned `SubtreeSignature`. Multiple entries are supported; all cosigners are contacted in parallel.
+
+Each entry has the following fields:
+
+#### `url`
+
+**Required.** URL to POST the DER-encoded `Checkpoint` to (e.g. `https://cosigner.example.com/sign`).
+
+#### `cosigner_id_cert_pem`
+
+**Optional.** Path to the cosigner's X.509 identity certificate PEM file. When set, the file is loaded at startup and added to the TLS trust store for that cosigner's HTTPS connection, in addition to the system root CAs. This allows cosigners whose TLS certificate chains to an operator-provisioned CA to be used without installing that CA system-wide.
+
+```toml
+[[mtc.cosigners]]
+url                  = "https://cosigner1.example.com/sign"
+cosigner_id_cert_pem = "/etc/akamu/cosigner1-id.pem"
+
+[[mtc.cosigners]]
+url = "https://cosigner2.example.com/sign"
+```
+
 ---
 
 ## `[server]`
