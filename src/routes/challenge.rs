@@ -136,15 +136,17 @@ pub async fn respond_challenge(
     let handle = tokio::spawn(async move {
         validation::validate_challenge(
             &state_clone,
-            &challenge_id,
-            &authz_id_clone,
-            &order_id,
-            &chall_type_clone,
-            &id_type,
-            &id_value,
-            &key_auth,
-            &token,
-            onion_csr_der.as_deref(),
+            validation::ChallengeParams {
+                challenge_id: &challenge_id,
+                authz_id: &authz_id_clone,
+                order_id: &order_id,
+                chall_type: &chall_type_clone,
+                id_type: &id_type,
+                id_value: &id_value,
+                key_auth: &key_auth,
+                token: &token,
+                onion_csr_der: onion_csr_der.as_deref(),
+            },
         )
         .await;
     });

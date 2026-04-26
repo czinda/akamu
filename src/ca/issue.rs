@@ -46,18 +46,24 @@ pub struct IssuedCert {
     pub not_after: i64,
 }
 
+/// Parameters for [`issue_certificate`].
+pub struct IssueCertParams<'a> {
+    pub ca_key: &'a synta_certificate::BackendPrivateKey,
+    pub ca_cert_der: &'a [u8],
+    /// Digest algorithm: `"sha256"`, `"sha384"`, `"sha512"`.
+    pub hash_alg: &'a str,
+    /// Cert validity in days (used when `not_after_override` is `None`).
+    pub validity_days: u32,
+    pub crl_url: Option<&'a str>,
+    pub ocsp_url: Option<&'a str>,
+    pub csr: &'a ValidatedCsr,
+    /// Optional Unix timestamp for notBefore (RFC 8555 §7.1.3).
+    pub not_before_override: Option<i64>,
+    /// Optional Unix timestamp for notAfter (RFC 8555 §7.1.3).
+    pub not_after_override: Option<i64>,
+}
+
 /// Issue an end-entity certificate.
-///
-/// Parameters:
-/// - `ca_key`              — CA private key (signing).
-/// - `ca_cert_der`         — CA certificate DER (for issuer name + AKI).
-/// - `hash_alg`            — Digest algorithm: `"sha256"`, `"sha384"`, `"sha512"`.
-/// - `validity_days`       — Cert validity in days (used when `not_after_override` is `None`).
-/// - `crl_url`             — Optional CRL distribution point URL.
-/// - `ocsp_url`            — Optional OCSP responder URL.
-/// - `csr`                 — Validated CSR output from `ca::csr::validate_csr`.
-/// - `not_before_override` — Optional Unix timestamp to use as notBefore (RFC 8555 §7.1.3).
-/// - `not_after_override`  — Optional Unix timestamp to use as notAfter (RFC 8555 §7.1.3).
 ///
 /// Validity window resolution:
 /// - Both `None`: `now` → `now + validity_days * 86400`.
@@ -67,18 +73,18 @@ pub struct IssuedCert {
 ///
 /// Clamping: notBefore is clamped to `now - 300` (5-minute grace for clock skew).
 /// A warning is logged if either bound is adjusted.
-#[allow(clippy::too_many_arguments)]
-pub fn issue_certificate(
-    ca_key: &synta_certificate::BackendPrivateKey,
-    ca_cert_der: &[u8],
-    hash_alg: &str,
-    validity_days: u32,
-    crl_url: Option<&str>,
-    ocsp_url: Option<&str>,
-    csr: &ValidatedCsr,
-    not_before_override: Option<i64>,
-    not_after_override: Option<i64>,
-) -> Result<IssuedCert, AcmeError> {
+pub fn issue_certificate(params: IssueCertParams<'_>) -> Result<IssuedCert, AcmeError> {
+    let IssueCertParams {
+        ca_key,
+        ca_cert_der,
+        hash_alg,
+        validity_days,
+        crl_url,
+        ocsp_url,
+        csr,
+        not_before_override,
+        not_after_override,
+    } = params;
     // ── Extract CA name and SPKI DER from the CA certificate ─────────────────
     let ca_name_der = extract_ca_subject_der(ca_cert_der)?;
     let ca_spki_der = ca_key
@@ -717,7 +723,7 @@ mod tests {
         verify, RevocationChecks,
     };
 
-    use super::{hex_encode, ip_string_to_bytes, issue_certificate};
+    use super::{hex_encode, ip_string_to_bytes, issue_certificate, IssueCertParams};
     use crate::ca::csr::{validate_csr, SanEntry, ValidatedCsr};
 
     /// Build a minimal self-signed CA certificate DER for testing.
@@ -801,17 +807,17 @@ mod tests {
         let domain = "test.example.com";
         let (_ee_key, validated_csr) = make_test_csr(domain);
 
-        let issued = issue_certificate(
-            &ca_key,
-            &ca_cert_der,
-            "sha256",
-            90,
-            None,
-            None,
-            &validated_csr,
-            None,
-            None,
-        )
+        let issued = issue_certificate(IssueCertParams {
+            ca_key: &ca_key,
+            ca_cert_der: &ca_cert_der,
+            hash_alg: "sha256",
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            csr: &validated_csr,
+            not_before_override: None,
+            not_after_override: None,
+        })
         .unwrap();
 
         // Cert DER should parse cleanly.
@@ -876,17 +882,17 @@ mod tests {
         let (ca_key, ca_cert_der) = make_test_ca();
         let (_ee_key, validated_csr) = make_test_csr("crl-test.example.com");
 
-        let issued = issue_certificate(
-            &ca_key,
-            &ca_cert_der,
-            "sha256",
-            90,
-            Some("http://crl.example.com/ca.crl"),
-            Some("http://ocsp.example.com"),
-            &validated_csr,
-            None,
-            None,
-        )
+        let issued = issue_certificate(IssueCertParams {
+            ca_key: &ca_key,
+            ca_cert_der: &ca_cert_der,
+            hash_alg: "sha256",
+            validity_days: 90,
+            crl_url: Some("http://crl.example.com/ca.crl"),
+            ocsp_url: Some("http://ocsp.example.com"),
+            csr: &validated_csr,
+            not_before_override: None,
+            not_after_override: None,
+        })
         .unwrap();
 
         assert!(!issued.cert_der.is_empty());
@@ -916,17 +922,17 @@ mod tests {
 
         let validated = validate_csr(&csr_der, &[("ip", "127.0.0.1")]).unwrap();
 
-        let issued = issue_certificate(
-            &ca_key,
-            &ca_cert_der,
-            "sha256",
-            90,
-            None,
-            None,
-            &validated,
-            None,
-            None,
-        )
+        let issued = issue_certificate(IssueCertParams {
+            ca_key: &ca_key,
+            ca_cert_der: &ca_cert_der,
+            hash_alg: "sha256",
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            csr: &validated,
+            not_before_override: None,
+            not_after_override: None,
+        })
         .unwrap();
 
         assert!(!issued.cert_der.is_empty());
@@ -977,17 +983,17 @@ mod tests {
                 value: "not-an-ip".into(),
             }],
         };
-        let result = issue_certificate(
-            &ca_key,
-            &ca_cert_der,
-            "sha256",
-            90,
-            None,
-            None,
-            &validated_csr,
-            None,
-            None,
-        );
+        let result = issue_certificate(IssueCertParams {
+            ca_key: &ca_key,
+            ca_cert_der: &ca_cert_der,
+            hash_alg: "sha256",
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            csr: &validated_csr,
+            not_before_override: None,
+            not_after_override: None,
+        });
         let Err(err) = result else {
             panic!("expected Builder error for invalid IP SAN")
         };
@@ -1014,17 +1020,17 @@ mod tests {
             }],
         };
         // The "email" type hits `_ => {}` (line 123) — SAN is ignored, cert issued with no SAN.
-        let result = issue_certificate(
-            &ca_key,
-            &ca_cert_der,
-            "sha256",
-            90,
-            None,
-            None,
-            &validated_csr,
-            None,
-            None,
-        );
+        let result = issue_certificate(IssueCertParams {
+            ca_key: &ca_key,
+            ca_cert_der: &ca_cert_der,
+            hash_alg: "sha256",
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            csr: &validated_csr,
+            not_before_override: None,
+            not_after_override: None,
+        });
         assert!(
             result.is_ok(),
             "unknown SAN type should be skipped silently"
@@ -1045,17 +1051,17 @@ mod tests {
             .as_secs() as i64;
         let requested_nb = now; // same second — well within the grace window
 
-        let issued = issue_certificate(
-            &ca_key,
-            &ca_cert_der,
-            "sha256",
-            30,
-            None,
-            None,
-            &validated_csr,
-            Some(requested_nb),
-            None,
-        )
+        let issued = issue_certificate(IssueCertParams {
+            ca_key: &ca_key,
+            ca_cert_der: &ca_cert_der,
+            hash_alg: "sha256",
+            validity_days: 30,
+            crl_url: None,
+            ocsp_url: None,
+            csr: &validated_csr,
+            not_before_override: Some(requested_nb),
+            not_after_override: None,
+        })
         .unwrap();
 
         assert_eq!(
@@ -1083,17 +1089,17 @@ mod tests {
         let requested_nb = now;
         let requested_na = now + 7 * 86400; // 7-day window
 
-        let issued = issue_certificate(
-            &ca_key,
-            &ca_cert_der,
-            "sha256",
-            90,
-            None,
-            None,
-            &validated_csr,
-            Some(requested_nb),
-            Some(requested_na),
-        )
+        let issued = issue_certificate(IssueCertParams {
+            ca_key: &ca_key,
+            ca_cert_der: &ca_cert_der,
+            hash_alg: "sha256",
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            csr: &validated_csr,
+            not_before_override: Some(requested_nb),
+            not_after_override: Some(requested_na),
+        })
         .unwrap();
 
         assert_eq!(
@@ -1120,17 +1126,17 @@ mod tests {
         // Request a notBefore 1 hour in the past — well outside the 5-min grace window.
         let too_early = now - 3600;
 
-        let issued = issue_certificate(
-            &ca_key,
-            &ca_cert_der,
-            "sha256",
-            90,
-            None,
-            None,
-            &validated_csr,
-            Some(too_early),
-            None,
-        )
+        let issued = issue_certificate(IssueCertParams {
+            ca_key: &ca_key,
+            ca_cert_der: &ca_cert_der,
+            hash_alg: "sha256",
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            csr: &validated_csr,
+            not_before_override: Some(too_early),
+            not_after_override: None,
+        })
         .unwrap();
 
         let earliest_allowed = now - 300;
@@ -1160,17 +1166,17 @@ mod tests {
             .as_secs() as i64;
 
         // notAfter == notBefore → invalid, should fall back.
-        let issued = issue_certificate(
-            &ca_key,
-            &ca_cert_der,
-            "sha256",
-            90,
-            None,
-            None,
-            &validated_csr,
-            Some(now),
-            Some(now), // equal, not strictly after
-        )
+        let issued = issue_certificate(IssueCertParams {
+            ca_key: &ca_key,
+            ca_cert_der: &ca_cert_der,
+            hash_alg: "sha256",
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            csr: &validated_csr,
+            not_before_override: Some(now),
+            not_after_override: Some(now), // equal, not strictly after
+        })
         .unwrap();
 
         // Fallback: notBefore + 90 days.

@@ -17,6 +17,19 @@ use serde_json::json;
 use crate::error::AcmeError;
 use crate::state::AppState;
 
+/// Challenge parameters for [`validate_challenge`].
+pub struct ChallengeParams<'a> {
+    pub challenge_id: &'a str,
+    pub authz_id: &'a str,
+    pub order_id: &'a str,
+    pub chall_type: &'a str,
+    pub id_type: &'a str,
+    pub id_value: &'a str,
+    pub key_auth: &'a str,
+    pub token: &'a str,
+    pub onion_csr_der: Option<&'a [u8]>,
+}
+
 /// Entry point called from `routes::challenge::respond_challenge`.
 ///
 /// This function is intentionally infallible — all errors are recorded in the
@@ -31,19 +44,21 @@ use crate::state::AppState;
 ///
 /// `onion_csr_der` carries the DER-encoded CSR submitted by the client for
 /// `onion-csr-01` challenges; it is `None` for all other challenge types.
-#[allow(clippy::too_many_arguments)]
 pub async fn validate_challenge(
     state: &Arc<AppState>,
-    challenge_id: &str,
-    authz_id: &str,
-    order_id: &str,
-    chall_type: &str,
-    id_type: &str,
-    id_value: &str,
-    key_auth: &str,
-    token: &str,
-    onion_csr_der: Option<&[u8]>,
+    params: ChallengeParams<'_>,
 ) -> &'static str {
+    let ChallengeParams {
+        challenge_id,
+        authz_id,
+        order_id,
+        chall_type,
+        id_type,
+        id_value,
+        key_auth,
+        token,
+        onion_csr_der,
+    } = params;
     let http_port = state.config.server.http_validation_port;
     let issuer_domain = state.config.dns_persist_issuer_domain();
     let dns_resolver_addr = state
@@ -53,19 +68,19 @@ pub async fn validate_challenge(
         .as_deref()
         .and_then(|s| s.parse::<std::net::SocketAddr>().ok());
     let validate_dnssec = state.config.server.validate_dnssec;
-    let result = dispatch(
+    let result = dispatch(DispatchParams {
         chall_type,
         id_type,
         id_value,
         key_auth,
         token,
         http_port,
-        &issuer_domain,
+        issuer_domain: &issuer_domain,
         dns_resolver_addr,
         validate_dnssec,
-        &state.validation_client,
+        validation_client: &state.validation_client,
         onion_csr_der,
-    )
+    })
     .await;
 
     let now = unix_now();
@@ -81,23 +96,38 @@ pub async fn validate_challenge(
     }
 }
 
+struct DispatchParams<'a> {
+    chall_type: &'a str,
+    id_type: &'a str,
+    id_value: &'a str,
+    key_auth: &'a str,
+    token: &'a str,
+    http_port: u16,
+    issuer_domain: &'a str,
+    dns_resolver_addr: Option<std::net::SocketAddr>,
+    validate_dnssec: bool,
+    validation_client: &'a crate::state::ValidationClient,
+    onion_csr_der: Option<&'a [u8]>,
+}
+
 /// Dispatch to the correct validator based on challenge type.
 ///
 /// For `dns-persist-01`, `key_auth` carries the account URI (not a token·thumbprint).
 /// For `onion-csr-01`, `onion_csr_der` must be `Some(der)` containing the client's CSR.
-#[allow(clippy::too_many_arguments)]
 async fn dispatch(
-    chall_type: &str,
-    id_type: &str,
-    id_value: &str,
-    key_auth: &str,
-    token: &str,
-    http_port: u16,
-    issuer_domain: &str,
-    dns_resolver_addr: Option<std::net::SocketAddr>,
-    validate_dnssec: bool,
-    validation_client: &crate::state::ValidationClient,
-    onion_csr_der: Option<&[u8]>,
+    DispatchParams {
+        chall_type,
+        id_type,
+        id_value,
+        key_auth,
+        token,
+        http_port,
+        issuer_domain,
+        dns_resolver_addr,
+        validate_dnssec,
+        validation_client,
+        onion_csr_der,
+    }: DispatchParams<'_>,
 ) -> Result<(), AcmeError> {
     match chall_type {
         "http-01" => {
@@ -414,19 +444,19 @@ mod tests {
         let client =
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
                 .build_http::<http_body_util::Empty<hyper::body::Bytes>>();
-        let result = dispatch(
-            "bogus-type",
-            "dns",
-            "example.com",
-            "key-auth",
-            "token",
-            80,
-            "acme.test",
-            None,
-            false,
-            &client,
-            None,
-        )
+        let result = dispatch(DispatchParams {
+            chall_type: "bogus-type",
+            id_type: "dns",
+            id_value: "example.com",
+            key_auth: "key-auth",
+            token: "token",
+            http_port: 80,
+            issuer_domain: "acme.test",
+            dns_resolver_addr: None,
+            validate_dnssec: false,
+            validation_client: &client,
+            onion_csr_der: None,
+        })
         .await;
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -471,15 +501,17 @@ mod tests {
         // Use a non-existent challenge_id/authz_id — the function is infallible
         validate_challenge(
             &state,
-            "fake-challenge-id",
-            "fake-authz-id",
-            "fake-order-id",
-            "bogus-01", // unsupported type → dispatch returns Err
-            "dns",
-            "example.com",
-            "token.thumbprint",
-            "token",
-            None,
+            ChallengeParams {
+                challenge_id: "fake-challenge-id",
+                authz_id: "fake-authz-id",
+                order_id: "fake-order-id",
+                chall_type: "bogus-01", // unsupported type → dispatch returns Err
+                id_type: "dns",
+                id_value: "example.com",
+                key_auth: "token.thumbprint",
+                token: "token",
+                onion_csr_der: None,
+            },
         )
         .await;
         // If we get here without panicking, the test passes
@@ -909,8 +941,18 @@ mod tests {
         .unwrap();
 
         validate_challenge(
-            &state, &chall_id, &authz_id, &order_id, "http-01", "ip", &id_value, &key_auth, token,
-            None,
+            &state,
+            ChallengeParams {
+                challenge_id: &chall_id,
+                authz_id: &authz_id,
+                order_id: &order_id,
+                chall_type: "http-01",
+                id_type: "ip",
+                id_value: &id_value,
+                key_auth: &key_auth,
+                token,
+                onion_csr_der: None,
+            },
         )
         .await;
 

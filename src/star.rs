@@ -164,17 +164,17 @@ async fn run_once(state: &Arc<AppState>) {
         let not_after = Some(not_after_raw.min(end_date));
 
         let ca = &state.ca;
-        let issued = match ca::issue::issue_certificate(
-            &ca.key,
-            &ca.cert_der,
-            &ca.hash_alg,
-            ca.validity_days,
-            ca.crl_url.as_deref(),
-            ca.ocsp_url.as_deref(),
-            &validated_csr,
-            not_before,
-            not_after,
-        ) {
+        let issued = match ca::issue::issue_certificate(ca::issue::IssueCertParams {
+            ca_key: &ca.key,
+            ca_cert_der: &ca.cert_der,
+            hash_alg: &ca.hash_alg,
+            validity_days: ca.validity_days,
+            crl_url: ca.crl_url.as_deref(),
+            ocsp_url: ca.ocsp_url.as_deref(),
+            csr: &validated_csr,
+            not_before_override: not_before,
+            not_after_override: not_after,
+        }) {
             Ok(i) => i,
             Err(e) => {
                 tracing::error!("STAR order {}: certificate issuance failed: {e}", order.id);

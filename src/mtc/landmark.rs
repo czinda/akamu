@@ -120,16 +120,16 @@ pub async fn maybe_allocate_landmark(
         // Trim to landmark.tree_size in case the log has grown since we checked.
         let tree_leaves: Vec<Vec<u8>> = all_leaves.into_iter().take(tree_size as usize).collect();
 
-        build_landmark_cert_der(
-            &cert_row.der,
+        build_landmark_cert_der(LandmarkCertParams {
+            cert_der: &cert_row.der,
             leaf_index,
             tree_leaves,
-            &spki_der,
+            spki_der: &spki_der,
             tree_size,
             log_algorithm,
-            &key,
-            &hash_alg_str,
-        )
+            signing_key: &key,
+            hash_alg_str: &hash_alg_str,
+        })
     })
     .await
     .map_err(|e| AcmeError::Mtc(format!("landmark blocking task panicked: {e}")))??;
@@ -149,16 +149,28 @@ pub async fn maybe_allocate_landmark(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn build_landmark_cert_der(
-    cert_der: &[u8],
+struct LandmarkCertParams<'a> {
+    cert_der: &'a [u8],
     leaf_index: u64,
     tree_leaves: Vec<Vec<u8>>,
-    spki_der: &[u8],
+    spki_der: &'a [u8],
     tree_size: u64,
     log_algorithm: HashAlgorithm,
-    signing_key: &BackendPrivateKey,
-    hash_alg_str: &str,
+    signing_key: &'a BackendPrivateKey,
+    hash_alg_str: &'a str,
+}
+
+fn build_landmark_cert_der(
+    LandmarkCertParams {
+        cert_der,
+        leaf_index,
+        tree_leaves,
+        spki_der,
+        tree_size,
+        log_algorithm,
+        signing_key,
+        hash_alg_str,
+    }: LandmarkCertParams<'_>,
 ) -> Result<Vec<u8>, AcmeError> {
     use synta::traits::Encode;
     use synta::types::constructed::Element;
