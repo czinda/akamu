@@ -17,7 +17,7 @@ listen_addr = "0.0.0.0:8080"
 base_url    = "https://acme.example.com"
 
 [database]
-path = "/var/lib/akamu/akamu.db"
+url = "sqlite:///var/lib/akamu/akamu.db"
 
 [ca]
 key_file         = "/etc/akamu/ca.key.pem"
@@ -91,16 +91,36 @@ It must match the URL that ACME clients use to reach the directory. It must not 
 
 ## `[database]`
 
-### `path`
+### `url`
 
-**Required.** Path to the SQLite database file. The file and its WAL journal are created automatically if they do not exist.
+**Required.** Database connection URL. The format depends on the compiled backend:
+
+| Backend | URL format |
+|---------|-----------|
+| SQLite | `sqlite:///absolute/path/to/akamu.db` or `sqlite::memory:` |
+| PostgreSQL | `postgres://user:pass@host/dbname` |
+| MariaDB/MySQL | `mariadb://user:pass@host/dbname` or `mysql://user:pass@host/dbname` |
+
+For SQLite, the database file and its WAL journal are created automatically if they do not exist.
 
 ```toml
 [database]
-path = "/var/lib/akamu/akamu.db"
+url = "sqlite:///var/lib/akamu/akamu.db"
 ```
 
-Use `:memory:` for an ephemeral in-memory database (useful for testing; all data is lost when the process exits).
+Use `sqlite::memory:` for an ephemeral in-memory database (useful for testing; all data is lost when the process exits).
+
+### `max_connections`
+
+**Optional. Default: `1` for SQLite, `10` for PostgreSQL/MariaDB.**
+
+Maximum number of pooled database connections. For SQLite, this must remain `1` to avoid `SQLITE_BUSY_SNAPSHOT` errors under concurrent writes; the default is correct for production SQLite deployments.
+
+```toml
+[database]
+url      = "postgres://akamu:secret@localhost/akamu"
+max_connections = 20
+```
 
 ---
 
