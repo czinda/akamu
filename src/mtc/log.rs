@@ -125,12 +125,44 @@ pub async fn generate_proof(
     .map_err(|e| AcmeError::Mtc(format!("spawn_blocking panicked: {e}")))?
 }
 
+/// Compute a Merkle inclusion proof and the current tree size atomically.
+///
+/// Both values are read under the same `blocking_lock` guard so the `proof`,
+/// `leafIndex`, and `treeSize` fields in an HTTP response are always consistent
+/// with each other.
+pub async fn proof_and_tree_size(
+    log: &SharedLog,
+    leaf_index: u64,
+) -> Result<(Vec<(bool, Vec<u8>)>, u64), AcmeError> {
+    let log_clone = Arc::clone(log);
+    tokio::task::spawn_blocking(move || {
+        let mut guard = log_clone.blocking_lock();
+        let proof = guard
+            .generate_proof(leaf_index)
+            .map_err(|e| AcmeError::Mtc(format!("generate_proof: {e}")))?;
+        let size = guard
+            .tree_size()
+            .map_err(|e| AcmeError::Mtc(format!("tree_size: {e}")))?;
+        Ok::<_, AcmeError>((proof, size))
+    })
+    .await
+    .map_err(|e| AcmeError::Mtc(format!("spawn_blocking panicked: {e}")))?
+}
+
 /// Return the current number of leaves in the log.
+///
+/// Uses `spawn_blocking` + `blocking_lock` because `DiskBackedLog::tree_size`
+/// calls `fstat` (a blocking syscall) under the hood.
 pub async fn tree_size(log: &SharedLog) -> Result<u64, AcmeError> {
-    let guard = log.lock().await;
-    guard
-        .tree_size()
-        .map_err(|e| AcmeError::Mtc(format!("tree_size: {e}")))
+    let log_clone = Arc::clone(log);
+    tokio::task::spawn_blocking(move || {
+        log_clone
+            .blocking_lock()
+            .tree_size()
+            .map_err(|e| AcmeError::Mtc(format!("tree_size: {e}")))
+    })
+    .await
+    .map_err(|e| AcmeError::Mtc(format!("spawn_blocking panicked: {e}")))?
 }
 
 /// Compute the current Merkle root of the log.
