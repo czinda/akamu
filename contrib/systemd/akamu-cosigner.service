@@ -1,0 +1,56 @@
+[Unit]
+Description=akamu MTC cosigner daemon
+Documentation=https://codeberg.org/abbra/akamu
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/akamu-cosigner /etc/akamu-cosigner/cosigner.toml
+Restart=on-failure
+RestartSec=5s
+
+# Run as a dedicated system user (create with: useradd -r -s /sbin/nologin akamu-cosigner)
+User=akamu-cosigner
+Group=akamu-cosigner
+
+# Configuration and data directories
+WorkingDirectory=/var/lib/akamu-cosigner
+StateDirectory=akamu-cosigner
+LogsDirectory=akamu-cosigner
+ConfigurationDirectory=akamu-cosigner
+
+# Allow writes to /etc/akamu-cosigner for first-run key/cert generation and
+# dns-hook scripts under ProtectSystem=strict
+ReadWritePaths=/etc/akamu-cosigner
+
+# Environment
+Environment=RUST_LOG=info
+
+# Restrict capabilities — the cosigner may listen on privileged ports
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelLogs=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
