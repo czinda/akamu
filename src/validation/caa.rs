@@ -268,16 +268,14 @@ fn evaluate_caa_record_set(
 
             for kv in key_values {
                 match kv.key() {
-                    "validationmethods" => {
-                        // The value is a comma-separated list of challenge types.
-                        if !challenge_type.is_empty() {
-                            let methods: Vec<&str> =
-                                kv.value().split(',').map(|s| s.trim()).collect();
-                            if !methods.contains(&challenge_type) {
-                                validationmethods_ok = false;
-                            }
+                    // The value is a comma-separated list of challenge types.
+                    "validationmethods" if !challenge_type.is_empty() => {
+                        let methods: Vec<&str> = kv.value().split(',').map(|s| s.trim()).collect();
+                        if !methods.contains(&challenge_type) {
+                            validationmethods_ok = false;
                         }
                     }
+                    "validationmethods" => {}
                     "accounturi" => {
                         // RFC 8657 §4: the requesting account's URL must match.
                         match account_url {
