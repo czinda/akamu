@@ -8,4 +8,3 @@ CREATE TABLE IF NOT EXISTS mtc_checkpoints (
     signature   BLOB    NOT NULL,          -- MTC signing key signature over DER Checkpoint
     created     INTEGER NOT NULL           -- Unix epoch seconds
 );
-CREATE INDEX IF NOT EXISTS idx_mtc_checkpoints_tree_size ON mtc_checkpoints(tree_size DESC);

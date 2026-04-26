@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS mtc_cosignatures (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    checkpoint_id   INTEGER NOT NULL REFERENCES mtc_checkpoints(id),
+    checkpoint_id   INTEGER NOT NULL REFERENCES mtc_checkpoints(id) ON DELETE CASCADE,
     cosigner_url    TEXT    NOT NULL,
     signature_der   BLOB    NOT NULL,
     created         INTEGER NOT NULL,

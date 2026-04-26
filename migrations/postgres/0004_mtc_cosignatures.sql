@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS mtc_cosignatures (
     id              BIGSERIAL   PRIMARY KEY,
-    checkpoint_id   BIGINT      NOT NULL REFERENCES mtc_checkpoints(id),
+    checkpoint_id   BIGINT      NOT NULL REFERENCES mtc_checkpoints(id) ON DELETE CASCADE,
     cosigner_url    TEXT        NOT NULL,
     signature_der   BYTEA       NOT NULL,
     created         BIGINT      NOT NULL,

@@ -5,4 +5,3 @@ CREATE TABLE IF NOT EXISTS mtc_landmarks (
     cert_der    MEDIUMBLOB,
     created     BIGINT      NOT NULL
 );
-CREATE INDEX idx_mtc_landmarks_seq ON mtc_landmarks(sequence_no DESC);

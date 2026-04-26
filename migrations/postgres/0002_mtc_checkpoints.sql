@@ -6,4 +6,3 @@ CREATE TABLE IF NOT EXISTS mtc_checkpoints (
     signature   BYTEA       NOT NULL,
     created     BIGINT      NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_mtc_checkpoints_tree_size ON mtc_checkpoints(tree_size DESC);
