@@ -18,16 +18,16 @@ graph TB
         tls["TLS layer<br/>rustls + tokio-rustls<br/>(optional)"]
         acme["ACME endpoints<br/>new-account · new-order · finalize<br/>revoke · ARI · key-change"]
         jose["akamu-jose<br/>JWK / JWS verification<br/>EAB HMAC check"]
-        ca["CA module<br/>CSR validation<br/>certificate issuance<br/>CRL generation"]
-        db[("SQLite<br/>accounts · orders · authzs<br/>challenges · certs · nonces")]
-        val["Validators<br/>http-01 · dns-01<br/>tls-alpn-01 · dns-persist-01"]
+        ca["CA module<br/>· CSR validation · certificate issuance · CRL generation"]
+        db[("SQL database<br/>· accounts · orders · authzs · challenges · certs · nonces")]
+        val["Validators<br/>· http-01 · dns-01 · tls-alpn-01 · dns-persist-01"]
         mtc["MTC log<br/>synta-mtc<br/>(optional)"]
     end
 
-    subgraph external["External — Applicant Infrastructure"]
-        httpserver["HTTP server<br/>port 80"]
-        dns["DNS server<br/>TXT records"]
-        tlsserver["TLS server<br/>port 443, ALPN acme-tls/1"]
+    subgraph external["Applicant Infrastructure"]
+        httpserver["HTTP server<br/>· port 80"]
+        dns["DNS server<br/>· TXT records"]
+        tlsserver["TLS server<br/>· port 443<br/>· ALPN acme-tls/1"]
     end
 
     subgraph artifacts["Issued Artifacts"]
@@ -35,12 +35,16 @@ graph TB
         crlsvc["CRL / OCSP service<br/>(external, referenced by URL)"]
     end
 
-    clients -->|"HTTPS ACME requests (JWS-signed)"| tls
+    certbot -->|"HTTPS ACME requests (JWS-signed)"| tls
+    acmesh --> tls
+    akamucli --> tls
+    custom --> tls
     tls --> acme
     acme --> jose
     acme --> ca
     acme --> db
     acme -->|"spawns tokio task"| val
+    acme --> mtc
 
     val -->|"GET /.well-known/…"| httpserver
     val -->|"TXT _acme-challenge.…"| dns
@@ -48,7 +52,6 @@ graph TB
 
     ca -->|"leaf + CA bundle"| certchain
     ca -->|"revoked serial list"| crlsvc
-    ca --> mtc
 ```
 
 ## Crate layout
