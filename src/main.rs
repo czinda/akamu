@@ -185,14 +185,13 @@ async fn run() -> Result<(), String> {
     let mtc_algorithm = synta_mtc::crypto::HashAlgorithm::Sha256;
 
     // Load or generate the MTC signing key (distinct from the CA key per §5.5).
-    let (mtc_signing_key, mtc_signing_hash_alg) =
-        if let Some(ref sk_cfg) = config.mtc.signing_key {
-            tracing::info!("loading MTC signing key from '{}'", sk_cfg.key_file);
-            let key = load_or_generate_mtc_key(sk_cfg)?;
-            (Some(key), sk_cfg.hash_alg.clone())
-        } else {
-            (None, "sha256".to_string())
-        };
+    let (mtc_signing_key, mtc_signing_hash_alg) = if let Some(ref sk_cfg) = config.mtc.signing_key {
+        tracing::info!("loading MTC signing key from '{}'", sk_cfg.key_file);
+        let key = load_or_generate_mtc_key(sk_cfg)?;
+        (Some(key), sk_cfg.hash_alg.clone())
+    } else {
+        (None, "sha256".to_string())
+    };
 
     let mtc = if config.mtc.enabled {
         tracing::info!("opening MTC log at '{}'", config.mtc.log_path);
@@ -264,6 +263,9 @@ async fn run() -> Result<(), String> {
 
     // ── MTC checkpoint background task ───────────────────────────────────────
     mtc::checkpoint::spawn_checkpoint_task(Arc::clone(&state));
+
+    // ── MTC landmark allocation background task ──────────────────────────────
+    mtc::landmark::spawn_landmark_task(Arc::clone(&state));
 
     // ── STAR background reissuance task ──────────────────────────────────────
     let _star_task = star::spawn(Arc::clone(&state));

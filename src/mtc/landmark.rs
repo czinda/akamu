@@ -1,0 +1,264 @@
+//! Landmark management (§6.3.1 of draft-ietf-plants-merkle-tree-certs).
+//!
+//! A landmark is a frozen tree-size snapshot that relying parties can use to
+//! anchor inclusion proofs over time.  Landmarks are allocated periodically (by
+//! default daily) and a `LandmarkCertificate` is built for each one.  The
+//! landmark cert embeds a TBSCertificate from any leaf at an index less than
+//! the landmark's tree size, together with an inclusion proof against the full
+//! set of leaves at that tree size.
+
+use std::sync::Arc;
+
+use synta::{Decoder, Encoding};
+use synta_certificate::{BackendPrivateKey, CertificateSigner as _, PrivateKey as _};
+use synta_mtc::builder::cert::LandmarkCertificateBuilder;
+use synta_mtc::crypto::HashAlgorithm;
+use synta_mtc::types::LandmarkID;
+
+use crate::db::{self, Db, DbKind};
+use crate::error::AcmeError;
+use crate::mtc::log::SharedLog;
+use crate::state::AppState;
+
+/// Attempt to allocate a new landmark and build its `LandmarkCertificate`.
+///
+/// A landmark is allocated when the current tree size exceeds the latest
+/// landmark's tree size.  No-op when the tree has not grown or is empty.
+///
+/// The `get_latest` → `insert` → `get_latest` sequence is wrapped in a write
+/// transaction so that concurrent callers (in theory, though the landmark task
+/// is single-threaded) cannot race on `sequence_no` assignment.
+pub async fn maybe_allocate_landmark(
+    log: &SharedLog,
+    signing_key: &BackendPrivateKey,
+    signing_hash_alg: &str,
+    log_algorithm: HashAlgorithm,
+    db: &Db,
+    db_kind: DbKind,
+    keep_count: u32,
+) -> Result<(), AcmeError> {
+    // Get current tree size.
+    let tree_size = {
+        let guard = log.lock().await;
+        guard
+            .tree_size()
+            .map_err(|e| AcmeError::Mtc(format!("landmark tree_size: {e}")))?
+    };
+
+    if tree_size == 0 {
+        return Ok(());
+    }
+
+    // Fast path: skip without acquiring a write transaction if we already have
+    // a landmark for this tree size.
+    if let Some(latest) = db::landmarks::get_latest(db).await? {
+        if latest.tree_size as u64 >= tree_size {
+            tracing::debug!(tree_size, "landmark up to date; skipping");
+            return Ok(());
+        }
+    }
+
+    let now_unix = crate::routes::unix_now() as i64;
+
+    // Atomically insert the landmark row inside a write transaction so that
+    // sequence_no assignment is serialised even under concurrent access.
+    let landmark = {
+        let mut tx = db::begin_write(db, db_kind).await?;
+        if !db::landmarks::insert(&mut *tx, tree_size as i64, now_unix).await? {
+            // Another writer inserted a landmark for this tree_size first.
+            return Ok(());
+        }
+        let Some(lm) = db::landmarks::get_latest(&mut *tx).await? else {
+            return Ok(());
+        };
+        tx.commit()
+            .await
+            .map_err(|e| AcmeError::Database(format!("commit landmark tx: {e}")))?;
+        lm
+    };
+
+    // Fetch a representative certificate (any cert with leaf_index < tree_size).
+    let Some(cert_row) = db::certs::get_representative_for_landmark(db, tree_size as i64).await?
+    else {
+        tracing::debug!(
+            tree_size,
+            "no certificates to use as landmark representative; skipping cert build"
+        );
+        return Ok(());
+    };
+
+    let key = signing_key.clone();
+    let hash_alg_str = signing_hash_alg.to_string();
+    let log_clone = Arc::clone(log);
+    let leaf_index = cert_row.mtc_log_index.unwrap_or(0) as u64;
+
+    // Build the LandmarkCertificate in a blocking thread (disk I/O + crypto).
+    //
+    // NOTE: `read_all_hashes()` loads every leaf hash into memory (32 bytes each),
+    // which is O(tree_size).  For a log with 10 million leaves that is ~320 MB.
+    // Operators should plan memory capacity accordingly, or reduce
+    // `landmark_interval_secs` to produce more frequent (smaller) snapshots.
+    let landmark_cert_der = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, AcmeError> {
+        let spki_der = key
+            .public_key()
+            .map_err(|e| AcmeError::Crypto(format!("MTC signing key public: {e}")))?
+            .spki_der()
+            .to_vec();
+
+        // Read ALL leaf hashes for the landmark tree_size.  LandmarkCertificateBuilder
+        // requires the full tree to generate the inclusion proof internally.
+        let all_leaves = {
+            let mut guard = log_clone.blocking_lock();
+            guard
+                .read_all_hashes()
+                .map_err(|e| AcmeError::Mtc(format!("read_all_hashes for landmark: {e}")))?
+        };
+
+        // Trim to landmark.tree_size in case the log has grown since we checked.
+        let tree_leaves: Vec<Vec<u8>> = all_leaves.into_iter().take(tree_size as usize).collect();
+
+        build_landmark_cert_der(
+            &cert_row.der,
+            leaf_index,
+            tree_leaves,
+            &spki_der,
+            tree_size,
+            log_algorithm,
+            &key,
+            &hash_alg_str,
+        )
+    })
+    .await
+    .map_err(|e| AcmeError::Mtc(format!("landmark blocking task panicked: {e}")))??;
+
+    db::landmarks::set_cert_der(db, landmark.id, &landmark_cert_der).await?;
+    tracing::info!(
+        sequence_no = landmark.sequence_no,
+        tree_size,
+        "MTC landmark allocated and cert built"
+    );
+
+    // Prune oldest landmarks to stay within the configured retention window.
+    if let Err(e) = db::landmarks::prune_oldest(db, keep_count).await {
+        tracing::warn!("prune old MTC landmarks: {e}");
+    }
+
+    Ok(())
+}
+
+fn build_landmark_cert_der(
+    cert_der: &[u8],
+    leaf_index: u64,
+    tree_leaves: Vec<Vec<u8>>,
+    spki_der: &[u8],
+    tree_size: u64,
+    log_algorithm: HashAlgorithm,
+    signing_key: &BackendPrivateKey,
+    hash_alg_str: &str,
+) -> Result<Vec<u8>, AcmeError> {
+    use synta::traits::Encode;
+    use synta::types::constructed::Element;
+    use synta::types::primitive::Null;
+    use synta::types::string::BitString;
+    use synta::{Encoder, Integer, ObjectIdentifier};
+    use synta_certificate::{AlgorithmIdentifier, Certificate, SubjectPublicKeyInfo};
+
+    // Parse the representative certificate's TBSCertificate.
+    let cert: Certificate<'_> = Decoder::new(cert_der, Encoding::Der)
+        .decode()
+        .map_err(|e| AcmeError::Mtc(format!("decode cert for landmark: {e}")))?;
+    let tbs = cert.tbs_certificate;
+
+    // DER-encode TBSCertificate for signing.
+    let mut enc = Encoder::new(Encoding::Der);
+    tbs.encode(&mut enc)
+        .map_err(|e| AcmeError::Mtc(format!("encode TBSCertificate for landmark: {e}")))?;
+    let tbs_bytes = enc
+        .finish()
+        .map_err(|e| AcmeError::Mtc(format!("finish TBSCertificate DER: {e}")))?;
+
+    // Sign and get AlgorithmIdentifier DER.
+    let signer = signing_key.as_signer(hash_alg_str);
+    let sig_bytes = signer
+        .sign_tbs(&tbs_bytes)
+        .map_err(|e| AcmeError::Mtc(format!("sign landmark TBS: {e}")))?;
+    let sig_alg_der = signer
+        .signature_algorithm_der()
+        .map_err(|e| AcmeError::Mtc(format!("signature_algorithm_der for landmark: {e}")))?;
+    let sig_alg = Decoder::new(&sig_alg_der, Encoding::Der)
+        .decode()
+        .map_err(|e| AcmeError::Mtc(format!("decode AlgorithmIdentifier for landmark: {e}")))?;
+
+    // Build LogID for LandmarkID.
+    let spki: SubjectPublicKeyInfo<'_> = Decoder::new(spki_der, Encoding::Der)
+        .decode()
+        .map_err(|e| AcmeError::Mtc(format!("decode SPKI for landmark: {e}")))?;
+    let hash_oid = match log_algorithm {
+        HashAlgorithm::Sha256 => ObjectIdentifier::new(&[2u32, 16, 840, 1, 101, 3, 4, 2, 1]),
+        HashAlgorithm::Sha384 => ObjectIdentifier::new(&[2u32, 16, 840, 1, 101, 3, 4, 2, 2]),
+        HashAlgorithm::Sha512 => ObjectIdentifier::new(&[2u32, 16, 840, 1, 101, 3, 4, 2, 3]),
+    }
+    .map_err(|e| AcmeError::Mtc(format!("hash algorithm OID for landmark: {e}")))?;
+    let log_id = synta_mtc::types::LogID {
+        hash_algorithm: AlgorithmIdentifier {
+            algorithm: hash_oid,
+            parameters: Some(Element::Null(Null)),
+        },
+        public_key: spki,
+    };
+
+    let landmark_id = LandmarkID {
+        log_id,
+        tree_size: Integer::from(tree_size),
+    };
+
+    let cert = LandmarkCertificateBuilder::new()
+        .tbs_certificate(tbs)
+        .log_entry_index(leaf_index)
+        .tree_leaves(tree_leaves)
+        .hash_algorithm(log_algorithm)
+        .landmark_id(landmark_id)
+        .signature_algorithm(sig_alg)
+        .signature(
+            BitString::new(sig_bytes, 0)
+                .map_err(|e| AcmeError::Mtc(format!("build BitString for landmark: {e}")))?,
+        )
+        .build()
+        .map_err(|e| AcmeError::Mtc(format!("build LandmarkCertificate: {e}")))?;
+
+    cert.to_der()
+        .map_err(|e| AcmeError::Mtc(format!("DER-encode LandmarkCertificate: {e}")))
+}
+
+/// Spawn a periodic landmark allocation task.
+///
+/// Fires every `config.mtc.landmark_interval_secs` seconds.  No-op when the
+/// MTC signing key is not configured.
+pub fn spawn_landmark_task(state: Arc<AppState>) {
+    let interval_secs = state.config.mtc.landmark_interval_secs;
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+        interval.tick().await; // skip immediate first tick
+        loop {
+            interval.tick().await;
+            let mtc = &state.mtc;
+            let (Some(log), Some(signing_key)) = (mtc.log.as_ref(), mtc.signing_key.as_ref())
+            else {
+                continue;
+            };
+            if let Err(e) = maybe_allocate_landmark(
+                log,
+                signing_key,
+                &mtc.signing_hash_alg,
+                mtc.algorithm,
+                &state.db,
+                state.db_kind,
+                state.config.mtc.max_active_landmarks,
+            )
+            .await
+            {
+                tracing::error!("MTC landmark allocation failed: {e}");
+            }
+        }
+    });
+}

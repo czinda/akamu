@@ -28,8 +28,7 @@ pub async fn get_tree_size(State(state): State<Arc<AppState>>) -> Result<Respons
 /// GET /acme/mtc/root
 pub async fn get_root(State(state): State<Arc<AppState>>) -> Result<Response, AcmeError> {
     let shared_log = state.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
-    let size = log::tree_size(shared_log).await?;
-    let root = log::compute_root(shared_log).await?;
+    let (size, root) = log::tree_size_and_root(shared_log).await?;
     Ok((
         StatusCode::OK,
         axum::Json(json!({ "treeSize": size, "rootHash": hex(&root) })),
@@ -48,9 +47,7 @@ pub async fn get_inclusion_proof(
         .await?
         .ok_or(AcmeError::NotFound)?;
 
-    let leaf_index = cert
-        .mtc_log_index
-        .ok_or(AcmeError::NotFound)? as u64;
+    let leaf_index = cert.mtc_log_index.ok_or(AcmeError::NotFound)? as u64;
 
     let proof_pairs = log::generate_proof(shared_log, leaf_index).await?;
     let proof: Vec<String> = proof_pairs
@@ -87,6 +84,58 @@ pub async fn get_standalone(
     let der = db::certs::get_mtc_standalone_der(&state.db, &cert_id)
         .await?
         .ok_or(AcmeError::NotFound)?;
+
+    Ok((
+        StatusCode::OK,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("application/pkix-cert"),
+        )],
+        der,
+    )
+        .into_response())
+}
+
+/// GET /acme/mtc/landmarks
+///
+/// Returns a JSON array of all allocated landmarks ordered by sequence number.
+pub async fn get_landmarks(State(state): State<Arc<AppState>>) -> Result<Response, AcmeError> {
+    if state.mtc.log.is_none() {
+        return Err(AcmeError::NotFound);
+    }
+
+    let landmarks = db::landmarks::list(&state.db).await?;
+    let body: Vec<_> = landmarks
+        .iter()
+        .map(|l| {
+            json!({
+                "sequenceNo": l.sequence_no,
+                "treeSize": l.tree_size,
+                "createdAt": l.created,
+            })
+        })
+        .collect();
+
+    Ok((StatusCode::OK, axum::Json(body)).into_response())
+}
+
+/// GET /acme/mtc/landmarks/{seq}/cert
+///
+/// Returns the DER-encoded `LandmarkCertificate` for the landmark with the
+/// given sequence number, or 404 if not found or not yet built.
+pub async fn get_landmark_cert(
+    State(state): State<Arc<AppState>>,
+    Path(seq): Path<i64>,
+) -> Result<Response, AcmeError> {
+    if state.mtc.log.is_none() {
+        return Err(AcmeError::NotFound);
+    }
+
+    let landmark = db::landmarks::get_by_seq(&state.db, seq)
+        .await?
+        .ok_or(AcmeError::NotFound)?;
+
+    let der = landmark.cert_der.ok_or(AcmeError::NotFound)?;
 
     Ok((
         StatusCode::OK,
