@@ -1,29 +1,27 @@
 # Database
 
-`Akāmu` uses SQLite as its persistence layer, accessed via `rusqlite` (with bundled SQLite) and `tokio-rusqlite` for async access. Schema migrations are managed by `rusqlite_migration`.
+`Akāmu` uses `sqlx` 0.8 as its database layer, with a runtime-dispatch `AnyPool` that supports SQLite, PostgreSQL, and MariaDB. The active backend is selected by a compile-time feature flag (`backend-sqlite`, `backend-postgres`, or `backend-mariadb`). Schema migrations are managed by sqlx's built-in `migrate!` macro.
 
 ## Connection model
 
-The server maintains a single `tokio_rusqlite::Connection` shared across all handler tasks via `Arc<Connection>`. `tokio_rusqlite` runs `rusqlite` operations on a dedicated background OS thread, communicating via an internal channel. This avoids blocking the tokio thread pool with synchronous I/O while keeping the SQLite API simple.
+The server holds a single `sqlx::AnyPool` shared across all handler tasks (stored in `AppState`). sqlx manages an async connection pool internally; callers simply use `pool.acquire()` or pass `&pool` directly to query macros.
 
-All queries use the pattern:
+All queries use the sqlx macro pattern:
 
 ```rust
-db.call(|conn| {
-    // synchronous rusqlite operations here
-    conn.execute(...)?;
-    Ok(result)
-}).await?
+sqlx::query_as!(Row, "SELECT … FROM …", param)
+    .fetch_one(&db)
+    .await?
 ```
 
 ### Initialization
 
-`db::open(path)` in `src/db/mod.rs` performs the following in order:
+`db::open(url, max_connections, migrations_dir)` in `src/db/mod.rs` performs the following in order:
 
-1. Opens or creates the SQLite database file (or opens an in-memory database for `:memory:`).
-2. Enables foreign key enforcement: `PRAGMA foreign_keys=ON`.
-3. Runs all pending migrations via `rusqlite_migration`.
-4. Enables WAL mode: `PRAGMA journal_mode=WAL`.
+1. Registers all compiled-in sqlx drivers via `sqlx::any::install_default_drivers()`.
+2. Opens the pool (creates the SQLite file if needed; for `:memory:` a fresh in-memory database is used).
+3. Runs all pending migrations from `migrations_dir` via `sqlx::migrate::Migrator`.
+4. Enables WAL mode for SQLite: `PRAGMA journal_mode=WAL`.
 
 WAL (Write-Ahead Logging) mode is enabled after migrations rather than before, because changing the journal mode during a migration can cause transaction issues.
 
