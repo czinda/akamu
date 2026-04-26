@@ -52,6 +52,11 @@ hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "server-auto", "service"] }
 http-body-util = "0.1"
 
+# HTTPS connector for MTC cosigner requests; build HTTPS clients that respect
+# the OS root CA store and per-cosigner custom CA certificates.
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1"] }
+rustls-native-certs = "0.8"
+
 # Service utilities (tower::ServiceExt used in TLS accept loop)
 tower = { version = "0.5", features = ["util"] }
 
