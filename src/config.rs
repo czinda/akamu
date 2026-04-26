@@ -340,6 +340,21 @@ pub struct MtcSigningKeyConfig {
     pub hash_alg: String,
 }
 
+/// Configuration for a single external MTC cosigner.
+///
+/// Akāmu POSTs the DER-encoded `Checkpoint` to `url`; the cosigner is expected
+/// to return a DER-encoded `SubtreeSignature`.  Partial failures are logged and
+/// skipped — the standalone certificate is built with whatever signatures arrive.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CosignerConfig {
+    /// URL to POST the DER checkpoint to.
+    pub url: String,
+    /// Path to the cosigner's X.509 certificate PEM file.  When set, the
+    /// signature in the returned `SubtreeSignature` is verified against the
+    /// cosigner's public key before the signature is stored.
+    pub cosigner_id_cert_pem: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct MtcConfig {
     /// Path to the MTC disk-backed log file.
@@ -352,6 +367,9 @@ pub struct MtcConfig {
     /// How often the checkpoint background task fires (seconds).  Default: 3600 (1 h).
     #[serde(default = "default_checkpoint_interval_secs")]
     pub checkpoint_interval_secs: u64,
+    /// External cosigners.  Each entry is a `[[mtc.cosigners]]` table.
+    #[serde(default)]
+    pub cosigners: Vec<CosignerConfig>,
 }
 
 fn default_checkpoint_interval_secs() -> u64 {

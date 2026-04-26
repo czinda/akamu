@@ -12,13 +12,18 @@ use std::sync::Arc;
 use synta_certificate::{BackendPrivateKey, CertificateSigner as _, PrivateKey as _};
 use synta_mtc::crypto::HashAlgorithm;
 
+use crate::config::CosignerConfig;
 use crate::db::{self, Db};
 use crate::error::AcmeError;
 use crate::mtc::log::SharedLog;
 use crate::state::AppState;
 
-/// Produce and persist a checkpoint for the current log state, then build
-/// `StandaloneCertificate` DER for every certificate newly covered by the checkpoint.
+/// Produce and persist a checkpoint for the current log state.
+///
+/// After the checkpoint is stored:
+/// 1. Cosignatures are gathered from each configured external cosigner.
+/// 2. A `StandaloneCertificate` is built for every certificate newly covered
+///    by the checkpoint, with any received cosignatures embedded.
 ///
 /// No-op when the log is empty or when the latest stored checkpoint already
 /// covers the current tree size.
@@ -28,6 +33,7 @@ pub async fn produce_checkpoint(
     signing_hash_alg: &str,
     log_algorithm: HashAlgorithm,
     db: &Db,
+    cosigners: &[CosignerConfig],
 ) -> Result<(), AcmeError> {
     // Get current tree size (O(1) file stat — very fast, OK in async context).
     let tree_size = {
@@ -52,7 +58,7 @@ pub async fn produce_checkpoint(
     let now_unix = unix_now_secs();
 
     // Fetch certs covered by this checkpoint that still need a standalone DER.
-    // This must happen before spawn_blocking so we can do async DB I/O.
+    // Must happen before spawn_blocking so we can do async DB I/O.
     let pending_certs = db::certs::get_pending_standalone(db, tree_size as i64).await?;
 
     // Clone the key so it can be moved into spawn_blocking.
@@ -61,8 +67,10 @@ pub async fn produce_checkpoint(
     let hash_alg_str = signing_hash_alg.to_string();
     let log_clone = Arc::clone(log);
 
-    let (root_bytes, signature, standalone_defs) = tokio::task::spawn_blocking(
-        move || -> Result<(Vec<u8>, Vec<u8>, Vec<(String, Vec<u8>)>), AcmeError> {
+    // ── Phase 1 (blocking): compute root, generate proofs, build + sign checkpoint ──
+    type CertProofs = Vec<(String, Vec<u8>, u64, Vec<(bool, Vec<u8>)>)>;
+    let (root_bytes, checkpoint_der, signature, cert_proofs) = tokio::task::spawn_blocking(
+        move || -> Result<(Vec<u8>, Vec<u8>, Vec<u8>, CertProofs), AcmeError> {
             // Obtain the signing key's SubjectPublicKeyInfo DER.
             let spki_der = key
                 .public_key()
@@ -77,7 +85,7 @@ pub async fn produce_checkpoint(
                 let root = guard
                     .compute_root()
                     .map_err(|e| AcmeError::Mtc(format!("compute_root: {e}")))?;
-                let mut proofs: Vec<(String, Vec<u8>, u64, Vec<(bool, Vec<u8>)>)> = Vec::new();
+                let mut proofs: CertProofs = Vec::new();
                 for cert in &pending_certs {
                     match guard.generate_proof(cert.mtc_log_index as u64) {
                         Ok(proof) => proofs.push((
@@ -96,49 +104,76 @@ pub async fn produce_checkpoint(
             };
             // Log mutex released here.
 
-            // Build the DER-encoded Checkpoint structure.
+            // Build and sign the DER-encoded Checkpoint structure.
             let checkpoint_der =
                 build_checkpoint_der(&spki_der, tree_size, root_bytes.clone(), now_unix, log_algorithm)?;
-
-            // Sign the DER-encoded checkpoint.
             let signer = key.as_signer(&hash_alg_str);
             let signature = signer
                 .sign_tbs(&checkpoint_der)
                 .map_err(|e| AcmeError::Mtc(format!("sign checkpoint: {e}")))?;
 
-            // Build standalone certificate DERs (signing key reused; no log access needed).
-            let mut standalone_defs: Vec<(String, Vec<u8>)> = Vec::new();
-            for (cert_id, cert_der, leaf_idx, proof) in cert_proofs {
-                match crate::mtc::standalone::build_standalone_der(
-                    &cert_der,
-                    leaf_idx,
-                    proof,
-                    tree_size,
-                    &key,
-                    &hash_alg_str,
-                    log_algorithm,
-                ) {
-                    Ok(der) => standalone_defs.push((cert_id, der)),
-                    Err(e) => tracing::warn!(cert_id = %cert_id, "build standalone cert: {e}"),
-                }
-            }
-
-            Ok::<_, AcmeError>((root_bytes, signature, standalone_defs))
+            Ok::<_, AcmeError>((root_bytes, checkpoint_der, signature, cert_proofs))
         },
     )
     .await
     .map_err(|e| AcmeError::Mtc(format!("checkpoint blocking task panicked: {e}")))??;
 
+    // Store checkpoint and resolve its DB row ID for cosignature FK.
     let root_hex: String = root_bytes.iter().map(|b| format!("{b:02x}")).collect();
     db::checkpoints::upsert(db, tree_size as i64, &root_hex, &signature, now_unix as i64).await?;
     tracing::info!(tree_size, root_hex, "MTC checkpoint produced");
+    let checkpoint_id = db::checkpoints::get_latest(db).await?.map(|r| r.id);
 
-    // Persist standalone DERs built during this checkpoint cycle.
+    // ── Async: gather cosignatures from external cosigners ────────────────────
+    let cosig_results = if cosigners.is_empty() {
+        Vec::new()
+    } else {
+        crate::mtc::cosign::gather_cosignatures(&checkpoint_der, cosigners).await
+    };
+    let cosig_ders: Vec<Vec<u8>> = cosig_results.iter().map(|(_, d)| d.clone()).collect();
+
+    // ── Phase 2 (blocking): build standalone DERs with proofs + cosignatures ──
+    let key2 = signing_key.clone();
+    let hash_alg2 = signing_hash_alg.to_string();
+    let standalone_defs: Vec<(String, Vec<u8>)> = tokio::task::spawn_blocking(move || {
+        let mut out = Vec::new();
+        for (cert_id, cert_der, leaf_idx, proof) in cert_proofs {
+            match crate::mtc::standalone::build_standalone_der(
+                &cert_der,
+                leaf_idx,
+                proof,
+                tree_size,
+                &key2,
+                &hash_alg2,
+                log_algorithm,
+                &cosig_ders,
+            ) {
+                Ok(der) => out.push((cert_id, der)),
+                Err(e) => tracing::warn!(cert_id = %cert_id, "build standalone cert: {e}"),
+            }
+        }
+        out
+    })
+    .await
+    .map_err(|e| AcmeError::Mtc(format!("standalone blocking task panicked: {e}")))?;
+
+    // Persist standalone DERs.
     for (cert_id, der) in standalone_defs {
         if let Err(e) = db::certs::set_mtc_standalone_der(db, &cert_id, &der).await {
             tracing::warn!(cert_id = %cert_id, "store standalone DER: {e}");
         } else {
             tracing::debug!(cert_id = %cert_id, "MTC standalone certificate stored");
+        }
+    }
+
+    // Persist cosignatures.
+    if let Some(chk_id) = checkpoint_id {
+        for (url, der) in cosig_results {
+            if let Err(e) =
+                db::cosignatures::upsert(db, chk_id, &url, &der, now_unix as i64).await
+            {
+                tracing::warn!(url = %url, "store cosignature: {e}");
+            }
         }
     }
 
@@ -227,6 +262,7 @@ pub fn spawn_checkpoint_task(state: Arc<AppState>) {
                 &mtc.signing_hash_alg,
                 mtc.algorithm,
                 &state.db,
+                &state.config.mtc.cosigners,
             )
             .await
             {

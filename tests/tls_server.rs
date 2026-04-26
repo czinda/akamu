@@ -413,6 +413,7 @@ async fn start_tls_server() -> TlsTestServer {
             enabled: false,
             signing_key: None,
             checkpoint_interval_secs: 3600,
+            cosigners: vec![],
         },
         server: ServerConfig::default(),
         profiles: Default::default(),

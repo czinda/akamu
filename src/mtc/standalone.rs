@@ -9,6 +9,7 @@ use synta::traits::Encode;
 use synta_certificate::{BackendPrivateKey, Certificate, CertificateSigner as _, PrivateKey as _};
 use synta_mtc::builder::cert::StandaloneCertificateBuilder;
 use synta_mtc::crypto::HashAlgorithm;
+use synta_mtc::types::SubtreeSignature;
 
 use crate::error::AcmeError;
 
@@ -18,6 +19,10 @@ use crate::error::AcmeError;
 /// leaves — the caller is responsible for this invariant (generate the proof
 /// and pass the tree_size atomically; see `produce_checkpoint` which does both
 /// under the same `blocking_lock` guard).
+///
+/// `cosignature_ders` is a slice of DER-encoded `SubtreeSignature` values collected
+/// from external cosigners.  An empty slice produces a standalone cert without
+/// any cosignatures; decoding failures for individual entries are logged and skipped.
 pub fn build_standalone_der(
     cert_der: &[u8],
     leaf_index: u64,
@@ -26,6 +31,7 @@ pub fn build_standalone_der(
     signing_key: &BackendPrivateKey,
     hash_alg_str: &str,
     log_algorithm: HashAlgorithm,
+    cosignature_ders: &[Vec<u8>],
 ) -> Result<Vec<u8>, AcmeError> {
     use synta::types::string::BitString;
 
@@ -57,8 +63,17 @@ pub fn build_standalone_der(
         .decode()
         .map_err(|e| AcmeError::Mtc(format!("decode AlgorithmIdentifier: {e}")))?;
 
+    // Decode each cosignature DER into a SubtreeSignature (borrows from cosignature_ders).
+    let mut subtree_sigs: Vec<SubtreeSignature<'_>> = Vec::new();
+    for (i, der) in cosignature_ders.iter().enumerate() {
+        match Decoder::new(der, Encoding::Der).decode::<SubtreeSignature<'_>>() {
+            Ok(sig) => subtree_sigs.push(sig),
+            Err(e) => tracing::warn!(index = i, "decode SubtreeSignature for standalone: {e}"),
+        }
+    }
+
     // Build the StandaloneCertificate.
-    let standalone = StandaloneCertificateBuilder::new()
+    let mut builder = StandaloneCertificateBuilder::new()
         .tbs_certificate(tbs)
         .log_entry_index(leaf_index)
         .with_proof_path(proof, tree_size)
@@ -67,7 +82,13 @@ pub fn build_standalone_der(
         .signature(
             BitString::new(sig_bytes, 0)
                 .map_err(|e| AcmeError::Mtc(format!("build BitString signature: {e}")))?,
-        )
+        );
+
+    for sig in subtree_sigs {
+        builder = builder.add_subtree_signature(sig);
+    }
+
+    let standalone = builder
         .build()
         .map_err(|e| AcmeError::Mtc(format!("build StandaloneCertificate: {e}")))?;
 

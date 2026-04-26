@@ -3,6 +3,7 @@ pub mod authz;
 pub mod certs;
 pub mod challenges;
 pub mod checkpoints;
+pub mod cosignatures;
 pub mod eab;
 pub mod nonces;
 pub mod orders;

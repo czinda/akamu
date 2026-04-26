@@ -52,6 +52,26 @@ When `[mtc.signing_key]` is present:
 
 When `[mtc.signing_key]` is absent, checkpoint production is disabled and the `mtc_checkpoints` table remains empty.
 
+### External cosigners
+
+After each checkpoint, akamu can POST the DER-encoded checkpoint to external cosigner servers and embed their `SubtreeSignature` responses in each `StandaloneCertificate`.
+
+```toml
+[[mtc.cosigners]]
+url                  = "https://cosigner.example.com/sign"
+cosigner_id_cert_pem = "/etc/akamu/cosigner1.pem"  # optional; path to cosigner X.509 cert PEM
+```
+
+Multiple `[[mtc.cosigners]]` entries are supported.  For each entry:
+
+- akamu POSTs the DER-encoded `Checkpoint` with `Content-Type: application/octet-stream`.
+- The cosigner is expected to return a DER-encoded `SubtreeSignature` with HTTP 200.
+- Failures are logged and skipped — partial success is acceptable; the standalone certificate is still built with whatever signatures arrive.
+
+When `cosigner_id_cert_pem` is set, the path is stored for future verification support; the current implementation stores signatures as received.
+
+The `mtc_cosignatures` database table retains cosignatures keyed by checkpoint and cosigner URL.
+
 ## Log format
 
 The log file is a binary file managed by `synta_mtc::storage::DiskBackedLog`. Entries are written as fixed-size SHA-256 hashes (32 bytes each) in leaf-order. The hash function includes Merkle tree domain separation to prevent second-preimage attacks.
@@ -147,4 +167,4 @@ The log is append-only by design. Once a leaf is appended it cannot be removed o
 - For a log with zero leaves the root is undefined.
 - For a log with one or more leaves the root is the SHA-256 Merkle root of all leaf hashes.
 
-> **Scope note:** Akāmu implements the issuance-log, checkpoint, and standalone certificate portions of the MTC draft (draft-ietf-plants-merkle-tree-certs).  The following CA operations are intentionally out of scope for now: cosignature gathering from external cosigners (§6.2) and landmark management (§6.3.1).
+> **Scope note:** Akāmu implements the issuance-log, checkpoint, standalone certificate, and cosignature-gathering portions of the MTC draft (draft-ietf-plants-merkle-tree-certs).  Landmark management (§6.3.1) is intentionally out of scope for now.

@@ -71,6 +71,15 @@ pub struct ChallengeRow {
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
+pub struct CosignatureRow {
+    pub id: i64,
+    pub checkpoint_id: i64,
+    pub cosigner_url: String,
+    pub signature_der: Vec<u8>,
+    pub created: i64,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct CheckpointRow {
     pub id: i64,
     pub tree_size: i64,

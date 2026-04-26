@@ -153,6 +153,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             enabled: false,
             signing_key: None,
             checkpoint_interval_secs: 3600,
+            cosigners: vec![],
         },
         server: ServerConfig::default(),
         tls: Default::default(),

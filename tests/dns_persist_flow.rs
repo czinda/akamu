@@ -168,6 +168,7 @@ async fn build_state(
             enabled: false,
             signing_key: None,
             checkpoint_interval_secs: 3600,
+            cosigners: vec![],
         },
         server: ServerConfig {
             dns_persist_issuer_domain: Some(issuer_domain.into()),
