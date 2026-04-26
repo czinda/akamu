@@ -69,7 +69,7 @@ Tests verify:
 - Every `AcmeError` variant maps to the correct ACME type string.
 - Every variant maps to the correct HTTP status code.
 - `Display` strings are correct.
-- `From<rusqlite::Error>` and `From<tokio_rusqlite::Error>` convert correctly.
+- `From<sqlx::Error>` converts correctly.
 - `into_response` produces `Content-Type: application/problem+json` and the correct status.
 
 ### `src/routes/mod.rs`

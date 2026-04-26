@@ -75,12 +75,11 @@ The `detail` field is the `Display` string of the variant, which for parameteriz
 
 ## From implementations
 
-Two `From` implementations allow the `?` operator to be used with database errors:
+One `From` implementation allows the `?` operator to be used with database errors:
 
-- `From<tokio_rusqlite::Error> for AcmeError` → wraps in `AcmeError::Database`.
-- `From<rusqlite::Error> for AcmeError` → wraps in `AcmeError::Database`.
+- `From<sqlx::Error> for AcmeError` → wraps in `AcmeError::Database`.
 
-This means any `db.call(|conn| { ... }).await?` will automatically convert database errors to `AcmeError::Database(msg)`.
+This means any `sqlx::query!(...).fetch_one(&db).await?` will automatically convert database errors to `AcmeError::Database(msg)`.
 
 ## Error propagation in handlers
 
@@ -90,8 +89,8 @@ Example handler error propagation chain:
 
 ```
 db::accounts::get_by_id(&db, &id).await?
-  ↓ rusqlite::Error or tokio_rusqlite::Error
-  ↓ From<...> for AcmeError
+  ↓ sqlx::Error
+  ↓ From<sqlx::Error> for AcmeError
   ↓ AcmeError::Database("...")
   ↓ returned from handler as Err(AcmeError::Database(...))
   ↓ axum calls AcmeError::into_response()
