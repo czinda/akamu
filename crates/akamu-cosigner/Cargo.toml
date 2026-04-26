@@ -1,0 +1,50 @@
+[package]
+name = "akamu-cosigner"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "MTC cosigner daemon — signs checkpoints and returns DER SubtreeSignature"
+
+[[bin]]
+name = "akamu-cosigner"
+path = "src/main.rs"
+
+[dependencies]
+# Akamu library crate — key generation, TLS, CA utilities
+akamu = { path = "../..", default-features = false }
+
+# ACME client library — used for EAB bootstrap
+akamu-client = { path = "../akamu-client" }
+
+# Cryptography and ASN.1
+synta-certificate = { version = "0.1.9", features = ["std", "pqc"] }
+synta-mtc         = { version = "0.1.9", features = ["std"] }
+synta             = { version = "0.1.9", default-features = false, features = ["std", "derive"] }
+
+# HTTP server
+axum = { version = "0.8", features = ["http1"] }
+tower = { version = "0.5", features = ["util"] }
+hyper = { version = "1", features = ["client", "http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "server-auto", "service"] }
+
+# TLS server
+rustls        = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+tokio-rustls  = "0.26"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization / config
+serde    = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml     = "0.8"
+
+# Error handling
+thiserror = "2"
+
+# Logging
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Base64 for EAB HMAC key decoding
+base64 = "0.22"

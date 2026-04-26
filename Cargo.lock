@@ -83,6 +83,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "akamu-cosigner"
+version = "0.1.0"
+dependencies = [
+ "akamu",
+ "akamu-client",
+ "axum",
+ "base64",
+ "hyper",
+ "hyper-util",
+ "rustls",
+ "serde",
+ "serde_json",
+ "synta",
+ "synta-certificate",
+ "synta-mtc",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-rustls",
+ "toml",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "akamu-jose"
 version = "0.1.0"
 dependencies = [

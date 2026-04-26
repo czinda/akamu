@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/akamu-jose", "crates/akamu-client", "crates/akamu-cli"]
+members = [".", "crates/akamu-jose", "crates/akamu-client", "crates/akamu-cli", "crates/akamu-cosigner"]
 resolver = "2"
 
 [package]
