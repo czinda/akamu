@@ -50,8 +50,11 @@ pub fn open_or_create(path: &str, algorithm: HashAlgorithm) -> Result<DiskBacked
                 .map_err(|e| AcmeError::Mtc(format!("seed null_entry at index 0: {e}")))?;
             Ok(log)
         }
-        Err(_) => {
-            // Creation failed — assume the file already exists and open it.
+        Err(create_err) => {
+            tracing::debug!(
+                path,
+                "MTC log create failed, attempting to open existing: {create_err}"
+            );
             DiskBackedLog::open(path).map_err(|e| AcmeError::Mtc(format!("open MTC log: {e}")))
         }
     }
@@ -111,10 +114,15 @@ pub async fn generate_proof(
     log: &SharedLog,
     leaf_index: u64,
 ) -> Result<Vec<(bool, Vec<u8>)>, AcmeError> {
-    let mut guard = log.lock().await;
-    guard
-        .generate_proof(leaf_index)
-        .map_err(|e| AcmeError::Mtc(format!("generate_proof: {e}")))
+    let log_clone = Arc::clone(log);
+    tokio::task::spawn_blocking(move || {
+        let mut guard = log_clone.blocking_lock();
+        guard
+            .generate_proof(leaf_index)
+            .map_err(|e| AcmeError::Mtc(format!("generate_proof: {e}")))
+    })
+    .await
+    .map_err(|e| AcmeError::Mtc(format!("spawn_blocking panicked: {e}")))?
 }
 
 /// Return the current number of leaves in the log.
@@ -129,10 +137,35 @@ pub async fn tree_size(log: &SharedLog) -> Result<u64, AcmeError> {
 ///
 /// Returns the root hash as a byte vector (length depends on the algorithm).
 pub async fn compute_root(log: &SharedLog) -> Result<Vec<u8>, AcmeError> {
-    let mut guard = log.lock().await;
-    guard
-        .compute_root()
-        .map_err(|e| AcmeError::Mtc(format!("compute_root: {e}")))
+    let log_clone = Arc::clone(log);
+    tokio::task::spawn_blocking(move || {
+        let mut guard = log_clone.blocking_lock();
+        guard
+            .compute_root()
+            .map_err(|e| AcmeError::Mtc(format!("compute_root: {e}")))
+    })
+    .await
+    .map_err(|e| AcmeError::Mtc(format!("spawn_blocking panicked: {e}")))?
+}
+
+/// Return the current tree size and Merkle root atomically.
+///
+/// Both values are read under the same `blocking_lock` guard, ensuring the
+/// `treeSize` and `rootHash` in HTTP responses are always consistent.
+pub async fn tree_size_and_root(log: &SharedLog) -> Result<(u64, Vec<u8>), AcmeError> {
+    let log_clone = Arc::clone(log);
+    tokio::task::spawn_blocking(move || {
+        let mut guard = log_clone.blocking_lock();
+        let size = guard
+            .tree_size()
+            .map_err(|e| AcmeError::Mtc(format!("tree_size: {e}")))?;
+        let root = guard
+            .compute_root()
+            .map_err(|e| AcmeError::Mtc(format!("compute_root: {e}")))?;
+        Ok::<_, AcmeError>((size, root))
+    })
+    .await
+    .map_err(|e| AcmeError::Mtc(format!("spawn_blocking panicked: {e}")))?
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
