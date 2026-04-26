@@ -398,11 +398,10 @@ minimum_rsa_modulus = 3072
   if the draft advances and code points change, only that file needs updating.
 
 - **Composite OpenSSL binding**: composite ML-DSA+classical `CertificateVerify`
-  verification relies on the pqc-prs OpenSSL fork exposing composite NIDs via
-  `PKey::public_key_from_der`.  If those NIDs are not yet in the Rust binding
-  layer, the function will return an OpenSSL error at runtime.  The fix is to add
-  composite NID support to the Rust openssl bindings in the pqc-prs fork, not to
-  Akāmu itself.
+  verification relies on `native-ossl` exposing composite NIDs via
+  `PKey::public_key_from_der`.  If those NIDs are not yet present in
+  `native-ossl`, the function will return an OpenSSL error at runtime.  The fix
+  is to add composite NID support to `native-ossl`, not to Akāmu itself.
 
 - **Pure ML-DSA TLS `SignatureScheme` code points**: no IANA code points exist yet
   for standalone ML-DSA (non-composite) TLS schemes.  Even with
