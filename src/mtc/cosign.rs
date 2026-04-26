@@ -45,6 +45,21 @@ pub struct CosignerClient {
     client: HttpsClient,
 }
 
+/// Build a `CosignerClient` that connects over plain HTTP (no TLS).
+///
+/// Intended for integration tests only; do not use in production.
+#[doc(hidden)]
+pub fn build_cosigner_client_http(url: String) -> CosignerClient {
+    let tls_config = build_tls_config(None).expect("native roots for test cosigner client");
+    let https = HttpsConnectorBuilder::new()
+        .with_tls_config(tls_config)
+        .https_or_http()
+        .enable_http1()
+        .build();
+    let client = Client::builder(TokioExecutor::new()).build::<_, Full<Bytes>>(https);
+    CosignerClient { url, client }
+}
+
 /// Build a `CosignerClient` for `cfg`, loading native root CAs and any
 /// optional per-cosigner CA certificate from disk.
 ///
