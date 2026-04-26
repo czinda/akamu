@@ -13,12 +13,13 @@ env:
   # System packages required to compile akamu and to run JavaScript-based
   # Forgejo Actions (actions/checkout, actions/cache) inside the container.
   #   nodejs22           — required by actions/checkout and actions/cache
-  #   openssl-devel      — OpenSSL headers (pqc-prs fork via [patch.crates-io])
+  #   openssl-devel      — OpenSSL headers (native-ossl / native-ossl-sys)
+  #   clang-libs         — libclang.so required by bindgen (native-ossl-sys)
   #   sqlite-devel       — system SQLite (rusqlite, no bundled feature)
   #   pkgconf-pkg-config — pkg-config used by openssl-sys and rusqlite-sys
   #   gcc / make         — C linker and build tooling
   DNF_PACKAGES: >-
-    nodejs22 gcc make pkgconf-pkg-config openssl-devel sqlite-devel
+    nodejs22 gcc make pkgconf-pkg-config openssl-devel clang-libs sqlite-devel
 
 jobs:
   # ── Build ──────────────────────────────────────────────────────────────────
