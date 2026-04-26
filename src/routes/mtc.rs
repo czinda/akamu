@@ -49,13 +49,13 @@ pub async fn get_inclusion_proof(
 
     let leaf_index = cert.mtc_log_index.ok_or(AcmeError::NotFound)? as u64;
 
-    let proof_pairs = log::generate_proof(shared_log, leaf_index).await?;
-    let proof: Vec<String> = proof_pairs
+    // Fetch proof and tree size under one lock to prevent TOCTOU.
+    let (proof_pairs, size) = log::proof_and_tree_size(shared_log, leaf_index).await?;
+    let proof: Vec<_> = proof_pairs
         .into_iter()
-        .map(|(_, hash)| hex(&hash))
+        .map(|(left, hash)| json!({ "left": left, "hash": hex(&hash) }))
         .collect();
 
-    let size = log::tree_size(shared_log).await?;
     Ok((
         StatusCode::OK,
         axum::Json(json!({
@@ -76,10 +76,7 @@ pub async fn get_standalone(
     State(state): State<Arc<AppState>>,
     Path(cert_id): Path<String>,
 ) -> Result<Response, AcmeError> {
-    // MTC must be enabled.
-    if state.mtc.log.is_none() {
-        return Err(AcmeError::NotFound);
-    }
+    state.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
 
     let der = db::certs::get_mtc_standalone_der(&state.db, &cert_id)
         .await?
@@ -89,7 +86,7 @@ pub async fn get_standalone(
         StatusCode::OK,
         [(
             axum::http::header::CONTENT_TYPE,
-            axum::http::HeaderValue::from_static("application/pkix-cert"),
+            axum::http::HeaderValue::from_static("application/octet-stream"),
         )],
         der,
     )
@@ -100,9 +97,7 @@ pub async fn get_standalone(
 ///
 /// Returns a JSON array of all allocated landmarks ordered by sequence number.
 pub async fn get_landmarks(State(state): State<Arc<AppState>>) -> Result<Response, AcmeError> {
-    if state.mtc.log.is_none() {
-        return Err(AcmeError::NotFound);
-    }
+    state.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
 
     let landmarks = db::landmarks::list(&state.db).await?;
     let body: Vec<_> = landmarks
@@ -127,9 +122,7 @@ pub async fn get_landmark_cert(
     State(state): State<Arc<AppState>>,
     Path(seq): Path<i64>,
 ) -> Result<Response, AcmeError> {
-    if state.mtc.log.is_none() {
-        return Err(AcmeError::NotFound);
-    }
+    state.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
 
     let landmark = db::landmarks::get_by_seq(&state.db, seq)
         .await?
@@ -141,7 +134,7 @@ pub async fn get_landmark_cert(
         StatusCode::OK,
         [(
             axum::http::header::CONTENT_TYPE,
-            axum::http::HeaderValue::from_static("application/pkix-cert"),
+            axum::http::HeaderValue::from_static("application/octet-stream"),
         )],
         der,
     )
