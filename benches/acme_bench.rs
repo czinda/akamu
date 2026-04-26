@@ -695,6 +695,12 @@ async fn start_server(args: &Args) -> BenchServer {
         mtc: MtcConfig {
             log_path: "/dev/null".into(),
             enabled: false,
+            signing_key: None,
+            checkpoint_interval_secs: 3600,
+            cosigners: vec![],
+            landmark_interval_secs: 86400,
+            max_active_landmarks: 100,
+            checkpoint_retention_count: 1000,
         },
         server: ServerConfig {
             http_validation_port,

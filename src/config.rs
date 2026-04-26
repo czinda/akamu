@@ -328,7 +328,7 @@ pub struct CaConfig {
 /// key_type = "ec:P-256"
 /// hash_alg = "sha256"
 /// ```
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct MtcSigningKeyConfig {
     /// PEM file for the MTC signing key (generated on first run if absent).
     pub key_file: String,
@@ -370,10 +370,35 @@ pub struct MtcConfig {
     /// External cosigners.  Each entry is a `[[mtc.cosigners]]` table.
     #[serde(default)]
     pub cosigners: Vec<CosignerConfig>,
+    /// How often to freeze a new landmark tree size (seconds).  Default: 86400 (1 day).
+    #[serde(default = "default_landmark_interval_secs")]
+    pub landmark_interval_secs: u64,
+    /// Maximum number of active (non-expired) landmarks to retain.
+    /// Once exceeded, the oldest landmark is available to relying parties for
+    /// `ceil(max_cert_lifetime / landmark_interval) + 1` overlap.  Default: 100.
+    #[serde(default = "default_max_active_landmarks")]
+    pub max_active_landmarks: u32,
+    /// Maximum number of checkpoints to retain in the database.
+    /// Older checkpoints (and their cosignatures) are pruned after each new
+    /// checkpoint is produced.  Default: 1000.
+    #[serde(default = "default_checkpoint_retention_count")]
+    pub checkpoint_retention_count: u32,
 }
 
 fn default_checkpoint_interval_secs() -> u64 {
     3600
+}
+
+fn default_landmark_interval_secs() -> u64 {
+    86400
+}
+
+fn default_max_active_landmarks() -> u32 {
+    100
+}
+
+fn default_checkpoint_retention_count() -> u32 {
+    1000
 }
 
 #[derive(Debug, Deserialize, Default)]

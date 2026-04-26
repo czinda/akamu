@@ -169,6 +169,9 @@ async fn build_state(
             signing_key: None,
             checkpoint_interval_secs: 3600,
             cosigners: vec![],
+            landmark_interval_secs: 86400,
+            max_active_landmarks: 100,
+            checkpoint_retention_count: 1000,
         },
         server: ServerConfig {
             dns_persist_issuer_domain: Some(issuer_domain.into()),
