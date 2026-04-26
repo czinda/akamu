@@ -68,16 +68,16 @@ getrandom = "0.2"
 # JWK/JWS primitives (extracted from server; no axum/rusqlite dependency)
 akamu-jose = { path = "crates/akamu-jose" }
 
-# OpenSSL bindings (pqc-prs fork for ML-DSA / composite PQ support)
-openssl = "0.10"
-
 # Base ASN.1 library (needed for Decoder/Encoder and Integer type)
-synta = { version = "0.1.6", default-features = false, features = ["std", "derive"] }
+synta = { version = "0.1.9", default-features = false, features = ["std", "derive"] }
 
 # Synta crates for all X.509 / MTC operations
-synta-certificate =  { version = "0.1.6", features = ["std", "openssl", "pqc"] }
-synta-x509-verification =  { version = "0.1.6" }
-synta-mtc = { version = "0.1.6", features = ["std"] }
+synta-certificate =  { version = "0.1.9", features = ["std", "pqc"] }
+synta-x509-verification =  { version = "0.1.9" }
+synta-mtc = { version = "0.1.9", features = ["std"] }
+
+# Native Rust bindings to system OpenSSL (composite ML-DSA TLS verify)
+native-ossl = "0.1.4"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
@@ -92,12 +92,3 @@ clap = { version = "4", features = ["derive"] }
 name = "acme_bench"
 harness = false
 
-[patch.crates-io]
-# Use the same rust-openssl fork as synta-certificate so that both crates see
-# consistent OpenSSL bindings (including ML-DSA / ML-KEM / PQC support).
-openssl-sys = { git = "https://github.com/abbra/rust-openssl.git", branch = "pqc-prs" }
-openssl     = { git = "https://github.com/abbra/rust-openssl.git", branch = "pqc-prs" }
-# Use the local synta worktree (branch pkcs11-uri-support) that includes
-# BackendPrivateKey::from_pkcs11_uri and PKCS#11 URI key loading support.
-synta             = { path = "/var/home/abokovoy/workspace/synta-pkcs11" }
-synta-certificate = { path = "/var/home/abokovoy/workspace/synta-pkcs11/synta-certificate" }
