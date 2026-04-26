@@ -3,7 +3,7 @@
 JWK/JWS primitives for the Akamu ACME server (RFC 7515 / RFC 7638).
 
 This crate provides the cryptographic building blocks used by both the Akamu
-server and the `akamu-client` library.  It has no dependency on axum, rusqlite,
+server and the `akamu-client` library.  It has no dependency on axum, sqlx,
 or any other server-specific crate.
 
 ## What this crate provides
