@@ -74,23 +74,11 @@ jws.verify(&spki_der).unwrap();
 For POST-as-GET requests, pass `None` as the payload; the crate produces an
 empty payload string as required by RFC 8555 §6.3.
 
-## Dependency note — PQC OpenSSL fork
+## Dependency note — PQC support
 
-This crate depends on `synta-certificate` with the `pqc` feature, which
-requires a patched OpenSSL crate that includes ML-DSA and other post-quantum
-primitives.  Until OpenSSL 3.5 support lands in stable `openssl-sys`, you must
-add the following to the **workspace root `Cargo.toml`** of any project that
-depends on `akamu-jose` or `akamu-client`:
-
-```toml
-[patch.crates-io]
-openssl-sys = { git = "https://github.com/abbra/rust-openssl.git", branch = "pqc-prs" }
-openssl     = { git = "https://github.com/abbra/rust-openssl.git", branch = "pqc-prs" }
-```
-
-This patch must appear in the workspace root, not in individual crate
-`Cargo.toml` files.  Crates that only use classical algorithms are not affected
-at runtime, but the patch is still required for the workspace to compile.
+This crate depends on `synta-certificate` with the `pqc` feature.  ML-DSA and
+other post-quantum primitives are provided via `native-ossl`, which is
+published on crates.io.  No git fork or `[patch.crates-io]` block is required.
 
 ## License
 

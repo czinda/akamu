@@ -169,19 +169,11 @@ filter enables `INFO`-level messages from `akamu_client`.
 RUST_LOG=debug akamu-cli issue ...
 ```
 
-## Dependency note — PQC OpenSSL fork
+## Dependency note — PQC support
 
-Building this binary requires the PQC OpenSSL patch in the workspace root
-`Cargo.toml`:
-
-```toml
-[patch.crates-io]
-openssl-sys = { git = "https://github.com/abbra/rust-openssl.git", branch = "pqc-prs" }
-openssl     = { git = "https://github.com/abbra/rust-openssl.git", branch = "pqc-prs" }
-```
-
-This is already present in the Akamu workspace.  If you copy `akamu-cli` into a
-separate workspace, add the patch there as well.
+ML-DSA and other post-quantum primitives are provided via `native-ossl`, which
+is published on crates.io.  No git fork or `[patch.crates-io]` block is
+required in any workspace that depends on this crate.
 
 ## License
 
