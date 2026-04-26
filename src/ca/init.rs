@@ -313,7 +313,7 @@ pub fn compute_aki_from_spki(spki_der: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Generate a `BackendPrivateKey` using the synta-certificate crypto backend.
-pub(crate) fn generate_backend_key(key_type: &str) -> Result<BackendPrivateKey, AcmeError> {
+pub fn generate_backend_key(key_type: &str) -> Result<BackendPrivateKey, AcmeError> {
     let cry = |e: &dyn std::fmt::Display| AcmeError::Crypto(format!("generate {key_type}: {e}"));
     match key_type {
         "ec:P-256" | "P-256" => BackendPrivateKey::generate_ec("P-256").map_err(|e| cry(&e)),

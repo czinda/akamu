@@ -316,13 +316,46 @@ pub struct CaConfig {
     pub ca_validity_years: u32,
 }
 
+/// MTC signing key parameters for checkpoint production.
+///
+/// The signing key MUST be distinct from the X.509 CA key (§5.5 of
+/// draft-ietf-plants-merkle-tree-certs).  When absent, checkpoint
+/// production and standalone certificate construction are disabled.
+///
+/// ```toml
+/// [mtc.signing_key]
+/// key_file = "/var/lib/akamu/mtc-signing.key"
+/// key_type = "ec:P-256"
+/// hash_alg = "sha256"
+/// ```
+#[derive(Debug, Deserialize)]
+pub struct MtcSigningKeyConfig {
+    /// PEM file for the MTC signing key (generated on first run if absent).
+    pub key_file: String,
+    /// Key algorithm: same values as `[ca].key_type` ("ec:P-256", "ed25519", …).
+    #[serde(default = "default_key_type")]
+    pub key_type: String,
+    /// Hash algorithm for signatures: "sha256", "sha384", "sha512".
+    #[serde(default = "default_hash_alg")]
+    pub hash_alg: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct MtcConfig {
-    /// Path to the MTC disk-backed log file
+    /// Path to the MTC disk-backed log file.
     pub log_path: String,
-    /// Whether to append issued certificates to the MTC log
+    /// Whether to append issued certificates to the MTC log.
     #[serde(default)]
     pub enabled: bool,
+    /// MTC signing key for checkpoint production.  Absent → checkpoints disabled.
+    pub signing_key: Option<MtcSigningKeyConfig>,
+    /// How often the checkpoint background task fires (seconds).  Default: 3600 (1 h).
+    #[serde(default = "default_checkpoint_interval_secs")]
+    pub checkpoint_interval_secs: u64,
+}
+
+fn default_checkpoint_interval_secs() -> u64 {
+    3600
 }
 
 #[derive(Debug, Deserialize, Default)]

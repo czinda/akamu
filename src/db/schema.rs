@@ -1,4 +1,8 @@
 /// Row types that mirror the SQLite schema columns.
+///
+/// Each struct maps 1-to-1 to a database table and is used to transfer data
+/// between the DB layer and the application.  All integer timestamps are Unix
+/// epoch seconds stored as `i64`.
 /// These are plain data structs used to transfer data between the DB and application layers.
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -64,6 +68,15 @@ pub struct ChallengeRow {
     pub error: Option<String>,
     pub created: i64,
     pub updated: i64,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct CheckpointRow {
+    pub id: i64,
+    pub tree_size: i64,
+    pub root_hex: String,
+    pub signature: Vec<u8>,
+    pub created: i64,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]

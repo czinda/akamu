@@ -212,6 +212,8 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         mtc: MtcConfig {
             log_path: "/dev/null".into(),
             enabled: false,
+            signing_key: None,
+            checkpoint_interval_secs: 3600,
         },
         server: ServerConfig::default(),
         tls: Default::default(),
@@ -244,6 +246,8 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         mtc: Arc::new(MtcState {
             log: None,
             algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
+            signing_key: None,
+            signing_hash_alg: "sha256".into(),
         }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
@@ -2189,6 +2193,8 @@ async fn test_directory_with_optional_fields() {
         mtc: akamu::config::MtcConfig {
             log_path: "/dev/null".into(),
             enabled: false,
+            signing_key: None,
+            checkpoint_interval_secs: 3600,
         },
         server: akamu::config::ServerConfig {
             terms_of_service_url: Some("https://example.org/tos".into()),
@@ -2223,6 +2229,8 @@ async fn test_directory_with_optional_fields() {
         mtc: Arc::new(akamu::state::MtcState {
             log: None,
             algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
+            signing_key: None,
+            signing_hash_alg: "sha256".into(),
         }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
@@ -2542,6 +2550,8 @@ async fn test_finalize_with_mtc_enabled() {
         mtc: MtcConfig {
             log_path: log_path.clone(),
             enabled: true,
+            signing_key: None,
+            checkpoint_interval_secs: 3600,
         },
         server: akamu::config::ServerConfig::default(),
         tls: Default::default(),
@@ -2575,6 +2585,8 @@ async fn test_finalize_with_mtc_enabled() {
         mtc: Arc::new(MtcState {
             log: Some(shared_log.clone()),
             algorithm,
+            signing_key: None,
+            signing_hash_alg: "sha256".into(),
         }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
@@ -2777,6 +2789,8 @@ async fn test_finalize_with_aia_and_cdp() {
         mtc: MtcConfig {
             log_path: "/dev/null".into(),
             enabled: false,
+            signing_key: None,
+            checkpoint_interval_secs: 3600,
         },
         server: ServerConfig::default(),
         tls: Default::default(),
@@ -2805,6 +2819,8 @@ async fn test_finalize_with_aia_and_cdp() {
         mtc: Arc::new(MtcState {
             log: None,
             algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
+            signing_key: None,
+            signing_hash_alg: "sha256".into(),
         }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),

@@ -26,6 +26,32 @@ When `enabled = false` (the default):
 - The log file is never written.
 - The `log_path` must still be specified but is not used.
 
+### Checkpoint signing
+
+To enable periodic checkpoint production, add a `[mtc.signing_key]` section.  The signing key **must** be distinct from the X.509 CA key (§5.5 of the MTC draft).
+
+```toml
+[mtc]
+log_path                 = "/var/lib/akamu/mtc.log"
+enabled                  = true
+checkpoint_interval_secs = 3600   # default: 3600 (1 hour)
+
+[mtc.signing_key]
+key_file = "/var/lib/akamu/mtc-signing.key"   # auto-generated if absent
+key_type = "ec:P-256"                          # same values as [ca].key_type
+hash_alg = "sha256"                            # sha256 | sha384 | sha512
+```
+
+Supported `key_type` values are the same set parsed for the CA key: `ec:P-256`, `ec:P-384`, `ec:P-521`, `rsa:2048`–`rsa:4096`, `ed25519`, `ed448`, `ml-dsa-44`, `ml-dsa-65`, `ml-dsa-87`.  Per §5.4.2 of the draft, only ECDSA P-256/P-384, Ed25519, and ML-DSA are listed as valid cosigner signature algorithms; prefer EC or EdDSA for the MTC signing key.
+
+When `[mtc.signing_key]` is present:
+
+- At startup the server reads the PEM file at `key_file`, or auto-generates a new key of `key_type` and writes it there.
+- A background task fires every `checkpoint_interval_secs` seconds.  If the log has grown since the last checkpoint, it computes the Merkle root, constructs a `Checkpoint` structure (per §6.2), DER-encodes it, signs it with the MTC signing key, and inserts a row into the `mtc_checkpoints` database table.
+- Checkpoints are idempotent: if the tree size has not grown the task is a no-op.
+
+When `[mtc.signing_key]` is absent, checkpoint production is disabled and the `mtc_checkpoints` table remains empty.
+
 ## Log format
 
 The log file is a binary file managed by `synta_mtc::storage::DiskBackedLog`. Entries are written as fixed-size SHA-256 hashes (32 bytes each) in leaf-order. The hash function includes Merkle tree domain separation to prevent second-preimage attacks.
@@ -109,4 +135,4 @@ The log is append-only by design. Once a leaf is appended it cannot be removed o
 - For a log with zero leaves the root is undefined.
 - For a log with one or more leaves the root is the SHA-256 Merkle root of all leaf hashes.
 
-> **Scope note:** Akāmu implements the issuance-log portion of the MTC draft (draft-ietf-plants-merkle-tree-certs).  The following CA operations are intentionally out of scope for now: checkpoint signing and cosignature gathering (§6.2), MTC proof certificate construction with `id-alg-mtcProof` (§6.1), and landmark management (§6.3.1).  The log currently functions as an internal audit trail that satisfies the append-only and null-entry-at-index-zero invariants required by the draft; the HTTP API above exposes the tree state for external verification.
+> **Scope note:** Akāmu implements the issuance-log and checkpoint portions of the MTC draft (draft-ietf-plants-merkle-tree-certs).  The following CA operations are intentionally out of scope for now: cosignature gathering from external cosigners (§6.2), MTC proof certificate construction with `id-alg-mtcProof` (§6.1), and landmark management (§6.3.1).

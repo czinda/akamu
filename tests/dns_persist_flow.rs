@@ -166,6 +166,8 @@ async fn build_state(
         mtc: MtcConfig {
             log_path: "/dev/null".into(),
             enabled: false,
+            signing_key: None,
+            checkpoint_interval_secs: 3600,
         },
         server: ServerConfig {
             dns_persist_issuer_domain: Some(issuer_domain.into()),
@@ -199,6 +201,8 @@ async fn build_state(
         mtc: Arc::new(MtcState {
             log: None,
             algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
+            signing_key: None,
+            signing_hash_alg: "sha256".into(),
         }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),

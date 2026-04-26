@@ -190,11 +190,21 @@ pub struct MtcState {
     pub log: Option<SharedLog>,
     /// Hash algorithm used for log leaf hashing.
     pub algorithm: HashAlgorithm,
+    /// MTC signing key for checkpoint production.  `None` when not configured.
+    /// Must be distinct from the X.509 CA key (§5.5 of the MTC draft).
+    pub signing_key: Option<BackendPrivateKey>,
+    /// Hash algorithm string for checkpoint signing (e.g. `"sha256"`).
+    pub signing_hash_alg: String,
 }
 
 impl MtcState {
     /// Return `true` when the MTC log is enabled and ready.
     pub fn is_enabled(&self) -> bool {
         self.log.is_some()
+    }
+
+    /// Return `true` when checkpoint production is enabled (log + signing key).
+    pub fn can_checkpoint(&self) -> bool {
+        self.log.is_some() && self.signing_key.is_some()
     }
 }

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use tracing_subscriber::EnvFilter;
 
-use akamu::config::Config;
+use akamu::config::{Config, MtcSigningKeyConfig};
 use akamu::state::{AppState, CaState, MtcState, NonceBucket, TlsState};
 use akamu::{ca, db, mtc, routes, star};
 
@@ -27,6 +27,38 @@ async fn main() {
     if let Err(e) = run().await {
         tracing::error!("fatal: {e}");
         std::process::exit(1);
+    }
+}
+
+/// Load or auto-generate the dedicated MTC signing key.
+///
+/// Reuses `generate_backend_key` and `BackendPrivateKey::from_pem` from the CA
+/// key loading path.  The file is created with the same PEM format.
+fn load_or_generate_mtc_key(
+    cfg: &MtcSigningKeyConfig,
+) -> Result<synta_certificate::BackendPrivateKey, String> {
+    use std::path::Path;
+    use synta_certificate::BackendPrivateKey;
+
+    if Path::new(&cfg.key_file).exists() {
+        let pem = std::fs::read(&cfg.key_file)
+            .map_err(|e| format!("read MTC signing key '{}': {e}", cfg.key_file))?;
+        BackendPrivateKey::from_pem(&pem, None)
+            .map_err(|e| format!("parse MTC signing key '{}': {e}", cfg.key_file))
+    } else {
+        tracing::info!(
+            "generating new MTC signing key ({}) → {}",
+            cfg.key_type,
+            cfg.key_file
+        );
+        let key = ca::init::generate_backend_key(&cfg.key_type)
+            .map_err(|e| format!("generate MTC signing key: {e}"))?;
+        let pem = key
+            .to_pem(None)
+            .map_err(|e| format!("MTC signing key to PEM: {e}"))?;
+        std::fs::write(&cfg.key_file, &pem)
+            .map_err(|e| format!("write MTC signing key '{}': {e}", cfg.key_file))?;
+        Ok(key)
     }
 }
 
@@ -151,6 +183,17 @@ async fn run() -> Result<(), String> {
 
     // ── MTC transparency log ──────────────────────────────────────────────────
     let mtc_algorithm = synta_mtc::crypto::HashAlgorithm::Sha256;
+
+    // Load or generate the MTC signing key (distinct from the CA key per §5.5).
+    let (mtc_signing_key, mtc_signing_hash_alg) =
+        if let Some(ref sk_cfg) = config.mtc.signing_key {
+            tracing::info!("loading MTC signing key from '{}'", sk_cfg.key_file);
+            let key = load_or_generate_mtc_key(sk_cfg)?;
+            (Some(key), sk_cfg.hash_alg.clone())
+        } else {
+            (None, "sha256".to_string())
+        };
+
     let mtc = if config.mtc.enabled {
         tracing::info!("opening MTC log at '{}'", config.mtc.log_path);
         let log = mtc::log::open_or_create(&config.mtc.log_path, mtc_algorithm)
@@ -159,12 +202,16 @@ async fn run() -> Result<(), String> {
         Arc::new(MtcState {
             log: Some(shared),
             algorithm: mtc_algorithm,
+            signing_key: mtc_signing_key,
+            signing_hash_alg: mtc_signing_hash_alg,
         })
     } else {
         tracing::info!("MTC logging disabled");
         Arc::new(MtcState {
             log: None,
             algorithm: mtc_algorithm,
+            signing_key: mtc_signing_key,
+            signing_hash_alg: mtc_signing_hash_alg,
         })
     };
 
@@ -214,6 +261,9 @@ async fn run() -> Result<(), String> {
             nonces.sweep_expired(86400);
         }
     });
+
+    // ── MTC checkpoint background task ───────────────────────────────────────
+    mtc::checkpoint::spawn_checkpoint_task(Arc::clone(&state));
 
     // ── STAR background reissuance task ──────────────────────────────────────
     let _star_task = star::spawn(Arc::clone(&state));
