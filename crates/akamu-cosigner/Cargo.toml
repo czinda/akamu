@@ -29,7 +29,7 @@ hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "server-au
 
 # TLS server
 rustls        = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
-tokio-rustls  = "0.26"
+tokio-rustls  = { version = "0.26", default-features = false, features = ["tls12", "ring"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
