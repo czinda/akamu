@@ -18,9 +18,9 @@ enabled  = true
 
 When `enabled = true`:
 
-- On startup, the server opens the existing log file at `log_path`, or creates a new one if the file does not exist.
+- On startup, the server opens the existing log file at `log_path`, or creates a new one if the file does not exist.  A brand-new log is immediately seeded with a `null_entry` at index 0 (required by §5.3 of the MTC draft so that no real certificate ever receives log index 0 as its serial number).
 - After each successful certificate issuance, the certificate is appended to the log asynchronously in a background task.
-- The resulting leaf index is stored in the `certificates` database table (`mtc_log_index` column).
+- The resulting leaf index (≥ 1) is stored in the `certificates` database table (`mtc_log_index` column).
 
 When `enabled = false` (the default):
 - The log file is never written.
@@ -72,4 +72,4 @@ The log is append-only by design. Once a leaf is appended it cannot be removed o
 - For a log with zero leaves the root is undefined.
 - For a log with one or more leaves the root is the SHA-256 Merkle root of all leaf hashes.
 
-> **Note:** The current implementation does not expose the log root, tree size, or inclusion proofs over HTTP. These would be additional endpoints if the MTC log were to be made externally verifiable. For now the log functions as an internal audit trail.
+> **Scope note:** Akāmu implements the issuance-log portion of the MTC draft (draft-ietf-plants-merkle-tree-certs).  The following CA operations are intentionally out of scope for now: checkpoint signing and cosignature gathering (§6.2), MTC proof certificate construction with `id-alg-mtcProof` (§6.1), and landmark management (§6.3.1).  The log root, tree size, and inclusion proofs are not yet exposed over HTTP.  The log currently functions as an internal audit trail that satisfies the append-only and null-entry-at-index-zero invariants required by the draft.
