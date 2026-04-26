@@ -166,4 +166,4 @@ cargo clippy --workspace
 cargo fmt -- --check
 ```
 
-Do not add axum, rusqlite, or server-specific dependencies to `akamu-jose` or `akamu-client` — they must remain usable without a running server.
+Do not add axum, sqlx, or server-specific dependencies to `akamu-jose` or `akamu-client` — they must remain usable without a running server.
