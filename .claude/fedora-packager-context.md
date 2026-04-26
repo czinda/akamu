@@ -61,11 +61,10 @@ comments = [
 ]
 ```
 
-The `openssl-sys` crate uses a patched fork via `[patch.crates-io]` in
-`Cargo.toml`.  This means the crate **cannot be built from crates.io sources**
-until the patch is upstreamed.  Source downloads must use the forge tarball
-and the fork must be vendored or the patch applied in `%prep`.  Raise this
-with the user before proceeding.
+PQC support is provided via `native-ossl` (crates.io, no git fork).  No
+`[patch.crates-io]` block is present in `Cargo.toml`, so the crate can be
+built from standard crates.io sources and the normal `rust2rpm` / mock
+workflow applies without extra vendoring steps.
 
 ## Notes
 
