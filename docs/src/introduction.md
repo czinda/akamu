@@ -28,8 +28,8 @@ For a detailed breakdown of RFC and draft coverage — including which sections 
 |---|---|
 | Async runtime | tokio |
 | HTTP framework | axum 0.8 |
-| Database | rusqlite (system SQLite) + tokio-rusqlite |
-| Schema migrations | rusqlite_migration |
+| Database | sqlx 0.8 (SQLite / PostgreSQL / MariaDB via `Any` backend) |
+| Schema migrations | sqlx built-in migrate |
 | X.509 / PKCS#10 / CRL | synta-certificate |
 | MTC transparency log | synta-mtc |
 | DNS resolution | hickory-resolver |
