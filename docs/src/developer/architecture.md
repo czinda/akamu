@@ -56,7 +56,7 @@ graph TB
 
 ## Crate layout
 
-The repository is organized as a **Cargo workspace** with four members:
+The repository is organized as a **Cargo workspace** with five members:
 
 ```
 Cargo.toml          <- workspace root (members: ., crates/*)
@@ -65,6 +65,7 @@ crates/
   akamu-jose/       <- JWK/JWS primitives (no HTTP/DB deps)
   akamu-client/     <- async ACME client library (tokio, hyper)
   akamu-cli/        <- CLI binary wrapping akamu-client
+  akamu-cosigner/   <- standalone MTC cosigner daemon
 ```
 
 ### Crate dependencies
@@ -74,6 +75,7 @@ graph LR
     SERVER["akamu (server)"]
     CLIENT["akamu-client"]
     CLI["akamu-cli"]
+    COSIGNER["akamu-cosigner"]
     JOSE["akamu-jose"]
     SYNTA["synta-certificate"]
 
@@ -82,10 +84,12 @@ graph LR
     CLIENT --> JOSE
     CLIENT --> SYNTA
     CLI --> CLIENT
+    COSIGNER --> CLIENT
+    COSIGNER --> SERVER
     JOSE --> SYNTA
 ```
 
-The server and `akamu-client` both depend directly on `akamu-jose` and `synta-certificate`. `akamu-cli` depends only on `akamu-client`.
+The server and `akamu-client` both depend directly on `akamu-jose` and `synta-certificate`. `akamu-cli` depends only on `akamu-client`. `akamu-cosigner` depends on both `akamu-client` (for ACME EAB bootstrap) and `akamu` itself (to reuse TLS loader helpers and key generation utilities).
 
 See [Client Libraries](../client/overview.md) for the standalone client API.
 
@@ -118,11 +122,15 @@ src/
 
   db/
     mod.rs         Database initialization (open, migrations, WAL mode)
-    schema.rs      Row types mirroring SQLite columns
+    schema.rs      Row types mirroring database columns
     accounts.rs    CRUD for accounts table
     authz.rs       CRUD for authorizations table
-    certs.rs       CRUD for certificates table
+    certs.rs       CRUD for certificates table (includes mtc_standalone_der column)
     challenges.rs  CRUD for challenges table
+    checkpoints.rs CRUD for mtc_checkpoints table (upsert, get_latest, prune_oldest)
+    cosignatures.rs CRUD for mtc_cosignatures table
+    eab.rs         CRUD for eab_keys table
+    landmarks.rs   CRUD for mtc_landmarks table (insert, get_by_seq, list, prune_oldest)
     nonces.rs      Anti-replay nonce management
     orders.rs      CRUD for orders table
 
@@ -139,6 +147,8 @@ src/
     revoke.rs      POST /acme/revoke-cert
     key_change.rs  POST /acme/key-change
     renewal_info.rs GET /acme/renewal-info/{cert_id}
+    mtc.rs         GET /acme/mtc/tree-size, /root, /inclusion-proof/{id},
+                   /cert/{id}/standalone, /landmarks, /landmarks/{seq}/cert
 
   ca/
     mod.rs         Re-exports ca submodules
@@ -162,7 +172,11 @@ src/
 
   mtc/
     mod.rs         Re-exports mtc submodules
-    log.rs         Disk-backed Merkle Tree Certificate log integration
+    log.rs         SharedLog type alias; tree_size, proof_and_tree_size async wrappers
+    checkpoint.rs  Checkpoint production background task; signs and stores Merkle roots
+    cosign.rs      CosignerClient; parallel cosignature gathering from external cosigners
+    landmark.rs    Landmark background task; allocates and builds LandmarkCertificate DERs
+    standalone.rs  StandaloneCertificate construction after each checkpoint
 
   jose/            Thin re-exports from crates/akamu-jose
                    (JwkPublic, JwsFlattened, JwsKeyRef, JwsProtectedHeader)
@@ -177,10 +191,12 @@ Defined in `src/state.rs`. Every axum handler receives an `Arc<AppState>` via ax
 - `config: Arc<Config>` — immutable configuration parsed at startup.
 - `db: sqlx::AnyPool` — shared connection pool. All database access goes through this.
 - `ca: Arc<CaState>` — CA private key, certificate, and signing policy.
-- `mtc: Arc<MtcState>` — MTC log handle and algorithm (or `None` if disabled).
+- `mtc: Arc<MtcState>` — MTC log handle, signing key, and pre-built cosigner HTTPS clients.
 - `profiles: Arc<ProfileRegistry>` — in-memory certificate profile cache; empty when no providers are configured, in which case every order falls back to CA defaults.
 - `nonces: Arc<NonceBucket>` — in-memory anti-replay nonce store.
 - `spki_cache: Arc<RwLock<HashMap<…>>>` — per-account SPKI/thumbprint cache to avoid a DB round-trip per authenticated request after the first.
+- `validation_client: ValidationClient` — shared hyper HTTP client for http-01 challenge validation; connection-pooled so TCP connections are reused across validations.
+- `link_header: Arc<HeaderValue>` — precomputed `Link: <base_url>/acme/directory>; rel="index"` header.
 
 `AppState` is `Clone` because `Arc<T>` is `Clone` and `sqlx::AnyPool` is `Clone`. Cloning is cheap (reference count bump). All mutable state (the database and MTC log) is protected at a lower level by sqlx's internal pool management and a `tokio::sync::Mutex<DiskBackedLog>`, respectively.
 
