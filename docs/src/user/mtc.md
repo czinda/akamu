@@ -34,7 +34,9 @@ To enable periodic checkpoint production, add a `[mtc.signing_key]` section.  Th
 [mtc]
 log_path                 = "/var/lib/akamu/mtc.log"
 enabled                  = true
-checkpoint_interval_secs = 3600   # default: 3600 (1 hour)
+checkpoint_interval_secs = 3600    # default: 3600 (1 hour)
+landmark_interval_secs   = 86400   # default: 86400 (1 day)
+max_active_landmarks     = 100     # default: 100
 
 [mtc.signing_key]
 key_file = "/var/lib/akamu/mtc-signing.key"   # auto-generated if absent
@@ -66,9 +68,10 @@ Multiple `[[mtc.cosigners]]` entries are supported.  For each entry:
 
 - akamu POSTs the DER-encoded `Checkpoint` with `Content-Type: application/octet-stream`.
 - The cosigner is expected to return a DER-encoded `SubtreeSignature` with HTTP 200.
+- Each request has a 30-second per-cosigner timeout.
 - Failures are logged and skipped — partial success is acceptable; the standalone certificate is still built with whatever signatures arrive.
 
-When `cosigner_id_cert_pem` is set, the path is stored for future verification support; the current implementation stores signatures as received.
+When `cosigner_id_cert_pem` is set, the PEM file is loaded at checkpoint time and added to the TLS trust store for that cosigner's connection, in addition to the system root CAs.  This allows cosigners whose TLS certificate chains to an operator-provisioned CA — for example, another Akāmu instance's CA certificate — to be used without installing that CA system-wide.
 
 The `mtc_cosignatures` database table retains cosignatures keyed by checkpoint and cosigner URL.
 
@@ -154,6 +157,42 @@ Returns 404 when:
 
 The standalone certificate embeds the `TBSCertificate`, a Merkle inclusion proof, and a signature from the MTC signing key.  Relying parties can verify the certificate's presence in the log without querying the CA.
 
+### `GET /acme/mtc/landmarks`
+
+Returns a JSON array of all allocated landmarks, ordered by sequence number ascending.
+
+```json
+[
+  { "sequenceNo": 0, "treeSize": 100, "createdAt": 1700000000 },
+  { "sequenceNo": 1, "treeSize": 250, "createdAt": 1700086400 }
+]
+```
+
+Returns 404 when MTC is disabled.
+
+### `GET /acme/mtc/landmarks/{seq}/cert`
+
+Returns the DER-encoded `LandmarkCertificate` (§6.3.1) for the landmark with sequence number `seq`, with `Content-Type: application/pkix-cert`.
+
+Returns 404 when:
+- MTC is disabled
+- No landmark with that sequence number exists
+- The landmark certificate has not yet been built
+
+## Landmark management (§6.3.1)
+
+A *landmark* is a frozen snapshot of the tree size at a point in time.  Relying parties use landmarks to anchor inclusion proofs across the log's lifetime without having to track every checkpoint.
+
+When `[mtc.signing_key]` is configured, a background task fires every `landmark_interval_secs` seconds (default: 86400 = 1 day).  If the tree has grown since the last landmark:
+
+1. A new row is inserted into the `mtc_landmarks` table with the current tree size and a monotonically increasing `sequence_no`.
+2. A representative certificate (any leaf with `mtc_log_index < tree_size`) is selected.
+3. All leaf hashes up to `tree_size` are read from the log under the mutex.
+4. A `LandmarkCertificate` is built using `LandmarkCertificateBuilder`: it embeds the representative `TBSCertificate`, the leaf's log index, all leaf hashes (for internal inclusion proof generation), the `LandmarkID` (log identity + frozen tree size), and a signature from the MTC signing key.
+5. The DER-encoded certificate is stored in the `cert_der` column of the landmark row.
+
+`max_active_landmarks` (default: 100) is stored in config for operator reference; landmark rows are not automatically pruned — operators can manage retention via direct database access.
+
 ## Concurrency
 
 The `DiskBackedLog` is not thread-safe internally. The server wraps it in a `tokio::sync::Mutex<DiskBackedLog>` (the `SharedLog` type alias in `src/mtc/log.rs`). All leaf appends and reads acquire this mutex, serializing concurrent operations at the async level.
@@ -166,5 +205,3 @@ The log is append-only by design. Once a leaf is appended it cannot be removed o
 
 - For a log with zero leaves the root is undefined.
 - For a log with one or more leaves the root is the SHA-256 Merkle root of all leaf hashes.
-
-> **Scope note:** Akāmu implements the issuance-log, checkpoint, standalone certificate, and cosignature-gathering portions of the MTC draft (draft-ietf-plants-merkle-tree-certs).  Landmark management (§6.3.1) is intentionally out of scope for now.
