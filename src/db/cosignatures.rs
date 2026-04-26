@@ -53,3 +53,91 @@ pub async fn get_by_checkpoint(
     .await?;
     Ok(rows)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::checkpoints;
+
+    async fn open_db() -> crate::db::Db {
+        crate::db::install_drivers();
+        crate::db::open("sqlite::memory:", 1, "./migrations/sqlite")
+            .await
+            .unwrap()
+    }
+
+    async fn insert_checkpoint(db: &crate::db::Db, tree_size: i64) -> i64 {
+        checkpoints::upsert(db, tree_size, "aabb", b"sig", tree_size * 100)
+            .await
+            .unwrap();
+        checkpoints::get_latest(db).await.unwrap().unwrap().id
+    }
+
+    #[tokio::test]
+    async fn upsert_and_retrieve() {
+        let db = open_db().await;
+        let chk_id = insert_checkpoint(&db, 10).await;
+
+        upsert(&db, chk_id, "https://cosigner.example", b"cosig1", 1000)
+            .await
+            .unwrap();
+
+        let rows = get_by_checkpoint(&db, chk_id).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].cosigner_url, "https://cosigner.example");
+        assert_eq!(rows[0].signature_der, b"cosig1");
+    }
+
+    #[tokio::test]
+    async fn upsert_updates_existing_signature() {
+        let db = open_db().await;
+        let chk_id = insert_checkpoint(&db, 10).await;
+
+        upsert(&db, chk_id, "https://cosigner.example", b"old", 1000)
+            .await
+            .unwrap();
+        upsert(&db, chk_id, "https://cosigner.example", b"new", 2000)
+            .await
+            .unwrap();
+
+        let rows = get_by_checkpoint(&db, chk_id).await.unwrap();
+        assert_eq!(rows.len(), 1, "should not duplicate");
+        assert_eq!(rows[0].signature_der, b"new", "should update to new sig");
+    }
+
+    #[tokio::test]
+    async fn cosignatures_cascade_on_checkpoint_prune() {
+        let db = open_db().await;
+
+        // Insert two checkpoints; attach a cosignature to the older one.
+        let old_id = insert_checkpoint(&db, 10).await;
+        insert_checkpoint(&db, 20).await;
+        upsert(&db, old_id, "https://cosigner.example", b"sig", 1000)
+            .await
+            .unwrap();
+
+        // Pruning checkpoints (keep newest 1) cascades to remove the cosignature.
+        checkpoints::prune_oldest(&db, 1).await.unwrap();
+        assert!(
+            get_by_checkpoint(&db, old_id).await.unwrap().is_empty(),
+            "cosignature should be removed by cascade"
+        );
+    }
+
+    #[tokio::test]
+    async fn prune_orphaned_is_noop_when_cascade_cleaned() {
+        let db = open_db().await;
+
+        let old_id = insert_checkpoint(&db, 10).await;
+        insert_checkpoint(&db, 20).await;
+        upsert(&db, old_id, "https://cosigner.example", b"sig", 1000)
+            .await
+            .unwrap();
+
+        checkpoints::prune_oldest(&db, 1).await.unwrap();
+
+        // CASCADE already removed the cosignature; prune_orphaned has nothing left.
+        let deleted = prune_orphaned(&db).await.unwrap();
+        assert_eq!(deleted, 0, "cascade already cleaned up the cosignature");
+    }
+}

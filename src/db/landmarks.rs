@@ -55,10 +55,14 @@ pub async fn insert(
     tree_size: i64,
     created: i64,
 ) -> Result<bool, AcmeError> {
+    // Use a FROM-less SELECT so that the aggregate MAX() subquery does not
+    // produce a spurious output row when NOT EXISTS is false.  A SELECT without
+    // FROM produces exactly 0 or 1 row depending on the WHERE condition.
     let result = sqlx::query(
         "INSERT INTO mtc_landmarks (sequence_no, tree_size, cert_der, created)
-         SELECT COALESCE(MAX(sequence_no), -1) + 1, ?, NULL, ?
-         FROM mtc_landmarks
+         SELECT
+             (SELECT COALESCE(MAX(sequence_no), -1) + 1 FROM mtc_landmarks),
+             ?, NULL, ?
          WHERE NOT EXISTS (SELECT 1 FROM mtc_landmarks WHERE tree_size = ?)",
     )
     .bind(tree_size)
@@ -119,4 +123,87 @@ pub async fn prune_oldest(
     .execute(executor)
     .await?;
     Ok(result.rows_affected())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn open_db() -> crate::db::Db {
+        crate::db::install_drivers();
+        crate::db::open("sqlite::memory:", 1, "./migrations/sqlite")
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn insert_and_get_latest() {
+        let db = open_db().await;
+        assert!(get_latest(&db).await.unwrap().is_none());
+
+        let inserted = insert(&db, 100, 1000).await.unwrap();
+        assert!(inserted, "first insert should succeed");
+
+        let lm = get_latest(&db).await.unwrap().unwrap();
+        assert_eq!(lm.tree_size, 100);
+        assert_eq!(lm.sequence_no, 0);
+        assert!(lm.cert_der.is_none());
+
+        let inserted2 = insert(&db, 200, 2000).await.unwrap();
+        assert!(inserted2);
+        let lm2 = get_latest(&db).await.unwrap().unwrap();
+        assert_eq!(lm2.tree_size, 200);
+        assert_eq!(lm2.sequence_no, 1);
+    }
+
+    #[tokio::test]
+    async fn insert_duplicate_tree_size_is_noop() {
+        let db = open_db().await;
+        assert!(insert(&db, 100, 1000).await.unwrap());
+        let dup = insert(&db, 100, 9999).await.unwrap();
+        assert!(!dup, "duplicate tree_size should return false");
+        assert_eq!(count(&db).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn get_by_seq_and_set_cert_der() {
+        let db = open_db().await;
+        insert(&db, 10, 100).await.unwrap();
+
+        let lm = get_by_seq(&db, 0).await.unwrap().unwrap();
+        assert_eq!(lm.tree_size, 10);
+        assert!(lm.cert_der.is_none());
+
+        set_cert_der(&db, lm.id, b"der_bytes").await.unwrap();
+        let updated = get_by_seq(&db, 0).await.unwrap().unwrap();
+        assert_eq!(updated.cert_der.as_deref(), Some(b"der_bytes".as_ref()));
+    }
+
+    #[tokio::test]
+    async fn list_excludes_cert_der() {
+        let db = open_db().await;
+        insert(&db, 10, 100).await.unwrap();
+        let lm_id = get_latest(&db).await.unwrap().unwrap().id;
+        set_cert_der(&db, lm_id, b"heavy_blob").await.unwrap();
+
+        let rows = list(&db).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(
+            rows[0].cert_der.is_none(),
+            "list should not return cert_der"
+        );
+    }
+
+    #[tokio::test]
+    async fn prune_oldest_keeps_most_recent() {
+        let db = open_db().await;
+        for i in 1i64..=5 {
+            insert(&db, i * 10, i * 100).await.unwrap();
+        }
+        let deleted = prune_oldest(&db, 3).await.unwrap();
+        assert_eq!(deleted, 2);
+        assert_eq!(count(&db).await.unwrap(), 3);
+        let latest = get_latest(&db).await.unwrap().unwrap();
+        assert_eq!(latest.sequence_no, 4);
+    }
 }

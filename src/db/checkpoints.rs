@@ -66,3 +66,64 @@ pub async fn upsert(
     .await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn open_db() -> crate::db::Db {
+        crate::db::install_drivers();
+        crate::db::open("sqlite::memory:", 1, "./migrations/sqlite")
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn upsert_and_get_latest() {
+        let db = open_db().await;
+
+        assert!(get_latest(&db).await.unwrap().is_none());
+
+        upsert(&db, 10, "aabbcc", b"sig1", 1000).await.unwrap();
+        let row = get_latest(&db).await.unwrap().unwrap();
+        assert_eq!(row.tree_size, 10);
+        assert_eq!(row.root_hex, "aabbcc");
+        assert_eq!(row.signature, b"sig1");
+
+        upsert(&db, 20, "ddeeff", b"sig2", 2000).await.unwrap();
+        let latest = get_latest(&db).await.unwrap().unwrap();
+        assert_eq!(latest.tree_size, 20);
+    }
+
+    #[tokio::test]
+    async fn upsert_is_idempotent() {
+        let db = open_db().await;
+        upsert(&db, 5, "aabb", b"sig", 100).await.unwrap();
+        upsert(&db, 5, "ccdd", b"sig2", 200).await.unwrap(); // same tree_size — ignored
+        let row = get_latest(&db).await.unwrap().unwrap();
+        assert_eq!(row.root_hex, "aabb", "second upsert should not overwrite");
+    }
+
+    #[tokio::test]
+    async fn prune_oldest_keeps_most_recent() {
+        let db = open_db().await;
+        for i in 1i64..=5 {
+            upsert(&db, i * 10, &format!("{i:064x}"), b"s", i * 100)
+                .await
+                .unwrap();
+        }
+        let deleted = prune_oldest(&db, 3).await.unwrap();
+        assert_eq!(deleted, 2, "should delete 2 of 5 rows");
+        let latest = get_latest(&db).await.unwrap().unwrap();
+        assert_eq!(latest.tree_size, 50, "latest should survive pruning");
+    }
+
+    #[tokio::test]
+    async fn prune_oldest_keep_count_zero_is_noop() {
+        let db = open_db().await;
+        upsert(&db, 1, "aa", b"s", 1).await.unwrap();
+        let deleted = prune_oldest(&db, 0).await.unwrap();
+        assert_eq!(deleted, 0);
+        assert!(get_latest(&db).await.unwrap().is_some());
+    }
+}
