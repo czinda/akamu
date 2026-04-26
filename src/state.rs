@@ -52,7 +52,10 @@ impl NonceBucket {
     /// Store a new nonce with its creation timestamp.
     pub fn insert(&self, nonce: &str) {
         let now = nonce_now_secs();
-        self.inner.lock().unwrap().insert(nonce.to_string(), now);
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(nonce.to_string(), now);
     }
 
     /// Consume `old_nonce` and atomically insert `new_nonce`.
@@ -60,7 +63,7 @@ impl NonceBucket {
     /// Returns `true` if `old_nonce` was present and successfully replaced,
     /// `false` if it was not found (replay or unknown).
     pub fn consume_and_insert(&self, old_nonce: &str, new_nonce: &str) -> bool {
-        let mut map = self.inner.lock().unwrap();
+        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if map.remove(old_nonce).is_none() {
             return false;
         }
@@ -73,7 +76,7 @@ impl NonceBucket {
     /// removed entries.
     pub fn sweep_expired(&self, max_age_secs: i64) -> usize {
         let cutoff = nonce_now_secs().saturating_sub(max_age_secs);
-        let mut map = self.inner.lock().unwrap();
+        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let before = map.len();
         map.retain(|_, &mut created| created >= cutoff);
         before - map.len()
