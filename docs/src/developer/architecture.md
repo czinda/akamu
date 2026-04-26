@@ -175,14 +175,14 @@ src/
 Defined in `src/state.rs`. Every axum handler receives an `Arc<AppState>` via axum's `State` extractor. It contains:
 
 - `config: Arc<Config>` — immutable configuration parsed at startup.
-- `db: Arc<Connection>` — shared tokio-rusqlite connection. All database access goes through this.
+- `db: sqlx::AnyPool` — shared connection pool. All database access goes through this.
 - `ca: Arc<CaState>` — CA private key, certificate, and signing policy.
 - `mtc: Arc<MtcState>` — MTC log handle and algorithm (or `None` if disabled).
 - `profiles: Arc<ProfileRegistry>` — in-memory certificate profile cache; empty when no providers are configured, in which case every order falls back to CA defaults.
 - `nonces: Arc<NonceBucket>` — in-memory anti-replay nonce store.
 - `spki_cache: Arc<RwLock<HashMap<…>>>` — per-account SPKI/thumbprint cache to avoid a DB round-trip per authenticated request after the first.
 
-`AppState` is `Clone` because `Arc<T>` is `Clone`. Cloning is cheap (reference count bump). All mutable state (the database and MTC log) is protected at a lower level by tokio-rusqlite's internal background thread and a `tokio::sync::Mutex<DiskBackedLog>`, respectively.
+`AppState` is `Clone` because `Arc<T>` is `Clone` and `sqlx::AnyPool` is `Clone`. Cloning is cheap (reference count bump). All mutable state (the database and MTC log) is protected at a lower level by sqlx's internal pool management and a `tokio::sync::Mutex<DiskBackedLog>`, respectively.
 
 ### `CaState`
 
@@ -263,11 +263,10 @@ A third background task (`ProfileRegistry::spawn_refresh_task`) wakes every `ref
 
 ## Database access model
 
-All database access goes through `tokio_rusqlite::Connection`, which runs `rusqlite` calls on a dedicated background OS thread. Calls cross the thread boundary via a channel. This means:
+All database access goes through `sqlx::AnyPool`. Queries are async and run directly on the tokio runtime. This means:
 
-- `db.call(|conn| { ... })` is the only way to issue queries.
-- The closure runs synchronously on the background thread and must not call async functions.
-- For multi-statement atomicity, start a SQLite transaction inside the closure.
+- `sqlx::query!(...)` / `sqlx::query_as!(...)` are the primary way to issue queries.
+- For multi-statement atomicity, acquire a transaction with `pool.begin().await?` and commit with `tx.commit().await?`.
 
 Foreign key enforcement is enabled at database open time (`PRAGMA foreign_keys=ON`). WAL journal mode is also enabled after migrations (`PRAGMA journal_mode=WAL`).
 
