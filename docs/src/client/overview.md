@@ -32,18 +32,6 @@ The server binary (`akamu`) also depends on `akamu-jose` directly; its `src/jose
 
 **Use `akamu-cli` when** you want a command-line tool and do not want to write Rust. It wraps `akamu-client` and exposes register, issue, and deregister subcommands.
 
-## The PQC OpenSSL patch requirement
-
-> **Important:** `akamu-jose` (and therefore all crates that depend on it) require a patched OpenSSL fork that adds post-quantum ML-DSA support. Any workspace that uses these crates as dependencies must add the following `[patch.crates-io]` block to its **root** `Cargo.toml`. The patch cannot live in a sub-crate's manifest.
-
-```toml
-[patch.crates-io]
-openssl-sys = { git = "https://github.com/abbra/rust-openssl.git", branch = "pqc-prs" }
-openssl     = { git = "https://github.com/abbra/rust-openssl.git", branch = "pqc-prs" }
-```
-
-Without this block, `cargo build` will either fail to resolve `openssl-sys` or will resolve the upstream crates.io version, which lacks ML-DSA support.
-
 ## Getting started
 
 ### Add crates to your Cargo.toml
@@ -57,24 +45,12 @@ akamu-client = { path = "/path/to/akamu/crates/akamu-client" }
 akamu-jose = { path = "/path/to/akamu/crates/akamu-jose" }
 ```
 
-### Add the patch block
-
-In your workspace root `Cargo.toml` (not in a member manifest):
-
-```toml
-[patch.crates-io]
-openssl-sys = { git = "https://github.com/abbra/rust-openssl.git", branch = "pqc-prs" }
-openssl     = { git = "https://github.com/abbra/rust-openssl.git", branch = "pqc-prs" }
-```
-
 ### Verify the build
 
 ```bash
 cargo build -p akamu-jose
 cargo build -p akamu-client
 ```
-
-Both crates should compile without errors. The first build downloads and compiles the patched OpenSSL fork, which can take a few minutes.
 
 ## Further reading
 

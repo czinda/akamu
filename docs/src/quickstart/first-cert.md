@@ -223,10 +223,4 @@ Add the following to your `Cargo.toml`:
 [dependencies]
 akamu-client = { path = "/path/to/akamu/crates/akamu-client" }
 tokio = { version = "1", features = ["full"] }
-
-[patch.crates-io]
-openssl-sys = { git = "https://github.com/abbra/rust-openssl.git", branch = "pqc-prs" }
-openssl     = { git = "https://github.com/abbra/rust-openssl.git", branch = "pqc-prs" }
 ```
-
-The `[patch.crates-io]` block is required because `akamu-client` depends on the PQC OpenSSL fork. See [Client Libraries Overview](../client/overview.md) for details.
