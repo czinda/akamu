@@ -21,7 +21,7 @@ use std::{
 
 use akamu_client::{
     AccountKey, AccountOptions, AcmeClient, ChallengeSolver as _, Dns01Helper, DnsPersist01Helper,
-    EabOptions, Http01Solver, Identifier, TlsAlpn01Solver,
+    DnsHookSolver, EabOptions, Http01Solver, Identifier, RenewalConfig, TlsAlpn01Solver,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use clap::{Parser, Subcommand};
@@ -256,6 +256,11 @@ struct IssueArgs {
     #[arg(long)]
     out: PathBuf,
 
+    /// Hook script for DNS TXT record management (invoked as `<script> add|remove`
+    /// with values in AKAMU_DOMAIN / AKAMU_TOKEN / AKAMU_TXT / AKAMU_KEY_AUTH env vars)
+    #[arg(long, value_name = "CMD")]
+    dns_hook: Option<String>,
+
     #[command(flatten)]
     eab: EabFlags,
 }
@@ -315,6 +320,17 @@ struct RenewArgs {
     /// Maximum seconds to wait for order/challenge validation (default: 120)
     #[arg(long, default_value_t = 120)]
     poll_timeout: u64,
+
+    /// Hook script for DNS TXT record management (invoked as `<script> add|remove`
+    /// with values in AKAMU_DOMAIN / AKAMU_TOKEN / AKAMU_TXT / AKAMU_KEY_AUTH env vars)
+    #[arg(long, value_name = "CMD")]
+    dns_hook: Option<String>,
+
+    /// Load renewal configuration from a TOML file written by `akamu-cli issue`.
+    /// When provided, all renewal parameters are taken from the file; other flags
+    /// are ignored.
+    #[arg(long, value_name = "FILE")]
+    renewal_config: Option<PathBuf>,
 
     #[command(flatten)]
     eab: EabFlags,
@@ -689,36 +705,61 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                     .ok_or_else(|| format!("no dns-01 challenge for {}", authz.identifier.value))?;
                 let token = chall.token.as_deref().ok_or("challenge missing token")?;
                 let key_auth = account.key_authorization(token);
-                let txt_value = Dns01Helper::txt_value(&key_auth).map_err(|e| e.to_string())?;
-
-                // Strip wildcard prefix for the DNS name.
                 let base_domain = authz.identifier.value.trim_start_matches("*.");
 
-                eprintln!();
-                eprintln!("DNS-01 challenge for {}:", authz.identifier.value);
-                eprintln!("  Name:  _acme-challenge.{}.", base_domain);
-                eprintln!("  Type:  TXT");
-                eprintln!("  Value: {}", txt_value);
-                eprintln!();
-                eprint!("Press Enter after the TXT record has propagated (Ctrl-C to abort)... ");
-                {
-                    use std::io::{self, BufRead};
-                    let stdin = io::stdin();
-                    stdin.lock().lines().next();
-                }
-
-                client
-                    .trigger_challenge(&account, chall)
-                    .await
-                    .map_err(|e| e.to_string())?;
-
-                let polled =
-                    poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
-                if polled.status == "invalid" {
-                    return Err(format!(
-                        "order invalid after dns-01 challenge for {}",
-                        authz.identifier.value
-                    ));
+                if let Some(hook) = &args.dns_hook {
+                    let solver = DnsHookSolver::new(hook.clone());
+                    solver
+                        .deploy(base_domain, token, &key_auth)
+                        .await
+                        .map_err(|e| format!("dns hook deploy: {e}"))?;
+                    client
+                        .trigger_challenge(&account, chall)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    let polled =
+                        poll_with_timeout(&client, &account, &order.url, args.poll_timeout)
+                            .await?;
+                    solver
+                        .clean(base_domain, token, &key_auth)
+                        .await
+                        .map_err(|e| format!("dns hook clean: {e}"))?;
+                    if polled.status == "invalid" {
+                        return Err(format!(
+                            "order invalid after dns-01 challenge for {}",
+                            authz.identifier.value
+                        ));
+                    }
+                } else {
+                    let txt_value =
+                        Dns01Helper::txt_value(&key_auth).map_err(|e| e.to_string())?;
+                    eprintln!();
+                    eprintln!("DNS-01 challenge for {}:", authz.identifier.value);
+                    eprintln!("  Name:  _acme-challenge.{}.", base_domain);
+                    eprintln!("  Type:  TXT");
+                    eprintln!("  Value: {}", txt_value);
+                    eprintln!();
+                    eprint!(
+                        "Press Enter after the TXT record has propagated (Ctrl-C to abort)... "
+                    );
+                    {
+                        use std::io::{self, BufRead};
+                        let stdin = io::stdin();
+                        stdin.lock().lines().next();
+                    }
+                    client
+                        .trigger_challenge(&account, chall)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    let polled =
+                        poll_with_timeout(&client, &account, &order.url, args.poll_timeout)
+                            .await?;
+                    if polled.status == "invalid" {
+                        return Err(format!(
+                            "order invalid after dns-01 challenge for {}",
+                            authz.identifier.value
+                        ));
+                    }
                 }
             }
             "dns-persist-01" => {
@@ -727,37 +768,63 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                 })?;
                 let token = chall.token.as_deref().ok_or("challenge missing token")?;
                 let key_auth = account.key_authorization(token);
-                let txt_value =
-                    DnsPersist01Helper::txt_value(&key_auth).map_err(|e| e.to_string())?;
-
                 let base_domain = authz.identifier.value.trim_start_matches("*.");
 
-                eprintln!();
-                eprintln!("DNS-persist-01 challenge for {}:", authz.identifier.value);
-                eprintln!("  Name:  _validation-persist.{}.", base_domain);
-                eprintln!("  Type:  TXT");
-                eprintln!("  Value: {}", txt_value);
-                eprintln!();
-                eprintln!("This is a long-lived TXT record; it only needs to be set once.");
-                eprint!("Press Enter after the TXT record has propagated (Ctrl-C to abort)... ");
-                {
-                    use std::io::{self, BufRead};
-                    let stdin = io::stdin();
-                    stdin.lock().lines().next();
-                }
-
-                client
-                    .trigger_challenge(&account, chall)
-                    .await
-                    .map_err(|e| e.to_string())?;
-
-                let polled =
-                    poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
-                if polled.status == "invalid" {
-                    return Err(format!(
-                        "order invalid after dns-persist-01 challenge for {}",
-                        authz.identifier.value
-                    ));
+                if let Some(hook) = &args.dns_hook {
+                    let solver = DnsHookSolver::new(hook.clone());
+                    solver
+                        .deploy(base_domain, token, &key_auth)
+                        .await
+                        .map_err(|e| format!("dns hook deploy: {e}"))?;
+                    client
+                        .trigger_challenge(&account, chall)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    let polled =
+                        poll_with_timeout(&client, &account, &order.url, args.poll_timeout)
+                            .await?;
+                    if polled.status == "invalid" {
+                        solver
+                            .clean(base_domain, token, &key_auth)
+                            .await
+                            .map_err(|e| format!("dns hook clean: {e}"))?;
+                        return Err(format!(
+                            "order invalid after dns-persist-01 challenge for {}",
+                            authz.identifier.value
+                        ));
+                    }
+                    // For dns-persist-01, the record persists; do not call clean.
+                } else {
+                    let txt_value =
+                        DnsPersist01Helper::txt_value(&key_auth).map_err(|e| e.to_string())?;
+                    eprintln!();
+                    eprintln!("DNS-persist-01 challenge for {}:", authz.identifier.value);
+                    eprintln!("  Name:  _validation-persist.{}.", base_domain);
+                    eprintln!("  Type:  TXT");
+                    eprintln!("  Value: {}", txt_value);
+                    eprintln!();
+                    eprintln!("This is a long-lived TXT record; it only needs to be set once.");
+                    eprint!(
+                        "Press Enter after the TXT record has propagated (Ctrl-C to abort)... "
+                    );
+                    {
+                        use std::io::{self, BufRead};
+                        let stdin = io::stdin();
+                        stdin.lock().lines().next();
+                    }
+                    client
+                        .trigger_challenge(&account, chall)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    let polled =
+                        poll_with_timeout(&client, &account, &order.url, args.poll_timeout)
+                            .await?;
+                    if polled.status == "invalid" {
+                        return Err(format!(
+                            "order invalid after dns-persist-01 challenge for {}",
+                            authz.identifier.value
+                        ));
+                    }
                 }
             }
             "tls-alpn-01" => {
@@ -963,6 +1030,7 @@ async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
         out: args.out,
         cert_key: None,
         poll_timeout: args.poll_timeout,
+        dns_hook: args.dns_hook,
         eab: args.eab,
     };
     cmd_issue(issue_args).await
