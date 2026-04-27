@@ -1,6 +1,6 @@
 # akamu-cli — Command Reference
 
-`akamu-cli` is a command-line ACME client that wraps `akamu-client`. It covers the full ACME lifecycle: account management, certificate issuance with multiple challenge types, ARI-aware renewal, and revocation.
+`akamu-cli` is a command-line ACME client that wraps `akamu-client`. It covers the full ACME lifecycle: account management, certificate issuance with multiple challenge types, ARI-aware renewal, revocation, and migration from other ACME clients.
 
 ## Installation
 
@@ -38,6 +38,8 @@ akamu-cli
                    tls-alpn-01 / onion-csr-01)
   renew            ARI-aware renewal (RFC 9773); skips issuance if outside window
   revoke           Revoke a certificate via account key or certificate's own key
+  import
+    certbot        Import accounts and certificates from a certbot installation
 ```
 
 ## Subcommands
@@ -61,7 +63,7 @@ akamu-cli account register --server URL --account-key FILE [OPTIONS]
 | `--eab-key KEY_B64U` | no | EAB HMAC key encoded as base64url (no padding). |
 | `--eab-alg ALG` | no | EAB HMAC algorithm: `HS256`, `HS384`, or `HS512`. Default: `HS256`. |
 
-After registration the account URL is written to `<account-key>.account-url` (see [Sidecar file](#sidecar-file)).
+After registration the account URL is written to `<account-key>.account-url` (see [Sidecar files](#sidecar-files)).
 
 ### account deregister
 
@@ -138,6 +140,7 @@ akamu-cli issue --server URL --account-key FILE -d DOMAIN --out FILE [OPTIONS]
 | `--cert-key-type TYPE` | no | Certificate key type. Default: `ec:P-256`. |
 | `--cert-key FILE` | no | Reuse an existing certificate private key PEM file. Generated and saved alongside `--out` if absent. |
 | `--challenge TYPE` | no | Challenge type: `http-01`, `dns-01`, `dns-persist-01`, `tls-alpn-01`, `onion-csr-01`. Default: `http-01`. |
+| `--dns-hook CMD` | no | Hook script for dns-01 / dns-persist-01 automation. See [DNS hook interface](#dns-hook-interface). |
 | `--http-port PORT` | no | Port for the built-in http-01 solver. Default: `80`. |
 | `--tls-port PORT` | no | Port for the built-in tls-alpn-01 solver. Default: `443`. |
 | `--onion-key FILE` | required for `onion-csr-01` | Ed25519 hidden-service private key PEM file. |
@@ -151,6 +154,8 @@ The `http-01` and `tls-alpn-01` challenge types cannot validate wildcard identif
 
 The certificate private key is generated and saved to `<out>.key.pem` unless `--cert-key` is provided.
 
+After every successful issuance, a [renewal configuration sidecar](#renewal-configuration-sidecar) is written to `<out>.renewal.toml`.
+
 ### renew
 
 Check the ARI renewal window (RFC 9773) for an existing certificate, then issue a replacement if renewal is suggested or `--force` is given.
@@ -161,13 +166,15 @@ akamu-cli renew --server URL --account-key FILE -d DOMAIN --out FILE [OPTIONS]
 
 | Flag | Required | Description |
 |---|---|---|
-| `--server URL` | yes | ACME directory URL |
-| `--account-key FILE` | yes | Account key PEM file |
-| `-d DOMAIN` | yes (repeatable) | Domains for the new certificate |
-| `--out FILE` | yes | Output path for the new PEM bundle |
+| `--server URL` | yes (unless `--renewal-config` is used) | ACME directory URL |
+| `--account-key FILE` | yes (unless `--renewal-config` is used) | Account key PEM file |
+| `-d DOMAIN` | yes (unless `--renewal-config` is used) | Domains for the new certificate |
+| `--out FILE` | yes (unless `--renewal-config` is used) | Output path for the new PEM bundle |
+| `--renewal-config FILE` | no | Load all settings from a `.renewal.toml` file. Explicit CLI flags override individual fields from the file. |
 | `--cert FILE` | no | Existing certificate PEM to check against ARI. Without this flag, no ARI check is performed. |
 | `--force` | no | Renew unconditionally, skipping the ARI window check. |
 | `--challenge TYPE` | no | Same values as `issue`. Default: `http-01`. |
+| `--dns-hook CMD` | no | Hook script for dns-01 / dns-persist-01 automation. See [DNS hook interface](#dns-hook-interface). |
 | `--http-port PORT` | no | Default: `80`. |
 | `--tls-port PORT` | no | Default: `443`. |
 | `--onion-key FILE` | no | Required for `onion-csr-01`. |
@@ -177,11 +184,17 @@ akamu-cli renew --server URL --account-key FILE -d DOMAIN --out FILE [OPTIONS]
 | `--eab-kid KID` | no | EAB key ID. |
 | `--eab-key KEY_B64U` | no | EAB HMAC key (base64url). |
 
-Behavior when `--cert` is given and `--force` is not:
+Behavior when `--cert` is given (or when `--renewal-config` is used and the cert file from the config exists) and `--force` is not:
 
 - If the current time is before the ARI window start, the command exits without issuing and prints a message.
 - If the current time is within (or past) the window, issuance proceeds.
 - If the server does not support ARI or returns an error, issuance proceeds with a warning.
+
+When `--renewal-config FILE` is provided, all settings are loaded from the TOML file (written by `issue` or `import certbot`). This makes cron-based renewal straightforward:
+
+```bash
+akamu-cli renew --renewal-config /etc/ssl/example.com/fullchain.pem.renewal.toml
+```
 
 ### revoke
 
@@ -201,15 +214,234 @@ akamu-cli revoke --server URL --account-key FILE --cert FILE [OPTIONS]
 
 Self-revocation (via `--cert-key`) is useful when the ACME account key is unavailable.
 
-## Sidecar file
+### import certbot
 
-When you register an account, `akamu-cli` writes the account URL to a file named `<account-key>.account-url` in the same directory as the account key. For example, if your account key is `~/.akamu/account.pem`, the sidecar is `~/.akamu/account.pem.account-url`.
+Import ACME account keys and certificate renewal configurations from an existing certbot installation.
+
+```
+akamu-cli import certbot [OPTIONS]
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--certbot-dir DIR` | no | Certbot configuration directory. Default: `/etc/letsencrypt`. |
+| `--account-key FILE` | yes (unless `--list`) | Output path for the imported account key PEM. Must not already exist. |
+| `--server URL` | no | Import only the account registered with this CA URL. Required when multiple accounts are found. |
+| `-d DOMAIN` | no (repeatable) | Limit certificate import to these domains. Default: all discovered domains. |
+| `--cert-dir DIR` | yes (when importing certificates) | Directory to write imported certificate chains and keys. Created if absent. |
+| `--dns-challenge TYPE` | no | Challenge type to use for DNS-based certbot configs: `dns-01` or `dns-persist-01`. Default: `dns-01`. |
+| `--dns-hook CMD` | no | Hook script to embed in generated renewal configs for DNS TXT record management. |
+| `--dry-run` | no | Show what would be done without writing any files. |
+| `--list` | no | List all discoverable accounts and certificate renewal configurations, then exit. |
+
+#### What the importer does
+
+1. Walks `<certbot-dir>/accounts/<ca-hostname>/<account-id>/` to discover accounts. Each account directory must contain `private_key.json` (the account key in JWK format) and `regr.json` (the registration response with account URL and contacts).
+
+2. Converts the certbot JWK private key to a PEM file written to `--account-key`. Writes the account URL to `<account-key>.account-url` as an [account URL sidecar](#sidecar-files).
+
+3. Walks `<certbot-dir>/renewal/*.conf` to discover certificate configurations. For each matching domain, copies `live/<domain>/fullchain.pem` and `live/<domain>/privkey.pem` into `--cert-dir`, then writes a `.renewal.toml` sidecar (see [Renewal configuration sidecar](#renewal-configuration-sidecar)).
+
+4. Prints the `akamu-cli renew --renewal-config` command for each imported certificate.
+
+#### Challenge type mapping
+
+Certbot's authenticator field is mapped to an akamu challenge type as follows:
+
+| Certbot authenticator | akamu challenge type |
+|---|---|
+| `standalone`, `webroot`, `nginx`, `apache` | `http-01` |
+| `manual` with `preferred_challenges = dns` | value of `--dns-challenge` |
+| `manual` (no DNS preference) | `http-01` |
+| Any `dns-*` plugin (dns-cloudflare, dns-route53, etc.) | value of `--dns-challenge` |
+| `tls-sni-01` | `tls-alpn-01` (with a deprecation warning) |
+
+When a DNS-based authenticator is mapped, a note is printed suggesting you configure `--dns-hook` if you did not supply one.
+
+#### Wildcard domain handling
+
+Certbot stores wildcard certificates under `live/_wildcard.<domain>/`. The importer decodes this convention automatically: `_wildcard.example.com``_wildcard.example.com` becomes `*.example.com` in the generated renewal configuration file.
+
+#### Prerequisites
+
+- The importer reads certbot's `live/` and `accounts/` directories. On most systems these are owned by root with mode 0700. Run the importer as root or with sufficient privilege to read them.
+- The `--account-key` output path must not already exist.
+
+#### Example
+
+```bash
+# List what would be imported
+akamu-cli import certbot --list
+
+# Dry run (shows actions without writing files)
+sudo akamu-cli import certbot \
+  --account-key /etc/akamu/acct.pem \
+  --cert-dir /etc/akamu/certs \
+  --dry-run
+
+# Full import from Let's Encrypt production, with a DNS hook for future renewals
+sudo akamu-cli import certbot \
+  --account-key /etc/akamu/acct.pem \
+  --server https://acme-v02.api.letsencrypt.org/directory \
+  --cert-dir /etc/akamu/certs \
+  --dns-challenge dns-01 \
+  --dns-hook /etc/akamu/hooks/dns-update.sh
+
+# Import only specific domains
+sudo akamu-cli import certbot \
+  --account-key /etc/akamu/acct.pem \
+  --cert-dir /etc/akamu/certs \
+  -d example.com \
+  -d "*.example.com"
+```
+
+After import, renew each certificate with:
+
+```bash
+akamu-cli renew --renewal-config /etc/akamu/certs/example.com.pem.renewal.toml
+```
+
+## Sidecar files
+
+### Account URL sidecar
+
+When you register an account (or when `issue` or `import certbot` creates one), `akamu-cli` writes the account URL to a file named `<account-key>.account-url` in the same directory as the account key. For example, if your account key is `~/.akamu/account.pem`, the sidecar is `~/.akamu/account.pem.account-url`.
 
 The `issue`, `renew`, `deregister`, `account show`, `account update`, and `account key-change` subcommands read this file to find the account URL without re-registering.
 
 If the sidecar is missing and you run `issue`, the CLI registers a new account first. If the sidecar is missing and you run `deregister`, the command fails with an error.
 
-Keep the key file and sidecar file together and back them up. If you lose the account key, you cannot deactivate or otherwise manage the account.
+Keep the key file and its sidecar together and back them up. If you lose the account key, you cannot deactivate or otherwise manage the account.
+
+### Renewal configuration sidecar
+
+After every successful `issue` (and after `import certbot`), `akamu-cli` writes a TOML file named `<out>.renewal.toml` alongside the certificate chain. This file captures every parameter needed to repeat the issuance and is consumed by `renew --renewal-config`.
+
+#### File format
+
+```toml
+server          = "https://acme.example.com/acme/directory"
+account_key     = "/etc/akamu/account.pem"
+account_key_type = "ec:P-256"
+cert_path       = "/etc/ssl/example.com/fullchain.pem"
+cert_key_path   = "/etc/ssl/example.com/fullchain.pem.key.pem"
+cert_key_type   = "ec:P-256"
+challenge_type  = "dns-01"
+http_port       = 80
+tls_port        = 443
+poll_timeout    = 120
+eab_alg         = "HS256"
+
+[[domains]]
+type  = "dns"
+value = "example.com"
+
+[[domains]]
+type  = "dns"
+value = "*.example.com"
+
+# Optional fields (omit when not applicable):
+onion_key  = "/path/to/hs_key.pem"
+contacts   = ["mailto:admin@example.com"]
+eab_kid    = "kid-from-ca"
+eab_key    = "base64url-hmac-key"
+dns_hook   = "/etc/akamu/hooks/dns-update.sh"
+```
+
+#### Fields
+
+| Field | Default | Description |
+|---|---|---|
+| `server` | — | ACME directory URL |
+| `domains` | — | Array of `{type, value}` identifier objects |
+| `account_key` | — | Path to the account private key PEM |
+| `account_key_type` | `"ec:P-256"` | Key type string for the account key |
+| `cert_path` | — | Output path for the certificate chain PEM |
+| `cert_key_path` | — | Output path for the certificate private key PEM |
+| `cert_key_type` | `"ec:P-256"` | Key type string for the certificate key |
+| `challenge_type` | `"http-01"` | ACME challenge type |
+| `http_port` | `80` | Port for the http-01 solver |
+| `tls_port` | `443` | Port for the tls-alpn-01 solver |
+| `onion_key` | — | Path to the Ed25519 onion service key (onion-csr-01 only) |
+| `poll_timeout` | `120` | Seconds to wait for challenge validation |
+| `contacts` | `[]` | Contact URIs registered with the account |
+| `eab_kid` | — | EAB key ID |
+| `eab_key` | — | EAB HMAC key (base64url) |
+| `eab_alg` | `"HS256"` | EAB HMAC algorithm |
+| `dns_hook` | — | Hook script path for DNS TXT record management |
+
+Fields that have defaults are optional in the TOML file. Existing configs with fewer fields remain forward-compatible as new optional fields are added.
+
+## DNS hook interface
+
+When `--dns-hook CMD` is passed with a DNS-based challenge type (`dns-01` or `dns-persist-01`), `akamu-cli` delegates TXT record management to an external script instead of waiting for manual input.
+
+The hook script is invoked as:
+
+```
+<CMD> add
+<CMD> remove
+```
+
+All values are passed through environment variables only (never as command-line arguments, which would be visible in `/proc/<pid>/cmdline`):
+
+| Variable | Value |
+|---|---|
+| `AKAMU_DOMAIN` | DNS name being validated (base domain, wildcard prefix stripped) |
+| `AKAMU_TOKEN` | ACME challenge token |
+| `AKAMU_TXT` | TXT record value: `base64url(SHA-256(key_authorization))` |
+| `AKAMU_KEY_AUTH` | Full key authorization string (`<token>.<account-key-thumbprint>`) |
+
+An exit code of `0` means success. Any non-zero exit code is treated as a failure; stderr from the script is captured and included in the error message.
+
+For `dns-01`, the hook is called with `add` before challenge validation and with `remove` after the challenge completes (whether it succeeds or fails). For `dns-persist-01`, the hook is only called with `add`; on success the TXT record is left in place (it is a long-lived record tied to the account key, not the token).
+
+### Minimal hook example
+
+```bash
+#!/usr/bin/env bash
+# /etc/akamu/hooks/dns-nsupdate.sh
+set -euo pipefail
+
+ZONE="example.com."
+RECORD="_acme-challenge.${AKAMU_DOMAIN}."
+
+case "$1" in
+  add)
+    nsupdate -k /etc/akamu/ddns.key <<EOF
+server ns1.example.com
+zone ${ZONE}
+update add ${RECORD} 60 TXT "${AKAMU_TXT}"
+send
+EOF
+    ;;
+  remove)
+    nsupdate -k /etc/akamu/ddns.key <<EOF
+server ns1.example.com
+zone ${ZONE}
+update delete ${RECORD} TXT
+send
+EOF
+    ;;
+esac
+```
+
+Make the hook executable:
+
+```bash
+chmod 0755 /etc/akamu/hooks/dns-nsupdate.sh
+```
+
+Then use it with `issue` or `renew`:
+
+```bash
+akamu-cli issue \
+  --account-key ~/.akamu/account.pem \
+  -d "*.example.com" \
+  --challenge dns-01 \
+  --dns-hook /etc/akamu/hooks/dns-nsupdate.sh \
+  --out /etc/ssl/example.com/wildcard.pem
+```
 
 ## Example sessions
 
@@ -254,9 +486,9 @@ akamu-cli issue \
   --out /etc/ssl/example.com/fullchain.pem
 ```
 
-### Issue with dns-01 (wildcard)
+### Issue with dns-01 (wildcard, manual)
 
-dns-01 is interactive: the CLI prints the TXT record to add and waits for you to press Enter.
+Without `--dns-hook`, dns-01 is interactive: the CLI prints the TXT record to add and waits for you to press Enter.
 
 ```bash
 akamu-cli issue \
@@ -277,6 +509,18 @@ DNS-01 challenge for *.example.com:
 Press Enter after the TXT record has propagated (Ctrl-C to abort)...
 ```
 
+### Issue with dns-01 (wildcard, automated hook)
+
+```bash
+akamu-cli issue \
+  --server https://acme.example.com/acme/directory \
+  --account-key ~/.akamu/account.pem \
+  -d "*.example.com" \
+  --challenge dns-01 \
+  --dns-hook /etc/akamu/hooks/dns-nsupdate.sh \
+  --out /etc/ssl/example.com/wildcard.pem
+```
+
 ### Issue with onion-csr-01 (RFC 9799)
 
 ```bash
@@ -289,7 +533,7 @@ akamu-cli issue \
   --out /etc/ssl/myservice/fullchain.pem
 ```
 
-### ARI-aware renewal
+### ARI-aware renewal (manual flags)
 
 ```bash
 # Check ARI window; issue only if inside it
@@ -308,6 +552,24 @@ akamu-cli renew \
   --cert /etc/ssl/example.com/fullchain.pem \
   --out /etc/ssl/example.com/fullchain.pem \
   --force
+```
+
+### ARI-aware renewal from a renewal config
+
+After `issue` has written a `.renewal.toml` sidecar, renewals require only one flag:
+
+```bash
+akamu-cli renew \
+  --renewal-config /etc/ssl/example.com/fullchain.pem.renewal.toml
+```
+
+The command checks ARI using the certificate path stored in the config, and re-issues only if the renewal window is open (or if `--force` is added). A new `.renewal.toml` is written after each successful renewal.
+
+This form is suitable for use from cron or a systemd timer:
+
+```
+# /etc/cron.d/akamu-renew
+0 3 * * * root akamu-cli renew --renewal-config /etc/ssl/example.com/fullchain.pem.renewal.toml
 ```
 
 ### Revoke a certificate
@@ -352,6 +614,23 @@ akamu-cli account update \
   --account-key ~/.akamu/account.pem \
   --contact mailto:new@example.com \
   --contact mailto:backup@example.com
+```
+
+### Migrate from certbot
+
+```bash
+# 1. Preview
+akamu-cli import certbot --list
+
+# 2. Import (run as root to read certbot's live/ and accounts/ directories)
+sudo akamu-cli import certbot \
+  --server https://acme-v02.api.letsencrypt.org/directory \
+  --account-key /etc/akamu/acct.pem \
+  --cert-dir /etc/akamu/certs \
+  --dns-hook /etc/akamu/hooks/dns-update.sh
+
+# 3. Renew each certificate with its generated config
+akamu-cli renew --renewal-config /etc/akamu/certs/example.com.pem.renewal.toml
 ```
 
 ## External Account Binding
@@ -429,3 +708,11 @@ The sidecar file is missing. Run `account register` first, or restore the sideca
 **`Unsupported algorithm: ML-DSA-65`**
 
 The server does not support the requested key type. Use a classical key type such as `ec:P-256`, or connect to an Akāmu server built with the PQC OpenSSL fork.
+
+**`dns hook '...' add exited with status 1: ...`**
+
+The DNS hook script returned a non-zero exit code. Check the hook's stderr output (included in the error message) and verify that the script has the correct permissions and that the DNS update API is reachable.
+
+**`no certbot accounts found; check --certbot-dir and --server`**
+
+The importer found no accounts under `<certbot-dir>/accounts/`. Verify the `--certbot-dir` path and that the directory is readable. If multiple accounts are present but no `--server` flag was given, run with `--list` first to identify the account URL, then pass `--server`.
