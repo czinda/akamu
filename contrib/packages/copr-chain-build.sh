@@ -4,7 +4,7 @@
 # akamu is a single-package workspace; there is no build dependency chain
 # between multiple packages.  The synta* prerequisite packages must already
 # be present in the target COPR project (or its chroot) before submitting
-# akamu — see the PREREQUISITE note in rust-akamu.spec.in.
+# akamu — see the PREREQUISITE note in akamu.spec.in.
 #
 # Usage:
 #   copr-chain-build.sh [OPTIONS] COPR_PROJECT
@@ -80,8 +80,8 @@ done
 
 # ── locate SRPM ───────────────────────────────────────────────────────────────
 
-SRPM=$(find_srpm "rust-akamu" "$SRPM_DIR")
-[[ -n "$SRPM" ]] || die "No rust-akamu-*.src.rpm found in $SRPM_DIR"
+SRPM=$(find_srpm "akamu" "$SRPM_DIR")
+[[ -n "$SRPM" ]] || die "No akamu-*.src.rpm found in $SRPM_DIR"
 info "Found: $(basename "$SRPM")"
 echo ""
 
@@ -89,7 +89,7 @@ echo ""
 
 cmd=(copr-cli build --nowait "${CHROOT_ARGS[@]}" "$COPR_PROJECT" "$SRPM")
 
-info "Submitting rust-akamu to $COPR_PROJECT"
+info "Submitting akamu to $COPR_PROJECT"
 info "  $(basename "$SRPM")"
 
 if [[ "$DRY_RUN" == 1 ]]; then

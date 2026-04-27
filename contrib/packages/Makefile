@@ -26,11 +26,10 @@ SHELL       := /bin/bash
 # Variables
 # ──────────────────────────────────────────────────────────────────────────────
 
-SPEC     := rust-akamu.spec.in
-SPEC_TMP := rust-akamu.spec
+SPEC     := akamu.spec.in
+SPEC_TMP := akamu.spec
 
-# NAME is defined via "%global crate akamu" in the spec; read it from there.
-NAME    := $(shell awk '/^%global[[:space:]]+crate[[:space:]]/{print $$3; exit}' $(SPEC))
+NAME    := $(shell awk '/^Name:/{print $$2; exit}' $(SPEC))
 VERSION := $(shell awk '/^Version:/{print $$2; exit}' $(SPEC))
 
 # Absolute path to the git repository root (two levels above this Makefile).
@@ -184,9 +183,9 @@ srpm: sources
 # ── mock ──────────────────────────────────────────────────────────────────────
 
 mock: srpm
-	$(eval SRPM := $(shell ls -1t "$(CURDIR)"/rust-$(NAME)-$(VERSION)-*.src.rpm 2>/dev/null | head -1))
+	$(eval SRPM := $(shell ls -1t "$(CURDIR)"/$(NAME)-$(VERSION)-*.src.rpm 2>/dev/null | head -1))
 	@if [ -z "$(SRPM)" ]; then \
-	    echo "ERROR: no SRPM found in $(CURDIR) for rust-$(NAME)-$(VERSION)"; \
+	    echo "ERROR: no SRPM found in $(CURDIR) for $(NAME)-$(VERSION)"; \
 	    exit 1; \
 	fi
 	@echo "==> Rebuilding $(SRPM) in mock ($(MOCK_CONFIG))"
@@ -206,7 +205,7 @@ lint:
 #   - akamu is not published on crates.io; --offline fetch fails.
 #   - cargo package fails on workspace path dependencies (no explicit versions).
 # rust2rpm.toml is kept as a machine-validated record of the package metadata
-# and build requirements.  The spec itself (rust-akamu.spec.in) is maintained
+# and build requirements.  The spec itself (akamu.spec.in) is maintained
 # manually, bootstrapped from the rust2rpm-generated template.
 
 validate-spec:
