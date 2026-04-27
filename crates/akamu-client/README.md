@@ -23,6 +23,13 @@ classical and post-quantum (ML-DSA) account keys.
 - **`Dns01Helper`** / **`DnsPersist01Helper`** — compute the
   `base64url(SHA-256(key_authorization))` value for dns-01 and dns-persist-01
   TXT records.  DNS provisioning is the caller's responsibility.
+- **`DnsHookSolver`** — implements `ChallengeSolver` by delegating TXT record
+  management to an external hook script via environment variables.
+- **`AccountKey::from_jwk_private(json)`** — build an `AccountKey` from a
+  certbot-style private JWK JSON string (EC P-256/P-384/P-521 or RSA).
+- **`RenewalConfig`** — serialisable struct capturing all parameters needed to
+  renew a certificate; written as `<cert>.renewal.toml` by `akamu-cli issue`
+  and consumed by `akamu-cli renew --renewal-config`.
 - **`build_csr(domains, key)`** — build a DER-encoded CSR.  The first domain
   becomes the Common Name; all domains are added as dNSName SANs.
 - **STAR order API** — `new_star_order()`, `cancel_star_order()`,
@@ -137,6 +144,90 @@ let opts = AccountOptions {
 The `hmac_key` field takes raw bytes; decode from base64url before passing it
 in.  The `alg` field defaults to `"HS256"` when left unspecified in higher-level
 callers.
+
+## DnsHookSolver
+
+`DnsHookSolver` implements `ChallengeSolver` by delegating TXT record management
+to an external script.  This is the hook-based counterpart to `Dns01Helper`: the
+hook script receives all values as environment variables and adds or removes the
+TXT record itself.
+
+```rust
+use akamu_client::DnsHookSolver;
+
+let solver = DnsHookSolver::new("/etc/akamu/hooks/dns-update.sh".to_string());
+
+// Before triggering the ACME challenge:
+solver.deploy(&domain, token, &key_auth).await?;
+client.trigger_challenge(&account, &challenge).await?;
+client.poll_order(&account, &order.url).await?;
+
+// After validation (dns-01: always call clean; dns-persist-01: only on failure):
+solver.clean(&domain, token, &key_auth).await?;
+```
+
+The hook is invoked as `<script> add` or `<script> remove`.  Values are passed
+exclusively via environment variables:
+
+| Variable | Value |
+|---|---|
+| `AKAMU_DOMAIN` | DNS name being validated (wildcard prefix stripped) |
+| `AKAMU_TOKEN` | ACME challenge token |
+| `AKAMU_TXT` | TXT record value: `base64url(SHA-256(key_authorization))` |
+| `AKAMU_KEY_AUTH` | Full key authorization string |
+
+Exit code 0 is success; non-zero produces a `ClientError::Crypto` with the
+captured stderr.
+
+## AccountKey::from_jwk_private
+
+Builds an `AccountKey` from a private JWK JSON string — the format used by
+certbot's `private_key.json`.  Supports EC P-256, P-384, P-521, and RSA.
+
+```rust
+use akamu_client::AccountKey;
+
+let json = std::fs::read_to_string("private_key.json")?;
+let key = AccountKey::from_jwk_private(&json)?;
+println!("{}", key.alg()); // "ES256", "RS256", etc.
+```
+
+## RenewalConfig
+
+`RenewalConfig` captures every parameter needed to repeat a certificate issuance.
+It serialises to and deserialises from TOML.  `akamu-cli issue` writes this to
+`<out>.renewal.toml`; `akamu-cli renew --renewal-config` reads it back.
+
+```rust
+use akamu_client::{RenewalConfig, Identifier};
+use std::path::PathBuf;
+
+let config = RenewalConfig {
+    server: "https://acme.example.com/acme/directory".into(),
+    domains: vec![Identifier::dns("example.com")],
+    account_key: PathBuf::from("/etc/akamu/account.pem"),
+    account_key_type: "ec:P-256".into(),   // optional field; default: "ec:P-256"
+    cert_path: PathBuf::from("/etc/ssl/example.com/fullchain.pem"),
+    cert_key_path: PathBuf::from("/etc/ssl/example.com/fullchain.pem.key.pem"),
+    cert_key_type: "ec:P-256".into(),
+    challenge_type: "dns-01".into(),       // optional field; default: "http-01"
+    http_port: 80,
+    tls_port: 443,
+    onion_key: None,
+    poll_timeout: 120,
+    contacts: vec!["mailto:admin@example.com".into()],
+    eab_kid: None,
+    eab_key: None,
+    eab_alg: "HS256".into(),
+    dns_hook: Some("/etc/akamu/hooks/dns-update.sh".into()),
+};
+
+let toml = toml::to_string_pretty(&config)?;
+let restored: RenewalConfig = toml::from_str(&toml)?;
+```
+
+`RenewalConfig` is re-exported from the crate root:
+`akamu_client::RenewalConfig`.
 
 ## Key type strings
 

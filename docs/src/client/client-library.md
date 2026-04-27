@@ -19,8 +19,11 @@ The library covers:
 - Built-in http-01 challenge solver (`Http01Solver`)
 - Built-in tls-alpn-01 challenge solver (`TlsAlpn01Solver`, RFC 8737)
 - DNS challenge helpers (`Dns01Helper`, `DnsPersist01Helper`)
+- DNS hook solver (`DnsHookSolver`) — delegates TXT record management to an external script
 - onion-csr-01 CSR builder (`build_onion_csr`, RFC 9799)
 - A `ChallengeSolver` trait for custom solvers
+- `AccountKey::from_jwk_private` — load an account key from a certbot-style private JWK
+- `RenewalConfig` — serialisable struct for persisting renewal parameters alongside a certificate
 
 Dependencies: `tokio`, `hyper-rustls` (TLS enabled by default), `akamu-jose`. No database or server dependencies.
 
@@ -108,6 +111,19 @@ std::fs::write("account.key", &pem)?;
 
 let loaded = AccountKey::from_pem(&pem)?;
 ```
+
+### Loading from a certbot JWK
+
+`AccountKey::from_jwk_private` parses a private JWK JSON string (the format used by certbot's `private_key.json`) and returns an `AccountKey`. Supported key types: EC P-256, P-384, P-521, and RSA.
+
+```rust
+use akamu_client::AccountKey;
+
+let jwk_json = std::fs::read_to_string("/etc/letsencrypt/accounts/.../private_key.json")?;
+let key = AccountKey::from_jwk_private(&jwk_json)?;
+```
+
+This is the same conversion performed internally by `akamu-cli import certbot`.
 
 ### Thumbprint and key authorization
 
@@ -532,6 +548,44 @@ let txt = DnsPersist01Helper::txt_value(&key_auth)?;
 // Add TXT record: _validation-persist.example.com  TXT  <txt>
 ```
 
+### DnsHookSolver
+
+`DnsHookSolver` implements `ChallengeSolver` by delegating TXT record management to an external script. It is designed for automated pipelines where a registrar API or DDNS tool handles DNS updates.
+
+The hook is invoked as:
+
+```
+<hook_script> add
+<hook_script> remove
+```
+
+All values are passed through environment variables only (never as command-line arguments):
+
+| Variable | Value |
+|---|---|
+| `AKAMU_DOMAIN` | DNS name being validated (wildcard prefix stripped) |
+| `AKAMU_TOKEN` | ACME challenge token |
+| `AKAMU_TXT` | TXT record value: `base64url(SHA-256(key_authorization))` |
+| `AKAMU_KEY_AUTH` | Full key authorization string (`<token>.<jwk_thumbprint>`) |
+
+Exit code `0` is success. Non-zero causes a `ClientError` that includes captured stderr.
+
+```rust
+use akamu_client::DnsHookSolver;
+
+let solver = DnsHookSolver::new("/etc/akamu/hooks/dns-update.sh".to_string());
+
+// Before triggering the ACME challenge:
+solver.deploy(&domain, token, &key_auth).await?;
+client.trigger_challenge(&account, &challenge).await?;
+client.poll_order(&account, &order.url).await?;
+
+// After the challenge completes (success or failure):
+solver.clean(&domain, token, &key_auth).await?;
+```
+
+For `dns-persist-01`, call only `deploy`; do not call `clean` on success because the TXT record is long-lived.
+
 ## build_onion_csr (RFC 9799)
 
 Builds a DER-encoded CSR for an onion-csr-01 challenge. The CSR carries the `cabf-onion-csr-nonce` extension (OID 2.23.140.41) containing the key authorization as a DER UTF8String, and is signed by the hidden-service Ed25519 private key.
@@ -570,6 +624,43 @@ let cert_pem = std::fs::read("cert.pem")?;
 let ders: Vec<Vec<u8>> = pem_to_der(&cert_pem);
 let cert_der = ders.into_iter().next().expect("no certificate");
 ```
+
+## RenewalConfig
+
+`RenewalConfig` is a serialisable/deserialisable struct that captures every parameter needed to repeat a certificate issuance. It is used by `akamu-cli issue` (written to `<out>.renewal.toml`) and by `akamu-cli import certbot` (generated from certbot's renewal config).
+
+```rust
+use akamu_client::{RenewalConfig, Identifier};
+use std::path::PathBuf;
+
+let config = RenewalConfig {
+    server: "https://acme.example.com/acme/directory".into(),
+    domains: vec![Identifier::dns("example.com")],
+    account_key: PathBuf::from("/etc/akamu/account.pem"),
+    account_key_type: "ec:P-256".into(),
+    cert_path: PathBuf::from("/etc/ssl/example.com/fullchain.pem"),
+    cert_key_path: PathBuf::from("/etc/ssl/example.com/fullchain.pem.key.pem"),
+    cert_key_type: "ec:P-256".into(),
+    challenge_type: "dns-01".into(),
+    http_port: 80,
+    tls_port: 443,
+    onion_key: None,
+    poll_timeout: 120,
+    contacts: vec!["mailto:admin@example.com".into()],
+    eab_kid: None,
+    eab_key: None,
+    eab_alg: "HS256".into(),
+    dns_hook: Some("/etc/akamu/hooks/dns-update.sh".into()),
+};
+
+let toml = toml::to_string_pretty(&config)?;
+std::fs::write("fullchain.pem.renewal.toml", &toml)?;
+
+// Round-trip:
+let loaded: RenewalConfig = toml::from_str(&toml)?;
+```
+
+Fields with defaults (`account_key_type`, `cert_key_type`, `challenge_type`, `http_port`, `tls_port`, `poll_timeout`, `eab_alg`) are optional in TOML files; missing fields are filled with sensible defaults on deserialisation.
 
 ## ClientError
 
