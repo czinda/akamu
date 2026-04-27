@@ -8,7 +8,10 @@
 //! akamu-cli issue             [--server <URL>] --domain <DOMAIN> ...
 //! akamu-cli renew             [--server <URL>] --domain <DOMAIN> ... [--cert <FILE>] [--force]
 //! akamu-cli revoke            [--server <URL>] --account-key <FILE> --cert <FILE>
+//! akamu-cli import certbot    [--certbot-dir <DIR>] --account-key <FILE> ...
 //! ```
+
+mod import;
 
 use std::{
     fs,
@@ -48,6 +51,17 @@ enum Commands {
     Renew(RenewArgs),
     /// Revoke an issued certificate
     Revoke(RevokeArgs),
+    /// Import configuration from another ACME client
+    Import {
+        #[command(subcommand)]
+        source: ImportSource,
+    },
+}
+
+#[derive(Subcommand)]
+enum ImportSource {
+    /// Import accounts and certificates from a certbot installation
+    Certbot(import::CertbotImportArgs),
 }
 
 #[derive(Subcommand)]
@@ -361,6 +375,9 @@ async fn run(cli: Cli) -> Result<(), String> {
         Commands::Issue(args) => cmd_issue(args).await,
         Commands::Renew(args) => cmd_renew(args).await,
         Commands::Revoke(args) => cmd_revoke(args).await,
+        Commands::Import { source } => match source {
+            ImportSource::Certbot(args) => import::cmd_import_certbot(args).await,
+        },
     }
 }
 
