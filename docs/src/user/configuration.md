@@ -417,7 +417,7 @@ external_account_required = true
 
 Pre-shared External Account Binding keys, expressed as a TOML table under `[server.eab_keys]`. Each entry maps a key identifier (`kid`) to its base64url-encoded raw HMAC key bytes. The key material must be at least 16 bytes; 32 bytes (256 bits) is recommended for HS256.
 
-Keys are seeded into the `eab_keys` database table at startup using `INSERT OR IGNORE`. A key that has been consumed (used to create an account) or modified by a future admin API call is never overwritten by a restart.
+Keys are loaded at startup and persisted in the database. A key that has been consumed (used to create an account) is never overwritten on a subsequent restart, so spent keys remain invalidated across restarts.
 
 ```toml
 [server.eab_keys]

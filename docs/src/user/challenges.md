@@ -71,7 +71,7 @@ flowchart TD
     B -->|dns-persist-01| F["Persistent DNS TXT record<br/>_validation-persist.DOMAIN<br/>with issuer + accounturi + policy fields"]
 
     C & D & E & F --> G["POST {} to challenge URL"]
-    G --> H["Server validates in background<br/>tokio::spawn task"]
+    G --> H["Server validates in background"]
 
     H -->|probe succeeds| I(["Authorization → valid<br/>Order → ready when all valid"])
     H -->|probe fails| J(["Authorization → invalid<br/>Order → invalid<br/>Create new order to retry"])

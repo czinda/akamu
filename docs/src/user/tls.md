@@ -135,9 +135,9 @@ is the URL clients will use; `listen_addr` is what the OS socket binds to.
 `0.0.0.0` binds on all interfaces; restrict to a specific IP if needed.
 
 **Step 2.** Start Akāmu.  Because `cert_file` and `key_file` are both absent,
-the bootstrap logic in `tls::init::load_or_generate` runs automatically:
+the server generates a TLS certificate automatically:
 
-1. A fresh server key is generated using `bootstrap_key_type` (default `ec:P-256`).
+1. A fresh server key is generated using the `bootstrap_key_type` algorithm (default `ec:P-256`).
 2. A server certificate for `server_name` is signed by the Akāmu CA.
 3. The PEM chain (`leaf + CA`) is written to `cert_file` and the private key to
    `key_file`.
@@ -352,15 +352,12 @@ minimum_rsa_modulus = 2048
 
 When enabled, Akāmu accepts:
 
-- **Pure ML-DSA certificate chains**: verified by `synta-x509-verification` using
-  the OpenSSL backend (pqc-prs fork).
+- **Pure ML-DSA certificate chains**: verified via the OpenSSL backend.
 - **Composite ML-DSA+classical TLS 1.3 `CertificateVerify` signatures**: provisional
-  code points from draft-ietf-lamps-pq-composite-sigs are advertised and verified
-  via the OpenSSL EVP interface.
+  code points from draft-ietf-lamps-pq-composite-sigs are advertised and verified.
 
-Classical verification is always performed via the ring crypto provider.
-TLS 1.2 `CertificateVerify` always uses classical ring verification — composite
-schemes are TLS 1.3 only and never appear in a TLS 1.2 handshake.
+Classical algorithms are always verified using a standard cryptographic backend.
+Composite schemes are TLS 1.3 only and never appear in a TLS 1.2 handshake.
 
 ---
 
@@ -392,25 +389,22 @@ minimum_rsa_modulus = 3072
 
 ## Known limitations
 
-- **Composite scheme code points** (`src/tls/schemes.rs`) are taken from the
-  provisional IANA allocations in draft-ietf-lamps-pq-composite-sigs.  They must
-  be verified against the current draft version before deploying to production;
-  if the draft advances and code points change, only that file needs updating.
+- **Composite scheme code points**: the composite ML-DSA+classical scheme identifiers
+  are taken from the provisional IANA allocations in draft-ietf-lamps-pq-composite-sigs.
+  They must be verified against the current draft version before deploying to production;
+  if the draft advances and code points change, a code update is required.
 
-- **Composite OpenSSL binding**: composite ML-DSA+classical `CertificateVerify`
-  verification relies on `native-ossl` exposing composite NIDs via
-  `PKey::public_key_from_der`.  If those NIDs are not yet present in
-  `native-ossl`, the function will return an OpenSSL error at runtime.  The fix
-  is to add composite NID support to `native-ossl`, not to Akāmu itself.
+- **Composite scheme support depends on the OpenSSL version**: composite ML-DSA+classical
+  `CertificateVerify` verification requires OpenSSL 3.5 or later with composite NID support.
+  If the installed OpenSSL version does not support the required NIDs, verification will
+  return an OpenSSL error at runtime.
 
-- **Pure ML-DSA TLS `SignatureScheme` code points**: no IANA code points exist yet
+- **Pure ML-DSA TLS signature schemes**: no IANA code points exist yet
   for standalone ML-DSA (non-composite) TLS schemes.  Even with
   `allow_post_quantum = true`, only composite schemes are advertised.
 
-- **Client remote address**: when native TLS is active, handlers can extract the
-  client's remote address via `axum::extract::ConnectInfo<SocketAddr>` — this is
-  available because the server is started with
-  `into_make_service_with_connect_info::<SocketAddr>()`.
+- **Client remote address**: when native TLS is active, the client's remote IP address
+  is available to handlers through the standard axum connection-info mechanism.
 
 ---
 
@@ -422,5 +416,5 @@ minimum_rsa_modulus = 3072
 | `TLS cert and key must both be present or both absent` | One file exists but the other does not; either supply both or remove both |
 | `build client-auth trust store: …` | A CA PEM file is malformed or contains non-certificate data |
 | `client cert verification failed: …` | Client presented a cert that does not chain to the configured CA, has expired, or violates the chosen profile |
-| `composite signature verification failed: …` | pqc-prs OpenSSL fork does not expose the composite NID for the scheme used; see Known Limitations |
+| `composite signature verification failed: …` | OpenSSL does not support the composite NID for the scheme used; see Known Limitations |
 | `TLS versions: …` | `protocols` list contains an unsupported value; use `"TLSv1.2"` and/or `"TLSv1.3"` |

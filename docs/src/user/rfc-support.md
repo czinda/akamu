@@ -85,15 +85,7 @@ external_account_required = true
 "kid-2" = "YW5vdGhlci1rZXktaGVyZQ"
 ```
 
-Keys are seeded into the `eab_keys` database table at startup using `INSERT OR IGNORE`, so a key consumed or modified at runtime is never overwritten by a server restart.  The server performs full HMAC verification per RFC 8555 §7.3.4:
-
-1. Extracts the `kid` from the EAB protected header.
-2. Looks up the key in the database; rejects unknown or already-consumed kids.
-3. Validates the algorithm (`HS256`, `HS384`, or `HS512`), the `url` (must match the `new-account` endpoint), and the payload (must be the account public key).
-4. Verifies the HMAC signature using OpenSSL constant-time comparison.
-5. Inserts the new account and marks the EAB key as consumed in a single SQLite transaction.
-
-The design is forward-compatible with an admin API endpoint: `insert`, `delete`, and `get_by_kid` are already implemented in the database layer.
+Keys configured in `[server.eab_keys]` are loaded at startup and persisted in the database. Once a key has been consumed to create an account it cannot be reused. The server performs full HMAC verification per RFC 8555 §7.3.4: it checks the `kid`, validates the algorithm and URL, verifies the HMAC signature, and confirms the EAB payload contains the account public key. Account creation and EAB key consumption happen atomically so that a key can never be used more than once even under concurrent requests.
 
 ### Certificate validity window
 
@@ -727,32 +719,8 @@ ML-DSA signatures in JOSE are **raw bytes** as defined by FIPS 204 §7.2. They a
 **not** DER-encoded. The server validates the signature length before attempting
 verification and returns `HTTP 400` if the length does not match the declared algorithm.
 
-The signing context MUST be an empty byte string (`b""`) per draft-ietf-cose-dilithium-11 §4.
-Verification uses `BackendPublicKey::verify_ml_dsa_with_context(signing_input, signature, b"")`.
+The signing context MUST be an empty byte string per draft-ietf-cose-dilithium-11 §4.
 Signature failures return `HTTP 401 Unauthorized`.
-
-### SPKI DER construction
-
-When an `AKP` JWK arrives in a `new-account` request (or any request using `jwk` instead
-of `kid`), Akāmu converts it to a SubjectPublicKeyInfo (SPKI) DER structure for storage and
-subsequent signature verification. The SPKI follows the X.509 / PKIX encoding for ML-DSA
-keys:
-
-```
-SEQUENCE {                          -- outer SEQUENCE
-  SEQUENCE {                        -- AlgorithmIdentifier
-    OID <variant OID>               -- no parameters (absent, not NULL)
-  }
-  BIT STRING {
-    0x00                            -- unused-bits octet
-    <raw public key bytes>          -- from the "pub" JWK field
-  }
-}
-```
-
-The `alg` field in the JWK determines which OID is embedded. The length octets in the DER
-use the minimum-length encoding; for ML-DSA key sizes, the outer SEQUENCE and BIT STRING
-both use the two-byte (`0x82`) length form.
 
 ### ACME client integration notes
 
@@ -797,7 +765,7 @@ The 12 composite scheme code points implemented are:
 
 ### Stability warning
 
-These code points come from the **provisional IANA registry** for an in-progress draft. They may change as the draft advances toward RFC publication. Before deploying to production, verify the current draft version against the code points in `src/tls/schemes.rs`. If the code points change, only that file needs to be updated.
+These code points come from the **provisional IANA registry** for an in-progress draft. They may change as the draft advances toward RFC publication. Before deploying to production, verify the current draft version against the code points listed above.
 
 ---
 

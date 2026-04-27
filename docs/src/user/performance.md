@@ -17,22 +17,18 @@ end-to-end wall time from the start of `new-order` through certificate download;
 account creation is excluded because it is amortised across all orders from a
 given client.
 
-> **Note — database layer (sqlx).**  Akāmu uses sqlx 0.8 for SQLite access.
-> Both in-memory (`:memory:`) and file-backed databases use a single-connection
-> pool (`max_connections = 1`).  In-memory databases require this because every
-> SQLite in-memory connection opens its own private, empty database.  File-backed
-> databases use it to avoid `SQLITE_BUSY_SNAPSHOT` (error 517), a WAL-mode
-> contention error that bypasses the busy handler and cannot be retried — sqlx
-> attempts to reuse connection read-snapshots across pool round-trips, and when a
-> concurrent writer commits between those round-trips the stale snapshot triggers
-> the error.  Approximately 24 SQL round-trips are needed per issuance (reduced
-> from ~55 by moving anti-replay nonces to an in-memory store and using JOIN
-> queries to collapse read pairs into single round-trips); throughput peaks at
-> ≈ 1350–1480 iss/s around 10 concurrent clients and remains stable at 25–50 clients
-> (≈ 1170–1380 iss/s), determined by how fast the single sqlx connection can process
-> queries rather than by crypto, network, or storage speed.  See the
-> [Database scalability](#database-scalability) section for guidance on exceeding
-> this ceiling.
+> **Note — single-connection database pool.**  Both in-memory (`:memory:`) and
+> file-backed databases use a single-connection pool.  In-memory databases require
+> this because every SQLite in-memory connection opens its own private, empty
+> database.  File-backed databases use it to avoid `SQLITE_BUSY_SNAPSHOT` (error 517),
+> a WAL-mode contention error that bypasses the busy handler and cannot be retried.
+> Approximately 24 SQL round-trips are needed per issuance (reduced from ~55 by moving
+> anti-replay nonces to an in-memory store and using JOIN queries to collapse read pairs
+> into single round-trips); throughput peaks at ≈ 1350–1480 iss/s around 10 concurrent
+> clients and remains stable at 25–50 clients (≈ 1170–1380 iss/s), determined by how
+> fast the single database connection can process queries rather than by crypto, network,
+> or storage speed.  See the [Database scalability](#database-scalability) section for
+> guidance on exceeding this ceiling.
 
 ---
 
@@ -172,7 +168,7 @@ validation round-trips.
 
 Both in-memory (`:memory:`) and file-backed databases use a single-connection
 pool, so the throughput ceiling of ≈ 1350–1480 iss/s applies to both.  The ceiling
-is set by how fast the sqlx SQLite worker thread can process one query at a time —
+is set by how fast the SQLite worker thread can process one query at a time —
 each query requires a channel round-trip to the background thread, and ~24 such
 round-trips are needed per issuance (reduced from ~55 by moving anti-replay nonces
 to an in-memory store and using JOIN queries to collapse read pairs).
@@ -193,7 +189,7 @@ is within run-to-run noise.
 | 50                 |  1243             |  1164             |
 
 Both backends peak around 1350–1430 iss/s at 10 concurrent clients and remain
-above 1150 iss/s at 50 clients.  The bottleneck is the sqlx connection
+above 1150 iss/s at 50 clients.  The bottleneck is the database connection
 round-trip per query, not storage speed; switching from in-memory to a
 tmpfs-backed file provides durability without a significant throughput penalty.
 
@@ -215,8 +211,8 @@ connection commits — even when the two transactions write to completely differ
 rows.  Unlike `SQLITE_BUSY` (error 5), error 517 bypasses the busy handler
 entirely, so `busy_timeout` has no effect on it.
 
-Akāmu resolves this by using `BEGIN IMMEDIATE` for every write transaction
-(`db::begin_write`).  `BEGIN IMMEDIATE` acquires the write lock at transaction
+Akāmu resolves this by using `BEGIN IMMEDIATE` for every write transaction.
+`BEGIN IMMEDIATE` acquires the write lock at transaction
 start, so the snapshot is always current.  Any resulting `SQLITE_BUSY`
 contention is handled transparently by the `busy_timeout = 5 s` already
 configured on the pool.
@@ -311,7 +307,7 @@ cargo bench --bench acme_bench -- --output json --clients 25 --requests 200 --po
 | `--key-type TYPE` | `ec:P-256` | CSR key type (see table above) |
 | `--ca-key-type TYPE` | `ec:P-256` | CA key type (same syntax) |
 | `--db PATH` | `:memory:` | SQLite path — `:memory:` or a file path |
-| `--pool-connections N` | `1` | SQLite pool size; ignored (clamped to 1) when `--db :memory:`; see [Connection pool size](#connection-pool-size-why-max_connections--1-is-mandatory) |
+| `--pool-connections N` | `1` | SQLite pool size; ignored (clamped to 1) when `--db :memory:`; see [Connection pool size and `BEGIN IMMEDIATE`](#connection-pool-size-and-begin-immediate) |
 | `--wildcard` | off | Issue `*.bench-N.acme-bench.test` (dns-persist-01 only) |
 | `--output FORMAT` | `text` | `text` or `json` |
 | `--verify-cert` | off | Parse and verify the SAN of every issued certificate |

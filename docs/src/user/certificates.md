@@ -16,7 +16,7 @@ flowchart TD
     D -->|OK| E{"SAN set equals<br/>order identifiers?"}
     E -->|Mismatch| FAIL
     E -->|Match| F["Generate random 16-byte serial<br/>clear high bit for positive integer"]
-    F --> P["Resolve profile parameters<br/>(registry lookup or CA defaults)"]
+    F --> P["Apply certificate profile parameters<br/>(from requested profile, or server defaults)"]
     P --> G["Build X.509 v3 end-entity cert<br/>extensions from resolved profile"]
     G --> H[Sign with CA private key]
     H --> I["Store DER + PEM bundle<br/>in certificates table"]
@@ -37,7 +37,7 @@ The server:
 3. Checks that the CSR does not request CA authority (`cA=TRUE` in BasicConstraints is rejected).
 4. Verifies that the CSR's SubjectAlternativeName extension contains exactly the identifiers from the order — no more, no fewer.
 5. Generates a random 16-byte serial number (positive two's complement, high bit cleared).
-6. Resolves the certificate parameters from the profile registry (or CA defaults if no profile was requested).
+6. Applies certificate parameters from the requested profile, or from the server's default policy if no profile was specified.
 7. Issues an X.509 v3 certificate. The extensions depend on the active profile:
 
 | Extension | Critical | Default (no profile) | With profile |

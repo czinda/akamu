@@ -121,7 +121,7 @@ sequenceDiagram
     S->>S: Verify inner JWS signature (new key from inner jwk)
     S->>S: Check inner payload account == outer kid account URL
     S->>S: Check new key not registered to another account
-    S->>S: Replace stored public_key + jwk_thumbprint
+    S->>S: Replace stored account key
     S-->>C: 200 OK (account object)
 
     Note over C: All future requests must be signed with the new key
@@ -137,6 +137,6 @@ On success, the account's stored key and thumbprint are replaced with the new ke
 
 ## Security considerations
 
-- Each account is identified by the SHA-256 thumbprint of its JWK public key. The thumbprint is stored in the database to enable fast lookup without storing or parsing the full public key on every request.
+- Each account is identified by the SHA-256 thumbprint of its JWK public key. The server uses this thumbprint to look up accounts without needing to parse or compare full public key material on every request.
 - Key rollover is the only mechanism to change the signing key. There is no password or other credential; possession of the private key is the sole proof of identity.
-- Contact email addresses are stored as plain text JSON in the database and are not validated against any mail server.
+- Contact email addresses are not validated against any mail server. Only `mailto:` URIs are accepted, but reachability is not checked.
