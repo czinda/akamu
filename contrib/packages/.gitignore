@@ -1,0 +1,8 @@
+# Generated source tarballs and vendor archive
+*.tar.gz
+
+# Generated spec (from akamu.spec.in via 'make srpm')
+akamu.spec
+
+# Built SRPMs
+*.src.rpm
