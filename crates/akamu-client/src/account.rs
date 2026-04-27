@@ -35,6 +35,15 @@ impl AccountKey {
         Self::from_backend_key(priv_key)
     }
 
+    /// Build an account key from a raw private JWK JSON string (as stored in
+    /// certbot's `accounts/…/private_key.json`).  Supports EC (`P-256`,
+    /// `P-384`, `P-521`) and RSA keys.
+    pub fn from_jwk_private(json: &str) -> Result<Self, ClientError> {
+        let priv_key = jwk_private_to_backend_key(json)
+            .map_err(|e| ClientError::Crypto(format!("JWK import: {e}")))?;
+        Self::from_backend_key(priv_key)
+    }
+
     /// Serialize the private key to PEM (unencrypted).
     pub fn to_pem(&self) -> Result<Vec<u8>, ClientError> {
         self.priv_key
@@ -193,6 +202,61 @@ fn alg_for_key(key: &BackendPrivateKey) -> Result<&'static str, ClientError> {
 /// Used in `AccountKey::from_backend_key` but also exposed for tests.
 pub fn compute_thumbprint(jwk: &JwkPublic) -> Result<String, ClientError> {
     jwk.thumbprint().map_err(ClientError::Jose)
+}
+
+/// Build a [`BackendPrivateKey`] from a raw private JWK JSON string.
+///
+/// Supports EC (`P-256`, `P-384`, `P-521`) and RSA keys.  The JWK fields are
+/// expected in base64url-no-padding encoding, as produced by certbot.
+fn jwk_private_to_backend_key(json: &str) -> Result<BackendPrivateKey, String> {
+    let v: serde_json::Value = serde_json::from_str(json).map_err(|e| format!("parse JWK: {e}"))?;
+    let kty = v["kty"].as_str().unwrap_or("").to_uppercase();
+    match kty.as_str() {
+        "EC" => {
+            let crv = v["crv"].as_str().unwrap_or("");
+            let curve = match crv {
+                "P-256" => "P-256",
+                "P-384" => "P-384",
+                "P-521" => "P-521",
+                other => return Err(format!("unsupported EC curve: {other}")),
+            };
+            let d = jwk_b64u(&v, "d")?;
+            let x = jwk_b64u(&v, "x")?;
+            let y = jwk_b64u(&v, "y")?;
+            BackendPrivateKey::from_ec_private_scalar(&d, &x, &y, curve).map_err(|e| e.to_string())
+        }
+        "RSA" => {
+            let n = jwk_b64u(&v, "n")?;
+            let e = jwk_b64u(&v, "e")?;
+            let d = jwk_b64u(&v, "d")?;
+            let p = jwk_b64u(&v, "p")?;
+            let q = jwk_b64u(&v, "q")?;
+            let dp = jwk_b64u(&v, "dp")?;
+            let dq = jwk_b64u(&v, "dq")?;
+            let qi = jwk_b64u(&v, "qi")?;
+            let components = synta_certificate::RsaPrivateComponents {
+                n: &n,
+                e: &e,
+                d: &d,
+                p: &p,
+                q: &q,
+                dp: &dp,
+                dq: &dq,
+                qi: &qi,
+            };
+            BackendPrivateKey::from_rsa_private_components(&components).map_err(|e| e.to_string())
+        }
+        other => Err(format!("unsupported JWK kty: {other}")),
+    }
+}
+
+fn jwk_b64u(v: &serde_json::Value, field: &str) -> Result<Vec<u8>, String> {
+    let s = v[field]
+        .as_str()
+        .ok_or_else(|| format!("JWK missing field: {field}"))?;
+    URL_SAFE_NO_PAD
+        .decode(s)
+        .map_err(|e| format!("JWK field {field}: base64url decode: {e}"))
 }
 
 /// dns-01 / dns-persist-01 TXT record value: base64url(SHA-256(key_auth)).
