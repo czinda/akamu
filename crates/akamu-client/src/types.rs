@@ -1,5 +1,7 @@
 //! ACME protocol types (RFC 8555).
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 /// An ACME identifier (e.g. `{"type": "dns", "value": "example.com"}`).
@@ -173,4 +175,78 @@ pub struct EabOptions<'a> {
     pub hmac_key: &'a [u8],
     /// HMAC algorithm: `"HS256"` (default), `"HS384"`, or `"HS512"`.
     pub alg: &'a str,
+}
+
+/// Persistent renewal configuration written as a TOML sidecar alongside the
+/// certificate chain (e.g. `<cert>.renewal.toml`).
+///
+/// Every field that has a sensible default is annotated with `#[serde(default
+/// = "...")]` so that existing configs with fewer fields remain forward-compatible.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenewalConfig {
+    /// ACME directory URL.
+    pub server: String,
+    /// Identifiers (domains or IPs) to certify.
+    pub domains: Vec<Identifier>,
+    /// Path to the account private key PEM.
+    pub account_key: PathBuf,
+    /// Key type for the account key (`"ec:P-256"`, `"rsa:2048"`, etc.).
+    #[serde(default = "defaults::key_type")]
+    pub account_key_type: String,
+    /// Where the certificate chain is written.
+    pub cert_path: PathBuf,
+    /// Where the certificate private key is written.
+    pub cert_key_path: PathBuf,
+    /// Key type for the certificate key.
+    #[serde(default = "defaults::key_type")]
+    pub cert_key_type: String,
+    /// ACME challenge type (`"http-01"`, `"dns-01"`, `"dns-persist-01"`,
+    /// `"tls-alpn-01"`).
+    #[serde(default = "defaults::challenge_type")]
+    pub challenge_type: String,
+    /// HTTP port for `http-01` challenges.
+    #[serde(default = "defaults::http_port")]
+    pub http_port: u16,
+    /// TLS port for `tls-alpn-01` challenges.
+    #[serde(default = "defaults::tls_port")]
+    pub tls_port: u16,
+    /// Path to the onion service private key (tor-only orders).
+    pub onion_key: Option<PathBuf>,
+    /// Poll timeout in seconds when waiting for challenge validation.
+    #[serde(default = "defaults::poll_timeout")]
+    pub poll_timeout: u64,
+    /// Contact URIs registered with the account (e.g. `"mailto:admin@example.com"`).
+    #[serde(default)]
+    pub contacts: Vec<String>,
+    /// EAB key identifier.
+    pub eab_kid: Option<String>,
+    /// EAB HMAC key (base64url).
+    pub eab_key: Option<String>,
+    /// EAB HMAC algorithm.
+    #[serde(default = "defaults::eab_alg")]
+    pub eab_alg: String,
+    /// Hook script for DNS TXT record management.  Invoked as
+    /// `<dns_hook> add|remove` with values passed via environment variables.
+    pub dns_hook: Option<String>,
+}
+
+mod defaults {
+    pub fn key_type() -> String {
+        "ec:P-256".into()
+    }
+    pub fn challenge_type() -> String {
+        "http-01".into()
+    }
+    pub fn http_port() -> u16 {
+        80
+    }
+    pub fn tls_port() -> u16 {
+        443
+    }
+    pub fn poll_timeout() -> u64 {
+        120
+    }
+    pub fn eab_alg() -> String {
+        "HS256".into()
+    }
 }
