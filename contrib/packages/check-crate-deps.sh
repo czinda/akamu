@@ -86,16 +86,26 @@ fi
 # dnf repoquery --provides is run once and its output filtered to crate() lines.
 # This is far faster than invoking dnf once per crate.
 #
+# dnf repoquery --provides is run once and its output filtered to crate() lines.
+# This is far faster than invoking dnf once per crate.
+#
+# --refresh forces a repo metadata download on every invocation.  Without it,
+# dnf serves results from the local metadata cache, which may lag behind the
+# actual repo state by hours or days.  This causes newly-published crate
+# versions (e.g. synta 0.1.9 uploaded to COPR after the last cache refresh) to
+# appear absent even though they are available.  --refresh runs without
+# elevated privileges because it writes to the user-accessible dnf cache.
+#
 # A temp file is used rather than a shell variable because storing the result in
 # a variable and then piping it through "printf '%s\n' "$var" | grep -qF ..." is
 # broken under "set -o pipefail": grep -q exits as soon as it finds a match,
 # which causes printf to receive SIGPIPE (exit 141).  pipefail then reports the
 # pipeline as failed and the crate is incorrectly classified as missing.
 # Reading directly from a file avoids that SIGPIPE path entirely.
-printf 'Fetching crate() provides from dnf repos... '
+printf 'Fetching crate() provides from dnf repos (refreshing metadata)... '
 _provides_tmp=$(mktemp -t check-crate-deps.XXXXXX)
 trap 'rm -f "$_provides_tmp"' EXIT
-dnf repoquery --provides --quiet 2>/dev/null \
+dnf repoquery --provides --quiet --refresh 2>/dev/null \
     | grep '^crate(' | sort -u > "$_provides_tmp" || true
 printf 'done (%d provides).\n\n' "$(wc -l < "$_provides_tmp")"
 
