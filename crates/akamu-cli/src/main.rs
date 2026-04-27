@@ -20,8 +20,8 @@ use std::{
 };
 
 use akamu_client::{
-    AccountKey, AccountOptions, AcmeClient, ChallengeSolver as _, Dns01Helper, DnsPersist01Helper,
-    DnsHookSolver, EabOptions, Http01Solver, Identifier, RenewalConfig, TlsAlpn01Solver,
+    AccountKey, AccountOptions, AcmeClient, ChallengeSolver as _, Dns01Helper, DnsHookSolver,
+    DnsPersist01Helper, EabOptions, Http01Solver, Identifier, RenewalConfig, TlsAlpn01Solver,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use clap::{Parser, Subcommand};
@@ -718,8 +718,7 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                         .await
                         .map_err(|e| e.to_string())?;
                     let polled =
-                        poll_with_timeout(&client, &account, &order.url, args.poll_timeout)
-                            .await?;
+                        poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
                     solver
                         .clean(base_domain, token, &key_auth)
                         .await
@@ -731,8 +730,7 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                         ));
                     }
                 } else {
-                    let txt_value =
-                        Dns01Helper::txt_value(&key_auth).map_err(|e| e.to_string())?;
+                    let txt_value = Dns01Helper::txt_value(&key_auth).map_err(|e| e.to_string())?;
                     eprintln!();
                     eprintln!("DNS-01 challenge for {}:", authz.identifier.value);
                     eprintln!("  Name:  _acme-challenge.{}.", base_domain);
@@ -752,8 +750,7 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                         .await
                         .map_err(|e| e.to_string())?;
                     let polled =
-                        poll_with_timeout(&client, &account, &order.url, args.poll_timeout)
-                            .await?;
+                        poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
                     if polled.status == "invalid" {
                         return Err(format!(
                             "order invalid after dns-01 challenge for {}",
@@ -781,8 +778,7 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                         .await
                         .map_err(|e| e.to_string())?;
                     let polled =
-                        poll_with_timeout(&client, &account, &order.url, args.poll_timeout)
-                            .await?;
+                        poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
                     if polled.status == "invalid" {
                         solver
                             .clean(base_domain, token, &key_auth)
@@ -817,8 +813,7 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                         .await
                         .map_err(|e| e.to_string())?;
                     let polled =
-                        poll_with_timeout(&client, &account, &order.url, args.poll_timeout)
-                            .await?;
+                        poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
                     if polled.status == "invalid" {
                         return Err(format!(
                             "order invalid after dns-persist-01 challenge for {}",
@@ -946,6 +941,39 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
     fs::write(&args.out, &pem).map_err(|e| format!("write {}: {e}", args.out.display()))?;
     println!("Certificate written to {}", args.out.display());
     println!("Certificate key:  {}", cert_key_path.display());
+
+    // Write .renewal.toml sidecar so `akamu-cli renew --renewal-config` can reload all settings.
+    let renewal_config = RenewalConfig {
+        server: args.server.clone(),
+        domains: ids,
+        account_key: args.account_key.clone(),
+        account_key_type: args.key_type.clone(),
+        cert_path: args.out.clone(),
+        cert_key_path: cert_key_path.clone(),
+        cert_key_type: args.cert_key_type.clone(),
+        challenge_type: args.challenge_type.clone(),
+        http_port: args.http_port,
+        tls_port: args.tls_port,
+        onion_key: args.onion_key.clone(),
+        poll_timeout: args.poll_timeout,
+        contacts: vec![],
+        eab_kid: args.eab.eab_kid.clone(),
+        eab_key: args.eab.eab_key.clone(),
+        eab_alg: args.eab.eab_alg.clone(),
+        dns_hook: args.dns_hook.clone(),
+    };
+    let toml_str = toml::to_string_pretty(&renewal_config)
+        .map_err(|e| format!("serialize renewal config: {e}"))?;
+    let mut renewal_path = args.out.clone().into_os_string();
+    renewal_path.push(".renewal.toml");
+    let renewal_path = std::path::PathBuf::from(renewal_path);
+    fs::write(&renewal_path, toml_str)
+        .map_err(|e| format!("write {}: {e}", renewal_path.display()))?;
+    println!("Renewal config:   {}", renewal_path.display());
+    println!(
+        "To renew: akamu-cli renew --renewal-config {}",
+        renewal_path.display()
+    );
     Ok(())
 }
 
@@ -974,6 +1002,84 @@ fn parse_rfc3339_utc(s: &str) -> Option<u64> {
 }
 
 async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
+    // When --renewal-config is provided, load all settings from the TOML file
+    // and delegate to cmd_issue directly.
+    if let Some(ref config_path) = args.renewal_config {
+        let toml_str = fs::read_to_string(config_path)
+            .map_err(|e| format!("read {}: {e}", config_path.display()))?;
+        let cfg: RenewalConfig = toml::from_str(&toml_str)
+            .map_err(|e| format!("parse {}: {e}", config_path.display()))?;
+
+        // Check ARI if --cert or cert_path from config exists and --force is not set.
+        if !args.force {
+            let cert_path = args
+                .cert
+                .as_ref()
+                .map(PathBuf::as_path)
+                .unwrap_or(&cfg.cert_path);
+            if cert_path.exists() {
+                let client = AcmeClient::new(&cfg.server)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let cert_pem = fs::read(cert_path)
+                    .map_err(|e| format!("read {}: {e}", cert_path.display()))?;
+                match client.get_renewal_info(&cert_pem).await {
+                    Ok(info) => {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        let start = parse_rfc3339_utc(&info.window_start).unwrap_or(0);
+                        let end = parse_rfc3339_utc(&info.window_end).unwrap_or(u64::MAX);
+                        if now < start {
+                            println!(
+                                "Renewal not yet suggested (window opens {}). Use --force to override.",
+                                info.window_start
+                            );
+                            return Ok(());
+                        }
+                        if now > end {
+                            eprintln!(
+                                "Warning: past the ARI renewal window end ({}); renewing anyway.",
+                                info.window_end
+                            );
+                        }
+                        println!(
+                            "ARI: renewal suggested (window {} – {})",
+                            info.window_start, info.window_end
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("ARI unavailable ({}); proceeding with renewal.", e);
+                    }
+                }
+            }
+        }
+
+        let eab = EabFlags {
+            eab_kid: cfg.eab_kid,
+            eab_key: cfg.eab_key,
+            eab_alg: cfg.eab_alg,
+        };
+        let issue_args = IssueArgs {
+            server: cfg.server,
+            domains: cfg.domains.into_iter().map(|id| id.value).collect(),
+            key_type: cfg.account_key_type,
+            account_key: cfg.account_key,
+            cert_key_type: cfg.cert_key_type,
+            challenge_type: cfg.challenge_type,
+            http_port: cfg.http_port,
+            tls_port: cfg.tls_port,
+            onion_key: cfg.onion_key,
+            poll_timeout: cfg.poll_timeout,
+            out: cfg.cert_path,
+            cert_key: Some(cfg.cert_key_path),
+            dns_hook: cfg.dns_hook,
+            eab,
+        };
+        return cmd_issue(issue_args).await;
+    }
+
     if !args.force {
         if let Some(cert_path) = &args.cert {
             let client = AcmeClient::new(&args.server)
