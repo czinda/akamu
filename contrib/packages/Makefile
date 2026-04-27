@@ -141,7 +141,7 @@ $(VENDOR_TARBALL):
 	@# each crate's CARGO_MANIFEST_DIR.  In the vendored layout that path resolves
 	@# to vendor/asn1/, but the schemas live inside vendor/synta-0.1.6/asn1/.
 	@# Copy them to the expected sibling location so the build script finds them.
-	cp -a "$(REPOROOT)/vendor/synta-0.1.6/asn1" "$(REPOROOT)/vendor/asn1"
+	cp -a "$(REPOROOT)/vendor/synta-0.1.9/asn1" "$(REPOROOT)/vendor/asn1"
 	@# Archive vendor/ and Cargo.lock (pinned versions for reproducible builds).
 	tar -czf "$(CURDIR)/$@" \
 	    -C "$(REPOROOT)" vendor/ Cargo.lock
