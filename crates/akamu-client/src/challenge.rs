@@ -173,6 +173,90 @@ impl DnsPersist01Helper {
     }
 }
 
+// ── dns-hook solver ───────────────────────────────────────────────────────────
+
+/// Delegates DNS-01 / dns-persist-01 TXT record management to an external hook
+/// script.
+///
+/// The hook is invoked as:
+///
+/// ```text
+/// <hook_script> add
+/// <hook_script> remove
+/// ```
+///
+/// All values are passed exclusively as **environment variables** (never as
+/// command-line arguments, which would be visible via `/proc/<pid>/cmdline`):
+///
+/// | Variable           | Value                                     |
+/// |--------------------|-------------------------------------------|
+/// | `AKAMU_DOMAIN`     | DNS name being validated                  |
+/// | `AKAMU_TOKEN`      | ACME challenge token                      |
+/// | `AKAMU_TXT`        | TXT record value (`base64url(SHA-256(key_auth))`) |
+/// | `AKAMU_KEY_AUTH`   | Full key authorization string             |
+///
+/// Exit code 0 is success; non-zero is failure.  stderr is captured and
+/// included in the returned [`ClientError`].
+pub struct DnsHookSolver {
+    hook: String,
+}
+
+impl DnsHookSolver {
+    /// Create a new solver that will delegate to `hook` (a path or shell
+    /// command).
+    pub fn new(hook: String) -> Self {
+        Self { hook }
+    }
+
+    /// Compute the TXT record value and invoke the hook with `add`.
+    pub async fn deploy(
+        &self,
+        domain: &str,
+        token: &str,
+        key_auth: &str,
+    ) -> Result<(), ClientError> {
+        self.run_hook("add", domain, token, key_auth).await
+    }
+
+    /// Invoke the hook with `remove` to clean up the TXT record.
+    pub async fn clean(
+        &self,
+        domain: &str,
+        token: &str,
+        key_auth: &str,
+    ) -> Result<(), ClientError> {
+        self.run_hook("remove", domain, token, key_auth).await
+    }
+
+    async fn run_hook(
+        &self,
+        operation: &str,
+        domain: &str,
+        token: &str,
+        key_auth: &str,
+    ) -> Result<(), ClientError> {
+        let txt = dns_txt_value(key_auth)?;
+        let output = tokio::process::Command::new(&self.hook)
+            .arg(operation)
+            .env("AKAMU_DOMAIN", domain)
+            .env("AKAMU_TOKEN", token)
+            .env("AKAMU_TXT", &txt)
+            .env("AKAMU_KEY_AUTH", key_auth)
+            .output()
+            .await?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(ClientError::Crypto(format!(
+            "dns hook '{}' {operation} exited with {}: {stderr}",
+            self.hook, output.status,
+        )))
+    }
+}
+
 // ── tls-alpn-01 solver ────────────────────────────────────────────────────────
 
 /// SNI-based certificate resolver: looks up the per-domain certified key in the
