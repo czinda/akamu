@@ -67,24 +67,31 @@ MOCK_CONFIG ?= fedora-rawhide-x86_64
 
 # ──────────────────────────────────────────────────────────────────────────────
 
-.PHONY: all sources tarball vendor srpm mock lint check-deps clean help copr-build
+.PHONY: all sources tarball vendor srpm mock lint validate-spec check-deps clean help copr-build
 
 all: sources
 
 help:
 	@echo "Targets:"
-	@echo "  sources     prepare all source files (tarball + vendor)"
-	@echo "  tarball     create $(TARBALL) from GIT_REF=$(GIT_REF)"
-	@echo "  vendor      create $(VENDOR_TARBALL)  [needs network]"
-	@echo "  srpm        build SRPM (Release: $(RELEASE)%{?dist})"
-	@echo "  mock        rebuild SRPM in mock chroot (MOCK_CONFIG=$(MOCK_CONFIG))"
-	@echo "  lint        run rpmlint on $(SPEC)"
-	@echo "  check-deps  check which Cargo.lock crates are available as system packages"
-	@echo "  copr-build  submit SRPM to COPR  (COPR=project required)"
-	@echo "              example: make copr-build COPR=@mygroup/akamu"
-	@echo "  clean       remove generated source files and the temporary spec"
+	@echo "  sources       prepare all source files (tarball + vendor)"
+	@echo "  tarball       create $(TARBALL) from GIT_REF=$(GIT_REF)"
+	@echo "  vendor        create $(VENDOR_TARBALL)  [needs network]"
+	@echo "  srpm          build SRPM (Release: $(RELEASE)%{?dist})"
+	@echo "  mock          rebuild SRPM in mock chroot (MOCK_CONFIG=$(MOCK_CONFIG))"
+	@echo "  lint          run rpmlint on $(SPEC)"
+	@echo "  validate-spec validate rust2rpm.toml against the rust2rpm schema"
+	@echo "  check-deps    check which Cargo.lock crates are available as system packages"
+	@echo "  copr-build    submit SRPM to COPR  (COPR=project required)"
+	@echo "                example: make copr-build COPR=@mygroup/akamu"
+	@echo "  clean         remove generated source files and the temporary spec"
 	@echo ""
 	@echo "Snapshot: GIT_REF=$(GIT_REF)  date=$(SNAPDATE)  commit=$(SNAPCOMMIT)"
+	@echo ""
+	@echo "Note: rust-akamu.spec.in is maintained manually."
+	@echo "  rust2rpm cannot generate it automatically because akamu is a Cargo"
+	@echo "  workspace not published on crates.io (cargo package fails on path"
+	@echo "  dependencies, and rust2rpm rejects workspace Cargo.toml files)."
+	@echo "  Use 'make validate-spec' to check rust2rpm.toml for schema errors."
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SOURCE PREPARATION
@@ -189,6 +196,22 @@ mock: srpm
 
 lint:
 	rpmlint "$(SPEC)"
+
+# ── validate-spec ─────────────────────────────────────────────────────────────
+#
+# Validate rust2rpm.toml against the rust2rpm JSON schema.
+#
+# Full spec regeneration via rust2rpm is not possible for this project:
+#   - akamu is a Cargo workspace; rust2rpm rejects workspace Cargo.toml files.
+#   - akamu is not published on crates.io; --offline fetch fails.
+#   - cargo package fails on workspace path dependencies (no explicit versions).
+# rust2rpm.toml is kept as a machine-validated record of the package metadata
+# and build requirements.  The spec itself (rust-akamu.spec.in) is maintained
+# manually, bootstrapped from the rust2rpm-generated template.
+
+validate-spec:
+	rust2rpm --validate-only -C "$(CURDIR)/rust2rpm.toml"
+	@echo "rust2rpm.toml is valid."
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DEPENDENCY CHECKING

@@ -1,8 +1,4 @@
 [package]
-# Source tarball produced with:
-#   git archive --format=tar.gz --prefix=akamu-{version}/ HEAD \
-#       -o akamu-{version}.tar.gz
-# Until the crate is published to crates.io, use the Codeberg forge URL:
 url = "https://codeberg.org/abbra/akamu/archive/v{version}.tar.gz"
 
 summary = "ACME server with post-quantum certificate support"
@@ -23,14 +19,11 @@ Systemd service units for akamu and akamu-cosigner are installed from
 contrib/systemd/ in the source tree.
 """
 
-license = "GPL-3.0-or-later"
-
-# The workspace root has both src/lib.rs (server library) and src/main.rs
-# (server binary).  Install only the server binary; the library is internal.
-# The akamu-cosigner and akamu-client binaries are installed via explicit
-# %cargo_install calls in the spec %install section (see rust-akamu.spec.in).
-install_bin = true
-install_lib = false
+# Install the server binary; the library is internal.
+# akamu-cosigner and akamu-client binaries are added via explicit
+# %cargo_install calls in the custom sections of the spec.
+cargo-install-bin = true
+cargo-install-lib = false
 
 [requires]
 build = [
@@ -38,30 +31,6 @@ build = [
     "sqlite-devel",
     "clang-devel",
     "pkgconfig(libsqlite3)",
-]
-comments = [
-    "Rebuild this package whenever openssl-devel is updated in Fedora.",
-    "The project uses an OpenSSL fork (pqc-prs) for ML-DSA/PQ support;",
-    "verify compatibility when the system OpenSSL major version changes.",
-    "",
-    "A full vendor tarball (Source1) is required because:",
-    "  1. [patch.crates-io] in Cargo.toml overrides openssl and openssl-sys",
-    "     with a git fork (pqc-prs branch of",
-    "     https://github.com/abbra/rust-openssl.git) for ML-DSA/ML-KEM/PQC",
-    "     support.  This fork is not published to crates.io.",
-    "  2. tokio-rusqlite and rusqlite_migration are not yet packaged in Fedora.",
-    "  3. rusqlite 0.31 is required; Fedora ships 0.38 (incompatible API).",
-    "  4. hickory-resolver 0.24 is required; Fedora ships 0.25 (incompatible).",
-    "  5. toml 0.8 is required; Fedora ships 1.1 (incompatible).",
-    "Generate the vendor tarball with:",
-    "  cargo vendor --versioned-dirs vendor/",
-    "  tar czf akamu-{version}-vendor.tar.gz -C vendor --transform ...",
-    "",
-    "PREREQUISITE: the synta* crates must be installed into the mock chroot",
-    "before this SRPM can build:",
-    "  rust-synta-devel, rust-synta-certificate-devel,",
-    "  rust-synta-x509-verification-devel, rust-synta-mtc-devel",
-    "Run 'mock --install' for each in dependency order before 'mock --rebuild'.",
 ]
 
 [tests]
