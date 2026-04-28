@@ -1,25 +1,44 @@
 # CRL and OCSP
 
-`Akāmu` supports both Certificate Revocation List (CRL) and Online Certificate Status Protocol (OCSP) as optional mechanisms to communicate revocation status. Neither is served directly by the server; instead, the server embeds URLs in issued certificates that point to external services you operate.
+`Akāmu` supports both Certificate Revocation List (CRL) and Online Certificate Status Protocol (OCSP) to communicate revocation status to relying parties. Both protocols are served directly by Akāmu at built-in endpoints.
 
-## CRL Distribution Points
+## CRL — `GET /ca/crl`
 
-When `crl_url` is set in `[ca]`, every issued end-entity certificate contains a `CRLDistributionPoints` extension pointing to that URL:
+Akāmu generates and serves a signed v2 CRL (RFC 5280) at:
+
+```
+GET /ca/crl
+```
+
+The CRL is built on each request from the current revocation database. No caching or pre-generation is required for typical issuance volumes. The response uses `Content-Type: application/pkix-crl`.
+
+### Configuring the CRL URL
+
+Set `crl_url` in `[ca]` to the public URL of the `/ca/crl` endpoint. This URL is embedded in every issued end-entity certificate in the `CRLDistributionPoints` extension:
 
 ```toml
 [ca]
-crl_url = "http://acme.example.com/crl/ca.crl"
+crl_url = "http://acme.example.com/ca/crl"
 ```
 
-Clients that check CRL status fetch the file at this URL and verify the certificate's serial number against the revocation list. Akāmu does not generate or publish the CRL file automatically. You are responsible for producing it and hosting it at the configured URL.
+Clients that check CRL status fetch this URL and verify the certificate's serial number against the revocation list.
+
+### CRL validity window
+
+The `nextUpdate` field in the CRL is set to the current time plus `crl_next_update_secs` (default: 86400 seconds, i.e. one day):
+
+```toml
+[ca]
+crl_next_update_secs = 86400   # one day (default)
+```
+
+Adjust this value to match how frequently clients are expected to re-fetch the CRL.
 
 ### What a CRL contains
 
-When you generate a CRL from Akāmu's data, it will be a v2 CRL conforming to RFC 5280. It contains one entry for each revoked certificate, carrying the hex-encoded serial number, the revocation timestamp, and the reason code (if one was provided at revocation time).
+Each CRL entry carries the certificate's serial number, the revocation timestamp, and the reason code (if one was provided at revocation time). The CRL also includes a `cRLNumber` extension (RFC 5280 §5.2.3) derived from the current Unix timestamp.
 
 ### CRL reason codes
-
-The reason codes that can be recorded at revocation time (see [Certificates](certificates.md)) are also recorded in the CRL:
 
 | Code | CRL reason string |
 |---|---|
@@ -34,37 +53,55 @@ The reason codes that can be recorded at revocation time (see [Certificates](cer
 | 9 | Privilege Withdrawn |
 | 10 | AA Compromise |
 
-## OCSP
+### Verifying the CRL manually
 
-When `ocsp_url` is set in `[ca]`, every issued end-entity certificate contains an `AuthorityInfoAccess` extension with an OCSP responder URI:
+```bash
+curl http://acme.example.com/ca/crl | openssl crl -inform DER -text -noout
+```
+
+## OCSP — `GET /ca/ocsp/{request}` and `POST /ca/ocsp`
+
+Akāmu includes a built-in OCSP responder (RFC 6960) at:
+
+```
+POST /ca/ocsp                 # body: DER OCSPRequest, Content-Type: application/ocsp-request
+GET  /ca/ocsp/{request}       # {request}: base64url-encoded DER OCSPRequest (RFC 6960 §A.1)
+```
+
+Both endpoints return a signed `OCSPResponse` with `Content-Type: application/ocsp-response`. No authentication is required — OCSP is a public protocol.
+
+### Configuring the OCSP URL
+
+Set `ocsp_url` in `[ca]` to the public base URL of the OCSP endpoint. This URL is embedded in every issued end-entity certificate in the `AuthorityInfoAccess` extension:
 
 ```toml
 [ca]
-ocsp_url = "http://ocsp.example.com"
+ocsp_url = "http://acme.example.com/ca/ocsp"
 ```
 
-OCSP clients query this URL to determine the status of a specific certificate. Akāmu does not implement an OCSP responder. You must operate one separately (for example, using the `openssl ocsp` command or a dedicated OCSP responder service).
+Clients sending GET requests append the base64url-encoded request to this URL. Clients sending POST requests target the URL directly.
 
-## Practical deployment
+### OCSP response behaviour
 
-### Minimal CRL deployment
+For each serial number in an OCSPRequest:
 
-For a private CA deployment that only needs CRL-based revocation status:
+| DB state | OCSP CertStatus |
+|---|---|
+| Certificate not found | `unknown` (2) |
+| Certificate found, `status = "revoked"` | `revoked` (1) |
+| Certificate found, any other status | `good` (0) |
 
-1. Set `crl_url` to a URL you control, for example `http://acme.internal/crl/ca.crl`.
-2. Periodically query the Akāmu database for revoked certificates and generate a signed CRL using the CA key. Akāmu exposes the necessary data — serial numbers, revocation timestamps, and reason codes — in the `certificates` table.
-3. Publish the resulting CRL file at the configured URL.
+The response is signed with the CA key. The responder identity is set to `byName` using the CA's subject DER.
 
-For the internal data format used to build CRLs, see [Certificate Authority — CRL generation](../developer/ca.md#crl-generation-srccarevokers) in the Developer Guide.
+The `nextUpdate` field in each `SingleResponse` is fixed at 24 hours after the response is produced.
 
-### OCSP deployment
+### Verifying OCSP manually
 
-For deployments requiring OCSP:
+```bash
+openssl ocsp -issuer ca.pem -cert issued.pem -url http://acme.example.com/ca/ocsp -text
+```
 
-1. Set `ocsp_url` to an OCSP responder you operate.
-2. The OCSP responder needs access to the CA's private key (or a delegated OCSP signing key) and the list of issued and revoked certificates. This information lives in the Akāmu database.
-
-### Checking revocation status from the database
+## Checking revocation status from the database
 
 To verify whether a specific certificate is currently marked as revoked in Akāmu's database, query the `certificates` table by serial number. The serial number is printed in hex by most certificate inspection tools (for example, `openssl x509 -serial -noout -in cert.pem`):
 

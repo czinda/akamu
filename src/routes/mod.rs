@@ -27,6 +27,7 @@ pub mod finalize;
 pub mod key_change;
 pub mod mtc;
 pub mod nonce;
+pub mod ocsp;
 pub mod order;
 pub mod renewal_info;
 pub mod revoke;
@@ -67,6 +68,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         // CRL (RFC 5280) — public, no auth required
         .route("/ca/crl", get(crl::get_crl))
+        // OCSP (RFC 6960) — public, no auth required
+        .route("/ca/ocsp", axum::routing::post(ocsp::post_ocsp))
+        .route("/ca/ocsp/{request}", get(ocsp::get_ocsp))
         // Revocation
         .route("/acme/revoke-cert", post(revoke::revoke_cert))
         // Key change

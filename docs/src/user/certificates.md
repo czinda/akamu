@@ -184,7 +184,14 @@ flowchart LR
     class D fail
 ```
 
-> **Note:** The `explanationURL` field is always `null` in the current implementation. RFC 9773 allows an explanation URL to be provided when the server has specific reasons for the suggested window.
+RFC 9773 allows an optional `explanationURL` field pointing to a human-readable page explaining the renewal recommendation. Set `ari_explanation_url` in `[server]` to include it:
+
+```toml
+[server]
+ari_explanation_url = "https://acme.example.com/docs/renewal-policy"
+```
+
+When absent, the field is omitted from the response.
 
 ### Using ARI with certbot
 

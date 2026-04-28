@@ -91,7 +91,7 @@ pub fn build_crl(
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Extract the DER-encoded subject Name from a DER-encoded certificate.
-fn extract_ca_subject_der(ca_cert_der: &[u8]) -> Result<Vec<u8>, AcmeError> {
+pub(crate) fn extract_ca_subject_der(ca_cert_der: &[u8]) -> Result<Vec<u8>, AcmeError> {
     let mut dec = Decoder::new(ca_cert_der, Encoding::Der);
     let cert: Certificate = dec
         .decode()

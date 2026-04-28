@@ -3051,3 +3051,167 @@ async fn test_crl_endpoint_contains_revoked_serial() {
         "revoked serial not found in CRL DER"
     );
 }
+
+/// Build a minimal DER-encoded OCSPRequest for one serial number.
+///
+/// Uses SHA-1 as the hash algorithm with zero-filled issuerNameHash and
+/// issuerKeyHash — sufficient for testing the server's decode/lookup/sign loop.
+fn build_ocsp_request_der(serial_bytes: &[u8]) -> Vec<u8> {
+    // SHA-1 AlgorithmIdentifier DER: SEQUENCE { OID 1.3.14.3.2.26, NULL }
+    let sha1_alg: &[u8] = &[0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00];
+    // issuerNameHash: OCTET STRING, 20 zero bytes
+    let name_hash: &[u8] = &[
+        0x04, 0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ];
+    // issuerKeyHash: OCTET STRING, 20 zero bytes
+    let key_hash: &[u8] = &[
+        0x04, 0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ];
+
+    // serialNumber: DER INTEGER (prepend 0x00 if high bit set)
+    let needs_pad = serial_bytes.first().map(|&b| b & 0x80 != 0).unwrap_or(false);
+    let int_val_len = serial_bytes.len() + usize::from(needs_pad);
+    let mut serial_int = vec![0x02_u8, int_val_len as u8];
+    if needs_pad {
+        serial_int.push(0x00);
+    }
+    serial_int.extend_from_slice(serial_bytes);
+
+    // CertID SEQUENCE
+    let cert_id_payload_len =
+        sha1_alg.len() + name_hash.len() + key_hash.len() + serial_int.len();
+    let mut cert_id = vec![0x30_u8, cert_id_payload_len as u8];
+    cert_id.extend_from_slice(sha1_alg);
+    cert_id.extend_from_slice(name_hash);
+    cert_id.extend_from_slice(key_hash);
+    cert_id.extend_from_slice(&serial_int);
+
+    // Request SEQUENCE
+    let mut request = vec![0x30_u8, cert_id.len() as u8];
+    request.extend_from_slice(&cert_id);
+
+    // requestList SEQUENCE OF
+    let mut req_list = vec![0x30_u8, request.len() as u8];
+    req_list.extend_from_slice(&request);
+
+    // TBSRequest SEQUENCE
+    let mut tbs = vec![0x30_u8, req_list.len() as u8];
+    tbs.extend_from_slice(&req_list);
+
+    // OCSPRequest SEQUENCE (no optional signature)
+    let mut ocsp_req = vec![0x30_u8, tbs.len() as u8];
+    ocsp_req.extend_from_slice(&tbs);
+    ocsp_req
+}
+
+#[tokio::test]
+async fn test_ocsp_endpoint_post_and_get() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let router = routes::build_router(Arc::clone(&state));
+    let db = state.db.clone();
+
+    // Issue a certificate so there is a valid serial in the DB.
+    let key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": "ocsp-test.example"}]})),
+    );
+    let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
+    let nonce = nonce_header(&order_headers);
+
+    let order_id: String =
+        sqlx::query_as::<_, (String,)>("SELECT id FROM orders ORDER BY created DESC LIMIT 1")
+            .fetch_one(&db)
+            .await
+            .unwrap()
+            .0;
+    mark_order_ready(&db, &order_id).await;
+
+    let csr_der = make_csr_der("ocsp-test.example");
+    let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/order/{order_id}/finalize"),
+        Some(json!({"csr": csr_b64})),
+    );
+    let (status, _, _) =
+        post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
+    assert_eq!(status, StatusCode::OK, "finalize failed");
+
+    // Retrieve the issued cert's serial from the DB.
+    let serial_hex: String =
+        sqlx::query_as::<_, (String,)>("SELECT serial_number FROM certificates ORDER BY created DESC LIMIT 1")
+            .fetch_one(&db)
+            .await
+            .unwrap()
+            .0;
+    let serial_bytes: Vec<u8> = (0..serial_hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&serial_hex[i..i + 2], 16).unwrap())
+        .collect();
+
+    let ocsp_req_der = build_ocsp_request_der(&serial_bytes);
+
+    // ── POST /ca/ocsp ─────────────────────────────────────────────────────────
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/ca/ocsp")
+        .header("Content-Type", "application/ocsp-request")
+        .body(Body::from(ocsp_req_der.clone()))
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "POST /ca/ocsp failed");
+    assert_eq!(
+        resp.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("application/ocsp-response"),
+        "wrong Content-Type for OCSP response"
+    );
+    let post_body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    assert!(!post_body.is_empty(), "OCSP POST response body is empty");
+    // A well-formed DER OCSPResponse starts with SEQUENCE tag 0x30.
+    assert_eq!(post_body[0], 0x30, "OCSP POST response is not a DER SEQUENCE");
+
+    // ── GET /ca/ocsp/{base64url(request)} ────────────────────────────────────
+    let encoded = URL_SAFE_NO_PAD.encode(&ocsp_req_der);
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/ca/ocsp/{encoded}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "GET /ca/ocsp failed");
+    assert_eq!(
+        resp.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("application/ocsp-response"),
+        "wrong Content-Type for OCSP GET response"
+    );
+    let get_body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    assert!(!get_body.is_empty(), "OCSP GET response body is empty");
+    assert_eq!(get_body[0], 0x30, "OCSP GET response is not a DER SEQUENCE");
+
+    // Both endpoints must produce the same structure (independent of signing
+    // time, so just check they're both valid DER starting with SEQUENCE).
+    assert!(get_body.len() > 10, "OCSP GET response too short");
+}
