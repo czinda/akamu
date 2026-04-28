@@ -232,7 +232,7 @@ async fn start_tls_server(
         .map_err(CosignerError::Tls)?;
 
     let server_cfg = rustls::ServerConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
+        rustls_native_ossl::default_provider(),
     ))
     .with_safe_default_protocol_versions()
     .map_err(|e| CosignerError::Tls(format!("TLS protocol config: {e}")))?
