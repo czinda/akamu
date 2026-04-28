@@ -63,6 +63,8 @@ pub fn load_builtin(
             issue_as_mtc,
             allowed_identifier_patterns: pcfg.allowed_identifiers.clone(),
             identifier_match_all,
+            auth_hook: pcfg.auth_hook.clone(),
+            auth_hook_timeout_secs: pcfg.auth_hook_timeout_secs.unwrap_or(30),
         };
 
         out.insert(id.clone(), (pcfg.description.clone(), params));
@@ -134,6 +136,8 @@ mod tests {
             issue_as: None,
             allowed_identifiers: vec![],
             identifier_match: None,
+            auth_hook: None,
+            auth_hook_timeout_secs: None,
         }
     }
 

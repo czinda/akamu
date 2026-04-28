@@ -131,6 +131,11 @@ pub struct CertificateParameters {
     /// matching any pattern is sufficient.  Ignored when
     /// `allowed_identifier_patterns` is empty.
     pub identifier_match_all: bool,
+    /// Path to an external authorization script.  `None` = no hook.
+    /// Receives `{"account_id","profile","identifiers"}` on stdin; exit 0 = allow.
+    pub auth_hook: Option<String>,
+    /// Seconds before the auth hook subprocess is considered timed out.
+    pub auth_hook_timeout_secs: u64,
 }
 
 impl CertificateParameters {
@@ -153,6 +158,8 @@ impl CertificateParameters {
             issue_as_mtc: false,
             allowed_identifier_patterns: vec![],
             identifier_match_all: true,
+            auth_hook: None,
+            auth_hook_timeout_secs: 30,
         }
     }
 }

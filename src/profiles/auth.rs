@@ -1,11 +1,15 @@
 //! Per-profile authorization checks applied at certificate finalization.
 //!
-//! Mechanism:
+//! Mechanisms:
 //!
 //! 1. **Identifier patterns** — regex patterns matched against each order
 //!    identifier formatted as `"type:value"`.  Controlled by
 //!    `allowed_identifier_patterns` / `identifier_match_all` in
 //!    [`CertificateParameters`].
+//!
+//! 2. **External hook** — an out-of-process script receives JSON on stdin and
+//!    must exit 0 to permit issuance.  Controlled by `auth_hook` /
+//!    `auth_hook_timeout_secs`.
 
 use crate::error::AcmeError;
 use crate::profiles::CertificateParameters;
@@ -20,8 +24,8 @@ use crate::profiles::CertificateParameters;
 /// encountered.
 pub async fn check_profile_auth(
     _db: &crate::db::Db,
-    _account_id: &str,
-    _profile_name: &str,
+    account_id: &str,
+    profile_name: &str,
     params: &CertificateParameters,
     identifiers: &[(&str, &str)],
 ) -> Result<(), AcmeError> {
@@ -31,6 +35,17 @@ pub async fn check_profile_auth(
             &params.allowed_identifier_patterns,
             params.identifier_match_all,
         )?;
+    }
+
+    if let Some(ref hook_path) = params.auth_hook {
+        check_auth_hook(
+            hook_path,
+            params.auth_hook_timeout_secs,
+            account_id,
+            profile_name,
+            identifiers,
+        )
+        .await?;
     }
 
     Ok(())
@@ -78,6 +93,63 @@ fn check_identifier_patterns(
     }
 
     Ok(())
+}
+
+// ── External hook check ───────────────────────────────────────────────────────
+
+async fn check_auth_hook(
+    hook_path: &str,
+    timeout_secs: u64,
+    account_id: &str,
+    profile_name: &str,
+    identifiers: &[(&str, &str)],
+) -> Result<(), AcmeError> {
+    let ids_json: Vec<serde_json::Value> = identifiers
+        .iter()
+        .map(|(t, v)| serde_json::json!({"type": t, "value": v}))
+        .collect();
+    let input = serde_json::json!({
+        "account_id": account_id,
+        "profile": profile_name,
+        "identifiers": ids_json,
+    });
+    let input_bytes = serde_json::to_vec(&input).unwrap_or_default();
+
+    let mut child = tokio::process::Command::new(hook_path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| AcmeError::Internal(format!("auth hook '{hook_path}': spawn failed: {e}")))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        use tokio::io::AsyncWriteExt;
+        stdin.write_all(&input_bytes).await.ok();
+    }
+
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        child.wait_with_output(),
+    )
+    .await
+    .map_err(|_| {
+        AcmeError::Unauthorized(format!(
+            "auth hook '{hook_path}': timed out after {timeout_secs}s"
+        ))
+    })?
+    .map_err(|e| AcmeError::Internal(format!("auth hook '{hook_path}': wait failed: {e}")))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let reason = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let detail = if reason.is_empty() {
+        format!("auth hook '{hook_path}' denied issuance")
+    } else {
+        format!("auth hook denied issuance: {reason}")
+    };
+    Err(AcmeError::Unauthorized(detail))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

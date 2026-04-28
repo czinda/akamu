@@ -181,6 +181,15 @@ pub struct BuiltinProfileConfig {
     /// `allowed_identifiers` is empty.
     #[serde(default)]
     pub identifier_match: Option<String>,
+    /// Path to an external authorization script.  Receives a JSON object on
+    /// stdin (`{"account_id","profile","identifiers"}`).  Exit 0 = permit;
+    /// non-zero = deny.  stdout (trimmed) is forwarded to the client as the
+    /// denial reason.
+    pub auth_hook: Option<String>,
+    /// Seconds to wait for `auth_hook` before aborting with a denial.
+    /// Default: 30.
+    #[serde(default)]
+    pub auth_hook_timeout_secs: Option<u64>,
 }
 
 /// A certificate policy OID with an optional CPS URI qualifier.
