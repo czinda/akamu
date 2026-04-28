@@ -304,11 +304,12 @@ fn translate(
         // Dogtag profiles always produce X.509; MTC issuance is builtin-only.
         issue_as_mtc: false,
         // Authorization controls are builtin-only; Dogtag/IPA profiles impose no
-        // identifier restrictions or hook.
+        // identifier restrictions, hook, or account-grant requirements.
         allowed_identifier_patterns: vec![],
         identifier_match_all: true,
         auth_hook: None,
         auth_hook_timeout_secs: 30,
+        require_account_grant: false,
     })
 }
 

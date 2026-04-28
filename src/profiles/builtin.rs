@@ -65,6 +65,7 @@ pub fn load_builtin(
             identifier_match_all,
             auth_hook: pcfg.auth_hook.clone(),
             auth_hook_timeout_secs: pcfg.auth_hook_timeout_secs.unwrap_or(30),
+            require_account_grant: pcfg.require_account_grant,
         };
 
         out.insert(id.clone(), (pcfg.description.clone(), params));
@@ -138,6 +139,7 @@ mod tests {
             identifier_match: None,
             auth_hook: None,
             auth_hook_timeout_secs: None,
+            require_account_grant: false,
         }
     }
 

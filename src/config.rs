@@ -190,6 +190,11 @@ pub struct BuiltinProfileConfig {
     /// Default: 30.
     #[serde(default)]
     pub auth_hook_timeout_secs: Option<u64>,
+    /// When `true`, the requesting account must have this profile's name in its
+    /// `profile_grants` attribute.  Grants are set via the admin API or copied
+    /// from the EAB key at account-creation time.
+    #[serde(default)]
+    pub require_account_grant: bool,
 }
 
 /// A certificate policy OID with an optional CPS URI qualifier.

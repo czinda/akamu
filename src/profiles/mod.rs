@@ -136,6 +136,9 @@ pub struct CertificateParameters {
     pub auth_hook: Option<String>,
     /// Seconds before the auth hook subprocess is considered timed out.
     pub auth_hook_timeout_secs: u64,
+    /// When `true`, the requesting account must have this profile listed in its
+    /// `profile_grants` attribute (managed via the admin API or EAB metadata).
+    pub require_account_grant: bool,
 }
 
 impl CertificateParameters {
@@ -160,6 +163,7 @@ impl CertificateParameters {
             identifier_match_all: true,
             auth_hook: None,
             auth_hook_timeout_secs: 30,
+            require_account_grant: false,
         }
     }
 }

@@ -1,6 +1,7 @@
 //! Per-profile authorization checks applied at certificate finalization.
 //!
-//! Mechanisms:
+//! Three independent mechanisms, combined with AND logic (all configured
+//! checks must pass for issuance to proceed):
 //!
 //! 1. **Identifier patterns** — regex patterns matched against each order
 //!    identifier formatted as `"type:value"`.  Controlled by
@@ -10,7 +11,11 @@
 //! 2. **External hook** — an out-of-process script receives JSON on stdin and
 //!    must exit 0 to permit issuance.  Controlled by `auth_hook` /
 //!    `auth_hook_timeout_secs`.
+//!
+//! 3. **Account grant** — the account's `profile_grants` attribute must list
+//!    the requested profile.  Controlled by `require_account_grant`.
 
+use crate::db;
 use crate::error::AcmeError;
 use crate::profiles::CertificateParameters;
 
@@ -23,7 +28,7 @@ use crate::profiles::CertificateParameters;
 /// `Err(AcmeError::Unauthorized(_))` / `Err(AcmeError::InvalidProfile(_))`
 /// encountered.
 pub async fn check_profile_auth(
-    _db: &crate::db::Db,
+    db: &db::Db,
     account_id: &str,
     profile_name: &str,
     params: &CertificateParameters,
@@ -46,6 +51,10 @@ pub async fn check_profile_auth(
             identifiers,
         )
         .await?;
+    }
+
+    if params.require_account_grant {
+        check_account_grant(db, account_id, profile_name).await?;
     }
 
     Ok(())
@@ -152,6 +161,42 @@ async fn check_auth_hook(
     Err(AcmeError::Unauthorized(detail))
 }
 
+// ── Account grant check ───────────────────────────────────────────────────────
+
+async fn check_account_grant(
+    db: &db::Db,
+    account_id: &str,
+    profile_name: &str,
+) -> Result<(), AcmeError> {
+    let grants_entry = db::accounts::get_profile_grants(db, account_id).await?;
+
+    match grants_entry {
+        None => {
+            // Account not found — this should not happen at finalize time since
+            // the account was already verified, but treat it as unauthorized.
+            Err(AcmeError::Unauthorized(format!(
+                "account '{account_id}' not found during grant check"
+            )))
+        }
+        Some(None) => {
+            // grants IS NULL → account has no explicit grants → denied.
+            Err(AcmeError::Unauthorized(format!(
+                "account has no profile grants; '{profile_name}' is not permitted"
+            )))
+        }
+        Some(Some(json)) => {
+            let grants: Vec<String> = serde_json::from_str(&json).unwrap_or_default();
+            if grants.iter().any(|g| g == profile_name) {
+                Ok(())
+            } else {
+                Err(AcmeError::Unauthorized(format!(
+                    "account is not granted access to profile '{profile_name}'"
+                )))
+            }
+        }
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -204,5 +249,50 @@ mod tests {
         let patterns = vec!["[invalid".to_string()];
         let err = check_identifier_patterns(&ids, &patterns, true).unwrap_err();
         assert!(matches!(err, AcmeError::InvalidProfile(_)));
+    }
+
+    #[tokio::test]
+    async fn account_grant_check_passes_when_profile_listed() {
+        let db = open_test_db().await;
+        let mut row = crate::db::schema::AccountRow {
+            id: "acct-grant-1".to_string(),
+            status: "valid".to_string(),
+            contact: None,
+            public_key: vec![0u8; 4],
+            jwk_thumbprint: "thumb-grant-1".to_string(),
+            created: 0,
+            updated: 0,
+            profile_grants: Some("[\"tls-server\",\"mtc\"]".to_string()),
+        };
+        crate::db::accounts::insert(&db, row.clone()).await.unwrap();
+        assert!(check_account_grant(&db, "acct-grant-1", "tls-server")
+            .await
+            .is_ok());
+        assert!(check_account_grant(&db, "acct-grant-1", "mtc")
+            .await
+            .is_ok());
+
+        // Not in the list.
+        let err = check_account_grant(&db, "acct-grant-1", "other")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AcmeError::Unauthorized(_)));
+
+        // NULL grants → denied.
+        row.id = "acct-grant-2".to_string();
+        row.jwk_thumbprint = "thumb-grant-2".to_string();
+        row.profile_grants = None;
+        crate::db::accounts::insert(&db, row).await.unwrap();
+        let err = check_account_grant(&db, "acct-grant-2", "tls-server")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AcmeError::Unauthorized(_)));
+    }
+
+    async fn open_test_db() -> crate::db::Db {
+        crate::db::install_drivers();
+        crate::db::open("sqlite::memory:", 1, "./migrations/sqlite")
+            .await
+            .unwrap()
     }
 }
