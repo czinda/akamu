@@ -49,8 +49,8 @@ The server:
 | BasicConstraints | No | `cA=FALSE` | `cA=FALSE` |
 | KeyUsage | Yes | `digitalSignature` | As configured in profile |
 | ExtendedKeyUsage | No | `serverAuth` | As configured in profile |
-| SubjectKeyIdentifier | No | RFC 5280 SHA-1 method | RFC 5280 SHA-1 method |
-| AuthorityKeyIdentifier | No | RFC 5280 SHA-1 method | RFC 5280 SHA-1 method |
+| SubjectKeyIdentifier | No | RFC 7093 §2 Method 1 (SHA-256) | RFC 7093 §2 Method 1 (SHA-256) |
+| AuthorityKeyIdentifier | No | RFC 7093 §2 Method 1 (SHA-256) | RFC 7093 §2 Method 1 (SHA-256) |
 | SubjectAlternativeName | No | Rebuilt from validated CSR SANs | Rebuilt from validated CSR SANs |
 | AuthorityInfoAccess (OCSP) | No | If `ocsp_url` configured | If profile or `ocsp_url` set |
 | CRLDistributionPoints | No | If `crl_url` configured | If profile or `crl_url` set |
