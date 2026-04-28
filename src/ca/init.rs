@@ -239,10 +239,12 @@ fn generate_cert_for_hsm_key(
         .ok_or_else(|| AcmeError::Builder("encode BasicConstraints".into()))?;
     let ku_der = encode_key_usage((1u16 << KEY_USAGE_KEY_CERT_SIGN) | (1u16 << KEY_USAGE_C_RLSIGN))
         .ok_or_else(|| AcmeError::Builder("encode KeyUsage".into()))?;
-    let ski_der = encode_subject_key_identifier(&spki_der, KeyIdMethod::Rfc5280Sha1, &hasher)
-        .ok_or_else(|| AcmeError::Builder("encode SKI".into()))?;
-    let aki_der = encode_authority_key_identifier(&spki_der, KeyIdMethod::Rfc5280Sha1, &hasher)
-        .ok_or_else(|| AcmeError::Builder("encode AKI".into()))?;
+    let ski_der =
+        encode_subject_key_identifier(&spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
+            .ok_or_else(|| AcmeError::Builder("encode SKI".into()))?;
+    let aki_der =
+        encode_authority_key_identifier(&spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
+            .ok_or_else(|| AcmeError::Builder("encode AKI".into()))?;
 
     let signer = backend_key.as_signer(&config.hash_alg);
     let cert_der = CertificateBuilder::new()
