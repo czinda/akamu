@@ -236,6 +236,27 @@ pub async fn tree_size_and_root(log: &SharedLog) -> Result<(u64, Vec<u8>), AcmeE
     .map_err(|e| AcmeError::Mtc(format!("spawn_blocking panicked: {e}")))?
 }
 
+/// Read a contiguous range of leaf hashes from the log.
+///
+/// Returns at most `count` hashes starting at `start`; returns fewer when
+/// the range reaches the end of the log.  Forwards to
+/// [`DiskBackedLog::read_hash_range`] under a `blocking_lock` guard.
+pub async fn read_hash_range(
+    log: &SharedLog,
+    start: u64,
+    count: usize,
+) -> Result<Vec<Vec<u8>>, AcmeError> {
+    let log_clone = Arc::clone(log);
+    tokio::task::spawn_blocking(move || {
+        log_clone
+            .blocking_lock()
+            .read_hash_range(start, count)
+            .map_err(|e| AcmeError::Mtc(format!("read_hash_range: {e}")))
+    })
+    .await
+    .map_err(|e| AcmeError::Mtc(format!("spawn_blocking panicked: {e}")))?
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
