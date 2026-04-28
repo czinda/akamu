@@ -116,6 +116,11 @@ pub struct CertificateParameters {
     /// The inner `Option<String>` is `None` when no `id-qt-cps` qualifier
     /// (OID 1.3.6.1.5.5.7.2.1) is needed for that policy OID.
     pub certificate_policies: Vec<(String, Option<String>)>,
+    /// When `true`, the ACME server issues an MTC `StandaloneCertificate`
+    /// instead of a full X.509 PEM chain.  Requires `[mtc]` to be enabled in
+    /// the server configuration; the finalization handler enforces this at
+    /// request time and returns `InvalidProfile` if MTC is not active.
+    pub issue_as_mtc: bool,
 }
 
 impl CertificateParameters {
@@ -135,6 +140,7 @@ impl CertificateParameters {
             ocsp_url: ca.ocsp_url.clone(),
             allowed_key_types: vec![],
             certificate_policies: vec![],
+            issue_as_mtc: false,
         }
     }
 }

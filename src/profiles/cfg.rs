@@ -301,6 +301,8 @@ fn translate(
         // When needed, parse `policyset.<set>.<n>.default.params.PolicyQualifiers*`
         // from the properties map and populate this field accordingly.
         certificate_policies: vec![],
+        // Dogtag profiles always produce X.509; MTC issuance is builtin-only.
+        issue_as_mtc: false,
     })
 }
 

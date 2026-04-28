@@ -10,6 +10,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde::Deserialize;
 
+use synta_certificate::der_to_pem;
+
 use crate::ca;
 use crate::db;
 use crate::db::schema::CertificateRow;
@@ -150,6 +152,48 @@ pub async fn finalize_order(
         order.not_after,
     )?;
 
+    // For MTC issuance profiles, build a StandaloneCertificate from the issued
+    // TBSCertificate + an MTC Merkle inclusion proof.  This is done synchronously
+    // before the DB transaction so the mtc_log_index is available at insert time.
+    let (final_cert_der, final_cert_pem, final_mtc_index) = if cert_params.issue_as_mtc {
+        let Some(log) = &state.mtc.log else {
+            return Err(AcmeError::InvalidProfile(
+                "profile 'issue_as = \"mtc\"' requires [mtc] to be enabled".into(),
+            ));
+        };
+
+        let idx =
+            crate::mtc::log::append_cert_to_log(log, issued.cert_der.clone(), state.mtc.algorithm)
+                .await
+                .map_err(|e| AcmeError::Mtc(format!("MTC log append for MTC-profile cert: {e}")))?;
+
+        let (proof, tree_size) = crate::mtc::log::proof_and_tree_size(log, idx)
+            .await
+            .map_err(|e| {
+                AcmeError::Mtc(format!("MTC inclusion proof for cert {}: {e}", issued.id))
+            })?;
+
+        let standalone_der = crate::mtc::standalone::build_standalone_der(
+            crate::mtc::standalone::StandaloneParams {
+                cert_der: &issued.cert_der,
+                leaf_index: idx,
+                proof,
+                tree_size,
+                signing_key: &state.ca.key,
+                hash_alg_str: &cert_params.hash_alg,
+                log_algorithm: state.mtc.algorithm,
+                cosignature_ders: &[],
+            },
+        )?;
+
+        let pem = String::from_utf8(der_to_pem("STANDALONE MTC CERTIFICATE", &standalone_der))
+            .map_err(|_| AcmeError::Internal("MTC PEM bytes are not valid UTF-8".into()))?;
+
+        (standalone_der, pem, Some(idx as i64))
+    } else {
+        (issued.cert_der.clone(), issued.cert_pem.clone(), None)
+    };
+
     let now = unix_now();
 
     // If this order carries a `replaces` cert_id, resolve the predecessor UUID
@@ -182,13 +226,13 @@ pub async fn finalize_order(
                 account_id: account_id.clone(),
                 serial_number: issued.serial_hex.clone(),
                 status: "valid".to_string(),
-                der: issued.cert_der.clone(),
-                pem: issued.cert_pem.clone(),
+                der: final_cert_der,
+                pem: final_cert_pem,
                 not_before: issued.not_before,
                 not_after: issued.not_after,
                 revoked_at: None,
                 revocation_reason: None,
-                mtc_log_index: None,
+                mtc_log_index: final_mtc_index,
                 created: now,
                 suggested_window_start: None,
                 suggested_window_end: None,
@@ -219,8 +263,9 @@ pub async fn finalize_order(
         return Err(AcmeError::CertAlreadyReplaced);
     }
 
-    // Optionally append to the MTC log.
-    if state.mtc.is_enabled() {
+    // Optionally append to the MTC log.  Skip when the profile already handled
+    // this synchronously above (MTC issuance profiles set final_mtc_index).
+    if state.mtc.is_enabled() && !cert_params.issue_as_mtc {
         if let Some(log) = &state.mtc.log {
             let cert_der = issued.cert_der.clone();
             let log = Arc::clone(log);

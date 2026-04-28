@@ -68,6 +68,18 @@ pub async fn download_cert_post(
 }
 
 fn cert_pem_response(cert: crate::db::schema::CertificateRow) -> Response {
+    if cert
+        .pem
+        .starts_with("-----BEGIN STANDALONE MTC CERTIFICATE-----")
+    {
+        // MTC StandaloneCertificate — serve the raw DER stored in the `der` column.
+        let mut resp = (StatusCode::OK, cert.der).into_response();
+        resp.headers_mut().insert(
+            axum::http::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/pkix-cert"),
+        );
+        return resp;
+    }
     let mut resp = (StatusCode::OK, cert.pem.into_bytes()).into_response();
     resp.headers_mut().insert(
         axum::http::header::CONTENT_TYPE,

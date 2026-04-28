@@ -48,6 +48,8 @@ pub fn load_builtin(
             .map(|pe| (pe.oid.clone(), pe.cps_uri.clone()))
             .collect();
 
+        let issue_as_mtc = matches!(pcfg.issue_as.as_deref(), Some("mtc"));
+
         let params = CertificateParameters {
             validity_days,
             hash_alg,
@@ -57,6 +59,7 @@ pub fn load_builtin(
             ocsp_url,
             allowed_key_types: pcfg.allowed_key_types.clone(),
             certificate_policies,
+            issue_as_mtc,
         };
 
         out.insert(id.clone(), (pcfg.description.clone(), params));
@@ -125,6 +128,7 @@ mod tests {
             ocsp_url: None,
             allowed_key_types: vec![],
             certificate_policies: vec![],
+            issue_as: None,
         }
     }
 
@@ -227,5 +231,45 @@ mod tests {
     fn key_usage_from_names_unknown_is_ignored() {
         let bits = key_usage_from_names(&["totally_unknown_bit".to_string()]);
         assert_eq!(bits, 0, "unknown name should produce zero bits");
+    }
+
+    #[test]
+    fn load_builtin_issue_as_mtc_sets_flag() {
+        let mut profiles = HashMap::new();
+        let mut p = make_profile("MTC cert");
+        p.issue_as = Some("mtc".to_string());
+        profiles.insert("mtc-tls".to_string(), p);
+        let cfg = BuiltinProviderConfig { profiles };
+        let loaded = load_builtin(&cfg, &default_ca());
+        assert!(
+            loaded["mtc-tls"].1.issue_as_mtc,
+            "issue_as = 'mtc' must set issue_as_mtc"
+        );
+    }
+
+    #[test]
+    fn load_builtin_issue_as_x509_does_not_set_flag() {
+        let mut profiles = HashMap::new();
+        let mut p = make_profile("Standard cert");
+        p.issue_as = Some("x509".to_string());
+        profiles.insert("standard".to_string(), p);
+        let cfg = BuiltinProviderConfig { profiles };
+        let loaded = load_builtin(&cfg, &default_ca());
+        assert!(
+            !loaded["standard"].1.issue_as_mtc,
+            "issue_as = 'x509' must not set issue_as_mtc"
+        );
+    }
+
+    #[test]
+    fn load_builtin_issue_as_absent_does_not_set_flag() {
+        let mut profiles = HashMap::new();
+        profiles.insert("default".to_string(), make_profile("Default"));
+        let cfg = BuiltinProviderConfig { profiles };
+        let loaded = load_builtin(&cfg, &default_ca());
+        assert!(
+            !loaded["default"].1.issue_as_mtc,
+            "absent issue_as must default to false"
+        );
     }
 }

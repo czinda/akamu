@@ -146,6 +146,11 @@ pub struct BuiltinProfileConfig {
     /// Empty = no CertificatePolicies extension.
     #[serde(default)]
     pub certificate_policies: Vec<PolicyEntry>,
+    /// Certificate format to issue.  Accepted values: `"x509"` (default) and
+    /// `"mtc"`.  When `"mtc"`, the server builds a Merkle Tree Certificate
+    /// (StandaloneCertificate) and requires `[mtc]` to be enabled.
+    #[serde(default)]
+    pub issue_as: Option<String>,
 }
 
 /// A certificate policy OID with an optional CPS URI qualifier.
