@@ -155,8 +155,7 @@ No authentication required.
   "suggestedWindow": {
     "start": "2026-04-01T00:00:00Z",
     "end":   "2026-04-09T00:00:00Z"
-  },
-  "explanationURL": null
+  }
 }
 ```
 

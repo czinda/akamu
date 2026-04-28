@@ -569,10 +569,10 @@ The **[dns-persist-01 specification](https://letsencrypt.org/2026/02/18/dns-pers
 
 ```toml
 [server]
-dns_persist_issuer_domain = "acme.example.com"
+dns_persist_issuer_domains = "acme.example.com"
 ```
 
-When `dns_persist_issuer_domain` is set, the server offers `dns-persist-01` as an additional challenge type alongside `http-01`, `dns-01`, and `tls-alpn-01`. Without it, the challenge type is not advertised.
+When `dns_persist_issuer_domains` is set, the server offers `dns-persist-01` as an additional challenge type alongside `http-01`, `dns-01`, and `tls-alpn-01`. Without it, the challenge type is not advertised.
 
 ### TXT record format
 
@@ -588,7 +588,7 @@ Optional extensions:
 
 ### Validation
 
-Akāmu queries the `_validation-persist.<domain>` TXT record, verifies the issuer domain matches `dns_persist_issuer_domain`, and checks that the `accounturi` matches the requesting ACME account URL. If both match, the authorization is marked valid.
+Akāmu queries the `_validation-persist.<domain>` TXT record, verifies the issuer domain matches one of the configured `dns_persist_issuer_domains`, and checks that the `accounturi` matches the requesting ACME account URL. If both match, the authorization is marked valid.
 
 ---
 

@@ -28,27 +28,30 @@ validity_days    = 90
 ca_validity_years = 10
 common_name      = "Example ACME CA"
 organization     = "Example Org"
-crl_url          = "http://acme.example.com/crl/ca.crl"
-ocsp_url         = "http://ocsp.example.com"
+crl_url              = "http://acme.example.com/ca/crl"
+crl_next_update_secs = 86400
+ocsp_url             = "http://acme.example.com/ca/ocsp"
 
 [mtc]
 log_path = "/var/lib/akamu/mtc.log"
 enabled  = false
 
 [server]
-terms_of_service_url   = "https://acme.example.com/tos.html"
-website_url            = "https://acme.example.com"
-caa_identities         = ["acme.example.com"]
-external_account_required = false
-order_expiry_secs      = 86400
-authz_expiry_secs      = 86400
-max_body_bytes         = 65536
-ari_retry_after_secs   = 21600
-allow_subdomain_auth   = false
-star_min_lifetime_secs = 86400
-star_max_duration_secs = 31536000
-star_allow_certificate_get = true
-tor_connectivity_enabled  = false
+terms_of_service_url        = "https://acme.example.com/tos.html"
+website_url                 = "https://acme.example.com"
+caa_identities              = ["acme.example.com"]
+external_account_required   = false
+order_expiry_secs           = 86400
+authz_expiry_secs           = 86400
+max_body_bytes              = 65536
+ari_retry_after_secs        = 21600
+ari_explanation_url         = "https://acme.example.com/docs/renewal-policy"
+allow_subdomain_auth        = false
+star_min_lifetime_secs      = 86400
+star_max_duration_secs      = 31536000
+star_allow_certificate_get  = true
+tor_connectivity_enabled    = false
+dns_persist01_resolver_addr = "127.0.0.1:5354"
 
 [admin]
 bearer_token = "change-me"
@@ -232,10 +235,10 @@ organization = "Example Org"
 If set, this URL is included as a CRL Distribution Point (CDP) URI in the `CRLDistributionPoints` extension of every issued end-entity certificate.
 
 ```toml
-crl_url = "http://acme.example.com/crl/ca.crl"
+crl_url = "http://acme.example.com/ca/crl"
 ```
 
-The server does not serve the CRL itself at this URL. You must arrange for the CRL file to be available at this location separately (for example, by generating it with a custom script or tool that uses the CA key).
+Set this to the URL of the built-in `/ca/crl` endpoint (i.e. `{base_url}/ca/crl`) to use the server's built-in CRL endpoint. The endpoint is served by Akāmu and requires no external CRL generation.
 
 ### `ocsp_url`
 
@@ -244,10 +247,20 @@ The server does not serve the CRL itself at this URL. You must arrange for the C
 If set, this URL is included in the `AuthorityInfoAccess` (AIA) extension as an OCSP responder URI in every issued end-entity certificate.
 
 ```toml
-ocsp_url = "http://ocsp.example.com"
+ocsp_url = "http://acme.example.com/ca/ocsp"
 ```
 
-The server does not implement an OCSP responder. You must run a separate OCSP responder at this URL.
+Set this to the URL of the built-in `/ca/ocsp` endpoint (i.e. `{base_url}/ca/ocsp`) to use the server's built-in OCSP responder. Both GET and POST OCSP requests are handled at this base URL.
+
+### `crl_next_update_secs`
+
+**Optional. Default: `86400` (1 day).**
+
+Controls the `nextUpdate` field in the CRL served at `/ca/crl`. The `nextUpdate` is set to the current time plus this many seconds. Adjust to match how frequently clients are expected to re-fetch the CRL.
+
+```toml
+crl_next_update_secs = 86400   # one day (default)
+```
 
 ---
 
@@ -473,16 +486,22 @@ TCP port used when the server fetches http-01 challenge responses. RFC 8555 §8.
 http_validation_port = 80
 ```
 
-### `dns_persist_issuer_domain`
+### `dns_persist_issuer_domains`
 
 **Optional. Default: absent (dns-persist-01 disabled).**
 
-The issuer domain placed in the `issuer-domain-names` field of `dns-persist-01` challenge objects and matched against the first token of TXT records during validation. When this field is set, the server offers `dns-persist-01` as an additional challenge type for all `dns` identifiers. When absent, `dns-persist-01` is not offered and existing clients are unaffected.
+The issuer domain(s) placed in the `issuer-domain-names` field of `dns-persist-01` challenge objects and matched against the first token of TXT records during validation. When this field is set, the server offers `dns-persist-01` as an additional challenge type for all `dns` identifiers. When absent, `dns-persist-01` is not offered and existing clients are unaffected.
+
+Accepts either a single string or an array of strings. Multi-tenant or multi-identity deployments can list all accepted issuer domains; validation succeeds when the TXT record's issuer domain matches any of the configured values.
 
 See [dns-persist-01 Challenge](challenges.md#dns-persist-01) for the full description of the challenge type and TXT record format.
 
 ```toml
-dns_persist_issuer_domain = "acme.example.com"
+# Single domain
+dns_persist_issuer_domains = "acme.example.com"
+
+# Multiple domains (multi-tenant or multi-identity deployments)
+dns_persist_issuer_domains = ["acme.example.com", "acme.example.org"]
 ```
 
 ### `dns_resolver_addr`
@@ -495,6 +514,17 @@ Override the DNS resolver used for `dns-01` and `dns-persist-01` challenge valid
 dns_resolver_addr = "127.0.0.1:5353"
 ```
 
+### `dns_persist01_resolver_addr`
+
+**Optional. Default: absent (falls back to `dns_resolver_addr`).**
+
+Resolver override used exclusively for `dns-persist-01` TXT lookups at `_validation-persist.*`. When set, this address is used instead of `dns_resolver_addr` for dns-persist-01 validation only. Useful when persistent TXT records are served by a different DNS infrastructure than the one used for dns-01 and CAA lookups.
+
+```toml
+dns_resolver_addr           = "127.0.0.1:5353"   # used for dns-01 and CAA
+dns_persist01_resolver_addr = "127.0.0.1:5354"   # used only for dns-persist-01
+```
+
 ### `ari_retry_after_secs`
 
 **Optional. Default: `21600` (6 hours).**
@@ -503,6 +533,16 @@ The value of the `Retry-After` header returned on `GET /acme/renewal-info/{cert-
 
 ```toml
 ari_retry_after_secs = 21600
+```
+
+### `ari_explanation_url`
+
+**Optional. Default: absent.**
+
+URL included in `GET /acme/renewal-info/{cert-id}` responses as the `explanationURL` field (RFC 9773 §4.1). When set, it points clients to a human-readable page explaining why early renewal is being suggested (for example, an incident notice or CA policy update). When absent, the field is omitted from the response entirely.
+
+```toml
+ari_explanation_url = "https://acme.example.com/docs/renewal-policy"
 ```
 
 ### `allow_subdomain_auth`
