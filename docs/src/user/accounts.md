@@ -135,6 +135,35 @@ The server verifies:
 
 On success, the account's stored key and thumbprint are replaced with the new key. Subsequent requests must be signed with the new key.
 
+## Profile grants
+
+Accounts may have a `profile_grants` attribute that restricts which certificate profiles they are allowed to request. When a profile is configured with `require_account_grant = true`, the account's `profile_grants` must include that profile's name or the finalization request is denied.
+
+An account with no grants (the default) can only request profiles that do not require a grant.
+
+**Viewing and modifying grants**
+
+Grants are managed through the Admin API (requires `[admin]` to be configured in `config.toml`):
+
+```
+GET    /admin/account/{id}/profile-grants   → {"profile_grants": ["p1"]}
+PUT    /admin/account/{id}/profile-grants   ← {"profile_grants": ["p1", "p2"]}
+DELETE /admin/account/{id}/profile-grants
+```
+
+All admin endpoints require `Authorization: Bearer <token>`.
+
+**EAB grant inheritance**
+
+When an EAB key is provisioned with `profile_grants` via `POST /admin/eab`, any account created using that EAB key automatically inherits those grants at account creation time. The transfer is atomic — the same database transaction that inserts the new account and marks the EAB key as used also sets the `profile_grants` on the account row.
+
+```json
+POST /admin/eab
+{"kid":"key-1","hmac_key_b64u":"<base64url>","profile_grants":["internal"]}
+```
+
+After an account is created using `key-1`, it will have `profile_grants = ["internal"]` without any additional admin action.
+
 ## Security considerations
 
 - Each account is identified by the SHA-256 thumbprint of its JWK public key. The server uses this thumbprint to look up accounts without needing to parse or compare full public key material on every request.

@@ -4,18 +4,21 @@ This chapter describes the internal implementation of External Account Binding (
 
 ## `eab_keys` table schema
 
-EAB keys are stored in the `eab_keys` table (added in a later migration than the core schema):
+EAB keys are stored in the `eab_keys` table. Migration `0007_profile_grants` added a `profile_grants` column:
 
 ```sql
 CREATE TABLE eab_keys (
-    kid          TEXT    PRIMARY KEY,
-    hmac_key_b64u TEXT   NOT NULL,    -- base64url-encoded raw HMAC key bytes
-    created      INTEGER NOT NULL,    -- Unix epoch seconds
-    used_at      INTEGER              -- NULL = unused; non-NULL = consumed timestamp
+    kid            TEXT    PRIMARY KEY,
+    hmac_key_b64u  TEXT    NOT NULL,    -- base64url-encoded raw HMAC key bytes
+    created        INTEGER NOT NULL,    -- Unix epoch seconds
+    used_at        INTEGER,             -- NULL = unused; non-NULL = consumed timestamp
+    profile_grants TEXT                 -- NULL = no restriction; JSON array of profile IDs
 );
 ```
 
 `hmac_key_b64u` stores the raw HMAC key in base64url encoding (no padding). The server base64url-decodes this before HMAC verification. A `NULL` `used_at` means the key is available for use; a non-`NULL` value means it has been consumed by an account-creation request and may not be reused.
+
+`profile_grants` stores a JSON array of profile ID strings (e.g. `'["tls-server","mtc-tls"]'`), or `NULL` when no restriction applies. When an account is created with this EAB key, the `profile_grants` value is copied atomically to the new account's `profile_grants` column.
 
 ## Startup seeding: `insert_if_absent`
 
@@ -41,7 +44,7 @@ WHERE NOT EXISTS (SELECT 1 FROM eab_keys WHERE kid = ?)
 This means:
 
 - A config-file key that does not exist in the DB is inserted.
-- A config-file key that exists in the DB (whether unconsumed, consumed, or modified by a future admin endpoint) is silently skipped.
+- A config-file key that exists in the DB (whether unconsumed, consumed, or modified by the admin API) is silently skipped.
 - A restart never revives a consumed key.
 
 The seeding loop in `src/main.rs` logs a `tracing::warn!` if `insert_if_absent` fails (e.g., due to a DB error), but does not abort startup.
@@ -104,28 +107,34 @@ let hmac_key = URL_SAFE_NO_PAD.decode(&key_row.hmac_key_b64u)?;
 crate::jose::eab::verify_eab_jws(eab_val, &url, &kid, &thumbprint, &hmac_key)?;
 ```
 
-After verification, `verified_eab_kid` is `Some(kid)` and the account insert and EAB mark are committed atomically:
+After verification, `verified_eab_kid` is `Some(kid)` and the account insert, EAB mark, and profile grant transfer are committed atomically:
 
 ```rust
 let mut tx = db::begin_write(&state.db, state.db_kind).await?;
-db::accounts::insert(&mut *tx, AccountRow { … }).await?;
+db::accounts::insert(&mut *tx, AccountRow {
+    profile_grants: eab_row.profile_grants.clone(),  // inherited from EAB key
+    …
+}).await?;
 if let Some(eab_kid) = verified_eab_kid {
     db::eab::mark_used(&mut *tx, &eab_kid, now).await?;
 }
 tx.commit().await.map_err(AcmeError::from)?;
 ```
 
-The atomicity guarantee: either both the account row is inserted **and** the EAB key is marked used, or neither happens. A concurrent second request using the same `kid` will find `used_at IS NOT NULL` after the first transaction commits, and will be rejected with `Unauthorized`.
+The atomicity guarantee: the account row insertion, EAB key consumption, and profile grant transfer all happen in a single transaction. Either all three succeed together, or none of them do. A concurrent second request using the same `kid` will find `used_at IS NOT NULL` after the first transaction commits and will be rejected with `Unauthorized`.
+
+When the EAB key's `profile_grants` is `NULL`, the new account's `profile_grants` is also `NULL` (no restriction). When it contains a JSON array, the array is stored verbatim on the account row and immediately governs profile authorization for that account.
 
 ## `db::eab` module
 
 | Function | Description |
 |---|---|
 | `insert_if_absent(executor, kid, hmac_key_b64u, now)` | Seed from config; silent no-op if `kid` already exists |
-| `insert(executor, kid, hmac_key_b64u, now)` | Unconditional insert; returns `Conflict` if `kid` exists |
+| `insert(executor, kid, hmac_key_b64u, now)` | Unconditional insert without grants; returns `Conflict` if `kid` exists |
+| `insert_with_grants(executor, kid, hmac_key_b64u, profile_grants, now)` | Unconditional insert with optional grants (used by the Admin API); returns `Conflict` if `kid` exists |
 | `get_by_kid(executor, kid)` | Fetch `EabKeyRow`; returns `None` for unknown `kid` |
 | `mark_used(executor, kid, now)` | Set `used_at`; intended to be called within a write transaction |
-| `delete(executor, kid)` | Remove the key entirely (future admin endpoint) |
+| `delete(executor, kid)` | Remove the key entirely |
 
 `EabKeyRow` mirrors the table columns:
 
@@ -134,6 +143,45 @@ pub struct EabKeyRow {
     pub kid: String,
     pub hmac_key_b64u: String,
     pub created: i64,
-    pub used_at: Option<i64>,   // None = unused
+    pub used_at: Option<i64>,        // None = unused
+    pub profile_grants: Option<String>,  // None = no restriction; Some = JSON array
 }
 ```
+
+---
+
+## Admin API internals (`src/routes/admin.rs`)
+
+The Admin API exposes four endpoints under `/admin/`. All routes are registered unconditionally in the axum router, but each handler calls `require_admin_auth` first, which returns:
+
+- **404** when `config.admin` is `None` (the `[admin]` section is absent).
+- **401** when the `Authorization` header is absent.
+- **403** when the header is present but the token does not match `config.admin.bearer_token`.
+
+This means admin endpoints are never reachable without explicit configuration, and callers cannot distinguish "not configured" from "not found" for a missing `[admin]` section.
+
+### Account profile grants endpoints
+
+`GET /admin/account/{id}/profile-grants` calls `db::accounts::get_profile_grants` and returns:
+
+```json
+{ "profile_grants": ["p1", "p2"] }
+```
+
+or `{"profile_grants": null}` for a NULL column. Returns 404 when the account ID is not found.
+
+`PUT /admin/account/{id}/profile-grants` deserialises the body as `{"profile_grants": <array or null>}` and calls `db::accounts::set_profile_grants`. An empty JSON array and `null` both map to `NULL` in the database (the `grants_to_json` helper returns `None` for both). Returns 204 on success; 404 when the account is not found or is deactivated.
+
+`DELETE /admin/account/{id}/profile-grants` calls `set_profile_grants` with `grants = None`, setting the column to `NULL`. Returns 204 on success; 404 when the account is not found or is deactivated.
+
+### EAB key provisioning endpoint
+
+`POST /admin/eab` deserialises the body as:
+
+```json
+{ "kid": "...", "hmac_key_b64u": "...", "profile_grants": ["p1"] }
+```
+
+`profile_grants` is optional (absent or `null` = no restriction). The handler calls `db::eab::insert_with_grants`, which inserts the key row with the `profile_grants` column set accordingly. Returns 201 with `{"kid": "...", "created": <unix-epoch>}`; returns 409 when the `kid` already exists (detected by a `UNIQUE` constraint violation).
+
+Keys provisioned via this endpoint behave identically to keys seeded from `[server.eab_keys]` during EAB verification. The only difference is that config-file keys have `profile_grants = NULL` always (they are seeded via `insert_if_absent`, which does not write the `profile_grants` column), while admin-provisioned keys may carry grants.
