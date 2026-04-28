@@ -4,7 +4,7 @@ This chapter describes the internal implementation of ACME account creation, key
 
 ## Database representation
 
-Accounts are stored in the `accounts` table (defined in `src/db/schema.rs` and migration 001):
+Accounts are stored in the `accounts` table (defined in `src/db/schema.rs` and migration 001, extended in migration `0007_profile_grants`):
 
 ```sql
 CREATE TABLE accounts (
@@ -14,7 +14,8 @@ CREATE TABLE accounts (
     public_key     BLOB    NOT NULL,              -- DER-encoded SubjectPublicKeyInfo
     jwk_thumbprint TEXT    NOT NULL UNIQUE,       -- base64url SHA-256 JWK thumbprint (RFC 7638)
     created        INTEGER NOT NULL,
-    updated        INTEGER NOT NULL
+    updated        INTEGER NOT NULL,
+    profile_grants TEXT                           -- NULL = unrestricted; JSON array of profile IDs
 );
 ```
 
@@ -22,6 +23,8 @@ Two fields carry cryptographic identity:
 
 - **`public_key`** — the raw DER-encoded `SubjectPublicKeyInfo` extracted from the outer JWS `jwk` at account creation time. Stored once; used to verify subsequent signed requests via a cache-aside pattern.
 - **`jwk_thumbprint`** — the RFC 7638 SHA-256 thumbprint of the public JWK, base64url-encoded. Carries a `UNIQUE` constraint so the database enforces that no two accounts share the same key. This is the lookup key for "does an account already exist for this key?" checks at `new-account` time.
+
+`profile_grants` stores a JSON array of profile ID strings (e.g. `'["tls-server","mtc-tls"]'`), or `NULL` when no restriction is in force. The `NULL` state is distinct from an empty array: `NULL` means "no restriction" while an empty array would grant access to no profiles. When a profile has `require_account_grant = true`, the finalize handler checks this column via `db::accounts::get_profile_grants`.
 
 ## Account creation flow (`src/routes/account.rs`)
 
@@ -95,5 +98,57 @@ The account DB module exposes:
 | `update_contact(executor, id, contact, now)` | `UPDATE accounts SET contact = ? … WHERE id = ? AND status = 'valid'` |
 | `update_status(executor, id, status, now)` | `UPDATE accounts SET status = ? …` |
 | `update_key(executor, id, public_key, jwk_thumbprint, now)` | `UPDATE accounts SET public_key = ?, jwk_thumbprint = ? … WHERE id = ? AND status = 'valid'` |
+| `set_profile_grants(executor, id, grants, now)` | `UPDATE accounts SET profile_grants = ? … WHERE id = ? AND status = 'valid'` |
+| `get_profile_grants(executor, id)` | `SELECT profile_grants FROM accounts WHERE id = ?` |
+
+`get_profile_grants` returns a nested `Option`:
+- `Ok(None)` — account not found.
+- `Ok(Some(None))` — account exists, `profile_grants IS NULL` (no restriction).
+- `Ok(Some(Some(json)))` — account exists and has a JSON grant array.
 
 All functions accept `impl sqlx::Executor<'_, Database = sqlx::Any>`, which allows them to be called with either a pool reference (`&Db`) or a mutable transaction reference (`&mut *tx`). This is the standard sqlx pattern for composing queries into transactions without changing the function signatures.
+
+
+---
+
+## Profile authorization (`src/profiles/auth.rs`)
+
+At finalize time, after the profile parameters are resolved from `ProfileRegistry::resolve`, the finalize handler calls `crate::profiles::auth::check_profile_auth` when the order carries a profile name. The function applies three checks in sequence; the first failure short-circuits with an `AcmeError::Unauthorized` or `AcmeError::InvalidProfile`:
+
+```rust
+pub async fn check_profile_auth(
+    db: &db::Db,
+    account_id: &str,
+    profile_name: &str,
+    params: &CertificateParameters,
+    identifiers: &[(&str, &str)],
+) -> Result<(), AcmeError>
+```
+
+**Check 1 — Identifier patterns** (`check_identifier_patterns`):
+
+If `params.allowed_identifier_patterns` is non-empty, each identifier is formatted as `"type:value"` and matched against the compiled regex list. `params.identifier_match_all` controls whether every identifier must match (`true`) or just one (`false`). An invalid regex returns `AcmeError::InvalidProfile`.
+
+**Check 2 — External hook** (`check_auth_hook`):
+
+If `params.auth_hook` is `Some(path)`, the handler spawns the executable at `path`, writes the following JSON to its stdin, and waits for it to exit within `params.auth_hook_timeout_secs` seconds (default: 30):
+
+```json
+{
+  "account_id": "<uuid>",
+  "profile": "<name>",
+  "identifiers": [{"type": "dns", "value": "example.com"}]
+}
+```
+
+Exit 0 = permit. Non-zero = deny; the hook's trimmed stdout is used as the denial detail. A timeout returns `AcmeError::Unauthorized`. Spawn failures return `AcmeError::Internal`.
+
+**Check 3 — Account grant** (`check_account_grant`):
+
+If `params.require_account_grant` is `true`, `db::accounts::get_profile_grants` is called. The three-way return value maps as follows:
+
+| `get_profile_grants` return | Authorization result |
+|-----------------------------|---------------------|
+| `Ok(None)` | Account not found → `Unauthorized` |
+| `Ok(Some(None))` | Account exists, `profile_grants IS NULL` → `Unauthorized` |
+| `Ok(Some(Some(json)))` | JSON parsed as `Vec<String>`; `Unauthorized` unless `profile_name` is in the list |

@@ -80,6 +80,14 @@ eku           = ["server_auth"]         # see table below
 crl_url       = "http://crl.example.com/ca.crl"   # optional
 ocsp_url      = "http://ocsp.example.com"          # optional
 allowed_key_types = ["ec:P-256", "rsa:2048"]       # optional; empty = any
+issue_as      = "mtc"       # optional; "mtc" or absent/"x509" for standard X.509
+
+# Per-profile authorization (all three checks are AND-combined)
+allowed_identifiers  = ['^dns:.*\.example\.com$']  # optional; empty = no restriction
+identifier_match     = "all"                        # "all" (default) or "any"
+auth_hook            = "/etc/akamu/hooks/auth.sh"  # optional; path to executable
+auth_hook_timeout_secs = 30                         # optional; default 30
+require_account_grant  = false                      # optional; default false
 
 [[profiles.providers.local.profiles.<profile-id>.certificate_policies]]
 oid     = "2.23.140.1.2.1"                         # DV certificate
@@ -228,7 +236,8 @@ Include `"profile"` in the `newOrder` payload:
 The server:
 1. Records the profile name on the order.
 2. Validates the profile name at finalize time (rejects with `invalidProfile` if no longer loaded).
-3. Issues the certificate using the profile's `CertificateParameters`.
+3. Runs per-profile authorization checks (see below).
+4. Issues the certificate using the profile's `CertificateParameters`.
 
 The profile name is echoed back in every order response:
 
@@ -238,6 +247,191 @@ The profile name is echoed back in every order response:
   "profile": "tlsserver",
   "certificate": "https://acme.example.com/acme/cert/…"
 }
+```
+
+---
+
+## Per-profile authorization
+
+Three independent checks are applied at finalize time. All configured checks must pass (AND logic) for issuance to proceed. Checks that are not configured are skipped.
+
+### 1. Identifier patterns
+
+`allowed_identifiers` is a list of regular expressions. Each order identifier is formatted as `"type:value"` (e.g. `"dns:example.com"`, `"dns:*.example.com"`) before being tested against the patterns.
+
+```toml
+[profiles.providers.local.profiles.internal]
+description         = "Internal services only"
+allowed_identifiers = ['^dns:.*\.internal\.example\.com$', '^dns:internal\.example\.com$']
+identifier_match    = "all"   # "all" (default) or "any"
+```
+
+`identifier_match` controls how the patterns are applied:
+
+| Value | Behaviour |
+|-------|-----------|
+| `"all"` (default) | Every identifier in the order must match at least one pattern. |
+| `"any"` | At least one identifier must match at least one pattern; the others are unrestricted. |
+
+When `allowed_identifiers` is empty (the default), no identifier restriction is applied.
+
+An invalid regular expression in `allowed_identifiers` causes the finalize request to fail with `invalidProfile`.
+
+### 2. External authorization hook
+
+`auth_hook` is a path to an executable. The server spawns it at finalize time and sends a JSON object on stdin:
+
+```json
+{
+  "account_id": "abc123",
+  "profile": "internal",
+  "identifiers": [
+    { "type": "dns", "value": "svc.internal.example.com" }
+  ]
+}
+```
+
+- Exit code 0: issuance proceeds.
+- Non-zero exit code: issuance is denied. The hook's standard output (trimmed) is forwarded to the ACME client as the denial reason.
+- Standard error is discarded.
+
+`auth_hook_timeout_secs` (default: `30`) sets the maximum time the server waits for the hook to exit. If the hook times out, issuance is denied.
+
+```toml
+[profiles.providers.local.profiles.internal]
+description            = "Internal services"
+auth_hook              = "/etc/akamu/hooks/check-service.sh"
+auth_hook_timeout_secs = 10
+```
+
+### 3. Account grants
+
+`require_account_grant = true` means the account requesting the order must have this profile's name in its `profile_grants` attribute.
+
+```toml
+[profiles.providers.local.profiles.privileged]
+description           = "Privileged cert profile"
+require_account_grant = true
+```
+
+Grants are managed two ways:
+
+- **Admin API**: `PUT /admin/account/{id}/profile-grants` with body `{"profile_grants":["privileged"]}`. See [Admin API](#admin-api) below.
+- **EAB key inheritance**: when an EAB key is provisioned with `profile_grants`, those grants are automatically copied to any account created using that key.
+
+An account whose `profile_grants` is NULL (the default) is considered to have no grants. When `require_account_grant` is `true`, such an account is denied.
+
+---
+
+## MTC certificate issuance (`issue_as = "mtc"`)
+
+A `builtin` profile can issue a Merkle Tree Certificate (MTC) `StandaloneCertificate` instead of a standard X.509 PEM chain by setting `issue_as = "mtc"`:
+
+```toml
+[mtc]
+log_path = "/var/lib/akamu/mtc.log"
+enabled  = true
+
+[mtc.signing_key]
+key_file = "/var/lib/akamu/mtc-signing.key"
+
+[profiles.providers.local]
+type = "builtin"
+
+[profiles.providers.local.profiles.mtc-tls]
+description = "MTC TLS certificate"
+validity_days = 90
+key_usage   = ["digital_signature"]
+eku         = ["server_auth"]
+issue_as    = "mtc"
+```
+
+When `issue_as = "mtc"`:
+
+1. The finalize handler issues the certificate as usual (X.509 `TBSCertificate`).
+2. The certificate is appended to the MTC log synchronously during finalization; the resulting leaf index is stored in the database.
+3. A `StandaloneCertificate` (per §6.1 of draft-ietf-plants-merkle-tree-certs) is built from the `TBSCertificate`, a Merkle inclusion proof, and a signature from the MTC signing key.
+4. The raw DER-encoded `StandaloneCertificate` is stored in the database and served at the certificate download URL with `Content-Type: application/pkix-cert`.
+
+Requirements:
+- `[mtc]` must be configured and `enabled = true`.
+- `[mtc.signing_key]` must be configured (the standalone certificate requires a signature).
+- If either condition is not met, finalization returns `invalidProfile`.
+
+The download endpoint auto-detects MTC certificates by their PEM marker and switches the response `Content-Type` accordingly:
+
+| Certificate type | `Content-Type` |
+|-----------------|---------------|
+| Standard X.509 chain | `application/pem-certificate-chain` |
+| MTC StandaloneCertificate | `application/pkix-cert` |
+
+---
+
+## Admin API
+
+The admin API is enabled by adding an `[admin]` section to `config.toml`:
+
+```toml
+[admin]
+bearer_token = "change-me-to-a-strong-random-value"
+```
+
+All admin endpoints require:
+
+```
+Authorization: Bearer <bearer_token>
+```
+
+When `[admin]` is absent from the configuration every admin endpoint returns **404**. When the section is present but the token is wrong or missing, the endpoints return **401** (missing header) or **403** (wrong token).
+
+### Account profile grants
+
+**`GET /admin/account/{id}/profile-grants`**
+
+Returns the current grants for the account:
+
+```json
+{ "profile_grants": ["p1", "p2"] }
+```
+
+Returns `{"profile_grants": null}` when the account has no grants. Returns 404 when the account is not found.
+
+**`PUT /admin/account/{id}/profile-grants`**
+
+Replace the account's grants entirely. Body:
+
+```json
+{ "profile_grants": ["p1", "p2"] }
+```
+
+Send `{"profile_grants": null}` or `{"profile_grants": []}` to clear all grants (equivalent to NULL — account may use any profile). Returns 204 on success, 404 when not found.
+
+**`DELETE /admin/account/{id}/profile-grants`**
+
+Clear all grants for the account (set to NULL). Returns 204 on success, 404 when not found.
+
+### EAB key provisioning
+
+**`POST /admin/eab`**
+
+Provision a new EAB key with optional profile grants:
+
+```json
+{
+  "kid": "key-id-1",
+  "hmac_key_b64u": "<base64url-encoded-HMAC-key>",
+  "profile_grants": ["p1", "p2"]
+}
+```
+
+`profile_grants` is optional; omit it or pass `null` for no restriction. When present, any account created with this EAB key will automatically inherit these grants at account creation time.
+
+Returns 201 with `{"kid": "key-id-1", "created": <unix-epoch>}` on success. Returns 409 when the `kid` already exists.
+
+To generate a suitable HMAC key:
+
+```bash
+openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
 ```
 
 ---

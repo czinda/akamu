@@ -622,6 +622,30 @@ profile_dir = "/etc/pki/pki-tomcat/ca/profiles/ca"
 profiles    = ["caIPAserviceCert"]
 ```
 
+**Additional `builtin` profile fields**
+
+Beyond the core extension fields, each `builtin` profile supports three groups of optional settings:
+
+*Certificate format*
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `issue_as` | absent / `"x509"` | Set to `"mtc"` to issue a Merkle Tree Certificate `StandaloneCertificate` instead of a PEM chain. Requires `[mtc]` to be enabled. |
+
+*Per-profile authorization*
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `allowed_identifiers` | `[]` | List of regex patterns. Each order identifier is matched as `"type:value"` (e.g. `"dns:example.com"`). Empty = no restriction. |
+| `identifier_match` | `"all"` | `"all"`: every identifier must match a pattern. `"any"`: at least one identifier must match. Ignored when `allowed_identifiers` is empty. |
+| `auth_hook` | absent | Path to an external executable. Receives JSON on stdin; exit 0 = permit, non-zero = deny. |
+| `auth_hook_timeout_secs` | `30` | Seconds to wait for the hook before denying. |
+| `require_account_grant` | `false` | When `true`, the account must have this profile's name in its `profile_grants` attribute (set via the Admin API or inherited from its EAB key). |
+
+See [Certificate Profiles](profiles.md) for detailed descriptions with examples.
+
+---
+
 ## `[admin]`
 
 The `[admin]` section enables the server-side Admin API. When this section is absent, all admin endpoints return 404 and are effectively invisible. This is the default; no admin access is possible without explicit configuration.
