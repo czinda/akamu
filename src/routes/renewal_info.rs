@@ -54,12 +54,15 @@ pub async fn get_renewal_info(
         }
     };
 
-    let obj = json!({
+    let mut obj = json!({
         "suggestedWindow": {
             "start": fmt_time(window_start),
             "end":   fmt_time(window_end),
         },
     });
+    if let Some(url) = &state.config.server.ari_explanation_url {
+        obj["explanationURL"] = serde_json::Value::String(url.clone());
+    }
 
     // Return 200 with renewal info and Retry-After (RFC 9773 §4.3).
     // ARI does not use the ACME JWS envelope.

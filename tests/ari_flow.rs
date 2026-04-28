@@ -472,6 +472,96 @@ async fn test_renewal_info_response_format() {
     );
 }
 
+/// When `ari_explanation_url` is configured, it appears in the renewal-info response.
+#[tokio::test]
+async fn test_renewal_info_explanation_url() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let db = state.db.clone();
+
+    // Rebuild state with ari_explanation_url set.
+    let mut server_cfg = ServerConfig::default();
+    server_cfg.ari_explanation_url = Some("https://ca.example/incident-42".into());
+    let config = Arc::new(Config {
+        listen_addr: "127.0.0.1:0".into(),
+        base_url: base_url.to_string(),
+        database: DatabaseConfig {
+            url: "sqlite::memory:".into(),
+            max_connections: None,
+        },
+        ca: CaConfig {
+            key_file: "/dev/null".into(),
+            cert_file: "/dev/null".into(),
+            key_type: "ec:P-256".into(),
+            hash_alg: "sha256".into(),
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            common_name: "ARI Test CA".into(),
+            organization: "ARI Test".into(),
+            ca_validity_years: 10,
+        },
+        mtc: MtcConfig {
+            log_path: "/dev/null".into(),
+            enabled: false,
+            signing_key: None,
+            checkpoint_interval_secs: 3600,
+            cosigners: vec![],
+            landmark_interval_secs: 86400,
+            max_active_landmarks: 100,
+            checkpoint_retention_count: 1000,
+        },
+        server: server_cfg,
+        tls: Default::default(),
+        profiles: Default::default(),
+        admin: None,
+    });
+    let state2 = Arc::new(AppState {
+        config: Arc::clone(&config),
+        db: db.clone(),
+        db_kind: akamu::db::DbKind::Sqlite,
+        profiles: akamu::profiles::ProfileRegistry::empty(&state.ca),
+        ca: Arc::clone(&state.ca),
+        mtc: Arc::clone(&state.mtc),
+        tls: None,
+        spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        nonces: Arc::new(NonceBucket::new()),
+        link_header: Arc::new(axum::http::HeaderValue::from_static(
+            "<https://acme.test/acme/directory>;rel=\"index\"",
+        )),
+        validation_client: {
+            let https = hyper_rustls::HttpsConnectorBuilder::new()
+                .with_native_roots()
+                .expect("native roots")
+                .https_or_http()
+                .enable_http1()
+                .build();
+            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                .build(https)
+        },
+    });
+    let router = routes::build_router(Arc::clone(&state2));
+
+    let key = TestKey::generate();
+    let (_, _, cert_id) = issue_cert(
+        &router,
+        &db,
+        base_url,
+        &key,
+        "ari-expl.example",
+        &state2.ca.aki_bytes,
+    )
+    .await;
+
+    let (status, body, _) = get(&router, &format!("/acme/renewal-info/{cert_id}")).await;
+    assert_eq!(status, StatusCode::OK, "expected 200: {body}");
+    assert_eq!(
+        body["explanationURL"].as_str(),
+        Some("https://ca.example/incident-42"),
+        "explanationURL must equal the configured value"
+    );
+}
+
 /// new-order with a valid `replaces` cert_id → 201 with `replaces` echoed in response.
 #[tokio::test]
 async fn test_new_order_with_replaces_field() {

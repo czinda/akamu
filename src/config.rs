@@ -501,6 +501,11 @@ pub struct ServerConfig {
     /// Retry-After interval in seconds for `GET /acme/renewal-info` responses (RFC 9773 §4.3).
     #[serde(default = "default_ari_retry_after_secs")]
     pub ari_retry_after_secs: u64,
+    /// URL included in `GET /acme/renewal-info` responses as `explanationURL` (RFC 9773 §4.1).
+    /// When absent, the field is omitted from the response.  Use this to point clients at a
+    /// human-readable page explaining why early renewal is being suggested (e.g. an incident
+    /// notice or CA policy update).
+    pub ari_explanation_url: Option<String>,
     /// Advertise RFC 9444 subdomain authorization support in the directory meta.
     #[serde(default)]
     pub allow_subdomain_auth: bool,
