@@ -4,8 +4,8 @@
 //! re-used across all connections — no DER re-parsing per handshake.
 //!
 //! Composite ML-DSA+classical TLS 1.3 `CertificateVerify` signatures are routed
-//! through the native-ossl EVP interface.  Classical schemes delegate to the ring
-//! crypto provider.
+//! through the native-ossl EVP interface.  Classical schemes delegate to the
+//! rustls-native-ossl crypto provider.
 
 use std::sync::Arc;
 
@@ -153,7 +153,7 @@ impl ClientCertVerifier for SyntaClientCertVerifier {
             .map_err(|e| TlsError::General(format!("client cert verification failed: {e}")))
     }
 
-    /// TLS 1.2 `CertificateVerify` — all schemes delegated to ring.
+    /// TLS 1.2 `CertificateVerify` — all schemes delegated to rustls-native-ossl.
     /// Composite ML-DSA schemes are TLS 1.3 only and never appear here.
     fn verify_tls12_signature(
         &self,
@@ -165,13 +165,13 @@ impl ClientCertVerifier for SyntaClientCertVerifier {
             message,
             cert,
             dss,
-            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+            &rustls_native_ossl::default_provider().signature_verification_algorithms,
         )
     }
 
     /// TLS 1.3 `CertificateVerify`.
     ///
-    /// Classical schemes delegate to ring.
+    /// Classical schemes delegate to rustls-native-ossl.
     /// Composite ML-DSA+classical schemes route through native-ossl.
     fn verify_tls13_signature(
         &self,
@@ -186,7 +186,7 @@ impl ClientCertVerifier for SyntaClientCertVerifier {
                 message,
                 cert,
                 dss,
-                &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+                &rustls_native_ossl::default_provider().signature_verification_algorithms,
             )
         }
     }

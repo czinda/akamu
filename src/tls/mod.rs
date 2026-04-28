@@ -1,8 +1,9 @@
 //! Standalone TLS server support for Akāmu.
 //!
 //! When `[tls] enabled = true` is set in config.toml, Akāmu binds as a native
-//! TLS server using the rustls crypto backend (ring provider) instead of
-//! delegating TLS termination to an upstream reverse proxy.
+//! TLS server using the rustls crypto backend (OpenSSL provider via
+//! rustls-native-ossl) instead of delegating TLS termination to an upstream
+//! reverse proxy.
 //!
 //! Optional mutual TLS (`[tls.client_auth]`) validates client certificates
 //! through `synta-x509-verification` with a configurable CAB Forum or RFC 5280
@@ -28,7 +29,7 @@ pub fn build_rustls_server_config(
 ) -> Result<rustls::ServerConfig, String> {
     let certs = loader::load_server_cert_chain(&tls.cert_file)?;
     let key = loader::load_server_private_key(&tls.key_file)?;
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let provider = Arc::new(rustls_native_ossl::default_provider());
 
     let versions: Vec<&'static rustls::SupportedProtocolVersion> = tls
         .protocols
