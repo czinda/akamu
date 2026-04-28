@@ -105,6 +105,13 @@ pub async fn validate_challenge(
         .dns_resolver_addr
         .as_deref()
         .and_then(|s| s.parse::<std::net::SocketAddr>().ok());
+    let dns_persist01_resolver_addr = state
+        .config
+        .server
+        .dns_persist01_resolver_addr
+        .as_deref()
+        .and_then(|s| s.parse::<std::net::SocketAddr>().ok())
+        .or(dns_resolver_addr);
     let validate_dnssec = state.config.server.validate_dnssec;
     let result = dispatch(DispatchParams {
         chall_type,
@@ -115,6 +122,7 @@ pub async fn validate_challenge(
         http_port,
         issuer_domains: &issuer_domain_refs,
         dns_resolver_addr,
+        dns_persist01_resolver_addr,
         validate_dnssec,
         validation_client: &state.validation_client,
         onion_csr_der,
@@ -143,6 +151,7 @@ struct DispatchParams<'a> {
     http_port: u16,
     issuer_domains: &'a [&'a str],
     dns_resolver_addr: Option<std::net::SocketAddr>,
+    dns_persist01_resolver_addr: Option<std::net::SocketAddr>,
     validate_dnssec: bool,
     validation_client: &'a crate::state::ValidationClient,
     onion_csr_der: Option<&'a [u8]>,
@@ -161,7 +170,8 @@ async fn dispatch(
         token,
         http_port,
         issuer_domains,
-        dns_resolver_addr,
+        dns_resolver_addr: _,
+        dns_persist01_resolver_addr,
         validate_dnssec,
         validation_client,
         onion_csr_der,
@@ -178,7 +188,7 @@ async fn dispatch(
                 id_value,
                 key_auth,
                 issuer_domains,
-                dns_resolver_addr,
+                dns_persist01_resolver_addr,
                 validate_dnssec,
             )
             .await
@@ -492,6 +502,7 @@ mod tests {
             http_port: 80,
             issuer_domains: &["acme.test"],
             dns_resolver_addr: None,
+            dns_persist01_resolver_addr: None,
             validate_dnssec: false,
             validation_client: &client,
             onion_csr_der: None,

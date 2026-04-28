@@ -489,10 +489,15 @@ pub struct ServerConfig {
     #[serde(default, deserialize_with = "deserialize_string_or_vec")]
     pub dns_persist_issuer_domains: Vec<String>,
     /// Override the DNS resolver used for challenge validation (dns-01,
-    /// dns-persist-01).  Format: `"ip:port"`, e.g. `"127.0.0.1:5353"`.
+    /// dns-persist-01, and CAA).  Format: `"ip:port"`, e.g. `"127.0.0.1:5353"`.
     /// When absent the system default resolver is used.
     /// Useful for testing and for split-horizon DNS deployments.
     pub dns_resolver_addr: Option<String>,
+    /// Override the DNS resolver used exclusively for dns-persist-01 validation.
+    /// Falls back to `dns_resolver_addr` when absent.
+    /// Useful when TXT records for persistent challenges are served by a different
+    /// resolver than the one used for dns-01 and CAA lookups.
+    pub dns_persist01_resolver_addr: Option<String>,
     /// Retry-After interval in seconds for `GET /acme/renewal-info` responses (RFC 9773 §4.3).
     #[serde(default = "default_ari_retry_after_secs")]
     pub ari_retry_after_secs: u64,
