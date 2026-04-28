@@ -95,6 +95,7 @@ native-ossl = "0.1.7"
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 tempfile = "3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 akamu-client = { path = "crates/akamu-client" }
 # (instant-acme 0.4 removed: it pulled hyper 0.14 as a transitive dependency,
 # which is not available in RHEL 10 / EPEL 10.  The acme_client_compat
