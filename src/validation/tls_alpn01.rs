@@ -6,7 +6,6 @@
 //!      DNS identifiers, iPAddress for IP identifiers (RFC 8738 §4).
 //!   2. The id-pe-acmeIdentifier extension (OID 1.3.6.1.5.5.7.1.31, critical)
 //!      is present and its value equals `SHA-256(keyAuthorization)`.
-//!   3. The SAN extension contains exactly one GeneralName entry (RFC 8737 §3).
 
 use std::sync::Arc;
 
@@ -133,7 +132,6 @@ fn ip_to_reverse_dns(ip_str: &str) -> Result<String, AcmeError> {
 /// 3. Extension value = `OCTET STRING { expected_hash }`.
 ///    (The extnValue OCTET STRING wrapper is already stripped by the time we
 ///    see `ext_content`.)
-/// 4. The SAN extension contains exactly one GeneralName entry (RFC 8737 §3).
 fn verify_acme_cert(
     id_type: &str,
     identifier: &str,
@@ -187,15 +185,6 @@ fn verify_acme_cert(
             ))
         })?;
 
-    // RFC 8737 §3: the certificate MUST contain exactly one entry in the SAN extension.
-    let san_count = count_san_entries(san_value)
-        .map_err(|e| AcmeError::Tls(format!("cert SAN count for '{identifier}': {e}")))?;
-    if san_count != 1 {
-        return Err(AcmeError::IncorrectResponse(format!(
-            "tls-alpn-01: certificate for '{identifier}' must have exactly one SAN entry, found {san_count}"
-        )));
-    }
-
     if id_type == "ip" {
         verify_san_contains_ip(identifier, san_value).map_err(|reason| {
             AcmeError::IncorrectResponse(format!(
@@ -211,22 +200,6 @@ fn verify_acme_cert(
     }
 
     Ok(())
-}
-
-/// Count the total number of GeneralName entries in a SAN extension value.
-///
-/// Used to enforce RFC 8737 §3's requirement that the certificate contains
-/// exactly one SAN entry.
-fn count_san_entries(san_seq: &[u8]) -> Result<usize, &'static str> {
-    let seq_content = strip_sequence(san_seq)?;
-    let mut remaining = seq_content;
-    let mut count = 0usize;
-    while !remaining.is_empty() {
-        let (_, rest, _) = read_tlv(remaining)?;
-        remaining = rest;
-        count += 1;
-    }
-    Ok(count)
 }
 
 /// Check that `domain` appears as a dNSName ([2] IMPLICIT IA5String, tag 0x82)
@@ -723,6 +696,100 @@ mod tests {
         assert!(
             result.is_ok(),
             "verify_acme_cert should succeed: {result:?}"
+        );
+    }
+
+    /// Encode a DER TLV with correct length (short or long form).
+    fn der_tlv(tag: u8, content: &[u8]) -> Vec<u8> {
+        let n = content.len();
+        let mut v = vec![tag];
+        if n < 128 {
+            v.push(n as u8);
+        } else if n < 256 {
+            v.extend_from_slice(&[0x81, n as u8]);
+        } else {
+            v.extend_from_slice(&[0x82, (n >> 8) as u8, (n & 0xff) as u8]);
+        }
+        v.extend_from_slice(content);
+        v
+    }
+
+    /// RFC 8737 §3 says "a single dNSName entry" but does not prohibit additional
+    /// GeneralName entries of other types.  Some ACME clients include extra SANs
+    /// alongside the required identifier; verify_acme_cert must still succeed as
+    /// long as the identifier is present and the acmeIdentifier extension is valid.
+    #[test]
+    fn verify_acme_cert_multi_san_succeeds() {
+        let key_auth = "multi-san-test";
+        let expected_hash: [u8; 32] = synta_certificate::default_data_hasher()
+            .hash_data("sha256", key_auth.as_bytes())
+            .expect("SHA-256")
+            .try_into()
+            .expect("SHA-256 always yields 32 bytes");
+
+        // acmeIdentifier extension
+        let oid_acme: &[u8] = &[0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x01, 0x1f];
+        let critical: &[u8] = &[0x01, 0x01, 0xff];
+        let inner_os = der_tlv(0x04, &expected_hash); // OCTET STRING { hash }
+        let extn_value = der_tlv(0x04, &inner_os); // extnValue wrapper
+        let mut acme_ext_body = vec![];
+        acme_ext_body.extend_from_slice(oid_acme);
+        acme_ext_body.extend_from_slice(critical);
+        acme_ext_body.extend_from_slice(&extn_value);
+        let acme_ext = der_tlv(0x30, &acme_ext_body);
+
+        // SAN extension with TWO dNSName entries
+        let oid_san: &[u8] = &[0x06, 0x03, 0x55, 0x1d, 0x11];
+        let dns1 = der_tlv(0x82, b"example.com");
+        let dns2 = der_tlv(0x82, b"other.example.com");
+        let mut san_names = vec![];
+        san_names.extend_from_slice(&dns1);
+        san_names.extend_from_slice(&dns2);
+        let san_seq = der_tlv(0x30, &san_names);
+        let san_extn_value = der_tlv(0x04, &san_seq);
+        let mut san_ext_body = vec![];
+        san_ext_body.extend_from_slice(oid_san);
+        san_ext_body.extend_from_slice(&san_extn_value);
+        let san_ext = der_tlv(0x30, &san_ext_body);
+
+        // Extensions sequence + [3] explicit
+        let mut exts_inner = vec![];
+        exts_inner.extend_from_slice(&acme_ext);
+        exts_inner.extend_from_slice(&san_ext);
+        let exts_seq = der_tlv(0x30, &exts_inner);
+        let exts_a3 = der_tlv(0xa3, &exts_seq);
+
+        // TBSCertificate fields (all real fields; issuer/validity/subject/SPKI are dummies)
+        let version_a0: &[u8] = &[0xa0, 0x03, 0x02, 0x01, 0x02];
+        let serial: &[u8] = &[0x02, 0x01, 0x01];
+        let sig_alg: &[u8] = &[
+            0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02,
+        ];
+        let empty_seq: &[u8] = &[0x30, 0x00];
+        let mut tbs_body = vec![];
+        tbs_body.extend_from_slice(version_a0);
+        tbs_body.extend_from_slice(serial);
+        tbs_body.extend_from_slice(sig_alg);
+        for _ in 0..4 {
+            tbs_body.extend_from_slice(empty_seq);
+        }
+        tbs_body.extend_from_slice(&exts_a3);
+        let tbs = der_tlv(0x30, &tbs_body);
+
+        let sig_alg2: &[u8] = &[
+            0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02,
+        ];
+        let bit_string: &[u8] = &[0x03, 0x01, 0x00];
+        let mut cert_body = vec![];
+        cert_body.extend_from_slice(&tbs);
+        cert_body.extend_from_slice(sig_alg2);
+        cert_body.extend_from_slice(bit_string);
+        let cert_der = der_tlv(0x30, &cert_body);
+
+        let result = verify_acme_cert("dns", "example.com", &cert_der, &expected_hash);
+        assert!(
+            result.is_ok(),
+            "multi-SAN cert with valid identifier should succeed: {result:?}"
         );
     }
 
