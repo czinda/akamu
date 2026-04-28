@@ -102,42 +102,52 @@ pub async fn new_account(
     // ── External Account Binding (RFC 8555 §7.3.4) ────────────────────────────
     // When external_account_required is set every new-account request must carry
     // a valid HMAC-signed EAB JWS whose payload is the account public key.
-    let verified_eab_kid: Option<String> = if state.config.server.external_account_required {
-        let eab_val = payload
-            .external_account_binding
-            .as_ref()
-            .ok_or(AcmeError::ExternalAccountRequired)?;
+    // The (kid, profile_grants) tuple lets us copy grants from the EAB key to
+    // the account atomically in the same transaction.
+    let verified_eab: Option<(String, Option<String>)> =
+        if state.config.server.external_account_required {
+            let eab_val = payload
+                .external_account_binding
+                .as_ref()
+                .ok_or(AcmeError::ExternalAccountRequired)?;
 
-        // Extract kid from EAB protected header → look it up in the DB.
-        let kid = crate::jose::eab::parse_eab_kid(eab_val)?;
-        let key_row = db::eab::get_by_kid(&state.db, &kid)
-            .await?
-            .ok_or_else(|| AcmeError::Unauthorized(format!("EAB: unknown kid '{kid}'")))?;
+            // Extract kid from EAB protected header → look it up in the DB.
+            let kid = crate::jose::eab::parse_eab_kid(eab_val)?;
+            let key_row = db::eab::get_by_kid(&state.db, &kid)
+                .await?
+                .ok_or_else(|| AcmeError::Unauthorized(format!("EAB: unknown kid '{kid}'")))?;
 
-        if key_row.used_at.is_some() {
-            return Err(AcmeError::Unauthorized(format!(
-                "EAB: kid '{kid}' has already been used"
-            )));
-        }
+            if key_row.used_at.is_some() {
+                return Err(AcmeError::Unauthorized(format!(
+                    "EAB: kid '{kid}' has already been used"
+                )));
+            }
 
-        // Decode the raw HMAC key bytes.
-        let hmac_key = URL_SAFE_NO_PAD
-            .decode(&key_row.hmac_key_b64u)
-            .map_err(|e| AcmeError::BadRequest(format!("EAB: invalid HMAC key encoding: {e}")))?;
+            // Decode the raw HMAC key bytes.
+            let hmac_key = URL_SAFE_NO_PAD
+                .decode(&key_row.hmac_key_b64u)
+                .map_err(|e| {
+                    AcmeError::BadRequest(format!("EAB: invalid HMAC key encoding: {e}"))
+                })?;
 
-        // Full HMAC verification: alg, url, payload-key, and MAC.
-        crate::jose::eab::verify_eab_jws(eab_val, &url, &kid, &thumbprint, &hmac_key)?;
+            // Full HMAC verification: alg, url, payload-key, and MAC.
+            crate::jose::eab::verify_eab_jws(eab_val, &url, &kid, &thumbprint, &hmac_key)?;
 
-        Some(kid)
-    } else {
-        None
-    };
+            // Capture grants before dropping key_row.
+            let grants = key_row.profile_grants.clone();
+            Some((kid, grants))
+        } else {
+            None
+        };
 
     let id = uuid::Uuid::new_v4().to_string();
     let contact_json = payload
         .contact
         .as_ref()
         .map(|c| serde_json::to_string(c).unwrap());
+
+    // Profile grants inherited from the EAB key (None when no EAB was used).
+    let eab_profile_grants = verified_eab.as_ref().and_then(|(_, g)| g.clone());
 
     // Insert the new account — atomically consume the EAB key if one was verified.
     // Both paths use a transaction so the insert is atomic with any EAB mark.
@@ -153,10 +163,11 @@ pub async fn new_account(
                 jwk_thumbprint: thumbprint,
                 created: now,
                 updated: now,
+                profile_grants: eab_profile_grants,
             },
         )
         .await?;
-        if let Some(eab_kid) = verified_eab_kid {
+        if let Some((eab_kid, _)) = verified_eab {
             db::eab::mark_used(&mut *tx, &eab_kid, now).await?;
         }
         tx.commit().await.map_err(AcmeError::from)?;
@@ -170,6 +181,7 @@ pub async fn new_account(
         jwk_thumbprint: String::new(),
         created: now,
         updated: now,
+        profile_grants: None,
     };
     let contacts = payload.contact.unwrap_or_default();
     let account_url = format!("{}/acme/account/{}", state.config.base_url, id);
@@ -381,6 +393,7 @@ mod tests {
             jwk_thumbprint: "thumb".to_string(),
             created: 0,
             updated: 0,
+            profile_grants: None,
         };
         let contacts = vec!["mailto:a@b.com".to_string()];
         let json = account_json(&row, &contacts, "https://acme.test");

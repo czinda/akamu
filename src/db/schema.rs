@@ -14,6 +14,9 @@ pub struct AccountRow {
     pub jwk_thumbprint: String,
     pub created: i64,
     pub updated: i64,
+    /// JSON array of permitted profile IDs, e.g. `'["tls-server","mtc-tls"]'`.
+    /// `NULL` / `None` means no restriction — the account may use any profile.
+    pub profile_grants: Option<String>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]

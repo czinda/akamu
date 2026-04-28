@@ -180,6 +180,7 @@ async fn build_state(
         },
         tls: Default::default(),
         profiles: Default::default(),
+        admin: None,
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();

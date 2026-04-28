@@ -14,6 +14,9 @@ pub struct EabKeyRow {
     pub created: i64,
     /// `None` → key is unused and may be consumed by a new-account request.
     pub used_at: Option<i64>,
+    /// JSON array of profile IDs that the account created with this key will
+    /// inherit.  `None` = no restriction.
+    pub profile_grants: Option<String>,
 }
 
 /// Seed a key from the config file.
@@ -65,13 +68,37 @@ pub async fn get_by_kid(
     kid: &str,
 ) -> Result<Option<EabKeyRow>, AcmeError> {
     let row = sqlx::query_as::<_, EabKeyRow>(
-        "SELECT kid, hmac_key_b64u, created, used_at \
+        "SELECT kid, hmac_key_b64u, created, used_at, profile_grants \
          FROM eab_keys WHERE kid = ?",
     )
     .bind(kid)
     .fetch_optional(executor)
     .await?;
     Ok(row)
+}
+
+/// Provision a new EAB key with optional profile grants (for the admin endpoint).
+///
+/// `profile_grants` is a JSON-serialised array of permitted profile IDs, or
+/// `None` for no restriction.  Returns a `Conflict` error if the `kid` already
+/// exists.
+pub async fn insert_with_grants(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    kid: &str,
+    hmac_key_b64u: &str,
+    profile_grants: Option<&str>,
+    now: i64,
+) -> Result<(), AcmeError> {
+    sqlx::query(
+        "INSERT INTO eab_keys (kid, hmac_key_b64u, created, profile_grants) VALUES (?, ?, ?, ?)",
+    )
+    .bind(kid)
+    .bind(hmac_key_b64u)
+    .bind(now)
+    .bind(profile_grants)
+    .execute(executor)
+    .await?;
+    Ok(())
 }
 
 /// Mark a key as used.
@@ -169,5 +196,33 @@ mod tests {
         let db = open_db().await;
         insert(&db, "kid5", "key", 1_000).await.unwrap();
         assert!(insert(&db, "kid5", "key2", 2_000).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn insert_with_grants_stores_grants() {
+        let db = open_db().await;
+        insert_with_grants(&db, "kid6", "key", Some("[\"p1\"]"), 1_000)
+            .await
+            .unwrap();
+        let row = get_by_kid(&db, "kid6").await.unwrap().unwrap();
+        assert_eq!(row.profile_grants, Some("[\"p1\"]".to_string()));
+    }
+
+    #[tokio::test]
+    async fn insert_with_grants_null_grants() {
+        let db = open_db().await;
+        insert_with_grants(&db, "kid7", "key", None, 1_000)
+            .await
+            .unwrap();
+        let row = get_by_kid(&db, "kid7").await.unwrap().unwrap();
+        assert!(row.profile_grants.is_none());
+    }
+
+    #[tokio::test]
+    async fn insert_plain_has_null_grants() {
+        let db = open_db().await;
+        insert(&db, "kid8", "key", 1_000).await.unwrap();
+        let row = get_by_kid(&db, "kid8").await.unwrap().unwrap();
+        assert!(row.profile_grants.is_none());
     }
 }

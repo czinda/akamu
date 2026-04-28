@@ -17,6 +17,7 @@ use crate::jose::jws::{JwsFlattened, JwsKeyRef, JwsProtectedHeader};
 use crate::state::{AppState, CachedAccount};
 
 pub mod account;
+pub mod admin;
 pub mod authz;
 pub mod certificate;
 pub mod challenge;
@@ -88,6 +89,16 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/acme/mtc/landmarks/{seq}/cert",
             get(mtc::get_landmark_cert),
         )
+        // Admin API — only registered when [admin] is configured in config.toml.
+        // The bearer-token check inside each handler also returns 404 when the
+        // section is absent, providing a double layer of protection.
+        .route(
+            "/admin/account/{id}/profile-grants",
+            axum::routing::get(admin::get_account_profile_grants)
+                .put(admin::put_account_profile_grants)
+                .delete(admin::delete_account_profile_grants),
+        )
+        .route("/admin/eab", axum::routing::post(admin::post_eab))
         .layer(
             TraceLayer::new_for_http()
                 // Suppress "started processing request" — the response line already

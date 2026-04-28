@@ -362,6 +362,7 @@ mod tests {
             server: ServerConfig::default(),
             tls: Default::default(),
             profiles: Default::default(),
+            admin: None,
         });
 
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
@@ -540,6 +541,7 @@ mod tests {
                 jwk_thumbprint: "thumb-val-001".to_string(),
                 created: now,
                 updated: now,
+                profile_grants: None,
             },
         )
         .await
@@ -654,6 +656,7 @@ mod tests {
                 jwk_thumbprint: "thumb-inv-001".to_string(),
                 created: now,
                 updated: now,
+                profile_grants: None,
             },
         )
         .await
@@ -814,6 +817,7 @@ mod tests {
             },
             tls: Default::default(),
             profiles: Default::default(),
+            admin: None,
         });
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
         db::install_drivers();
@@ -872,6 +876,7 @@ mod tests {
                 jwk_thumbprint: "thumb-http01-001".to_string(),
                 created: now,
                 updated: now,
+                profile_grants: None,
             },
         )
         .await
@@ -1093,6 +1098,7 @@ mod tests {
             server: ServerConfig::default(),
             tls: Default::default(),
             profiles: Default::default(),
+            admin: None,
         });
         let (ca_key, ca_cert_der) = crate::ca::init::load_or_generate(&config.ca).unwrap();
         let ca = Arc::new(CaState {
@@ -1151,6 +1157,7 @@ mod tests {
                 jwk_thumbprint: format!("t-{acc_id}"),
                 created: now,
                 updated: now,
+                profile_grants: None,
             },
         )
         .await

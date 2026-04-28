@@ -161,6 +161,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         server: ServerConfig::default(),
         tls: Default::default(),
         profiles: Default::default(),
+        admin: None,
     });
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
     let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();

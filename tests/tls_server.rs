@@ -429,6 +429,7 @@ async fn start_tls_server() -> TlsTestServer {
             bootstrap_key_type: "ec:P-256".into(),
             client_auth: None,
         },
+        admin: None,
     });
 
     // Initialise CA.

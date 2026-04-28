@@ -6,8 +6,9 @@ pub async fn insert(
     row: AccountRow,
 ) -> Result<(), AcmeError> {
     sqlx::query(
-        "INSERT INTO accounts (id, status, contact, public_key, jwk_thumbprint, created, updated)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO accounts \
+         (id, status, contact, public_key, jwk_thumbprint, created, updated, profile_grants)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&row.id)
     .bind(&row.status)
@@ -16,6 +17,7 @@ pub async fn insert(
     .bind(&row.jwk_thumbprint)
     .bind(row.created)
     .bind(row.updated)
+    .bind(&row.profile_grants)
     .execute(executor)
     .await?;
     Ok(())
@@ -26,7 +28,7 @@ pub async fn get_by_id(
     id: &str,
 ) -> Result<Option<AccountRow>, AcmeError> {
     let row = sqlx::query_as::<_, AccountRow>(
-        "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated
+        "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated, profile_grants
          FROM accounts WHERE id = ?",
     )
     .bind(id)
@@ -40,7 +42,7 @@ pub async fn get_by_thumbprint(
     thumbprint: &str,
 ) -> Result<Option<AccountRow>, AcmeError> {
     let row = sqlx::query_as::<_, AccountRow>(
-        "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated
+        "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated, profile_grants
          FROM accounts WHERE jwk_thumbprint = ?",
     )
     .bind(thumbprint)
@@ -105,6 +107,47 @@ pub async fn update_key(
     Ok(n > 0)
 }
 
+/// Set or clear the `profile_grants` for an account.
+///
+/// `grants` is a JSON-serialised array of permitted profile IDs, e.g.
+/// `Some("[\"tls-server\",\"mtc-tls\"]")`.  `None` clears the restriction
+/// (account may request any profile).  Returns `true` when the account was
+/// found and updated.
+pub async fn set_profile_grants(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    id: &str,
+    grants: Option<&str>,
+    now: i64,
+) -> Result<bool, AcmeError> {
+    let n = sqlx::query(
+        "UPDATE accounts SET profile_grants = ?, updated = ? WHERE id = ? AND status = 'valid'",
+    )
+    .bind(grants)
+    .bind(now)
+    .bind(id)
+    .execute(executor)
+    .await?
+    .rows_affected();
+    Ok(n > 0)
+}
+
+/// Fetch only the `profile_grants` column for an account.
+///
+/// Returns `Ok(None)` when the account is not found, `Ok(Some(None))` when
+/// the account exists but has no grant restriction, and
+/// `Ok(Some(Some(json)))` when grants are configured.
+pub async fn get_profile_grants(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    id: &str,
+) -> Result<Option<Option<String>>, AcmeError> {
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT profile_grants FROM accounts WHERE id = ?")
+            .bind(id)
+            .fetch_optional(executor)
+            .await?;
+    Ok(row.map(|(grants,)| grants))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,6 +169,7 @@ mod tests {
             jwk_thumbprint: format!("thumb-{id}"),
             created: 1_700_000_000,
             updated: 1_700_000_000,
+            profile_grants: None,
         }
     }
 
@@ -301,5 +345,59 @@ mod tests {
         assert!(update_key(&raw, "any", vec![], "thumb".into(), 0)
             .await
             .is_err());
+        assert!(set_profile_grants(&raw, "any", None, 0).await.is_err());
+        assert!(get_profile_grants(&raw, "any").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn set_and_get_profile_grants() {
+        let db = open_db().await;
+        insert(&db, sample_account("pg-1")).await.unwrap();
+
+        // Freshly inserted account has no grants.
+        let g = get_profile_grants(&db, "pg-1").await.unwrap();
+        assert_eq!(g, Some(None), "new account should have NULL profile_grants");
+
+        // Set grants.
+        let changed = set_profile_grants(&db, "pg-1", Some("[\"p1\",\"p2\"]"), 1_700_000_001)
+            .await
+            .unwrap();
+        assert!(changed);
+        let g = get_profile_grants(&db, "pg-1").await.unwrap();
+        assert_eq!(
+            g,
+            Some(Some("[\"p1\",\"p2\"]".to_string())),
+            "grants should be stored"
+        );
+
+        // Clear grants.
+        let changed = set_profile_grants(&db, "pg-1", None, 1_700_000_002)
+            .await
+            .unwrap();
+        assert!(changed);
+        let g = get_profile_grants(&db, "pg-1").await.unwrap();
+        assert_eq!(g, Some(None), "clearing grants should restore NULL");
+    }
+
+    #[tokio::test]
+    async fn get_profile_grants_unknown_account() {
+        let db = open_db().await;
+        let g = get_profile_grants(&db, "nonexistent").await.unwrap();
+        assert_eq!(g, None, "unknown account should return outer None");
+    }
+
+    #[tokio::test]
+    async fn insert_propagates_profile_grants() {
+        let db = open_db().await;
+        let mut row = sample_account("pg-2");
+        row.profile_grants = Some("[\"mtc-tls\"]".to_string());
+        insert(&db, row).await.unwrap();
+
+        let g = get_profile_grants(&db, "pg-2").await.unwrap();
+        assert_eq!(
+            g,
+            Some(Some("[\"mtc-tls\"]".to_string())),
+            "grants passed to insert should be persisted"
+        );
     }
 }

@@ -137,6 +137,7 @@ mod tests {
                 jwk_thumbprint: format!("thumb-{account_id}"),
                 created: 1_700_000_000,
                 updated: 1_700_000_000,
+                profile_grants: None,
             },
         )
         .await

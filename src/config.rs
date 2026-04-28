@@ -21,6 +21,25 @@ pub struct Config {
     /// still governs directory advertisement in that case.
     #[serde(default)]
     pub profiles: ProfilesConfig,
+    /// Admin API configuration.  Absent → admin endpoints return 404.
+    #[serde(default)]
+    pub admin: Option<AdminConfig>,
+}
+
+/// Admin API configuration.
+///
+/// When present, the server exposes admin endpoints under `/admin/`.
+/// All requests must supply the configured bearer token in the
+/// `Authorization: Bearer <token>` header.
+///
+/// ```toml
+/// [admin]
+/// bearer_token = "change-me"
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct AdminConfig {
+    /// Secret token required in the `Authorization` header for all admin requests.
+    pub bearer_token: String,
 }
 
 // ── Profile subsystem configuration ──────────────────────────────────────────

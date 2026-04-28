@@ -111,6 +111,7 @@ mod tests {
                 jwk_thumbprint: "thumb-deact".to_string(),
                 created: 1_700_000_000,
                 updated: 1_700_000_000,
+                profile_grants: None,
             },
         )
         .await
@@ -147,6 +148,7 @@ mod tests {
                 jwk_thumbprint: "thumb-valid".to_string(),
                 created: 1_700_000_000,
                 updated: 1_700_000_000,
+                profile_grants: None,
             },
         )
         .await
