@@ -7,7 +7,9 @@
 //!   local TCP port (default 80) using a minimal hyper HTTP/1.1 server.
 //! - [`Dns01Helper`] — computes the TXT record value; DNS provisioning is the
 //!   caller's responsibility.
-//! - [`DnsPersist01Helper`] — same math as `Dns01Helper`.
+//! - [`DnsPersist01Helper`] — builds the persistent TXT record content per
+//!   draft-ietf-acme-dns-persist; DNS provisioning is the caller's
+//!   responsibility.
 
 use std::{
     collections::HashMap,
@@ -159,17 +161,51 @@ impl Dns01Helper {
 
 // ── dns-persist-01 helper ─────────────────────────────────────────────────────
 
-/// Computes the persistent TXT record value for dns-persist-01.
+/// Builds the persistent TXT record content for dns-persist-01
+/// (draft-ietf-acme-dns-persist).
 ///
-/// Uses the same SHA-256 digest as dns-01 (per the LE draft).  The caller is
-/// responsible for provisioning the long-lived `_validation-persist.<domain>`
-/// TXT record before placing the order.
+/// The record is provisioned once at `_validation-persist.<domain>` and left
+/// in place; it does not need to be reprovisioned for each renewal.  Unlike
+/// dns-01, there is no token or key-authorization hash — the record encodes
+/// the CA's issuer domain and the client's ACME account URI directly.
+///
+/// # Example
+///
+/// ```
+/// use akamu_client::challenge::DnsPersist01Helper;
+/// let record = DnsPersist01Helper::txt_record(
+///     "acme.example.com",
+///     "https://acme.example.com/acme/account/42",
+/// );
+/// assert_eq!(record, "acme.example.com; accounturi=https://acme.example.com/acme/account/42");
+/// ```
 pub struct DnsPersist01Helper;
 
 impl DnsPersist01Helper {
-    /// Returns `base64url(SHA-256(key_authorization))`.
-    pub fn txt_value(key_auth: &str) -> Result<String, ClientError> {
-        dns_txt_value(key_auth)
+    /// Returns the TXT record content for a non-wildcard domain:
+    ///
+    /// ```text
+    /// <issuer_domain>; accounturi=<account_url>
+    /// ```
+    ///
+    /// `issuer_domain` must be one of the values from the `issuer-domain-names`
+    /// array in the server's challenge object.  `account_url` is the ACME
+    /// account URL returned by the server at registration time.
+    pub fn txt_record(issuer_domain: &str, account_url: &str) -> String {
+        format!("{}; accounturi={}", issuer_domain, account_url)
+    }
+
+    /// Returns the TXT record content when `policy=wildcard` authorisation is
+    /// needed (wildcard identifiers or subdomain coverage):
+    ///
+    /// ```text
+    /// <issuer_domain>; accounturi=<account_url>; policy=wildcard
+    /// ```
+    pub fn txt_record_wildcard(issuer_domain: &str, account_url: &str) -> String {
+        format!(
+            "{}; accounturi={}; policy=wildcard",
+            issuer_domain, account_url
+        )
     }
 }
 
@@ -188,12 +224,21 @@ impl DnsPersist01Helper {
 /// All values are passed exclusively as **environment variables** (never as
 /// command-line arguments, which would be visible via `/proc/<pid>/cmdline`):
 ///
-/// | Variable           | Value                                     |
-/// |--------------------|-------------------------------------------|
-/// | `AKAMU_DOMAIN`     | DNS name being validated                  |
-/// | `AKAMU_TOKEN`      | ACME challenge token                      |
-/// | `AKAMU_TXT`        | TXT record value (`base64url(SHA-256(key_auth))`) |
-/// | `AKAMU_KEY_AUTH`   | Full key authorization string             |
+/// **dns-01** (`deploy` / `clean`):
+///
+/// | Variable           | Value                                             |
+/// |--------------------|---------------------------------------------------|
+/// | `AKAMU_DOMAIN`     | Base DNS name being validated                     |
+/// | `AKAMU_TOKEN`      | ACME challenge token                              |
+/// | `AKAMU_TXT`        | `base64url(SHA-256(key_auth))`                    |
+/// | `AKAMU_KEY_AUTH`   | Full key authorization string                     |
+///
+/// **dns-persist-01** (`deploy_persist`):
+///
+/// | Variable           | Value                                             |
+/// |--------------------|---------------------------------------------------|
+/// | `AKAMU_DOMAIN`     | Base DNS name being validated                     |
+/// | `AKAMU_TXT`        | Full TXT record content (`issuer; accounturi=…`)  |
 ///
 /// Exit code 0 is success; non-zero is failure.  stderr is captured and
 /// included in the returned [`ClientError`].
@@ -226,6 +271,31 @@ impl DnsHookSolver {
         key_auth: &str,
     ) -> Result<(), ClientError> {
         self.run_hook("remove", domain, token, key_auth).await
+    }
+
+    /// Provision a dns-persist-01 TXT record by invoking the hook with `add`.
+    ///
+    /// Unlike [`deploy`](Self::deploy), the `txt_record` is the full structured
+    /// record content (`"issuer; accounturi=<url>[; policy=wildcard]"`) built by
+    /// [`DnsPersist01Helper`] — there is no token or key-authorization hash.
+    /// The hook receives `AKAMU_DOMAIN` and `AKAMU_TXT` only.
+    pub async fn deploy_persist(&self, domain: &str, txt_record: &str) -> Result<(), ClientError> {
+        let output = tokio::process::Command::new(&self.hook)
+            .arg("add")
+            .env("AKAMU_DOMAIN", domain)
+            .env("AKAMU_TXT", txt_record)
+            .output()
+            .await?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(ClientError::Crypto(format!(
+            "dns hook '{}' add exited with {}: {stderr}",
+            self.hook, output.status,
+        )))
     }
 
     async fn run_hook(
@@ -490,11 +560,27 @@ mod tests {
     }
 
     #[test]
-    fn dns_persist_01_matches_dns01() {
-        let key_auth = "sometoken.somethumbprint";
-        let a = Dns01Helper::txt_value(key_auth).unwrap();
-        let b = DnsPersist01Helper::txt_value(key_auth).unwrap();
-        assert_eq!(a, b);
+    fn dns_persist_01_txt_record_non_wildcard() {
+        let record = DnsPersist01Helper::txt_record(
+            "acme.example.com",
+            "https://acme.example.com/acme/account/42",
+        );
+        assert_eq!(
+            record,
+            "acme.example.com; accounturi=https://acme.example.com/acme/account/42"
+        );
+    }
+
+    #[test]
+    fn dns_persist_01_txt_record_wildcard() {
+        let record = DnsPersist01Helper::txt_record_wildcard(
+            "acme.example.com",
+            "https://acme.example.com/acme/account/42",
+        );
+        assert_eq!(
+            record,
+            "acme.example.com; accounturi=https://acme.example.com/acme/account/42; policy=wildcard"
+        );
     }
 
     #[tokio::test]
