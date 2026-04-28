@@ -60,13 +60,25 @@ When `cosigner_id_cert_pem` is configured for a cosigner, the PEM file is loaded
 
 ## Standalone certificate construction
 
-After cosignatures are gathered, `src/mtc/standalone.rs` builds a `StandaloneCertificate` (§6.1) for every certificate covered by the new checkpoint that does not already have one. The standalone DER is stored in the `mtc_standalone_der` column of the `certificates` table (added by a schema migration).
+There are two code paths that produce a `StandaloneCertificate`:
 
-The standalone certificate embeds:
+**Checkpoint-driven (background)**: After cosignatures are gathered, `src/mtc/standalone.rs` builds a `StandaloneCertificate` (§6.1) for every certificate covered by the new checkpoint that does not already have one. This is the path for ordinary X.509 certificates issued with `[mtc]` enabled — logging is asynchronous and the standalone certificate is built during the next checkpoint cycle.
+
+**Profile-driven (synchronous)**: When a `builtin` profile has `issue_as = "mtc"`, the finalize handler (`src/routes/finalize.rs`) builds the `StandaloneCertificate` synchronously during the request itself, before the database transaction:
+
+1. The X.509 `TBSCertificate` is issued as normal.
+2. The certificate is appended to the MTC log (synchronously, not via a background task) to obtain the leaf index immediately.
+3. `crate::mtc::standalone::build_standalone_der` constructs the `StandaloneCertificate` DER.
+4. The DER is stored in the `certificates.der` column; `certificates.pem` stores a PEM-armored wrapper with the `STANDALONE MTC CERTIFICATE` marker so the download handler can detect the format.
+5. `certificates.mtc_log_index` is set to the leaf index (not `NULL`), so the regular checkpoint-driven path skips this certificate.
+
+The download handler (`src/routes/certificate.rs::cert_pem_response`) detects MTC certificates by the PEM marker prefix and returns the raw DER with `Content-Type: application/pkix-cert` instead of the PEM bundle.
+
+In both paths the standalone certificate embeds:
 - The `TBSCertificate` from the issued certificate.
 - A Merkle inclusion proof (computed from the leaf hashes under the `SharedLog` mutex).
 - A signature from the MTC signing key.
-- All gathered `SubtreeSignature` entries from external cosigners.
+- Any gathered `SubtreeSignature` entries from external cosigners (empty slice for profile-driven issuance, which does not wait for cosigners).
 
 ## Landmark construction
 

@@ -26,6 +26,43 @@ When `enabled = false` (the default):
 - The log file is never written.
 - The `log_path` must still be specified but is not used.
 
+## Issuing MTC certificates directly from a profile
+
+When `[mtc]` is enabled and `[mtc.signing_key]` is configured, a `builtin` certificate profile can be set to issue a Merkle Tree Certificate `StandaloneCertificate` instead of a standard X.509 PEM chain. Set `issue_as = "mtc"` on the profile:
+
+```toml
+[mtc]
+log_path = "/var/lib/akamu/mtc.log"
+enabled  = true
+
+[mtc.signing_key]
+key_file = "/var/lib/akamu/mtc-signing.key"
+key_type = "ec:P-256"
+
+[profiles.providers.local]
+type = "builtin"
+
+[profiles.providers.local.profiles.mtc-tls]
+description = "MTC TLS certificate"
+validity_days = 90
+key_usage   = ["digital_signature"]
+eku         = ["server_auth"]
+issue_as    = "mtc"
+```
+
+When a client finalizes an order with this profile, the finalize handler:
+
+1. Issues the X.509 `TBSCertificate` as usual.
+2. Appends the certificate to the MTC log synchronously (not in a background task, because the leaf index is needed immediately for the standalone certificate).
+3. Builds a `StandaloneCertificate` embedding the `TBSCertificate`, a Merkle inclusion proof, and a signature from the MTC signing key.
+4. Stores the DER-encoded `StandaloneCertificate` and returns the certificate URL to the client.
+
+The certificate download endpoint (`GET /acme/cert/{id}`) detects MTC certificates and serves them as raw DER with `Content-Type: application/pkix-cert`.
+
+If `[mtc]` is not enabled or `[mtc.signing_key]` is absent when a profile with `issue_as = "mtc"` is finalized, the server returns `invalidProfile`.
+
+See [Certificate Profiles — MTC certificate issuance](profiles.md#mtc-certificate-issuance-issue_as--mtc) for the full configuration reference.
+
 ### Checkpoint signing
 
 To enable periodic checkpoint production, add a `[mtc.signing_key]` section. The signing key **must** be distinct from the X.509 CA key (§5.5 of the MTC draft).

@@ -15,19 +15,23 @@ flowchart TD
     D -->|cA=TRUE found| FAIL
     D -->|OK| E{"SAN set equals<br/>order identifiers?"}
     E -->|Mismatch| FAIL
-    E -->|Match| F["Generate random 16-byte serial<br/>clear high bit for positive integer"]
-    F --> P["Apply certificate profile parameters<br/>(from requested profile, or server defaults)"]
-    P --> G["Build X.509 v3 end-entity cert<br/>extensions from resolved profile"]
+    E -->|Match| F["Resolve profile parameters<br/>(from requested profile, or server defaults)"]
+    F --> AUTH{"Per-profile auth checks<br/>(patterns, hook, grants)"}
+    AUTH -->|Denied| UNAUTH([401/403 unauthorized])
+    AUTH -->|Permitted| G["Build end-entity certificate<br/>extensions from resolved profile"]
     G --> H[Sign with CA private key]
-    H --> I["Store DER + PEM bundle<br/>in certificates table"]
+    H --> MTC{"issue_as = mtc?"}
+    MTC -->|Yes| MTCB["Build MTC StandaloneCertificate<br/>DER; Content-Type: application/pkix-cert"]
+    MTC -->|No| I["Store DER + PEM bundle<br/>in certificates table"]
+    MTCB --> I
     I --> J["Update order: status=valid<br/>certificate_id set"]
     J --> K([Return order with certificate URL])
-    K --> L(["Client: GET /acme/cert/ID<br/>Download PEM bundle"])
+    K --> L(["Client: GET /acme/cert/ID<br/>Download certificate"])
 
     classDef ok   fill:#f0fdf4,stroke:#16a34a,color:#0f172a
     classDef fail fill:#fef2f2,stroke:#dc2626,color:#0f172a
     class K,L ok
-    class FAIL fail
+    class FAIL,UNAUTH fail
 ```
 
 The server:
@@ -38,7 +42,7 @@ The server:
 4. Verifies that the CSR's SubjectAlternativeName extension contains exactly the identifiers from the order — no more, no fewer.
 5. Generates a random 16-byte serial number (positive two's complement, high bit cleared).
 6. Applies certificate parameters from the requested profile, or from the server's default policy if no profile was specified.
-7. Issues an X.509 v3 certificate. The extensions depend on the active profile:
+7. Issues the certificate. When the resolved profile has `issue_as = "mtc"`, a Merkle Tree Certificate `StandaloneCertificate` is built instead of a PEM chain; otherwise, a standard X.509 v3 certificate is issued. The extensions depend on the active profile:
 
 | Extension | Critical | Default (no profile) | With profile |
 |---|---|---|---|
@@ -54,7 +58,7 @@ The server:
 
 The Subject Name from the CSR is copied verbatim into the issued certificate.
 
-The validity period runs from the moment of issuance for `validity_days` days (default 90), or the profile-specific validity if a profile is active. See [Certificate Profiles](profiles.md) for how to configure per-profile extension content.
+The validity period runs from the moment of issuance for `validity_days` days (default 90), or the profile-specific validity if a profile is active. See [Certificate Profiles](profiles.md) for how to configure per-profile extension content, MTC issuance, and per-profile authorization.
 
 ## Downloading a certificate
 
@@ -64,7 +68,9 @@ Send a GET request to the certificate URL provided in the order's `certificate` 
 GET /acme/cert/<cert-id>
 ```
 
-No authentication is required. The response is a PEM bundle with `Content-Type: application/pem-certificate-chain`:
+No authentication is required. The response format depends on how the certificate was issued:
+
+**Standard X.509 certificate** (`Content-Type: application/pem-certificate-chain`):
 
 ```
 -----BEGIN CERTIFICATE-----
@@ -76,6 +82,10 @@ No authentication is required. The response is a PEM bundle with `Content-Type: 
 ```
 
 The bundle always contains the end-entity certificate followed by the CA certificate. No intermediate certificates are included (there are none in this single-tier CA architecture).
+
+**MTC StandaloneCertificate** (`Content-Type: application/pkix-cert`):
+
+When the order was finalized with a profile that sets `issue_as = "mtc"`, the endpoint returns the raw DER-encoded `StandaloneCertificate` (§6.1 of draft-ietf-plants-merkle-tree-certs). The server detects MTC certificates automatically and sets the appropriate `Content-Type`. See [Certificate Profiles — MTC certificate issuance](profiles.md#mtc-certificate-issuance-issue_as--mtc) for how to configure an MTC-issuing profile.
 
 ## Certificate storage
 
