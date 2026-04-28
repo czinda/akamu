@@ -407,6 +407,7 @@ async fn start_tls_server() -> TlsTestServer {
             common_name: "Akāmu TLS Test CA".into(),
             organization: "Akāmu Tests".into(),
             ca_validity_years: 10,
+            crl_next_update_secs: 86400,
         },
         mtc: MtcConfig {
             log_path: "/dev/null".into(),
@@ -946,6 +947,7 @@ async fn test_tls_untrusted_ca_rejected() {
         common_name: "Unrelated CA".into(),
         organization: "Other".into(),
         ca_validity_years: 10,
+        crl_next_update_secs: 86400,
     };
     let (_, other_ca_der) = ca::init::load_or_generate(&unrelated_ca_cfg).unwrap();
     tracing::info!("Attempting TLS handshake with unrelated CA trust store…");

@@ -21,6 +21,7 @@ pub mod admin;
 pub mod authz;
 pub mod certificate;
 pub mod challenge;
+pub mod crl;
 pub mod directory;
 pub mod finalize;
 pub mod key_change;
@@ -64,6 +65,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/acme/cert/star/{order_id}",
             get(star_cert::star_cert_get).post(star_cert::star_cert_post),
         )
+        // CRL (RFC 5280) — public, no auth required
+        .route("/ca/crl", get(crl::get_crl))
         // Revocation
         .route("/acme/revoke-cert", post(revoke::revoke_cert))
         // Key change

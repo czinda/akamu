@@ -208,6 +208,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             common_name: "Integration Test CA".into(),
             organization: "Test Org".into(),
             ca_validity_years: 10,
+            crl_next_update_secs: 86400,
         },
         mtc: MtcConfig {
             log_path: "/dev/null".into(),
@@ -2201,6 +2202,7 @@ async fn test_directory_with_optional_fields() {
             common_name: "Dir Test CA".into(),
             organization: "Test Org".into(),
             ca_validity_years: 10,
+            crl_next_update_secs: 86400,
         },
         mtc: akamu::config::MtcConfig {
             log_path: "/dev/null".into(),
@@ -2570,6 +2572,7 @@ async fn test_finalize_with_mtc_enabled() {
             common_name: "MTC Test CA".into(),
             organization: "Test Org".into(),
             ca_validity_years: 10,
+            crl_next_update_secs: 86400,
         },
         mtc: MtcConfig {
             log_path: log_path.clone(),
@@ -2821,6 +2824,7 @@ async fn test_finalize_with_aia_and_cdp() {
             common_name: "Test CA".into(),
             organization: "Test Org".into(),
             ca_validity_years: 10,
+            crl_next_update_secs: 86400,
         },
         mtc: MtcConfig {
             log_path: "/dev/null".into(),
@@ -2931,5 +2935,119 @@ async fn test_finalize_with_aia_and_cdp() {
         body["status"].as_str(),
         Some("valid"),
         "order should be valid after AIA/CDP finalize"
+    );
+}
+
+/// GET /ca/crl returns a DER-encoded CRL that contains the serial of a revoked certificate.
+#[tokio::test]
+async fn test_crl_endpoint_contains_revoked_serial() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let router = routes::build_router(Arc::clone(&state));
+    let db = state.db.clone();
+
+    // Issue a certificate via the full ACME flow.
+    let key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": "crl-test.example"}]})),
+    );
+    let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
+    let nonce = nonce_header(&order_headers);
+
+    let order_id: String =
+        sqlx::query_as::<_, (String,)>("SELECT id FROM orders ORDER BY created DESC LIMIT 1")
+            .fetch_one(&db)
+            .await
+            .unwrap()
+            .0;
+    mark_order_ready(&db, &order_id).await;
+
+    let csr_der = make_csr_der("crl-test.example");
+    let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/order/{order_id}/finalize"),
+        Some(json!({"csr": csr_b64})),
+    );
+    let (status, _, _) =
+        post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
+    assert_eq!(status, StatusCode::OK, "finalize failed");
+
+    // Read the issued cert's serial from the DB.
+    let (cert_id, serial_hex): (String, String) = sqlx::query_as::<_, (String, String)>(
+        "SELECT id, serial_number FROM certificates ORDER BY created DESC LIMIT 1",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+
+    // CRL should be empty before revocation.
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/ca/crl")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "GET /ca/crl failed");
+    assert_eq!(
+        resp.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("application/pkix-crl"),
+        "wrong Content-Type for CRL"
+    );
+    let crl_bytes_before = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    assert!(!crl_bytes_before.is_empty(), "empty CRL DER before revocation");
+
+    // Revoke the certificate via DB (no ACME auth needed for the test).
+    akamu::db::certs::revoke(&state.db, &cert_id, Some(1), 1_700_000_000)
+        .await
+        .unwrap();
+
+    // Fetch CRL again — the revoked serial must appear.
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/ca/crl")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "GET /ca/crl after revoke failed");
+    let crl_bytes_after = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+
+    // The CRL DER should be larger after adding a revoked entry.
+    assert!(
+        crl_bytes_after.len() > crl_bytes_before.len(),
+        "CRL did not grow after adding a revoked entry"
+    );
+
+    // Decode the serial hex and verify the bytes appear somewhere in the CRL DER.
+    // (A full ASN.1 parse would be ideal but byte-contains is sufficient for integration testing.)
+    let serial_bytes: Vec<u8> = (0..serial_hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&serial_hex[i..i + 2], 16).unwrap())
+        .collect();
+    assert!(
+        crl_bytes_after
+            .windows(serial_bytes.len())
+            .any(|w| w == serial_bytes),
+        "revoked serial not found in CRL DER"
     );
 }

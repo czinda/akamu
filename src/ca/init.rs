@@ -395,6 +395,7 @@ mod tests {
             common_name: "Test CA".to_string(),
             organization: "Test Org".to_string(),
             ca_validity_years: 1,
+            crl_next_update_secs: 86400,
         }
     }
 

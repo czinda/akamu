@@ -144,6 +144,7 @@ mod tests {
             common_name: "Test CA".into(),
             organization: "Test".into(),
             ca_validity_years: 10,
+            crl_next_update_secs: 86400,
         };
         init::load_or_generate(&config).unwrap()
     }

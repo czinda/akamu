@@ -350,10 +350,18 @@ pub struct CaConfig {
     /// Default validity period for issued certificates (days)
     #[serde(default = "default_validity_days")]
     pub validity_days: u32,
-    /// Optional CRL distribution point URL
+    /// Optional CRL distribution point URL.
+    /// When set, issued certificates include a CRLDistributionPoints extension pointing
+    /// here.  Set this to `{base_url}/ca/crl` to use the server's built-in CRL endpoint.
     pub crl_url: Option<String>,
-    /// Optional OCSP responder URL
+    /// Optional OCSP responder URL.
+    /// When set, issued certificates include an AuthorityInfoAccess/OCSP extension.
+    /// Set this to `{base_url}/ca/ocsp` to use the server's built-in OCSP endpoint.
     pub ocsp_url: Option<String>,
+    /// nextUpdate validity window for the built-in CRL endpoint (seconds).
+    /// Default: 86400 (1 day).
+    #[serde(default = "default_crl_next_update_secs")]
+    pub crl_next_update_secs: u64,
     /// CA distinguished name common name (used when auto-generating)
     #[serde(default = "default_ca_cn")]
     pub common_name: String,
@@ -641,6 +649,10 @@ fn default_ca_org() -> String {
 
 fn default_ca_validity_years() -> u32 {
     10
+}
+
+fn default_crl_next_update_secs() -> u64 {
+    86400
 }
 
 fn default_http_validation_port() -> u16 {

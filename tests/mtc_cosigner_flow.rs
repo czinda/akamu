@@ -304,6 +304,7 @@ async fn build_akamu_state(
             common_name: "MTC Test CA".into(),
             organization: "Test".into(),
             ca_validity_years: 10,
+            crl_next_update_secs: 86400,
         },
         mtc: MtcConfig {
             log_path: mtc_log_path.clone(),

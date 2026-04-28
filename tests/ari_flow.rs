@@ -147,6 +147,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             common_name: "ARI Test CA".into(),
             organization: "ARI Test".into(),
             ca_validity_years: 10,
+            crl_next_update_secs: 86400,
         },
         mtc: MtcConfig {
             log_path: "/dev/null".into(),
@@ -500,6 +501,7 @@ async fn test_renewal_info_explanation_url() {
             common_name: "ARI Test CA".into(),
             organization: "ARI Test".into(),
             ca_validity_years: 10,
+            crl_next_update_secs: 86400,
         },
         mtc: MtcConfig {
             log_path: "/dev/null".into(),
