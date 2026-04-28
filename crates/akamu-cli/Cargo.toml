@@ -14,5 +14,6 @@ akamu-client = { path = "../akamu-client" }
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
+toml = "1"
 tokio = { version = "1", features = ["full"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

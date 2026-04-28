@@ -32,6 +32,11 @@ SPEC_TMP := akamu.spec
 NAME    := $(shell awk '/^Name:/{print $$2; exit}' $(SPEC))
 VERSION := $(shell awk '/^Version:/{print $$2; exit}' $(SPEC))
 
+# Resolved synta version from Cargo.lock (the lock file pins the exact version
+# selected by the resolver, unlike Cargo.toml which only has a requirement).
+# Used to locate the vendored synta directory that carries the asn1/ schemas.
+SYNTA_VERSION := $(shell awk '/^\[\[package\]\]/{p=0} /^name = "synta"$$/{p=1} p && /^version =/{gsub(/[" ]/, "", $$3); print $$3; exit}' "$(REPOROOT)/Cargo.lock")
+
 # Absolute path to the git repository root (two levels above this Makefile).
 REPOROOT := $(abspath $(dir $(abspath $(lastword $(MAKEFILE_LIST))))/../..)
 
@@ -147,7 +152,7 @@ $(VENDOR_TARBALL):
 	@# each crate's CARGO_MANIFEST_DIR.  In the vendored layout that path resolves
 	@# to vendor/asn1/, but the schemas live inside vendor/synta-0.1.6/asn1/.
 	@# Copy them to the expected sibling location so the build script finds them.
-	cp -a "$(REPOROOT)/vendor/synta-0.1.9/asn1" "$(REPOROOT)/vendor/asn1"
+	cp -a "$(REPOROOT)/vendor/synta-$(SYNTA_VERSION)/asn1" "$(REPOROOT)/vendor/asn1"
 	@# Archive vendor/ and Cargo.lock (pinned versions for reproducible builds).
 	tar -czf "$(CURDIR)/$@" \
 	    -C "$(REPOROOT)" vendor/ Cargo.lock
