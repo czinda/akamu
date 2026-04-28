@@ -59,7 +59,7 @@ impl AcmeClient {
     /// Construct a client by fetching the ACME directory.
     pub async fn new(directory_url: &str) -> Result<Self, ClientError> {
         let https = HttpsConnectorBuilder::new()
-            .with_native_roots()
+            .with_provider_and_native_roots(rustls_native_ossl::default_provider())
             .map_err(|e| ClientError::Http(format!("TLS root certs: {e}")))?
             .https_or_http()
             .enable_http1()

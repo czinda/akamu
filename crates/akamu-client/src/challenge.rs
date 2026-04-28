@@ -376,7 +376,7 @@ impl TlsAlpn01Solver {
     /// SNI.  Call this once before the first [`present`](Self::present).
     pub async fn start(&mut self) -> Result<(), ClientError> {
         let config = rustls::ServerConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
+            rustls_native_ossl::default_provider(),
         ))
         .with_safe_default_protocol_versions()
         .map_err(|e| ClientError::Crypto(format!("rustls: {e}")))?
@@ -504,7 +504,7 @@ impl TlsAlpn01Solver {
         let private_key = rustls::pki_types::PrivateKeyDer::Pkcs8(
             rustls::pki_types::PrivatePkcs8KeyDer::from(pkcs8_der),
         );
-        let signing_key = rustls::crypto::ring::default_provider()
+        let signing_key = rustls_native_ossl::default_provider()
             .key_provider
             .load_private_key(private_key)
             .map_err(|e| ClientError::Crypto(format!("load key: {e}")))?;
