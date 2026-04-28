@@ -7,6 +7,7 @@ use axum::http::HeaderValue;
 use http_body_util::Empty;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
+use hyper_rustls::HttpsConnector;
 use synta_certificate::BackendPrivateKey;
 use synta_mtc::crypto::HashAlgorithm;
 
@@ -90,11 +91,13 @@ fn nonce_now_secs() -> i64 {
         .as_secs() as i64
 }
 
-/// Shared HTTP client for outbound challenge validation requests.
+/// Shared HTTP/HTTPS client for outbound challenge validation requests.
 ///
 /// Using a single shared client allows hyper to pool and reuse TCP connections
 /// to challenge responders instead of opening a new connection per validation.
-pub type ValidationClient = Client<HttpConnector, Empty<hyper::body::Bytes>>;
+/// The HTTPS connector is needed to follow HTTP 3xx redirects that point to
+/// HTTPS targets, as permitted by RFC 8555 §8.3.
+pub type ValidationClient = Client<HttpsConnector<HttpConnector>, Empty<hyper::body::Bytes>>;
 
 /// Top-level application state cloned into every axum handler.
 #[derive(Clone)]

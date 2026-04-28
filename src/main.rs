@@ -14,6 +14,7 @@ use akamu::{ca, db, mtc, routes, star};
 use http_body_util::Empty;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
+use hyper_rustls::HttpsConnectorBuilder;
 
 #[tokio::main]
 async fn main() {
@@ -262,8 +263,15 @@ async fn run() -> Result<(), String> {
             ))
             .expect("base_url produces a valid Link header value"),
         ),
-        validation_client: Client::builder(TokioExecutor::new())
-            .build_http::<Empty<hyper::body::Bytes>>(),
+        validation_client: {
+            let https = HttpsConnectorBuilder::new()
+                .with_native_roots()
+                .expect("failed to load native root CAs for http-01 validation client")
+                .https_or_http()
+                .enable_http1()
+                .build();
+            Client::builder(TokioExecutor::new()).build(https)
+        },
     });
 
     // Spawn background profile refresh task (no-op when no providers configured).

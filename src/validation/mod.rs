@@ -447,10 +447,16 @@ mod tests {
             link_header: Arc::new(axum::http::HeaderValue::from_static(
                 "<https://acme.test/acme/directory>;rel=\"index\"",
             )),
-            validation_client: hyper_util::client::legacy::Client::builder(
-                hyper_util::rt::TokioExecutor::new(),
-            )
-            .build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
+            validation_client: {
+                let https = hyper_rustls::HttpsConnectorBuilder::new()
+                    .with_native_roots()
+                    .expect("native roots")
+                    .https_or_http()
+                    .enable_http1()
+                    .build();
+                hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                    .build(https)
+            },
         })
     }
 
@@ -490,9 +496,16 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_unsupported_type_returns_error() {
-        let client =
+        let client = {
+            let https = hyper_rustls::HttpsConnectorBuilder::new()
+                .with_native_roots()
+                .expect("native roots")
+                .https_or_http()
+                .enable_http1()
+                .build();
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
-                .build_http::<http_body_util::Empty<hyper::body::Bytes>>();
+                .build(https)
+        };
         let result = dispatch(DispatchParams {
             chall_type: "bogus-type",
             id_type: "dns",
@@ -902,10 +915,16 @@ mod tests {
             link_header: Arc::new(axum::http::HeaderValue::from_static(
                 "<https://acme.test/acme/directory>;rel=\"index\"",
             )),
-            validation_client: hyper_util::client::legacy::Client::builder(
-                hyper_util::rt::TokioExecutor::new(),
-            )
-            .build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
+            validation_client: {
+                let https = hyper_rustls::HttpsConnectorBuilder::new()
+                    .with_native_roots()
+                    .expect("native roots")
+                    .https_or_http()
+                    .enable_http1()
+                    .build();
+                hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                    .build(https)
+            },
         });
 
         // The identifier is just the IP address — no port embedded.
@@ -1180,10 +1199,16 @@ mod tests {
             link_header: Arc::new(axum::http::HeaderValue::from_static(
                 "<https://acme.test/acme/directory>;rel=\"index\"",
             )),
-            validation_client: hyper_util::client::legacy::Client::builder(
-                hyper_util::rt::TokioExecutor::new(),
-            )
-            .build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
+            validation_client: {
+                let https = hyper_rustls::HttpsConnectorBuilder::new()
+                    .with_native_roots()
+                    .expect("native roots")
+                    .https_or_http()
+                    .enable_http1()
+                    .build();
+                hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                    .build(https)
+            },
         })
     }
 
