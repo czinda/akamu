@@ -113,9 +113,9 @@ For Apache or nginx, ensure that requests to `/.well-known/acme-challenge/` are 
 
 - Port 80 must be reachable from the ACME server.
 - The response body must be less than 8 KiB.
-- Redirects are not followed; the initial response must be 200 OK.
+- HTTP 3xx redirects are followed (up to 10 hops), including redirects to HTTPS targets.
 - IPv6 addresses are supported as `ip` type identifiers; the URL literal uses bracket notation (e.g., `http://[2001:db8::1]/.well-known/acme-challenge/<token>`).
-- Wildcard identifiers (`*.example.com`) cannot be validated with http-01.
+- Wildcard identifiers (`*.example.com`) cannot be validated with http-01 (RFC 8555 §7.1.3).
 
 ---
 
@@ -190,7 +190,7 @@ The validator accepts both TLS 1.2 and TLS 1.3 connections.
 ### Constraints
 
 - Port 443 must be reachable from the ACME server.
-- Wildcard identifiers are not supported by tls-alpn-01.
+- Wildcard identifiers are not supported by tls-alpn-01 (RFC 8737 §3).
 - IP address identifiers (`ip` type) are supported; the server connects to the IP address directly.
 - RFC 8737 §3 requires exactly one SAN entry in the validation certificate. Certificates that contain more than one SAN are rejected.
 
@@ -200,9 +200,9 @@ The validator accepts both TLS 1.2 and TLS 1.3 connections.
 
 `dns-persist-01` is a DNS-based challenge type that differs from `dns-01` in one important way: the TXT record is **persistent**. It does not change from one certificate renewal to the next. Once an operator provisions the record, it remains valid for every subsequent renewal by the same ACME account — no per-renewal DNS changes are required.
 
-The challenge type is defined by the Let's Encrypt specification at <https://letsencrypt.org/2026/02/18/dns-persist-01>. It is available only for `dns` type identifiers; IP address identifiers are not supported.
+The challenge type is defined by the IETF draft [`draft-ietf-acme-dns-persist`](https://datatracker.ietf.org/doc/html/draft-ietf-acme-dns-persist). It is available only for `dns` type identifiers; IP address identifiers are not supported.
 
-This type is **opt-in**: it is offered to clients only when `server.dns_persist_issuer_domain` is set in `config.toml`. When that field is absent, only the standard three types are advertised and existing clients are unaffected.
+This type is **opt-in**: it is offered to clients only when `server.dns_persist_issuer_domains` is set in `config.toml`. When that field is absent, only the standard three types are advertised and existing clients are unaffected.
 
 ### How it works
 
@@ -279,24 +279,30 @@ Records without `persistUntil` never expire through this mechanism; their lifeti
 
 ### Configuration
 
-Both fields belong to the `[server]` section of `config.toml`.
+All fields belong to the `[server]` section of `config.toml`.
 
-#### `dns_persist_issuer_domain`
+#### `dns_persist_issuer_domains`
 
 **Optional. Default: absent (dns-persist-01 disabled).**
 
-The issuer domain placed in `issuer-domain-names` challenge objects and matched against the first token of TXT records. When set, `dns-persist-01` is offered alongside the standard types for all `dns` identifiers.
+The issuer domain(s) placed in `issuer-domain-names` challenge objects and matched against the first token of TXT records. When set, `dns-persist-01` is offered alongside the standard types for all `dns` identifiers.
+
+Accepts either a single string or an array of strings. Multi-tenant or multi-identity deployments can list all accepted issuer domains; validation succeeds when any configured domain matches.
 
 ```toml
 [server]
-dns_persist_issuer_domain = "acme.example.com"
+# Single domain
+dns_persist_issuer_domains = "acme.example.com"
+
+# Multiple domains
+dns_persist_issuer_domains = ["acme.example.com", "acme.example.org"]
 ```
 
 #### `dns_resolver_addr`
 
 **Optional. Default: absent (system resolver).**
 
-DNS resolver override for `dns-01` and `dns-persist-01` validation. Format: `"<ip>:<port>"`. The `http-01` and `tls-alpn-01` validators are not affected.
+DNS resolver override for `dns-01`, `dns-persist-01`, and CAA validation. Format: `"<ip>:<port>"`. The `http-01` and `tls-alpn-01` validators are not affected.
 
 ```toml
 [server]
@@ -305,12 +311,21 @@ dns_resolver_addr = "127.0.0.1:5353"
 
 Useful for split-horizon DNS (where the ACME server cannot reach the public resolver) and for integration tests against a local stub server.
 
+#### `dns_persist01_resolver_addr`
+
+**Optional. Default: absent (falls back to `dns_resolver_addr`).**
+
+Resolver override used exclusively for `dns-persist-01` validation. When set, this address is used instead of `dns_resolver_addr` for TXT lookups at `_validation-persist.*`. Useful when persistent TXT records are served by a different DNS infrastructure than the one used for `dns-01` and CAA lookups.
+
+```toml
+[server]
+dns_resolver_addr        = "127.0.0.1:5353"   # used for dns-01 and CAA
+dns_persist01_resolver_addr = "127.0.0.1:5354" # used only for dns-persist-01
+```
+
 ### Limitations
 
-- **No ACME client library support yet.** As of instant-acme 0.4.3, `dns-persist-01` is not implemented. A custom client, a patched library, or direct ACME HTTP calls are required until upstream support arrives.
-- **No revocation check during TXT lookup.** If an account is deactivated in the Akāmu database, the TXT record is not invalidated automatically; operators must remove it manually.
-- **One issuer domain per server instance.** `dns_persist_issuer_domain` accepts a single string. Deployments with multiple issuer identities should use `dns-01` instead.
-- **Resolver override is global.** `dns_resolver_addr` applies to all DNS-based challenge validation; per-type resolver selection is not supported.
+- **No IP address identifier support.** `dns-persist-01` is defined only for DNS name identifiers; IP address identifiers are not supported (no TXT record format is specified in `draft-ietf-acme-dns-persist` for IP identifiers).
 
 ---
 
