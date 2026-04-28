@@ -273,7 +273,7 @@ fn client_tls_config(ca_der: &[u8]) -> rustls::ClientConfig {
     root_store
         .add(CertificateDer::from(ca_der.to_vec()))
         .expect("add CA cert to root store");
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let provider = Arc::new(rustls_native_ossl::default_provider());
     rustls::ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .expect("safe protocol versions")

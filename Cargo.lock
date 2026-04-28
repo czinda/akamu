@@ -33,6 +33,7 @@ dependencies = [
  "reqwest",
  "rustls",
  "rustls-native-certs",
+ "rustls-native-ossl",
  "rustls-pki-types",
  "serde",
  "serde_json",
@@ -78,6 +79,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "rustls",
+ "rustls-native-ossl",
  "serde",
  "serde_json",
  "synta",
@@ -100,6 +102,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "rustls",
+ "rustls-native-ossl",
  "serde",
  "serde_json",
  "synta",
@@ -1971,6 +1974,17 @@ dependencies = [
  "rustls-pki-types",
  "schannel",
  "security-framework",
+]
+
+[[package]]
+name = "rustls-native-ossl"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d33408a124513b9788c13175cef36a1ba2c603bcdb74e2d0ae72cf43afc5aa37"
+dependencies = [
+ "native-ossl",
+ "rustls",
+ "rustls-pki-types",
 ]
 
 [[package]]
