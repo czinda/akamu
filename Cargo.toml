@@ -73,6 +73,9 @@ getrandom = "0.2"
 # Regular expressions (profile identifier authorization)
 regex = { version = "1", default-features = false, features = ["std", "unicode-bool"] }
 
+# LDAP client for Dogtag/IPA profile loading
+ldap3 = { version = "0.11", default-features = false, features = ["tls"] }
+
 # JWK/JWS primitives (extracted from server; no axum/rusqlite dependency)
 akamu-jose = { path = "crates/akamu-jose" }
 
