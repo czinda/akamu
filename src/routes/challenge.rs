@@ -146,6 +146,7 @@ pub async fn respond_challenge(
                 key_auth: &key_auth,
                 token: &token,
                 onion_csr_der: onion_csr_der.as_deref(),
+                account_id: &account_id,
             },
         )
         .await;

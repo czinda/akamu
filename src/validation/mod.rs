@@ -28,6 +28,10 @@ pub struct ChallengeParams<'a> {
     pub key_auth: &'a str,
     pub token: &'a str,
     pub onion_csr_der: Option<&'a [u8]>,
+    /// String account ID (UUID or numeric string) of the account that triggered
+    /// this challenge.  Used by dns-persist-01 to verify the account is still
+    /// active before trusting the long-lived TXT record.
+    pub account_id: &'a str,
 }
 
 /// Entry point called from `routes::challenge::respond_challenge`.
@@ -58,7 +62,40 @@ pub async fn validate_challenge(
         key_auth,
         token,
         onion_csr_der,
+        account_id,
     } = params;
+
+    // dns-persist-01: the TXT record is long-lived and pre-provisioned; the
+    // account may have been deactivated or revoked between the record being
+    // published and this validation task running.  Reject early so we don't
+    // count a stale record as a successful validation.
+    if chall_type == "dns-persist-01" {
+        let status: Result<String, _> = sqlx::query_scalar(
+            "SELECT status FROM accounts WHERE id = ?",
+        )
+        .bind(account_id)
+        .fetch_one(&state.db)
+        .await;
+
+        match status.as_deref() {
+            Ok("valid") => {}
+            Ok(s) => {
+                let err = AcmeError::Unauthorized(format!(
+                    "dns-persist-01: account {account_id} is {s}"
+                ));
+                let now = unix_now();
+                on_invalid(state, challenge_id, authz_id, err, now).await;
+                return "invalid";
+            }
+            Err(e) => {
+                let err = AcmeError::Internal(format!("account status lookup: {e}"));
+                let now = unix_now();
+                on_invalid(state, challenge_id, authz_id, err, now).await;
+                return "invalid";
+            }
+        }
+    }
+
     let http_port = state.config.server.http_validation_port;
     let issuer_domain = state.config.dns_persist_issuer_domain();
     let dns_resolver_addr = state
@@ -512,6 +549,7 @@ mod tests {
                 key_auth: "token.thumbprint",
                 token: "token",
                 onion_csr_der: None,
+                account_id: "1",
             },
         )
         .await;
@@ -957,6 +995,7 @@ mod tests {
                 key_auth: &key_auth,
                 token,
                 onion_csr_der: None,
+                account_id: "1",
             },
         )
         .await;
