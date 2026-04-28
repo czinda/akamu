@@ -97,7 +97,8 @@ pub async fn validate_challenge(
     }
 
     let http_port = state.config.server.http_validation_port;
-    let issuer_domain = state.config.dns_persist_issuer_domain();
+    let issuer_domains = state.config.dns_persist_issuer_domains();
+    let issuer_domain_refs: Vec<&str> = issuer_domains.iter().map(String::as_str).collect();
     let dns_resolver_addr = state
         .config
         .server
@@ -112,7 +113,7 @@ pub async fn validate_challenge(
         key_auth,
         token,
         http_port,
-        issuer_domain: &issuer_domain,
+        issuer_domains: &issuer_domain_refs,
         dns_resolver_addr,
         validate_dnssec,
         validation_client: &state.validation_client,
@@ -140,7 +141,7 @@ struct DispatchParams<'a> {
     key_auth: &'a str,
     token: &'a str,
     http_port: u16,
-    issuer_domain: &'a str,
+    issuer_domains: &'a [&'a str],
     dns_resolver_addr: Option<std::net::SocketAddr>,
     validate_dnssec: bool,
     validation_client: &'a crate::state::ValidationClient,
@@ -159,7 +160,7 @@ async fn dispatch(
         key_auth,
         token,
         http_port,
-        issuer_domain,
+        issuer_domains,
         dns_resolver_addr,
         validate_dnssec,
         validation_client,
@@ -176,7 +177,7 @@ async fn dispatch(
             dns_persist_01::validate(
                 id_value,
                 key_auth,
-                issuer_domain,
+                issuer_domains,
                 dns_resolver_addr,
                 validate_dnssec,
             )
@@ -489,7 +490,7 @@ mod tests {
             key_auth: "key-auth",
             token: "token",
             http_port: 80,
-            issuer_domain: "acme.test",
+            issuer_domains: &["acme.test"],
             dns_resolver_addr: None,
             validate_dnssec: false,
             validation_client: &client,

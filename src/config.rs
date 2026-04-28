@@ -476,10 +476,18 @@ pub struct ServerConfig {
     /// Override to a high port for testing or non-standard deployments.
     #[serde(default = "default_http_validation_port")]
     pub http_validation_port: u16,
-    /// Issuer domain placed in the `issuer-domain-names` field of dns-persist-01
-    /// challenges and matched against TXT records.  When absent the host portion
-    /// of `base_url` is used.
-    pub dns_persist_issuer_domain: Option<String>,
+    /// Issuer domain(s) placed in the `issuer-domain-names` field of
+    /// dns-persist-01 challenges and matched against TXT records.  Accepts a
+    /// single string or an array of strings.  When empty, the host portion of
+    /// `base_url` is used as the sole issuer domain.
+    ///
+    /// ```toml
+    /// dns_persist_issuer_domains = "acme.example.com"
+    /// # or
+    /// dns_persist_issuer_domains = ["acme.example.com", "acme.example.org"]
+    /// ```
+    #[serde(default, deserialize_with = "deserialize_string_or_vec")]
+    pub dns_persist_issuer_domains: Vec<String>,
     /// Override the DNS resolver used for challenge validation (dns-01,
     /// dns-persist-01).  Format: `"ip:port"`, e.g. `"127.0.0.1:5353"`.
     /// When absent the system default resolver is used.
@@ -660,13 +668,14 @@ impl Config {
         toml::from_str(&content).map_err(|e| format!("config parse error: {}", e))
     }
 
-    /// Returns the issuer domain used for dns-persist-01 TXT record validation.
+    /// Returns the list of issuer domains used for dns-persist-01 TXT record
+    /// validation and the `issuer-domain-names` challenge field.
     ///
-    /// Uses `server.dns_persist_issuer_domain` when explicitly configured; otherwise
-    /// extracts the host portion of `base_url` (stripping scheme and port).
-    pub fn dns_persist_issuer_domain(&self) -> String {
-        if let Some(ref d) = self.server.dns_persist_issuer_domain {
-            return d.clone();
+    /// Uses `server.dns_persist_issuer_domains` when explicitly configured;
+    /// otherwise falls back to the host portion of `base_url`.
+    pub fn dns_persist_issuer_domains(&self) -> Vec<String> {
+        if !self.server.dns_persist_issuer_domains.is_empty() {
+            return self.server.dns_persist_issuer_domains.clone();
         }
         // Extract host from base_url: strip scheme, then take up to first '/' or ':'
         let without_scheme = self
@@ -676,8 +685,47 @@ impl Config {
             .unwrap_or(&self.base_url);
         let host = without_scheme.split('/').next().unwrap_or(without_scheme);
         let host = host.split(':').next().unwrap_or(host);
-        host.to_string()
+        vec![host.to_string()]
     }
+}
+
+/// Serde deserialiser that accepts either a bare string or an array of strings.
+///
+/// Used for `dns_persist_issuer_domains` so that operators can write either:
+/// ```toml
+/// dns_persist_issuer_domains = "acme.example.com"
+/// dns_persist_issuer_domains = ["acme.example.com", "acme.example.org"]
+/// ```
+fn deserialize_string_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+    use std::fmt;
+
+    struct StringOrVec;
+
+    impl<'de> Visitor<'de> for StringOrVec {
+        type Value = Vec<String>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a string or array of strings")
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Vec<String>, E> {
+            Ok(vec![v.to_owned()])
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<String>, A::Error> {
+            let mut out = Vec::new();
+            while let Some(s) = seq.next_element::<String>()? {
+                out.push(s);
+            }
+            Ok(out)
+        }
+    }
+
+    deserializer.deserialize_any(StringOrVec)
 }
 
 #[cfg(test)]
@@ -742,29 +790,42 @@ enabled = false
         assert!(cfg.server.caa_identities.is_empty());
         assert!(cfg.server.terms_of_service_url.is_none());
         assert!(cfg.server.website_url.is_none());
-        assert!(cfg.server.dns_persist_issuer_domain.is_none());
+        assert!(cfg.server.dns_persist_issuer_domains.is_empty());
         assert_eq!(cfg.server.ari_retry_after_secs, 21600);
     }
 
     #[test]
-    fn dns_persist_issuer_domain_uses_explicit_field() {
+    fn dns_persist_issuer_domains_uses_explicit_string() {
         let toml = format!(
-            "{}\n[server]\ndns_persist_issuer_domain = \"ca.example.org\"\n",
+            "{}\n[server]\ndns_persist_issuer_domains = \"ca.example.org\"\n",
             minimal_toml()
         );
         let cfg: Config = toml::from_str(&toml).unwrap();
-        assert_eq!(cfg.dns_persist_issuer_domain(), "ca.example.org");
+        assert_eq!(cfg.dns_persist_issuer_domains(), vec!["ca.example.org"]);
     }
 
     #[test]
-    fn dns_persist_issuer_domain_falls_back_to_base_url_https() {
+    fn dns_persist_issuer_domains_accepts_array() {
+        let toml = format!(
+            "{}\n[server]\ndns_persist_issuer_domains = [\"ca.example.org\", \"ca2.example.org\"]\n",
+            minimal_toml()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        assert_eq!(
+            cfg.dns_persist_issuer_domains(),
+            vec!["ca.example.org", "ca2.example.org"]
+        );
+    }
+
+    #[test]
+    fn dns_persist_issuer_domains_falls_back_to_base_url_https() {
         let cfg: Config = toml::from_str(minimal_toml()).unwrap();
         // base_url = "https://acme.example.com" → host = "acme.example.com"
-        assert_eq!(cfg.dns_persist_issuer_domain(), "acme.example.com");
+        assert_eq!(cfg.dns_persist_issuer_domains(), vec!["acme.example.com"]);
     }
 
     #[test]
-    fn dns_persist_issuer_domain_strips_port_from_base_url() {
+    fn dns_persist_issuer_domains_strips_port_from_base_url() {
         let toml = r#"
 listen_addr = "127.0.0.1:8080"
 base_url = "https://acme.example.com:8443"
@@ -778,7 +839,7 @@ log_path = "/dev/null"
 enabled = false
 "#;
         let cfg: Config = toml::from_str(toml).unwrap();
-        assert_eq!(cfg.dns_persist_issuer_domain(), "acme.example.com");
+        assert_eq!(cfg.dns_persist_issuer_domains(), vec!["acme.example.com"]);
     }
 
     #[test]

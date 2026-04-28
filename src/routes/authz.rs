@@ -168,7 +168,7 @@ pub async fn new_authz(
     }
 
     let token = gen_token();
-    let dns_persist_enabled = state.config.server.dns_persist_issuer_domain.is_some();
+    let dns_persist_enabled = !state.config.server.dns_persist_issuer_domains.is_empty();
     let dns_types: &[&str] = if dns_persist_enabled {
         &["http-01", "dns-01", "tls-alpn-01", "dns-persist-01"]
     } else {
@@ -256,12 +256,12 @@ fn build_authz_json<'a>(
     state: &AppState,
     jwk_thumbprint: &str,
 ) -> AuthzJson<'a> {
-    let issuer_domain = state.config.dns_persist_issuer_domain();
+    let issuer_domains = state.config.dns_persist_issuer_domains();
     let challs: Vec<ChallengeJson<'_>> = challenges
         .iter()
         .map(|c| {
             let (token, issuer_domain_names, auth_key) = if c.r#type == "dns-persist-01" {
-                (None, Some(vec![issuer_domain.to_string()]), None)
+                (None, Some(issuer_domains.clone()), None)
             } else if c.r#type == "onion-csr-01" {
                 // RFC 9799 §3.2: include authKey (JWK thumbprint) so the client
                 // can construct the key authorization without an extra lookup.

@@ -22,16 +22,17 @@ use crate::error::AcmeError;
 
 /// Validate a dns-persist-01 challenge.
 ///
-/// * `domain`        — identifier value; any leading `*.` wildcard is stripped
+/// * `domain`          — identifier value; any leading `*.` wildcard is stripped
 ///   before forming the DNS query.
-/// * `account_uri`   — full ACME account URI (stored in the key_auth DB column).
-/// * `issuer_domain` — CA's configured issuer domain (from `Config::dns_persist_issuer_domain`).
-/// * `resolver_addr` — optional DNS resolver override (used in tests and split-horizon
-///   deployments); `None` uses the system default resolver.
+/// * `account_uri`     — full ACME account URI (stored in the key_auth DB column).
+/// * `issuer_domains`  — one or more CA issuer domains; a TXT record is accepted
+///   if its first token matches **any** of them.
+/// * `resolver_addr`   — optional DNS resolver override (used in tests and
+///   split-horizon deployments); `None` uses the system default resolver.
 pub async fn validate(
     domain: &str,
     account_uri: &str,
-    issuer_domain: &str,
+    issuer_domains: &[&str],
     resolver_addr: Option<std::net::SocketAddr>,
     validate_dnssec: bool,
 ) -> Result<(), AcmeError> {
@@ -45,13 +46,13 @@ pub async fn validate(
         }
         None => TokioAsyncResolver::tokio(ResolverConfig::default(), opts),
     };
-    validate_with_resolver(domain, account_uri, issuer_domain, resolver).await
+    validate_with_resolver(domain, account_uri, issuer_domains, resolver).await
 }
 
 async fn validate_with_resolver(
     domain: &str,
     account_uri: &str,
-    issuer_domain: &str,
+    issuer_domains: &[&str],
     resolver: TokioAsyncResolver,
 ) -> Result<(), AcmeError> {
     let base_domain = domain.strip_prefix("*.").unwrap_or(domain);
@@ -63,7 +64,7 @@ async fn validate_with_resolver(
     tracing::debug!(
         domain,
         query_name,
-        issuer_domain,
+        ?issuer_domains,
         account_uri,
         is_wildcard,
         "dns-persist-01: querying TXT records"
@@ -91,7 +92,7 @@ async fn validate_with_resolver(
 
     for value in &records {
         let value = value.trim();
-        let matched = matches_record(value, issuer_domain, account_uri, is_wildcard, now);
+        let matched = matches_record(value, issuer_domains, account_uri, is_wildcard, now);
         tracing::debug!(
             record = value,
             matched,
@@ -109,33 +110,36 @@ async fn validate_with_resolver(
 
     Err(AcmeError::IncorrectResponse(format!(
         "dns-persist-01: no TXT record at '{query_name}' matches \
-         issuer='{issuer_domain}' accounturi='{account_uri}'"
+         issuer={issuer_domains:?} accounturi='{account_uri}'"
     )))
 }
 
 /// Check whether a single TXT record value satisfies the dns-persist-01 requirements.
 ///
 /// Returns `true` only when all of the following hold:
-/// - First token (before `;`) equals `expected_issuer` (case-insensitive, no trailing dot).
+/// - First token (before `;`) equals **any** entry in `expected_issuers`
+///   (case-insensitive, trailing dot stripped).
 /// - `accounturi=<expected_account_uri>` is present among the key=value tokens.
 /// - If `require_wildcard_policy` is true, `policy=wildcard` is present.
 /// - If `persistUntil=<ts>` is present, `<ts>` parses and is >= `now`.
 pub(crate) fn matches_record(
     raw: &str,
-    expected_issuer: &str,
+    expected_issuers: &[&str],
     expected_account_uri: &str,
     require_wildcard_policy: bool,
     now: i64,
 ) -> bool {
     let mut parts = raw.split(';');
 
-    // First token: issuer domain.
+    // First token: issuer domain — must match one of the configured issuers.
     let issuer_token = match parts.next() {
         Some(t) => t.trim().trim_end_matches('.').to_lowercase(),
         None => return false,
     };
-    let norm_expected = expected_issuer.trim().trim_end_matches('.').to_lowercase();
-    if issuer_token != norm_expected {
+    if !expected_issuers
+        .iter()
+        .any(|e| e.trim().trim_end_matches('.').to_lowercase() == issuer_token)
+    {
         return false;
     }
 
@@ -305,7 +309,7 @@ mod tests {
     fn matches_basic_record() {
         assert!(matches_record(
             "acme.example.com; accounturi=https://acme.example.com/acme/account/1",
-            "acme.example.com",
+            &["acme.example.com"],
             "https://acme.example.com/acme/account/1",
             false,
             NOW,
@@ -316,7 +320,7 @@ mod tests {
     fn matches_case_insensitive_issuer() {
         assert!(matches_record(
             "ACME.EXAMPLE.COM; accounturi=https://acme.example.com/acme/account/1",
-            "acme.example.com",
+            &["acme.example.com"],
             "https://acme.example.com/acme/account/1",
             false,
             NOW,
@@ -327,7 +331,7 @@ mod tests {
     fn matches_trailing_dot_stripped() {
         assert!(matches_record(
             "acme.example.com.; accounturi=https://acme.example.com/acme/account/1",
-            "acme.example.com",
+            &["acme.example.com"],
             "https://acme.example.com/acme/account/1",
             false,
             NOW,
@@ -338,7 +342,7 @@ mod tests {
     fn rejects_wrong_issuer() {
         assert!(!matches_record(
             "evil.example.com; accounturi=https://acme.example.com/acme/account/1",
-            "acme.example.com",
+            &["acme.example.com"],
             "https://acme.example.com/acme/account/1",
             false,
             NOW,
@@ -349,7 +353,7 @@ mod tests {
     fn rejects_wrong_account_uri() {
         assert!(!matches_record(
             "acme.example.com; accounturi=https://acme.example.com/acme/account/99",
-            "acme.example.com",
+            &["acme.example.com"],
             "https://acme.example.com/acme/account/1",
             false,
             NOW,
@@ -360,7 +364,7 @@ mod tests {
     fn rejects_missing_account_uri() {
         assert!(!matches_record(
             "acme.example.com; policy=wildcard",
-            "acme.example.com",
+            &["acme.example.com"],
             "https://acme.example.com/acme/account/1",
             false,
             NOW,
@@ -371,7 +375,7 @@ mod tests {
     fn matches_with_wildcard_policy() {
         assert!(matches_record(
             "acme.example.com; accounturi=https://acme.example.com/acme/account/1; policy=wildcard",
-            "acme.example.com",
+            &["acme.example.com"],
             "https://acme.example.com/acme/account/1",
             true, // require wildcard policy
             NOW,
@@ -382,7 +386,7 @@ mod tests {
     fn rejects_missing_wildcard_policy_when_required() {
         assert!(!matches_record(
             "acme.example.com; accounturi=https://acme.example.com/acme/account/1",
-            "acme.example.com",
+            &["acme.example.com"],
             "https://acme.example.com/acme/account/1",
             true, // require wildcard policy
             NOW,
@@ -393,7 +397,7 @@ mod tests {
     fn accepts_non_wildcard_order_without_policy() {
         assert!(matches_record(
             "acme.example.com; accounturi=https://acme.example.com/acme/account/1",
-            "acme.example.com",
+            &["acme.example.com"],
             "https://acme.example.com/acme/account/1",
             false, // wildcard policy not required
             NOW,
@@ -405,7 +409,7 @@ mod tests {
         // persistUntil well in the future
         assert!(matches_record(
             "acme.example.com; accounturi=https://acme.example.com/acme/account/1; persistUntil=2099-01-01T00:00:00Z",
-            "acme.example.com",
+            &["acme.example.com"],
             "https://acme.example.com/acme/account/1",
             false,
             NOW,
@@ -417,7 +421,7 @@ mod tests {
         // persistUntil in the past
         assert!(!matches_record(
             "acme.example.com; accounturi=https://acme.example.com/acme/account/1; persistUntil=2020-01-01T00:00:00Z",
-            "acme.example.com",
+            &["acme.example.com"],
             "https://acme.example.com/acme/account/1",
             false,
             NOW,
@@ -428,7 +432,7 @@ mod tests {
     fn rejects_unparseable_persist_until() {
         assert!(!matches_record(
             "acme.example.com; accounturi=https://acme.example.com/acme/account/1; persistUntil=not-a-date",
-            "acme.example.com",
+            &["acme.example.com"],
             "https://acme.example.com/acme/account/1",
             false,
             NOW,
@@ -439,7 +443,7 @@ mod tests {
     fn ignores_unknown_key_value_tokens() {
         assert!(matches_record(
             "acme.example.com; accounturi=https://acme.example.com/acme/account/1; unknownField=xyz",
-            "acme.example.com",
+            &["acme.example.com"],
             "https://acme.example.com/acme/account/1",
             false,
             NOW,
@@ -450,9 +454,31 @@ mod tests {
     fn matches_record_with_all_fields() {
         assert!(matches_record(
             "acme.example.com; accounturi=https://acme.example.com/acme/account/1; policy=wildcard; persistUntil=2099-12-31T23:59:59Z",
-            "acme.example.com",
+            &["acme.example.com"],
             "https://acme.example.com/acme/account/1",
             true,
+            NOW,
+        ));
+    }
+
+    #[test]
+    fn matches_second_issuer_in_list() {
+        assert!(matches_record(
+            "acme2.example.org; accounturi=https://acme.example.com/acme/account/1",
+            &["acme.example.com", "acme2.example.org"],
+            "https://acme.example.com/acme/account/1",
+            false,
+            NOW,
+        ));
+    }
+
+    #[test]
+    fn rejects_issuer_not_in_list() {
+        assert!(!matches_record(
+            "evil.example.com; accounturi=https://acme.example.com/acme/account/1",
+            &["acme.example.com", "acme2.example.org"],
+            "https://acme.example.com/acme/account/1",
+            false,
             NOW,
         ));
     }
@@ -525,7 +551,7 @@ mod tests {
         let (config, opts) = local_resolver(port);
         let resolver = TokioAsyncResolver::tokio(config, opts);
 
-        let result = validate_with_resolver("example.test", account_uri, issuer, resolver).await;
+        let result = validate_with_resolver("example.test", account_uri, &[issuer], resolver).await;
         assert!(
             result.is_ok(),
             "expected Ok for matching record: {result:?}"
@@ -541,7 +567,7 @@ mod tests {
         let resolver = TokioAsyncResolver::tokio(config, opts);
 
         let result =
-            validate_with_resolver("example.test", account_uri, "acme.example.com", resolver).await;
+            validate_with_resolver("example.test", account_uri, &["acme.example.com"], resolver).await;
         assert!(
             matches!(result, Err(AcmeError::IncorrectResponse(_))),
             "expected IncorrectResponse: {result:?}"
@@ -558,7 +584,7 @@ mod tests {
         let (config, opts) = local_resolver(port);
         let resolver = TokioAsyncResolver::tokio(config, opts);
 
-        let result = validate_with_resolver("*.example.test", account_uri, issuer, resolver).await;
+        let result = validate_with_resolver("*.example.test", account_uri, &[issuer], resolver).await;
         assert!(
             result.is_ok(),
             "wildcard validation should succeed: {result:?}"
@@ -575,7 +601,7 @@ mod tests {
         let (config, opts) = local_resolver(port);
         let resolver = TokioAsyncResolver::tokio(config, opts);
 
-        let result = validate_with_resolver("*.example.test", account_uri, issuer, resolver).await;
+        let result = validate_with_resolver("*.example.test", account_uri, &[issuer], resolver).await;
         assert!(
             matches!(result, Err(AcmeError::IncorrectResponse(_))),
             "expected IncorrectResponse for missing wildcard policy: {result:?}"
@@ -587,7 +613,7 @@ mod tests {
         let result = validate(
             "nonexistent.acme-test-invalid.invalid",
             "uri",
-            "issuer",
+            &["issuer"],
             None,
             false,
         )

@@ -191,10 +191,9 @@ fn challenge_response(
     nonce: &str,
 ) -> Result<Response, AcmeError> {
     let base = &state.config.base_url;
-    // dns-persist-01 has no per-challenge token; instead expose the issuer domain.
+    // dns-persist-01 has no per-challenge token; instead expose the issuer domains.
     let (token, issuer_domain_names) = if challenge.r#type == "dns-persist-01" {
-        let issuer_domain = state.config.dns_persist_issuer_domain();
-        (None, Some(vec![issuer_domain.to_string()]))
+        (None, Some(state.config.dns_persist_issuer_domains()))
     } else {
         (Some(challenge.token.as_str()), None)
     };

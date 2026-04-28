@@ -324,7 +324,7 @@ pub async fn new_order(
         let token = gen_token();
         // dns-persist-01 is offered only when the operator has explicitly configured
         // an issuer domain — without it the challenge cannot be validated.
-        let dns_persist_enabled = state.config.server.dns_persist_issuer_domain.is_some();
+        let dns_persist_enabled = !state.config.server.dns_persist_issuer_domains.is_empty();
         let dns_types: &[&str] = if dns_persist_enabled {
             &["http-01", "dns-01", "tls-alpn-01", "dns-persist-01"]
         } else {

@@ -174,7 +174,7 @@ async fn build_state(
             checkpoint_retention_count: 1000,
         },
         server: ServerConfig {
-            dns_persist_issuer_domain: Some(issuer_domain.into()),
+            dns_persist_issuer_domains: vec![issuer_domain.into()],
             dns_resolver_addr: Some(dns_resolver_addr.into()),
             ..ServerConfig::default()
         },
