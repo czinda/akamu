@@ -99,6 +99,13 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/acme/mtc/landmarks/{seq}/cert",
             get(mtc::get_landmark_cert),
         )
+        // C2SP tlog-tiles API
+        .route("/acme/mtc/tlog/checkpoint", get(mtc::get_tlog_checkpoint))
+        .route(
+            "/acme/mtc/tlog/cosignature",
+            get(mtc::get_tlog_cosignature),
+        )
+        .route("/acme/mtc/tlog/tile/{*path}", get(mtc::get_tlog_tile))
         // Admin API — only registered when [admin] is configured in config.toml.
         // The bearer-token check inside each handler also returns 404 when the
         // section is absent, providing a double layer of protection.
