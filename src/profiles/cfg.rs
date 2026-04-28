@@ -303,6 +303,10 @@ fn translate(
         certificate_policies: vec![],
         // Dogtag profiles always produce X.509; MTC issuance is builtin-only.
         issue_as_mtc: false,
+        // Authorization controls are builtin-only; Dogtag/IPA profiles impose no
+        // identifier restrictions.
+        allowed_identifier_patterns: vec![],
+        identifier_match_all: true,
     })
 }
 

@@ -30,6 +30,7 @@
 //! 2. Implement a `load_<type>` function in a new submodule.
 //! 3. Call it from `load_all_providers`.
 
+pub mod auth;
 pub mod builtin;
 pub mod cfg;
 pub mod dogtag;
@@ -121,6 +122,15 @@ pub struct CertificateParameters {
     /// the server configuration; the finalization handler enforces this at
     /// request time and returns `InvalidProfile` if MTC is not active.
     pub issue_as_mtc: bool,
+    /// Regex patterns that order identifiers must satisfy.  Each identifier is
+    /// formatted as `"type:value"` (e.g. `"dns:example.com"`) before matching.
+    /// Empty = no identifier restriction.
+    pub allowed_identifier_patterns: Vec<String>,
+    /// When `true`, ALL order identifiers must match at least one pattern in
+    /// `allowed_identifier_patterns`.  When `false`, at least one identifier
+    /// matching any pattern is sufficient.  Ignored when
+    /// `allowed_identifier_patterns` is empty.
+    pub identifier_match_all: bool,
 }
 
 impl CertificateParameters {
@@ -141,6 +151,8 @@ impl CertificateParameters {
             allowed_key_types: vec![],
             certificate_policies: vec![],
             issue_as_mtc: false,
+            allowed_identifier_patterns: vec![],
+            identifier_match_all: true,
         }
     }
 }

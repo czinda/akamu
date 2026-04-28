@@ -27,6 +27,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "native-ossl",
+ "regex",
  "rustls",
  "rustls-native-certs",
  "rustls-pki-types",

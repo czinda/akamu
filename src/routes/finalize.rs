@@ -142,6 +142,20 @@ pub async fn finalize_order(
         _ => crate::profiles::CertificateParameters::from_ca(&state.ca),
     };
 
+    // Per-profile authorization checks (identifier patterns, external hook,
+    // account grants).  Only meaningful when the order carries a profile.
+    if order.profile.is_some() {
+        let profile_name = order.profile.as_deref().unwrap_or("");
+        crate::profiles::auth::check_profile_auth(
+            &state.db,
+            &account_id,
+            profile_name,
+            &cert_params,
+            &allowed,
+        )
+        .await?;
+    }
+
     // Issue the certificate using the resolved parameters.  akamu's own CA
     // signs in all cases; the profile only governs extension content and validity.
     let issued = ca::issue::issue_with_params(

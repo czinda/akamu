@@ -49,6 +49,7 @@ pub fn load_builtin(
             .collect();
 
         let issue_as_mtc = matches!(pcfg.issue_as.as_deref(), Some("mtc"));
+        let identifier_match_all = !matches!(pcfg.identifier_match.as_deref(), Some("any"));
 
         let params = CertificateParameters {
             validity_days,
@@ -60,6 +61,8 @@ pub fn load_builtin(
             allowed_key_types: pcfg.allowed_key_types.clone(),
             certificate_policies,
             issue_as_mtc,
+            allowed_identifier_patterns: pcfg.allowed_identifiers.clone(),
+            identifier_match_all,
         };
 
         out.insert(id.clone(), (pcfg.description.clone(), params));
@@ -129,6 +132,8 @@ mod tests {
             allowed_key_types: vec![],
             certificate_policies: vec![],
             issue_as: None,
+            allowed_identifiers: vec![],
+            identifier_match: None,
         }
     }
 

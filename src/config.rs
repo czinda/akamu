@@ -170,6 +170,17 @@ pub struct BuiltinProfileConfig {
     /// (StandaloneCertificate) and requires `[mtc]` to be enabled.
     #[serde(default)]
     pub issue_as: Option<String>,
+    /// Regex patterns that order identifiers must satisfy for this profile to be
+    /// used.  Each identifier is formatted as `"type:value"` (e.g.
+    /// `"dns:example.com"`) before being tested against the patterns.
+    /// Empty = no identifier restriction.
+    #[serde(default)]
+    pub allowed_identifiers: Vec<String>,
+    /// Controls whether ALL identifiers must match a pattern (`"all"`, default)
+    /// or whether ANY single match is sufficient (`"any"`).  Ignored when
+    /// `allowed_identifiers` is empty.
+    #[serde(default)]
+    pub identifier_match: Option<String>,
 }
 
 /// A certificate policy OID with an optional CPS URI qualifier.
