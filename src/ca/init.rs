@@ -396,6 +396,7 @@ mod tests {
             organization: "Test Org".to_string(),
             ca_validity_years: 1,
             crl_next_update_secs: 86400,
+            enforce_validity_cap: false,
         }
     }
 

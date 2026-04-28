@@ -163,6 +163,7 @@ async fn build_state(
             organization: "Test".into(),
             ca_validity_years: 10,
             crl_next_update_secs: 86400,
+            enforce_validity_cap: false,
         },
         mtc: MtcConfig {
             log_path: "/dev/null".into(),
@@ -197,6 +198,7 @@ async fn build_state(
         crl_url: None,
         ocsp_url: None,
         aki_bytes: Vec::new(),
+        enforce_validity_cap: false,
     });
     let state = Arc::new(AppState {
         config: Arc::clone(&config),

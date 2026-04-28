@@ -371,6 +371,14 @@ pub struct CaConfig {
     /// CA validity years (used when auto-generating)
     #[serde(default = "default_ca_validity_years")]
     pub ca_validity_years: u32,
+    /// When `true`, reject certificate issuance when the computed validity period
+    /// exceeds 200 days (the current CA/B Forum BR §6.3.2 limit since 2026-03-15).
+    /// Default `false` — private or enterprise PKI deployments may legitimately
+    /// issue certificates with longer validity when not chaining to a public root.
+    /// Public WebPKI CAs should set this to `true` to enforce the limit at
+    /// issuance time rather than relying solely on the startup warning.
+    #[serde(default)]
+    pub enforce_validity_cap: bool,
 }
 
 /// MTC signing key parameters for checkpoint production.

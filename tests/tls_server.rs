@@ -408,6 +408,7 @@ async fn start_tls_server() -> TlsTestServer {
             organization: "Akāmu Tests".into(),
             ca_validity_years: 10,
             crl_next_update_secs: 86400,
+            enforce_validity_cap: false,
         },
         mtc: MtcConfig {
             log_path: "/dev/null".into(),
@@ -455,6 +456,7 @@ async fn start_tls_server() -> TlsTestServer {
         crl_url: None,
         ocsp_url: None,
         aki_bytes: Vec::new(),
+        enforce_validity_cap: false,
     });
 
     // Bootstrap TLS cert/key signed by the CA.
@@ -948,6 +950,7 @@ async fn test_tls_untrusted_ca_rejected() {
         organization: "Other".into(),
         ca_validity_years: 10,
         crl_next_update_secs: 86400,
+        enforce_validity_cap: false,
     };
     let (_, other_ca_der) = ca::init::load_or_generate(&unrelated_ca_cfg).unwrap();
     tracing::info!("Attempting TLS handshake with unrelated CA trust store…");

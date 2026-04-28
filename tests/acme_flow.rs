@@ -209,6 +209,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             organization: "Test Org".into(),
             ca_validity_years: 10,
             crl_next_update_secs: 86400,
+            enforce_validity_cap: false,
         },
         mtc: MtcConfig {
             log_path: "/dev/null".into(),
@@ -242,6 +243,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         crl_url: None,
         ocsp_url: None,
         aki_bytes: ca_aki_bytes,
+        enforce_validity_cap: false,
     });
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
@@ -2203,6 +2205,7 @@ async fn test_directory_with_optional_fields() {
             organization: "Test Org".into(),
             ca_validity_years: 10,
             crl_next_update_secs: 86400,
+            enforce_validity_cap: false,
         },
         mtc: akamu::config::MtcConfig {
             log_path: "/dev/null".into(),
@@ -2238,6 +2241,7 @@ async fn test_directory_with_optional_fields() {
         crl_url: None,
         ocsp_url: None,
         aki_bytes: Vec::new(),
+        enforce_validity_cap: false,
     });
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
@@ -2573,6 +2577,7 @@ async fn test_finalize_with_mtc_enabled() {
             organization: "Test Org".into(),
             ca_validity_years: 10,
             crl_next_update_secs: 86400,
+            enforce_validity_cap: false,
         },
         mtc: MtcConfig {
             log_path: log_path.clone(),
@@ -2607,6 +2612,7 @@ async fn test_finalize_with_mtc_enabled() {
         crl_url: None,
         ocsp_url: None,
         aki_bytes: Vec::new(),
+        enforce_validity_cap: false,
     });
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
@@ -2825,6 +2831,7 @@ async fn test_finalize_with_aia_and_cdp() {
             organization: "Test Org".into(),
             ca_validity_years: 10,
             crl_next_update_secs: 86400,
+            enforce_validity_cap: false,
         },
         mtc: MtcConfig {
             log_path: "/dev/null".into(),
@@ -2854,6 +2861,7 @@ async fn test_finalize_with_aia_and_cdp() {
         crl_url: Some("http://crl.test/ca.crl".into()),
         ocsp_url: Some("http://ocsp.test/".into()),
         aki_bytes: Vec::new(),
+        enforce_validity_cap: false,
     });
     let state = Arc::new(AppState {
         config: Arc::clone(&config),

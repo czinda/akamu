@@ -438,6 +438,19 @@ pub fn issue_with_params(
     } else {
         raw_not_after
     };
+    // CA/B Forum BR §6.3.2 hard cap at issuance when configured.
+    if ca.enforce_validity_cap {
+        let validity_secs = not_after_unix - not_before_unix;
+        let validity_days_computed = validity_secs / 86400;
+        if validity_days_computed > 200 {
+            return Err(AcmeError::BadRequest(format!(
+                "certificate validity {} days exceeds the 200-day CA/B Forum BR §6.3.2 limit; \
+                 set ca.enforce_validity_cap = false to allow longer validity for private PKI",
+                validity_days_computed
+            )));
+        }
+    }
+
     let not_before =
         synta_certificate::parse_time(&super::init::unix_to_generalized_time(not_before_unix))
             .map_err(|e| AcmeError::Builder(format!("notBefore: {e}")))?;
@@ -723,7 +736,7 @@ mod tests {
         verify, RevocationChecks,
     };
 
-    use super::{hex_encode, ip_string_to_bytes, issue_certificate, IssueCertParams};
+    use super::{hex_encode, ip_string_to_bytes, issue_certificate, issue_with_params, IssueCertParams};
     use crate::ca::csr::{validate_csr, SanEntry, ValidatedCsr};
 
     /// Build a minimal self-signed CA certificate DER for testing.
@@ -1184,6 +1197,97 @@ mod tests {
             issued.not_after,
             issued.not_before + 90 * 86400,
             "notAfter must fall back to notBefore + validity_days * 86400 when override is invalid"
+        );
+    }
+
+    /// `ca.enforce_validity_cap = true` rejects issuance when validity exceeds 200 days.
+    #[test]
+    fn issue_with_params_rejects_overlong_validity_when_cap_enabled() {
+        let (ca_key, ca_cert_der) = make_test_ca();
+        let (_ee_key, validated_csr) = make_test_csr("cap-test.example.com");
+
+        let ca = crate::state::CaState {
+            key: ca_key,
+            cert_der: ca_cert_der,
+            hash_alg: "sha256".into(),
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            aki_bytes: vec![],
+            enforce_validity_cap: true,
+        };
+
+        let params = crate::profiles::CertificateParameters {
+            validity_days: 201, // exceeds 200-day cap
+            hash_alg: "sha256".into(),
+            key_usage_bits: 1u16 << synta_certificate::KEY_USAGE_DIGITAL_SIGNATURE,
+            extended_key_usages: vec!["server_auth".into()],
+            crl_url: None,
+            ocsp_url: None,
+            allowed_key_types: vec![],
+            certificate_policies: vec![],
+            issue_as_mtc: false,
+            allowed_identifier_patterns: vec![],
+            identifier_match_all: true,
+            auth_hook: None,
+            auth_hook_timeout_secs: 30,
+            require_account_grant: false,
+        };
+
+        let result = issue_with_params(&ca, &validated_csr, &params, None, None);
+        assert!(
+            result.is_err(),
+            "expected Err when enforce_validity_cap=true and validity_days=201"
+        );
+        match result.unwrap_err() {
+            crate::error::AcmeError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("201") || msg.contains("200"),
+                    "error message should mention the day count: {msg}"
+                );
+            }
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    /// `ca.enforce_validity_cap = true` allows issuance at exactly 200 days.
+    #[test]
+    fn issue_with_params_allows_200_days_when_cap_enabled() {
+        let (ca_key, ca_cert_der) = make_test_ca();
+        let (_ee_key, validated_csr) = make_test_csr("cap-ok.example.com");
+
+        let ca = crate::state::CaState {
+            key: ca_key,
+            cert_der: ca_cert_der,
+            hash_alg: "sha256".into(),
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            aki_bytes: vec![],
+            enforce_validity_cap: true,
+        };
+
+        let params = crate::profiles::CertificateParameters {
+            validity_days: 200,
+            hash_alg: "sha256".into(),
+            key_usage_bits: 1u16 << synta_certificate::KEY_USAGE_DIGITAL_SIGNATURE,
+            extended_key_usages: vec!["server_auth".into()],
+            crl_url: None,
+            ocsp_url: None,
+            allowed_key_types: vec![],
+            certificate_policies: vec![],
+            issue_as_mtc: false,
+            allowed_identifier_patterns: vec![],
+            identifier_match_all: true,
+            auth_hook: None,
+            auth_hook_timeout_secs: 30,
+            require_account_grant: false,
+        };
+
+        let result = issue_with_params(&ca, &validated_csr, &params, None, None);
+        assert!(
+            result.is_ok(),
+            "expected Ok when enforce_validity_cap=true and validity_days=200: {result:?}"
         );
     }
 }

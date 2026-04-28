@@ -160,6 +160,7 @@ async fn run() -> Result<(), String> {
         crl_url: config.ca.crl_url.clone(),
         ocsp_url: config.ca.ocsp_url.clone(),
         aki_bytes: ca_aki_bytes,
+        enforce_validity_cap: config.ca.enforce_validity_cap,
     });
 
     // ── Certificate profile registry ──────────────────────────────────────────

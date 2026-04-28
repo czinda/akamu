@@ -145,6 +145,7 @@ mod tests {
             organization: "Test".into(),
             ca_validity_years: 10,
             crl_next_update_secs: 86400,
+            enforce_validity_cap: false,
         };
         init::load_or_generate(&config).unwrap()
     }

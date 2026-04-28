@@ -181,6 +181,9 @@ pub struct CaState {
     /// AKI component of ARI cert-ids (RFC 9773 §4.1) — a cert-id whose AKI
     /// does not match returns 404.
     pub aki_bytes: Vec<u8>,
+    /// When `true`, `issue_with_params` rejects issuance when the computed
+    /// validity exceeds 200 days (CA/B Forum BR §6.3.2).
+    pub enforce_validity_cap: bool,
 }
 
 /// Cached account key material stored in `AppState::spki_cache`.
