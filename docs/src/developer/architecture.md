@@ -116,7 +116,7 @@ src/
   main.rs          Entry point; parses config, initializes subsystems, starts axum
   lib.rs           Re-exports public modules for integration tests
   config.rs        TOML configuration structs (Config, CaConfig, MtcConfig, ServerConfig,
-                   ProfilesConfig, ProviderConfig, BuiltinProviderConfig, …)
+                   ProfilesConfig, ProviderConfig, BuiltinProviderConfig, AdminConfig, …)
   state.rs         Shared application state (AppState, CaState, MtcState)
   error.rs         AcmeError enum with HTTP mapping and problem+json serialization
 
@@ -143,12 +143,14 @@ src/
     authz.rs       POST /acme/authz/{id}
     challenge.rs   POST /acme/chall/{authz_id}/{type}
     finalize.rs    POST /acme/order/{id}/finalize
-    certificate.rs GET /acme/cert/{id}
+    certificate.rs GET /acme/cert/{id} (auto-detects MTC vs X.509 by PEM marker)
     revoke.rs      POST /acme/revoke-cert
     key_change.rs  POST /acme/key-change
     renewal_info.rs GET /acme/renewal-info/{cert_id}
     mtc.rs         GET /acme/mtc/tree-size, /root, /inclusion-proof/{id},
                    /cert/{id}/standalone, /landmarks, /landmarks/{seq}/cert
+    admin.rs       GET/PUT/DELETE /admin/account/{id}/profile-grants,
+                   POST /admin/eab (bearer-token guarded; 404 when [admin] absent)
 
   ca/
     mod.rs         Re-exports ca submodules

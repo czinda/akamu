@@ -50,6 +50,9 @@ star_max_duration_secs = 31536000
 star_allow_certificate_get = true
 tor_connectivity_enabled  = false
 
+[admin]
+bearer_token = "change-me"
+
 [profiles]
 refresh_interval_secs = 3600
 
@@ -618,3 +621,36 @@ type        = "ipa"
 profile_dir = "/etc/pki/pki-tomcat/ca/profiles/ca"
 profiles    = ["caIPAserviceCert"]
 ```
+
+## `[admin]`
+
+The `[admin]` section enables the server-side Admin API. When this section is absent, all admin endpoints return 404 and are effectively invisible. This is the default; no admin access is possible without explicit configuration.
+
+```toml
+[admin]
+bearer_token = "change-me-to-a-strong-random-value"
+```
+
+### `bearer_token`
+
+**Required within `[admin]`.** The secret token that all admin API callers must supply in the `Authorization: Bearer <token>` HTTP header.
+
+Generate a strong random value before deploying:
+
+```bash
+openssl rand -hex 32
+```
+
+When the header is absent, the endpoint returns 401. When the header is present but the token does not match, the endpoint returns 403.
+
+**Admin endpoints exposed when this section is configured:**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/admin/account/{id}/profile-grants` | Read current grants for an account |
+| `PUT` | `/admin/account/{id}/profile-grants` | Replace grants for an account |
+| `DELETE` | `/admin/account/{id}/profile-grants` | Revoke all grants from an account |
+| `POST` | `/admin/eab` | Provision a new EAB key with optional grants |
+
+See [Certificate Profiles — Admin API](profiles.md#admin-api) for the full request/response format of each endpoint.
+
