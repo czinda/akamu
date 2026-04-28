@@ -763,14 +763,28 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                 let chall = authz.find_challenge("dns-persist-01").ok_or_else(|| {
                     format!("no dns-persist-01 challenge for {}", authz.identifier.value)
                 })?;
-                let token = chall.token.as_deref().ok_or("challenge missing token")?;
-                let key_auth = account.key_authorization(token);
+                let issuer_domain = chall
+                    .issuer_domain_names
+                    .as_deref()
+                    .and_then(|v| v.first())
+                    .ok_or_else(|| {
+                        format!(
+                            "dns-persist-01 challenge for {} has no issuer-domain-names",
+                            authz.identifier.value
+                        )
+                    })?;
+                let is_wildcard = authz.identifier.value.starts_with("*.");
                 let base_domain = authz.identifier.value.trim_start_matches("*.");
+                let txt_record = if is_wildcard {
+                    DnsPersist01Helper::txt_record_wildcard(issuer_domain, &account.url)
+                } else {
+                    DnsPersist01Helper::txt_record(issuer_domain, &account.url)
+                };
 
                 if let Some(hook) = &args.dns_hook {
                     let solver = DnsHookSolver::new(hook.clone());
                     solver
-                        .deploy(base_domain, token, &key_auth)
+                        .deploy_persist(base_domain, &txt_record)
                         .await
                         .map_err(|e| format!("dns hook deploy: {e}"))?;
                     client
@@ -780,24 +794,18 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                     let polled =
                         poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
                     if polled.status == "invalid" {
-                        solver
-                            .clean(base_domain, token, &key_auth)
-                            .await
-                            .map_err(|e| format!("dns hook clean: {e}"))?;
                         return Err(format!(
                             "order invalid after dns-persist-01 challenge for {}",
                             authz.identifier.value
                         ));
                     }
-                    // For dns-persist-01, the record persists; do not call clean.
+                    // Record persists intentionally; do not call clean.
                 } else {
-                    let txt_value =
-                        DnsPersist01Helper::txt_value(&key_auth).map_err(|e| e.to_string())?;
                     eprintln!();
                     eprintln!("DNS-persist-01 challenge for {}:", authz.identifier.value);
                     eprintln!("  Name:  _validation-persist.{}.", base_domain);
                     eprintln!("  Type:  TXT");
-                    eprintln!("  Value: {}", txt_value);
+                    eprintln!("  Value: {}", txt_record);
                     eprintln!();
                     eprintln!("This is a long-lived TXT record; it only needs to be set once.");
                     eprint!(
