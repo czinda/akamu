@@ -82,12 +82,12 @@ akamu-jose = { path = "crates/akamu-jose" }
 akamu-ldap = { path = "crates/akamu-ldap" }
 
 # Base ASN.1 library (needed for Decoder/Encoder and Integer type)
-synta = { version = ">=0.1.10", default-features = false, features = ["std", "derive"] }
+synta = { version = ">=0.1.11", default-features = false, features = ["std", "derive"] }
 
 # Synta crates for all X.509 / MTC operations
-synta-certificate =  { version = ">=0.1.10", features = ["std", "pqc"] }
-synta-x509-verification =  { version = ">=0.1.10" }
-synta-mtc = { version = ">=0.1.10", features = ["std"] }
+synta-certificate =  { version = ">=0.1.11", features = ["std", "pqc"] }
+synta-x509-verification =  { version = ">=0.1.11" }
+synta-mtc = { version = ">=0.1.11", features = ["std"] }
 
 # Native Rust bindings to system OpenSSL (composite ML-DSA TLS verify)
 native-ossl = "0.1.7"
@@ -105,3 +105,4 @@ clap = { version = "4", features = ["derive"] }
 [[bench]]
 name = "acme_bench"
 harness = false
+
