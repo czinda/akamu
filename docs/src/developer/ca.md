@@ -170,4 +170,4 @@ The CRL:
 
 The CRL Number is encoded as a positive DER INTEGER. `encode_integer_der` handles the two's complement padding (adding a `0x00` prefix when the high bit of the first content byte is set).
 
-The server does not call `build_crl` automatically. It must be called by external tooling or a future CRL-serving endpoint.
+`build_crl` is called on each `GET /ca/crl` request by `src/routes/crl.rs`. The handler fetches all revoked entries from the DB via `db::certs::list_revoked`, converts them to `RevokedEntry` values, and returns the DER response directly. No pre-generation or caching is needed at expected issuance volumes.

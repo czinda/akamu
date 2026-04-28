@@ -10,8 +10,8 @@ For a detailed breakdown of RFC and draft coverage — including which sections 
 - Validates domain ownership using **http-01**, **dns-01**, **tls-alpn-01**, and **dns-persist-01** challenge types (RFC 8555 §8, RFC 8737, and the [Let's Encrypt dns-persist-01 specification](https://letsencrypt.org/2026/02/18/dns-persist-01)).
 - Issues end-entity certificates signed by a built-in Certificate Authority whose key and self-signed root are generated automatically on first run, or loaded from existing PEM files.
 - Maintains a SQLite database for all ACME objects (accounts, orders, authorizations, challenges, certificates, nonces).
-- Generates and serves CRLs (Certificate Revocation Lists).
-- Exposes OCSP responder URLs in issued certificates when configured.
+- Generates and serves CRLs (Certificate Revocation Lists) at `GET /ca/crl`.
+- Serves OCSP responses at `GET /ca/ocsp/{request}` and `POST /ca/ocsp` (RFC 6960).
 - Implements the ACME Renewal Information extension ([RFC 9773](https://www.rfc-editor.org/rfc/rfc9773)) so ACME clients know when to renew.
 - Optionally appends issued certificates to a Merkle Tree Certificate transparency log using the `synta-mtc` library.
 - When `external_account_required = true`, performs full HMAC verification of the `externalAccountBinding` JWS (HS256/HS384/HS512), confirms the payload is the account key, and atomically consumes the EAB key on account creation. Keys are provisioned in the TOML config under `[server.eab_keys]`.
@@ -19,7 +19,6 @@ For a detailed breakdown of RFC and draft coverage — including which sections 
 
 ## What it does not do
 
-- It does not serve the CRL or OCSP responses over HTTP itself; those endpoints must be provided separately if you enable `crl_url` or `ocsp_url`.
 - It does not support wildcard certificates via http-01 or tls-alpn-01 (only dns-01 and dns-persist-01 can authorize wildcard identifiers per RFC 8555 §7.1.3).
 
 ## Technology stack
@@ -54,6 +53,7 @@ For a detailed breakdown of RFC and draft coverage — including which sections 
 - [RFC 9799](https://www.rfc-editor.org/rfc/rfc9799) — ACME Extensions for .onion Special-Use Domain Names
 - [RFC 7807](https://www.rfc-editor.org/rfc/rfc7807) — Problem Details for HTTP APIs (error responses)
 - [RFC 5280](https://www.rfc-editor.org/rfc/rfc5280) — X.509 Certificate and CRL profile
+- [RFC 6960](https://www.rfc-editor.org/rfc/rfc6960) — Online Certificate Status Protocol (OCSP)
 - [Let's Encrypt dns-persist-01](https://letsencrypt.org/2026/02/18/dns-persist-01) — Persistent DNS challenge type
 - [draft-aaron-acme-profiles-01](https://www.ietf.org/archive/id/draft-aaron-acme-profiles-01.html) — ACME certificate profiles
 - [draft-ietf-lamps-pq-composite-sigs](https://datatracker.ietf.org/doc/draft-ietf-lamps-pq-composite-sigs/) — ML-DSA composite TLS signature schemes (provisional code points)

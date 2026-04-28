@@ -21,6 +21,7 @@ This page documents every RFC that is relevant to `Akāmu`, explaining what each
 | [RFC 9773](#rfc-9773-acme-renewal-information-ari) | ACME Renewal Information (ARI) | Full |
 | [RFC 9799](#rfc-9799-acme-for-onion-domains) | ACME Extensions for .onion Special-Use Domain Names | Full |
 | [RFC 5280](#rfc-5280-x509-certificate-profile) | X.509 Certificate and CRL Profile | Full |
+| [RFC 6960](#rfc-6960-ocsp-responder) | Online Certificate Status Protocol (OCSP) | Full |
 | [RFC 8823](#rfc-8823-smime-certificates-informational) | ACME Extensions for S/MIME Certificates | Not implemented |
 | [RFC 9115](#rfc-9115-acme-profile-for-delegated-certificates) | ACME Profile for Delegated Certificates | Not implemented |
 | [RFC 9345](#rfc-9345-delegated-credentials-for-tls) | Delegated Credentials for TLS | Not implemented |
@@ -388,6 +389,7 @@ Akāmu validates that the predecessor cert belongs to the same account, marks it
 ```toml
 [server]
 ari_retry_after_secs = 21600  # 6 hours between renewal-info polls (default)
+# ari_explanation_url = "https://acme.example.com/docs/renewal-policy"  # optional
 ```
 
 ---
@@ -443,6 +445,44 @@ bbcweb3hytmzhn5d532owbu6oqadra5z3ar726vq5kgwwn6aucdccrad.onion
 ```
 
 Version 2 addresses (16-character label) are rejected per RFC 9799 §2.
+
+---
+
+## RFC 6960 — OCSP Responder
+
+**[RFC 6960](https://www.rfc-editor.org/rfc/rfc6960)** defines the Online Certificate Status Protocol (OCSP), which allows relying parties to query a CA for the real-time revocation status of a specific certificate.
+
+### Endpoints
+
+```
+POST /ca/ocsp                   # body: DER OCSPRequest, Content-Type: application/ocsp-request
+GET  /ca/ocsp/{request}         # {request}: base64url-encoded DER OCSPRequest (RFC 6960 §A.1)
+```
+
+Both endpoints return a signed `OCSPResponse` with `Content-Type: application/ocsp-response`. No authentication is required.
+
+### Status mapping
+
+For each serial number in the OCSPRequest, the server looks up the certificate in the database:
+
+| DB state | CertStatus |
+|---|---|
+| Certificate not found | `unknown` |
+| `status = "revoked"` | `revoked` |
+| Any other status | `good` |
+
+The response is signed with the CA private key. The responder identity is `byName` using the CA's subject Name DER.
+
+### Configuration
+
+Set `ocsp_url` in `[ca]` to the public URL of the OCSP endpoint so the URL is embedded in issued certificates:
+
+```toml
+[ca]
+ocsp_url = "http://acme.example.com/ca/ocsp"
+```
+
+See [CRL and OCSP](crl-ocsp.md) for the complete deployment guide.
 
 ---
 
