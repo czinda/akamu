@@ -3068,17 +3068,39 @@ async fn test_crl_endpoint_contains_revoked_serial() {
 ///
 /// Uses SHA-1 as the hash algorithm with zero-filled issuerNameHash and
 /// issuerKeyHash — sufficient for testing the server's decode/lookup/sign loop.
-fn build_ocsp_request_der(serial_bytes: &[u8]) -> Vec<u8> {
+fn build_ocsp_request_der(ca_cert_der: &[u8], serial_bytes: &[u8]) -> Vec<u8> {
+    use synta_certificate::{Certificate, KeyIdHasher as _, default_key_id_hasher};
+
     // SHA-1 AlgorithmIdentifier DER: SEQUENCE { OID 1.3.14.3.2.26, NULL }
     let sha1_alg: &[u8] = &[0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00];
-    // issuerNameHash: OCTET STRING, 20 zero bytes
-    let name_hash: &[u8] = &[
-        0x04, 0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    ];
-    // issuerKeyHash: OCTET STRING, 20 zero bytes
-    let key_hash: &[u8] = &[
-        0x04, 0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    ];
+    // SHA-1 OID component array for the hasher.
+    const SHA1_OID: &[u32] = &[1, 3, 14, 3, 2, 26];
+
+    // Compute the real issuer hashes from the CA certificate.
+    let cert = Certificate::from_der(ca_cert_der).expect("test CA cert must be valid DER");
+    let subject_der = cert.tbs_certificate.subject.0;
+    let raw_key_bytes = cert
+        .tbs_certificate
+        .subject_public_key_info
+        .subject_public_key
+        .as_bytes();
+    // issuerKeyHash input = BIT STRING value: 0x00 (unused bits) || key bytes
+    let mut key_hash_input = vec![0u8];
+    key_hash_input.extend_from_slice(raw_key_bytes);
+
+    let hasher = default_key_id_hasher();
+    let name_hash_bytes = hasher
+        .hash(SHA1_OID, subject_der)
+        .expect("SHA-1 issuerNameHash must succeed");
+    let key_hash_bytes = hasher
+        .hash(SHA1_OID, &key_hash_input)
+        .expect("SHA-1 issuerKeyHash must succeed");
+
+    // Encode as DER OCTET STRING (tag 0x04, length, value).
+    let mut name_hash = vec![0x04_u8, name_hash_bytes.len() as u8];
+    name_hash.extend_from_slice(&name_hash_bytes);
+    let mut key_hash = vec![0x04_u8, key_hash_bytes.len() as u8];
+    key_hash.extend_from_slice(&key_hash_bytes);
 
     // serialNumber: DER INTEGER (prepend 0x00 if high bit set)
     let needs_pad = serial_bytes.first().map(|&b| b & 0x80 != 0).unwrap_or(false);
@@ -3094,8 +3116,8 @@ fn build_ocsp_request_der(serial_bytes: &[u8]) -> Vec<u8> {
         sha1_alg.len() + name_hash.len() + key_hash.len() + serial_int.len();
     let mut cert_id = vec![0x30_u8, cert_id_payload_len as u8];
     cert_id.extend_from_slice(sha1_alg);
-    cert_id.extend_from_slice(name_hash);
-    cert_id.extend_from_slice(key_hash);
+    cert_id.extend_from_slice(&name_hash);
+    cert_id.extend_from_slice(&key_hash);
     cert_id.extend_from_slice(&serial_int);
 
     // Request SEQUENCE
@@ -3176,7 +3198,7 @@ async fn test_ocsp_endpoint_post_and_get() {
         .map(|i| u8::from_str_radix(&serial_hex[i..i + 2], 16).unwrap())
         .collect();
 
-    let ocsp_req_der = build_ocsp_request_der(&serial_bytes);
+    let ocsp_req_der = build_ocsp_request_der(&state.ca.cert_der, &serial_bytes);
 
     // ── POST /ca/ocsp ─────────────────────────────────────────────────────────
     let req = Request::builder()

@@ -17,7 +17,11 @@ use axum::response::{IntoResponse, Response};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 
-use synta_certificate::{CertificateSigner, OCSPResponseBuilder, PrivateKey, SingleResponseSpec};
+use synta_certificate::ocsp::{OCSPResponse, OCSPResponseStatus};
+use synta_certificate::{
+    default_key_id_hasher, CertificateSigner, KeyIdHasher, OCSPResponseBuilder, PrivateKey,
+    SingleResponseSpec,
+};
 
 use crate::ca::init::unix_to_generalized_time;
 use crate::ca::revoke::extract_ca_subject_der;
@@ -56,6 +60,9 @@ pub async fn post_ocsp(
 /// One parsed cert-ID entry, extracted into owned data before any await.
 struct CertEntry {
     hash_alg_der: Vec<u8>,
+    /// OID component array from the CertID hash algorithm — used to compute
+    /// the CA's own issuer hashes for validation.
+    hash_alg_oid: Vec<u32>,
     serial_hex: String,
     serial_bytes: Vec<u8>,
     issuer_name_hash: Vec<u8>,
@@ -81,6 +88,11 @@ async fn handle_ocsp_request(der: &[u8], state: &AppState) -> Result<Vec<u8>, Ac
                     .hash_algorithm
                     .to_der()
                     .map_err(|e| AcmeError::Internal(format!("OCSP hash alg encode: {e}")))?;
+                let hash_alg_oid = cert_id
+                    .hash_algorithm
+                    .algorithm
+                    .components()
+                    .to_vec();
                 let serial_bytes = cert_id.serial_number.as_bytes().to_vec();
                 let serial_hex: String =
                     serial_bytes.iter().map(|b| format!("{b:02x}")).collect();
@@ -88,6 +100,7 @@ async fn handle_ocsp_request(der: &[u8], state: &AppState) -> Result<Vec<u8>, Ac
                 let issuer_key_hash = cert_id.issuer_key_hash.as_bytes().to_vec();
                 Ok::<_, AcmeError>(CertEntry {
                     hash_alg_der,
+                    hash_alg_oid,
                     serial_hex,
                     serial_bytes,
                     issuer_name_hash,
@@ -102,6 +115,27 @@ async fn handle_ocsp_request(der: &[u8], state: &AppState) -> Result<Vec<u8>, Ac
     let this_update = unix_to_generalized_time(now);
     let next_update = unix_to_generalized_time(now + 86400);
     let subject_der = extract_ca_subject_der(&state.ca.cert_der)?;
+
+    // ── Step 1b: validate issuer hashes against this CA ──────────────────────
+    // RFC 6960 §4.1.1: the client computes issuerNameHash and issuerKeyHash
+    // using the CA's subject Name DER and subjectPublicKey BIT STRING value.
+    // A client supplying arbitrary hashes could construct an OCSP signing oracle
+    // (we'd sign a response that appears to be for a different CA).  Reject any
+    // request whose hashes don't match our CA's actual values for that algorithm.
+    for entry in &entries {
+        let (expected_name_hash, expected_key_hash) =
+            compute_issuer_hashes(&state.ca.cert_der, &entry.hash_alg_oid)?;
+
+        if entry.issuer_name_hash != expected_name_hash
+            || entry.issuer_key_hash != expected_key_hash
+        {
+            tracing::warn!(
+                "OCSP: request with issuer hashes that do not match this CA; returning unauthorized"
+            );
+            let der = build_error_response_der(OCSPResponseStatus::Unauthorized)?;
+            return Ok(der);
+        }
+    }
 
     // ── Step 2: DB lookups (async, no signer held) ────────────────────────────
     let mut statuses: Vec<u8> = Vec::with_capacity(entries.len());
@@ -155,4 +189,56 @@ fn ocsp_response(der: Vec<u8>) -> Response {
         der,
     )
         .into_response()
+}
+
+/// Build a minimal DER-encoded `OCSPResponse` with the given error status
+/// (e.g. `OCSPResponseStatus::Unauthorized`).  No `responseBytes` are present.
+fn build_error_response_der(status: OCSPResponseStatus) -> Result<Vec<u8>, AcmeError> {
+    let resp = OCSPResponse {
+        response_status: status,
+        response_bytes: None,
+    };
+    resp.to_der()
+        .map_err(|e| AcmeError::Builder(format!("OCSP error response encode: {e}")))
+}
+
+/// Compute the RFC 6960 §4.1.1 `issuerNameHash` and `issuerKeyHash` for the
+/// CA certificate using the hash algorithm OID `hash_oid`.
+///
+/// - `issuerNameHash` = hash of the DER-encoded subject Name.
+/// - `issuerKeyHash`  = hash of the BIT STRING *value* of subjectPublicKey
+///   (first byte is the unused-bits count, typically 0x00, followed by the
+///   raw public key bytes).
+fn compute_issuer_hashes(
+    ca_cert_der: &[u8],
+    hash_oid: &[u32],
+) -> Result<(Vec<u8>, Vec<u8>), AcmeError> {
+    use synta_certificate::Certificate;
+
+    let cert = Certificate::from_der(ca_cert_der)
+        .map_err(|e| AcmeError::Internal(format!("OCSP: re-decode CA cert: {e}")))?;
+
+    let subject_der = cert.tbs_certificate.subject.0;
+
+    // The issuerKeyHash input is the BIT STRING *value*: unused-bits byte (0x00)
+    // followed by the actual key bytes.  `as_bytes()` omits the unused-bits byte,
+    // so prepend it explicitly.
+    let key_bytes = cert
+        .tbs_certificate
+        .subject_public_key_info
+        .subject_public_key
+        .as_bytes();
+    let mut key_hash_input = Vec::with_capacity(key_bytes.len() + 1);
+    key_hash_input.push(0u8); // unused bits = 0
+    key_hash_input.extend_from_slice(key_bytes);
+
+    let hasher = default_key_id_hasher();
+    let name_hash = hasher
+        .hash(hash_oid, subject_der)
+        .map_err(|e| AcmeError::Crypto(format!("OCSP: issuerNameHash: {e}")))?;
+    let key_hash = hasher
+        .hash(hash_oid, &key_hash_input)
+        .map_err(|e| AcmeError::Crypto(format!("OCSP: issuerKeyHash: {e}")))?;
+
+    Ok((name_hash, key_hash))
 }
