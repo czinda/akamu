@@ -248,10 +248,13 @@ async fn start_tls_server(
     tracing::info!("akamu-cosigner listening on {} with TLS", listen_addr);
 
     loop {
-        let (stream, _) = listener
-            .accept()
-            .await
-            .map_err(|e| CosignerError::Config(format!("accept: {e}")))?;
+        let (stream, _) = match listener.accept().await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("accept error (continuing): {e}");
+                continue;
+            }
+        };
         let acceptor = acceptor.clone();
         let router = router.clone();
         tokio::spawn(async move {
