@@ -293,7 +293,9 @@ fn parse_contacts(contact_json: &Option<String>) -> Vec<String> {
 
 fn validate_contacts(contacts: &[String]) -> Result<(), AcmeError> {
     for c in contacts {
-        if !c.starts_with("mailto:") {
+        // RFC 8555 §7.1.2 requires contacts to be URLs.  Any URI scheme is
+        // accepted; bare strings without a scheme separator are rejected.
+        if !c.contains(':') {
             return Err(AcmeError::UnsupportedContact);
         }
     }
@@ -311,8 +313,15 @@ mod tests {
     }
 
     #[test]
-    fn validate_contacts_rejects_non_mailto() {
-        let result = validate_contacts(&["https://example.com".to_string()]);
+    fn validate_contacts_accepts_any_uri_scheme() {
+        validate_contacts(&["https://example.com".to_string()]).unwrap();
+        validate_contacts(&["tel:+1-555-000-0000".to_string()]).unwrap();
+        validate_contacts(&["xmpp:user@example.com".to_string()]).unwrap();
+    }
+
+    #[test]
+    fn validate_contacts_rejects_bare_strings() {
+        let result = validate_contacts(&["user@example.com".to_string()]);
         assert!(result.is_err());
         match result.unwrap_err() {
             AcmeError::UnsupportedContact => {}
