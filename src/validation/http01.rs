@@ -4,9 +4,9 @@
 //! that the response body (trimmed) equals the key authorization string.
 //! Up to 10 HTTP redirects are followed, including redirects to HTTPS targets.
 
-use http_body_util::BodyExt;
-use hyper::Uri;
+use http_body_util::{BodyExt, Limited};
 use hyper::header::LOCATION;
+use hyper::Uri;
 
 use crate::error::AcmeError;
 use crate::state::ValidationClient;
@@ -19,8 +19,11 @@ const MAX_REDIRECTS: usize = 10;
 fn is_blocked_ip(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(v4) => {
-            v4.is_loopback() || v4.is_private() || v4.is_link_local()
-                || v4.is_unspecified() || v4.is_broadcast()
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
         }
         std::net::IpAddr::V6(v6) => {
             if v6.is_loopback() || v6.is_unspecified() {
@@ -92,8 +95,8 @@ async fn check_redirect_host(
 /// * `key_auth`          — `{token}.{jwk_thumbprint}` (expected response body).
 /// * `port`              — TCP port to connect to (RFC 8555 §8.3 requires 80; override for testing).
 /// * `allow_private_ips` — when `false`, redirects to RFC-1918/loopback/link-local
-///                         addresses are rejected (SSRF guard).  Set to `true` only
-///                         in isolated test environments.
+///   addresses are rejected (SSRF guard).  Set to `true` only
+///   in isolated test environments.
 /// * `client`            — shared hyper client; reusing it avoids a TCP handshake per validation.
 pub async fn validate(
     domain: &str,
@@ -151,10 +154,7 @@ pub async fn validate(
                 })?
             } else {
                 // Relative reference — reconstruct using current authority + scheme.
-                let authority = uri
-                    .authority()
-                    .map(|a| a.as_str())
-                    .unwrap_or_default();
+                let authority = uri.authority().map(|a| a.as_str()).unwrap_or_default();
                 let scheme = uri.scheme_str().unwrap_or("http");
                 format!("{scheme}://{authority}{location}")
                     .parse()
@@ -187,30 +187,28 @@ pub async fn validate(
             )));
         }
 
-        // Cap response body to prevent runaway memory consumption from hostile targets.
-        // Key authorizations are < 200 bytes; 1 MiB allows for proxies that prepend
-        // extra content while still bounding allocation per validation attempt.
+        // Key authorizations are < 200 bytes; 1 MiB is generous while still
+        // bounding memory per validation attempt.  Limited aborts streaming as
+        // soon as the limit is exceeded so a hostile server cannot force a full
+        // allocation before the check fires.
         const MAX_BODY: usize = 1_048_576;
-        let body_bytes = resp
-            .into_body()
+        let body_bytes = Limited::new(resp.into_body(), MAX_BODY)
             .collect()
             .await
             .map_err(|e| {
-                AcmeError::Connection(format!("http-01 body read from '{current_url}': {e}"))
+                // LengthLimitError is returned when the limit is hit.
+                if e.is::<http_body_util::LengthLimitError>() {
+                    AcmeError::IncorrectResponse(format!(
+                        "http-01: response body exceeds {MAX_BODY} bytes for '{current_url}'"
+                    ))
+                } else {
+                    AcmeError::Connection(format!("http-01 body read from '{current_url}': {e}"))
+                }
             })?
             .to_bytes();
 
-        if body_bytes.len() > MAX_BODY {
-            return Err(AcmeError::IncorrectResponse(format!(
-                "http-01: response body too large ({} bytes)",
-                body_bytes.len()
-            )));
-        }
-
         let body = std::str::from_utf8(&body_bytes)
-            .map_err(|_| {
-                AcmeError::IncorrectResponse("http-01: body is not valid UTF-8".into())
-            })?
+            .map_err(|_| AcmeError::IncorrectResponse("http-01: body is not valid UTF-8".into()))?
             .trim();
 
         if body != key_auth {
@@ -232,8 +230,8 @@ mod tests {
     use super::*;
     use axum::{http::StatusCode, routing::get, Router};
     use hyper_rustls::HttpsConnectorBuilder;
-    use hyper_util::client::legacy::Client;
     use hyper_util::client::legacy::connect::HttpConnector;
+    use hyper_util::client::legacy::Client;
     use hyper_util::rt::TokioExecutor;
     use tokio::net::TcpListener;
 
@@ -395,7 +393,10 @@ mod tests {
             &test_client(),
         )
         .await;
-        assert!(result.is_ok(), "expected Ok after redirect, got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "expected Ok after redirect, got: {result:?}"
+        );
     }
 
     #[tokio::test]
