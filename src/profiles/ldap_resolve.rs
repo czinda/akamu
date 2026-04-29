@@ -31,9 +31,16 @@ pub async fn resolve_ldap_uris(cfg: &LdapConfig, provider_name: &str) -> Result<
     uris.extend(cfg.uris.iter().cloned());
 
     // SRV-based discovery appended after explicit servers.
+    // Failure to resolve SRV is non-fatal when explicit URIs are available;
+    // the operator may have configured fallback URIs precisely for this case.
     if let Some(domain) = &cfg.srv_domain {
-        let discovered = resolve_srv(domain, provider_name).await?;
-        uris.extend(discovered);
+        match resolve_srv(domain, provider_name).await {
+            Ok(discovered) => uris.extend(discovered),
+            Err(e) if !uris.is_empty() => {
+                tracing::warn!("{e}; continuing with explicitly configured URIs");
+            }
+            Err(e) => return Err(e),
+        }
     }
 
     if uris.is_empty() {
@@ -47,11 +54,15 @@ pub async fn resolve_ldap_uris(cfg: &LdapConfig, provider_name: &str) -> Result<
 }
 
 /// Resolve `_ldap._tcp.{domain}` SRV records and return `ldap://host:port`
-/// URIs ordered by RFC 2782 (ascending priority; descending weight within
-/// the same priority so higher-weight servers are tried first).
+/// URIs ordered by priority (ascending) then weight (descending).  RFC 2782
+/// requires weighted-random selection within a priority group; this
+/// implementation uses a deterministic sort instead, which is simpler and
+/// sufficient for typical LDAP topologies where servers within a priority
+/// group are equivalent.
 ///
 /// A lookup that returns zero SRV records is not treated as an error.
 async fn resolve_srv(domain: &str, provider_name: &str) -> Result<Vec<String>, String> {
+    // TODO: cache the resolver across profile refreshes (store in ProfileRegistry).
     let resolver =
         TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
 
