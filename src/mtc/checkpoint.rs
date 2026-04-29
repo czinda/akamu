@@ -37,10 +37,8 @@ pub async fn produce_checkpoint(
 ) -> Result<(), AcmeError> {
     // Get current tree size (O(1) file stat — very fast, OK in async context).
     let tree_size = {
-        let guard = log.lock().await;
-        guard
-            .tree_size()
-            .map_err(|e| AcmeError::Mtc(format!("tree_size: {e}")))?
+        let mut guard = log.lock().await;
+        guard.tree_size()?
     };
 
     if tree_size == 0 {
@@ -92,12 +90,9 @@ pub async fn produce_checkpoint(
             // the value here is the authoritative size embedded in the checkpoint DER.
             let (actual_tree_size, root_bytes, cert_proofs) = {
                 let mut guard = log_clone.blocking_lock();
-                let actual_tree_size = guard
-                    .tree_size()
-                    .map_err(|e| AcmeError::Mtc(format!("locked tree_size: {e}")))?;
-                let root = guard
-                    .compute_root()
-                    .map_err(|e| AcmeError::Mtc(format!("compute_root: {e}")))?;
+                let actual_tree_size = guard.tree_size()?;
+                // compute_root also warms the CachedLog root cache.
+                let root = guard.compute_root()?;
                 let mut proofs: Vec<CertProofEntry> = Vec::new();
                 for cert in &pending_certs {
                     match guard.generate_proof(cert.mtc_log_index as u64) {

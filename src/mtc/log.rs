@@ -22,8 +22,101 @@ use tokio::sync::Mutex;
 
 use crate::error::AcmeError;
 
+/// `DiskBackedLog` wrapped with an in-memory root-hash cache.
+///
+/// `compute_root` is O(N) disk reads.  The cache stores the most recently
+/// computed `(tree_size, root_hash)` pair so that HTTP reads of the current
+/// checkpoint can skip the O(N) traversal when the tree hasn't grown since the
+/// last checkpoint-production run.
+///
+/// Cache coherence rules:
+/// - Warmed by `compute_root()` and `tree_size_and_root()`.
+/// - Invalidated by `append_leaf()` (any write to the log).
+pub struct CachedLog {
+    log: DiskBackedLog,
+    root_cache: Option<(u64, Vec<u8>)>,
+}
+
+impl CachedLog {
+    pub fn new(log: DiskBackedLog) -> Self {
+        Self {
+            log,
+            root_cache: None,
+        }
+    }
+
+    pub fn tree_size(&mut self) -> Result<u64, AcmeError> {
+        self.log
+            .tree_size()
+            .map_err(|e| AcmeError::Mtc(format!("tree_size: {e}")))
+    }
+
+    /// Compute the Merkle root and warm the cache.
+    pub fn compute_root(&mut self) -> Result<Vec<u8>, AcmeError> {
+        let root = self
+            .log
+            .compute_root()
+            .map_err(|e| AcmeError::Mtc(format!("compute_root: {e}")))?;
+        // Best-effort: if tree_size fails here we still return the root.
+        if let Ok(size) = self.log.tree_size() {
+            self.root_cache = Some((size, root.clone()));
+        }
+        Ok(root)
+    }
+
+    /// Return `(tree_size, root_hash)`, using the cache when the tree hasn't grown.
+    pub fn tree_size_and_root(&mut self) -> Result<(u64, Vec<u8>), AcmeError> {
+        let size = self.tree_size()?;
+        if let Some((cached_size, ref root)) = self.root_cache {
+            if cached_size == size {
+                return Ok((size, root.clone()));
+            }
+        }
+        let root = self
+            .log
+            .compute_root()
+            .map_err(|e| AcmeError::Mtc(format!("compute_root: {e}")))?;
+        self.root_cache = Some((size, root.clone()));
+        Ok((size, root))
+    }
+
+    /// Append a leaf hash; invalidates the root cache.
+    pub fn append_leaf(&mut self, hash: &[u8]) -> Result<u64, AcmeError> {
+        let idx = self
+            .log
+            .append_leaf(hash)
+            .map_err(|e| AcmeError::Mtc(format!("append_leaf: {e}")))?;
+        self.root_cache = None;
+        Ok(idx)
+    }
+
+    pub fn generate_proof(&mut self, leaf_index: u64) -> Result<Vec<(bool, Vec<u8>)>, AcmeError> {
+        self.log
+            .generate_proof(leaf_index)
+            .map_err(|e| AcmeError::Mtc(format!("generate_proof: {e}")))
+    }
+
+    /// Read a contiguous range of leaf hashes; returns `Ok(vec![])` when
+    /// `start` is at or beyond the current tree size.
+    pub fn read_hash_range(&mut self, start: u64, count: usize) -> Result<Vec<Vec<u8>>, AcmeError> {
+        let size = self.tree_size()?;
+        if start >= size {
+            return Ok(vec![]);
+        }
+        self.log
+            .read_hash_range(start, count)
+            .map_err(|e| AcmeError::Mtc(format!("read_hash_range: {e}")))
+    }
+
+    pub fn read_all_hashes(&mut self) -> Result<Vec<Vec<u8>>, AcmeError> {
+        self.log
+            .read_all_hashes()
+            .map_err(|e| AcmeError::Mtc(format!("read_all_hashes: {e}")))
+    }
+}
+
 /// Shared handle to the disk-backed MTC log.
-pub type SharedLog = Arc<Mutex<DiskBackedLog>>;
+pub type SharedLog = Arc<Mutex<CachedLog>>;
 
 /// Open an existing MTC log file, or create a new one if none exists.
 ///
@@ -34,7 +127,7 @@ pub type SharedLog = Arc<Mutex<DiskBackedLog>>;
 /// Note: concurrent calls on the **same path** from different processes are
 /// still not supported — the caller is responsible for ensuring mutual
 /// exclusion at that level (e.g. via a file lock or single-process guarantee).
-pub fn open_or_create(path: &str, algorithm: HashAlgorithm) -> Result<DiskBackedLog, AcmeError> {
+pub fn open_or_create(path: &str, algorithm: HashAlgorithm) -> Result<CachedLog, AcmeError> {
     match DiskBackedLog::create(path, algorithm) {
         Ok(mut log) => {
             // §5.3 of draft-ietf-plants-merkle-tree-certs: entry zero of every
@@ -50,14 +143,16 @@ pub fn open_or_create(path: &str, algorithm: HashAlgorithm) -> Result<DiskBacked
                 .ok_or_else(|| AcmeError::Mtc("IssuanceLogBuilder yielded no hashes".into()))?;
             log.append_leaf(&null_hash)
                 .map_err(|e| AcmeError::Mtc(format!("seed null_entry at index 0: {e}")))?;
-            Ok(log)
+            Ok(CachedLog::new(log))
         }
         Err(create_err) => {
             tracing::debug!(
                 path,
                 "MTC log create failed, attempting to open existing: {create_err}"
             );
-            DiskBackedLog::open(path).map_err(|e| AcmeError::Mtc(format!("open MTC log: {e}")))
+            DiskBackedLog::open(path)
+                .map(CachedLog::new)
+                .map_err(|e| AcmeError::Mtc(format!("open MTC log: {e}")))
         }
     }
 }
@@ -134,11 +229,9 @@ pub async fn append_cert_to_log(
     .await
     .map_err(|e| AcmeError::Mtc(format!("spawn_blocking panicked: {e}")))??;
 
-    // Append the hash to the log file (one write syscall).
+    // Append the hash; CachedLog::append_leaf also invalidates the root cache.
     let mut guard = log.lock().await;
-    guard
-        .append_leaf(&leaf_hash)
-        .map_err(|e| AcmeError::Mtc(format!("append_leaf: {e}")))
+    guard.append_leaf(&leaf_hash)
 }
 
 /// Compute a Merkle inclusion proof for the leaf at `leaf_index`.
@@ -151,14 +244,9 @@ pub async fn generate_proof(
     leaf_index: u64,
 ) -> Result<Vec<(bool, Vec<u8>)>, AcmeError> {
     let log_clone = Arc::clone(log);
-    tokio::task::spawn_blocking(move || {
-        let mut guard = log_clone.blocking_lock();
-        guard
-            .generate_proof(leaf_index)
-            .map_err(|e| AcmeError::Mtc(format!("generate_proof: {e}")))
-    })
-    .await
-    .map_err(|e| AcmeError::Mtc(format!("spawn_blocking panicked: {e}")))?
+    tokio::task::spawn_blocking(move || log_clone.blocking_lock().generate_proof(leaf_index))
+        .await
+        .map_err(|e| AcmeError::Mtc(format!("spawn_blocking panicked: {e}")))?
 }
 
 /// Compute a Merkle inclusion proof and the current tree size atomically.
@@ -173,12 +261,8 @@ pub async fn proof_and_tree_size(
     let log_clone = Arc::clone(log);
     tokio::task::spawn_blocking(move || {
         let mut guard = log_clone.blocking_lock();
-        let proof = guard
-            .generate_proof(leaf_index)
-            .map_err(|e| AcmeError::Mtc(format!("generate_proof: {e}")))?;
-        let size = guard
-            .tree_size()
-            .map_err(|e| AcmeError::Mtc(format!("tree_size: {e}")))?;
+        let proof = guard.generate_proof(leaf_index)?;
+        let size = guard.tree_size()?;
         Ok::<_, AcmeError>((proof, size))
     })
     .await
@@ -191,14 +275,9 @@ pub async fn proof_and_tree_size(
 /// calls `fstat` (a blocking syscall) under the hood.
 pub async fn tree_size(log: &SharedLog) -> Result<u64, AcmeError> {
     let log_clone = Arc::clone(log);
-    tokio::task::spawn_blocking(move || {
-        log_clone
-            .blocking_lock()
-            .tree_size()
-            .map_err(|e| AcmeError::Mtc(format!("tree_size: {e}")))
-    })
-    .await
-    .map_err(|e| AcmeError::Mtc(format!("spawn_blocking panicked: {e}")))?
+    tokio::task::spawn_blocking(move || log_clone.blocking_lock().tree_size())
+        .await
+        .map_err(|e| AcmeError::Mtc(format!("spawn_blocking panicked: {e}")))?
 }
 
 /// Compute the current Merkle root of the log.
@@ -206,34 +285,22 @@ pub async fn tree_size(log: &SharedLog) -> Result<u64, AcmeError> {
 /// Returns the root hash as a byte vector (length depends on the algorithm).
 pub async fn compute_root(log: &SharedLog) -> Result<Vec<u8>, AcmeError> {
     let log_clone = Arc::clone(log);
-    tokio::task::spawn_blocking(move || {
-        let mut guard = log_clone.blocking_lock();
-        guard
-            .compute_root()
-            .map_err(|e| AcmeError::Mtc(format!("compute_root: {e}")))
-    })
-    .await
-    .map_err(|e| AcmeError::Mtc(format!("spawn_blocking panicked: {e}")))?
+    tokio::task::spawn_blocking(move || log_clone.blocking_lock().compute_root())
+        .await
+        .map_err(|e| AcmeError::Mtc(format!("spawn_blocking panicked: {e}")))?
 }
 
 /// Return the current tree size and Merkle root atomically.
 ///
 /// Both values are read under the same `blocking_lock` guard, ensuring the
 /// `treeSize` and `rootHash` in HTTP responses are always consistent.
+/// Return `(tree_size, root_hash)`, using the in-memory cache when the tree
+/// hasn't grown since the last `compute_root` or checkpoint-production run.
 pub async fn tree_size_and_root(log: &SharedLog) -> Result<(u64, Vec<u8>), AcmeError> {
     let log_clone = Arc::clone(log);
-    tokio::task::spawn_blocking(move || {
-        let mut guard = log_clone.blocking_lock();
-        let size = guard
-            .tree_size()
-            .map_err(|e| AcmeError::Mtc(format!("tree_size: {e}")))?;
-        let root = guard
-            .compute_root()
-            .map_err(|e| AcmeError::Mtc(format!("compute_root: {e}")))?;
-        Ok::<_, AcmeError>((size, root))
-    })
-    .await
-    .map_err(|e| AcmeError::Mtc(format!("spawn_blocking panicked: {e}")))?
+    tokio::task::spawn_blocking(move || log_clone.blocking_lock().tree_size_and_root())
+        .await
+        .map_err(|e| AcmeError::Mtc(format!("spawn_blocking panicked: {e}")))?
 }
 
 /// Read a contiguous range of leaf hashes from the log.
@@ -247,20 +314,9 @@ pub async fn read_hash_range(
     count: usize,
 ) -> Result<Vec<Vec<u8>>, AcmeError> {
     let log_clone = Arc::clone(log);
-    tokio::task::spawn_blocking(move || {
-        let mut guard = log_clone.blocking_lock();
-        let size = guard
-            .tree_size()
-            .map_err(|e| AcmeError::Mtc(format!("tree_size: {e}")))?;
-        if start >= size {
-            return Ok(vec![]);
-        }
-        guard
-            .read_hash_range(start, count)
-            .map_err(|e| AcmeError::Mtc(format!("read_hash_range: {e}")))
-    })
-    .await
-    .map_err(|e| AcmeError::Mtc(format!("spawn_blocking panicked: {e}")))?
+    tokio::task::spawn_blocking(move || log_clone.blocking_lock().read_hash_range(start, count))
+        .await
+        .map_err(|e| AcmeError::Mtc(format!("spawn_blocking panicked: {e}")))?
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

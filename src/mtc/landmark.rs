@@ -39,10 +39,8 @@ pub async fn maybe_allocate_landmark(
 ) -> Result<(), AcmeError> {
     // Get current tree size.
     let tree_size = {
-        let guard = log.lock().await;
-        guard
-            .tree_size()
-            .map_err(|e| AcmeError::Mtc(format!("landmark tree_size: {e}")))?
+        let mut guard = log.lock().await;
+        guard.tree_size()?
     };
 
     if tree_size == 0 {
@@ -112,9 +110,7 @@ pub async fn maybe_allocate_landmark(
         // requires the full tree to generate the inclusion proof internally.
         let all_leaves = {
             let mut guard = log_clone.blocking_lock();
-            guard
-                .read_all_hashes()
-                .map_err(|e| AcmeError::Mtc(format!("read_all_hashes for landmark: {e}")))?
+            guard.read_all_hashes()?
         };
 
         // Trim to landmark.tree_size in case the log has grown since we checked.
