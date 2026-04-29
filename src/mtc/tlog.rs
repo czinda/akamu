@@ -23,6 +23,8 @@
 //! Type 0x05 is a CT-log compatibility type; its key ID and signature format
 //! are defined in c2sp.org/static-ct-api and are not produced here.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 
@@ -582,13 +584,17 @@ async fn tile_entries(
     max_width: usize,
 ) -> Result<Vec<Vec<u8>>, AcmeError> {
     if level == 0 {
-        let start = tile_n.checked_mul(TILE_WIDTH as u64).ok_or(AcmeError::NotFound)?;
+        let start = tile_n
+            .checked_mul(TILE_WIDTH as u64)
+            .ok_or(AcmeError::NotFound)?;
         return read_hash_range(log, start, max_width).await;
     }
 
     let mut result = Vec::with_capacity(max_width);
     for i in 0..max_width as u64 {
-        let base = tile_n.checked_mul(TILE_WIDTH as u64).ok_or(AcmeError::NotFound)?;
+        let base = tile_n
+            .checked_mul(TILE_WIDTH as u64)
+            .ok_or(AcmeError::NotFound)?;
         let sub_tile_n = base.checked_add(i).ok_or(AcmeError::NotFound)?;
         let sub = Box::pin(tile_entries(
             log,
@@ -662,9 +668,13 @@ pub async fn produce_cosigner_checkpoint(
     key: &synta_certificate::BackendPrivateKey,
     hash_alg: &str,
     origin: &str,
-    timestamp_unix: u64,
 ) -> Result<String, AcmeError> {
     let (tree_size, root_hash) = tree_size_and_root(log).await?;
+    // Sample timestamp after the tree snapshot to minimise clock/state skew.
+    let timestamp_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     sign_checkpoint_as_cosigner(
         cosigner_name,
         key,

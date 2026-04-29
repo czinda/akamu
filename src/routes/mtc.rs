@@ -3,8 +3,6 @@
 //! All endpoints return 404 when MTC logging is disabled.
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -246,13 +244,9 @@ pub async fn get_tlog_cosignature(
     let origin = format!("{}/acme/mtc/tlog", state.config.base_url);
     let key_name = origin.clone();
     let hash_alg = &state.mtc.signing_hash_alg;
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
 
-    let note = tlog::produce_cosigner_checkpoint(shared_log, &key_name, key, hash_alg, &origin, ts)
-        .await?;
+    let note =
+        tlog::produce_cosigner_checkpoint(shared_log, &key_name, key, hash_alg, &origin).await?;
 
     Ok((
         StatusCode::OK,
