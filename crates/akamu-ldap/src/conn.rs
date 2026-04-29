@@ -101,14 +101,23 @@ impl LdapConnection {
         let rc = unsafe { ffi::ldap_initialize(&mut ld, uri_c.as_ptr()) };
         check(rc, "ldap_initialize")?;
 
+        // Wrap immediately so Drop (ldap_unbind_ext_s) runs on all error paths below.
+        let conn = Self { ld };
+
         // Enforce LDAPv3.
         let v3: c_int = 3;
-        unsafe {
+        let rc = unsafe {
             ffi::ldap_set_option(
-                ld,
+                conn.ld,
                 ffi::LDAP_OPT_PROTOCOL_VERSION,
                 &v3 as *const c_int as *const _,
-            );
+            )
+        };
+        if rc == ffi::LDAP_OPT_ERROR {
+            return Err(LdapError::Protocol {
+                code: rc,
+                msg: "ldap_set_option(PROTOCOL_VERSION) failed".into(),
+            });
         }
 
         if let Some(ca_path) = tls_ca_cert_file {
@@ -118,7 +127,7 @@ impl LdapConnection {
             let path_c = cstr(ca_path)?;
             let rc = unsafe {
                 ffi::ldap_set_option(
-                    ld,
+                    conn.ld,
                     ffi::LDAP_OPT_X_TLS_CACERTFILE,
                     path_c.as_ptr() as *const _,
                 )
@@ -132,7 +141,7 @@ impl LdapConnection {
             let zero: c_int = 0;
             let rc = unsafe {
                 ffi::ldap_set_option(
-                    ld,
+                    conn.ld,
                     ffi::LDAP_OPT_X_TLS_NEWCTX,
                     &zero as *const c_int as *const _,
                 )
@@ -146,7 +155,7 @@ impl LdapConnection {
 
         if starttls {
             let rc =
-                unsafe { ffi::ldap_start_tls_s(ld, ptr::null_mut(), ptr::null_mut()) };
+                unsafe { ffi::ldap_start_tls_s(conn.ld, ptr::null_mut(), ptr::null_mut()) };
             if rc != ffi::LDAP_SUCCESS {
                 return Err(LdapError::Tls(format!(
                     "STARTTLS failed: {}",
@@ -155,7 +164,7 @@ impl LdapConnection {
             }
         }
 
-        Ok(Self { ld })
+        Ok(conn)
     }
 
     // ── Bind ──────────────────────────────────────────────────────────────────
@@ -248,7 +257,11 @@ impl LdapConnection {
                     &mut result,
                 )
             };
-            if rc2 < 0 {
+            if rc2 <= 0 {
+                if !result.is_null() {
+                    unsafe { ffi::ldap_msgfree(result) };
+                    result = ptr::null_mut();
+                }
                 return Err(LdapError::Protocol {
                     code: rc2,
                     msg: "ldap_result during GSSAPI exchange failed".into(),
@@ -258,7 +271,13 @@ impl LdapConnection {
     }
 
     /// Wait (blocking) for the result of a previously sent request identified
-    /// by `msgid`, then assert it succeeded.
+    /// by `msgid`, then assert it succeeded at both the transport and protocol
+    /// level.
+    ///
+    /// `ldap_result` returns the message *type* (> 0) on success, 0 on timeout
+    /// or connection drop, and < 0 on error.  The protocol-level result code
+    /// (e.g. `LDAP_INVALID_CREDENTIALS`) is embedded in the message body and
+    /// must be extracted with `ldap_parse_result` before the message is freed.
     fn collect_result(&mut self, msgid: c_int, context: &str) -> Result<(), LdapError> {
         let mut res: *mut ffi::LDAPMessage = ptr::null_mut();
         let rc = unsafe {
@@ -270,13 +289,41 @@ impl LdapConnection {
                 &mut res,
             )
         };
-        if !res.is_null() {
-            unsafe { ffi::ldap_msgfree(res) };
-        }
-        if rc < 0 {
+        if rc <= 0 {
+            // rc == 0: timeout / connection dropped; rc < 0: local error.
+            if !res.is_null() {
+                unsafe { ffi::ldap_msgfree(res) };
+            }
             return Err(LdapError::Protocol {
                 code: rc,
                 msg: format!("ldap_result for {context} failed"),
+            });
+        }
+        // Extract the LDAP protocol result code from the message body.
+        // freeit=1: ldap_parse_result takes ownership of `res` and frees it.
+        let mut errcode: c_int = ffi::LDAP_SUCCESS;
+        let parse_rc = unsafe {
+            ffi::ldap_parse_result(
+                self.ld,
+                res,
+                &mut errcode,
+                ptr::null_mut(), // matcheddnp — not needed
+                ptr::null_mut(), // diagmsgp  — not needed
+                ptr::null_mut(), // referralsp — not needed
+                ptr::null_mut(), // serverctrls — not needed
+                1,               // freeit: ldap_parse_result frees `res`
+            )
+        };
+        if parse_rc != ffi::LDAP_SUCCESS {
+            return Err(LdapError::Protocol {
+                code: parse_rc,
+                msg: format!("{context}: ldap_parse_result failed: {}", err_string(parse_rc)),
+            });
+        }
+        if errcode != ffi::LDAP_SUCCESS {
+            return Err(LdapError::Protocol {
+                code: errcode,
+                msg: format!("{context}: {}", err_string(errcode)),
             });
         }
         Ok(())
@@ -354,10 +401,13 @@ impl LdapConnection {
                 &mut res,
             )
         };
-        if rc < 0 {
+        if rc <= 0 {
+            if !res.is_null() {
+                unsafe { ffi::ldap_msgfree(res) };
+            }
             return Err(LdapError::Protocol {
                 code: rc,
-                msg: format!("ldap_result for search failed"),
+                msg: "ldap_result for search failed".into(),
             });
         }
 
