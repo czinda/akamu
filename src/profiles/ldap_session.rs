@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 
 use akamu_ldap::{AsyncLdapConnection, Auth, Scope};
+use hickory_resolver::TokioAsyncResolver;
 
 use crate::config::LdapConfig;
 use crate::profiles::{cfg, CaDefaults, CertificateParameters};
@@ -16,12 +17,16 @@ use crate::profiles::{cfg, CaDefaults, CertificateParameters};
 ///
 /// `kind` is a short backend label (e.g. `"dogtag"` or `"ipa"`) used in
 /// error messages to identify which provider configuration is at fault.
+///
+/// `resolver` is the shared DNS resolver from `ProfileRegistry`; forwarded to
+/// SRV discovery so no new resolver is allocated per refresh cycle.
 pub(crate) async fn load_profiles_from_ldap(
     provider_name: &str,
     kind: &str,
     ldap_cfg: &LdapConfig,
     filter: &[String],
     ca: &CaDefaults,
+    resolver: Option<&TokioAsyncResolver>,
 ) -> Result<HashMap<String, (String, CertificateParameters)>, String> {
     let auth = if ldap_cfg.gssapi {
         Auth::Gssapi
@@ -55,7 +60,7 @@ pub(crate) async fn load_profiles_from_ldap(
     };
 
     let uri_str =
-        crate::profiles::ldap_resolve::resolve_ldap_uris(ldap_cfg, provider_name).await?;
+        crate::profiles::ldap_resolve::resolve_ldap_uris(ldap_cfg, provider_name, resolver).await?;
     let tls_ca = ldap_cfg.tls_ca_cert_file.as_deref();
     let conn =
         AsyncLdapConnection::connect(&uri_str, tls_ca, ldap_cfg.starttls, ldap_cfg.timeout_secs)
@@ -122,11 +127,7 @@ pub(crate) async fn load_profiles_from_ldap(
                     continue;
                 }
             }
-        } else if let Some(s) = entry
-            .attrs
-            .get("certprofileconfig")
-            .and_then(|v| v.first())
-        {
+        } else if let Some(s) = entry.attrs.get("certprofileconfig").and_then(|v| v.first()) {
             s.clone()
         } else {
             tracing::warn!(

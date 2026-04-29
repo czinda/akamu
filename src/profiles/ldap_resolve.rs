@@ -20,7 +20,15 @@ use crate::config::LdapConfig;
 ///
 /// Explicit URIs (`uri` / `uris`) are listed first; SRV-discovered servers are
 /// appended after them.  Returns an error if no servers can be determined.
-pub async fn resolve_ldap_uris(cfg: &LdapConfig, provider_name: &str) -> Result<String, String> {
+///
+/// `resolver` is the shared DNS resolver from `ProfileRegistry`; when `None`
+/// (e.g. during unit tests or when called outside the registry), a one-shot
+/// resolver is created for the duration of this call.
+pub async fn resolve_ldap_uris(
+    cfg: &LdapConfig,
+    provider_name: &str,
+    resolver: Option<&TokioAsyncResolver>,
+) -> Result<String, String> {
     let mut uris: Vec<String> = Vec::new();
 
     // Explicit single URI (backward-compatible field).
@@ -34,7 +42,7 @@ pub async fn resolve_ldap_uris(cfg: &LdapConfig, provider_name: &str) -> Result<
     // Failure to resolve SRV is non-fatal when explicit URIs are available;
     // the operator may have configured fallback URIs precisely for this case.
     if let Some(domain) = &cfg.srv_domain {
-        match resolve_srv(domain, &cfg.srv_scheme, provider_name).await {
+        match resolve_srv(domain, &cfg.srv_scheme, provider_name, resolver).await {
             Ok(discovered) => uris.extend(discovered),
             Err(e) if !uris.is_empty() => {
                 tracing::warn!("{e}; continuing with explicitly configured URIs");
@@ -61,10 +69,20 @@ pub async fn resolve_ldap_uris(cfg: &LdapConfig, provider_name: &str) -> Result<
 /// group are equivalent.
 ///
 /// A lookup that returns zero SRV records is not treated as an error.
-async fn resolve_srv(domain: &str, scheme: &str, provider_name: &str) -> Result<Vec<String>, String> {
-    // TODO: cache the resolver across profile refreshes (store in ProfileRegistry).
-    let resolver =
-        TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
+async fn resolve_srv(
+    domain: &str,
+    scheme: &str,
+    provider_name: &str,
+    resolver: Option<&TokioAsyncResolver>,
+) -> Result<Vec<String>, String> {
+    let owned;
+    let resolver = match resolver {
+        Some(r) => r,
+        None => {
+            owned = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
+            &owned
+        }
+    };
 
     let srv_name = format!("_ldap._tcp.{}.", domain);
     let response = resolver

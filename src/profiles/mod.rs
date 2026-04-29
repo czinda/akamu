@@ -42,7 +42,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
-use crate::config::ProfilesConfig;
+use hickory_resolver::config::{ResolverConfig, ResolverOpts};
+use hickory_resolver::TokioAsyncResolver;
+
+use crate::config::{ProfilesConfig, ProviderConfig};
 use crate::state::CaState;
 
 /// Simplified CA defaults used during profile parameter resolution.
@@ -194,6 +197,10 @@ pub struct ProfileRegistry {
     providers_cfg: ProfilesConfig,
     /// CA defaults for inheriting validity/hash/URLs during loading.
     ca_defaults: CaDefaults,
+    /// Shared DNS resolver for SRV-based LDAP discovery.  `None` when no
+    /// provider uses `srv_domain` (avoids allocating background tasks for a
+    /// feature that is not in use).
+    dns_resolver: Option<TokioAsyncResolver>,
 }
 
 impl ProfileRegistry {
@@ -206,7 +213,15 @@ impl ProfileRegistry {
     /// A provider that finds zero matching profiles is not an error.
     pub async fn new(cfg: &ProfilesConfig, ca: &CaState) -> Result<Arc<Self>, String> {
         let ca_defaults = CaDefaults::from_ca(ca);
-        let profiles = load_all_providers(cfg, &ca_defaults).await?;
+        let dns_resolver = if needs_dns_resolver(cfg) {
+            Some(TokioAsyncResolver::tokio(
+                ResolverConfig::default(),
+                ResolverOpts::default(),
+            ))
+        } else {
+            None
+        };
+        let profiles = load_all_providers(cfg, &ca_defaults, dns_resolver.as_ref()).await?;
 
         let registry = Arc::new(Self {
             cache: RwLock::new(ProfileCache {
@@ -215,6 +230,7 @@ impl ProfileRegistry {
             }),
             providers_cfg: cfg.clone(),
             ca_defaults,
+            dns_resolver,
         });
 
         Ok(registry)
@@ -231,6 +247,7 @@ impl ProfileRegistry {
             }),
             providers_cfg: ProfilesConfig::default(),
             ca_defaults: CaDefaults::from_ca(ca),
+            dns_resolver: None,
         })
     }
 
@@ -265,7 +282,12 @@ impl ProfileRegistry {
 
     /// Re-read all providers and atomically replace the cache.
     pub async fn refresh(&self) -> Result<(), String> {
-        let profiles = load_all_providers(&self.providers_cfg, &self.ca_defaults).await?;
+        let profiles = load_all_providers(
+            &self.providers_cfg,
+            &self.ca_defaults,
+            self.dns_resolver.as_ref(),
+        )
+        .await?;
         let count = profiles.len();
         {
             let mut cache = self.cache.write().unwrap();
@@ -325,18 +347,17 @@ impl ProfileRegistry {
 async fn load_all_providers(
     cfg: &ProfilesConfig,
     ca: &CaDefaults,
+    resolver: Option<&TokioAsyncResolver>,
 ) -> Result<HashMap<String, (String, CertificateParameters)>, String> {
     let mut merged: HashMap<String, (String, CertificateParameters)> = HashMap::new();
 
     for (provider_name, provider_cfg) in &cfg.providers {
         let loaded = match provider_cfg {
-            crate::config::ProviderConfig::Builtin(bcfg) => builtin::load_builtin(bcfg, ca),
-            crate::config::ProviderConfig::Dogtag(dcfg) => {
-                dogtag::load_dogtag(provider_name, dcfg, ca).await?
+            ProviderConfig::Builtin(bcfg) => builtin::load_builtin(bcfg, ca),
+            ProviderConfig::Dogtag(dcfg) => {
+                dogtag::load_dogtag(provider_name, dcfg, ca, resolver).await?
             }
-            crate::config::ProviderConfig::Ipa(icfg) => {
-                ipa::load_ipa(provider_name, icfg, ca).await?
-            }
+            ProviderConfig::Ipa(icfg) => ipa::load_ipa(provider_name, icfg, ca, resolver).await?,
         };
 
         let count = loaded.len();
@@ -365,4 +386,21 @@ async fn load_all_providers(
     }
 
     Ok(merged)
+}
+
+/// Return `true` when at least one provider uses SRV-based LDAP discovery.
+fn needs_dns_resolver(cfg: &ProfilesConfig) -> bool {
+    cfg.providers.values().any(|p| match p {
+        ProviderConfig::Dogtag(d) => d
+            .ldap
+            .as_ref()
+            .map(|l| l.srv_domain.is_some())
+            .unwrap_or(false),
+        ProviderConfig::Ipa(i) => i
+            .ldap
+            .as_ref()
+            .map(|l| l.srv_domain.is_some())
+            .unwrap_or(false),
+        ProviderConfig::Builtin(_) => false,
+    })
 }
