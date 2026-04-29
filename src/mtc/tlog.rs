@@ -439,9 +439,16 @@ fn build_ml_dsa_cosigned_message(
 /// Interior nodes use `SHA-256(0x01 || left || right)`.
 pub fn mth(hashes: &[Vec<u8>], algorithm: HashAlgorithm) -> Result<Vec<u8>, AcmeError> {
     match hashes.len() {
-        0 => default_data_hasher()
-            .hash_data("sha256", &[])
-            .map_err(|e| AcmeError::Mtc(format!("hash empty MTH: {e}"))),
+        0 => {
+            let alg_str = match algorithm {
+                HashAlgorithm::Sha256 => "sha256",
+                HashAlgorithm::Sha384 => "sha384",
+                HashAlgorithm::Sha512 => "sha512",
+            };
+            default_data_hasher()
+                .hash_data(alg_str, &[])
+                .map_err(|e| AcmeError::Mtc(format!("hash empty MTH: {e}")))
+        }
         1 => Ok(hashes[0].clone()),
         n => {
             // k = 2^floor(log2(n-1)) — largest power of 2 that is < n
