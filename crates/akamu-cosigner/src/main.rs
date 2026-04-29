@@ -71,7 +71,7 @@ async fn run() -> Result<(), CosignerError> {
 
     // ── Load or generate cosigner-id certificate ──────────────────────────────
     let id_cert_path = config.effective_cosigner_id_cert().to_owned();
-    if !std::path::Path::new(&id_cert_path).exists() {
+    if acme::cert_needs_renewal(&id_cert_path, 30) {
         tracing::info!("generating self-signed cosigner-id certificate → {id_cert_path}");
         generate_self_signed_cert(
             &signing_key,
@@ -79,6 +79,11 @@ async fn run() -> Result<(), CosignerError> {
             &config.server.base_url,
             &id_cert_path,
         )?;
+    } else {
+        tracing::info!(
+            "existing cosigner-id certificate valid; skipping regeneration ({})",
+            id_cert_path
+        );
     }
 
     let id_cert_pem = std::fs::read(&id_cert_path)?;
