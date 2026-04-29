@@ -691,6 +691,8 @@ async fn start_server(args: &Args) -> BenchServer {
             common_name: "Bench CA".into(),
             organization: "Bench".into(),
             ca_validity_years: 10,
+            crl_next_update_secs: 86400,
+            enforce_validity_cap: false,
         },
         mtc: MtcConfig {
             log_path: "/dev/null".into(),
@@ -704,7 +706,7 @@ async fn start_server(args: &Args) -> BenchServer {
         },
         server: ServerConfig {
             http_validation_port,
-            dns_persist_issuer_domain: issuer_domain,
+            dns_persist_issuer_domains: issuer_domain.into_iter().collect(),
             dns_resolver_addr,
             ..ServerConfig::default()
         },
@@ -740,6 +742,7 @@ async fn start_server(args: &Args) -> BenchServer {
         crl_url: None,
         ocsp_url: None,
         aki_bytes: ca_aki_bytes,
+        enforce_validity_cap: false,
     });
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
@@ -753,8 +756,10 @@ async fn start_server(args: &Args) -> BenchServer {
             signing_key: None,
             signing_hash_alg: "sha256".into(),
             cosigner_clients: vec![],
+            _log_lock: None,
         }),
         tls: None,
+        crl_cache: Default::default(),
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),
         link_header: Arc::new(
@@ -764,10 +769,16 @@ async fn start_server(args: &Args) -> BenchServer {
             ))
             .expect("base_url produces a valid Link header value"),
         ),
-        validation_client: hyper_util::client::legacy::Client::builder(
-            hyper_util::rt::TokioExecutor::new(),
-        )
-        .build_http::<http_body_util::Empty<hyper::body::Bytes>>(),
+        validation_client: {
+            let https = hyper_rustls::HttpsConnectorBuilder::new()
+                .with_native_roots()
+                .expect("native root CAs")
+                .https_or_http()
+                .enable_http1()
+                .build();
+            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                .build(https)
+        },
     });
 
     let router = routes::build_router(state);

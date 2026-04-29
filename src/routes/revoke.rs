@@ -82,6 +82,11 @@ pub async fn revoke_cert(
         return Err(AcmeError::AlreadyRevoked);
     }
 
+    // Invalidate the CRL cache so the next GET /ca/crl rebuilds with the new entry.
+    if let Ok(mut guard) = state.crl_cache.lock() {
+        *guard = None;
+    }
+
     // Return 200 with empty body (RFC 8555 §7.6).
     let headers = acme_headers(&state, &ctx.next_nonce);
     let mut resp = StatusCode::OK.into_response();

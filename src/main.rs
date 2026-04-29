@@ -11,9 +11,9 @@ use akamu::config::{Config, MtcSigningKeyConfig};
 use akamu::state::{AppState, CaState, MtcState, NonceBucket, TlsState};
 use akamu::{ca, db, mtc, routes, star};
 
+use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
-use hyper_rustls::HttpsConnectorBuilder;
 
 #[tokio::main]
 async fn main() {
@@ -212,8 +212,8 @@ async fn run() -> Result<(), String> {
 
     let mtc = if config.mtc.enabled {
         tracing::info!("opening MTC log at '{}'", config.mtc.log_path);
-        let log_lock = mtc::log::acquire_log_lock(&config.mtc.log_path)
-            .map_err(|e| format!("{e}"))?;
+        let log_lock =
+            mtc::log::acquire_log_lock(&config.mtc.log_path).map_err(|e| format!("{e}"))?;
         let log = mtc::log::open_or_create(&config.mtc.log_path, mtc_algorithm)
             .map_err(|e| format!("MTC log init: {e}"))?;
         let shared = Arc::new(tokio::sync::Mutex::new(log));
@@ -276,6 +276,7 @@ async fn run() -> Result<(), String> {
                 .build();
             Client::builder(TokioExecutor::new()).build(https)
         },
+        crl_cache: Default::default(),
     });
 
     // Spawn background profile refresh task (no-op when no providers configured).

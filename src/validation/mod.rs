@@ -474,6 +474,7 @@ mod tests {
                 hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
                     .build(https)
             },
+            crl_cache: Default::default(),
         })
     }
 
@@ -946,6 +947,7 @@ mod tests {
                 hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
                     .build(https)
             },
+            crl_cache: Default::default(),
         });
 
         // The identifier is just the IP address — no port embedded.
@@ -1234,6 +1236,7 @@ mod tests {
                 hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
                     .build(https)
             },
+            crl_cache: Default::default(),
         })
     }
 

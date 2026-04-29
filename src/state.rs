@@ -5,9 +5,9 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use axum::http::HeaderValue;
 use http_body_util::Empty;
+use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
-use hyper_rustls::HttpsConnector;
 use synta_certificate::BackendPrivateKey;
 use synta_mtc::crypto::HashAlgorithm;
 
@@ -99,6 +99,9 @@ fn nonce_now_secs() -> i64 {
 /// HTTPS targets, as permitted by RFC 8555 §8.3.
 pub type ValidationClient = Client<HttpsConnector<HttpConnector>, Empty<hyper::body::Bytes>>;
 
+/// In-memory CRL cache: DER bytes + expiry instant.
+pub type CrlCache = Arc<Mutex<Option<(Vec<u8>, std::time::Instant)>>>;
+
 /// Top-level application state cloned into every axum handler.
 #[derive(Clone)]
 pub struct AppState {
@@ -144,6 +147,12 @@ pub struct AppState {
     /// allows hyper to pool and reuse TCP connections to challenge responders,
     /// avoiding a TCP handshake per validation at ~200 validations/sec.
     pub validation_client: ValidationClient,
+    /// Cached signed CRL DER and the `Instant` after which the entry is stale.
+    ///
+    /// `None` until the first `GET /ca/crl` request (or after a revocation
+    /// that invalidates the cache).  The `Arc<Mutex<…>>` allows the handler
+    /// and the revoke route to share the cache without `&mut AppState`.
+    pub crl_cache: CrlCache,
 }
 
 /// TLS client-auth state available to handlers for introspection.

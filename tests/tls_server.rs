@@ -502,6 +502,7 @@ async fn start_tls_server() -> TlsTestServer {
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
                 .build(https)
         },
+        crl_cache: Default::default(),
     });
 
     let router = routes::build_router(Arc::clone(&state));

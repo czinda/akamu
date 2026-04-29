@@ -212,6 +212,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
                 .build(https)
         },
+        crl_cache: Default::default(),
     });
     (state, dir)
 }
@@ -545,6 +546,7 @@ async fn test_renewal_info_explanation_url() {
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
                 .build(https)
         },
+        crl_cache: Default::default(),
     });
     let router = routes::build_router(Arc::clone(&state2));
 

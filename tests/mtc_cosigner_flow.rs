@@ -399,6 +399,7 @@ async fn build_akamu_state(
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
                 .build(https)
         },
+        crl_cache: Default::default(),
     })
 }
 

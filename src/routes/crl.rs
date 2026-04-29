@@ -1,9 +1,11 @@
 //! GET /ca/crl — serve the current Certificate Revocation List (RFC 5280).
 //!
-//! The CRL is built on each request from the revoked certificates table.
-//! For expected issuance volumes this is fast enough; no caching is needed.
+//! The CRL is signed once and cached for half of `crl_next_update_secs`.
+//! Serving a stale-but-valid CRL is RFC-conforming; the cache prevents
+//! repeated asymmetric signing on every unauthenticated request.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -18,7 +20,39 @@ use crate::state::AppState;
 ///
 /// Returns `application/pkix-crl` (RFC 5280 §A.1).  No authentication is
 /// required — CRLs are public documents per RFC 5280.
+///
+/// The signed CRL is cached in `AppState::crl_cache` for
+/// `crl_next_update_secs / 2` seconds (minimum 30 s) to avoid re-signing on
+/// every unauthenticated GET.  A `Cache-Control: max-age` header is emitted
+/// so downstream proxies and clients can cache the response independently.
 pub async fn get_crl(State(state): State<Arc<AppState>>) -> Result<Response, AcmeError> {
+    let validity_secs = state.config.ca.crl_next_update_secs;
+    // Cache for half the CRL validity period, at least 30 s.
+    let cache_ttl = Duration::from_secs((validity_secs / 2).max(30));
+
+    // ── Fast path: serve from cache if still valid ────────────────────────────
+    {
+        let guard = state
+            .crl_cache
+            .lock()
+            .map_err(|_| AcmeError::Internal("CRL cache mutex poisoned".into()))?;
+        if let Some((ref der, ref expires_at)) = *guard {
+            if Instant::now() < *expires_at {
+                let remaining = expires_at.duration_since(Instant::now()).as_secs();
+                return Ok((
+                    StatusCode::OK,
+                    [
+                        ("Content-Type", "application/pkix-crl"),
+                        ("Cache-Control", &format!("public, max-age={remaining}")),
+                    ],
+                    der.clone(),
+                )
+                    .into_response());
+            }
+        }
+    } // lock released before async DB call
+
+    // ── Slow path: rebuild ────────────────────────────────────────────────────
     let rows = db::certs::list_revoked(&state.db).await?;
 
     let entries: Vec<RevokedEntry> = rows
@@ -61,12 +95,25 @@ pub async fn get_crl(State(state): State<Arc<AppState>>) -> Result<Response, Acm
         &state.ca.cert_der,
         &state.ca.hash_alg,
         &entries,
-        state.config.ca.crl_next_update_secs,
+        validity_secs,
     )?;
 
+    // Store in cache.
+    {
+        let mut guard = state
+            .crl_cache
+            .lock()
+            .map_err(|_| AcmeError::Internal("CRL cache mutex poisoned".into()))?;
+        *guard = Some((crl_der.clone(), Instant::now() + cache_ttl));
+    }
+
+    let max_age = cache_ttl.as_secs();
     Ok((
         StatusCode::OK,
-        [("Content-Type", "application/pkix-crl")],
+        [
+            ("Content-Type", "application/pkix-crl"),
+            ("Cache-Control", &format!("public, max-age={max_age}")),
+        ],
         crl_der,
     )
         .into_response())

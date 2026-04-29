@@ -275,6 +275,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
                 .build(https)
         },
+        crl_cache: Default::default(),
     });
 
     (state, dir)
@@ -2274,6 +2275,7 @@ async fn test_directory_with_optional_fields() {
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
                 .build(https)
         },
+        crl_cache: Default::default(),
     });
     let router = routes::build_router(Arc::clone(&state));
     let (status, dir_body, _) = get(&router, "/acme/directory").await;
@@ -2646,6 +2648,7 @@ async fn test_finalize_with_mtc_enabled() {
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
                 .build(https)
         },
+        crl_cache: Default::default(),
     });
 
     let router = routes::build_router(Arc::clone(&state));
@@ -2896,6 +2899,7 @@ async fn test_finalize_with_aia_and_cdp() {
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
                 .build(https)
         },
+        crl_cache: Default::default(),
     });
 
     let router = routes::build_router(Arc::clone(&state));
@@ -2995,8 +2999,7 @@ async fn test_crl_endpoint_contains_revoked_serial() {
         &format!("{base_url}/acme/order/{order_id}/finalize"),
         Some(json!({"csr": csr_b64})),
     );
-    let (status, _, _) =
-        post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
+    let (status, _, _) = post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
     assert_eq!(status, StatusCode::OK, "finalize failed");
 
     // Read the issued cert's serial from the DB.
@@ -3025,12 +3028,17 @@ async fn test_crl_endpoint_contains_revoked_serial() {
     let crl_bytes_before = axum::body::to_bytes(resp.into_body(), 1_000_000)
         .await
         .unwrap();
-    assert!(!crl_bytes_before.is_empty(), "empty CRL DER before revocation");
+    assert!(
+        !crl_bytes_before.is_empty(),
+        "empty CRL DER before revocation"
+    );
 
     // Revoke the certificate via DB (no ACME auth needed for the test).
     akamu::db::certs::revoke(&state.db, &cert_id, Some(1), 1_700_000_000)
         .await
         .unwrap();
+    // Clear the CRL cache so the next request rebuilds with the new entry.
+    *state.crl_cache.lock().unwrap() = None;
 
     // Fetch CRL again — the revoked serial must appear.
     let req = Request::builder()
@@ -3039,7 +3047,11 @@ async fn test_crl_endpoint_contains_revoked_serial() {
         .body(Body::empty())
         .unwrap();
     let resp = router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "GET /ca/crl after revoke failed");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "GET /ca/crl after revoke failed"
+    );
     let crl_bytes_after = axum::body::to_bytes(resp.into_body(), 1_000_000)
         .await
         .unwrap();
@@ -3069,10 +3081,12 @@ async fn test_crl_endpoint_contains_revoked_serial() {
 /// Uses SHA-1 as the hash algorithm with zero-filled issuerNameHash and
 /// issuerKeyHash — sufficient for testing the server's decode/lookup/sign loop.
 fn build_ocsp_request_der(ca_cert_der: &[u8], serial_bytes: &[u8]) -> Vec<u8> {
-    use synta_certificate::{Certificate, KeyIdHasher as _, default_key_id_hasher};
+    use synta_certificate::{default_key_id_hasher, Certificate, KeyIdHasher as _};
 
     // SHA-1 AlgorithmIdentifier DER: SEQUENCE { OID 1.3.14.3.2.26, NULL }
-    let sha1_alg: &[u8] = &[0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00];
+    let sha1_alg: &[u8] = &[
+        0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00,
+    ];
     // SHA-1 OID component array for the hasher.
     const SHA1_OID: &[u32] = &[1, 3, 14, 3, 2, 26];
 
@@ -3103,7 +3117,10 @@ fn build_ocsp_request_der(ca_cert_der: &[u8], serial_bytes: &[u8]) -> Vec<u8> {
     key_hash.extend_from_slice(&key_hash_bytes);
 
     // serialNumber: DER INTEGER (prepend 0x00 if high bit set)
-    let needs_pad = serial_bytes.first().map(|&b| b & 0x80 != 0).unwrap_or(false);
+    let needs_pad = serial_bytes
+        .first()
+        .map(|&b| b & 0x80 != 0)
+        .unwrap_or(false);
     let int_val_len = serial_bytes.len() + usize::from(needs_pad);
     let mut serial_int = vec![0x02_u8, int_val_len as u8];
     if needs_pad {
@@ -3112,8 +3129,7 @@ fn build_ocsp_request_der(ca_cert_der: &[u8], serial_bytes: &[u8]) -> Vec<u8> {
     serial_int.extend_from_slice(serial_bytes);
 
     // CertID SEQUENCE
-    let cert_id_payload_len =
-        sha1_alg.len() + name_hash.len() + key_hash.len() + serial_int.len();
+    let cert_id_payload_len = sha1_alg.len() + name_hash.len() + key_hash.len() + serial_int.len();
     let mut cert_id = vec![0x30_u8, cert_id_payload_len as u8];
     cert_id.extend_from_slice(sha1_alg);
     cert_id.extend_from_slice(&name_hash);
@@ -3182,17 +3198,17 @@ async fn test_ocsp_endpoint_post_and_get() {
         &format!("{base_url}/acme/order/{order_id}/finalize"),
         Some(json!({"csr": csr_b64})),
     );
-    let (status, _, _) =
-        post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
+    let (status, _, _) = post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
     assert_eq!(status, StatusCode::OK, "finalize failed");
 
     // Retrieve the issued cert's serial from the DB.
-    let serial_hex: String =
-        sqlx::query_as::<_, (String,)>("SELECT serial_number FROM certificates ORDER BY created DESC LIMIT 1")
-            .fetch_one(&db)
-            .await
-            .unwrap()
-            .0;
+    let serial_hex: String = sqlx::query_as::<_, (String,)>(
+        "SELECT serial_number FROM certificates ORDER BY created DESC LIMIT 1",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap()
+    .0;
     let serial_bytes: Vec<u8> = (0..serial_hex.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&serial_hex[i..i + 2], 16).unwrap())
@@ -3221,7 +3237,10 @@ async fn test_ocsp_endpoint_post_and_get() {
         .unwrap();
     assert!(!post_body.is_empty(), "OCSP POST response body is empty");
     // A well-formed DER OCSPResponse starts with SEQUENCE tag 0x30.
-    assert_eq!(post_body[0], 0x30, "OCSP POST response is not a DER SEQUENCE");
+    assert_eq!(
+        post_body[0], 0x30,
+        "OCSP POST response is not a DER SEQUENCE"
+    );
 
     // ── GET /ca/ocsp/{base64url(request)} ────────────────────────────────────
     let encoded = URL_SAFE_NO_PAD.encode(&ocsp_req_der);
