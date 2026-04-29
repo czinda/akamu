@@ -84,7 +84,11 @@ impl Scope {
 ///
 /// Owned strings are used so that `Auth` values can be sent to blocking
 /// threads via `spawn_blocking` without lifetime restrictions.
-#[derive(Clone)]
+///
+/// Both `bind_dn` and `password` are zeroed on drop ([`zeroize::ZeroizeOnDrop`])
+/// to reduce the window during which cleartext credentials live in process
+/// memory after the bind completes.
+#[derive(Clone, zeroize::ZeroizeOnDrop)]
 pub enum Auth {
     /// LDAP simple bind: DN + cleartext password.
     Simple { bind_dn: String, password: String },
