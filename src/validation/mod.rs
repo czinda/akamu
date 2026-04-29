@@ -105,13 +105,25 @@ pub async fn validate_challenge(
         .server
         .dns_resolver_addr
         .as_deref()
-        .and_then(|s| s.parse::<std::net::SocketAddr>().ok());
+        .and_then(|s| match s.parse::<std::net::SocketAddr>() {
+            Ok(a) => Some(a),
+            Err(e) => {
+                tracing::warn!(addr = %s, "dns_resolver_addr is not a valid socket address, ignoring: {e}");
+                None
+            }
+        });
     let dns_persist01_resolver_addr = state
         .config
         .server
         .dns_persist01_resolver_addr
         .as_deref()
-        .and_then(|s| s.parse::<std::net::SocketAddr>().ok())
+        .and_then(|s| match s.parse::<std::net::SocketAddr>() {
+            Ok(a) => Some(a),
+            Err(e) => {
+                tracing::warn!(addr = %s, "dns_persist01_resolver_addr is not a valid socket address, ignoring: {e}");
+                None
+            }
+        })
         .or(dns_resolver_addr);
     let validate_dnssec = state.config.server.validate_dnssec;
     let result = dispatch(DispatchParams {
