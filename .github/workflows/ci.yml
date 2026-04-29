@@ -18,8 +18,12 @@ env:
   #   sqlite-devel       — system SQLite (rusqlite, no bundled feature)
   #   pkgconf-pkg-config — pkg-config used by openssl-sys and rusqlite-sys
   #   gcc / make         — C linker and build tooling
+  #   openldap-devel     — libldap + liblber (akamu-ldap FFI)
+  #   cyrus-sasl-devel   — libsasl2 (SASL for LDAP GSSAPI bind)
+  #   krb5-devel         — libgssapi_krb5 (Kerberos for SASL/GSSAPI)
   DNF_PACKAGES: >-
     nodejs22 gcc make pkgconf-pkg-config openssl-devel clang sqlite-devel
+    openldap-devel cyrus-sasl-devel krb5-devel
 
 jobs:
   # ── Build ──────────────────────────────────────────────────────────────────
