@@ -175,27 +175,55 @@ type        = "ipa"
 profile_dir = "/etc/pki/pki-tomcat/ca/profiles/ca"
 profiles    = ["caIPAserviceCert"]
 
-# LDAP source — simple bind (GSSAPI not yet implemented)
+# LDAP source — single server, simple bind
 [profiles.providers.ipa_ldap]
 type     = "ipa"
 profiles = ["caIPAserviceCert"]
 
 [profiles.providers.ipa_ldap.ldap]
-uri               = "ldap://ipa.example.com:7389"
-base_dn           = "o=ipaca"
-bind_dn           = "uid=admin,ou=people,o=ipaca"
+uri                = "ldap://ipa.example.com:7389"
+base_dn            = "o=ipaca"
+bind_dn            = "uid=admin,ou=people,o=ipaca"
 bind_password_file = "/etc/akamu/ipa-ldap-password"
+
+# LDAP source — multiple servers (failover list), GSSAPI
+[profiles.providers.ipa_ha]
+type     = "ipa"
+profiles = ["caIPAserviceCert"]
+
+[profiles.providers.ipa_ha.ldap]
+uris    = ["ldap://ipa1.example.com:7389", "ldap://ipa2.example.com:7389"]
+base_dn = "o=ipaca"
+gssapi  = true
+
+# LDAP source — SRV-based discovery, GSSAPI
+[profiles.providers.ipa_gssapi]
+type     = "ipa"
+profiles = ["caIPAserviceCert"]
+
+[profiles.providers.ipa_gssapi.ldap]
+srv_domain = "example.com"   # resolves _ldap._tcp.example.com SRV records
+base_dn    = "o=ipaca"
+gssapi     = true
 ```
+
+**LDAP server selection**
+
+| Key | Description |
+|-----|-------------|
+| `uri` | Single LDAP URI: `ldap://host:port` or `ldaps://host:port`. |
+| `uris` | List of LDAP URIs tried in order for failover. |
+| `srv_domain` | Discover servers via DNS SRV (`_ldap._tcp.{srv_domain}`), sorted by RFC 2782 priority/weight. Appended after any explicit `uris`. |
+
+At least one of `uri`, `uris`, or `srv_domain` must be set.
 
 **LDAP authentication options**
 
 | Key | Description |
 |-----|-------------|
-| `bind_dn` | Bind DN for simple authentication. Required when using LDAP. |
+| `bind_dn` | Bind DN for simple authentication. Required for simple bind. |
 | `bind_password_file` | Path to a file containing the simple bind password. Required when `bind_dn` is set. |
-| `gssapi = true` | Use SASL GSSAPI (Kerberos). **Not yet implemented** — returns an error; use `profile_dir` as a fallback. |
-| `keytab_file` | (Future) Path to a Kerberos keytab for the service principal. |
-| `principal` | (Future) Kerberos principal, e.g. `akamu/host@REALM`. |
+| `gssapi = true` | Use SASL GSSAPI (Kerberos). The Kerberos TGT from the current credential cache is used automatically. |
 | `tls_ca_cert_file` | Path to a PEM CA certificate for verifying the LDAP server's TLS certificate. |
 | `starttls` | If `true`, issue a StartTLS command after connecting on the plain port. |
 
