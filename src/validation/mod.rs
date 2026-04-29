@@ -16,6 +16,7 @@ use serde_json::json;
 
 use crate::error::AcmeError;
 use crate::state::AppState;
+use crate::util::unix_now;
 
 /// Challenge parameters for [`validate_challenge`].
 pub struct ChallengeParams<'a> {
@@ -70,19 +71,17 @@ pub async fn validate_challenge(
     // published and this validation task running.  Reject early so we don't
     // count a stale record as a successful validation.
     if chall_type == "dns-persist-01" {
-        let status: Result<String, _> = sqlx::query_scalar(
-            "SELECT status FROM accounts WHERE id = ?",
-        )
-        .bind(account_id)
-        .fetch_one(&state.db)
-        .await;
+        let status: Result<String, _> =
+            sqlx::query_scalar("SELECT status FROM accounts WHERE id = ?")
+                .bind(account_id)
+                .fetch_one(&state.db)
+                .await;
 
         match status.as_deref() {
             Ok("valid") => {}
             Ok(s) => {
-                let err = AcmeError::Unauthorized(format!(
-                    "dns-persist-01: account {account_id} is {s}"
-                ));
+                let err =
+                    AcmeError::Unauthorized(format!("dns-persist-01: account {account_id} is {s}"));
                 let now = unix_now();
                 on_invalid(state, challenge_id, authz_id, err, now).await;
                 return "invalid";
@@ -192,7 +191,15 @@ async fn dispatch(
 ) -> Result<(), AcmeError> {
     match chall_type {
         "http-01" => {
-            http01::validate(id_value, token, key_auth, http_port, http_allow_private_ips, validation_client).await
+            http01::validate(
+                id_value,
+                token,
+                key_auth,
+                http_port,
+                http_allow_private_ips,
+                validation_client,
+            )
+            .await
         }
         "dns-01" => dns01::validate(id_value, key_auth, validate_dnssec).await,
         "tls-alpn-01" => tls_alpn01::validate(id_type, id_value, key_auth).await,
@@ -371,13 +378,6 @@ fn err_type(e: &AcmeError) -> &'static str {
         AcmeError::IncorrectResponse(_) => "urn:ietf:params:acme:error:incorrectResponse",
         _ => "urn:ietf:params:acme:error:serverInternal",
     }
-}
-
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
 }
 
 #[cfg(test)]

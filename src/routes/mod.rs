@@ -72,7 +72,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // CRL (RFC 5280) — public, no auth required
         .route("/ca/crl", get(crl::get_crl))
         // OCSP (RFC 6960) — public, no auth required
-        .route("/ca/ocsp", axum::routing::post(ocsp::post_ocsp))
+        .route("/ca/ocsp", post(ocsp::post_ocsp))
         .route("/ca/ocsp/{request}", get(ocsp::get_ocsp))
         // Revocation
         .route("/acme/revoke-cert", post(revoke::revoke_cert))
@@ -108,7 +108,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .put(admin::put_account_profile_grants)
                 .delete(admin::delete_account_profile_grants),
         )
-        .route("/admin/eab", axum::routing::post(admin::post_eab))
+        .route("/admin/eab", post(admin::post_eab))
         .layer(if max_body > 0 {
             axum::extract::DefaultBodyLimit::max(max_body)
         } else {
@@ -300,13 +300,7 @@ pub(crate) fn require_payload<T: serde::de::DeserializeOwned>(
     serde_json::from_slice(payload).map_err(|e| AcmeError::BadRequest(format!("{ctx} JSON: {e}")))
 }
 
-/// Return the current Unix timestamp in seconds.
-pub(crate) fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
-}
+pub(crate) use crate::util::unix_now;
 
 /// Format a Unix timestamp as an RFC 3339 string (`YYYY-MM-DDTHH:MM:SSZ`).
 ///

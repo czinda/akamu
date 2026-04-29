@@ -229,8 +229,9 @@ async fn load_from_ldap(
             Some(id) => id.clone(),
             None => {
                 tracing::warn!(
-                    "profiles provider '{}': LDAP entry missing 'cn'; skipped",
-                    provider_name
+                    provider = %provider_name,
+                    dn = %entry.dn,
+                    "profiles provider: LDAP entry missing 'cn'; skipped"
                 );
                 continue;
             }

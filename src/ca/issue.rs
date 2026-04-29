@@ -19,10 +19,10 @@ use synta_x509_verification::{
     OwnedStore, RevocationChecks,
 };
 
-use crate::profiles::CertificateParameters;
-
 use crate::error::AcmeError;
+use crate::profiles::CertificateParameters;
 use crate::state::CaState;
+use crate::util::{extract_ca_subject_der, unix_now};
 
 use super::csr::ValidatedCsr;
 use super::init::unix_to_generalized_time;
@@ -325,23 +325,6 @@ fn parse_oid_str(s: &str) -> Option<Vec<u32>> {
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
-
-/// Extract the DER-encoded subject Name from a DER-encoded certificate.
-fn extract_ca_subject_der(ca_cert_der: &[u8]) -> Result<Vec<u8>, AcmeError> {
-    let mut dec = Decoder::new(ca_cert_der, Encoding::Der);
-    let cert: Certificate = dec
-        .decode()
-        .map_err(|e| AcmeError::Internal(format!("parse CA cert: {e}")))?;
-    Ok(cert.tbs_certificate.subject.0.to_vec())
-}
-
-/// Return the current time as Unix seconds.
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
-}
 
 /// Encode a byte slice as a lowercase hex string.
 fn hex_encode(bytes: &[u8]) -> String {
@@ -736,7 +719,9 @@ mod tests {
         verify, RevocationChecks,
     };
 
-    use super::{hex_encode, ip_string_to_bytes, issue_certificate, issue_with_params, IssueCertParams};
+    use super::{
+        hex_encode, ip_string_to_bytes, issue_certificate, issue_with_params, IssueCertParams,
+    };
     use crate::ca::csr::{validate_csr, SanEntry, ValidatedCsr};
 
     /// Build a minimal self-signed CA certificate DER for testing.

@@ -12,7 +12,8 @@ use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::header::CONTENT_TYPE;
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -24,11 +25,11 @@ use synta_certificate::{
 };
 
 use crate::ca::init::unix_to_generalized_time;
-use crate::ca::revoke::extract_ca_subject_der;
 use crate::db;
 use crate::error::AcmeError;
 use crate::routes::unix_now;
 use crate::state::AppState;
+use crate::util::extract_ca_subject_der;
 
 /// GET /ca/ocsp/{request}
 ///
@@ -56,6 +57,11 @@ const MAX_OCSP_POST_BYTES: usize = 65_536;
 /// RFC 6960 does not impose a limit, but serving thousands of DB lookups per
 /// unauthenticated request can saturate the connection pool.
 const MAX_OCSP_ENTRIES: usize = 10;
+
+/// RFC 6960 §2.2 certificate status values.
+const OCSP_GOOD: u8 = 0;
+const OCSP_REVOKED: u8 = 1;
+const OCSP_UNKNOWN: u8 = 2;
 
 /// POST /ca/ocsp
 ///
@@ -107,14 +113,9 @@ async fn handle_ocsp_request(der: &[u8], state: &AppState) -> Result<Vec<u8>, Ac
                     .hash_algorithm
                     .to_der()
                     .map_err(|e| AcmeError::Internal(format!("OCSP hash alg encode: {e}")))?;
-                let hash_alg_oid = cert_id
-                    .hash_algorithm
-                    .algorithm
-                    .components()
-                    .to_vec();
+                let hash_alg_oid = cert_id.hash_algorithm.algorithm.components().to_vec();
                 let serial_bytes = cert_id.serial_number.as_bytes().to_vec();
-                let serial_hex: String =
-                    serial_bytes.iter().map(|b| format!("{b:02x}")).collect();
+                let serial_hex: String = serial_bytes.iter().map(|b| format!("{b:02x}")).collect();
                 let issuer_name_hash = cert_id.issuer_name_hash.as_bytes().to_vec();
                 let issuer_key_hash = cert_id.issuer_key_hash.as_bytes().to_vec();
                 Ok::<_, AcmeError>(CertEntry {
@@ -168,9 +169,9 @@ async fn handle_ocsp_request(der: &[u8], state: &AppState) -> Result<Vec<u8>, Ac
     for entry in &entries {
         let row = db::certs::get_by_serial(&state.db, &entry.serial_hex).await?;
         let status: u8 = match &row {
-            None => 2,                             // unknown
-            Some(r) if r.status == "revoked" => 1, // revoked
-            _ => 0,                                // good
+            None => OCSP_UNKNOWN,
+            Some(r) if r.status == "revoked" => OCSP_REVOKED,
+            _ => OCSP_GOOD,
         };
         statuses.push(status);
     }
@@ -209,12 +210,12 @@ async fn handle_ocsp_request(der: &[u8], state: &AppState) -> Result<Vec<u8>, Ac
 }
 
 fn ocsp_response(der: Vec<u8>) -> Response {
-    (
-        StatusCode::OK,
-        [("Content-Type", "application/ocsp-response")],
-        der,
-    )
-        .into_response()
+    let mut resp = (StatusCode::OK, der).into_response();
+    resp.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/ocsp-response"),
+    );
+    resp
 }
 
 /// Build a minimal DER-encoded `OCSPResponse` with the given error status

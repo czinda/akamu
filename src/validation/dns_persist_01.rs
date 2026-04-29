@@ -19,6 +19,7 @@ use hickory_resolver::config::{NameServerConfig, Protocol, ResolverConfig, Resol
 use hickory_resolver::TokioAsyncResolver;
 
 use crate::error::AcmeError;
+use crate::util::unix_now;
 
 /// Validate a dns-persist-01 challenge.
 ///
@@ -237,13 +238,6 @@ fn parse_persist_until(s: &str) -> Option<i64> {
 
     let total_days = days_to_year + days_to_month + day - 1;
     Some(total_days * 86400 + hour * 3600 + minute * 60 + second)
-}
-
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -567,7 +561,8 @@ mod tests {
         let resolver = TokioAsyncResolver::tokio(config, opts);
 
         let result =
-            validate_with_resolver("example.test", account_uri, &["acme.example.com"], resolver).await;
+            validate_with_resolver("example.test", account_uri, &["acme.example.com"], resolver)
+                .await;
         assert!(
             matches!(result, Err(AcmeError::IncorrectResponse(_))),
             "expected IncorrectResponse: {result:?}"
@@ -584,7 +579,8 @@ mod tests {
         let (config, opts) = local_resolver(port);
         let resolver = TokioAsyncResolver::tokio(config, opts);
 
-        let result = validate_with_resolver("*.example.test", account_uri, &[issuer], resolver).await;
+        let result =
+            validate_with_resolver("*.example.test", account_uri, &[issuer], resolver).await;
         assert!(
             result.is_ok(),
             "wildcard validation should succeed: {result:?}"
@@ -601,7 +597,8 @@ mod tests {
         let (config, opts) = local_resolver(port);
         let resolver = TokioAsyncResolver::tokio(config, opts);
 
-        let result = validate_with_resolver("*.example.test", account_uri, &[issuer], resolver).await;
+        let result =
+            validate_with_resolver("*.example.test", account_uri, &[issuer], resolver).await;
         assert!(
             matches!(result, Err(AcmeError::IncorrectResponse(_))),
             "expected IncorrectResponse for missing wildcard policy: {result:?}"

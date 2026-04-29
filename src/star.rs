@@ -19,6 +19,7 @@ use crate::ca::csr::validate_csr;
 use crate::db;
 use crate::db::schema::CertificateRow;
 use crate::state::AppState;
+use crate::util::unix_now;
 
 /// Interval between STAR renewal checks.
 const POLL_INTERVAL_SECS: u64 = 60;
@@ -237,11 +238,4 @@ async fn run_once(state: &Arc<AppState>) {
             );
         }
     }
-}
-
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
 }

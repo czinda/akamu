@@ -8,7 +8,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 use crate::ca::revoke::{build_crl, RevokedEntry};
@@ -39,15 +40,16 @@ pub async fn get_crl(State(state): State<Arc<AppState>>) -> Result<Response, Acm
         if let Some((ref der, ref expires_at)) = *guard {
             if Instant::now() < *expires_at {
                 let remaining = expires_at.duration_since(Instant::now()).as_secs();
-                return Ok((
-                    StatusCode::OK,
-                    [
-                        ("Content-Type", "application/pkix-crl"),
-                        ("Cache-Control", &format!("public, max-age={remaining}")),
-                    ],
-                    der.clone(),
-                )
-                    .into_response());
+                let mut resp = (StatusCode::OK, der.clone()).into_response();
+                resp.headers_mut().insert(
+                    CONTENT_TYPE,
+                    HeaderValue::from_static("application/pkix-crl"),
+                );
+                resp.headers_mut().insert(
+                    CACHE_CONTROL,
+                    HeaderValue::from_str(&format!("public, max-age={remaining}")).unwrap(),
+                );
+                return Ok(resp);
             }
         }
     } // lock released before async DB call
@@ -108,22 +110,23 @@ pub async fn get_crl(State(state): State<Arc<AppState>>) -> Result<Response, Acm
     }
 
     let max_age = cache_ttl.as_secs();
-    Ok((
-        StatusCode::OK,
-        [
-            ("Content-Type", "application/pkix-crl"),
-            ("Cache-Control", &format!("public, max-age={max_age}")),
-        ],
-        crl_der,
-    )
-        .into_response())
+    let mut resp = (StatusCode::OK, crl_der).into_response();
+    resp.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/pkix-crl"),
+    );
+    resp.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_str(&format!("public, max-age={max_age}")).unwrap(),
+    );
+    Ok(resp)
 }
 
 /// Decode a lowercase hex string to bytes (same encoding used by `serial_number` column).
 ///
 /// Returns an error when `hex` has odd length or contains non-hex characters.
 fn decode_hex(hex: &str) -> Result<Vec<u8>, String> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err(format!("odd-length hex string ({} chars)", hex.len()));
     }
     (0..hex.len())
