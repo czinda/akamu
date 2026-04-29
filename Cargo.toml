@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/akamu-jose", "crates/akamu-client", "crates/akamu-cli", "crates/akamu-cosigner"]
+members = [".", "crates/akamu-jose", "crates/akamu-client", "crates/akamu-cli", "crates/akamu-cosigner", "crates/akamu-ldap"]
 resolver = "2"
 
 [package]
@@ -72,15 +72,14 @@ getrandom = "0.2"
 
 # Regular expressions (profile identifier authorization)
 regex = { version = "1", default-features = false, features = ["std", "unicode-bool"] }
-
-# LDAP client for Dogtag/IPA profile loading
-ldap3 = { version = "0.11", default-features = false, features = ["tls"] }
-
 # POSIX file locking (flock) for MTC log exclusion
 libc = "0.2"
 
 # JWK/JWS primitives (extracted from server; no axum/rusqlite dependency)
 akamu-jose = { path = "crates/akamu-jose" }
+
+# LDAP client (OpenLDAP FFI with simple-bind and GSSAPI/Kerberos support)
+akamu-ldap = { path = "crates/akamu-ldap" }
 
 # Base ASN.1 library (needed for Decoder/Encoder and Integer type)
 synta = { version = ">=0.1.10", default-features = false, features = ["std", "derive"] }
