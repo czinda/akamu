@@ -76,6 +76,9 @@ regex = { version = "1", default-features = false, features = ["std", "unicode-b
 # LDAP client for Dogtag/IPA profile loading
 ldap3 = { version = "0.11", default-features = false, features = ["tls"] }
 
+# POSIX file locking (flock) for MTC log exclusion
+libc = "0.2"
+
 # JWK/JWS primitives (extracted from server; no axum/rusqlite dependency)
 akamu-jose = { path = "crates/akamu-jose" }
 

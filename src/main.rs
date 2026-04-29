@@ -213,6 +213,8 @@ async fn run() -> Result<(), String> {
 
     let mtc = if config.mtc.enabled {
         tracing::info!("opening MTC log at '{}'", config.mtc.log_path);
+        let log_lock = mtc::log::acquire_log_lock(&config.mtc.log_path)
+            .map_err(|e| format!("{e}"))?;
         let log = mtc::log::open_or_create(&config.mtc.log_path, mtc_algorithm)
             .map_err(|e| format!("MTC log init: {e}"))?;
         let shared = Arc::new(tokio::sync::Mutex::new(log));
@@ -222,6 +224,7 @@ async fn run() -> Result<(), String> {
             signing_key: mtc_signing_key,
             signing_hash_alg: mtc_signing_hash_alg,
             cosigner_clients,
+            _log_lock: Some(log_lock),
         })
     } else {
         tracing::info!("MTC logging disabled");
@@ -231,6 +234,7 @@ async fn run() -> Result<(), String> {
             signing_key: mtc_signing_key,
             signing_hash_alg: mtc_signing_hash_alg,
             cosigner_clients,
+            _log_lock: None,
         })
     };
 

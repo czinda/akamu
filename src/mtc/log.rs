@@ -5,6 +5,8 @@
 //! offloaded to `tokio::task::spawn_blocking` and the sub-millisecond disk
 //! append runs under a `tokio::sync::Mutex` guard.
 
+use std::fs;
+use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
 
 use synta::traits::Encode;
@@ -58,6 +60,40 @@ pub fn open_or_create(path: &str, algorithm: HashAlgorithm) -> Result<DiskBacked
             DiskBackedLog::open(path).map_err(|e| AcmeError::Mtc(format!("open MTC log: {e}")))
         }
     }
+}
+
+/// Acquire an exclusive advisory lock on `{path}.lock`.
+///
+/// Opens (or creates) the sidecar lock file and calls `flock(LOCK_EX|LOCK_NB)`.
+/// The returned `File` must be stored for the lifetime of the process; the
+/// kernel releases the lock automatically when the `File` is dropped or the
+/// process exits.
+///
+/// Returns `Err` immediately if another process already holds the lock so the
+/// caller gets a clear error rather than silent log corruption.
+pub fn acquire_log_lock(path: &str) -> Result<fs::File, AcmeError> {
+    let lock_path = format!("{path}.lock");
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|e| AcmeError::Mtc(format!("open MTC lock file '{lock_path}': {e}")))?;
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc != 0 {
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
+            return Err(AcmeError::Mtc(format!(
+                "MTC log '{path}' is locked by another process; \
+                 ensure only one Akāmu instance accesses this log file \
+                 (lock file: '{lock_path}')"
+            )));
+        }
+        return Err(AcmeError::Mtc(format!(
+            "flock on MTC lock file '{lock_path}': {err}"
+        )));
+    }
+    Ok(file)
 }
 
 /// Append an issued certificate to the MTC transparency log.

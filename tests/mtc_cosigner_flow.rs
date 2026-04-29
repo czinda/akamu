@@ -378,6 +378,7 @@ async fn build_akamu_state(
             signing_key: Some(mtc_key),
             signing_hash_alg: "sha256".into(),
             cosigner_clients: vec![cosigner_client],
+            _log_lock: None,
         }),
         tls: None,
         spki_cache: Arc::new(RwLock::new(HashMap::new())),

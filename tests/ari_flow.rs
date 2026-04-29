@@ -194,6 +194,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             signing_key: None,
             signing_hash_alg: "sha256".into(),
             cosigner_clients: vec![],
+            _log_lock: None,
         }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),

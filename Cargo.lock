@@ -27,6 +27,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "ldap3",
+ "libc",
  "native-ossl",
  "regex",
  "rustls",

@@ -209,6 +209,10 @@ pub struct MtcState {
     /// entry.  Built once at startup so TLS config errors surface immediately
     /// and PEM files are not re-read on every checkpoint.
     pub cosigner_clients: Vec<CosignerClient>,
+    /// Advisory flock held on `{log_path}.lock` for the process lifetime.
+    /// `None` when MTC is disabled.  Keeping the `File` here ensures the lock
+    /// is not released prematurely.
+    pub _log_lock: Option<std::fs::File>,
 }
 
 impl MtcState {
