@@ -14,18 +14,93 @@ use crate::state::ValidationClient;
 /// Maximum number of 3xx redirects to follow before giving up.
 const MAX_REDIRECTS: usize = 10;
 
+/// Returns `true` when `ip` is a private, loopback, link-local, or otherwise
+/// non-globally-routable address that must not be reached via a redirect.
+fn is_blocked_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_loopback() || v4.is_private() || v4.is_link_local()
+                || v4.is_unspecified() || v4.is_broadcast()
+        }
+        std::net::IpAddr::V6(v6) => {
+            if v6.is_loopback() || v6.is_unspecified() {
+                return true;
+            }
+            let segs = v6.segments();
+            // Link-local fe80::/10
+            if (segs[0] & 0xffc0) == 0xfe80 {
+                return true;
+            }
+            // Unique local fc00::/7
+            if (segs[0] & 0xfe00) == 0xfc00 {
+                return true;
+            }
+            // IPv4-mapped ::ffff:0:0/96 — inherit IPv4 classification
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_blocked_ip(std::net::IpAddr::V4(v4));
+            }
+            false
+        }
+    }
+}
+
+/// Resolve `host` and reject it when any address is private/loopback, unless
+/// `allow_private_ips` is set (test environments only).
+///
+/// `host` may be a bare hostname, an IPv4 literal, or an IPv6 literal
+/// enclosed in `[`…`]` as it appears in a URI authority.
+async fn check_redirect_host(
+    host: &str,
+    allow_private_ips: bool,
+    from_url: &str,
+) -> Result<(), AcmeError> {
+    if allow_private_ips {
+        return Ok(());
+    }
+    // Strip IPv6 brackets added by URI formatting.
+    let clean = host.trim_start_matches('[').trim_end_matches(']');
+
+    // Try an IP literal first — no DNS needed.
+    if let Ok(ip) = clean.parse::<std::net::IpAddr>() {
+        if is_blocked_ip(ip) {
+            return Err(AcmeError::IncorrectResponse(format!(
+                "http-01: redirect from '{from_url}' targets blocked IP address {ip}"
+            )));
+        }
+        return Ok(());
+    }
+
+    // Hostname — resolve and check every returned address.
+    let addrs = tokio::net::lookup_host((clean, 80u16))
+        .await
+        .map_err(|e| AcmeError::Connection(format!("http-01: DNS lookup for '{clean}': {e}")))?;
+    for addr in addrs {
+        if is_blocked_ip(addr.ip()) {
+            return Err(AcmeError::IncorrectResponse(format!(
+                "http-01: redirect from '{from_url}' resolves to blocked address {} ('{clean}')",
+                addr.ip()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Validate an http-01 challenge.
 ///
-/// * `domain`   — the identifier value (DNS name or IP address literal).
-/// * `token`    — the challenge token stored in the database.
-/// * `key_auth` — `{token}.{jwk_thumbprint}` (expected response body).
-/// * `port`     — TCP port to connect to (RFC 8555 §8.3 requires 80; override for testing).
-/// * `client`   — shared hyper client; reusing it avoids a TCP handshake per validation.
+/// * `domain`            — the identifier value (DNS name or IP address literal).
+/// * `token`             — the challenge token stored in the database.
+/// * `key_auth`          — `{token}.{jwk_thumbprint}` (expected response body).
+/// * `port`              — TCP port to connect to (RFC 8555 §8.3 requires 80; override for testing).
+/// * `allow_private_ips` — when `false`, redirects to RFC-1918/loopback/link-local
+///                         addresses are rejected (SSRF guard).  Set to `true` only
+///                         in isolated test environments.
+/// * `client`            — shared hyper client; reusing it avoids a TCP handshake per validation.
 pub async fn validate(
     domain: &str,
     token: &str,
     key_auth: &str,
     port: u16,
+    allow_private_ips: bool,
     client: &ValidationClient,
 ) -> Result<(), AcmeError> {
     // RFC 3986 §3.2.2: IPv6 literals must be enclosed in brackets when used
@@ -95,6 +170,11 @@ pub async fn validate(
                 return Err(AcmeError::IncorrectResponse(format!(
                     "http-01: redirect target '{next}' uses unsupported scheme '{scheme}'"
                 )));
+            }
+
+            // SSRF guard: reject redirects to private/loopback addresses.
+            if let Some(host) = next.host() {
+                check_redirect_host(host, allow_private_ips, &current_url).await?;
             }
 
             uri = next;
@@ -185,6 +265,7 @@ mod tests {
             "token",
             "key.auth",
             80,
+            false,
             &test_client(),
         )
         .await;
@@ -207,6 +288,7 @@ mod tests {
             "mytoken",
             "mytoken.thumbprint",
             addr.port(),
+            false,
             &test_client(),
         )
         .await;
@@ -225,6 +307,7 @@ mod tests {
             "token",
             "expected",
             addr.port(),
+            false,
             &test_client(),
         )
         .await;
@@ -246,6 +329,7 @@ mod tests {
             "token",
             "expected",
             addr.port(),
+            false,
             &test_client(),
         )
         .await;
@@ -267,6 +351,7 @@ mod tests {
             "token",
             "correct-auth",
             addr.port(),
+            false,
             &test_client(),
         )
         .await;
@@ -306,6 +391,7 @@ mod tests {
             "redir-token",
             "redir-token.thumbprint",
             redirect_addr.port(),
+            true, // test servers are on loopback
             &test_client(),
         )
         .await;
@@ -344,12 +430,85 @@ mod tests {
             "loop-token",
             "key",
             addr.port(),
+            true, // test server is on loopback
             &test_client(),
         )
         .await;
         assert!(
             matches!(result, Err(AcmeError::IncorrectResponse(_))),
             "expected IncorrectResponse for redirect loop, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_blocks_redirect_to_private_ip() {
+        // Server that redirects to a link-local address (169.254.x.x — cloud metadata pattern).
+        let addr = start_server(Router::new().route(
+            "/.well-known/acme-challenge/token",
+            get(|| async {
+                (
+                    StatusCode::FOUND,
+                    [(
+                        axum::http::header::LOCATION,
+                        "http://169.254.169.254/latest/meta-data/",
+                    )],
+                )
+            }),
+        ))
+        .await;
+
+        let result = validate(
+            "127.0.0.1",
+            "token",
+            "key",
+            addr.port(),
+            false, // SSRF guard enabled
+            &test_client(),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(AcmeError::IncorrectResponse(_))),
+            "expected IncorrectResponse for private-IP redirect, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_allows_private_ip_redirect_when_configured() {
+        // Same setup but allow_private_ips=true (test-only override).
+        let target_addr = start_server(Router::new().route(
+            "/.well-known/acme-challenge/token",
+            get(|| async { "token.thumbprint" }),
+        ))
+        .await;
+        let target_port = target_addr.port();
+        let redirect_addr = start_server(Router::new().route(
+            "/.well-known/acme-challenge/token",
+            get(move || async move {
+                (
+                    StatusCode::FOUND,
+                    [(
+                        axum::http::header::LOCATION,
+                        format!(
+                            "http://127.0.0.1:{}/.well-known/acme-challenge/token",
+                            target_port
+                        ),
+                    )],
+                )
+            }),
+        ))
+        .await;
+        let result = validate(
+            "127.0.0.1",
+            "token",
+            "token.thumbprint",
+            redirect_addr.port(),
+            true, // private IPs allowed
+            &test_client(),
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "expected Ok when allow_private_ips=true, got: {result:?}"
         );
     }
 

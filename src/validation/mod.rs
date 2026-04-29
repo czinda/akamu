@@ -97,6 +97,7 @@ pub async fn validate_challenge(
     }
 
     let http_port = state.config.server.http_validation_port;
+    let http_allow_private_ips = state.config.server.http_validation_allow_private_ips;
     let issuer_domains = state.config.dns_persist_issuer_domains();
     let issuer_domain_refs: Vec<&str> = issuer_domains.iter().map(String::as_str).collect();
     let dns_resolver_addr = state
@@ -120,6 +121,7 @@ pub async fn validate_challenge(
         key_auth,
         token,
         http_port,
+        http_allow_private_ips,
         issuer_domains: &issuer_domain_refs,
         dns_persist01_resolver_addr,
         validate_dnssec,
@@ -148,6 +150,7 @@ struct DispatchParams<'a> {
     key_auth: &'a str,
     token: &'a str,
     http_port: u16,
+    http_allow_private_ips: bool,
     issuer_domains: &'a [&'a str],
     dns_persist01_resolver_addr: Option<std::net::SocketAddr>,
     validate_dnssec: bool,
@@ -167,6 +170,7 @@ async fn dispatch(
         key_auth,
         token,
         http_port,
+        http_allow_private_ips,
         issuer_domains,
         dns_persist01_resolver_addr,
         validate_dnssec,
@@ -176,7 +180,7 @@ async fn dispatch(
 ) -> Result<(), AcmeError> {
     match chall_type {
         "http-01" => {
-            http01::validate(id_value, token, key_auth, http_port, validation_client).await
+            http01::validate(id_value, token, key_auth, http_port, http_allow_private_ips, validation_client).await
         }
         "dns-01" => dns01::validate(id_value, key_auth, validate_dnssec).await,
         "tls-alpn-01" => tls_alpn01::validate(id_type, id_value, key_auth).await,
@@ -514,6 +518,7 @@ mod tests {
             key_auth: "key-auth",
             token: "token",
             http_port: 80,
+            http_allow_private_ips: false,
             issuer_domains: &["acme.test"],
             dns_persist01_resolver_addr: None,
             validate_dnssec: false,

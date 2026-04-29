@@ -505,6 +505,16 @@ pub struct ServerConfig {
     /// Override to a high port for testing or non-standard deployments.
     #[serde(default = "default_http_validation_port")]
     pub http_validation_port: u16,
+    /// Allow http-01 redirect targets that resolve to private or loopback IP
+    /// addresses (RFC-1918, link-local 169.254/16, loopback 127/8, etc.).
+    ///
+    /// **Default: `false`** — private-IP redirects are blocked to prevent
+    /// SSRF attacks against cloud metadata endpoints (e.g. 169.254.169.254).
+    ///
+    /// Set to `true` only in isolated test environments where the challenge
+    /// responder intentionally runs on a private address.
+    #[serde(default)]
+    pub http_validation_allow_private_ips: bool,
     /// Issuer domain(s) placed in the `issuer-domain-names` field of
     /// dns-persist-01 challenges and matched against TXT records.  Accepts a
     /// single string or an array of strings.  When empty, the host portion of
