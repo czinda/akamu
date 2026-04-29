@@ -38,6 +38,8 @@ pub struct SyntaClientCertVerifier {
     max_chain_depth: u8,
     minimum_rsa_modulus: usize,
     allow_post_quantum: bool,
+    /// Crypto provider — built once at construction, shared across all handshakes.
+    provider: Arc<rustls::crypto::CryptoProvider>,
 }
 
 impl std::fmt::Debug for SyntaClientCertVerifier {
@@ -82,6 +84,7 @@ impl SyntaClientCertVerifier {
             max_chain_depth: config.max_chain_depth,
             minimum_rsa_modulus: config.minimum_rsa_modulus,
             allow_post_quantum: config.allow_post_quantum,
+            provider: Arc::new(rustls_native_ossl::default_provider()),
         })
     }
 }
@@ -165,7 +168,7 @@ impl ClientCertVerifier for SyntaClientCertVerifier {
             message,
             cert,
             dss,
-            &rustls_native_ossl::default_provider().signature_verification_algorithms,
+            &self.provider.signature_verification_algorithms,
         )
     }
 
@@ -186,7 +189,7 @@ impl ClientCertVerifier for SyntaClientCertVerifier {
                 message,
                 cert,
                 dss,
-                &rustls_native_ossl::default_provider().signature_verification_algorithms,
+                &self.provider.signature_verification_algorithms,
             )
         }
     }
