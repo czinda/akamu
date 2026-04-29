@@ -152,7 +152,9 @@ pub async fn get_landmark_cert(
 ///
 /// Returns 404 when MTC logging is disabled and 503 when no signing key is
 /// configured.
-pub async fn get_tlog_checkpoint(State(state): State<Arc<AppState>>) -> Result<Response, AcmeError> {
+pub async fn get_tlog_checkpoint(
+    State(state): State<Arc<AppState>>,
+) -> Result<Response, AcmeError> {
     let shared_log = state.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
     let key = state
         .mtc
@@ -231,7 +233,9 @@ pub async fn get_tlog_tile(
 ///
 /// Returns 404 when MTC logging is disabled and 503 when no signing key is
 /// configured or the key type does not support the cosignature role.
-pub async fn get_tlog_cosignature(State(state): State<Arc<AppState>>) -> Result<Response, AcmeError> {
+pub async fn get_tlog_cosignature(
+    State(state): State<Arc<AppState>>,
+) -> Result<Response, AcmeError> {
     let shared_log = state.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
     let key = state
         .mtc
@@ -247,9 +251,8 @@ pub async fn get_tlog_cosignature(State(state): State<Arc<AppState>>) -> Result<
         .unwrap_or_default()
         .as_secs();
 
-    let note =
-        tlog::produce_cosigner_checkpoint(shared_log, &key_name, key, hash_alg, &origin, ts)
-            .await?;
+    let note = tlog::produce_cosigner_checkpoint(shared_log, &key_name, key, hash_alg, &origin, ts)
+        .await?;
 
     Ok((
         StatusCode::OK,
