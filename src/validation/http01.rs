@@ -107,8 +107,10 @@ pub async fn validate(
             )));
         }
 
-        // Cap response body to prevent memory abuse.
-        const MAX_BODY: usize = 8192;
+        // Cap response body to prevent runaway memory consumption from hostile targets.
+        // Key authorizations are < 200 bytes; 1 MiB allows for proxies that prepend
+        // extra content while still bounding allocation per validation attempt.
+        const MAX_BODY: usize = 1_048_576;
         let body_bytes = resp
             .into_body()
             .collect()
