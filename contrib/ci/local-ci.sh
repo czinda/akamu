@@ -243,7 +243,7 @@ job_test() {
     fi
 
     echo "Running test suite…"
-    cargo test
+    cargo test --features test-utils
 }
 
 job_bench() {

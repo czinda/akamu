@@ -47,8 +47,8 @@ pub struct CosignerClient {
 
 /// Build a `CosignerClient` that connects over plain HTTP (no TLS).
 ///
-/// Intended for integration tests only; do not use in production.
-#[doc(hidden)]
+/// Intended for integration tests only; compiled only with `--features test-utils`.
+#[cfg(feature = "test-utils")]
 pub fn build_cosigner_client_http(url: String) -> CosignerClient {
     let tls_config = build_tls_config(None).expect("native roots for test cosigner client");
     let https = HttpsConnectorBuilder::new()

@@ -13,6 +13,9 @@ default = ["backend-sqlite"]
 backend-sqlite   = ["sqlx/sqlite"]
 backend-postgres = ["sqlx/postgres"]
 backend-mariadb  = ["sqlx/mysql"]
+# Expose test-only helpers (e.g. build_cosigner_client_http) to integration tests.
+# Pass --features test-utils when running `cargo test`.
+test-utils = []
 
 [dependencies]
 # Async runtime
@@ -107,4 +110,8 @@ clap = { version = "4", features = ["derive"] }
 [[bench]]
 name = "acme_bench"
 harness = false
+
+[[test]]
+name = "mtc_cosigner_flow"
+required-features = ["test-utils"]
 
