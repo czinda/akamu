@@ -322,6 +322,12 @@ pub struct LdapConfig {
     #[serde(default)]
     pub starttls: bool,
 
+    /// URI scheme used when constructing URIs from SRV-discovered servers.
+    /// Allowed values: `"ldap"` (default) or `"ldaps"`.  Use `"ldaps"` when
+    /// SRV records point at LDAP-over-TLS servers (port 636).
+    #[serde(default = "default_srv_scheme")]
+    pub srv_scheme: String,
+
     // ── Timeouts ───────────────────────────────────────────────────────────
     /// Timeout in seconds for TCP connect and LDAP operations.
     /// 0 means no finite timeout (OS default).  Default: 10.
@@ -722,6 +728,10 @@ fn default_star_allow_certificate_get() -> bool {
 
 fn default_ldap_timeout_secs() -> u64 {
     10
+}
+
+fn default_srv_scheme() -> String {
+    "ldap".to_owned()
 }
 
 impl Config {
