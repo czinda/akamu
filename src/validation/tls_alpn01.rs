@@ -56,8 +56,9 @@ async fn validate_inner(
     // Build a rustls ClientConfig that:
     //  - Accepts any server certificate (we do our own checking below).
     //  - Advertises ALPN "acme-tls/1" only.
-    let crypto_provider = rustls::crypto::ring::default_provider();
-    let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(crypto_provider))
+    let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls_native_ossl::default_provider(),
+    ))
         .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
         .map_err(|e| AcmeError::Tls(format!("rustls protocol config: {e}")))?
         .dangerous()
@@ -1336,7 +1337,7 @@ mod tests {
         let cert = CertificateDer::from(cert_der);
 
         let mut server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
+            rustls_native_ossl::default_provider(),
         ))
         .with_safe_default_protocol_versions()
         .unwrap()
@@ -1373,7 +1374,7 @@ mod tests {
         let cert = CertificateDer::from(cert_der);
 
         let mut server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
+            rustls_native_ossl::default_provider(),
         ))
         .with_protocol_versions(&[&rustls::version::TLS12])
         .unwrap()
