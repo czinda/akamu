@@ -38,9 +38,16 @@ use akamu::{ca, db, routes};
 
 // ── Port utility ──────────────────────────────────────────────────────────────
 
-fn free_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    l.local_addr().unwrap().port()
+/// Bind an ephemeral port and return the listener together with its port.
+///
+/// Keeping the listener open eliminates the TOCTOU race that a
+/// "get port, drop, re-bind" approach would introduce.
+fn bind_ephemeral() -> (u16, TcpListener) {
+    let std_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    std_l.set_nonblocking(true).unwrap();
+    let port = std_l.local_addr().unwrap().port();
+    let tokio_l = TcpListener::from_std(std_l).unwrap();
+    (port, tokio_l)
 }
 
 // ── Test state builder ────────────────────────────────────────────────────────
@@ -263,8 +270,7 @@ fn c2sp_key_id_ed25519_operator_formula() {
     let key = BackendPrivateKey::generate_ed25519().unwrap();
     let name = "log.example.com/2024";
 
-    let (_, computed_id) =
-        tlog::compute_key_id(name, &key, NoteSigningRole::LogOperator).unwrap();
+    let (_, computed_id) = tlog::compute_key_id(name, &key, NoteSigningRole::LogOperator).unwrap();
 
     // Manually apply the formula.
     let pub_key = key.public_key().unwrap();
@@ -289,8 +295,7 @@ fn c2sp_key_id_ecdsa_formula() {
     let key = BackendPrivateKey::generate_ec("P-256").unwrap();
     let name = "log.example.com/2024";
 
-    let (_, computed_id) =
-        tlog::compute_key_id(name, &key, NoteSigningRole::LogOperator).unwrap();
+    let (_, computed_id) = tlog::compute_key_id(name, &key, NoteSigningRole::LogOperator).unwrap();
 
     let pub_key = key.public_key().unwrap();
     let spki_der = pub_key.spki_der();
@@ -473,14 +478,11 @@ fn c2sp_cosignature_mldsa44_blob_structure() {
 #[tokio::test]
 async fn tlog_checkpoint_endpoint_returns_valid_note() {
     let dir = tempfile::TempDir::new().unwrap();
-    let port = free_port();
+    let (port, listener) = bind_ephemeral();
     let base_url = format!("http://127.0.0.1:{port}");
     let state = build_test_state(dir.path(), &base_url).await;
 
     let app = routes::build_router(Arc::clone(&state));
-    let listener = TcpListener::bind(format!("127.0.0.1:{port}"))
-        .await
-        .unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -514,14 +516,11 @@ async fn tlog_checkpoint_endpoint_returns_valid_note() {
 #[tokio::test]
 async fn tlog_tile_entries_returns_501() {
     let dir = tempfile::TempDir::new().unwrap();
-    let port = free_port();
+    let (port, listener) = bind_ephemeral();
     let base_url = format!("http://127.0.0.1:{port}");
     let state = build_test_state(dir.path(), &base_url).await;
 
     let app = routes::build_router(Arc::clone(&state));
-    let listener = TcpListener::bind(format!("127.0.0.1:{port}"))
-        .await
-        .unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -538,14 +537,11 @@ async fn tlog_tile_entries_returns_501() {
 #[tokio::test]
 async fn tlog_tile_level0_partial_returns_one_hash() {
     let dir = tempfile::TempDir::new().unwrap();
-    let port = free_port();
+    let (port, listener) = bind_ephemeral();
     let base_url = format!("http://127.0.0.1:{port}");
     let state = build_test_state(dir.path(), &base_url).await;
 
     let app = routes::build_router(Arc::clone(&state));
-    let listener = TcpListener::bind(format!("127.0.0.1:{port}"))
-        .await
-        .unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -578,7 +574,7 @@ async fn tlog_tile_level0_partial_returns_one_hash() {
 #[tokio::test]
 async fn tlog_tile_level0_full_returns_404_for_small_log() {
     let dir = tempfile::TempDir::new().unwrap();
-    let port = free_port();
+    let (port, listener) = bind_ephemeral();
     let base_url = format!("http://127.0.0.1:{port}");
     let state = build_test_state(dir.path(), &base_url).await;
 
@@ -590,9 +586,6 @@ async fn tlog_tile_level0_full_returns_404_for_small_log() {
     }
 
     let app = routes::build_router(Arc::clone(&state));
-    let listener = TcpListener::bind(format!("127.0.0.1:{port}"))
-        .await
-        .unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -618,14 +611,11 @@ async fn tlog_cosignature_endpoint_structure() {
     use base64::Engine;
 
     let dir = tempfile::TempDir::new().unwrap();
-    let port = free_port();
+    let (port, listener) = bind_ephemeral();
     let base_url = format!("http://127.0.0.1:{port}");
     let state = build_test_state(dir.path(), &base_url).await;
 
     let app = routes::build_router(Arc::clone(&state));
-    let listener = TcpListener::bind(format!("127.0.0.1:{port}"))
-        .await
-        .unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
