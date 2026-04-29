@@ -11,7 +11,6 @@ use akamu::config::{Config, MtcSigningKeyConfig};
 use akamu::state::{AppState, CaState, MtcState, NonceBucket, TlsState};
 use akamu::{ca, db, mtc, routes, star};
 
-use http_body_util::Empty;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use hyper_rustls::HttpsConnectorBuilder;
