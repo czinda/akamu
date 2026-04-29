@@ -9,7 +9,7 @@
 
 #![allow(non_camel_case_types, dead_code)]
 
-use libc::{c_char, c_int, c_ulong, c_uint, c_void, timeval};
+use libc::{c_char, c_int, c_uint, c_ulong, c_void, timeval};
 
 // ── Primitive type aliases ────────────────────────────────────────────────────
 
@@ -63,7 +63,8 @@ pub struct LDAPControl {
 
 /// SASL interactive callback prompt descriptor (matches C `sasl_interact_t`).
 ///
-/// Layout verified: size 48, align 8.
+/// Layout verified: size 48, align 8 on LP64 (Linux/macOS x86-64/aarch64).
+/// The compile-time assertions below confirm this at build time.
 #[repr(C)]
 pub struct sasl_interact {
     /// Callback identifier.  `SASL_CB_LIST_END` (0) terminates the array.
@@ -76,6 +77,16 @@ pub struct sasl_interact {
     /// Byte length of `result`.
     pub len: c_uint,
 }
+
+const _: () = {
+    // sasl_interact_t layout assertions for LP64 (8-byte pointer, 8-byte c_ulong).
+    // These fire at compile time on non-LP64 targets before any unsafe code runs.
+    #[cfg(target_pointer_width = "64")]
+    {
+        assert!(std::mem::size_of::<sasl_interact>() == 48);
+        assert!(std::mem::align_of::<sasl_interact>() == 8);
+    }
+};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
