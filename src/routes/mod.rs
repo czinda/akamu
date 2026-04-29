@@ -35,6 +35,9 @@ pub mod star_cert;
 
 /// Build the main axum router with all ACME endpoints.
 pub fn build_router(state: Arc<AppState>) -> Router {
+    // max_body_bytes = 0 means "use axum's built-in default (2 MiB)".
+    // Only install DefaultBodyLimit when explicitly configured.
+    let max_body = state.config.server.max_body_bytes;
     Router::new()
         // Directory
         .route("/acme/directory", get(directory::get_directory))
@@ -106,6 +109,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .delete(admin::delete_account_profile_grants),
         )
         .route("/admin/eab", axum::routing::post(admin::post_eab))
+        .layer(if max_body > 0 {
+            axum::extract::DefaultBodyLimit::max(max_body)
+        } else {
+            axum::extract::DefaultBodyLimit::disable()
+        })
         .layer(
             TraceLayer::new_for_http()
                 // Suppress "started processing request" — the response line already
