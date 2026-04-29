@@ -23,10 +23,36 @@ pub async fn get_crl(State(state): State<Arc<AppState>>) -> Result<Response, Acm
 
     let entries: Vec<RevokedEntry> = rows
         .iter()
-        .map(|r| RevokedEntry {
-            serial_bytes: decode_hex(&r.serial_number),
-            revoked_at: r.revoked_at.unwrap_or(0),
-            reason: r.revocation_reason.map(|v| v as u8),
+        .filter_map(|r| {
+            let serial_bytes = match decode_hex(&r.serial_number) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(
+                        serial = %r.serial_number,
+                        "CRL: skipping revoked cert with malformed serial in DB: {e}"
+                    );
+                    return None;
+                }
+            };
+            let revoked_at = match r.revoked_at {
+                Some(ts) => ts,
+                None => {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64;
+                    tracing::warn!(
+                        serial = %r.serial_number,
+                        "CRL: revoked_at is NULL; using current timestamp"
+                    );
+                    now
+                }
+            };
+            Some(RevokedEntry {
+                serial_bytes,
+                revoked_at,
+                reason: r.revocation_reason.map(|v| v as u8),
+            })
         })
         .collect();
 
@@ -47,9 +73,17 @@ pub async fn get_crl(State(state): State<Arc<AppState>>) -> Result<Response, Acm
 }
 
 /// Decode a lowercase hex string to bytes (same encoding used by `serial_number` column).
-fn decode_hex(hex: &str) -> Vec<u8> {
+///
+/// Returns an error when `hex` has odd length or contains non-hex characters.
+fn decode_hex(hex: &str) -> Result<Vec<u8>, String> {
+    if hex.len() % 2 != 0 {
+        return Err(format!("odd-length hex string ({} chars)", hex.len()));
+    }
     (0..hex.len())
         .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap_or(0))
+        .map(|i| {
+            u8::from_str_radix(&hex[i..i + 2], 16)
+                .map_err(|_| format!("invalid hex byte at offset {i}: '{}'", &hex[i..i + 2]))
+        })
         .collect()
 }
