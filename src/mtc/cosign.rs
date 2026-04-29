@@ -110,7 +110,7 @@ fn build_tls_config(cosigner_ca_pem_path: Option<&str>) -> Result<ClientConfig, 
     }
 
     Ok(ClientConfig::builder_with_provider(std::sync::Arc::new(
-        rustls::crypto::ring::default_provider(),
+        rustls_native_ossl::default_provider(),
     ))
     .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
     .map_err(|e| AcmeError::Tls(format!("rustls protocol versions: {e}")))?
