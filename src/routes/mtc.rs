@@ -2,11 +2,11 @@
 //!
 //! All endpoints return 404 when MTC logging is disabled.
 
-use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
+use std::sync::Arc;
 
 use crate::db;
 use crate::error::AcmeError;
@@ -154,11 +154,10 @@ pub async fn get_tlog_checkpoint(
     State(state): State<Arc<AppState>>,
 ) -> Result<Response, AcmeError> {
     let shared_log = state.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
-    let key = state
-        .mtc
-        .signing_key
-        .as_ref()
-        .ok_or_else(|| AcmeError::ServiceUnavailable("MTC signing key not configured".into()))?;
+    let key =
+        state.mtc.signing_key.as_ref().ok_or_else(|| {
+            AcmeError::ServiceUnavailable("MTC signing key not configured".into())
+        })?;
 
     let origin = format!("{}/acme/mtc/tlog", state.config.base_url);
     let key_name = origin.clone();
@@ -169,10 +168,16 @@ pub async fn get_tlog_checkpoint(
 
     Ok((
         StatusCode::OK,
-        [(
-            axum::http::header::CONTENT_TYPE,
-            axum::http::HeaderValue::from_static("text/plain; charset=utf-8"),
-        )],
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderValue::from_static("text/plain; charset=utf-8"),
+            ),
+            (
+                axum::http::header::CACHE_CONTROL,
+                axum::http::HeaderValue::from_static("no-store"),
+            ),
+        ],
         note,
     )
         .into_response())
@@ -208,7 +213,15 @@ pub async fn get_tlog_tile(
     let tile = tlog::parse_tile_path(&path)?;
     let bytes = tlog::get_tile_bytes(shared_log, state.mtc.algorithm, &tile).await?;
 
-    Ok((
+    // Full tiles are append-only and never change once written — cache aggressively.
+    // Partial tiles grow as the log grows and must not be cached.
+    let cache = if tile.partial_width.is_some() {
+        axum::http::HeaderValue::from_static("no-store")
+    } else {
+        axum::http::HeaderValue::from_static("public, max-age=86400")
+    };
+
+    let mut resp = (
         StatusCode::OK,
         [(
             axum::http::header::CONTENT_TYPE,
@@ -216,7 +229,10 @@ pub async fn get_tlog_tile(
         )],
         bytes,
     )
-        .into_response())
+        .into_response();
+    resp.headers_mut()
+        .insert(axum::http::header::CACHE_CONTROL, cache);
+    Ok(resp)
 }
 
 /// GET /acme/mtc/tlog/cosignature
@@ -235,11 +251,10 @@ pub async fn get_tlog_cosignature(
     State(state): State<Arc<AppState>>,
 ) -> Result<Response, AcmeError> {
     let shared_log = state.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
-    let key = state
-        .mtc
-        .signing_key
-        .as_ref()
-        .ok_or_else(|| AcmeError::ServiceUnavailable("MTC signing key not configured".into()))?;
+    let key =
+        state.mtc.signing_key.as_ref().ok_or_else(|| {
+            AcmeError::ServiceUnavailable("MTC signing key not configured".into())
+        })?;
 
     let origin = format!("{}/acme/mtc/tlog", state.config.base_url);
     let key_name = origin.clone();
@@ -250,10 +265,16 @@ pub async fn get_tlog_cosignature(
 
     Ok((
         StatusCode::OK,
-        [(
-            axum::http::header::CONTENT_TYPE,
-            axum::http::HeaderValue::from_static("text/plain; charset=utf-8"),
-        )],
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderValue::from_static("text/plain; charset=utf-8"),
+            ),
+            (
+                axum::http::header::CACHE_CONTROL,
+                axum::http::HeaderValue::from_static("no-store"),
+            ),
+        ],
         note,
     )
         .into_response())
