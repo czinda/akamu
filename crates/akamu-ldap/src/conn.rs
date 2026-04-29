@@ -39,7 +39,7 @@ pub(crate) unsafe extern "C" fn sasl_interact_noop(
     // response before returning.
     let mut interact = interact_raw as *mut ffi::sasl_interact;
     while (*interact).id != ffi::SASL_CB_LIST_END {
-        (*interact).result = b"\0".as_ptr() as *const c_void;
+        (*interact).result = c"".as_ptr() as *const c_void;
         (*interact).len = 0;
         interact = interact.add(1);
     }
@@ -104,8 +104,7 @@ impl LdapConnection {
         force_starttls: bool,
         timeout_secs: u64,
     ) -> Result<Self, LdapError> {
-        let needs_tls =
-            tls_ca_cert_file.is_some() || uri.starts_with("ldaps://") || force_starttls;
+        let needs_tls = tls_ca_cert_file.is_some() || uri.starts_with("ldaps://") || force_starttls;
         let starttls = needs_tls && uri.starts_with("ldap://");
         debug!(uri, tls = needs_tls, starttls, "LDAP connect");
 
@@ -155,9 +154,8 @@ impl LdapConnection {
         }
 
         if let Some(ca_path) = tls_ca_cert_file {
-            std::fs::metadata(ca_path).map_err(|e| {
-                LdapError::Tls(format!("cannot read TLS CA cert '{ca_path}': {e}"))
-            })?;
+            std::fs::metadata(ca_path)
+                .map_err(|e| LdapError::Tls(format!("cannot read TLS CA cert '{ca_path}': {e}")))?;
             let path_c = cstr(ca_path)?;
             let rc = unsafe {
                 ffi::ldap_set_option(
@@ -188,8 +186,7 @@ impl LdapConnection {
         }
 
         if starttls {
-            let rc =
-                unsafe { ffi::ldap_start_tls_s(conn.ld, ptr::null_mut(), ptr::null_mut()) };
+            let rc = unsafe { ffi::ldap_start_tls_s(conn.ld, ptr::null_mut(), ptr::null_mut()) };
             if rc != ffi::LDAP_SUCCESS {
                 return Err(LdapError::Tls(format!(
                     "STARTTLS failed: {}",
@@ -214,7 +211,7 @@ impl LdapConnection {
     pub fn bind(&mut self, auth: &Auth) -> Result<(), LdapError> {
         match auth {
             Auth::Simple { bind_dn, password } => {
-                debug!(bind_dn, "LDAP simple bind");
+                tracing::trace!(bind_dn, "LDAP simple bind");
                 self.bind_simple(bind_dn, password)
             }
             Auth::Gssapi => {
@@ -294,7 +291,6 @@ impl LdapConnection {
             if rc2 <= 0 {
                 if !result.is_null() {
                     unsafe { ffi::ldap_msgfree(result) };
-                    result = ptr::null_mut();
                 }
                 return Err(LdapError::Protocol {
                     code: rc2,
@@ -351,7 +347,10 @@ impl LdapConnection {
         if parse_rc != ffi::LDAP_SUCCESS {
             return Err(LdapError::Protocol {
                 code: parse_rc,
-                msg: format!("{context}: ldap_parse_result failed: {}", err_string(parse_rc)),
+                msg: format!(
+                    "{context}: ldap_parse_result failed: {}",
+                    err_string(parse_rc)
+                ),
             });
         }
         if errcode != ffi::LDAP_SUCCESS {
@@ -391,10 +390,8 @@ impl LdapConnection {
         let filter_c = cstr(filter)?;
 
         // Build a NULL-terminated *mut *mut c_char array for the attribute list.
-        let attr_cstrings: Vec<CString> = attrs
-            .iter()
-            .map(|a| cstr(a))
-            .collect::<Result<_, _>>()?;
+        let attr_cstrings: Vec<CString> =
+            attrs.iter().map(|a| cstr(a)).collect::<Result<_, _>>()?;
         let mut attr_ptrs: Vec<*mut c_char> = attr_cstrings
             .iter()
             .map(|s| s.as_ptr() as *mut c_char)
@@ -415,7 +412,7 @@ impl LdapConnection {
                 scope.as_int(),
                 filter_c.as_ptr(),
                 attrs_arg,
-                0,              // attrsonly = false
+                0, // attrsonly = false
                 ptr::null_mut(),
                 ptr::null_mut(),
                 ptr::null_mut(), // no timeout
@@ -506,9 +503,7 @@ unsafe fn decode_entry(
     // DN
     let dn_ptr = ffi::ldap_get_dn(ld, entry);
     if !dn_ptr.is_null() {
-        se.dn = CStr::from_ptr(dn_ptr)
-            .to_string_lossy()
-            .into_owned();
+        se.dn = CStr::from_ptr(dn_ptr).to_string_lossy().into_owned();
         ffi::ldap_memfree(dn_ptr as *mut c_void);
     }
 
@@ -523,7 +518,10 @@ unsafe fn decode_entry(
         let vals_ptr = ffi::ldap_get_values_len(ld, entry, attr_ptr);
         if !vals_ptr.is_null() {
             let (str_vals, bin_vals) = decode_bervals(vals_ptr);
-            se.attrs.entry(attr_name.clone()).or_default().extend(str_vals);
+            se.attrs
+                .entry(attr_name.clone())
+                .or_default()
+                .extend(str_vals);
             se.bin_attrs.entry(attr_name).or_default().extend(bin_vals);
             ffi::ldap_value_free_len(vals_ptr);
         }
@@ -609,8 +607,13 @@ mod tests {
 
     #[test]
     fn connect_with_nonexistent_ca_cert_returns_tls_error() {
-        let err = LdapConnection::connect("ldap://127.0.0.1:389", Some("/nonexistent/ca.pem"), false, 5)
-            .expect_err("should fail on missing CA cert");
+        let err = LdapConnection::connect(
+            "ldap://127.0.0.1:389",
+            Some("/nonexistent/ca.pem"),
+            false,
+            5,
+        )
+        .expect_err("should fail on missing CA cert");
         assert!(
             matches!(err, LdapError::Tls(_)),
             "unexpected error variant: {err:?}"
