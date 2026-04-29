@@ -39,6 +39,10 @@ use crate::mtc::log::{read_hash_range, tree_size_and_root, SharedLog};
 /// Number of hash entries per full tile (and branching factor per tree level).
 const TILE_WIDTH: usize = 256;
 
+/// Maximum supported tile level.  256^6 ≈ 281 trillion entries — more than any
+/// realistic log will reach.  Requests for higher levels are rejected with 400.
+const MAX_TILE_LEVEL: u32 = 6;
+
 /// ML-DSA-44 public key length per FIPS 204.
 const ML_DSA_44_PUBKEY_LEN: usize = 1312;
 
@@ -536,6 +540,11 @@ pub fn parse_tile_path(path: &str) -> Result<TilePath, AcmeError> {
     // First path segment is the level number.
     let slash = path_part.find('/').ok_or_else(bad)?;
     let level: u32 = path_part[..slash].parse().map_err(|_| bad())?;
+    if level > MAX_TILE_LEVEL {
+        return Err(AcmeError::BadRequest(format!(
+            "tile level {level} exceeds maximum {MAX_TILE_LEVEL}"
+        )));
+    }
     let index_path = &path_part[slash + 1..];
     if index_path.is_empty() {
         return Err(bad());
@@ -566,13 +575,14 @@ async fn tile_entries(
     max_width: usize,
 ) -> Result<Vec<Vec<u8>>, AcmeError> {
     if level == 0 {
-        let start = tile_n * TILE_WIDTH as u64;
+        let start = tile_n.checked_mul(TILE_WIDTH as u64).ok_or(AcmeError::NotFound)?;
         return read_hash_range(log, start, max_width).await;
     }
 
     let mut result = Vec::with_capacity(max_width);
     for i in 0..max_width as u64 {
-        let sub_tile_n = tile_n * TILE_WIDTH as u64 + i;
+        let base = tile_n.checked_mul(TILE_WIDTH as u64).ok_or(AcmeError::NotFound)?;
+        let sub_tile_n = base.checked_add(i).ok_or(AcmeError::NotFound)?;
         let sub = Box::pin(tile_entries(
             log,
             algorithm,
@@ -600,8 +610,18 @@ pub async fn get_tile_bytes(
 ) -> Result<Vec<u8>, AcmeError> {
     let max_width = tile.partial_width.unwrap_or(TILE_WIDTH);
     let entries = tile_entries(log, algorithm, tile.level, tile.tile_n, max_width).await?;
-    if entries.is_empty() {
-        return Err(AcmeError::NotFound);
+
+    match tile.partial_width {
+        None => {
+            if entries.len() < TILE_WIDTH {
+                return Err(AcmeError::NotFound);
+            }
+        }
+        Some(w) => {
+            if entries.len() != w {
+                return Err(AcmeError::NotFound);
+            }
+        }
     }
 
     let hash_size = entries[0].len();

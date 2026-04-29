@@ -598,19 +598,15 @@ async fn tlog_tile_level0_full_returns_404_for_small_log() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    // A full tile request when only 1 leaf exists: server should either return
-    // the partial tile bytes (if it decides to serve whatever it has) or 404.
-    // Per C2SP tlog-tiles, a server SHOULD return a partial tile at the right
-    // edge. Since we requested without .p/W, the server returns what it has.
-    // Our implementation returns whatever leaves exist, so expect 200 with 32 bytes
-    // (the partial tail tile) or 404.  Both are conformant; we just verify no 5xx.
+    // A full tile URL (no .p/W suffix) for a log with fewer than 256 leaves must
+    // return 404 per C2SP tlog-tiles: a full-tile URL promises exactly 256 entries.
     let resp = reqwest::get(format!("http://{addr}/acme/mtc/tlog/tile/0/000"))
         .await
         .unwrap();
-    let status = resp.status().as_u16();
-    assert!(
-        status == 200 || status == 404,
-        "must return 200 (partial) or 404, got {status}"
+    assert_eq!(
+        resp.status().as_u16(),
+        404,
+        "full tile URL must return 404 when log has < 256 entries"
     );
 }
 

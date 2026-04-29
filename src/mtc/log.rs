@@ -239,8 +239,8 @@ pub async fn tree_size_and_root(log: &SharedLog) -> Result<(u64, Vec<u8>), AcmeE
 /// Read a contiguous range of leaf hashes from the log.
 ///
 /// Returns at most `count` hashes starting at `start`; returns fewer when
-/// the range reaches the end of the log.  Forwards to
-/// [`DiskBackedLog::read_hash_range`] under a `blocking_lock` guard.
+/// the range reaches the end of the log.  Returns an empty vec when `start`
+/// is at or beyond the current tree size (the tile is past the log head).
 pub async fn read_hash_range(
     log: &SharedLog,
     start: u64,
@@ -248,8 +248,14 @@ pub async fn read_hash_range(
 ) -> Result<Vec<Vec<u8>>, AcmeError> {
     let log_clone = Arc::clone(log);
     tokio::task::spawn_blocking(move || {
-        log_clone
-            .blocking_lock()
+        let mut guard = log_clone.blocking_lock();
+        let size = guard
+            .tree_size()
+            .map_err(|e| AcmeError::Mtc(format!("tree_size: {e}")))?;
+        if start >= size {
+            return Ok(vec![]);
+        }
+        guard
             .read_hash_range(start, count)
             .map_err(|e| AcmeError::Mtc(format!("read_hash_range: {e}")))
     })
