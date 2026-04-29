@@ -56,7 +56,7 @@ graph TB
 
 ## Crate layout
 
-The repository is organized as a **Cargo workspace** with five members:
+The repository is organized as a **Cargo workspace** with six members:
 
 ```
 Cargo.toml          <- workspace root (members: ., crates/*)
@@ -66,6 +66,10 @@ crates/
   akamu-client/     <- async ACME client library (tokio, hyper)
   akamu-cli/        <- CLI binary wrapping akamu-client
   akamu-cosigner/   <- standalone MTC cosigner daemon
+  akamu-ldap/       <- safe Rust wrapper around the OpenLDAP C library (libldap);
+                       provides LdapConnection (sync) and AsyncLdapConnection
+                       (tokio::task::spawn_blocking) with simple-bind and
+                       SASL GSSAPI/Kerberos authentication
 ```
 
 ### Crate dependencies
@@ -78,9 +82,11 @@ graph LR
     COSIGNER["akamu-cosigner"]
     JOSE["akamu-jose"]
     SYNTA["synta-certificate"]
+    LDAP["akamu-ldap"]
 
     SERVER --> JOSE
     SERVER --> SYNTA
+    SERVER --> LDAP
     CLIENT --> JOSE
     CLIENT --> SYNTA
     CLI --> CLIENT
@@ -89,7 +95,7 @@ graph LR
     JOSE --> SYNTA
 ```
 
-The server and `akamu-client` both depend directly on `akamu-jose` and `synta-certificate`. `akamu-cli` depends only on `akamu-client`. `akamu-cosigner` depends on both `akamu-client` (for ACME EAB bootstrap) and `akamu` itself (to reuse TLS loader helpers and key generation utilities).
+The server and `akamu-client` both depend directly on `akamu-jose` and `synta-certificate`. The server additionally depends on `akamu-ldap` for reading Dogtag and IPA certificate profiles from LDAP. `akamu-cli` depends only on `akamu-client`. `akamu-cosigner` depends on both `akamu-client` (for ACME EAB bootstrap) and `akamu` itself (to reuse TLS loader helpers and key generation utilities).
 
 See [Client Libraries](../client/overview.md) for the standalone client API.
 
@@ -160,13 +166,15 @@ src/
     revoke.rs      CRL generation
 
   profiles/
-    mod.rs         ProfileRegistry — in-memory cache, background refresh, resolve()
-    builtin.rs     Builtin provider: inline TOML profile declarations;
-                   handles issue_as, allowed_identifiers, auth_hook, require_account_grant
-    auth.rs        check_profile_auth — identifier pattern, external hook, account grant checks
-    cfg.rs         Dogtag Java-properties .cfg parser and translator
-    dogtag.rs      Dogtag PKI provider (filesystem or LDAP — simple bind and GSSAPI/Kerberos)
-    ipa.rs         FreeIPA/IPAThinCA provider (filesystem or LDAP — simple bind and GSSAPI/Kerberos)
+    mod.rs           ProfileRegistry — in-memory cache, background refresh, resolve()
+    builtin.rs       Builtin provider: inline TOML profile declarations;
+                     handles issue_as, allowed_identifiers, auth_hook, require_account_grant
+    auth.rs          check_profile_auth — identifier pattern, external hook, account grant checks
+    cfg.rs           Dogtag Java-properties .cfg parser and translator
+    dogtag.rs        Dogtag PKI provider (filesystem or LDAP — simple bind and GSSAPI/Kerberos)
+    ipa.rs           FreeIPA/IPAThinCA provider (filesystem or LDAP — simple bind and GSSAPI/Kerberos)
+    ldap_resolve.rs  resolve_ldap_uris() — merges uri/uris/srv_domain into a space-separated
+                     URI string for ldap_initialize; SRV records sorted per RFC 2782
 
   validation/
     mod.rs         Challenge dispatch and DB state transitions (validate_challenge)

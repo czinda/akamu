@@ -52,11 +52,9 @@ type     = "ipa"
 profiles = ["caIPAserviceCert", "IECUserRoles"]
 
 [profiles.providers.ipa_prod.ldap]
-uri         = "ldap://ipa.example.com:7389"
-base_dn     = "o=ipaca"
-gssapi      = true
-keytab_file = "/etc/akamu/akamu.keytab"
-principal   = "akamu/akamu.example.com@EXAMPLE.COM"
+uri     = "ldap://ipa.example.com:7389"
+base_dn = "o=ipaca"
+gssapi  = true
 ```
 
 ---
@@ -145,10 +143,34 @@ profiles    = ["caServerCert", "caIPAserviceCert"]
 | Key | Required | Description |
 |-----|----------|-------------|
 | `profile_dir` | Conditional | Path to directory of `.cfg` files |
-| `ldap` | Conditional | LDAP connection; see below |
+| `ldap` | Conditional | LDAP connection sub-table; see LDAP options under [ipa](#ipa--freeipaipathinca) below |
 | `profiles` | No | Allowlist of profile IDs; empty = all |
 
 At least one of `profile_dir` or `ldap` must be set. When both are configured, `ldap` takes priority.
+
+```toml
+# LDAP source — simple bind, TLS via STARTTLS
+[profiles.providers.dogtag_ldap]
+type     = "dogtag"
+profiles = ["caServerCert"]
+
+[profiles.providers.dogtag_ldap.ldap]
+uri                = "ldap://dogtag.example.com:389"
+base_dn            = "dc=example,dc=com"
+bind_dn            = "uid=admin,ou=people,dc=example,dc=com"
+bind_password_file = "/etc/akamu/ldap-password"
+tls_ca_cert_file   = "/etc/ssl/certs/ldap-ca.pem"   # triggers STARTTLS on ldap:// URIs
+
+# LDAP source — multiple servers, GSSAPI
+[profiles.providers.dogtag_ha]
+type     = "dogtag"
+profiles = ["caServerCert"]
+
+[profiles.providers.dogtag_ha.ldap]
+uris    = ["ldap://dogtag1.example.com:389", "ldap://dogtag2.example.com:389"]
+base_dn = "dc=example,dc=com"
+gssapi  = true
+```
 
 **Supported Dogtag policy classes**
 
@@ -223,9 +245,10 @@ At least one of `uri`, `uris`, or `srv_domain` must be set.
 |-----|-------------|
 | `bind_dn` | Bind DN for simple authentication. Required for simple bind. |
 | `bind_password_file` | Path to a file containing the simple bind password. Required when `bind_dn` is set. |
-| `gssapi = true` | Use SASL GSSAPI (Kerberos). The Kerberos TGT from the current credential cache is used automatically. |
-| `tls_ca_cert_file` | Path to a PEM CA certificate for verifying the LDAP server's TLS certificate. |
-| `starttls` | If `true`, issue a StartTLS command after connecting on the plain port. |
+| `gssapi = true` | Use SASL GSSAPI (Kerberos). Pre-condition: the process must have a valid Kerberos TGT in its credential cache (e.g. obtained via `kinit` or a system keytab). No explicit credentials are passed to the server. |
+| `tls_ca_cert_file` | Path to a PEM CA certificate for verifying the LDAP server's TLS certificate. When set on an `ldap://` URI, STARTTLS is negotiated automatically before any credentials are sent. |
+
+> **Attribute name lowercasing**: the `akamu-ldap` library normalises all LDAP attribute names to lower case in the returned entries. Profile lookup keys such as `cn` and `certProfileConfig` are matched in lower case internally; this is transparent to the operator.
 
 ---
 

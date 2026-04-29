@@ -656,6 +656,7 @@ profile_dir = "/etc/pki/pki-tomcat/ca/profiles/ca"
 profiles    = ["caServerCert"]   # empty = all .cfg files
 
 # Dogtag provider: load profiles from LDAP (simple bind, single server)
+# Setting tls_ca_cert_file triggers STARTTLS automatically on ldap:// URIs.
 [profiles.providers.dogtag_ldap]
 type     = "dogtag"
 profiles = ["caServerCert"]
@@ -665,7 +666,7 @@ uri                = "ldap://dogtag.example.com:389"
 base_dn            = "dc=example,dc=com"
 bind_dn            = "uid=admin,ou=people,dc=example,dc=com"
 bind_password_file = "/etc/akamu/ldap-password"
-starttls           = true   # upgrade to TLS before binding
+tls_ca_cert_file   = "/etc/ssl/certs/dogtag-ldap-ca.pem"   # triggers STARTTLS
 
 # Dogtag provider: multiple servers for failover (GSSAPI)
 [profiles.providers.dogtag_ha]
@@ -693,6 +694,38 @@ srv_domain = "example.com"   # resolves _ldap._tcp.example.com SRV records
 base_dn    = "o=ipaca"
 gssapi     = true
 ```
+
+**`[ldap]` sub-table fields** (applies to both `dogtag` and `ipa` providers)
+
+*Server selection — at least one of the following is required*
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `uri` | string | absent | Single LDAP URI (`ldap://host:port` or `ldaps://host:636`). Kept for backward compatibility; use `uris` when listing multiple servers explicitly. |
+| `uris` | array of strings | `[]` | Ordered list of LDAP URIs tried in turn for failover. All URIs are passed to `ldap_initialize` as a space-separated string. |
+| `srv_domain` | string | absent | DNS domain for SRV discovery. Resolves `_ldap._tcp.{srv_domain}` SRV records; discovered servers are sorted by RFC 2782 priority/weight and appended after any explicit `uris`. |
+
+Explicit servers (`uri` / `uris`) are always tried before SRV-discovered servers. An error is returned at startup if none of the three keys is set.
+
+*Search parameters — required*
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `base_dn` | string | Base DN for the profile search. Dogtag: directory root suffix (e.g. `dc=example,dc=com`). IPA: `o=ipaca`. |
+
+*Authentication — choose one method*
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `bind_dn` | string | absent | Bind DN for LDAP simple bind. Required when using simple authentication. |
+| `bind_password_file` | string | absent | Path to a file containing the simple bind password (trailing newline is stripped). Required when `bind_dn` is set. |
+| `gssapi` | boolean | `false` | Use SASL GSSAPI (Kerberos) authentication. Pre-condition: the process must hold a valid Kerberos TGT in its credential cache. Mutually exclusive with `bind_dn` / `bind_password_file`. |
+
+*TLS*
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `tls_ca_cert_file` | string | absent | Path to a PEM CA certificate used to verify the LDAP server's TLS certificate. When this is set on an `ldap://` URI, STARTTLS is negotiated automatically before any credentials are sent. When set on an `ldaps://` URI, the CA is used for the immediate TLS handshake. When absent, the system trust store is used. |
 
 **Additional `builtin` profile fields**
 
