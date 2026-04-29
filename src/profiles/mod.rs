@@ -35,6 +35,7 @@ pub mod builtin;
 pub mod cfg;
 pub mod dogtag;
 pub mod ipa;
+pub mod ldap_resolve;
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};

@@ -272,9 +272,22 @@ pub struct IpaProviderConfig {
 /// is the expected method for IPA LDAP access.
 #[derive(Debug, Deserialize, Clone)]
 pub struct LdapConfig {
-    /// LDAP URI, e.g. `ldap://host:389`, `ldaps://host:636`,
-    /// `ldap://ipa.example.com:7389`.
-    pub uri: String,
+    // ── Server address(es) ─────────────────────────────────────────────────
+    /// Single LDAP URI (`ldap://host:389`, `ldaps://host:636`).
+    /// Kept for backward compatibility; prefer `uris` for explicit lists.
+    /// Mutually exclusive with `srv_domain`; combined with `uris` if both are set.
+    #[serde(default)]
+    pub uri: Option<String>,
+    /// List of LDAP URIs tried in order for failover.
+    /// `ldap_initialize` receives all of them as a space-separated string and
+    /// tries each in turn.  Mutually exclusive with `srv_domain`.
+    #[serde(default)]
+    pub uris: Vec<String>,
+    /// Discover LDAP servers via DNS SRV records (`_ldap._tcp.{srv_domain}`).
+    /// Resolved records are sorted by RFC 2782 priority/weight and appended
+    /// after any explicitly listed `uris`.
+    pub srv_domain: Option<String>,
+
     /// LDAP base DN under which profiles are searched.
     /// Dogtag: directory root suffix (e.g. `dc=example,dc=com`).
     /// IPA:    `o=ipaca`.
