@@ -31,6 +31,10 @@ build = [
     "sqlite-devel",
     "clang-devel",
     "pkgconfig(libsqlite3)",
+    # LDAP / SASL / GSSAPI (akamu-ldap FFI crate)
+    "openldap-devel",
+    "cyrus-sasl-devel",
+    "krb5-devel",
 ]
 
 [tests]

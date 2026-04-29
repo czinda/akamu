@@ -82,6 +82,10 @@ BuildRequires:  pkgconfig(openssl)
 BuildRequires:  openssl-devel
 BuildRequires:  pkgconfig(sqlite3)
 BuildRequires:  sqlite-devel
+# LDAP / SASL / GSSAPI — required by the akamu-ldap FFI crate
+BuildRequires:  openldap-devel
+BuildRequires:  cyrus-sasl-devel
+BuildRequires:  krb5-devel
 # Optional backend: PostgreSQL (libpq)
 %if %{with backend_postgres}
 BuildRequires:  pkgconfig(libpq)
