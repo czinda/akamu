@@ -167,7 +167,7 @@ fn generate_self_signed_cert(
         .issuer_name(&name_der)
         .subject_name(&name_der)
         .public_key_der(&spki_der)
-        .serial_number(synta::Integer::from_i64(1))
+        .serial_number(synta::Integer::from_i64(now_unix()))
         .not_valid_before(not_before)
         .not_valid_after(not_after)
         .add_extension_oid(synta_certificate::oids::KEY_USAGE, true, &ku_der)
