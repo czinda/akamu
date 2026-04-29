@@ -45,6 +45,17 @@ const ML_DSA_44_PUBKEY_LEN: usize = 1312;
 /// ML-DSA-44 signature length per FIPS 204.
 const ML_DSA_44_SIG_LEN: usize = 2420;
 
+// ── C2SP signed-note type bytes ───────────────────────────────────────────────
+
+/// Ed25519 primary log operator (type 0x01).
+const NOTE_TYPE_ED25519_OPERATOR: u8 = 0x01;
+/// ECDSA P-256/P-384/P-521 (type 0x02; applies to both operator and cosigner roles).
+const NOTE_TYPE_ECDSA: u8 = 0x02;
+/// Timestamped Ed25519 cosignature (type 0x04).
+const NOTE_TYPE_ED25519_COSIGNER: u8 = 0x04;
+/// Timestamped ML-DSA-44 cosignature (type 0x06).
+const NOTE_TYPE_ML_DSA_44_COSIGNER: u8 = 0x06;
+
 // ── Signing role ──────────────────────────────────────────────────────────────
 
 /// Whether the key is used as the primary log operator or as an external cosigner.
@@ -88,17 +99,21 @@ fn key_id_from_bytes(
     let hash = default_data_hasher()
         .hash_data("sha256", &input)
         .map_err(|e| AcmeError::Mtc(format!("SHA-256 for key ID: {e}")))?;
-    Ok(hash[..4].try_into().unwrap())
+    hash.get(..4)
+        .ok_or_else(|| AcmeError::Mtc("SHA-256 output too short for key ID".into()))?
+        .try_into()
+        .map_err(|_| AcmeError::Mtc("key ID conversion failed".into()))
 }
 
 // ── Key ID computation ────────────────────────────────────────────────────────
 
-/// Compute the 4-byte C2SP signed-note key ID for the given private key and role.
+/// Compute the C2SP signed-note type byte and 4-byte key ID for the given key and role.
 ///
-/// - Ed25519 + `LogOperator`  → type 0x01: `SHA-256(name || LF || 0x01 || 32-byte pubkey)[:4]`
-/// - Ed25519 + `Cosigner`     → type 0x04: `SHA-256(name || LF || 0x04 || 32-byte pubkey)[:4]`
-/// - ECDSA (any role)         → type 0x02: `SHA-256(SPKI_DER)[:4]`
-/// - ML-DSA-44 + `Cosigner`  → type 0x06: `SHA-256(name || LF || 0x06 || 1312-byte pubkey)[:4]`
+/// Returns `(type_byte, key_id)`:
+/// - Ed25519 + `LogOperator`  → `(NOTE_TYPE_ED25519_OPERATOR, SHA-256(name||LF||0x01||pubkey)[:4])`
+/// - Ed25519 + `Cosigner`     → `(NOTE_TYPE_ED25519_COSIGNER, SHA-256(name||LF||0x04||pubkey)[:4])`
+/// - ECDSA (any role)         → `(NOTE_TYPE_ECDSA, SHA-256(SPKI_DER)[:4])`
+/// - ML-DSA-44 + `Cosigner`  → `(NOTE_TYPE_ML_DSA_44_COSIGNER, SHA-256(name||LF||0x06||pubkey)[:4])`
 ///
 /// Returns an error for Ed448, RSA, ML-DSA-44 as `LogOperator`, or any other
 /// key type without a defined C2SP signed-note type byte.
@@ -106,7 +121,7 @@ pub fn compute_key_id(
     key_name: &str,
     key: &synta_certificate::BackendPrivateKey,
     role: NoteSigningRole,
-) -> Result<[u8; 4], AcmeError> {
+) -> Result<(u8, [u8; 4]), AcmeError> {
     let pub_key = key
         .public_key()
         .map_err(|e| AcmeError::Mtc(format!("get public key for key ID: {e}")))?;
@@ -114,7 +129,6 @@ pub fn compute_key_id(
 
     match (key.key_type(), role) {
         ("ed25519", NoteSigningRole::LogOperator) => {
-            // Type 0x01: SHA-256(name || LF || 0x01 || 32-byte Ed25519 pubkey)[:4]
             let raw = raw_pubkey_from_spki(spki_der)?;
             if raw.len() != 32 {
                 return Err(AcmeError::Mtc(format!(
@@ -122,10 +136,12 @@ pub fn compute_key_id(
                     raw.len()
                 )));
             }
-            key_id_from_bytes(key_name, 0x01, &raw)
+            Ok((
+                NOTE_TYPE_ED25519_OPERATOR,
+                key_id_from_bytes(key_name, NOTE_TYPE_ED25519_OPERATOR, &raw)?,
+            ))
         }
         ("ed25519", NoteSigningRole::Cosigner) => {
-            // Type 0x04: SHA-256(name || LF || 0x04 || 32-byte Ed25519 pubkey)[:4]
             let raw = raw_pubkey_from_spki(spki_der)?;
             if raw.len() != 32 {
                 return Err(AcmeError::Mtc(format!(
@@ -133,18 +149,24 @@ pub fn compute_key_id(
                     raw.len()
                 )));
             }
-            key_id_from_bytes(key_name, 0x04, &raw)
+            Ok((
+                NOTE_TYPE_ED25519_COSIGNER,
+                key_id_from_bytes(key_name, NOTE_TYPE_ED25519_COSIGNER, &raw)?,
+            ))
         }
         ("ec", _) => {
-            // Type 0x02: SHA-256(SPKI_DER)[:4]
             // Applies to both LogOperator and Cosigner roles (no ECDSA cosig type defined).
             let hash = default_data_hasher()
                 .hash_data("sha256", spki_der)
                 .map_err(|e| AcmeError::Mtc(format!("SHA-256 ECDSA SPKI: {e}")))?;
-            Ok(hash[..4].try_into().unwrap())
+            let key_id = hash
+                .get(..4)
+                .ok_or_else(|| AcmeError::Mtc("SHA-256 output too short for key ID".into()))?
+                .try_into()
+                .map_err(|_| AcmeError::Mtc("key ID conversion failed".into()))?;
+            Ok((NOTE_TYPE_ECDSA, key_id))
         }
         ("ml-dsa-44", NoteSigningRole::Cosigner) => {
-            // Type 0x06: SHA-256(name || LF || 0x06 || 1312-byte ML-DSA-44 pubkey)[:4]
             let raw = raw_pubkey_from_spki(spki_der)?;
             if raw.len() != ML_DSA_44_PUBKEY_LEN {
                 return Err(AcmeError::Mtc(format!(
@@ -153,7 +175,10 @@ pub fn compute_key_id(
                     raw.len()
                 )));
             }
-            key_id_from_bytes(key_name, 0x06, &raw)
+            Ok((
+                NOTE_TYPE_ML_DSA_44_COSIGNER,
+                key_id_from_bytes(key_name, NOTE_TYPE_ML_DSA_44_COSIGNER, &raw)?,
+            ))
         }
         ("ml-dsa-44", NoteSigningRole::LogOperator) => Err(AcmeError::Mtc(
             "ML-DSA-44 is not a valid primary log operator key type in C2SP signed-note; \
@@ -221,10 +246,12 @@ pub fn sign_checkpoint_as_operator(
     root_hash: &[u8],
 ) -> Result<String, AcmeError> {
     let body = checkpoint_note_body(origin, tree_size, root_hash);
-    let key_id = compute_key_id(key_name, key, NoteSigningRole::LogOperator)?;
+    let (type_byte, key_id) = compute_key_id(key_name, key, NoteSigningRole::LogOperator)?;
     let sig = raw_sign(key, hash_alg, body.as_bytes())?;
 
-    let mut blob = Vec::with_capacity(4 + sig.len());
+    // Wire format: type_byte(1) || key_id(4) || signature
+    let mut blob = Vec::with_capacity(1 + 4 + sig.len());
+    blob.push(type_byte);
     blob.extend_from_slice(&key_id);
     blob.extend_from_slice(&sig);
 
@@ -271,7 +298,7 @@ pub fn sign_checkpoint_as_cosigner(
     timestamp_unix: u64,
 ) -> Result<String, AcmeError> {
     let body = checkpoint_note_body(origin, tree_size, root_hash);
-    let key_id = compute_key_id(cosigner_name, key, NoteSigningRole::Cosigner)?;
+    let (type_byte, key_id) = compute_key_id(cosigner_name, key, NoteSigningRole::Cosigner)?;
 
     match key.key_type() {
         "ed25519" => {
@@ -279,8 +306,9 @@ pub fn sign_checkpoint_as_cosigner(
             let msg = format!("cosignature/v1\ntime {timestamp_unix}\n{body}");
             let sig = raw_sign(key, hash_alg, msg.as_bytes())?;
 
-            // Blob: 4-byte key_id || u64 timestamp (big-endian) || 64-byte Ed25519 sig
-            let mut blob = Vec::with_capacity(4 + 8 + sig.len());
+            // Wire format: type_byte(1) || key_id(4) || timestamp_be(8) || sig(64)
+            let mut blob = Vec::with_capacity(1 + 4 + 8 + sig.len());
+            blob.push(type_byte);
             blob.extend_from_slice(&key_id);
             blob.extend_from_slice(&timestamp_unix.to_be_bytes());
             blob.extend_from_slice(&sig);
@@ -292,9 +320,11 @@ pub fn sign_checkpoint_as_cosigner(
         }
         "ec" => {
             // ECDSA has no dedicated cosignature type; use primary-operator format (0x02).
-            // This follows the same signed-note structure as type 0x01/0x02.
+            // `timestamp_unix` is not embedded — ECDSA cosignatures carry no timestamp.
             let sig = raw_sign(key, hash_alg, body.as_bytes())?;
-            let mut blob = Vec::with_capacity(4 + sig.len());
+            // Wire format: type_byte(1) || key_id(4) || sig
+            let mut blob = Vec::with_capacity(1 + 4 + sig.len());
+            blob.push(type_byte);
             blob.extend_from_slice(&key_id);
             blob.extend_from_slice(&sig);
             Ok(format!(
@@ -321,8 +351,9 @@ pub fn sign_checkpoint_as_cosigner(
                 )));
             }
 
-            // Blob: 4-byte key_id || u64 timestamp (big-endian) || 2420-byte ML-DSA-44 sig
-            let mut blob = Vec::with_capacity(4 + 8 + sig.len());
+            // Wire format: type_byte(1) || key_id(4) || timestamp_be(8) || sig(2420)
+            let mut blob = Vec::with_capacity(1 + 4 + 8 + sig.len());
+            blob.push(type_byte);
             blob.extend_from_slice(&key_id);
             blob.extend_from_slice(&timestamp_unix.to_be_bytes());
             blob.extend_from_slice(&sig);
@@ -676,14 +707,18 @@ mod tests {
     #[test]
     fn compute_key_id_ed25519_operator() {
         let key = BackendPrivateKey::generate_ed25519().unwrap();
-        let id = compute_key_id("log.example.com", &key, NoteSigningRole::LogOperator).unwrap();
+        let (type_byte, id) =
+            compute_key_id("log.example.com", &key, NoteSigningRole::LogOperator).unwrap();
+        assert_eq!(type_byte, NOTE_TYPE_ED25519_OPERATOR);
         assert_eq!(id.len(), 4);
     }
 
     #[test]
     fn compute_key_id_ed25519_cosigner() {
         let key = BackendPrivateKey::generate_ed25519().unwrap();
-        let id = compute_key_id("log.example.com", &key, NoteSigningRole::Cosigner).unwrap();
+        let (type_byte, id) =
+            compute_key_id("log.example.com", &key, NoteSigningRole::Cosigner).unwrap();
+        assert_eq!(type_byte, NOTE_TYPE_ED25519_COSIGNER);
         assert_eq!(id.len(), 4);
     }
 
@@ -691,15 +726,19 @@ mod tests {
     fn compute_key_id_ed25519_operator_vs_cosigner_differ() {
         // Same key, same name — but type byte 0x01 ≠ 0x04, so IDs differ.
         let key = BackendPrivateKey::generate_ed25519().unwrap();
-        let op_id = compute_key_id("log.example.com", &key, NoteSigningRole::LogOperator).unwrap();
-        let co_id = compute_key_id("log.example.com", &key, NoteSigningRole::Cosigner).unwrap();
+        let (_, op_id) =
+            compute_key_id("log.example.com", &key, NoteSigningRole::LogOperator).unwrap();
+        let (_, co_id) =
+            compute_key_id("log.example.com", &key, NoteSigningRole::Cosigner).unwrap();
         assert_ne!(op_id, co_id);
     }
 
     #[test]
     fn compute_key_id_ecdsa_p256() {
         let key = BackendPrivateKey::generate_ec("P-256").unwrap();
-        let id = compute_key_id("log.example.com", &key, NoteSigningRole::LogOperator).unwrap();
+        let (type_byte, id) =
+            compute_key_id("log.example.com", &key, NoteSigningRole::LogOperator).unwrap();
+        assert_eq!(type_byte, NOTE_TYPE_ECDSA);
         assert_eq!(id.len(), 4);
     }
 
@@ -707,8 +746,10 @@ mod tests {
     fn compute_key_id_ecdsa_independent_of_name_and_role() {
         // Type 0x02: SHA-256(SPKI_DER)[:4] — ignores key_name and role.
         let key = BackendPrivateKey::generate_ec("P-256").unwrap();
-        let id_a = compute_key_id("log-a.example.com", &key, NoteSigningRole::LogOperator).unwrap();
-        let id_b = compute_key_id("log-b.example.com", &key, NoteSigningRole::Cosigner).unwrap();
+        let (_, id_a) =
+            compute_key_id("log-a.example.com", &key, NoteSigningRole::LogOperator).unwrap();
+        let (_, id_b) =
+            compute_key_id("log-b.example.com", &key, NoteSigningRole::Cosigner).unwrap();
         assert_eq!(id_a, id_b);
     }
 
@@ -716,8 +757,10 @@ mod tests {
     fn compute_key_id_ed25519_differs_by_name() {
         // Type 0x01: name is hashed in, so different names → different IDs.
         let key = BackendPrivateKey::generate_ed25519().unwrap();
-        let id_a = compute_key_id("log-a.example.com", &key, NoteSigningRole::LogOperator).unwrap();
-        let id_b = compute_key_id("log-b.example.com", &key, NoteSigningRole::LogOperator).unwrap();
+        let (_, id_a) =
+            compute_key_id("log-a.example.com", &key, NoteSigningRole::LogOperator).unwrap();
+        let (_, id_b) =
+            compute_key_id("log-b.example.com", &key, NoteSigningRole::LogOperator).unwrap();
         assert_ne!(id_a, id_b);
     }
 
@@ -736,7 +779,9 @@ mod tests {
     #[test]
     fn compute_key_id_mldsa44_as_cosigner() {
         let key = BackendPrivateKey::generate_ml_dsa("ML-DSA-44").unwrap();
-        let id = compute_key_id("cosigner.example.com", &key, NoteSigningRole::Cosigner).unwrap();
+        let (type_byte, id) =
+            compute_key_id("cosigner.example.com", &key, NoteSigningRole::Cosigner).unwrap();
+        assert_eq!(type_byte, NOTE_TYPE_ML_DSA_44_COSIGNER);
         assert_eq!(id.len(), 4);
     }
 
@@ -799,8 +844,9 @@ mod tests {
         let sig_line = note.lines().find(|l| l.starts_with("\u{2014}")).unwrap();
         let b64 = sig_line.splitn(3, ' ').nth(2).unwrap();
         let blob = BASE64.decode(b64).unwrap();
-        // blob[0..4] = key_id, blob[4..12] = timestamp BE
-        let ts_bytes: [u8; 8] = blob[4..12].try_into().unwrap();
+        // blob = type_byte(1) || key_id(4) || timestamp_be(8) || sig(64)
+        assert_eq!(blob[0], NOTE_TYPE_ED25519_COSIGNER);
+        let ts_bytes: [u8; 8] = blob[5..13].try_into().unwrap();
         assert_eq!(u64::from_be_bytes(ts_bytes), ts);
     }
 
@@ -821,9 +867,10 @@ mod tests {
         let sig_line = note.lines().find(|l| l.starts_with("\u{2014}")).unwrap();
         let b64 = sig_line.splitn(3, ' ').nth(2).unwrap();
         let blob = BASE64.decode(b64).unwrap();
-        // blob = key_id(4) || timestamp_be(8) || sig(2420) = 2432 bytes total
-        assert_eq!(blob.len(), 4 + 8 + ML_DSA_44_SIG_LEN);
-        let ts_bytes: [u8; 8] = blob[4..12].try_into().unwrap();
+        // blob = type_byte(1) || key_id(4) || timestamp_be(8) || sig(2420) = 2433 bytes
+        assert_eq!(blob.len(), 1 + 4 + 8 + ML_DSA_44_SIG_LEN);
+        assert_eq!(blob[0], NOTE_TYPE_ML_DSA_44_COSIGNER);
+        let ts_bytes: [u8; 8] = blob[5..13].try_into().unwrap();
         assert_eq!(u64::from_be_bytes(ts_bytes), ts);
     }
 
