@@ -44,6 +44,19 @@ pub async fn get_ocsp(
     Ok(ocsp_response(ocsp_der))
 }
 
+/// Maximum DER body size accepted for an OCSP POST request.
+///
+/// An OCSPRequest for a single certificate is < 200 bytes; 64 KiB is
+/// generous enough to cover any realistic request while blocking amplification
+/// attacks from unauthenticated callers.
+const MAX_OCSP_POST_BYTES: usize = 65_536;
+
+/// Maximum number of `Request` entries processed in one OCSPRequest.
+///
+/// RFC 6960 does not impose a limit, but serving thousands of DB lookups per
+/// unauthenticated request can saturate the connection pool.
+const MAX_OCSP_ENTRIES: usize = 10;
+
 /// POST /ca/ocsp
 ///
 /// Body is a DER-encoded OCSPRequest; `Content-Type: application/ocsp-request`.
@@ -51,6 +64,12 @@ pub async fn post_ocsp(
     State(state): State<Arc<AppState>>,
     body: Bytes,
 ) -> Result<Response, AcmeError> {
+    if body.len() > MAX_OCSP_POST_BYTES {
+        return Err(AcmeError::BadRequest(format!(
+            "OCSP POST body too large ({} bytes; max {MAX_OCSP_POST_BYTES})",
+            body.len()
+        )));
+    }
     let ocsp_der = handle_ocsp_request(&body, &state).await?;
     Ok(ocsp_response(ocsp_der))
 }
@@ -110,6 +129,13 @@ async fn handle_ocsp_request(der: &[u8], state: &AppState) -> Result<Vec<u8>, Ac
             .collect::<Result<Vec<_>, _>>()?
         // `req` dropped here — no borrowed data escapes this block
     };
+
+    if entries.len() > MAX_OCSP_ENTRIES {
+        return Err(AcmeError::BadRequest(format!(
+            "OCSPRequest contains {} entries; max allowed is {MAX_OCSP_ENTRIES}",
+            entries.len()
+        )));
+    }
 
     let now = unix_now();
     let this_update = unix_to_generalized_time(now);
