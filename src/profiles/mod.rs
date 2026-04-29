@@ -338,9 +338,22 @@ async fn load_all_providers(
         };
 
         let count = loaded.len();
-        // Earlier providers take precedence — do not overwrite.
         for (id, entry) in loaded {
-            merged.entry(id).or_insert(entry);
+            use std::collections::hash_map::Entry;
+            match merged.entry(id.clone()) {
+                Entry::Vacant(e) => {
+                    e.insert(entry);
+                }
+                Entry::Occupied(_) => {
+                    tracing::warn!(
+                        "profiles: profile '{}' from provider '{}' skipped — \
+                         already loaded by an earlier provider; \
+                         keep profile IDs unique across providers to avoid ambiguity",
+                        id,
+                        provider_name,
+                    );
+                }
+            }
         }
         tracing::info!(
             "profiles: provider '{}' contributed {} profile(s)",
