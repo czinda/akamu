@@ -194,6 +194,51 @@ Returns 404 when:
 - No landmark with that sequence number exists
 - The landmark certificate has not yet been built
 
+## C2SP tlog-tiles API
+
+When `[mtc.signing_key]` is configured, three additional endpoints implement the [C2SP tlog-tiles](https://c2sp.org/tlog-tiles) and [C2SP signed-note](https://c2sp.org/signed-note) specifications, enabling compatibility with transparency-log clients that speak the tlog-tiles protocol.
+
+All three endpoints return 404 when MTC is disabled. `GET /acme/mtc/tlog/checkpoint` and `GET /acme/mtc/tlog/cosignature` additionally require a signing key to be configured; without one they return 503.
+
+### `GET /acme/mtc/tlog/checkpoint`
+
+Returns the current tree as a C2SP signed-note checkpoint signed by the MTC signing key acting as the primary log operator.
+
+- Ed25519 key: signature type 0x01.
+- ECDSA key: signature type 0x02.
+
+Response `Content-Type` is `text/plain; charset=utf-8`. The note body format is:
+
+```
+<log origin>
+<tree_size>
+<base64(root_hash)>
+
+— <key_name> <base64(key_id || signature)>
+```
+
+### `GET /acme/mtc/tlog/tile/{*path}`
+
+Serves a C2SP hash tile. The path component encodes `{level}/{tile_index_path}[.p/{width}]`:
+
+- `level` is 0 for leaf-hash tiles, or L > 0 for Merkle subtree roots (covering 256^L leaves each).
+- `tile_index_path` is the C2SP multi-level decimal encoding (e.g. `000`, `x001/234`).
+- The optional `.p/{width}` suffix requests a partial tile with fewer than 256 entries.
+
+Response `Content-Type` is `application/octet-stream`; each hash entry is 32 bytes for SHA-256.
+
+Returns 404 when the tile is entirely beyond the current log size. Returns 501 for `tile/entries/...` paths because Akāmu stores only leaf hashes, not raw entry data.
+
+### `GET /acme/mtc/tlog/cosignature`
+
+Returns a C2SP cosignature note for the current checkpoint, produced by the MTC signing key acting as a cosigner. The current POSIX timestamp is embedded in the signature blob.
+
+- Ed25519 key: cosignature type 0x04 (`cosignature/v1` signed-note format).
+- ML-DSA-44 key: cosignature type 0x06 (`subtree/v1` binary cosigned message).
+- ECDSA key: uses the operator format (type 0x02) because no dedicated ECDSA cosignature type is defined by C2SP.
+
+Response `Content-Type` is `text/plain; charset=utf-8`.
+
 ## Landmark management
 
 A *landmark* is a frozen snapshot of the tree size at a point in time. Relying parties use landmarks to anchor inclusion proofs across the log's lifetime without tracking every checkpoint.

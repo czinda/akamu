@@ -203,6 +203,7 @@ All integration test files live under `tests/`.  Each builds a full `AppState` w
 | `tests/dns_persist_flow.rs` | Full dns-persist-01 challenge flow against a local DNS stub server |
 | `tests/mtc_cosigner_flow.rs` | End-to-end ACME issuance followed by MTC checkpoint production, cosignature gathering from an inline cosigner HTTP server, and `StandaloneCertificate` verification |
 | `tests/tls_server.rs` | Helper module providing a local TLS server for tls-alpn-01 integration tests |
+| `tests/mtc_playground_compat.rs` | Wire-compatibility tests for the C2SP tlog-tiles and signed-note implementation (RFC 9162 Merkle hashing, tile path encoding, checkpoint/cosignature note format, live HTTP endpoint smoke tests); optional DigiCert playground integration gated behind `MTC_PLAYGROUND_DIR` env var and `--ignored` |
 
 ## Adding new tests
 

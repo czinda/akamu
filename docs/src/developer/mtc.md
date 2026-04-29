@@ -100,3 +100,36 @@ The Merkle root is computed from all leaf hashes using the RFC 6962 / synta-mtc 
 - For a log with one or more leaves the root is the SHA-256 Merkle root of all leaf hashes.
 
 The computation is performed under the `SharedLog` mutex and is exposed to handlers by `src/mtc/log.rs::proof_and_tree_size` and `tree_size`.
+
+## C2SP tlog-tiles module (`src/mtc/tlog.rs`)
+
+`src/mtc/tlog.rs` implements the C2SP tlog-tiles, signed-note, and tlog-cosignature specifications on top of the existing `DiskBackedLog` storage.
+
+### Signed-note key IDs
+
+Key IDs are 4-byte prefixes derived from `SHA-256` of a type-specific input:
+
+| Key type | Role | C2SP type byte | Key ID formula |
+|---|---|---|---|
+| Ed25519 | Log operator | 0x01 | `SHA-256(name \| LF \| 0x01 \| 32-byte pubkey)[:4]` |
+| ECDSA | Log operator or cosigner | 0x02 | `SHA-256(SPKI_DER)[:4]` |
+| Ed25519 | Cosigner | 0x04 | `SHA-256(name \| LF \| 0x04 \| 32-byte pubkey)[:4]` |
+| ML-DSA-44 | Cosigner | 0x06 | `SHA-256(name \| LF \| 0x06 \| 1312-byte pubkey)[:4]` |
+
+ML-DSA-44 as a primary log operator key and Ed448/RSA keys are rejected — they have no assigned C2SP signed-note type byte.
+
+### Hash tiles
+
+Level-0 tiles are leaf hashes read directly from the `DiskBackedLog` via the `read_hash_range` wrapper in `src/mtc/log.rs`. Level-L tiles are computed by applying `MTH` (RFC 9162 §2) recursively over 256 level-(L-1) entries. Partial tiles (`.p/{width}` suffix in the URL) return fewer than 256 entries when the log ends mid-tile.
+
+### HTTP route wiring
+
+The three tlog-tiles endpoints are registered in `src/routes/mod.rs` and dispatched to handlers in `src/routes/mtc.rs`:
+
+| Endpoint | Handler |
+|---|---|
+| `GET /acme/mtc/tlog/checkpoint` | `mtc::get_tlog_checkpoint` |
+| `GET /acme/mtc/tlog/tile/{*path}` | `mtc::get_tlog_tile` |
+| `GET /acme/mtc/tlog/cosignature` | `mtc::get_tlog_cosignature` |
+
+The log origin string used in checkpoint notes is `{base_url}/acme/mtc/tlog`.
