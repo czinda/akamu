@@ -105,6 +105,10 @@ pub enum AcmeError {
     #[error("bad request: {0}")]
     BadRequest(String),
 
+    // ── Server availability ───────────────────────────────────────────────────
+    #[error("service unavailable: {0}")]
+    ServiceUnavailable(String),
+
     // ── Internal errors ───────────────────────────────────────────────────────
     #[error("database error: {0}")]
     Database(String),
@@ -212,6 +216,7 @@ impl AcmeError {
             AcmeError::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             AcmeError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             AcmeError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            AcmeError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             AcmeError::ExternalAccountRequired => StatusCode::FORBIDDEN,
             AcmeError::AutoRenewalCanceled => StatusCode::FORBIDDEN,
             AcmeError::AutoRenewalCancellationInvalid => StatusCode::BAD_REQUEST,

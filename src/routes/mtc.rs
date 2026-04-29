@@ -160,7 +160,7 @@ pub async fn get_tlog_checkpoint(
         .mtc
         .signing_key
         .as_ref()
-        .ok_or_else(|| AcmeError::Internal("MTC signing key not configured".into()))?;
+        .ok_or_else(|| AcmeError::ServiceUnavailable("MTC signing key not configured".into()))?;
 
     let origin = format!("{}/acme/mtc/tlog", state.config.base_url);
     let key_name = origin.clone();
@@ -241,7 +241,7 @@ pub async fn get_tlog_cosignature(
         .mtc
         .signing_key
         .as_ref()
-        .ok_or_else(|| AcmeError::Internal("MTC signing key not configured".into()))?;
+        .ok_or_else(|| AcmeError::ServiceUnavailable("MTC signing key not configured".into()))?;
 
     let origin = format!("{}/acme/mtc/tlog", state.config.base_url);
     let key_name = origin.clone();
