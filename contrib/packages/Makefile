@@ -32,13 +32,13 @@ SPEC_TMP := akamu.spec
 NAME    := $(shell awk '/^Name:/{print $$2; exit}' $(SPEC))
 VERSION := $(shell awk '/^Version:/{print $$2; exit}' $(SPEC))
 
+# Absolute path to the git repository root (two levels above this Makefile).
+REPOROOT := $(abspath $(dir $(abspath $(lastword $(MAKEFILE_LIST))))/../..)
+
 # Resolved synta version from Cargo.lock (the lock file pins the exact version
 # selected by the resolver, unlike Cargo.toml which only has a requirement).
 # Used to locate the vendored synta directory that carries the asn1/ schemas.
 SYNTA_VERSION := $(shell awk '/^\[\[package\]\]/{p=0} /^name = "synta"$$/{p=1} p && /^version =/{gsub(/[" ]/, "", $$3); print $$3; exit}' "$(REPOROOT)/Cargo.lock")
-
-# Absolute path to the git repository root (two levels above this Makefile).
-REPOROOT := $(abspath $(dir $(abspath $(lastword $(MAKEFILE_LIST))))/../..)
 
 TARBALL        := $(NAME)-$(VERSION).tar.gz
 VENDOR_TARBALL := $(NAME)-$(VERSION)-vendor.tar.gz
