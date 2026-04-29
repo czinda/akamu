@@ -59,11 +59,11 @@ async fn validate_inner(
     let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls_native_ossl::default_provider(),
     ))
-        .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
-        .map_err(|e| AcmeError::Tls(format!("rustls protocol config: {e}")))?
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(AcceptAnyCert))
-        .with_no_client_auth();
+    .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
+    .map_err(|e| AcmeError::Tls(format!("rustls protocol config: {e}")))?
+    .dangerous()
+    .with_custom_certificate_verifier(Arc::new(AcceptAnyCert))
+    .with_no_client_auth();
 
     config.alpn_protocols = vec![b"acme-tls/1".to_vec()];
 
