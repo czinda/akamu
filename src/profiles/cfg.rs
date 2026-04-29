@@ -121,6 +121,7 @@ fn translate(
     let mut extended_key_usages: Vec<String> = vec!["server_auth".to_string()];
     let mut crl_url = ca.crl_url.clone();
     let mut ocsp_url = ca.ocsp_url.clone();
+    let mut certificate_policies: Vec<(String, Option<String>)> = vec![];
     let mut key_usage_seen = false;
     let mut eku_seen = false;
 
@@ -262,6 +263,37 @@ fn translate(
                 }
             }
 
+            // Certificate Policies extension.
+            "certificatePoliciesExtDefaultImpl" => {
+                let num_key = format!("{pfx}.num");
+                if let Some(num_str) = props.get(&num_key) {
+                    if let Ok(count) = num_str.parse::<usize>() {
+                        for i in 0..count {
+                            let oid_key = format!("{pfx}.policyId.{i}");
+                            if let Some(oid) = props.get(&oid_key) {
+                                let oid = oid.trim().to_string();
+                                if oid.is_empty() {
+                                    continue;
+                                }
+                                let cps_enabled = props
+                                    .get(&format!("{pfx}.PolicyQualifiers{i}_0.CPSURI.enable"))
+                                    .map(|v| v == "true")
+                                    .unwrap_or(false);
+                                let cps_uri = if cps_enabled {
+                                    props
+                                        .get(&format!("{pfx}.PolicyQualifiers{i}_0.CPSURI.value"))
+                                        .map(|s| s.trim().to_string())
+                                        .filter(|s| !s.is_empty())
+                                } else {
+                                    None
+                                };
+                                certificate_policies.push((oid, cps_uri));
+                            }
+                        }
+                    }
+                }
+            }
+
             // All other class IDs (subjectNameDefaultImpl, userKeyDefaultImpl,
             // authorityKeyIdentifierExtDefaultImpl, subjectAltNameExtDefaultImpl,
             // etc.) either have no bearing on CertificateParameters or are
@@ -297,10 +329,7 @@ fn translate(
         // Dogtag profile files express no key-type constraint on the subscriber
         // CSR; any algorithm is accepted by akamu's CSR validation logic.
         allowed_key_types: vec![],
-        // `certificatePoliciesExtDefaultImpl` is not yet translated.
-        // When needed, parse `policyset.<set>.<n>.default.params.PolicyQualifiers*`
-        // from the properties map and populate this field accordingly.
-        certificate_policies: vec![],
+        certificate_policies,
         // Dogtag profiles always produce X.509; MTC issuance is builtin-only.
         issue_as_mtc: false,
         // Authorization controls are builtin-only; Dogtag/IPA profiles impose no
@@ -429,6 +458,34 @@ policyset.serverCertSet.4.default.params.exKeyUsageOIDs=1.3.6.1.5.5.7.3.1,1.3.6.
     fn translate_missing_policyset_list_returns_error() {
         let bad = "name=test\n";
         assert!(parse_and_translate(bad, "bad", &default_ca()).is_err());
+    }
+
+    #[test]
+    fn translate_certificate_policies_with_and_without_cps() {
+        let ca = default_ca();
+        let cfg_text = "\
+name=Policy Test\n\
+policyset.list=s\n\
+policyset.s.list=1\n\
+policyset.s.1.default.class_id=certificatePoliciesExtDefaultImpl\n\
+policyset.s.1.default.params.num=2\n\
+policyset.s.1.default.params.policyId.0=1.2.3.4\n\
+policyset.s.1.default.params.PolicyQualifiers0_0.CPSURI.enable=true\n\
+policyset.s.1.default.params.PolicyQualifiers0_0.CPSURI.value=https://ca.example.com/cps\n\
+policyset.s.1.default.params.policyId.1=2.16.840.1.101.3.2.1.3.13\n\
+policyset.s.1.default.params.PolicyQualifiers1_0.CPSURI.enable=false\n";
+        let (_, params) = parse_and_translate(cfg_text, "policy-test", &ca).unwrap();
+        assert_eq!(params.certificate_policies.len(), 2);
+        assert_eq!(params.certificate_policies[0].0, "1.2.3.4");
+        assert_eq!(
+            params.certificate_policies[0].1.as_deref(),
+            Some("https://ca.example.com/cps")
+        );
+        assert_eq!(
+            params.certificate_policies[1].0,
+            "2.16.840.1.101.3.2.1.3.13"
+        );
+        assert!(params.certificate_policies[1].1.is_none());
     }
 
     #[test]
