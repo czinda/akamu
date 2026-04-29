@@ -29,7 +29,7 @@
 use std::collections::HashMap;
 
 use crate::config::IpaProviderConfig;
-use crate::profiles::{CaDefaults, CertificateParameters};
+use crate::profiles::{cfg, CaDefaults, CertificateParameters};
 
 /// Load profiles from an IPA / IPAThinCA provider.
 ///
@@ -61,54 +61,166 @@ pub async fn load_ipa(
 
 // ── LDAP loader ───────────────────────────────────────────────────────────────
 
-/// Load profiles from the IPA Dogtag LDAP store via GSSAPI.
+/// Load profiles from the IPA-embedded Dogtag LDAP store.
 ///
-/// When fully implemented this function will perform a one-level LDAP search
-/// against the IPA-embedded Dogtag LDAP instance (default port 7389):
+/// Performs a one-level LDAP search:
 ///
 /// ```text
-/// base:   ou=certificateProfiles,ou=ca,o=ipaca
+/// base:   ou=certificateProfiles,ou=ca,<base_dn>   (typically o=ipaca)
 /// scope:  one
 /// filter: (objectClass=certProfile)
 /// attrs:  cn, certProfileConfig
 /// ```
 ///
-/// The `certProfileConfig` attribute contains the raw `.cfg` file bytes, which
-/// are parsed with [`crate::profiles::cfg::parse_and_translate`].
-///
-/// Authentication is SASL GSSAPI (Kerberos).  When `keytab_file` and
-/// `principal` are set in [`LdapConfig`][crate::config::LdapConfig], a TGT
-/// is obtained from the keytab before connecting; otherwise the current
-/// Kerberos credential cache (ccache) is used.  The ccache is typically
-/// populated by `kinit` or a system keytab renewal daemon.
-///
-/// # Status
-///
-/// **Not yet implemented.**  GSSAPI LDAP requires an async LDAP client
-/// (e.g. the `ldap3` crate) compiled with SASL/GSSAPI support and linked
-/// against `libsasl2` and `libgssapi_krb5`.  These dependencies have not been
-/// added yet; use `profile_dir` as a filesystem fallback in the
-/// `[profiles.providers.<name>]` block.
-/// Calling this function always returns `Err`.
+/// Simple bind is supported when `gssapi = false` (requires `bind_dn` and
+/// `bind_password_file`).  GSSAPI/Kerberos authentication is not yet
+/// implemented; use `profile_dir` as a filesystem fallback when running in a
+/// Kerberos-authenticated environment.
 async fn load_from_ldap(
     provider_name: &str,
     ldap_cfg: &crate::config::LdapConfig,
-    _filter: &[String],
-    _ca: &CaDefaults,
+    filter: &[String],
+    ca: &CaDefaults,
 ) -> Result<HashMap<String, (String, CertificateParameters)>, String> {
-    let container_dn = format!("ou=certificateProfiles,ou=ca,{}", ldap_cfg.base_dn);
-    let auth_method = if ldap_cfg.gssapi {
-        "SASL GSSAPI (Kerberos)"
-    } else {
-        "simple bind"
-    };
-    Err(format!(
-        "profiles provider '{provider_name}' (ipa): \
-         LDAP profile loading is not yet implemented \
-         (would connect to '{}' with {auth_method}, \
-         search '{container_dn}', filter '(objectClass=certProfile)', \
-         attr 'certProfileConfig'); \
-         configure 'profile_dir' as a filesystem fallback",
-        ldap_cfg.uri
-    ))
+    use ldap3::{LdapConnAsync, LdapConnSettings, Scope, SearchEntry};
+
+    if ldap_cfg.gssapi {
+        return Err(format!(
+            "profiles provider '{provider_name}' (ipa): \
+             GSSAPI authentication is not yet implemented; \
+             configure 'bind_dn' and 'bind_password_file' for simple bind, \
+             or use 'profile_dir' as a filesystem fallback"
+        ));
+    }
+
+    let bind_dn = ldap_cfg.bind_dn.as_deref().ok_or_else(|| {
+        format!(
+            "profiles provider '{provider_name}' (ipa): \
+             'bind_dn' is required for simple bind LDAP authentication"
+        )
+    })?;
+    let pw_file = ldap_cfg.bind_password_file.as_deref().ok_or_else(|| {
+        format!(
+            "profiles provider '{provider_name}' (ipa): \
+             'bind_password_file' is required when 'bind_dn' is set"
+        )
+    })?;
+    let bind_password = std::fs::read_to_string(pw_file).map_err(|e| {
+        format!(
+            "profiles provider '{provider_name}': \
+             read bind_password_file '{pw_file}': {e}"
+        )
+    })?;
+    let bind_password = bind_password.trim_end_matches('\n').trim_end_matches('\r');
+
+    let settings = LdapConnSettings::new().set_starttls(ldap_cfg.starttls);
+    let (conn, mut ldap) = LdapConnAsync::with_settings(settings, &ldap_cfg.uri)
+        .await
+        .map_err(|e| {
+            format!(
+                "profiles provider '{provider_name}': \
+                 LDAP connect to '{}': {e}",
+                ldap_cfg.uri
+            )
+        })?;
+    ldap3::drive!(conn);
+
+    ldap.simple_bind(bind_dn, bind_password)
+        .await
+        .map_err(|e| {
+            format!(
+                "profiles provider '{provider_name}': \
+                 LDAP bind as '{bind_dn}': {e}"
+            )
+        })?
+        .success()
+        .map_err(|e| {
+            format!(
+                "profiles provider '{provider_name}': \
+                 LDAP bind as '{bind_dn}': {e}"
+            )
+        })?;
+
+    let base = format!("ou=certificateProfiles,ou=ca,{}", ldap_cfg.base_dn);
+    let (raw_entries, _) = ldap
+        .search(&base, Scope::OneLevel, "(objectClass=certProfile)", vec!["cn", "certProfileConfig"])
+        .await
+        .map_err(|e| {
+            format!(
+                "profiles provider '{provider_name}': \
+                 LDAP search '{base}': {e}"
+            )
+        })?
+        .success()
+        .map_err(|e| {
+            format!(
+                "profiles provider '{provider_name}': \
+                 LDAP search '{base}': {e}"
+            )
+        })?;
+
+    let _ = ldap.unbind().await;
+
+    let mut out = HashMap::new();
+    for raw_entry in raw_entries {
+        let entry = SearchEntry::construct(raw_entry);
+
+        let profile_id = match entry.attrs.get("cn").and_then(|v| v.first()) {
+            Some(id) => id.clone(),
+            None => {
+                tracing::warn!(
+                    "profiles provider '{}': LDAP entry missing 'cn'; skipped",
+                    provider_name
+                );
+                continue;
+            }
+        };
+
+        if !filter.is_empty() && !filter.iter().any(|f| f == &profile_id) {
+            continue;
+        }
+
+        // certProfileConfig is stored as OCTET STRING (binary) in Dogtag LDAP.
+        let cfg_content = if let Some(bytes) =
+            entry.bin_attrs.get("certProfileConfig").and_then(|v| v.first())
+        {
+            match std::str::from_utf8(bytes) {
+                Ok(s) => s.to_string(),
+                Err(_) => {
+                    tracing::warn!(
+                        "profiles provider '{}': certProfileConfig for '{}' \
+                         is not valid UTF-8; skipped",
+                        provider_name,
+                        profile_id
+                    );
+                    continue;
+                }
+            }
+        } else if let Some(s) = entry.attrs.get("certProfileConfig").and_then(|v| v.first()) {
+            s.clone()
+        } else {
+            tracing::warn!(
+                "profiles provider '{}': LDAP entry '{}' missing 'certProfileConfig'; skipped",
+                provider_name,
+                profile_id
+            );
+            continue;
+        };
+
+        match cfg::parse_and_translate(&cfg_content, &profile_id, ca) {
+            Ok((desc, params)) => {
+                out.insert(profile_id, (desc, params));
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "profiles provider '{}': skipping '{}': {}",
+                    provider_name,
+                    profile_id,
+                    e
+                );
+            }
+        }
+    }
+
+    Ok(out)
 }
