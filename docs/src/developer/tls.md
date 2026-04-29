@@ -15,19 +15,19 @@ src/tls/
 
 TLS is optional. When `config.tls.enabled` is `false`, the server uses a plain `axum::serve` call and the entire `src/tls/` subsystem is never entered.
 
-## Crypto provider: `ring`
+## Crypto provider: `rustls-native-ossl`
 
-The rustls `ServerConfig` is constructed with the `ring` default provider:
+The rustls `ServerConfig` is constructed with the `rustls-native-ossl` default provider, which delegates all cryptographic operations to the system OpenSSL library:
 
 ```rust
-let provider = Arc::new(rustls::crypto::ring::default_provider());
+let provider = Arc::new(rustls_native_ossl::default_provider());
 let builder = rustls::ServerConfig::builder_with_provider(provider)
     .with_protocol_versions(&versions)?;
 ```
 
-`ring` handles all classical TLS signature schemes (ECDSA, RSA-PSS, RSA-PKCS1, EdDSA) for both server certificate verification and client certificate `CertificateVerify` in TLS 1.2.
+`rustls-native-ossl` handles all classical TLS signature schemes (ECDSA, RSA-PSS, RSA-PKCS1, EdDSA) for both server certificate verification and client certificate `CertificateVerify` in TLS 1.2.
 
-Composite ML-DSA+classical `CertificateVerify` messages in TLS 1.3 are routed away from ring to the `native-ossl` OpenSSL backend (see [Composite scheme verification](#composite-scheme-verification-native-ossl) below).
+Composite ML-DSA+classical `CertificateVerify` messages in TLS 1.3 are routed through the same `native-ossl` OpenSSL backend via a dedicated dispatch path (see [Composite scheme verification](#composite-scheme-verification-native-ossl) below).
 
 ## `tls::init::load_or_generate` (`src/tls/init.rs`)
 
@@ -111,12 +111,12 @@ Algorithm sets are chosen based on `allow_post_quantum`:
 
 ### `verify_tls12_signature`
 
-All TLS 1.2 `CertificateVerify` schemes delegate to the `ring` provider:
+All TLS 1.2 `CertificateVerify` schemes delegate to the `rustls-native-ossl` provider:
 
 ```rust
 rustls::crypto::verify_tls12_signature(
     message, cert, dss,
-    &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+    &rustls_native_ossl::default_provider().signature_verification_algorithms,
 )
 ```
 
@@ -132,12 +132,12 @@ if crate::tls::schemes::is_composite(dss.scheme) {
 } else {
     rustls::crypto::verify_tls13_signature(
         message, cert, dss,
-        &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        &rustls_native_ossl::default_provider().signature_verification_algorithms,
     )
 }
 ```
 
-Classical schemes go to `ring`; composite ML-DSA schemes go to the native-ossl path.
+Classical schemes go to `rustls-native-ossl`; composite ML-DSA schemes go to the native-ossl EVP path.
 
 ## Composite scheme code points (`src/tls/schemes.rs`)
 
@@ -248,7 +248,7 @@ pub fn build_rustls_server_config(
 ```
 
 1. Calls `loader::load_server_cert_chain` and `loader::load_server_private_key`.
-2. Builds the provider: `Arc::new(rustls::crypto::ring::default_provider())`.
+2. Builds the provider: `Arc::new(rustls_native_ossl::default_provider())`.
 3. Filters `tls.protocols` to `&rustls::version::TLS12` and/or `&rustls::version::TLS13`. Returns `Err` if the resulting list is empty.
 4. If `tls.client_auth` is present: builds `SyntaClientCertVerifier` and calls `.with_client_cert_verifier(verifier)`.
 5. If absent: calls `.with_no_client_auth()`.

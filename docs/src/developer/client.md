@@ -170,7 +170,7 @@ tls-alpn-01 (RFC 8737).
 **Internal design:**
 
 - Certificate storage is `Arc<RwLock<HashMap<String, Arc<rustls::sign::CertifiedKey>>>>` (domain → certified key).
-- `start()` creates a `rustls::ServerConfig` using the `ring` provider,
+- `start()` creates a `rustls::ServerConfig` using the `rustls-native-ossl` provider,
   sets `alpn_protocols = vec![b"acme-tls/1"]`, and spawns a
   `tokio_rustls::TlsAcceptor` accept loop.  The `JoinHandle` is stored in
   `self.handle`.
@@ -184,7 +184,7 @@ tls-alpn-01 (RFC 8737).
      with a 7-day validity window, the domain as CN, and the `id-pe-acmeIdentifier`
      extension marked critical.  For `id_type == "ip"` the SAN is `iPAddress`;
      otherwise `dNSName`.
-  5. Loads the key into rustls via `ring::default_provider().key_provider.load_private_key`.
+  5. Loads the key into rustls via `rustls_native_ossl::default_provider().key_provider.load_private_key`.
   6. Inserts the `rustls::sign::CertifiedKey` into the SNI store under the domain name.
 - `SniResolver` implements `rustls::server::ResolvesServerCert` by looking up
   `client_hello.server_name()` in the store.

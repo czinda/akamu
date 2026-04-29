@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Rust toolchain 1.75 or later (install via [rustup](https://rustup.rs))
-- OpenSSL development headers (required by `synta-certificate`'s cryptography backend)
+- OpenSSL development headers (required by `synta-certificate`'s cryptography backend and by `rustls-native-ossl`, the TLS crypto provider)
 
 ### Fedora / RHEL
 
