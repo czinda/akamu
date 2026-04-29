@@ -284,11 +284,24 @@ async fn start_tls_server(
 }
 
 fn extract_hostname(url: &str) -> String {
-    url.trim_start_matches("https://")
+    let authority = url
+        .trim_start_matches("https://")
         .trim_start_matches("http://")
         .split('/')
         .next()
-        .unwrap_or("localhost")
+        .unwrap_or("localhost");
+
+    // IPv6 literal: "[::1]" or "[::1]:port" — return the bracketed address.
+    if authority.starts_with('[') {
+        return authority
+            .split(']')
+            .next()
+            .map(|s| format!("{s}]"))
+            .unwrap_or_else(|| "localhost".to_owned());
+    }
+
+    // IPv4 / hostname: strip optional ":port".
+    authority
         .split(':')
         .next()
         .unwrap_or("localhost")
