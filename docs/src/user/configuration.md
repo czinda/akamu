@@ -635,8 +635,8 @@ Each key under `[profiles.providers]` names a provider. The required `type` fiel
 | `type` | Source |
 |--------|--------|
 | `"builtin"` | Inline TOML profile declarations in `config.toml` |
-| `"dogtag"` | Dogtag PKI `.cfg` files — filesystem (LDAP not yet implemented) |
-| `"ipa"` | FreeIPA/IPAThinCA — filesystem or GSSAPI LDAP (not yet implemented) |
+| `"dogtag"` | Dogtag PKI `.cfg` files — filesystem or LDAP (simple bind; GSSAPI not yet implemented) |
+| `"ipa"` | FreeIPA/IPAThinCA — filesystem or LDAP (simple bind; GSSAPI not yet implemented) |
 
 ```toml
 # Builtin provider: inline declarations
@@ -655,11 +655,34 @@ type        = "dogtag"
 profile_dir = "/etc/pki/pki-tomcat/ca/profiles/ca"
 profiles    = ["caServerCert"]   # empty = all .cfg files
 
-# IPA provider: filesystem fallback (LDAP not yet implemented)
+# Dogtag provider: load profiles from LDAP (simple bind)
+[profiles.providers.dogtag_ldap]
+type     = "dogtag"
+profiles = ["caServerCert"]
+
+[profiles.providers.dogtag_ldap.ldap]
+uri               = "ldap://dogtag.example.com:389"
+base_dn           = "dc=example,dc=com"
+bind_dn           = "uid=admin,ou=people,dc=example,dc=com"
+bind_password_file = "/etc/akamu/ldap-password"
+starttls          = true   # upgrade to TLS before binding
+
+# IPA provider: filesystem fallback
 [profiles.providers.ipa_prod]
 type        = "ipa"
 profile_dir = "/etc/pki/pki-tomcat/ca/profiles/ca"
 profiles    = ["caIPAserviceCert"]
+
+# IPA provider: load profiles from the IPA-embedded Dogtag LDAP (simple bind)
+[profiles.providers.ipa_ldap]
+type     = "ipa"
+profiles = ["caIPAserviceCert"]
+
+[profiles.providers.ipa_ldap.ldap]
+uri               = "ldap://ipa.example.com:7389"
+base_dn           = "o=ipaca"
+bind_dn           = "uid=admin,ou=people,o=ipaca"
+bind_password_file = "/etc/akamu/ipa-ldap-password"
 ```
 
 **Additional `builtin` profile fields**

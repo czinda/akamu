@@ -202,6 +202,6 @@ When `[mtc.signing_key]` is configured, a background task fires every `landmark_
 
 ## Log integrity
 
-The log is append-only by design. Once a leaf is appended it cannot be removed or modified without corrupting the file. A single Akāmu process is the exclusive writer; multiple processes accessing the same log file concurrently are not supported.
+The log is append-only by design. Once a leaf is appended it cannot be removed or modified without corrupting the file. A single Akāmu process is the exclusive writer. At startup, Akāmu acquires an exclusive advisory lock on `<log_path>.lock`; if another process already holds the lock the server exits immediately with a clear error rather than proceeding to corrupt the log.
 
 For details on the internal log format, appending algorithm, checkpoint production, and concurrency model, see [MTC Implementation](../developer/mtc.md) in the Developer Guide.

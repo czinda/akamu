@@ -165,8 +165,8 @@ src/
                    handles issue_as, allowed_identifiers, auth_hook, require_account_grant
     auth.rs        check_profile_auth — identifier pattern, external hook, account grant checks
     cfg.rs         Dogtag Java-properties .cfg parser and translator
-    dogtag.rs      Dogtag PKI provider (filesystem; LDAP stub)
-    ipa.rs         FreeIPA/IPAThinCA provider (filesystem; GSSAPI LDAP stub)
+    dogtag.rs      Dogtag PKI provider (filesystem or LDAP simple bind; GSSAPI not yet implemented)
+    ipa.rs         FreeIPA/IPAThinCA provider (filesystem or LDAP simple bind; GSSAPI not yet implemented)
 
   validation/
     mod.rs         Challenge dispatch and DB state transitions (validate_challenge)

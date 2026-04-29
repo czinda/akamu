@@ -145,10 +145,10 @@ profiles    = ["caServerCert", "caIPAserviceCert"]
 | Key | Required | Description |
 |-----|----------|-------------|
 | `profile_dir` | Conditional | Path to directory of `.cfg` files |
-| `ldap` | Conditional | LDAP connection; see below — **not yet implemented** |
+| `ldap` | Conditional | LDAP connection; see below |
 | `profiles` | No | Allowlist of profile IDs; empty = all |
 
-At least one of `profile_dir` or `ldap` must be set. If both are set, `profile_dir` is tried first; LDAP loading is not yet implemented and returns an error.
+At least one of `profile_dir` or `ldap` must be set. When both are configured, `ldap` takes priority.
 
 **Supported Dogtag policy classes**
 
@@ -162,8 +162,6 @@ At least one of `profile_dir` or `ldap` must be set. If both are set, `profile_d
 
 Unrecognised policy class IDs are silently skipped.
 
-> **Not yet implemented:** `certificatePoliciesExtDefaultImpl` — CertificatePolicies extension translation from Dogtag profiles is planned but not yet coded.
-
 ---
 
 ### `ipa` — FreeIPA / IPAThinCA
@@ -171,33 +169,35 @@ Unrecognised policy class IDs are silently skipped.
 Load profiles from a FreeIPA or IPAThinCA instance. Profile `.cfg` files use the same Dogtag format. The standard location for IPA-embedded Dogtag is `/etc/pki/pki-tomcat/ca/profiles/ca` on the IPA server, and LDAP profiles are stored at `ou=certificateProfiles,ou=ca,o=ipaca` on port 7389.
 
 ```toml
+# Filesystem source
 [profiles.providers.ipa_prod]
 type        = "ipa"
-profile_dir = "/etc/pki/pki-tomcat/ca/profiles/ca"   # filesystem fallback
+profile_dir = "/etc/pki/pki-tomcat/ca/profiles/ca"
 profiles    = ["caIPAserviceCert"]
 
-# LDAP (not yet implemented — use profile_dir for now)
-[profiles.providers.ipa_prod.ldap]
-uri         = "ldap://ipa.example.com:7389"
-base_dn     = "o=ipaca"
-gssapi      = true
-keytab_file = "/etc/akamu/akamu.keytab"
-principal   = "akamu/akamu.example.com@EXAMPLE.COM"
+# LDAP source — simple bind (GSSAPI not yet implemented)
+[profiles.providers.ipa_ldap]
+type     = "ipa"
+profiles = ["caIPAserviceCert"]
+
+[profiles.providers.ipa_ldap.ldap]
+uri               = "ldap://ipa.example.com:7389"
+base_dn           = "o=ipaca"
+bind_dn           = "uid=admin,ou=people,o=ipaca"
+bind_password_file = "/etc/akamu/ipa-ldap-password"
 ```
 
 **LDAP authentication options**
 
 | Key | Description |
 |-----|-------------|
-| `gssapi = true` | Use SASL GSSAPI (Kerberos). Required for IPA. |
-| `keytab_file` | Path to a Kerberos keytab for the service principal. When set together with `principal`, a TGT is obtained from the keytab before connecting. |
-| `principal` | Kerberos principal, e.g. `akamu/host@REALM`. |
-| `bind_dn` | Simple bind DN (for non-IPA Dogtag). Not compatible with `gssapi`. |
-| `bind_password_file` | Path to a file containing the simple bind password. |
+| `bind_dn` | Bind DN for simple authentication. Required when using LDAP. |
+| `bind_password_file` | Path to a file containing the simple bind password. Required when `bind_dn` is set. |
+| `gssapi = true` | Use SASL GSSAPI (Kerberos). **Not yet implemented** — returns an error; use `profile_dir` as a fallback. |
+| `keytab_file` | (Future) Path to a Kerberos keytab for the service principal. |
+| `principal` | (Future) Kerberos principal, e.g. `akamu/host@REALM`. |
 | `tls_ca_cert_file` | Path to a PEM CA certificate for verifying the LDAP server's TLS certificate. |
 | `starttls` | If `true`, issue a StartTLS command after connecting on the plain port. |
-
-> **Not yet implemented:** LDAP loading for both `dogtag` and `ipa` providers requires the `ldap3` crate (with SASL/GSSAPI support, linked against `libsasl2` and `libgssapi_krb5`). Until this is implemented, configure `profile_dir` as a filesystem fallback. Calling the LDAP path currently returns an error.
 
 ---
 
