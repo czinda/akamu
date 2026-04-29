@@ -87,11 +87,20 @@ impl LdapConnection {
     /// CA cert, STARTTLS is negotiated before any credentials are sent.  For
     /// `ldaps://` URIs the TLS handshake happens immediately on connect.
     ///
-    /// For GSSAPI binds over plain `ldap://`, pass `tls_ca_cert_file = None`:
-    /// GSSAPI provides its own cryptographic protection, so transport-layer
-    /// encryption is not required.
-    pub fn connect(uri: &str, tls_ca_cert_file: Option<&str>) -> Result<Self, LdapError> {
-        let needs_tls = tls_ca_cert_file.is_some() || uri.starts_with("ldaps://");
+    /// When `force_starttls` is `true`, STARTTLS is negotiated on `ldap://` URIs
+    /// even when no explicit CA cert is given (the system trust store is used).
+    /// Ignored for `ldaps://` URIs (TLS is implicit) and has no effect when the
+    /// URI already triggers STARTTLS via `tls_ca_cert_file`.
+    ///
+    /// For GSSAPI binds over plain `ldap://`, pass `tls_ca_cert_file = None` and
+    /// `force_starttls = false`: GSSAPI provides its own cryptographic protection.
+    pub fn connect(
+        uri: &str,
+        tls_ca_cert_file: Option<&str>,
+        force_starttls: bool,
+    ) -> Result<Self, LdapError> {
+        let needs_tls =
+            tls_ca_cert_file.is_some() || uri.starts_with("ldaps://") || force_starttls;
         let starttls = needs_tls && uri.starts_with("ldap://");
         debug!(uri, tls = needs_tls, starttls, "LDAP connect");
 
@@ -563,7 +572,7 @@ mod tests {
         // ldap_initialize merely parses the URI; the error surfaces on first I/O.
         // A search against a host that is not listening should fail quickly.
         let mut conn =
-            LdapConnection::connect("ldap://127.0.0.1:38999", None).expect("initialize");
+            LdapConnection::connect("ldap://127.0.0.1:38999", None, false).expect("initialize");
         let err = conn
             .search("dc=test", Scope::Base, "(objectClass=*)", &[])
             .expect_err("search to closed port should fail");
@@ -575,7 +584,7 @@ mod tests {
 
     #[test]
     fn connect_with_nonexistent_ca_cert_returns_tls_error() {
-        let err = LdapConnection::connect("ldap://127.0.0.1:389", Some("/nonexistent/ca.pem"))
+        let err = LdapConnection::connect("ldap://127.0.0.1:389", Some("/nonexistent/ca.pem"), false)
             .expect_err("should fail on missing CA cert");
         assert!(
             matches!(err, LdapError::Tls(_)),

@@ -16,7 +16,7 @@
 //! use akamu_ldap::{Auth, AsyncLdapConnection, Scope};
 //!
 //! # async fn example() -> Result<(), akamu_ldap::LdapError> {
-//! let conn = AsyncLdapConnection::connect("ldap://ipa.example.com", None).await?;
+//! let conn = AsyncLdapConnection::connect("ldap://ipa.example.com", None, false).await?;
 //! conn.bind(Auth::Gssapi).await?;
 //! let entries = conn.search(
 //!     "ou=people,dc=example,dc=com",

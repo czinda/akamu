@@ -30,11 +30,18 @@ impl AsyncLdapConnection {
     /// `tls_ca_cert_file` — if `Some(path)`, the PEM file at `path` is used as
     /// a trusted CA for TLS verification.  A plain `ldap://` URI with a CA
     /// path triggers STARTTLS.
-    pub async fn connect(uri: &str, tls_ca_cert_file: Option<&str>) -> Result<Self, LdapError> {
+    ///
+    /// `force_starttls` — when `true`, STARTTLS is negotiated on `ldap://` URIs
+    /// even when no explicit CA cert is given.  Ignored for `ldaps://` URIs.
+    pub async fn connect(
+        uri: &str,
+        tls_ca_cert_file: Option<&str>,
+        force_starttls: bool,
+    ) -> Result<Self, LdapError> {
         let uri = uri.to_owned();
         let tls = tls_ca_cert_file.map(str::to_owned);
         let conn = tokio::task::spawn_blocking(move || {
-            LdapConnection::connect(&uri, tls.as_deref())
+            LdapConnection::connect(&uri, tls.as_deref(), force_starttls)
         })
         .await
         .map_err(|_| LdapError::TaskPanic)??;

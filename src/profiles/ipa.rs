@@ -116,7 +116,7 @@ async fn load_from_ldap(
 
     let uri_str = crate::profiles::ldap_resolve::resolve_ldap_uris(ldap_cfg, provider_name).await?;
     let tls_ca = ldap_cfg.tls_ca_cert_file.as_deref();
-    let conn = AsyncLdapConnection::connect(&uri_str, tls_ca)
+    let conn = AsyncLdapConnection::connect(&uri_str, tls_ca, ldap_cfg.starttls)
         .await
         .map_err(|e| {
             format!(
