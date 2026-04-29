@@ -73,85 +73,70 @@ pub async fn load_ipa(
 /// ```
 ///
 /// Simple bind is supported when `gssapi = false` (requires `bind_dn` and
-/// `bind_password_file`).  GSSAPI/Kerberos authentication is not yet
-/// implemented; use `profile_dir` as a filesystem fallback when running in a
-/// Kerberos-authenticated environment.
+/// `bind_password_file`).  GSSAPI/Kerberos authentication (`gssapi = true`)
+/// uses the Kerberos TGT from the current credential cache.
 async fn load_from_ldap(
     provider_name: &str,
     ldap_cfg: &crate::config::LdapConfig,
     filter: &[String],
     ca: &CaDefaults,
 ) -> Result<HashMap<String, (String, CertificateParameters)>, String> {
-    use ldap3::{LdapConnAsync, LdapConnSettings, Scope, SearchEntry};
+    use akamu_ldap::{AsyncLdapConnection, Auth, Scope};
 
-    if ldap_cfg.gssapi {
-        return Err(format!(
-            "profiles provider '{provider_name}' (ipa): \
-             GSSAPI authentication is not yet implemented; \
-             configure 'bind_dn' and 'bind_password_file' for simple bind, \
-             or use 'profile_dir' as a filesystem fallback"
-        ));
-    }
+    let auth = if ldap_cfg.gssapi {
+        Auth::Gssapi
+    } else {
+        let bind_dn = ldap_cfg.bind_dn.as_deref().ok_or_else(|| {
+            format!(
+                "profiles provider '{provider_name}' (ipa): \
+                 'bind_dn' is required for simple bind LDAP authentication"
+            )
+        })?;
+        let pw_file = ldap_cfg.bind_password_file.as_deref().ok_or_else(|| {
+            format!(
+                "profiles provider '{provider_name}' (ipa): \
+                 'bind_password_file' is required when 'bind_dn' is set"
+            )
+        })?;
+        let bind_password = std::fs::read_to_string(pw_file).map_err(|e| {
+            format!(
+                "profiles provider '{provider_name}': \
+                 read bind_password_file '{pw_file}': {e}"
+            )
+        })?;
+        let bind_password = bind_password
+            .trim_end_matches('\n')
+            .trim_end_matches('\r')
+            .to_owned();
+        Auth::Simple {
+            bind_dn: bind_dn.to_owned(),
+            password: bind_password,
+        }
+    };
 
-    let bind_dn = ldap_cfg.bind_dn.as_deref().ok_or_else(|| {
-        format!(
-            "profiles provider '{provider_name}' (ipa): \
-             'bind_dn' is required for simple bind LDAP authentication"
-        )
-    })?;
-    let pw_file = ldap_cfg.bind_password_file.as_deref().ok_or_else(|| {
-        format!(
-            "profiles provider '{provider_name}' (ipa): \
-             'bind_password_file' is required when 'bind_dn' is set"
-        )
-    })?;
-    let bind_password = std::fs::read_to_string(pw_file).map_err(|e| {
-        format!(
-            "profiles provider '{provider_name}': \
-             read bind_password_file '{pw_file}': {e}"
-        )
-    })?;
-    let bind_password = bind_password.trim_end_matches('\n').trim_end_matches('\r');
-
-    let settings = LdapConnSettings::new().set_starttls(ldap_cfg.starttls);
-    let (conn, mut ldap) = LdapConnAsync::with_settings(settings, &ldap_cfg.uri)
+    let uri_str = crate::profiles::ldap_resolve::resolve_ldap_uris(ldap_cfg, provider_name).await?;
+    let tls_ca = ldap_cfg.tls_ca_cert_file.as_deref();
+    let conn = AsyncLdapConnection::connect(&uri_str, tls_ca)
         .await
         .map_err(|e| {
             format!(
                 "profiles provider '{provider_name}': \
-                 LDAP connect to '{}': {e}",
-                ldap_cfg.uri
+                 LDAP connect to '{uri_str}': {e}"
             )
         })?;
-    ldap3::drive!(conn);
-
-    ldap.simple_bind(bind_dn, bind_password)
-        .await
-        .map_err(|e| {
-            format!(
-                "profiles provider '{provider_name}': \
-                 LDAP bind as '{bind_dn}': {e}"
-            )
-        })?
-        .success()
-        .map_err(|e| {
-            format!(
-                "profiles provider '{provider_name}': \
-                 LDAP bind as '{bind_dn}': {e}"
-            )
-        })?;
+    conn.bind(auth).await.map_err(|e| {
+        format!("profiles provider '{provider_name}': LDAP bind: {e}")
+    })?;
 
     let base = format!("ou=certificateProfiles,ou=ca,{}", ldap_cfg.base_dn);
-    let (raw_entries, _) = ldap
-        .search(&base, Scope::OneLevel, "(objectClass=certProfile)", vec!["cn", "certProfileConfig"])
+    let entries = conn
+        .search(
+            &base,
+            Scope::OneLevel,
+            "(objectClass=certProfile)",
+            vec!["cn".into(), "certProfileConfig".into()],
+        )
         .await
-        .map_err(|e| {
-            format!(
-                "profiles provider '{provider_name}': \
-                 LDAP search '{base}': {e}"
-            )
-        })?
-        .success()
         .map_err(|e| {
             format!(
                 "profiles provider '{provider_name}': \
@@ -159,12 +144,9 @@ async fn load_from_ldap(
             )
         })?;
 
-    let _ = ldap.unbind().await;
-
     let mut out = HashMap::new();
-    for raw_entry in raw_entries {
-        let entry = SearchEntry::construct(raw_entry);
-
+    for entry in entries {
+        // akamu-ldap lowercases all attribute names.
         let profile_id = match entry.attrs.get("cn").and_then(|v| v.first()) {
             Some(id) => id.clone(),
             None => {
@@ -182,7 +164,7 @@ async fn load_from_ldap(
 
         // certProfileConfig is stored as OCTET STRING (binary) in Dogtag LDAP.
         let cfg_content = if let Some(bytes) =
-            entry.bin_attrs.get("certProfileConfig").and_then(|v| v.first())
+            entry.bin_attrs.get("certprofileconfig").and_then(|v| v.first())
         {
             match std::str::from_utf8(bytes) {
                 Ok(s) => s.to_string(),
@@ -196,7 +178,7 @@ async fn load_from_ldap(
                     continue;
                 }
             }
-        } else if let Some(s) = entry.attrs.get("certProfileConfig").and_then(|v| v.first()) {
+        } else if let Some(s) = entry.attrs.get("certprofileconfig").and_then(|v| v.first()) {
             s.clone()
         } else {
             tracing::warn!(
