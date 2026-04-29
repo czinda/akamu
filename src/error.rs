@@ -225,6 +225,9 @@ impl AcmeError {
 impl IntoResponse for AcmeError {
     fn into_response(self) -> Response {
         let status = self.http_status();
+        if status.is_server_error() {
+            tracing::error!(error = %self, status = status.as_u16(), "internal server error");
+        }
         let body = json!({
             "type": self.acme_type(),
             "status": status.as_u16(),
