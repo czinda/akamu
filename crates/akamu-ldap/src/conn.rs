@@ -55,6 +55,7 @@ pub(crate) unsafe extern "C" fn sasl_interact_noop(
 ///
 /// The underlying `LDAP *` handle is freed (via `ldap_unbind_ext_s`) when this
 /// value is dropped, even if no explicit `unbind` call was made.
+#[derive(Debug)]
 pub struct LdapConnection {
     /// Raw OpenLDAP session pointer.  Always non-null after construction.
     ld: *mut LDAP,
