@@ -321,6 +321,12 @@ pub struct LdapConfig {
     /// Ignored for `ldaps://` URIs.
     #[serde(default)]
     pub starttls: bool,
+
+    // ── Timeouts ───────────────────────────────────────────────────────────
+    /// Timeout in seconds for TCP connect and LDAP operations.
+    /// 0 means no finite timeout (OS default).  Default: 10.
+    #[serde(default = "default_ldap_timeout_secs")]
+    pub timeout_secs: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -712,6 +718,10 @@ fn default_validate_dnssec() -> bool {
 
 fn default_star_allow_certificate_get() -> bool {
     true
+}
+
+fn default_ldap_timeout_secs() -> u64 {
+    10
 }
 
 impl Config {

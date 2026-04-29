@@ -101,6 +101,12 @@ pub const LDAP_OPT_X_TLS_CACERTFILE: c_int = 0x6002;
 /// Option: rebuild the OpenLDAP-internal TLS context after option changes (`int *` argument).
 pub const LDAP_OPT_X_TLS_NEWCTX: c_int = 0x600f;
 
+/// Option: TCP-level connect timeout (`struct timeval *` argument).
+pub const LDAP_OPT_NETWORK_TIMEOUT: c_int = 0x5010;
+
+/// Option: default timeout for synchronous operations (`struct timeval *` argument).
+pub const LDAP_OPT_TIMEOUT: c_int = 0x5014;
+
 /// SASL flag: do not interact with the user; fail on any prompt.
 pub const LDAP_SASL_QUIET: c_uint = 2;
 

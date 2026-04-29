@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::ffi::{CStr, CString, NulError};
 use std::ptr;
 
-use libc::{c_char, c_int, c_void};
+use libc::{c_char, c_int, c_void, timeval};
 use tracing::debug;
 
 use crate::ffi::{self, berval, BerElement, LDAP};
@@ -94,10 +94,15 @@ impl LdapConnection {
     ///
     /// For GSSAPI binds over plain `ldap://`, pass `tls_ca_cert_file = None` and
     /// `force_starttls = false`: GSSAPI provides its own cryptographic protection.
+    ///
+    /// `timeout_secs` sets both the TCP-level connect timeout and the default
+    /// operation timeout (`LDAP_OPT_NETWORK_TIMEOUT` + `LDAP_OPT_TIMEOUT`).
+    /// Pass 0 to use the OS default (no finite timeout).
     pub fn connect(
         uri: &str,
         tls_ca_cert_file: Option<&str>,
         force_starttls: bool,
+        timeout_secs: u64,
     ) -> Result<Self, LdapError> {
         let needs_tls =
             tls_ca_cert_file.is_some() || uri.starts_with("ldaps://") || force_starttls;
@@ -127,6 +132,26 @@ impl LdapConnection {
                 code: rc,
                 msg: "ldap_set_option(PROTOCOL_VERSION) failed".into(),
             });
+        }
+
+        // Set connect and operation timeouts to prevent indefinite blocking.
+        if timeout_secs > 0 {
+            let tv = timeval {
+                tv_sec: timeout_secs as libc::time_t,
+                tv_usec: 0,
+            };
+            unsafe {
+                ffi::ldap_set_option(
+                    conn.ld,
+                    ffi::LDAP_OPT_NETWORK_TIMEOUT,
+                    &tv as *const timeval as *const _,
+                );
+                ffi::ldap_set_option(
+                    conn.ld,
+                    ffi::LDAP_OPT_TIMEOUT,
+                    &tv as *const timeval as *const _,
+                );
+            }
         }
 
         if let Some(ca_path) = tls_ca_cert_file {
@@ -572,7 +597,7 @@ mod tests {
         // ldap_initialize merely parses the URI; the error surfaces on first I/O.
         // A search against a host that is not listening should fail quickly.
         let mut conn =
-            LdapConnection::connect("ldap://127.0.0.1:38999", None, false).expect("initialize");
+            LdapConnection::connect("ldap://127.0.0.1:38999", None, false, 5).expect("initialize");
         let err = conn
             .search("dc=test", Scope::Base, "(objectClass=*)", &[])
             .expect_err("search to closed port should fail");
@@ -584,7 +609,7 @@ mod tests {
 
     #[test]
     fn connect_with_nonexistent_ca_cert_returns_tls_error() {
-        let err = LdapConnection::connect("ldap://127.0.0.1:389", Some("/nonexistent/ca.pem"), false)
+        let err = LdapConnection::connect("ldap://127.0.0.1:389", Some("/nonexistent/ca.pem"), false, 5)
             .expect_err("should fail on missing CA cert");
         assert!(
             matches!(err, LdapError::Tls(_)),
