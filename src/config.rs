@@ -598,6 +598,47 @@ pub struct ServerConfig {
     /// where the DNS infrastructure is not yet DNSSEC-signed (non-compliant).
     #[serde(default = "default_validate_dnssec")]
     pub validate_dnssec: bool,
+    /// CIDR blocks whose connecting IP is trusted to supply `X-Remote-User`.
+    ///
+    /// When a request arrives from one of these addresses the server reads the
+    /// `X-Remote-User` header value as the authenticated principal name (set by
+    /// a reverse proxy that terminated SPNEGO/Kerberos authentication).
+    ///
+    /// Example: `trusted_proxies = ["127.0.0.1/32", "::1/128", "10.0.0.0/8"]`
+    ///
+    /// Requests from other source IPs never have `X-Remote-User` honoured,
+    /// regardless of what the header contains.
+    #[serde(default)]
+    pub trusted_proxies: Vec<ipnet::IpNet>,
+    /// Standalone GSSAPI/SPNEGO configuration.
+    ///
+    /// When set, Akamu handles `Authorization: Negotiate` directly without a
+    /// reverse proxy.  The server acquires credentials from `keytab_file` at
+    /// startup and validates each SPNEGO token with `gss_accept_sec_context`.
+    ///
+    /// Example:
+    /// ```toml
+    /// [server.gssapi]
+    /// keytab_file  = "/etc/akamu/http.keytab"
+    /// service_name = "HTTP"   # MIT Kerberos appends @<hostname> automatically
+    /// ```
+    pub gssapi: Option<GssapiConfig>,
+}
+
+/// Standalone GSSAPI/SPNEGO configuration for Akamu acting as its own KDC client.
+#[derive(Debug, Deserialize)]
+pub struct GssapiConfig {
+    /// Path to the HTTP service keytab (e.g. `/etc/akamu/http.keytab`).
+    pub keytab_file: String,
+    /// Host-based service name to acquire credentials for.
+    /// MIT Kerberos appends `@<local-hostname>` when no realm is specified.
+    /// Default: `"HTTP"`.
+    #[serde(default = "default_gssapi_service")]
+    pub service_name: String,
+}
+
+fn default_gssapi_service() -> String {
+    "HTTP".into()
 }
 
 /// Server-side TLS configuration.  Absent or `enabled = false` → plain HTTP (no change).
