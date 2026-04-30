@@ -187,7 +187,7 @@ async fn build_state(
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
     db::install_drivers();
-    let db_conn = db::open("sqlite::memory:", 1, "./migrations/sqlite")
+    let db_conn = db::open("sqlite::memory:", 1)
         .await
         .unwrap();
     let ca = Arc::new(CaState {

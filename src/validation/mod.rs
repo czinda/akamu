@@ -430,7 +430,7 @@ mod tests {
 
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
         db::install_drivers();
-        let db_conn = db::open("sqlite::memory:", 1, "./migrations/sqlite")
+        let db_conn = db::open("sqlite::memory:", 1)
             .await
             .unwrap();
 
@@ -904,7 +904,7 @@ mod tests {
         });
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
         db::install_drivers();
-        let db_conn = db::open("sqlite::memory:", 1, "./migrations/sqlite")
+        let db_conn = db::open("sqlite::memory:", 1)
             .await
             .unwrap();
         let ca = Arc::new(CaState {
@@ -1333,7 +1333,7 @@ mod tests {
     #[tokio::test]
     async fn on_valid_orders_update_fails() {
         crate::db::install_drivers();
-        let db_conn = crate::db::open("sqlite::memory:", 1, "./migrations/sqlite")
+        let db_conn = crate::db::open("sqlite::memory:", 1)
             .await
             .unwrap();
         insert_test_rows(&db_conn, "acc-ov", "ord-ov", "authz-ov", "chall-ov").await;
@@ -1362,7 +1362,7 @@ mod tests {
     #[tokio::test]
     async fn on_invalid_orders_update_fails() {
         crate::db::install_drivers();
-        let db_conn = crate::db::open("sqlite::memory:", 1, "./migrations/sqlite")
+        let db_conn = crate::db::open("sqlite::memory:", 1)
             .await
             .unwrap();
         insert_test_rows(&db_conn, "acc-oi", "ord-oi", "authz-oi", "chall-oi").await;

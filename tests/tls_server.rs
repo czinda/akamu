@@ -444,7 +444,7 @@ async fn start_tls_server() -> TlsTestServer {
     }
 
     db::install_drivers();
-    let db_conn = db::open("sqlite::memory:", 1, "./migrations/sqlite")
+    let db_conn = db::open("sqlite::memory:", 1)
         .await
         .unwrap();
 

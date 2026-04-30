@@ -210,9 +210,7 @@ mod tests {
 
     async fn open_db() -> Db {
         crate::db::install_drivers();
-        crate::db::open("sqlite::memory:", 1, "./migrations/sqlite")
-            .await
-            .unwrap()
+        crate::db::open("sqlite::memory:", 1).await.unwrap()
     }
 
     async fn insert_parents(db: &Db, account_id: &str, order_id: &str) {

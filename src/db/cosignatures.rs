@@ -82,9 +82,7 @@ mod tests {
 
     async fn open_db() -> crate::db::Db {
         crate::db::install_drivers();
-        crate::db::open("sqlite::memory:", 1, "./migrations/sqlite")
-            .await
-            .unwrap()
+        crate::db::open("sqlite::memory:", 1).await.unwrap()
     }
 
     async fn insert_checkpoint(db: &crate::db::Db, tree_size: i64) -> i64 {

@@ -107,13 +107,8 @@ async fn run() -> Result<(), String> {
         db::DbKind::Sqlite => 1,
         _ => 10,
     });
-    let migrations_dir = match db_kind {
-        db::DbKind::Sqlite => "migrations/sqlite",
-        db::DbKind::Postgres => "migrations/postgres",
-        db::DbKind::MariaDb => "migrations/mariadb",
-    };
     tracing::info!("opening database '{}'", config.database.url);
-    let db = db::open(&config.database.url, max_connections, migrations_dir)
+    let db = db::open(&config.database.url, max_connections)
         .await
         .map_err(|e| format!("database init: {e}"))?;
 

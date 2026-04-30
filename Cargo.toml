@@ -26,7 +26,7 @@ axum = { version = "0.8", features = ["http1", "http2"] }
 tower-http = { version = "0.6", features = ["trace"] }
 
 # Database (sqlx with runtime-dispatch Any backend; concrete drivers enabled via features)
-sqlx = { version = "0.8", default-features = false, features = ["any", "runtime-tokio", "migrate", "derive", "tls-native-tls"] }
+sqlx = { version = "0.8", default-features = false, features = ["any", "runtime-tokio", "migrate", "macros", "derive", "tls-native-tls"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

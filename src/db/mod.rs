@@ -56,7 +56,7 @@ pub fn install_drivers() {
 /// `max_connections` controls pool size.  Pass `1` for SQLite (multiple
 /// connections cause `SQLITE_BUSY_SNAPSHOT` in WAL mode); pass a higher value
 /// for PostgreSQL / MariaDB where MVCC allows real concurrency.
-pub async fn open(url: &str, max_connections: u32, migrations_dir: &str) -> Result<Db, AcmeError> {
+pub async fn open(url: &str, max_connections: u32) -> Result<Db, AcmeError> {
     // For SQLite file-backed databases, ensure the file is created on first
     // open.  The sqlx URL parser sets create_if_missing=false by default;
     // appending ?mode=rwc (read-write-create) enables it via the SQLite URI
@@ -97,12 +97,21 @@ pub async fn open(url: &str, max_connections: u32, migrations_dir: &str) -> Resu
         }
     }
 
-    sqlx::migrate::Migrator::new(std::path::Path::new(migrations_dir))
-        .await
-        .map_err(|e| AcmeError::Database(format!("migration source '{migrations_dir}': {e}")))?
-        .run(&pool)
-        .await
-        .map_err(|e| AcmeError::Database(format!("migration failed: {e}")))?;
+    let map_err = |e| AcmeError::Database(format!("migration failed: {e}"));
+    match DbKind::from_url(url) {
+        DbKind::Sqlite => sqlx::migrate!("migrations/sqlite")
+            .run(&pool)
+            .await
+            .map_err(map_err)?,
+        DbKind::Postgres => sqlx::migrate!("migrations/postgres")
+            .run(&pool)
+            .await
+            .map_err(map_err)?,
+        DbKind::MariaDb => sqlx::migrate!("migrations/mariadb")
+            .run(&pool)
+            .await
+            .map_err(map_err)?,
+    }
 
     Ok(pool)
 }
@@ -128,14 +137,10 @@ pub async fn begin_write(
 mod tests {
     use super::*;
 
-    fn migrations_dir() -> &'static str {
-        "./migrations/sqlite"
-    }
-
     #[tokio::test]
     async fn open_in_memory_succeeds() {
         install_drivers();
-        let pool = open("sqlite::memory:", 1, migrations_dir()).await.unwrap();
+        let pool = open("sqlite::memory:", 1).await.unwrap();
         let row: (i64,) = sqlx::query_as("SELECT 1").fetch_one(&pool).await.unwrap();
         assert_eq!(row.0, 1);
     }
@@ -145,7 +150,7 @@ mod tests {
         install_drivers();
         let dir = tempfile::tempdir().unwrap();
         let path = format!("sqlite://{}", dir.path().join("test.db").to_string_lossy());
-        let pool = open(&path, 1, migrations_dir()).await.unwrap();
+        let pool = open(&path, 1).await.unwrap();
         let row: (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='accounts'",
         )

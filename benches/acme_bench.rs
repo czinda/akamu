@@ -726,12 +726,7 @@ async fn start_server(args: &Args) -> BenchServer {
     } else {
         args.pool_connections.max(1)
     };
-    let migrations_dir = match db_kind {
-        db::DbKind::Sqlite => "migrations/sqlite",
-        db::DbKind::Postgres => "migrations/postgres",
-        db::DbKind::MariaDb => "migrations/mariadb",
-    };
-    let db_conn = db::open(&args.db, effective_pool, migrations_dir)
+    let db_conn = db::open(&args.db, effective_pool)
         .await
         .unwrap();
     let ca = Arc::new(CaState {

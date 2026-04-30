@@ -155,9 +155,7 @@ mod tests {
 
     async fn open_db() -> Db {
         crate::db::install_drivers();
-        crate::db::open("sqlite::memory:", 1, "./migrations/sqlite")
-            .await
-            .unwrap()
+        crate::db::open("sqlite::memory:", 1).await.unwrap()
     }
 
     fn sample_account(id: &str) -> AccountRow {

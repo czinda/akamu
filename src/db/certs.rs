@@ -315,9 +315,7 @@ mod tests {
 
     async fn open_db() -> Db {
         crate::db::install_drivers();
-        crate::db::open("sqlite::memory:", 1, "./migrations/sqlite")
-            .await
-            .unwrap()
+        crate::db::open("sqlite::memory:", 1).await.unwrap()
     }
 
     /// Insert a minimal account + order so that foreign-key constraints pass.

@@ -102,7 +102,7 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
     let ca_aki_bytes = ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
 
     db::install_drivers();
-    let db_conn = db::open("sqlite::memory:", 1, "./migrations/sqlite")
+    let db_conn = db::open("sqlite::memory:", 1)
         .await
         .unwrap();
 
