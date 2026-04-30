@@ -23,6 +23,7 @@ pub mod certificate;
 pub mod challenge;
 pub mod crl;
 pub mod directory;
+pub mod eab_identity;
 pub mod finalize;
 pub mod key_change;
 pub mod mtc;
@@ -113,6 +114,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .delete(admin::delete_account_profile_grants),
         )
         .route("/admin/eab", post(admin::post_eab))
+        // EAB identity — returns authenticated principal (proxy header or GSSAPI)
+        .route(
+            "/acme/eab",
+            get(eab_identity::get_eab_identity),
+        )
         .layer(if max_body > 0 {
             axum::extract::DefaultBodyLimit::max(max_body)
         } else {
