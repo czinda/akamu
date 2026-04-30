@@ -1,0 +1,10 @@
+[package]
+name = "akamu-gssapi"
+version = "0.1.0"
+edition = "2021"
+description = "Server-side GSSAPI/SPNEGO bindings for akamu (Kerberos accept context)"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+libc = "0.2"
+thiserror = "2"
