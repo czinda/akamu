@@ -7,6 +7,7 @@ pub mod ca;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod extract;
 pub mod jose;
 pub mod mtc;
 pub mod profiles;
