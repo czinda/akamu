@@ -153,6 +153,12 @@ pub struct AppState {
     /// that invalidates the cache).  The `Arc<Mutex<…>>` allows the handler
     /// and the revoke route to share the cache without `&mut AppState`.
     pub crl_cache: CrlCache,
+    /// Server-side GSSAPI credential for standalone SPNEGO authentication.
+    ///
+    /// `None` when `[server.gssapi]` is absent from the config.  When present,
+    /// the `RemoteUser` extractor uses it to validate `Authorization: Negotiate`
+    /// tokens without a reverse proxy.
+    pub gss_cred: Option<Arc<akamu_gssapi::GssServerCred>>,
 }
 
 /// TLS client-auth state available to handlers for introspection.

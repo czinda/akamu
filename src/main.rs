@@ -243,6 +243,21 @@ async fn run() -> Result<(), String> {
         None
     };
 
+    // ── GSSAPI server credential ──────────────────────────────────────────────
+    let gss_cred = if let Some(ref gcfg) = config.server.gssapi {
+        tracing::info!(
+            "initializing GSSAPI credential for service '{}' from '{}'",
+            gcfg.service_name,
+            gcfg.keytab_file
+        );
+        let cred =
+            akamu_gssapi::GssServerCred::acquire(&gcfg.service_name, &gcfg.keytab_file)
+                .map_err(|e| format!("GSSAPI credential init: {e}"))?;
+        Some(Arc::new(cred))
+    } else {
+        None
+    };
+
     // ── Application state ─────────────────────────────────────────────────────
     let nonces = Arc::new(NonceBucket::new());
     let state = Arc::new(AppState {
@@ -272,6 +287,7 @@ async fn run() -> Result<(), String> {
             Client::builder(TokioExecutor::new()).build(https)
         },
         crl_cache: Default::default(),
+        gss_cred,
     });
 
     // Spawn background profile refresh task (no-op when no providers configured).
@@ -317,7 +333,7 @@ async fn run() -> Result<(), String> {
             config.base_url
         );
         loop {
-            let (stream, _) = listener
+            let (stream, peer_addr) = listener
                 .accept()
                 .await
                 .map_err(|e| format!("accept: {e}"))?;
@@ -334,7 +350,9 @@ async fn run() -> Result<(), String> {
                 let io = hyper_util::rt::TokioIo::new(tls);
                 use tower::ServiceExt as _;
                 let svc = hyper::service::service_fn(
-                    move |req: hyper::Request<hyper::body::Incoming>| {
+                    move |mut req: hyper::Request<hyper::body::Incoming>| {
+                        req.extensions_mut()
+                            .insert(axum::extract::ConnectInfo(peer_addr));
                         let router = router.clone();
                         async move {
                             let req = req.map(axum::body::Body::new);
@@ -361,9 +379,12 @@ async fn run() -> Result<(), String> {
             config.listen_addr,
             config.base_url
         );
-        axum::serve(listener, router)
-            .await
-            .map_err(|e| format!("server error: {e}"))?;
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .map_err(|e| format!("server error: {e}"))?;
     }
 
     Ok(())

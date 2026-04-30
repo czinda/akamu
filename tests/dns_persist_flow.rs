@@ -231,6 +231,7 @@ async fn build_state(
                 .build(https)
         },
         crl_cache: Default::default(),
+        gss_cred: None,
     });
     (state, dir)
 }

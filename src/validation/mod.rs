@@ -475,6 +475,7 @@ mod tests {
                     .build(https)
             },
             crl_cache: Default::default(),
+            gss_cred: None,
         })
     }
 
@@ -948,6 +949,7 @@ mod tests {
                     .build(https)
             },
             crl_cache: Default::default(),
+            gss_cred: None,
         });
 
         // The identifier is just the IP address — no port embedded.
@@ -1237,6 +1239,7 @@ mod tests {
                     .build(https)
             },
             crl_cache: Default::default(),
+            gss_cred: None,
         })
     }
 

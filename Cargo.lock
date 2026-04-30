@@ -16,6 +16,7 @@ name = "akamu"
 version = "0.1.0"
 dependencies = [
  "akamu-client",
+ "akamu-gssapi",
  "akamu-jose",
  "akamu-ldap",
  "axum",
@@ -27,6 +28,7 @@ dependencies = [
  "hyper",
  "hyper-rustls",
  "hyper-util",
+ "ipnet",
  "libc",
  "native-ossl",
  "regex",
@@ -115,6 +117,14 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "akamu-gssapi"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -241,6 +251,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90"
 dependencies = [
  "axum-core",
+ "axum-macros",
  "bytes",
  "form_urlencoded",
  "futures-util",
@@ -284,6 +295,17 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
+]
+
+[[package]]
+name = "axum-macros"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7aa268c23bfbbd2c4363b9cd302a4f504fb2a9dfe7e3451d66f35dd392e20aca"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -1165,6 +1187,9 @@ name = "ipnet"
 version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "iri-string"

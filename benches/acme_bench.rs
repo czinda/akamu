@@ -726,9 +726,7 @@ async fn start_server(args: &Args) -> BenchServer {
     } else {
         args.pool_connections.max(1)
     };
-    let db_conn = db::open(&args.db, effective_pool)
-        .await
-        .unwrap();
+    let db_conn = db::open(&args.db, effective_pool).await.unwrap();
     let ca = Arc::new(CaState {
         key: ca_key,
         cert_der: ca_cert_der,
@@ -774,6 +772,8 @@ async fn start_server(args: &Args) -> BenchServer {
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
                 .build(https)
         },
+        gss_cred: None,
+        eab_master_secret: None,
     });
 
     let router = routes::build_router(state);

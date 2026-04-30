@@ -503,6 +503,7 @@ async fn start_tls_server() -> TlsTestServer {
                 .build(https)
         },
         crl_cache: Default::default(),
+        gss_cred: None,
     });
 
     let router = routes::build_router(Arc::clone(&state));

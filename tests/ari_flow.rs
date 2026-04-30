@@ -213,6 +213,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
                 .build(https)
         },
         crl_cache: Default::default(),
+        gss_cred: None,
     });
     (state, dir)
 }
@@ -547,6 +548,7 @@ async fn test_renewal_info_explanation_url() {
                 .build(https)
         },
         crl_cache: Default::default(),
+        gss_cred: None,
     });
     let router = routes::build_router(Arc::clone(&state2));
 

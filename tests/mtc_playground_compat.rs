@@ -160,6 +160,7 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
             Client::builder(TokioExecutor::new()).build(https)
         },
         crl_cache: Default::default(),
+        gss_cred: None,
     })
 }
 

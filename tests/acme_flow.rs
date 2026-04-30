@@ -276,6 +276,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
                 .build(https)
         },
         crl_cache: Default::default(),
+        gss_cred: None,
     });
 
     (state, dir)
@@ -2276,6 +2277,7 @@ async fn test_directory_with_optional_fields() {
                 .build(https)
         },
         crl_cache: Default::default(),
+        gss_cred: None,
     });
     let router = routes::build_router(Arc::clone(&state));
     let (status, dir_body, _) = get(&router, "/acme/directory").await;
@@ -2649,6 +2651,7 @@ async fn test_finalize_with_mtc_enabled() {
                 .build(https)
         },
         crl_cache: Default::default(),
+        gss_cred: None,
     });
 
     let router = routes::build_router(Arc::clone(&state));
@@ -2900,6 +2903,7 @@ async fn test_finalize_with_aia_and_cdp() {
                 .build(https)
         },
         crl_cache: Default::default(),
+        gss_cred: None,
     });
 
     let router = routes::build_router(Arc::clone(&state));
