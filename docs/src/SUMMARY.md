@@ -22,6 +22,7 @@
 - [TLS Configuration](user/tls.md)
 - [Performance](user/performance.md)
 - [RFC Support Reference](user/rfc-support.md)
+- [EAB and Kerberos Authentication](user/eab-kerberos.md)
 
 # Client Libraries
 

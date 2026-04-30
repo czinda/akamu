@@ -52,6 +52,11 @@ star_max_duration_secs      = 31536000
 star_allow_certificate_get  = true
 tor_connectivity_enabled    = false
 dns_persist01_resolver_addr = "127.0.0.1:5354"
+trusted_proxies             = ["127.0.0.1/32"]
+
+[server.gssapi]
+keytab_file  = "/etc/akamu/http.keytab"
+service_name = "HTTP"
 
 [admin]
 bearer_token = "change-me"
@@ -608,6 +613,92 @@ Controls whether DNSSEC validation is enforced during DNS-based challenge verifi
 ```toml
 validate_dnssec = true
 ```
+
+### `trusted_proxies`
+
+**Optional. Default: empty (proxy header mode disabled).**
+
+List of CIDR blocks (IPv4 or IPv6) whose connecting IP address is trusted to
+supply an `X-Remote-User` header. When a request arrives from one of these
+addresses, akamu reads the header value as the already-authenticated principal
+name — the reverse proxy is expected to have completed SPNEGO or another
+authentication step before forwarding the request.
+
+Requests from addresses not in this list never have `X-Remote-User` honoured,
+regardless of what the header contains.
+
+```toml
+[server]
+trusted_proxies = ["127.0.0.1/32", "::1/128", "10.0.0.0/8"]
+```
+
+Security note: keep this list tightly scoped to the IP addresses of your
+reverse proxy or load balancer. Adding broad ranges (e.g. `0.0.0.0/0`) allows
+any client to impersonate any principal.
+
+### `[server.gssapi]`
+
+**Optional. When absent, standalone GSSAPI mode is disabled.**
+
+Configures akamu to accept `Authorization: Negotiate` tokens directly, without
+a reverse proxy. At startup the server acquires an acceptor credential from
+`keytab_file` and uses `gss_accept_sec_context` to validate each SPNEGO token.
+
+Use this mode when you want akamu to handle Kerberos authentication itself
+rather than delegating to a front-end proxy such as Apache or Nginx.
+
+#### `keytab_file`
+
+**Required within `[server.gssapi]`.** Path to the HTTP service keytab file.
+The akamu process must be able to read this file; no other user should have
+read access to it.
+
+```toml
+keytab_file = "/etc/akamu/http.keytab"
+```
+
+Generate the keytab for an IPA-managed host:
+
+```bash
+ipa-getkeytab -s ipa.example.com -p HTTP/akamu.example.com@EXAMPLE.COM \
+    -k /etc/akamu/http.keytab
+chmod 600 /etc/akamu/http.keytab
+chown akamu: /etc/akamu/http.keytab
+```
+
+#### `service_name`
+
+**Optional. Default: `"HTTP"`.**
+
+Host-based service name to acquire credentials for. MIT Kerberos appends
+`@<local-hostname>` when no realm is specified, so `"HTTP"` is correct for a
+single-homed host. Use `"HTTP@akamu.example.com"` to be explicit.
+
+```toml
+service_name = "HTTP"
+```
+
+#### Proxy mode example
+
+```toml
+[server]
+trusted_proxies = ["192.168.1.10/32"]
+```
+
+In this configuration, only connections from `192.168.1.10` (the reverse proxy)
+are allowed to supply `X-Remote-User`. All other connections receive 403.
+
+#### Standalone GSSAPI example
+
+```toml
+[server.gssapi]
+keytab_file  = "/etc/akamu/http.keytab"
+service_name = "HTTP"
+```
+
+In this configuration, akamu handles `Authorization: Negotiate` directly. Clients
+must obtain a Kerberos service ticket for `HTTP/<hostname>` before calling
+authenticated endpoints.
 
 ---
 

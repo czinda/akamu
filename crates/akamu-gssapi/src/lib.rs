@@ -19,6 +19,13 @@
 //! // `principal` is e.g. "user@REALM"
 //! // `out_token` is the mutual-auth response (may be empty)
 //! ```
+//!
+//! # Thread safety
+//!
+//! [`GssServerCred`] is `Send + Sync`.  MIT Kerberos allows concurrent
+//! `gss_accept_sec_context` calls against the same acceptor credential, so a
+//! single `Arc<GssServerCred>` shared across all request-handling threads is
+//! the expected usage pattern.
 
 pub mod error;
 mod ffi;
@@ -35,6 +42,8 @@ pub use error::GssError;
 /// The underlying `gss_cred_id_t` is safe to use from multiple threads
 /// simultaneously for `gss_accept_sec_context` calls (MIT Kerberos guarantees
 /// this for acceptor credentials).
+///
+/// Drop releases the credential handle via `gss_release_cred`.
 pub struct GssServerCred {
     raw: ffi::GssCredIdT,
 }
@@ -64,6 +73,14 @@ impl GssServerCred {
     /// Uses `gss_acquire_cred_from()` (RFC 5587) with a credential store entry
     /// `{key="keytab", value=keytab_file}`, which avoids any environment-variable
     /// mutation and is safe to call from multiple threads.
+    ///
+    /// # Errors
+    ///
+    /// - [`GssError::NulInServiceName`] — `service_name` contains a NUL byte.
+    /// - [`GssError::NulInKeytabPath`] — `keytab_file` contains a NUL byte.
+    /// - [`GssError::ImportName`] — `gss_import_name` rejected the service name.
+    /// - [`GssError::AcquireCred`] — `gss_acquire_cred_from` failed (keytab
+    ///   missing, wrong principal, or Kerberos library error).
     pub fn acquire(service_name: &str, keytab_file: &str) -> Result<Self, GssError> {
         let svc_cstr =
             CString::new(service_name).map_err(|_| GssError::NulInServiceName)?;
@@ -143,6 +160,15 @@ impl GssServerCred {
 /// Creates and immediately destroys a per-call security context.  HTTP SPNEGO
 /// with Kerberos is a single-round-trip exchange, so no context persistence is
 /// needed across requests.
+///
+/// # Errors
+///
+/// - [`GssError::AcceptContext`] — `gss_accept_sec_context` rejected the token
+///   (expired ticket, wrong service, replay, or forged token).
+/// - [`GssError::DisplayName`] — the authenticated name could not be converted
+///   to a printable string by `gss_display_name`.
+/// - [`GssError::InvalidUtf8`] — the display name returned by the GSSAPI
+///   library is not valid UTF-8.
 pub fn accept_token(
     cred: &GssServerCred,
     input_token: &[u8],

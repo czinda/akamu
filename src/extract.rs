@@ -30,6 +30,15 @@ use crate::state::AppState;
 ///
 /// If neither source is configured or the credentials are absent/invalid, the
 /// extractor returns an appropriate HTTP error response.
+///
+/// # HTTP responses on failure
+///
+/// | Condition | Status | Body |
+/// |-----------|--------|------|
+/// | Trusted proxy, header absent or empty | 401 | `X-Remote-User header required` |
+/// | GSSAPI configured, no `Authorization` header | 401 | `WWW-Authenticate: Negotiate` challenge |
+/// | GSSAPI configured, token invalid or expired | 403 | `GSSAPI authentication failed` |
+/// | Neither mechanism configured | 403 | configuration error message |
 pub struct RemoteUser(pub String);
 
 impl<S> FromRequestParts<S> for RemoteUser
@@ -145,11 +154,22 @@ fn negotiate(
     }
 }
 
-/// Extension type carrying the optional mutual-auth `WWW-Authenticate: Negotiate`
-/// response token.  Route handlers may read this and forward it to the client.
+/// Request extension carrying the optional mutual-auth token from a successful
+/// SPNEGO exchange.
+///
+/// When `gss_accept_sec_context` produces an output token (i.e. the client
+/// requested mutual authentication), this extension is inserted into the
+/// request's extension map.  Route handlers that wish to return the token to
+/// the client can read it and emit a `WWW-Authenticate: Negotiate <base64>`
+/// response header.
+///
+/// The inner [`HeaderValue`] is already formatted as `"Negotiate <base64>"` and
+/// can be inserted directly into the response headers.
 #[derive(Clone)]
 pub struct NegotiateResponse(pub HeaderValue);
 
+/// Build a `401 Unauthorized` response with a `WWW-Authenticate: Negotiate`
+/// header, prompting the client to begin a SPNEGO exchange.
 fn negotiate_challenge() -> Response {
     let mut resp = (StatusCode::UNAUTHORIZED, "").into_response();
     resp.headers_mut()
@@ -157,6 +177,7 @@ fn negotiate_challenge() -> Response {
     resp
 }
 
+/// Build a plain `401 Unauthorized` response with a text body.
 fn unauthorized(msg: &'static str) -> Response {
     (StatusCode::UNAUTHORIZED, msg).into_response()
 }
