@@ -53,6 +53,7 @@ star_allow_certificate_get  = true
 tor_connectivity_enabled    = false
 dns_persist01_resolver_addr = "127.0.0.1:5354"
 trusted_proxies             = ["127.0.0.1/32"]
+eab_master_secret           = "Zm9vYmFyYmF6cXV4cXV1eGZvb2JhcmJhenF1eHF1dXg"
 
 [server.gssapi]
 keytab_file  = "/etc/akamu/http.keytab"
@@ -426,7 +427,7 @@ caa_identities = ["acme.example.com"]
 
 When `true`, new-account requests must include an `externalAccountBinding` field (RFC 8555 §7.3.4). Requests without it are rejected with `urn:ietf:params:acme:error:externalAccountRequired` (HTTP 403). The directory response also includes `meta.externalAccountRequired: true`.
 
-When enabled, the server performs full HMAC verification: it resolves the `kid` in `[server.eab_keys]`, verifies the HS256/HS384/HS512 MAC, confirms the payload is the account key, and atomically consumes the key at account creation so each EAB key can only be used once.
+When enabled, the server performs full HMAC verification: it resolves the `kid` in the `eab_keys` database table (populated either from `[server.eab_keys]` at startup or by HKDF derivation via `GET /acme/eab`), verifies the HS256/HS384/HS512 MAC, confirms the payload is the account key, and atomically consumes the key at account creation so each EAB key can only be used once.
 
 ```toml
 external_account_required = true
@@ -449,6 +450,35 @@ Keys are loaded at startup and persisted in the database. A key that has been co
 To generate a key:
 ```bash
 openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
+```
+
+### `eab_master_secret`
+
+**Optional. Default: absent.**
+
+Base64url-encoded master secret (must decode to at least 32 bytes) used to derive deterministic EAB credentials via HKDF-SHA-256 (RFC 5869). When set, the `GET /acme/eab` endpoint derives a unique `(kid, hmac_key)` pair for each authenticated principal using the following construction:
+
+```
+kid      = base64url( HKDF-SHA256(IKM=master_secret, info="akamu-eab-v1-kid:<principal>", L=16) )
+hmac_key = base64url( HKDF-SHA256(IKM=master_secret, info="akamu-eab-v1-key:<principal>", L=32) )
+```
+
+The same `(master_secret, principal)` pair always produces the same `(kid, hmac_key)`. Credentials are stored in the `eab_keys` table on first request and returned on subsequent requests. Once the `kid` has been consumed by an account registration, re-fetching `GET /acme/eab` for that principal returns HTTP 409 Conflict.
+
+When `eab_master_secret` is absent, `GET /acme/eab` returns only `{"principal":"…"}` (backward-compatible stub behaviour, no EAB credentials).
+
+Authentication for `GET /acme/eab` requires either `[server.gssapi]` (standalone GSSAPI/SPNEGO) or `trusted_proxies` (reverse-proxy mode supplying `X-Remote-User`).
+
+Generate a suitable secret:
+
+```bash
+openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
+```
+
+```toml
+[server]
+external_account_required = true
+eab_master_secret = "Zm9vYmFyYmF6cXV4cXV1eGZvb2JhcmJhenF1eHF1dXg"
 ```
 
 ### `order_expiry_secs`
@@ -627,6 +657,10 @@ authentication step before forwarding the request.
 Requests from addresses not in this list never have `X-Remote-User` honoured,
 regardless of what the header contains.
 
+**Mutually exclusive with `[server.gssapi]`.** Setting both `trusted_proxies`
+and `[server.gssapi]` at the same time is a configuration error; the server
+exits at startup with an error message.
+
 ```toml
 [server]
 trusted_proxies = ["127.0.0.1/32", "::1/128", "10.0.0.0/8"]
@@ -640,6 +674,9 @@ any client to impersonate any principal.
 
 **Optional. When absent, standalone GSSAPI mode is disabled.**
 
+**Mutually exclusive with `trusted_proxies`.** Setting both at the same time is
+a configuration error; the server exits at startup with an error message.
+
 Configures akamu to accept `Authorization: Negotiate` tokens directly, without
 a reverse proxy. At startup the server acquires an acceptor credential from
 `keytab_file` and uses `gss_accept_sec_context` to validate each SPNEGO token.
@@ -647,11 +684,33 @@ a reverse proxy. At startup the server acquires an acceptor credential from
 Use this mode when you want akamu to handle Kerberos authentication itself
 rather than delegating to a front-end proxy such as Apache or Nginx.
 
+**Security behaviors in standalone GSSAPI mode:**
+
+- **Token size limit.** `Authorization: Negotiate` tokens larger than 128 KiB
+  are rejected with `400 Bad Request`. Legitimate Kerberos tickets are always
+  smaller than this limit.
+- **Case-insensitive scheme matching.** The `"Negotiate "` prefix is matched
+  case-insensitively per RFC 7235 §2.1.
+- **TLS channel bindings (RFC 5929).** When akamu terminates TLS itself, the
+  `tls-server-end-point` binding is computed from the leaf certificate and
+  passed to `gss_accept_sec_context`, binding the Kerberos exchange to the TLS
+  channel. Channel bindings are disabled automatically when the server
+  certificate uses ML-DSA (pure or composite) or Ed448, because RFC 5929
+  defines no canonical hash for those algorithms.
+- **Replay detection.** After a successful context acceptance, akamu verifies
+  that `GSS_C_REPLAY_FLAG` is set. Contexts without replay detection are
+  rejected with `403 Forbidden`.
+- **GSSAPI without TLS.** Running standalone GSSAPI without TLS is permitted
+  but emits a `warn`-level log at startup: SPNEGO tokens are vulnerable to
+  interception and relay attacks without TLS.
+- **No mechanism configured.** When neither `trusted_proxies` nor
+  `[server.gssapi]` is set, authenticated endpoints return `404 Not Found`.
+
 #### `keytab_file`
 
 **Required within `[server.gssapi]`.** Path to the HTTP service keytab file.
 The akamu process must be able to read this file; no other user should have
-read access to it.
+read access to it. The path is logged at `debug` level only.
 
 ```toml
 keytab_file = "/etc/akamu/http.keytab"
@@ -686,7 +745,9 @@ trusted_proxies = ["192.168.1.10/32"]
 ```
 
 In this configuration, only connections from `192.168.1.10` (the reverse proxy)
-are allowed to supply `X-Remote-User`. All other connections receive 403.
+are allowed to supply `X-Remote-User`. Requests from any other source that reach
+an authenticated endpoint return `404 Not Found` (no authentication mechanism
+is configured for those connections).
 
 #### Standalone GSSAPI example
 

@@ -75,7 +75,9 @@ The response is identical to a reactive authorization created by `newOrder`.
 
 When `server.external_account_required = true`, every `newAccount` request **must** include an `externalAccountBinding` field. Requests without it are rejected with `urn:ietf:params:acme:error:externalAccountRequired` (HTTP 403).
 
-EAB keys are provisioned in the TOML configuration under `[server]`:
+EAB keys can be provisioned in two ways:
+
+**Static provisioning** — keys are declared in the TOML configuration under `[server.eab_keys]` and loaded into the database at startup:
 
 ```toml
 [server]
@@ -86,7 +88,17 @@ external_account_required = true
 "kid-2" = "YW5vdGhlci1rZXktaGVyZQ"
 ```
 
-Keys configured in `[server.eab_keys]` are loaded at startup and persisted in the database. Once a key has been consumed to create an account it cannot be reused. The server performs full HMAC verification per RFC 8555 §7.3.4: it checks the `kid`, validates the algorithm and URL, verifies the HMAC signature, and confirms the EAB payload contains the account public key. Account creation and EAB key consumption happen atomically so that a key can never be used more than once even under concurrent requests.
+**GSSAPI self-service derivation** — when `[server].eab_master_secret` is set, authenticated clients call `GET /acme/eab` (authenticating via `Authorization: Negotiate` or via a trusted reverse proxy supplying `X-Remote-User`). The server derives deterministic `(kid, hmac_key)` pairs using HKDF-SHA-256 (RFC 5869) keyed by `(master_secret, principal)`, stores them in the `eab_keys` table on first request, and returns them to the client:
+
+```toml
+[server]
+external_account_required = true
+eab_master_secret = "<base64url-encoded 32-byte secret>"   # see configuration reference
+```
+
+The response JSON is `{"principal":"…","kid":"…","hmac_key":"…","alg":"HS256"}`. The client uses the returned `kid` and `hmac_key` to construct the `externalAccountBinding` JWS for `newAccount`. Once a `kid` has been consumed by an account registration, re-fetching `GET /acme/eab` for the same principal returns HTTP 409 Conflict.
+
+Regardless of the provisioning method, the server performs full HMAC verification per RFC 8555 §7.3.4: it checks the `kid`, validates the algorithm and URL, verifies the HMAC signature, and confirms the EAB payload contains the account public key. Account creation and EAB key consumption happen atomically so that a key can never be used more than once even under concurrent requests.
 
 ### Certificate validity window
 
