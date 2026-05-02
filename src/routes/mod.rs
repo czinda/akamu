@@ -244,7 +244,7 @@ pub(crate) async fn parse_jws(
         JwsKeyRef::Kid { kid } => {
             let id = crate::jose::kid::account_id_from_kid(&state.config.base_url, kid)?;
             // Try the in-memory account cache first to avoid a DB round-trip.
-            let cached = state.spki_cache.read().unwrap().get(&id).cloned();
+            let cached = state.spki_cache.read().unwrap_or_else(|e| e.into_inner()).get(&id).cloned();
             let cached_account = if let Some(acc) = cached {
                 if acc.status != "valid" {
                     return Err(AcmeError::Unauthorized(format!(
@@ -271,7 +271,7 @@ pub(crate) async fn parse_jws(
                 state
                     .spki_cache
                     .write()
-                    .unwrap()
+                    .unwrap_or_else(|e| e.into_inner())
                     .insert(id.clone(), entry.clone());
                 entry
             };
