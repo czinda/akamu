@@ -274,16 +274,20 @@ pub enum OperatorRole {
     Auditor,
 }
 
-impl OperatorRole {
-    pub fn from_str(s: &str) -> Option<Self> {
+impl std::str::FromStr for OperatorRole {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "administrator" => Some(OperatorRole::Administrator),
-            "ca_operations" => Some(OperatorRole::CaOperations),
-            "ca_ra" => Some(OperatorRole::CaRa),
-            "auditor" => Some(OperatorRole::Auditor),
-            _ => None,
+            "administrator" => Ok(OperatorRole::Administrator),
+            "ca_operations" => Ok(OperatorRole::CaOperations),
+            "ca_ra" => Ok(OperatorRole::CaRa),
+            "auditor" => Ok(OperatorRole::Auditor),
+            _ => Err(()),
         }
     }
+}
+
+impl OperatorRole {
 
     pub fn as_str(self) -> &'static str {
         match self {
