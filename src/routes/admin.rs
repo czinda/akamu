@@ -536,7 +536,10 @@ pub async fn delete_account_profile_grants(
 
 /// `GET /admin/eab`
 ///
-/// List EAB keys.  Query params: `used=true|false` to filter by used status.
+/// List EAB keys.  Query params:
+///   `used=true|false` — filter by used status
+///   `limit=N`        — max rows returned (default 200)
+///   `offset=N`       — skip first N rows (default 0)
 /// Requires: any role.
 pub async fn get_eab(
     operator: OperatorContext,
@@ -553,22 +556,35 @@ pub async fn get_eab(
         "false" => Some(false),
         _ => None,
     });
+    let limit: i64 = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(200);
+    let offset: i64 = params
+        .get("offset")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
 
-    let rows = sqlx::query_as::<_, db::eab::EabKeyRow>(
-        "SELECT kid, hmac_key_b64u, created, used_at, profile_grants FROM eab_keys ORDER BY created DESC",
-    )
-    .fetch_all(&state.db)
-    .await;
+    let mut sql = "SELECT kid, hmac_key_b64u, created, used_at, profile_grants \
+                   FROM eab_keys"
+        .to_string();
+    match used_filter {
+        Some(true) => sql.push_str(" WHERE used_at IS NOT NULL"),
+        Some(false) => sql.push_str(" WHERE used_at IS NULL"),
+        None => {}
+    }
+    sql.push_str(" ORDER BY created DESC LIMIT ? OFFSET ?");
+
+    let rows = sqlx::query_as::<_, db::eab::EabKeyRow>(&sql)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await;
 
     match rows {
         Ok(rows) => {
             let keys: Vec<_> = rows
                 .into_iter()
-                .filter(|r| match used_filter {
-                    Some(true) => r.used_at.is_some(),
-                    Some(false) => r.used_at.is_none(),
-                    None => true,
-                })
                 .map(|r| {
                     json!({
                         "kid": r.kid,
