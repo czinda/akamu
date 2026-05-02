@@ -296,6 +296,14 @@ async fn on_valid(state: &AppState, challenge_id: &str, authz_id: &str, order_id
             tracing::warn!("authz {authz_id_log}: on_valid transaction failed: {e}");
         }
     }
+    let _ = crate::audit::record(
+        &state.db,
+        &state.audit,
+        &state.audit_policy,
+        crate::audit::AuditEvent::success(crate::audit::AuditEventType::AuthChallengeOk)
+            .with_subject(authz_id),
+    )
+    .await;
 }
 
 /// Handle a failed challenge validation.
@@ -368,6 +376,14 @@ async fn on_invalid(
     if let Err(e) = result {
         tracing::warn!("authz {authz_id_log}: on_invalid transaction failed: {e}");
     }
+    let _ = crate::audit::record(
+        &state.db,
+        &state.audit,
+        &state.audit_policy,
+        crate::audit::AuditEvent::failure(crate::audit::AuditEventType::AuthChallengeFail)
+            .with_subject(authz_id),
+    )
+    .await;
 }
 
 fn err_type(e: &AcmeError) -> &'static str {

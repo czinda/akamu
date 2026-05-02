@@ -340,6 +340,28 @@ async fn run() -> Result<(), String> {
         startup_time: std::time::Instant::now(),
     });
 
+    // ── Startup audit records ─────────────────────────────────────────────────
+    let key_file_exists = std::path::Path::new(&config.ca.key_file).exists();
+    let key_event_type = if key_file_exists {
+        akamu::audit::AuditEventType::KeyLoad
+    } else {
+        akamu::audit::AuditEventType::KeyGenerate
+    };
+    let _ = akamu::audit::record(
+        &state.db,
+        &state.audit,
+        &state.audit_policy,
+        akamu::audit::AuditEvent::success(key_event_type),
+    )
+    .await;
+    let _ = akamu::audit::record(
+        &state.db,
+        &state.audit,
+        &state.audit_policy,
+        akamu::audit::AuditEvent::success(akamu::audit::AuditEventType::CaStart),
+    )
+    .await;
+
     // Spawn background profile refresh task (no-op when no providers configured).
     profile_registry.spawn_refresh_task();
 

@@ -105,6 +105,13 @@ pub async fn get_crl(State(state): State<Arc<AppState>>) -> Result<Response, Acm
             .map_err(|_| AcmeError::Internal("CRL cache mutex poisoned".into()))?;
         *guard = Some((crl_der.clone(), Instant::now() + cache_ttl));
     }
+    let _ = crate::audit::record(
+        &state.db,
+        &state.audit,
+        &state.audit_policy,
+        crate::audit::AuditEvent::success(crate::audit::AuditEventType::CrlGenerate),
+    )
+    .await;
 
     let max_age = cache_ttl.as_secs();
     let mut resp = (StatusCode::OK, crl_der).into_response();
