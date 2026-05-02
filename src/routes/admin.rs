@@ -205,7 +205,7 @@ pub async fn post_operators(
 
     match result {
         Ok(()) => {
-            let _ = crate::audit::record(
+            crate::audit::record_or_log(
                 &state.db,
                 &state.audit,
                 &state.audit_policy,
@@ -254,13 +254,23 @@ pub async fn patch_operator(
 
     let now = now_rfc3339();
     match db::operators::set_active(&state.db, id, payload.active, &now).await {
-        Ok(()) => {
+        Ok(0) => (StatusCode::NOT_FOUND, Json(json!({"status": 404, "detail": "operator not found"}))).into_response(),
+        Ok(_) => {
             let action = if payload.active {
                 "operator.activate"
             } else {
                 "operator.deactivate"
             };
-            let _ = crate::audit::record(
+            // Revoked operators must not retain live session tokens.
+            if !payload.active {
+                if let Some(sessions) = &state.admin_sessions {
+                    sessions
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .retain(|_, s| s.operator_id != id);
+                }
+            }
+            crate::audit::record_or_log(
                 &state.db,
                 &state.audit,
                 &state.audit_policy,
@@ -473,7 +483,7 @@ pub async fn put_account_profile_grants(
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         Ok(false) => (StatusCode::NOT_FOUND, "account not found or deactivated").into_response(),
         Ok(true) => {
-            let _ = crate::audit::record(
+            crate::audit::record_or_log(
                 &state.db,
                 &state.audit,
                 &state.audit_policy,
@@ -507,7 +517,7 @@ pub async fn delete_account_profile_grants(
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         Ok(false) => (StatusCode::NOT_FOUND, "account not found or deactivated").into_response(),
         Ok(true) => {
-            let _ = crate::audit::record(
+            crate::audit::record_or_log(
                 &state.db,
                 &state.audit,
                 &state.audit_policy,
@@ -613,7 +623,7 @@ pub async fn post_eab(
     .await
     {
         Ok(()) => {
-            let _ = crate::audit::record(
+            crate::audit::record_or_log(
                 &state.db,
                 &state.audit,
                 &state.audit_policy,
@@ -657,8 +667,9 @@ pub async fn delete_eab(
     require_role!(operator, Administrator | CaOperations);
 
     match db::eab::delete(&state.db, &kid).await {
-        Ok(()) => {
-            let _ = crate::audit::record(
+        Ok(0) => (StatusCode::NOT_FOUND, Json(json!({"status": 404, "detail": "EAB key not found"}))).into_response(),
+        Ok(_) => {
+            crate::audit::record_or_log(
                 &state.db,
                 &state.audit,
                 &state.audit_policy,
@@ -692,7 +703,7 @@ pub async fn post_crl_force(
     // Drop the cached CRL; the next GET /ca/crl will regenerate it.
     *state.crl_cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
 
-    let _ = crate::audit::record(
+    crate::audit::record_or_log(
         &state.db,
         &state.audit,
         &state.audit_policy,
@@ -728,7 +739,7 @@ pub async fn post_revoke(
         Ok(true) => {
             // Invalidate CRL cache.
             *state.crl_cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
-            let _ = crate::audit::record(
+            crate::audit::record_or_log(
                 &state.db,
                 &state.audit,
                 &state.audit_policy,

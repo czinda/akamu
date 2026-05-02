@@ -94,19 +94,21 @@ pub async fn list(
 }
 
 /// Set `active = 1` or `active = 0` and update `last_seen_at`.
+///
+/// Returns the number of rows updated; callers should treat 0 as "not found".
 pub async fn set_active(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: i64,
     active: bool,
     now: &str,
-) -> Result<(), AcmeError> {
-    sqlx::query("UPDATE operators SET active = ?, last_seen_at = ? WHERE id = ?")
+) -> Result<u64, AcmeError> {
+    let result = sqlx::query("UPDATE operators SET active = ?, last_seen_at = ? WHERE id = ?")
         .bind(if active { 1i64 } else { 0i64 })
         .bind(now)
         .bind(id)
         .execute(executor)
         .await?;
-    Ok(())
+    Ok(result.rows_affected())
 }
 
 /// Bump `last_seen_at` on successful authentication.

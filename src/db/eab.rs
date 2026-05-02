@@ -119,15 +119,18 @@ pub async fn mark_used(
 }
 
 /// Delete a key entirely (for the future admin endpoint cleanup path).
+/// Delete an EAB key by KID.
+///
+/// Returns the number of rows deleted; callers should treat 0 as "not found".
 pub async fn delete(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     kid: &str,
-) -> Result<(), AcmeError> {
-    sqlx::query("DELETE FROM eab_keys WHERE kid = ?")
+) -> Result<u64, AcmeError> {
+    let result = sqlx::query("DELETE FROM eab_keys WHERE kid = ?")
         .bind(kid)
         .execute(executor)
         .await?;
-    Ok(())
+    Ok(result.rows_affected())
 }
 
 #[cfg(test)]
