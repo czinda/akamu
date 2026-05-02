@@ -768,3 +768,48 @@ mod tests {
         assert!(result.is_none());
     }
 }
+
+// ── Admin search ──────────────────────────────────────────────────────────────
+
+/// Filtered, paginated search used by `GET /admin/certs`.
+///
+/// Uses `QueryBuilder` so optional filters only emit bind parameters when
+/// present, avoiding the `(? IS NULL OR ...)` pattern that misfires on
+/// Postgres with untyped NULL placeholders.
+pub async fn search(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    serial: Option<&str>,
+    account_id: Option<&str>,
+    status: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<CertificateRow>, crate::error::AcmeError> {
+    let mut qb = sqlx::QueryBuilder::<sqlx::Any>::new(
+        "SELECT id, order_id, account_id, serial_number, status, der, pem, \
+                not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created, \
+                suggested_window_start, suggested_window_end, replaced_by \
+         FROM certificates WHERE 1=1",
+    );
+    if let Some(s) = serial {
+        qb.push(" AND serial_number = ");
+        qb.push_bind(s);
+    }
+    if let Some(a) = account_id {
+        qb.push(" AND account_id = ");
+        qb.push_bind(a);
+    }
+    if let Some(st) = status {
+        qb.push(" AND status = ");
+        qb.push_bind(st);
+    }
+    qb.push(" ORDER BY created DESC LIMIT ");
+    qb.push_bind(limit);
+    qb.push(" OFFSET ");
+    qb.push_bind(offset);
+
+    let rows = qb
+        .build_query_as::<CertificateRow>()
+        .fetch_all(executor)
+        .await?;
+    Ok(rows)
+}

@@ -375,32 +375,11 @@ pub async fn get_certs(
         .unwrap_or(0)
         .max(0);
 
-    // Build a simple query using the IS NULL OR col = ? pattern for optional params.
     let serial = params.get("serial").map(String::as_str);
     let account_id = params.get("account_id").map(String::as_str);
     let status = params.get("status").map(String::as_str);
 
-    let result = sqlx::query_as::<_, crate::db::schema::CertificateRow>(
-        "SELECT id, order_id, account_id, serial_number, status, der, pem, \
-                not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created, \
-                suggested_window_start, suggested_window_end, replaced_by \
-         FROM certificates \
-         WHERE (? IS NULL OR serial_number = ?) \
-           AND (? IS NULL OR account_id = ?) \
-           AND (? IS NULL OR status = ?) \
-         ORDER BY created DESC \
-         LIMIT ? OFFSET ?",
-    )
-    .bind(serial)
-    .bind(serial)
-    .bind(account_id)
-    .bind(account_id)
-    .bind(status)
-    .bind(status)
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(&state.db)
-    .await;
+    let result = db::certs::search(&state.db, serial, account_id, status, limit, offset).await;
 
     match result {
         Ok(rows) => {
@@ -788,43 +767,13 @@ pub async fn get_stats(
 
     let uptime_secs = state.startup_time.elapsed().as_secs();
 
-    // Gather counts from the DB.
-    let account_total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM accounts")
-        .fetch_one(&state.db)
-        .await
-        .unwrap_or((0,));
-    let account_active: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM accounts WHERE status = 'valid'")
-            .fetch_one(&state.db)
-            .await
-            .unwrap_or((0,));
-    let cert_total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM certificates")
-        .fetch_one(&state.db)
-        .await
-        .unwrap_or((0,));
-    let cert_active: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM certificates WHERE status = 'valid'")
-            .fetch_one(&state.db)
-            .await
-            .unwrap_or((0,));
-    let cert_revoked: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM certificates WHERE status = 'revoked'")
-            .fetch_one(&state.db)
-            .await
-            .unwrap_or((0,));
-    let eab_total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM eab_keys")
-        .fetch_one(&state.db)
-        .await
-        .unwrap_or((0,));
-    let eab_used: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM eab_keys WHERE used_at IS NOT NULL")
-            .fetch_one(&state.db)
-            .await
-            .unwrap_or((0,));
-    let audit_total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM audit_events")
-        .fetch_one(&state.db)
-        .await
-        .unwrap_or((0,));
+    let counts = match db::stats::summary(&state.db).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(error = %e, "stats DB query failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
 
     let server_version = env!("CARGO_PKG_VERSION");
 
@@ -834,21 +783,21 @@ pub async fn get_stats(
             "server_version": server_version,
             "uptime_secs": uptime_secs,
             "accounts": {
-                "total": account_total.0,
-                "active": account_active.0,
+                "total": counts.account_total,
+                "active": counts.account_active,
             },
             "certs": {
-                "total": cert_total.0,
-                "active": cert_active.0,
-                "revoked": cert_revoked.0,
+                "total": counts.cert_total,
+                "active": counts.cert_active,
+                "revoked": counts.cert_revoked,
             },
             "eab_keys": {
-                "total": eab_total.0,
-                "used": eab_used.0,
-                "unused": eab_total.0 - eab_used.0,
+                "total": counts.eab_total,
+                "used": counts.eab_used,
+                "unused": counts.eab_total - counts.eab_used,
             },
             "audit_events": {
-                "total": audit_total.0,
+                "total": counts.audit_total,
             },
         })),
     )

@@ -11,6 +11,7 @@ pub mod nonces;
 pub mod operators;
 pub mod orders;
 pub mod schema;
+pub mod stats;
 
 use crate::error::AcmeError;
 
