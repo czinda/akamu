@@ -40,6 +40,7 @@ use crate::state::{AdminAuthMethod, AdminSession, AppState, OperatorRole};
 /// DER-encoded leaf client certificate injected into request extensions by the
 /// admin TLS accept loop.  Absent when the admin listener has no client-cert
 /// requirement or the client presented no certificate.
+#[derive(Clone)]
 pub struct PeerClientCert(pub Vec<u8>);
 
 // ── Session token generation ──────────────────────────────────────────────────
@@ -225,7 +226,7 @@ where
             })?;
             match db::operators::get_by_fingerprint(&app.db, &fingerprint).await {
                 Ok(Some(op)) => {
-                    let role = OperatorRole::from_str(&op.role).ok_or_else(|| {
+                    let role = op.role.parse::<OperatorRole>().map_err(|_| {
                         tracing::error!(role = %op.role, "operator has unknown role");
                         StatusCode::INTERNAL_SERVER_ERROR.into_response()
                     })?;
@@ -407,7 +408,7 @@ async fn authenticate_gssapi(
     // Look up the principal in the operators table.
     match db::operators::get_by_principal(&app.db, &principal).await {
         Ok(Some(op)) => {
-            let role = OperatorRole::from_str(&op.role).ok_or_else(|| {
+            let role = op.role.parse::<OperatorRole>().map_err(|_| {
                 tracing::error!(role = %op.role, "operator has unknown role");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             })?;
