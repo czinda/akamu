@@ -57,7 +57,7 @@ fn generate_token() -> Result<String, crate::error::AcmeError> {
 
 /// Compute the SHA-256 fingerprint of DER bytes and return it as a lowercase
 /// hex string.
-fn sha256_hex(data: &[u8]) -> Result<String, crate::error::AcmeError> {
+pub(crate) fn sha256_hex(data: &[u8]) -> Result<String, crate::error::AcmeError> {
     let alg = native_ossl::digest::DigestAlg::fetch(c"SHA2-256", None)
         .map_err(|e| crate::error::AcmeError::Internal(format!("SHA2-256 fetch: {e}")))?;
     let mut ctx = alg

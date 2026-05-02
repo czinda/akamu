@@ -178,6 +178,15 @@ async fn run() -> Result<(), String> {
             .map_err(|e| format!("TLS init: {e}"))?;
     }
 
+    // ── Admin bootstrap (auto-generate server cert and bootstrap operator) ───
+    if let Some(ref admin_cfg) = config.admin {
+        akamu::admin::init::load_or_generate_server_cert(admin_cfg, &ca)
+            .map_err(|e| format!("admin TLS init: {e}"))?;
+        akamu::admin::init::bootstrap_operator_if_needed(admin_cfg, &ca, &db)
+            .await
+            .map_err(|e| format!("admin operator bootstrap: {e}"))?;
+    }
+
     // ── MTC transparency log ──────────────────────────────────────────────────
     let mtc_algorithm = synta_mtc::crypto::HashAlgorithm::Sha256;
 
