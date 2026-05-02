@@ -27,7 +27,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/sign", post(sign::post_sign))
         .route(
-            "/.well-known/acme-challenge/:token",
+            "/.well-known/acme-challenge/{token}",
             get(acme_challenge_handler),
         )
         .route(
