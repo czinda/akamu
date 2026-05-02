@@ -71,9 +71,12 @@ pub async fn delete_oldest(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     n: i64,
 ) -> Result<(), AcmeError> {
+    // Wrap the inner SELECT in a derived-table alias so this works on
+    // Postgres (rejects DELETE…WHERE id IN (SELECT…FROM same_table)) and
+    // MariaDB (raises error 1093 for the same reason). SQLite accepts both.
     sqlx::query(
         "DELETE FROM audit_events WHERE id IN \
-         (SELECT id FROM audit_events ORDER BY id ASC LIMIT ?)",
+         (SELECT id FROM (SELECT id FROM audit_events ORDER BY id ASC LIMIT ?) AS _oldest)",
     )
     .bind(n)
     .execute(executor)
