@@ -166,24 +166,89 @@
             activationBorderColor: '#e6b450',  // --quote-border
             activationBkgColor:    '#3d2e00',  // --search-mark-bg
         },
+        // ── Pastel ─────────────────────────────────────────────────────────────
+        pastel: {
+            background:            '#FFFFFF',
+            primaryColor:          '#D1E8FF',  // soft pastel blue (standard nodes)
+            primaryBorderColor:    '#A9D1FB',  // slightly deeper blue borders
+            primaryTextColor:      '#5A5A5A',
+            secondaryColor:        '#E6F2FF',  // very light blue (decision diamonds)
+            tertiaryColor:         '#C4E1FF',  // medium pastel blue (ovals/other)
+            edgeLabelBackground:   '#FFFFFF',
+            clusterBkg:            '#FFFFFF',
+            clusterBorder:         '#A9D1FB',
+            lineColor:             '#A9D1FB',  // matching blue lines
+            textColor:             '#5A5A5A',
+            fontFamily:            "Inter, 'Trebuchet MS', Arial, sans-serif",
+            // sequence diagram
+            actorBkg:              '#D1E8FF',
+            actorBorder:           '#A9D1FB',
+            actorTextColor:        '#5A5A5A',
+            actorLineColor:        '#A9D1FB',
+            signalColor:           '#A9D1FB',
+            signalTextColor:       '#5A5A5A',
+            labelBoxBkgColor:      '#D1E8FF',
+            labelBoxBorderColor:   '#A9D1FB',
+            labelTextColor:        '#5A5A5A',
+            loopTextColor:         '#5A5A5A',
+            noteBkgColor:          '#E6F2FF',  // very light blue notes
+            noteBorderColor:       '#A9D1FB',
+            noteTextColor:         '#5A5A5A',
+            activationBorderColor: '#A9D1FB',
+            activationBkgColor:    '#C4E1FF',  // medium pastel blue
+        },
+
+        // ── Rainbow ────────────────────────────────────────────────────────────
+        rainbow: {
+            background:            '#FFFFFF',
+            primaryColor:          '#FFD1DC',  // pastel pink (standard nodes)
+            primaryBorderColor:    '#D3D3D3',  // neutral light gray borders
+            primaryTextColor:      '#5A5A5A',
+            secondaryColor:        '#FDFD96',  // pastel yellow (decision diamonds)
+            tertiaryColor:         '#B0E0E6',  // pastel powder blue (ovals/other)
+            edgeLabelBackground:   '#FFFFFF',
+            clusterBkg:            '#FFFFFF',
+            clusterBorder:         '#E6E6FA',  // pastel lavender
+            lineColor:             '#A9A9A9',
+            textColor:             '#5A5A5A',
+            fontFamily:            "Inter, 'Trebuchet MS', Arial, sans-serif",
+            // sequence diagram
+            actorBkg:              '#FFD1DC',
+            actorBorder:           '#D3D3D3',
+            actorTextColor:        '#5A5A5A',
+            actorLineColor:        '#A9A9A9',
+            signalColor:           '#A9A9A9',
+            signalTextColor:       '#5A5A5A',
+            labelBoxBkgColor:      '#FFD1DC',
+            labelBoxBorderColor:   '#D3D3D3',
+            labelTextColor:        '#5A5A5A',
+            loopTextColor:         '#5A5A5A',
+            noteBkgColor:          '#FDFD96',  // pastel yellow notes
+            noteBorderColor:       '#D3D3D3',
+            noteTextColor:         '#5A5A5A',
+            activationBorderColor: '#D3D3D3',
+            activationBkgColor:    '#B0E0E6',  // pastel powder blue
+        },
     };
 
     const darkThemeNames  = ['ayu', 'navy', 'coal'];
-    const lightThemeNames = ['light', 'rust'];
+    const lightThemeNames = ['light', 'rust', 'pastel', 'rainbow'];
 
     // ── Detect current mdBook theme from <html> class list ────────────────────
 
     function detectTheme() {
         const classes = document.getElementsByTagName('html')[0].classList;
         for (const name of Object.keys(themes)) {
-            if (classes.contains(name)) return name;
+            if (classes.contains(name)) {
+                // Light mdBook themes default to the pastel Mermaid config.
+                return lightThemeNames.includes(name) ? 'pastel' : name;
+            }
         }
-        // Fallback: pick light/dark based on any known class.
+        // Fallback: pick pastel/dark based on any known class.
         for (const cls of classes) {
-            if (darkThemeNames.includes(cls))  return 'navy';
-            if (lightThemeNames.includes(cls)) return 'light';
+            if (darkThemeNames.includes(cls)) return 'navy';
         }
-        return 'light';
+        return 'pastel';
     }
 
     // ── Initialize Mermaid ────────────────────────────────────────────────────
@@ -194,7 +259,7 @@
     mermaid.initialize({
         startOnLoad: true,
         theme: 'base',
-        themeVariables: themes[currentTheme] ?? themes.light,
+        themeVariables: themes[currentTheme] ?? themes.pastel,
         // Inherit the page font so diagrams feel native, not bolted-on.
         fontFamily: 'inherit',
         // Slightly larger base font so labels stay readable at all viewport sizes.
