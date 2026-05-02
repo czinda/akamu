@@ -254,6 +254,9 @@ pub async fn new_order(
                 )));
             }
         }
+        if ar.lifetime > i64::MAX as u64 {
+            return Err(AcmeError::BadRequest("auto-renewal lifetime out of range".into()));
+        }
         (
             start_ts,
             Some(end_ts),
