@@ -98,38 +98,46 @@ pub struct AuditQuery<'a> {
 
 /// Filtered, paginated query over `audit_events`.
 ///
-/// Uses `(? IS NULL OR col = ?)` for optional filters so that binding `None`
-/// (SQL NULL) is treated as "no constraint", while binding `Some(val)` applies
-/// an equality filter.  This works correctly on SQLite, PostgreSQL, and MariaDB.
+/// Uses `sqlx::QueryBuilder` to emit bind parameters only for filters that are
+/// `Some`, avoiding the `(? IS NULL OR col = ?)` pattern that misfires on
+/// Postgres when an untyped NULL placeholder cannot be inferred.
 pub async fn query(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     q: &AuditQuery<'_>,
 ) -> Result<Vec<AuditEventRow>, AcmeError> {
-    let rows = sqlx::query_as::<_, AuditEventRow>(
+    let mut qb = sqlx::QueryBuilder::<sqlx::Any>::new(
         "SELECT id, occurred_at, event_type, subject, principal, outcome, detail \
-         FROM audit_events \
-         WHERE (? IS NULL OR event_type = ?) \
-           AND (? IS NULL OR subject = ?) \
-           AND (? IS NULL OR occurred_at >= ?) \
-           AND (? IS NULL OR occurred_at <= ?) \
-           AND (? IS NULL OR outcome = ?) \
-         ORDER BY id DESC \
-         LIMIT ? OFFSET ?",
-    )
-    .bind(q.event_type)
-    .bind(q.event_type)
-    .bind(q.subject)
-    .bind(q.subject)
-    .bind(q.from)
-    .bind(q.from)
-    .bind(q.until)
-    .bind(q.until)
-    .bind(q.outcome)
-    .bind(q.outcome)
-    .bind(q.limit)
-    .bind(q.offset)
-    .fetch_all(executor)
-    .await?;
+         FROM audit_events WHERE 1=1",
+    );
+    if let Some(t) = q.event_type {
+        qb.push(" AND event_type = ");
+        qb.push_bind(t);
+    }
+    if let Some(s) = q.subject {
+        qb.push(" AND subject = ");
+        qb.push_bind(s);
+    }
+    if let Some(f) = q.from {
+        qb.push(" AND occurred_at >= ");
+        qb.push_bind(f);
+    }
+    if let Some(u) = q.until {
+        qb.push(" AND occurred_at <= ");
+        qb.push_bind(u);
+    }
+    if let Some(o) = q.outcome {
+        qb.push(" AND outcome = ");
+        qb.push_bind(o);
+    }
+    qb.push(" ORDER BY id DESC LIMIT ");
+    qb.push_bind(q.limit);
+    qb.push(" OFFSET ");
+    qb.push_bind(q.offset);
+
+    let rows = qb
+        .build_query_as::<AuditEventRow>()
+        .fetch_all(executor)
+        .await?;
     Ok(rows)
 }
 
