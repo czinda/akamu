@@ -185,6 +185,17 @@ impl AdminClient {
         parse_json(&resp.body)
     }
 
+    /// Make an authenticated PUT request with JSON body.
+    pub async fn put(&self, path: &str, body: &Value) -> Result<Value, CtlError> {
+        let token = self.session_token().await?;
+        let body_str = body.to_string();
+        let resp = self
+            .raw_request(Method::PUT, path, Some(&token), Some(&body_str))
+            .await?;
+        check_status(&resp)?;
+        parse_json(&resp.body)
+    }
+
     /// Make an authenticated DELETE request.
     pub async fn delete(&self, path: &str) -> Result<(), CtlError> {
         let token = self.session_token().await?;

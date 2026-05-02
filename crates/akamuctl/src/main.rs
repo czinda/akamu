@@ -433,11 +433,11 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
                     print(&fmt, &resp);
                 }
                 AccountGrantsCmd::Set { id, profiles } => {
-                    let body = json!({"profiles": profiles});
+                    let body = json!({"profile_grants": profiles});
                     let resp = server_client
-                        .post(
+                        .put(
                             &format!("/admin/account/{}/profile-grants", urlenc(&id)),
-                            Some(&body),
+                            &body,
                         )
                         .await?;
                     print(&fmt, &resp);
