@@ -80,6 +80,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Cryptographically random nonces/tokens
 getrandom = "0.2"
 
+# Constant-time byte comparison (session token lookup defense against timing attacks)
+subtle = "2"
+
 # Regular expressions (profile identifier authorization)
 regex = { version = "1", default-features = false, features = ["std", "unicode-bool"] }
 # POSIX file locking (flock) for MTC log exclusion

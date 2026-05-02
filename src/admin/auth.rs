@@ -108,7 +108,11 @@ pub async fn create_session(
 
 /// Look up a session by token.  Sweeps expired entries; updates `last_active_at`
 /// on a hit.  Returns `None` when the token is absent or expired.
+///
+/// Token comparison uses `subtle::ConstantTimeEq` to prevent timing side-channels
+/// that could leak information about valid vs. invalid token prefixes.
 async fn lookup_session(state: &AppState, token: &str) -> Option<(i64, String, OperatorRole, AdminAuthMethod)> {
+    use subtle::ConstantTimeEq as _;
     let store = state.admin_sessions.as_ref()?;
     let ttl = Duration::from_secs(
         state
@@ -120,7 +124,17 @@ async fn lookup_session(state: &AppState, token: &str) -> Option<(i64, String, O
     );
     let mut map = store.lock().await;
     map.retain(|_, s| s.last_active_at.elapsed() < ttl);
-    let session = map.get_mut(token)?;
+    let token_bytes = token.as_bytes();
+    // Scan all entries so the iteration time is independent of position.
+    let found_key = map
+        .keys()
+        .find(|k| {
+            let kb = k.as_bytes();
+            kb.len() == token_bytes.len() && kb.ct_eq(token_bytes).into()
+        })
+        .cloned();
+    let key = found_key?;
+    let session = map.get_mut(&key)?;
     session.last_active_at = Instant::now();
     Some((session.operator_id, session.name.clone(), session.role, session.auth_method))
 }
@@ -315,6 +329,11 @@ where
 #[derive(Clone)]
 pub struct NewSessionToken(pub String);
 
+/// Optional GSSAPI out-token (base64-encoded) to be returned in a
+/// `WWW-Authenticate: Negotiate <token>` response header.
+#[derive(Clone)]
+pub struct GssapiOutToken(pub String);
+
 // ── GSSAPI path ───────────────────────────────────────────────────────────────
 
 async fn authenticate_gssapi(
@@ -369,7 +388,7 @@ async fn authenticate_gssapi(
         StatusCode::INTERNAL_SERVER_ERROR.into_response()
     })?;
 
-    let (_out_token, principal) = match result {
+    let (out_token, principal) = match result {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!(error = %e, "admin GSSAPI authentication failed");
@@ -418,6 +437,10 @@ async fn authenticate_gssapi(
             )
             .await;
             parts.extensions.insert(NewSessionToken(token.clone()));
+            if !out_token.is_empty() {
+                let encoded = base64::engine::general_purpose::STANDARD.encode(&out_token);
+                parts.extensions.insert(GssapiOutToken(encoded));
+            }
             Ok(OperatorContext {
                 operator_id: op.id,
                 name: op.name,
@@ -462,7 +485,8 @@ async fn authenticate_gssapi(
 pub async fn post_session(
     operator: OperatorContext,
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
-) -> impl axum::response::IntoResponse {
+    gssapi_out: Option<axum::extract::Extension<GssapiOutToken>>,
+) -> axum::response::Response {
     let ttl_secs = state
         .config
         .admin
@@ -478,8 +502,8 @@ pub async fn post_session(
         gt.year, gt.month, gt.day, gt.hour, gt.minute, gt.second
     );
 
-    let token = operator.session_token.unwrap_or_default();
-    (
+    let token = operator.session_token.as_deref().unwrap_or("");
+    let mut resp = (
         StatusCode::OK,
         axum::Json(json!({
             "session_token": token,
@@ -487,6 +511,20 @@ pub async fn post_session(
             "expires_at": expires_at,
         })),
     )
+        .into_response();
+
+    if !token.is_empty() {
+        if let Ok(hv) = axum::http::HeaderValue::from_str(token) {
+            resp.headers_mut().insert("X-Session-Token", hv);
+        }
+    }
+    if let Some(axum::extract::Extension(GssapiOutToken(b64))) = gssapi_out {
+        let negotiate = format!("Negotiate {b64}");
+        if let Ok(hv) = axum::http::HeaderValue::from_str(&negotiate) {
+            resp.headers_mut().insert("WWW-Authenticate", hv);
+        }
+    }
+    resp
 }
 
 /// `DELETE /admin/session`
