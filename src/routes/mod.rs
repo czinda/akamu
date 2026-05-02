@@ -3,7 +3,9 @@
 use std::sync::Arc;
 
 use axum::body::Bytes;
+use axum::extract::Request;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, head, post};
 use axum::{Json, Router};
@@ -34,12 +36,34 @@ pub mod renewal_info;
 pub mod revoke;
 pub mod star_cert;
 
+/// Middleware: reject ACME requests when the audit store is full and the
+/// overflow policy is `halt` (FAU_STG.4).  Admin routes bypass this check
+/// so operators can query status and resolve the condition.
+async fn halt_check(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    use std::sync::atomic::Ordering;
+    if state.audit.should_halt.load(Ordering::Acquire) {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [("Retry-After", "300")],
+            "audit storage full — server halted per FAU_STG.4 policy",
+        )
+            .into_response();
+    }
+    next.run(req).await
+}
+
 /// Build the main axum router with all ACME endpoints.
 pub fn build_router(state: Arc<AppState>) -> Router {
     // max_body_bytes = 0 means "use axum's built-in default (2 MiB)".
     // Only install DefaultBodyLimit when explicitly configured.
     let max_body = state.config.server.max_body_bytes;
-    Router::new()
+
+    // ACME routes: subject to FAU_STG.4 halt_check middleware.
+    let acme_router = Router::new()
         // Directory
         .route("/acme/directory", get(directory::get_directory))
         // Nonces
@@ -60,7 +84,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/acme/chall/{authz_id}/{type}",
             post(challenge::respond_challenge),
         )
-        // Certificates — GET for plain clients; POST for RFC 8555 POST-as-GET clients
+        // Certificates
         .route(
             "/acme/cert/{id}",
             get(certificate::download_cert).post(certificate::download_cert_post),
@@ -70,11 +94,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/acme/cert/star/{order_id}",
             get(star_cert::star_cert_get).post(star_cert::star_cert_post),
         )
-        // CRL (RFC 5280) — public, no auth required
-        .route("/ca/crl", get(crl::get_crl))
-        // OCSP (RFC 6960) — public, no auth required
-        .route("/ca/ocsp", post(ocsp::post_ocsp))
-        .route("/ca/ocsp/{request}", get(ocsp::get_ocsp))
         // Revocation
         .route("/acme/revoke-cert", post(revoke::revoke_cert))
         // Key change
@@ -104,6 +123,21 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/acme/mtc/tlog/checkpoint", get(mtc::get_tlog_checkpoint))
         .route("/acme/mtc/tlog/cosignature", get(mtc::get_tlog_cosignature))
         .route("/acme/mtc/tlog/tile/{*path}", get(mtc::get_tlog_tile))
+        // EAB identity — returns authenticated principal (proxy header or GSSAPI)
+        .route("/acme/eab", get(eab_identity::get_eab_identity))
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
+            halt_check,
+        ));
+
+    // Non-ACME routes: CRL/OCSP (public, read-only) and admin (operators need
+    // access even when the server is halted for audit-overflow remediation).
+    let other_router = Router::new()
+        // CRL (RFC 5280) — public, no auth required
+        .route("/ca/crl", get(crl::get_crl))
+        // OCSP (RFC 6960) — public, no auth required
+        .route("/ca/ocsp", post(ocsp::post_ocsp))
+        .route("/ca/ocsp/{request}", get(ocsp::get_ocsp))
         // Admin API — only registered when [admin] is configured in config.toml.
         // Full operator authentication (mTLS cert + session token + GSSAPI) is
         // enforced by the OperatorContext extractor in crate::admin::auth.
@@ -131,9 +165,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/admin/certs", axum::routing::get(admin::get_certs))
         .route("/admin/crl/force", post(admin::post_crl_force))
         .route("/admin/revoke", post(admin::post_revoke))
-        .route("/admin/stats", axum::routing::get(admin::get_stats))
-        // EAB identity — returns authenticated principal (proxy header or GSSAPI)
-        .route("/acme/eab", get(eab_identity::get_eab_identity))
+        .route("/admin/stats", axum::routing::get(admin::get_stats));
+
+    Router::new()
+        .merge(acme_router)
+        .merge(other_router)
         .layer(if max_body > 0 {
             axum::extract::DefaultBodyLimit::max(max_body)
         } else {
@@ -141,11 +177,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         })
         .layer(
             TraceLayer::new_for_http()
-                // Suppress "started processing request" — the response line already
-                // carries method, URI, status, and latency; the request event is redundant.
                 .on_request(())
-                // Suppress "end of stream" — this fires after the body is fully
-                // sent and adds no useful information for ACME endpoints.
                 .on_eos(()),
         )
         .with_state(state)
