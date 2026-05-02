@@ -264,10 +264,7 @@ pub async fn patch_operator(
             // Revoked operators must not retain live session tokens.
             if !payload.active {
                 if let Some(sessions) = &state.admin_sessions {
-                    sessions
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .retain(|_, s| s.operator_id != id);
+                    sessions.lock().await.retain(|_, s| s.operator_id != id);
                 }
             }
             crate::audit::record_or_log(

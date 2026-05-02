@@ -73,7 +73,7 @@ fn sha256_hex(data: &[u8]) -> Result<String, crate::error::AcmeError> {
 // ── Session store helpers ─────────────────────────────────────────────────────
 
 /// Create a new session for `operator_id` and return the token.
-pub fn create_session(
+pub async fn create_session(
     state: &AppState,
     operator_id: i64,
     name: String,
@@ -90,7 +90,7 @@ pub fn create_session(
         auth_method,
     };
     if let Some(ref store) = state.admin_sessions {
-        let mut map = store.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = store.lock().await;
         // Sweep expired entries while we hold the lock.
         let ttl = Duration::from_secs(
             state
@@ -108,7 +108,7 @@ pub fn create_session(
 
 /// Look up a session by token.  Sweeps expired entries; updates `last_active_at`
 /// on a hit.  Returns `None` when the token is absent or expired.
-fn lookup_session(state: &AppState, token: &str) -> Option<(i64, String, OperatorRole, AdminAuthMethod)> {
+async fn lookup_session(state: &AppState, token: &str) -> Option<(i64, String, OperatorRole, AdminAuthMethod)> {
     let store = state.admin_sessions.as_ref()?;
     let ttl = Duration::from_secs(
         state
@@ -118,7 +118,7 @@ fn lookup_session(state: &AppState, token: &str) -> Option<(i64, String, Operato
             .map(|a| a.session_ttl_secs)
             .unwrap_or(3600),
     );
-    let mut map = store.lock().unwrap_or_else(|e| e.into_inner());
+    let mut map = store.lock().await;
     map.retain(|_, s| s.last_active_at.elapsed() < ttl);
     let session = map.get_mut(token)?;
     session.last_active_at = Instant::now();
@@ -126,12 +126,9 @@ fn lookup_session(state: &AppState, token: &str) -> Option<(i64, String, Operato
 }
 
 /// Remove a session token from the store.  No-op if the token is unknown.
-pub fn invalidate_session(state: &AppState, token: &str) {
+pub async fn invalidate_session(state: &AppState, token: &str) {
     if let Some(ref store) = state.admin_sessions {
-        store
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(token);
+        store.lock().await.remove(token);
     }
 }
 
@@ -189,7 +186,7 @@ where
 
         // ── Path 1: Bearer session token ──────────────────────────────────────
         if let Some(token) = auth_header.strip_prefix("Bearer ") {
-            if let Some((id, name, role, method)) = lookup_session(&app, token) {
+            if let Some((id, name, role, method)) = lookup_session(&app, token).await {
                 return Ok(OperatorContext {
                     operator_id: id,
                     name,
@@ -221,6 +218,7 @@ where
                     // Issue a session token for subsequent requests.
                     let token =
                         create_session(&app, op.id, op.name.clone(), role, AdminAuthMethod::Cert)
+                            .await
                             .map_err(|e| {
                                 tracing::error!(error = %e, "session creation failed");
                                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -395,6 +393,7 @@ async fn authenticate_gssapi(
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             })?;
             let token = create_session(app, op.id, op.name.clone(), role, AdminAuthMethod::Gssapi)
+                .await
                 .map_err(|e| {
                     tracing::error!(error = %e, "session creation failed");
                     StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -498,7 +497,7 @@ pub async fn delete_session(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> impl axum::response::IntoResponse {
     if let Some(token) = &operator.session_token {
-        invalidate_session(&state, token);
+        invalidate_session(&state, token).await;
     }
     crate::audit::record_or_log(
         &state.db,

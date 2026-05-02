@@ -335,7 +335,7 @@ async fn run() -> Result<(), String> {
                 .unwrap_or_default(),
         ),
         admin_sessions: config.admin.as_ref().map(|_| {
-            Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))
+            Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()))
         }),
         startup_time: std::time::Instant::now(),
     });

@@ -176,7 +176,7 @@ pub struct AppState {
     /// Maps opaque 32-byte hex session token → `AdminSession`.  Checked on
     /// every request to the admin listener; entries are evicted when their TTL
     /// expires.  `None` when `[admin]` is absent.
-    pub admin_sessions: Option<Arc<Mutex<HashMap<String, AdminSession>>>>,
+    pub admin_sessions: Option<Arc<tokio::sync::Mutex<HashMap<String, AdminSession>>>>,
     /// Time the server process started.  Used for uptime reporting in
     /// `GET /admin/stats` and for session-expiry calculations.
     pub startup_time: Instant,
