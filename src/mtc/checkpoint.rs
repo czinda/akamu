@@ -53,7 +53,7 @@ pub async fn produce_checkpoint(
         }
     }
 
-    let now_unix = crate::routes::unix_now();
+    let now_unix = crate::util::unix_now();
 
     // Fetch certs covered by this checkpoint that still need a standalone DER.
     // Must happen before spawn_blocking so we can do async DB I/O.

@@ -56,7 +56,7 @@ pub async fn maybe_allocate_landmark(
         }
     }
 
-    let now_unix = crate::routes::unix_now();
+    let now_unix = crate::util::unix_now();
 
     // Atomically insert the landmark row inside a write transaction so that
     // sequence_no assignment is serialised even under concurrent access.
