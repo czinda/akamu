@@ -42,40 +42,40 @@ sequenceDiagram
     participant Ext as Applicant Server / DNS
     participant DB as SQLite
 
-    Client->>H: POST to challenge URL
-    H->>DB: challenge → processing
-    H->>V: tokio::spawn(validate_challenge)
-    H-->>Client: 200 processing (immediate return)
+    Client->H: POST to challenge URL
+    H->DB: challenge -> processing
+    H->V: tokio::spawn(validate_challenge)
+    H-->Client: 200 processing (immediate return)
 
-    V->>D: dispatch(chall_type, domain, key_auth, …)
+    V->D: dispatch(chall_type, domain, key_auth, ...)
 
     alt http-01
-        D->>Ext: GET /.well-known/acme-challenge/TOKEN
-        Ext-->>D: 200 key_authorization body
+        D->Ext: GET /.well-known/acme-challenge/TOKEN
+        Ext-->D: 200 key_authorization body
     else dns-01
-        D->>Ext: TXT _acme-challenge.DOMAIN
-        Ext-->>D: TXT record value
+        D->Ext: TXT _acme-challenge.DOMAIN
+        Ext->D: TXT record value
     else tls-alpn-01
-        D->>Ext: TLS connect :443, ALPN acme-tls/1
-        Ext-->>D: Certificate with id-pe-acmeIdentifier
+        D->Ext: TLS connect :443, ALPN acme-tls/1
+        Ext->D: Certificate with id-pe-acmeIdentifier
     else dns-persist-01
-        D->>Ext: TXT _validation-persist.DOMAIN
-        Ext-->>D: TXT record value (issuer;accounturi;policy;persistUntil)
+        D->Ext: TXT _validation-persist.DOMAIN
+        Ext->D: TXT record value (issuer;accounturi;policy;persistUntil)
     end
 
     alt probe succeeded
-        V->>DB: BEGIN TRANSACTION
-        V->>DB: challenge → valid (+ validated timestamp)
-        V->>DB: authorization → valid
-        V->>DB: count non-valid authzs for order
+        V->DB: BEGIN TRANSACTION
+        V->DB: challenge -> valid (+ validated timestamp)
+        V->DB: authorization -> valid
+        V->DB: count non-valid authzs for order
         alt all authorizations now valid
-            V->>DB: order → ready
+            V->DB: order -> ready
         end
-        V->>DB: COMMIT
+        V->DB: COMMIT
     else probe failed
-        V->>DB: challenge → invalid (+ error JSON)
-        V->>DB: authorization → invalid
-        V->>DB: order → invalid
+        V->DB: challenge -> invalid (+ error JSON)
+        V->DB: authorization -> invalid
+        V->DB: order -> invalid
     end
 
     Note over Client: Client polls authorization URL (POST-as-GET)
@@ -140,7 +140,7 @@ stateDiagram-v2
     }
 
     chall --> authz : atomic DB transaction
-    authz --> ord : atomic DB transaction (on_valid)\nindependent steps (on_invalid)
+    authz --> ord : atomic DB transaction (on_valid)<br/>independent steps (on_invalid)
 ```
 
 ## State transitions on success (`on_valid`)

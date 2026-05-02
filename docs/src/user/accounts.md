@@ -7,7 +7,7 @@ ACME accounts are persistent identities that tie a public key to one or more ema
 ```mermaid
 stateDiagram-v2
     direction LR
-    [*] --> valid : create account\nPOST /acme/new-account
+    [*] --> valid : create account<br/>POST /acme/new-account
     valid --> deactivated : POST status=deactivated
     deactivated --> [*]
 ```
