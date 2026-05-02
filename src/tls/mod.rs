@@ -13,12 +13,23 @@
 //! Bootstrap: if `cert_file`/`key_file` are absent, `init::load_or_generate`
 //! generates a server certificate signed by the Akāmu CA at startup.
 
+pub mod channel_binding;
 pub mod init;
 pub mod loader;
 pub mod schemes;
 pub mod verifier;
 
 use std::sync::Arc;
+
+/// Return the DER bytes of the leaf (end-entity) TLS server certificate.
+pub fn leaf_cert_der(tls: &crate::config::TlsConfig) -> Result<Vec<u8>, String> {
+    let chain = loader::load_server_cert_chain(&tls.cert_file)?;
+    chain
+        .into_iter()
+        .next()
+        .map(|c| c.to_vec())
+        .ok_or_else(|| format!("TLS cert '{}' contains no certificates", tls.cert_file))
+}
 
 /// Build a `rustls::ServerConfig` from the `[tls]` configuration section.
 ///
