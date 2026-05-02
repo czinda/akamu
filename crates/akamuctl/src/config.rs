@@ -91,12 +91,25 @@ impl SessionCache {
     }
 
     pub fn save(&self) -> Result<(), String> {
+        use std::io::Write as _;
+        use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
         let path = Self::default_path();
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent)
+                .map_err(|e| format!("mkdir: {e}"))?;
         }
         let s = serde_json::to_string_pretty(self).map_err(|e| format!("serialize: {e}"))?;
-        std::fs::write(&path, s).map_err(|e| format!("write session: {e}"))
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)
+            .and_then(|mut f| f.write_all(s.as_bytes()))
+            .map_err(|e| format!("write session: {e}"))
     }
 
     /// Return the cached token for `url` if it's not expired (30 s margin).
