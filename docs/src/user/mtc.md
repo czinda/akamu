@@ -152,13 +152,13 @@ Returns a Merkle inclusion proof for the certificate identified by `cert_id` (th
   "leafIndex": 7,
   "treeSize": 42,
   "proof": [
-    { "left": true,  "hash": "a1b2c3..." },
-    { "left": false, "hash": "d4e5f6..." }
+    { "hash": "a1b2c3..." },
+    { "hash": "d4e5f6..." }
   ]
 }
 ```
 
-Each element of `proof` is an object with two fields: `"left"` (a boolean indicating whether the sibling is to the left of the current node) and `"hash"` (the sibling hash as a lowercase hex string). The proof is ordered from the leaf up to the root.
+Each element of `proof` is an object with a single `"hash"` field containing the sibling hash as a lowercase hex string. The proof is ordered from the leaf up to the root. The sibling position (left or right) is determined algorithmically from the leaf index and tree size, following the standard RFC 6962 Merkle audit proof construction; it is not encoded in the response.
 
 ### `GET /acme/mtc/cert/{cert_id}/standalone`
 

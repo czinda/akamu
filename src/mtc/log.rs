@@ -9,14 +9,14 @@ use std::fs;
 use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
 
-use synta::traits::Encode;
-use synta::{Decoder, Encoder, Encoding};
+use synta::{Decoder, Encoding};
 use synta_certificate::Certificate;
 use synta_mtc::{
     builder::IssuanceLogBuilder,
-    crypto::{hash_leaf, HashAlgorithm},
+    crypto::{hash_log_entry, HashAlgorithm},
     integration::tbs_certificate_to_log_entry,
     storage::DiskBackedLog,
+    types::MerkleTreeCertEntry,
 };
 use tokio::sync::Mutex;
 
@@ -90,7 +90,7 @@ impl CachedLog {
         Ok(idx)
     }
 
-    pub fn generate_proof(&mut self, leaf_index: u64) -> Result<Vec<(bool, Vec<u8>)>, AcmeError> {
+    pub fn generate_proof(&mut self, leaf_index: u64) -> Result<Vec<Vec<u8>>, AcmeError> {
         self.log
             .generate_proof(leaf_index)
             .map_err(|e| AcmeError::Mtc(format!("generate_proof: {e}")))
@@ -214,17 +214,10 @@ pub async fn append_cert_to_log(
         let log_entry = tbs_certificate_to_log_entry(&cert.tbs_certificate, algorithm)
             .map_err(|e| AcmeError::Mtc(format!("build log entry: {e}")))?;
 
-        // DER-encode the log entry.
-        let mut enc = Encoder::new(Encoding::Der);
-        log_entry
-            .encode(&mut enc)
-            .map_err(|e| AcmeError::Mtc(format!("encode log entry: {e}")))?;
-        let entry_der = enc
-            .finish()
-            .map_err(|e| AcmeError::Mtc(format!("finish log entry: {e}")))?;
-
-        // Compute the leaf hash (with Merkle tree domain separation).
-        Ok(hash_leaf(algorithm, &entry_der))
+        // Hash via TLS wire encoding (spec §4.2); direction bits are implicit.
+        let entry = MerkleTreeCertEntry::TbsCertEntry(log_entry);
+        hash_log_entry(algorithm, &entry)
+            .map_err(|e| AcmeError::Mtc(format!("hash_log_entry: {e}")))
     })
     .await
     .map_err(|e| AcmeError::Mtc(format!("spawn_blocking panicked: {e}")))??;
@@ -236,13 +229,10 @@ pub async fn append_cert_to_log(
 
 /// Compute a Merkle inclusion proof for the leaf at `leaf_index`.
 ///
-/// Returns the ordered sibling hashes along the path from the leaf to the root,
-/// paired with a boolean that is `true` when the sibling is a left child.
+/// Returns the ordered sibling hashes along the path from the leaf to the root.
+/// Direction is implicit from the leaf index per spec §4.3.2.
 /// Leaf index 0 is the null_entry; real certificates begin at index 1.
-pub async fn generate_proof(
-    log: &SharedLog,
-    leaf_index: u64,
-) -> Result<Vec<(bool, Vec<u8>)>, AcmeError> {
+pub async fn generate_proof(log: &SharedLog, leaf_index: u64) -> Result<Vec<Vec<u8>>, AcmeError> {
     let log_clone = Arc::clone(log);
     tokio::task::spawn_blocking(move || log_clone.blocking_lock().generate_proof(leaf_index))
         .await
@@ -257,7 +247,7 @@ pub async fn generate_proof(
 pub async fn proof_and_tree_size(
     log: &SharedLog,
     leaf_index: u64,
-) -> Result<(Vec<(bool, Vec<u8>)>, u64), AcmeError> {
+) -> Result<(Vec<Vec<u8>>, u64), AcmeError> {
     let log_clone = Arc::clone(log);
     tokio::task::spawn_blocking(move || {
         let mut guard = log_clone.blocking_lock();

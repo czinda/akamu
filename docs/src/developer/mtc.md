@@ -16,11 +16,10 @@ Appending a certificate leaf involves:
 
 1. Parsing the DER-encoded certificate to extract the `TBSCertificate`.
 2. Converting the `TBSCertificate` to a `TBSCertificateLogEntry` using `synta_mtc::integration::tbs_certificate_to_log_entry`.
-3. DER-encoding the log entry.
-4. Computing `hash_leaf(SHA-256, entry_der)` — the Merkle leaf hash with the `\x00` domain separation prefix.
-5. Appending the 32-byte hash to the log file under a `tokio::sync::Mutex` guard.
+3. Wrapping the entry as a `MerkleTreeCertEntry::TbsCertEntry` and computing the Merkle leaf hash via `hash_log_entry(algorithm, &entry)`. This function TLS wire-encodes the entry (per spec §4.2) and then hashes it with the `\x00` domain separation prefix.
+4. Appending the 32-byte hash to the log file under a `tokio::sync::Mutex` guard.
 
-Steps 1–4 run in a `tokio::task::spawn_blocking` thread to avoid blocking the async executor with CPU-bound encoding work. Step 5 takes the mutex and writes.
+Steps 1–3 run in a `tokio::task::spawn_blocking` thread to avoid blocking the async executor with CPU-bound encoding work. Step 4 takes the mutex and writes.
 
 If the append fails, a warning is logged but the certificate issuance response is not affected. The `mtc_log_index` column remains `NULL` in the database for that certificate.
 
@@ -53,6 +52,8 @@ After each checkpoint is produced, `src/mtc/cosign.rs` contacts all configured e
 - The cosigner is expected to return a DER-encoded `SubtreeSignature` with HTTP 200.
 - Each request uses a 30-second timeout.
 - Failures are logged and skipped; partial success is acceptable.
+
+When `cosigner_id_cert_pem` is set, the received `SubtreeSignature` is cryptographically verified before being stored. Verification uses `synta_mtc::cosignature::validate_cosignature_quorum_with_crypto`, which builds the TLS-framed `CosignedMessage` (per §5.4.1 of the MTC draft) internally from the checkpoint and signature fields, then delegates the actual signature check to `OpensslSignatureVerifier`.
 
 Each `SubtreeSignature` is stored in the `mtc_cosignatures` table, keyed by checkpoint sequence number and cosigner URL.
 

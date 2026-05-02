@@ -23,8 +23,6 @@
 //! Type 0x05 is a CT-log compatibility type; its key ID and signature format
 //! are defined in c2sp.org/static-ct-api and are not produced here.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 
@@ -671,10 +669,7 @@ pub async fn produce_cosigner_checkpoint(
 ) -> Result<String, AcmeError> {
     let (tree_size, root_hash) = tree_size_and_root(log).await?;
     // Sample timestamp after the tree snapshot to minimise clock/state skew.
-    let timestamp_unix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let timestamp_unix = crate::util::unix_now() as u64;
     sign_checkpoint_as_cosigner(
         cosigner_name,
         key,

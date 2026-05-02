@@ -102,9 +102,7 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
     let ca_aki_bytes = ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
 
     db::install_drivers();
-    let db_conn = db::open("sqlite::memory:", 1)
-        .await
-        .unwrap();
+    let db_conn = db::open("sqlite::memory:", 1).await.unwrap();
 
     let mtc_key = BackendPrivateKey::generate_ed25519().unwrap();
     let mtc_key_pem = mtc_key.to_pem(None).unwrap();
@@ -161,6 +159,7 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
         },
         crl_cache: Default::default(),
         gss_cred: None,
+        eab_master_secret: None,
     })
 }
 

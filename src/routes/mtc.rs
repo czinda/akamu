@@ -49,10 +49,10 @@ pub async fn get_inclusion_proof(
     let leaf_index = cert.mtc_log_index.ok_or(AcmeError::NotFound)? as u64;
 
     // Fetch proof and tree size under one lock to prevent TOCTOU.
-    let (proof_pairs, size) = log::proof_and_tree_size(shared_log, leaf_index).await?;
-    let proof: Vec<_> = proof_pairs
+    let (proof_hashes, size) = log::proof_and_tree_size(shared_log, leaf_index).await?;
+    let proof: Vec<_> = proof_hashes
         .into_iter()
-        .map(|(left, hash)| json!({ "left": left, "hash": hex(&hash) }))
+        .map(|hash| json!({ "hash": hex(&hash) }))
         .collect();
 
     Ok((

@@ -29,8 +29,14 @@ use rustls::{ClientConfig, RootCertStore};
 use synta::traits::Encode;
 use synta::{Decoder, Encoder, Encoding};
 use synta_certificate::owned::Certificate;
-use synta_certificate::{pem_to_der, OpensslSignatureVerifier, SignatureVerifier as _};
-use synta_mtc::types::{CosignerID, SubtreeSignature};
+use synta_certificate::{
+    pem_to_der, AlgorithmIdentifier, OpensslSignatureVerifier, SignatureVerifier as _,
+};
+use synta_mtc::cosignature::{
+    validate_cosignature_quorum_with_crypto, CosignaturePolicy,
+    CosignerVerifier as MtcCosignerVerifier,
+};
+use synta_mtc::types::SubtreeSignature;
 
 use crate::config::CosignerConfig;
 use crate::error::AcmeError;
@@ -44,11 +50,63 @@ type HttpsClient = Client<hyper_rustls::HttpsConnector<HttpConnector>, Full<Byte
 /// Loaded once at startup from `cosigner_id_cert_pem`.  Allows verifying the
 /// `SubtreeSignature` returned by the cosigner without re-reading the cert file.
 #[derive(Clone)]
-struct CosignerVerifier {
-    /// Expected `CosignerID` (issuer + serial) — must match `SubtreeSignature.cosigner`.
-    expected_id: CosignerID,
+struct AkamuCosignerVerifier {
+    /// Expected hash_algorithm OID components — for `CosignerID` identity comparison.
+    expected_hash_alg_oid: Vec<u32>,
+    /// Expected raw public key bytes — for `CosignerID` identity comparison.
+    expected_pubkey_bytes: Vec<u8>,
     /// DER-encoded `SubjectPublicKeyInfo` of the cosigner's signing key.
     spki_der: Vec<u8>,
+}
+
+impl MtcCosignerVerifier for AkamuCosignerVerifier {
+    fn verify_cosignature(
+        &self,
+        cosigner_id: &synta_mtc::types::CosignerID<'_>,
+        algorithm: &AlgorithmIdentifier<'_>,
+        signed_data: &[u8],
+        signature: &[u8],
+    ) -> synta_mtc::Result<()> {
+        use synta_mtc::Error;
+
+        // Identity check: hash_algorithm OID must match.
+        if cosigner_id.hash_algorithm.algorithm.components()
+            != self.expected_hash_alg_oid.as_slice()
+        {
+            return Err(Error::invalid_input(
+                "SubtreeSignature cosigner hash_algorithm OID does not match expected",
+            ));
+        }
+
+        // Identity check: public key bytes must match.
+        if cosigner_id.public_key.subject_public_key.as_bytes()
+            != self.expected_pubkey_bytes.as_slice()
+        {
+            return Err(Error::invalid_input(
+                "SubtreeSignature cosigner public key does not match expected",
+            ));
+        }
+
+        // DER-encode the signature algorithm from the response.
+        let mut enc = Encoder::new(Encoding::Der);
+        algorithm
+            .encode(&mut enc)
+            .map_err(|e| Error::invalid_input(format!("encode sig_alg: {e}")))?;
+        let sig_alg_der = enc
+            .finish()
+            .map_err(|e| Error::invalid_input(format!("finish sig_alg DER: {e}")))?;
+
+        // The cosigner signed the CosignedMessage (built internally by the
+        // validate_cosignature_quorum_with_crypto caller); `signed_data` is
+        // exactly those bytes.
+        OpensslSignatureVerifier
+            .verify_certificate_signature(signed_data, &sig_alg_der, signature, &self.spki_der)
+            .map_err(|e| {
+                Error::invalid_input(format!(
+                    "cosignature cryptographic verification failed: {e}"
+                ))
+            })
+    }
 }
 
 /// A cosigner URL paired with its pre-built HTTPS client.
@@ -59,8 +117,8 @@ struct CosignerVerifier {
 pub struct CosignerClient {
     pub(crate) url: String,
     client: HttpsClient,
-    /// Verification key — `Some` when `cosigner_id_cert_pem` is configured.
-    verifier: Option<CosignerVerifier>,
+    /// Verification material — `Some` when `cosigner_id_cert_pem` is configured.
+    verifier: Option<AkamuCosignerVerifier>,
 }
 
 /// Build a `CosignerClient` that connects over plain HTTP (no TLS).
@@ -109,9 +167,9 @@ pub fn build_cosigner_client(cfg: &CosignerConfig) -> Result<CosignerClient, Acm
     })
 }
 
-/// Load a cosigner's ID cert PEM and extract the SPKI + CosignerID for
+/// Load a cosigner's ID cert PEM and extract the identity fields + SPKI for
 /// verifying `SubtreeSignature` responses at checkpoint time.
-fn load_cosigner_verifier(pem_path: &str) -> Result<CosignerVerifier, AcmeError> {
+fn load_cosigner_verifier(pem_path: &str) -> Result<AkamuCosignerVerifier, AcmeError> {
     let pem = std::fs::read(pem_path)
         .map_err(|e| AcmeError::Tls(format!("read cosigner ID cert '{pem_path}': {e}")))?;
     let der = pem_to_der(&pem)
@@ -123,7 +181,25 @@ fn load_cosigner_verifier(pem_path: &str) -> Result<CosignerVerifier, AcmeError>
         .decode()
         .map_err(|e| AcmeError::Tls(format!("parse cosigner ID cert: {e}")))?;
 
-    // DER-encode SPKI.
+    // Extract hash_algorithm OID from the cert's signature algorithm field.
+    // Both the cosigner daemon (parse_cosigner_id in main.rs) and this verifier
+    // extract the same field from the same certificate, ensuring equality.
+    let expected_hash_alg_oid = cert
+        .tbs_certificate
+        .signature
+        .algorithm
+        .components()
+        .to_vec();
+
+    // Extract the raw public key bytes for identity comparison.
+    let expected_pubkey_bytes = cert
+        .tbs_certificate
+        .subject_public_key_info
+        .subject_public_key
+        .as_bytes()
+        .to_vec();
+
+    // DER-encode SPKI for cryptographic signature verification.
     let mut enc = Encoder::new(Encoding::Der);
     cert.tbs_certificate
         .subject_public_key_info
@@ -133,62 +209,30 @@ fn load_cosigner_verifier(pem_path: &str) -> Result<CosignerVerifier, AcmeError>
         .finish()
         .map_err(|e| AcmeError::Tls(format!("finish cosigner SPKI DER: {e}")))?;
 
-    // Derive CosignerID: DER-encode issuer then re-decode as synta_mtc::Name.
-    let mut enc2 = Encoder::new(Encoding::Der);
-    cert.tbs_certificate
-        .issuer
-        .encode(&mut enc2)
-        .map_err(|e| AcmeError::Tls(format!("encode cosigner issuer: {e}")))?;
-    let issuer_der = enc2
-        .finish()
-        .map_err(|e| AcmeError::Tls(format!("finish cosigner issuer DER: {e}")))?;
-    let mtc_issuer = Decoder::new(&issuer_der, Encoding::Der)
-        .decode::<synta_mtc::types::Name>()
-        .map_err(|e| AcmeError::Tls(format!("decode cosigner issuer as MTC Name: {e}")))?;
-
-    let expected_id = CosignerID {
-        issuer: mtc_issuer,
-        serial_number: cert.tbs_certificate.serial_number.clone(),
-    };
-
-    Ok(CosignerVerifier {
-        expected_id,
+    Ok(AkamuCosignerVerifier {
+        expected_hash_alg_oid,
+        expected_pubkey_bytes,
         spki_der,
     })
 }
 
 /// Verify a `SubtreeSignature` DER returned by a cosigner.
 ///
-/// Checks:
-/// 1. `cosigner` field matches the expected `CosignerID` (issuer + serial).
-/// 2. `signature` over the original checkpoint DER is valid under the cosigner's SPKI.
-fn verify_subtree_signature(
-    checkpoint_der: &[u8],
-    response_der: &[u8],
-    v: &CosignerVerifier,
-) -> Result<(), String> {
+/// Uses `validate_cosignature_quorum_with_crypto` which builds the TLS-encoded
+/// `CosignedMessage` (spec §5.4.1) internally and delegates cryptographic
+/// verification to `AkamuCosignerVerifier::verify_cosignature`.
+fn verify_subtree_signature(response_der: &[u8], v: &AkamuCosignerVerifier) -> Result<(), String> {
     let sig = SubtreeSignature::from_der(response_der)
         .map_err(|e| format!("parse SubtreeSignature: {e}"))?;
 
-    if sig.cosigner != v.expected_id {
-        return Err("SubtreeSignature.cosigner does not match expected CosignerID".into());
-    }
+    let policy = CosignaturePolicy {
+        min_cosignatures: 1,
+        max_cosignatures: 1,
+        allow_duplicate_cosigners: false,
+    };
 
-    // DER-encode the signature algorithm from the response.
-    let mut enc = Encoder::new(Encoding::Der);
-    sig.signature_algorithm
-        .encode(&mut enc)
-        .map_err(|e| format!("encode sig_alg: {e}"))?;
-    let sig_alg_der = enc
-        .finish()
-        .map_err(|e| format!("finish sig_alg DER: {e}"))?;
-
-    // The cosigner signed the raw checkpoint DER bytes.
-    let signature_bits = sig.signature.as_bytes();
-
-    OpensslSignatureVerifier
-        .verify_certificate_signature(checkpoint_der, &sig_alg_der, signature_bits, &v.spki_der)
-        .map_err(|e| format!("cosignature cryptographic verification failed: {e}"))
+    validate_cosignature_quorum_with_crypto(&[sig], &policy, v)
+        .map_err(|e| format!("cosignature verification failed: {e}"))
 }
 
 fn build_tls_config(cosigner_ca_pem_path: Option<&str>) -> Result<ClientConfig, AcmeError> {
@@ -271,11 +315,8 @@ async fn post_to_cosigner(
     url: String,
     client: HttpsClient,
     body_bytes: Bytes,
-    verifier: Option<CosignerVerifier>,
+    verifier: Option<AkamuCosignerVerifier>,
 ) -> Option<(String, Vec<u8>)> {
-    // Clone before move into request body — Bytes clone is O(1).
-    let checkpoint_bytes = body_bytes.clone();
-
     let req = match Request::builder()
         .method(Method::POST)
         .uri(&url)
@@ -320,7 +361,7 @@ async fn post_to_cosigner(
                     return None;
                 }
                 if let Some(ref v) = verifier {
-                    if let Err(e) = verify_subtree_signature(checkpoint_bytes.as_ref(), &der, v) {
+                    if let Err(e) = verify_subtree_signature(&der, v) {
                         tracing::warn!(url = %url, "cosignature rejected: {e}");
                         return None;
                     }

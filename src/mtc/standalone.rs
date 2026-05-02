@@ -26,7 +26,7 @@ use crate::error::AcmeError;
 pub struct StandaloneParams<'a> {
     pub cert_der: &'a [u8],
     pub leaf_index: u64,
-    pub proof: Vec<(bool, Vec<u8>)>,
+    pub proof: Vec<Vec<u8>>,
     pub tree_size: u64,
     pub signing_key: &'a BackendPrivateKey,
     pub hash_alg_str: &'a str,

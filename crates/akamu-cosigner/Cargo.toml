@@ -17,9 +17,9 @@ akamu = { path = "../..", default-features = false }
 akamu-client = { path = "../akamu-client" }
 
 # Cryptography and ASN.1
-synta-certificate = { version = ">=0.1.11", features = ["std", "pqc"] }
-synta-mtc         = { version = ">=0.1.11", features = ["std"] }
-synta             = { version = ">=0.1.11", default-features = false, features = ["std", "derive"] }
+synta-certificate = { version = ">=0.2.0", features = ["std", "pqc"] }
+synta-mtc         = { version = ">=0.2.0", features = ["std"] }
+synta             = { version = ">=0.2.0", default-features = false, features = ["std", "derive"] }
 
 # HTTP server
 axum = { version = "0.8", features = ["http1"] }

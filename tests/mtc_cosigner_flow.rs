@@ -34,8 +34,12 @@ use synta_certificate::{
     encode_key_usage, BackendPrivateKey, CertificateBuilder, CertificateSigner as _, NameBuilder,
     PrivateKey as _, SubjectAlternativeNameBuilder, KEY_USAGE_DIGITAL_SIGNATURE,
 };
-use synta_mtc::crypto::{hash_leaf, verify_inclusion_proof, HashAlgorithm};
-use synta_mtc::types::{Checkpoint, CosignerID, StandaloneCertificate, Subtree, SubtreeSignature};
+use synta_certificate::{AlgorithmIdentifier, SubjectPublicKeyInfo};
+use synta_mtc::crypto::{hash_log_entry, verify_inclusion_proof, HashAlgorithm};
+use synta_mtc::types::CosignerID;
+use synta_mtc::types::{
+    Checkpoint, MerkleTreeCertEntry, StandaloneCertificate, Subtree, SubtreeSignature,
+};
 use tokio::net::TcpListener;
 
 use akamu::config::{
@@ -67,7 +71,8 @@ struct CosignerState {
     signing_key: BackendPrivateKey,
     hash_alg: String,
     sig_alg_der: Vec<u8>,
-    cosigner_id: CosignerID,
+    cosigner_hash_alg_der: Vec<u8>,
+    cosigner_spki_der: Vec<u8>,
 }
 
 /// Build a self-signed cosigner-id certificate and return its DER.
@@ -117,27 +122,24 @@ fn self_signed_cosigner_cert(signing_key: &BackendPrivateKey, hash_alg: &str) ->
         .unwrap()
 }
 
-/// Parse `CosignerID` from a DER-encoded certificate.
-fn parse_cosigner_id(cert_der: &[u8]) -> CosignerID {
+/// Parse `(hash_alg_der, spki_der)` from a DER-encoded cosigner-id certificate.
+fn parse_cosigner_id(cert_der: &[u8]) -> (Vec<u8>, Vec<u8>) {
     use synta_certificate::owned::Certificate;
-    use synta_mtc::types::Name as MtcName;
 
-    let mut dec = Decoder::new(cert_der, Encoding::Der);
-    let cert: Certificate = dec.decode().unwrap();
-
-    let serial = cert.tbs_certificate.serial_number.clone();
+    let cert: Certificate = Decoder::new(cert_der, Encoding::Der).decode().unwrap();
 
     let mut enc = Encoder::new(Encoding::Der);
-    cert.tbs_certificate.issuer.encode(&mut enc).unwrap();
-    let issuer_der = enc.finish().unwrap();
+    cert.tbs_certificate.signature.encode(&mut enc).unwrap();
+    let hash_alg_der = enc.finish().unwrap();
 
-    let mut dec2 = Decoder::new(&issuer_der, Encoding::Der);
-    let issuer: MtcName = dec2.decode().unwrap();
+    let mut enc2 = Encoder::new(Encoding::Der);
+    cert.tbs_certificate
+        .subject_public_key_info
+        .encode(&mut enc2)
+        .unwrap();
+    let spki_der = enc2.finish().unwrap();
 
-    CosignerID {
-        issuer,
-        serial_number: serial,
-    }
+    (hash_alg_der, spki_der)
 }
 
 /// Derive the DER-encoded `AlgorithmIdentifier` for a key/hash combination.
@@ -174,8 +176,23 @@ async fn cosigner_sign(State(state): State<Arc<CosignerState>>, body: Bytes) -> 
         value: OctetString::from(root_bytes),
     };
 
+    // Reconstruct CosignerID per request from stored DER fields.
+    let cosigner_hash_alg: AlgorithmIdentifier =
+        Decoder::new(&state.cosigner_hash_alg_der, Encoding::Der)
+            .decode()
+            .unwrap();
+    let cosigner_spki: SubjectPublicKeyInfo = Decoder::new(&state.cosigner_spki_der, Encoding::Der)
+        .decode()
+        .unwrap();
+    let cosigner_id = CosignerID {
+        hash_algorithm: cosigner_hash_alg,
+        public_key: cosigner_spki,
+    };
+
+    // Build and sign the TLS-encoded CosignedMessage (spec §5.4.1).
+    let cosigned_msg = build_cosigned_message(&cosigner_id, &subtree, &checkpoint);
     let signer = state.signing_key.as_signer(&state.hash_alg);
-    let sig_bytes = match signer.sign_tbs(&body) {
+    let sig_bytes = match signer.sign_tbs(&cosigned_msg) {
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("sign: {e}")).into_response(),
     };
@@ -193,7 +210,7 @@ async fn cosigner_sign(State(state): State<Arc<CosignerState>>, body: Bytes) -> 
     };
 
     let subtree_sig = SubtreeSignature {
-        cosigner: state.cosigner_id.clone(),
+        cosigner: cosigner_id,
         subtree,
         checkpoint,
         signature_algorithm: sig_alg,
@@ -219,19 +236,54 @@ async fn cosigner_sign(State(state): State<Arc<CosignerState>>, body: Bytes) -> 
         .into_response()
 }
 
+/// Replicate the TLS-encoded `CosignedMessage` wire structure (spec §5.4.1).
+fn build_cosigned_message(
+    cosigner: &CosignerID<'_>,
+    subtree: &Subtree,
+    checkpoint: &Checkpoint<'_>,
+) -> Vec<u8> {
+    const LABEL: &[u8; 12] = b"subtree/v1\n\0";
+
+    let cosigner_name = format!("oid/{}", cosigner.hash_algorithm.algorithm);
+    let cosigner_name_bytes = cosigner_name.as_bytes();
+
+    let log_origin = format!("oid/{}", checkpoint.log_id.hash_algorithm.algorithm);
+    let log_origin_bytes = log_origin.as_bytes();
+
+    let unix_secs = checkpoint.timestamp.to_unix();
+    let timestamp: u64 = if unix_secs < 0 { 0 } else { unix_secs as u64 };
+
+    let start = subtree.start.as_u64().unwrap_or(0);
+    let end = subtree.end.as_u64().unwrap_or(0);
+    let subtree_hash = subtree.value.as_bytes();
+
+    let mut msg = Vec::new();
+    msg.extend_from_slice(LABEL);
+    msg.push(cosigner_name_bytes.len() as u8);
+    msg.extend_from_slice(cosigner_name_bytes);
+    msg.extend_from_slice(&timestamp.to_be_bytes());
+    msg.push(log_origin_bytes.len() as u8);
+    msg.extend_from_slice(log_origin_bytes);
+    msg.extend_from_slice(&start.to_be_bytes());
+    msg.extend_from_slice(&end.to_be_bytes());
+    msg.extend_from_slice(subtree_hash);
+    msg
+}
+
 /// Start the inline cosigner and return its URL and its cosigner-id cert DER.
 async fn start_cosigner(port: u16) -> (String, Vec<u8>) {
     let signing_key = BackendPrivateKey::generate_ec("P-256").unwrap();
     let hash_alg = "sha256".to_string();
     let cert_der = self_signed_cosigner_cert(&signing_key, &hash_alg);
-    let cosigner_id = parse_cosigner_id(&cert_der);
+    let (cosigner_hash_alg_der, cosigner_spki_der) = parse_cosigner_id(&cert_der);
     let alg_der = sig_alg_der(&signing_key, &hash_alg);
 
     let state = Arc::new(CosignerState {
         signing_key,
         hash_alg,
         sig_alg_der: alg_der,
-        cosigner_id,
+        cosigner_hash_alg_der,
+        cosigner_spki_der,
     });
 
     let app = Router::new()
@@ -339,9 +391,7 @@ async fn build_akamu_state(
     let ca_aki_bytes = ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
 
     db::install_drivers();
-    let db_conn = db::open("sqlite::memory:", 1)
-        .await
-        .unwrap();
+    let db_conn = db::open("sqlite::memory:", 1).await.unwrap();
 
     // Generate MTC signing key directly (avoids needing to call main.rs helpers).
     let mtc_key = BackendPrivateKey::generate_ec("P-256").unwrap();
@@ -401,6 +451,7 @@ async fn build_akamu_state(
         },
         crl_cache: Default::default(),
         gss_cred: None,
+        eab_master_secret: None,
     })
 }
 
@@ -666,18 +717,16 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
 
     let leaf_index = proof_json["leafIndex"].as_u64().expect("leafIndex");
     let tree_size_proof = proof_json["treeSize"].as_u64().expect("treeSize");
-    let proof_hashes: Vec<(bool, Vec<u8>)> = proof_json["proof"]
+    let proof_hashes: Vec<Vec<u8>> = proof_json["proof"]
         .as_array()
         .expect("proof array")
         .iter()
         .map(|entry| {
-            let left = entry["left"].as_bool().unwrap_or(false);
             let hex = entry["hash"].as_str().unwrap_or("");
-            let bytes = (0..hex.len())
+            (0..hex.len())
                 .step_by(2)
                 .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
-                .collect();
-            (left, bytes)
+                .collect()
         })
         .collect();
 
@@ -700,9 +749,8 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
         // Parse the PEM chain and get the first (leaf) cert DER.
         let cert_ders = synta_certificate::pem_to_der(&cert_der_bytes);
         if let Some(leaf_cert_der) = cert_ders.first() {
-            // The MTC log stores hash_leaf(log_entry_der), NOT hash_leaf(cert_der).
-            // Reproduce the same log-entry DER that append_cert_to_log builds:
-            //   Certificate DER → TBSCertificate → TBSCertificateLogEntry → DER → hash.
+            // Reproduce the same leaf hash that append_cert_to_log produces:
+            // TLS wire-encoded MerkleTreeCertEntry via hash_log_entry (spec §4.2).
             let cert: synta_certificate::Certificate<'_> =
                 Decoder::new(leaf_cert_der, Encoding::Der)
                     .decode()
@@ -712,14 +760,8 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
                 HashAlgorithm::Sha256,
             )
             .expect("build log entry from TBS cert");
-            let mut enc = Encoder::new(Encoding::Der);
-            <synta_mtc::types::TBSCertificateLogEntry<'_> as synta::traits::Encode>::encode(
-                &log_entry, &mut enc,
-            )
-            .expect("encode log entry");
-            let log_entry_der = enc.finish().expect("finish log entry DER");
-
-            let leaf_hash = hash_leaf(HashAlgorithm::Sha256, &log_entry_der);
+            let entry = MerkleTreeCertEntry::TbsCertEntry(log_entry);
+            let leaf_hash = hash_log_entry(HashAlgorithm::Sha256, &entry).expect("hash_log_entry");
             verify_inclusion_proof(
                 HashAlgorithm::Sha256,
                 leaf_index,

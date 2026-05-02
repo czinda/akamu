@@ -91,14 +91,15 @@ async fn run() -> Result<(), CosignerError> {
         .into_iter()
         .next()
         .ok_or_else(|| CosignerError::Crypto("no DER block in cosigner-id PEM".into()))?;
-    let cosigner_id = parse_cosigner_id(&id_cert_der)?;
+    let (cosigner_hash_alg_der, cosigner_spki_der) = parse_cosigner_id(&id_cert_der)?;
 
     // ── Build application state ───────────────────────────────────────────────
     let state = Arc::new(AppState {
         signing_key,
         hash_alg: config.signing_key.hash_alg.clone(),
         sig_alg_der,
-        cosigner_id,
+        cosigner_hash_alg_der,
+        cosigner_spki_der,
         challenge_tokens: Arc::clone(&challenge_tokens),
     });
 
@@ -186,42 +187,44 @@ fn generate_self_signed_cert(
     Ok(())
 }
 
-/// Parse `CosignerID` (issuer Name + serial) from a DER-encoded certificate.
+/// Extract `(hash_alg_der, spki_der)` from a DER-encoded cosigner-id certificate.
 ///
-/// Uses a DER roundtrip to convert the issuer `Name<'a>` (borrowed) into
-/// `synta_mtc::types::Name` (owned).
-fn parse_cosigner_id(cert_der: &[u8]) -> Result<synta_mtc::types::CosignerID, CosignerError> {
+/// `hash_alg_der` is the DER encoding of `tbs_certificate.signature`
+/// (`AlgorithmIdentifier` — e.g. ecdsa-with-sha256).  Both the cosigner daemon
+/// and the server-side verifier extract this same field from the same
+/// certificate, so `CosignerID` equality checks will pass.
+///
+/// `spki_der` is the DER encoding of `tbs_certificate.subject_public_key_info`.
+fn parse_cosigner_id(cert_der: &[u8]) -> Result<(Vec<u8>, Vec<u8>), CosignerError> {
     use synta::traits::Encode;
     use synta::{Decoder, Encoder, Encoding};
     use synta_certificate::owned::Certificate;
-    use synta_mtc::types::{CosignerID, Name as MtcName};
 
-    let mut dec = Decoder::new(cert_der, Encoding::Der);
-    let cert: Certificate = dec
+    let cert: Certificate = Decoder::new(cert_der, Encoding::Der)
         .decode()
-        .map_err(|e| CosignerError::Asn1(format!("decode cert for CosignerID: {e}")))?;
+        .map_err(|e| CosignerError::Asn1(format!("decode cert for cosigner-id: {e}")))?;
 
-    let serial = cert.tbs_certificate.serial_number.clone();
-
-    // DER-encode issuer (borrowed from input), then decode as owned MTC Name.
+    // DER-encode the signature AlgorithmIdentifier (e.g. ecdsa-with-sha256).
     let mut enc = Encoder::new(Encoding::Der);
     cert.tbs_certificate
-        .issuer
+        .signature
         .encode(&mut enc)
-        .map_err(|e| CosignerError::Asn1(format!("encode issuer: {e}")))?;
-    let issuer_der = enc
+        .map_err(|e| CosignerError::Asn1(format!("encode signature AlgorithmIdentifier: {e}")))?;
+    let hash_alg_der = enc
         .finish()
-        .map_err(|e| CosignerError::Asn1(format!("finish issuer DER: {e}")))?;
+        .map_err(|e| CosignerError::Asn1(format!("finish hash_alg DER: {e}")))?;
 
-    let mut dec2 = Decoder::new(&issuer_der, Encoding::Der);
-    let mtc_issuer: MtcName = dec2
-        .decode()
-        .map_err(|e| CosignerError::Asn1(format!("decode MTC issuer Name: {e}")))?;
+    // DER-encode the SubjectPublicKeyInfo.
+    let mut enc2 = Encoder::new(Encoding::Der);
+    cert.tbs_certificate
+        .subject_public_key_info
+        .encode(&mut enc2)
+        .map_err(|e| CosignerError::Asn1(format!("encode SPKI: {e}")))?;
+    let spki_der = enc2
+        .finish()
+        .map_err(|e| CosignerError::Asn1(format!("finish SPKI DER: {e}")))?;
 
-    Ok(CosignerID {
-        issuer: mtc_issuer,
-        serial_number: serial,
-    })
+    Ok((hash_alg_der, spki_der))
 }
 
 async fn start_tls_server(

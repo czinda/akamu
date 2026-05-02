@@ -70,7 +70,7 @@ pub async fn produce_checkpoint(
         cert_id: String,
         cert_der: Vec<u8>,
         leaf_index: u64,
-        proof: Vec<(bool, Vec<u8>)>,
+        proof: Vec<Vec<u8>>,
     }
 
     // ── Phase 1 (blocking): compute root, generate proofs, build + sign checkpoint ──
