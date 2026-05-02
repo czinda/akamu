@@ -23,6 +23,8 @@
 - [Performance](user/performance.md)
 - [RFC Support Reference](user/rfc-support.md)
 - [EAB and Kerberos Authentication](user/eab-kerberos.md)
+- [Admin API and Operator Management](user/admin-api.md)
+- [akamuctl — Admin CLI](user/akamuctl.md)
 
 # Client Libraries
 

@@ -281,3 +281,153 @@ The daemon does not persist any state other than the key and certificate files o
 RUST_LOG=info  akamu-cosigner /etc/akamu/cosigner.toml
 RUST_LOG=debug akamu-cosigner /etc/akamu/cosigner.toml
 ```
+
+---
+
+## Admin interface
+
+`akamu-cosigner` includes its own admin HTTP listener.  When the `[admin]`
+section is present in the configuration file, the daemon starts a second
+HTTPS server for operator access.  The admin listener is independent of the
+signing endpoint and supports the same mTLS and session-token authentication
+model as the main akamu server.
+
+### Configuration
+
+Add an `[admin]` section and one or more `[[admin.operators]]` entries to
+`cosigner.toml`:
+
+```toml
+[admin]
+listen_addr    = "127.0.0.1:9444"
+cert_file      = "/etc/akamu/cosigner-admin-tls.pem"
+key_file       = "/etc/akamu/cosigner-admin-tls.key"
+ca_certs       = ["/etc/akamu/operator-ca.pem"]
+session_ttl_secs = 3600
+
+[[admin.operators]]
+name             = "alice"
+role             = "administrator"
+cert_fingerprint = "a3b4c5…"    # SHA-256 hex of the DER leaf cert
+
+[[admin.operators]]
+name             = "bob"
+role             = "auditor"
+cert_fingerprint = "b2c3d4…"
+```
+
+Operators are defined statically in the config file rather than in a database.
+Changes to the operator list require a daemon restart.
+
+### `[admin]` fields
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `listen_addr` | Yes | — | TCP address and port for the admin listener. |
+| `cert_file` | Yes | — | PEM file for the admin listener's TLS server certificate. |
+| `key_file` | Yes | — | PEM file for the admin listener's TLS private key. |
+| `ca_certs` | No | `[]` | PEM CA files whose issued client certificates are accepted as operator credentials. |
+| `session_ttl_secs` | No | `3600` | Idle session expiry in seconds. |
+
+### `[[admin.operators]]` fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes | Human-readable operator name (shown in logs). |
+| `role` | Yes | `"administrator"` or `"auditor"`. |
+| `cert_fingerprint` | At least one | Lowercase hex SHA-256 of the DER leaf certificate. |
+| `gssapi_principal` | At least one | Kerberos principal (reserved for future use). |
+
+### Admin endpoints
+
+| Method | Path | administrator | auditor |
+|--------|------|:---:|:---:|
+| `POST` | `/admin/session` | Y | Y |
+| `DELETE` | `/admin/session` | Y | Y |
+| `GET` | `/admin/status` | Y | Y |
+| `GET` | `/admin/stats` | Y | Y |
+| `GET` | `/admin/config` | Y | |
+
+#### `POST /admin/session`
+
+Authenticate with a client certificate and receive a session token.
+
+**Response `200 OK`:**
+
+```json
+{
+  "session_token": "a4f1…64-hex-chars…",
+  "role": "administrator",
+  "expires_at": "2026-05-02T14:00:00Z"
+}
+```
+
+#### `DELETE /admin/session`
+
+Invalidate the current session token.
+
+**Response: `204 No Content`.**
+
+#### `GET /admin/status`
+
+Liveness check.  All authenticated operators may call this endpoint.
+
+**Response `200 OK`:**
+
+```json
+{ "status": "ok", "uptime_secs": 3600 }
+```
+
+#### `GET /admin/stats`
+
+Return signing statistics.
+
+**Response `200 OK`:**
+
+```json
+{
+  "uptime_secs": 3600,
+  "checkpoints_signed": 42,
+  "last_checkpoint_at": "2026-05-02T13:45:00Z"
+}
+```
+
+#### `GET /admin/config`
+
+Return a redacted view of the running configuration: operator names, roles, and
+session TTL.  Private key material and CA certificate paths are not included.
+Requires the `administrator` role.
+
+**Response `200 OK`:**
+
+```json
+{
+  "operators": [
+    { "name": "alice", "role": "administrator" },
+    { "name": "bob",   "role": "auditor" }
+  ],
+  "session_ttl_secs": 3600
+}
+```
+
+### Querying via akamuctl
+
+The `akamuctl cosigner` subcommands target the cosigner's admin listener.
+Configure the connection in the `[cosigner]` section of
+`~/.config/akamu/akamuctl.toml`:
+
+```toml
+[cosigner]
+url       = "https://cosigner.example.com:9444"
+ca_cert   = "/etc/akamu/cosigner-admin-ca.pem"
+cert_file = "/etc/akamu/operator.pem"
+key_file  = "/etc/akamu/operator.key"
+```
+
+```bash
+akamuctl cosigner status
+akamuctl cosigner stats
+```
+
+See [akamuctl — Cosigner administration](akamuctl.md#cosigner-administration)
+for the full command reference.
