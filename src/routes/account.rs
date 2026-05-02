@@ -131,7 +131,27 @@ pub async fn new_account(
                 })?;
 
             // Full HMAC verification: alg, url, payload-key, and MAC.
-            crate::jose::eab::verify_eab_jws(eab_val, &url, &kid, &thumbprint, &hmac_key)?;
+            if let Err(e) = crate::jose::eab::verify_eab_jws(
+                eab_val, &url, &kid, &thumbprint, &hmac_key,
+            ) {
+                crate::audit::record_or_log(
+                    &state.db,
+                    &state.audit,
+                    &state.audit_policy,
+                    crate::audit::AuditEvent::failure(crate::audit::AuditEventType::EabReject)
+                        .with_subject(&kid),
+                )
+                .await;
+                return Err(e);
+            }
+            crate::audit::record_or_log(
+                &state.db,
+                &state.audit,
+                &state.audit_policy,
+                crate::audit::AuditEvent::success(crate::audit::AuditEventType::EabUse)
+                    .with_subject(&kid),
+            )
+            .await;
 
             // Capture grants before dropping key_row.
             let grants = key_row.profile_grants.clone();

@@ -280,8 +280,34 @@ pub(crate) async fn parse_jws(
         }
     };
 
-    // Verify the JWS signature.
-    jws.verify(&spki_der)?;
+    // Verify the JWS signature; emit AuthJwsOk or AuthJwsFail audit event.
+    if let Err(e) = jws.verify(&spki_der) {
+        let principal = account_id
+            .as_deref()
+            .map(|id| format!("acme:{id}"))
+            .unwrap_or_else(|| "acme:unknown".to_string());
+        crate::audit::record_or_log(
+            &state.db,
+            &state.audit,
+            &state.audit_policy,
+            crate::audit::AuditEvent::failure(crate::audit::AuditEventType::AuthJwsFail)
+                .with_principal(&principal),
+        )
+        .await;
+        return Err(e.into());
+    }
+    crate::audit::record_or_log(
+        &state.db,
+        &state.audit,
+        &state.audit_policy,
+        crate::audit::AuditEvent::success(crate::audit::AuditEventType::AuthJwsOk)
+            .with_principal(
+                account_id
+                    .as_deref()
+                    .unwrap_or("new-account"),
+            ),
+    )
+    .await;
 
     let payload = jws.decode_payload()?;
     Ok(JwsContext {

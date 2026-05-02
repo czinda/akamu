@@ -275,6 +275,15 @@ pub async fn finalize_order(
         &state.db,
         &state.audit,
         &state.audit_policy,
+        crate::audit::AuditEvent::success(crate::audit::AuditEventType::OrderFinalize)
+            .with_subject(&id)
+            .with_principal(&format!("acme:{}", ctx.jwk_thumbprint.as_deref().unwrap_or(""))),
+    )
+    .await;
+    crate::audit::record_or_log(
+        &state.db,
+        &state.audit,
+        &state.audit_policy,
         crate::audit::AuditEvent::success(crate::audit::AuditEventType::CertIssue)
             .with_subject(&issued.serial_hex)
             .with_principal(&format!("acme:{}", ctx.jwk_thumbprint.as_deref().unwrap_or(""))),
