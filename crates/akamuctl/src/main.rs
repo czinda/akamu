@@ -243,7 +243,7 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
         Config::default()
     };
 
-    let fmt = Format::from_str(&cli.output);
+    let fmt = cli.output.parse::<Format>().map_err(CtlError::Config)?;
     let session_cache = Arc::new(Mutex::new(SessionCache::load()));
 
     // Resolve server URL.

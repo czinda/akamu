@@ -7,12 +7,14 @@ pub enum Format {
     Json,
 }
 
-impl Format {
-    pub fn from_str(s: &str) -> Self {
-        if s == "json" {
-            Format::Json
-        } else {
-            Format::Table
+impl std::str::FromStr for Format {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "json" => Ok(Format::Json),
+            "table" => Ok(Format::Table),
+            other => Err(format!("unknown output format '{other}'; expected 'json' or 'table'")),
         }
     }
 }
