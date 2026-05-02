@@ -39,6 +39,7 @@ REPOROOT := $(abspath $(dir $(abspath $(lastword $(MAKEFILE_LIST))))/../..)
 # selected by the resolver, unlike Cargo.toml which only has a requirement).
 # Used to locate the vendored synta directory that carries the asn1/ schemas.
 SYNTA_VERSION := $(shell awk '/^\[\[package\]\]/{p=0} /^name = "synta"$$/{p=1} p && /^version =/{gsub(/[" ]/, "", $$3); print $$3; exit}' "$(REPOROOT)/Cargo.lock")
+$(if $(SYNTA_VERSION),,$(error SYNTA_VERSION: could not extract synta version from $(REPOROOT)/Cargo.lock))
 
 TARBALL        := $(NAME)-$(VERSION).tar.gz
 VENDOR_TARBALL := $(NAME)-$(VERSION)-vendor.tar.gz
