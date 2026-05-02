@@ -328,7 +328,7 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
                         .into_iter()
                         .next()
                         .ok_or_else(|| CtlError::Config("cert_file contains no certificate".into()))?;
-                    Some(sha256_hex(&der))
+                    Some(sha256_hex(&der)?)
                 } else {
                     None
                 };
@@ -360,9 +360,9 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
             EabCmd::List { used, unused } => {
                 let mut path = "/admin/eab".to_string();
                 if used && !unused {
-                    path.push_str("?filter=used");
+                    path.push_str("?used=true");
                 } else if unused && !used {
-                    path.push_str("?filter=unused");
+                    path.push_str("?used=false");
                 }
                 let resp = server_client.get(&path).await?;
                 print(&fmt, &resp);
@@ -377,10 +377,10 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
                     body["kid"] = Value::String(k);
                 }
                 if let Some(h) = hmac_key {
-                    body["hmac_key"] = Value::String(h);
+                    body["hmac_key_b64u"] = Value::String(h);
                 }
                 if !profiles.is_empty() {
-                    body["profiles"] = Value::Array(
+                    body["profile_grants"] = Value::Array(
                         profiles.into_iter().map(Value::String).collect(),
                     );
                 }
@@ -531,20 +531,17 @@ fn urlenc(s: &str) -> String {
         .collect()
 }
 
-fn sha256_hex(data: &[u8]) -> String {
+fn sha256_hex(data: &[u8]) -> Result<String, CtlError> {
     use native_ossl::digest::DigestAlg;
-    let Ok(alg) = DigestAlg::fetch(c"SHA2-256", None) else {
-        return String::new();
-    };
-    let Ok(mut ctx) = alg.new_context() else {
-        return String::new();
-    };
-    if ctx.update(data).is_err() {
-        return String::new();
-    }
+    let alg = DigestAlg::fetch(c"SHA2-256", None)
+        .map_err(|e| CtlError::Config(format!("SHA2-256 fetch: {e}")))?;
+    let mut ctx = alg
+        .new_context()
+        .map_err(|e| CtlError::Config(format!("digest context: {e}")))?;
+    ctx.update(data)
+        .map_err(|e| CtlError::Config(format!("digest update: {e}")))?;
     let mut out = [0u8; 32];
-    if ctx.finish(&mut out).is_err() {
-        return String::new();
-    }
-    native_ossl::util::hex_encode(&out)
+    ctx.finish(&mut out)
+        .map_err(|e| CtlError::Config(format!("digest finish: {e}")))?;
+    Ok(native_ossl::util::hex_encode(&out))
 }
