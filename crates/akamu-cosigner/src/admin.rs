@@ -50,10 +50,21 @@ pub fn sha256_hex(data: &[u8]) -> Result<String, String> {
 
 // ── Session management ────────────────────────────────────────────────────────
 
-pub fn create_session(state: &AppState, name: &str, role: &str) -> Result<String, String> {
+pub async fn create_session(state: &AppState, name: &str, role: &str) -> Result<String, String> {
     let token = generate_token()?;
     let now = std::time::Instant::now();
-    let mut sessions = state.admin_sessions.lock().unwrap();
+    let mut sessions = state.admin_sessions.lock().await;
+    // Evict oldest session if cap reached.
+    const SESSION_CAP: usize = 1000;
+    if sessions.len() >= SESSION_CAP {
+        if let Some(oldest_key) = sessions
+            .iter()
+            .min_by_key(|(_, s)| s.last_active_at)
+            .map(|(k, _)| k.clone())
+        {
+            sessions.remove(&oldest_key);
+        }
+    }
     sessions.insert(
         token.clone(),
         CosignerSession {
@@ -66,21 +77,31 @@ pub fn create_session(state: &AppState, name: &str, role: &str) -> Result<String
     Ok(token)
 }
 
-pub fn lookup_session(state: &AppState, token: &str) -> Option<(String, String)> {
+pub async fn lookup_session(state: &AppState, token: &str) -> Option<(String, String)> {
+    use subtle::ConstantTimeEq as _;
     let ttl = std::time::Duration::from_secs(state.admin_session_ttl_secs);
     let now = std::time::Instant::now();
-    let mut sessions = state.admin_sessions.lock().unwrap();
+    let mut sessions = state.admin_sessions.lock().await;
     // Sweep sessions that have been idle longer than the TTL.
     sessions.retain(|_, s| now.duration_since(s.last_active_at) < ttl);
-    if let Some(s) = sessions.get_mut(token) {
-        s.last_active_at = now;
-        return Some((s.name.clone(), s.role.clone()));
-    }
-    None
+    // Constant-time scan: compare every key so iteration time is independent
+    // of where the matching entry is, preventing timing-based token guessing.
+    let token_bytes = token.as_bytes();
+    let found_key = sessions
+        .keys()
+        .find(|k| {
+            let kb = k.as_bytes();
+            kb.len() == token_bytes.len() && kb.ct_eq(token_bytes).into()
+        })
+        .cloned();
+    let key = found_key?;
+    let s = sessions.get_mut(&key)?;
+    s.last_active_at = now;
+    Some((s.name.clone(), s.role.clone()))
 }
 
-pub fn invalidate_session(state: &AppState, token: &str) {
-    state.admin_sessions.lock().unwrap().remove(token);
+pub async fn invalidate_session(state: &AppState, token: &str) {
+    state.admin_sessions.lock().await.remove(token);
 }
 
 // ── OperatorContext extractor ─────────────────────────────────────────────────
@@ -106,13 +127,15 @@ where
         if let Some(auth) = parts.headers.get(axum::http::header::AUTHORIZATION) {
             if let Ok(s) = auth.to_str() {
                 if let Some(token) = s.strip_prefix("Bearer ") {
-                    if let Some((name, role)) = lookup_session(&app_state, token) {
+                    if let Some((name, role)) = lookup_session(&app_state, token).await {
+                        tracing::info!(operator = %name, role = %role, "cosigner admin: bearer token accepted");
                         return Ok(OperatorContext {
                             name,
                             role,
                             session_token: Some(token.to_string()),
                         });
                     }
+                    tracing::warn!("cosigner admin: bearer token invalid or expired");
                     return Err((StatusCode::UNAUTHORIZED, "session expired or invalid").into_response());
                 }
             }
@@ -121,6 +144,7 @@ where
         // Path 2: mTLS client certificate fingerprint.
         if let Some(ext) = parts.extensions.get::<PeerClientCert>() {
             let fp = sha256_hex(&ext.0).map_err(|e| {
+                tracing::error!(error = %e, "cosigner admin: fingerprint computation failed");
                 (StatusCode::INTERNAL_SERVER_ERROR, format!("fingerprint: {e}")).into_response()
             })?;
             if let Some(op) = app_state
@@ -128,9 +152,11 @@ where
                 .iter()
                 .find(|o| o.cert_fingerprint.as_deref() == Some(&fp))
             {
-                let token = create_session(&app_state, &op.name, &op.role).map_err(|e| {
+                let token = create_session(&app_state, &op.name, &op.role).await.map_err(|e| {
+                    tracing::error!(error = %e, "cosigner admin: session creation failed");
                     (StatusCode::INTERNAL_SERVER_ERROR, format!("session: {e}")).into_response()
                 })?;
+                tracing::info!(operator = %op.name, role = %op.role, "cosigner admin: mTLS cert accepted, session created");
                 return Ok(OperatorContext {
                     name: op.name.clone(),
                     role: op.role.clone(),
@@ -138,9 +164,11 @@ where
                 });
             }
             // Cert presented but not registered.
+            tracing::warn!(fingerprint = %fp, "cosigner admin: mTLS cert not registered as operator");
             return Err((StatusCode::UNAUTHORIZED, "client certificate not registered as operator").into_response());
         }
 
+        tracing::warn!("cosigner admin: request with no authentication");
         Err((StatusCode::UNAUTHORIZED, "authentication required (Bearer token or mTLS)").into_response())
     }
 }
@@ -196,7 +224,7 @@ pub async fn delete_session(
     State(state): State<Arc<AppState>>,
 ) -> Response {
     if let Some(token) = &operator.session_token {
-        invalidate_session(&state, token);
+        invalidate_session(&state, token).await;
     }
     StatusCode::NO_CONTENT.into_response()
 }
@@ -255,7 +283,7 @@ pub async fn get_stats(
 /// `GET /admin/config`
 ///
 /// Returns a redacted view of the cosigner configuration.
-/// Restricted to `administrator` role.
+/// Only accessible to the `administrator` role.
 pub async fn get_config(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
@@ -276,4 +304,128 @@ pub async fn get_config(
         })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, RwLock};
+    use std::time::Instant;
+
+    use axum::body::Body;
+    use axum::http::{header, Method, Request, StatusCode};
+    use tower::ServiceExt;
+
+    use synta_certificate::BackendPrivateKey;
+
+    use crate::routes::build_router;
+    use crate::state::CosignerSession;
+
+    fn build_state() -> Arc<AppState> {
+        let signing_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        Arc::new(AppState {
+            signing_key,
+            hash_alg: "sha256".to_string(),
+            // DER fields are unused by admin routes; use empty stubs.
+            sig_alg_der: vec![],
+            cosigner_hash_alg_der: vec![],
+            cosigner_spki_der: vec![],
+            challenge_tokens: Arc::new(RwLock::new(HashMap::new())),
+            admin_operators: vec![],
+            admin_sessions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            admin_session_ttl_secs: 3600,
+            startup_time: Instant::now(),
+            signing_stats: Arc::new(Mutex::new((0, None))),
+        })
+    }
+
+    async fn seed_session(state: &Arc<AppState>, token: &str, role: &str) {
+        state.admin_sessions.lock().await.insert(
+            token.to_string(),
+            CosignerSession {
+                name: "test-op".to_string(),
+                role: role.to_string(),
+                created_at: Instant::now(),
+                last_active_at: Instant::now(),
+            },
+        );
+    }
+
+    async fn get_with_bearer(router: &axum::Router, path: &str, token: &str) -> axum::response::Response {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(path)
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        router.clone().oneshot(req).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn get_status_returns_ok() {
+        let state = build_state();
+        let router = build_router(Arc::clone(&state));
+        seed_session(&state, "tok-status", "auditor").await;
+
+        let resp = get_with_bearer(&router, "/admin/status", "tok-status").await;
+        assert_eq!(resp.status(), StatusCode::OK, "GET /admin/status must return 200");
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "ok", "status field must be \"ok\"");
+        assert!(json["uptime_secs"].is_u64(), "uptime_secs must be a number");
+    }
+
+    #[tokio::test]
+    async fn get_stats_returns_counters() {
+        let state = build_state();
+        let router = build_router(Arc::clone(&state));
+        seed_session(&state, "tok-stats", "auditor").await;
+
+        let resp = get_with_bearer(&router, "/admin/stats", "tok-stats").await;
+        assert_eq!(resp.status(), StatusCode::OK, "GET /admin/stats must return 200");
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["uptime_secs"].is_u64(), "uptime_secs must be present");
+        assert!(json["checkpoints_signed"].is_u64(), "checkpoints_signed must be present");
+        assert_eq!(json["checkpoints_signed"], 0, "fresh server must have 0 checkpoints signed");
+    }
+
+    #[tokio::test]
+    async fn post_session_with_bearer_returns_token() {
+        let state = build_state();
+        let router = build_router(Arc::clone(&state));
+        seed_session(&state, "tok-session", "administrator").await;
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/admin/session")
+            .header(header::AUTHORIZATION, "Bearer tok-session")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "POST /admin/session must return 200");
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["session_token"], "tok-session", "session_token in body must match Bearer token");
+        assert_eq!(json["role"], "administrator", "role in body must match session role");
+        assert!(json["expires_at"].is_string(), "expires_at must be a string");
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_request_returns_401() {
+        let state = build_state();
+        let router = build_router(Arc::clone(&state));
+
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/admin/status")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "unauthenticated request must return 401");
+    }
 }

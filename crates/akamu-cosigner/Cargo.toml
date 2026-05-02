@@ -49,5 +49,8 @@ thiserror = "2"
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Constant-time comparisons (session token validation)
+subtle = "2"
+
 # Base64 for EAB HMAC key decoding
 base64 = "0.22"
