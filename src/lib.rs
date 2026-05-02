@@ -3,6 +3,7 @@
 //! All modules are public so that integration tests (`tests/`) and the binary
 //! crate (`src/main.rs`) can access them through the library's public API.
 
+pub mod admin;
 pub mod audit;
 pub mod ca;
 pub mod config;

@@ -105,8 +105,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/acme/mtc/tlog/cosignature", get(mtc::get_tlog_cosignature))
         .route("/acme/mtc/tlog/tile/{*path}", get(mtc::get_tlog_tile))
         // Admin API — only registered when [admin] is configured in config.toml.
-        // The bearer-token check inside each handler also returns 404 when the
-        // section is absent, providing a double layer of protection.
+        // Full operator authentication (mTLS cert + session token + GSSAPI) is
+        // enforced by the OperatorContext extractor in crate::admin::auth.
+        .route(
+            "/admin/session",
+            post(crate::admin::auth::post_session).delete(crate::admin::auth::delete_session),
+        )
         .route(
             "/admin/account/{id}/profile-grants",
             axum::routing::get(admin::get_account_profile_grants)
