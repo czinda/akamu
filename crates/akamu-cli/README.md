@@ -36,12 +36,18 @@ Options:
                           (may be repeated)
   --agree-tos             Agree to the server's terms of service
   --eab-kid <KID>         External Account Binding key ID
+                          (mutually exclusive with --gssapi-keytab)
   --eab-key <KEY>         EAB HMAC key, base64url-encoded (no padding)
+                          (mutually exclusive with --gssapi-keytab)
   --eab-alg <ALG>         EAB HMAC algorithm: HS256 | HS384 | HS512
                           [default: HS256]
+  --gssapi-keytab <PATH>  Kerberos keytab for GSSAPI-authenticated EAB fetch.
+                          The CLI sends GET /acme/eab with an Authorization:
+                          Negotiate token and logs the authenticated principal.
+                          Mutually exclusive with --eab-kid / --eab-key.
 ```
 
-`--eab-kid` and `--eab-key` must be provided together or not at all.
+`--eab-kid` and `--eab-key` must be provided together or not at all. They cannot be combined with `--gssapi-keytab`.
 
 ### `account deregister`
 
@@ -93,9 +99,14 @@ Options:
   --cert-key <FILE>           Reuse an existing certificate private key PEM
   --out <FILE>                Write the PEM certificate chain to this file
   --eab-kid <KID>             External Account Binding key ID
+                              (mutually exclusive with --gssapi-keytab)
   --eab-key <KEY>             EAB HMAC key, base64url-encoded (no padding)
+                              (mutually exclusive with --gssapi-keytab)
   --eab-alg <ALG>             EAB HMAC algorithm: HS256 | HS384 | HS512
                               [default: HS256]
+  --gssapi-keytab <PATH>      Kerberos keytab for GSSAPI-authenticated EAB.
+                              Used only when no account URL sidecar exists yet.
+                              Mutually exclusive with --eab-kid / --eab-key.
 ```
 
 Accepted `--key-type` and `--cert-key-type` values:
@@ -132,9 +143,12 @@ Options:
   --cert <FILE>               Existing certificate PEM for ARI window check
   --force                     Renew unconditionally, ignoring the ARI window
   --out <FILE>                Output path for the renewed PEM bundle
-  --eab-kid <KID>             EAB key ID
+  --eab-kid <KID>             EAB key ID (mutually exclusive with --gssapi-keytab)
   --eab-key <KEY>             EAB HMAC key (base64url)
+                              (mutually exclusive with --gssapi-keytab)
   --eab-alg <ALG>             [default: HS256]
+  --gssapi-keytab <PATH>      Kerberos keytab for GSSAPI-authenticated EAB.
+                              Mutually exclusive with --eab-kid / --eab-key.
 ```
 
 When `--renewal-config FILE` is given, all parameters are loaded from the TOML
@@ -240,6 +254,10 @@ poll_timeout    = 120
 eab_alg         = "HS256"
 dns_hook        = "/etc/akamu/hooks/dns-update.sh"
 
+# Optional: Kerberos keytab for GSSAPI-authenticated EAB.
+# Mutually exclusive with eab_kid / eab_key.
+# gssapi_keytab = "/etc/akamu/client.keytab"
+
 [[domains]]
 type  = "dns"
 value = "example.com"
@@ -251,7 +269,8 @@ value = "*.example.com"
 
 Fields that have defaults (`account_key_type`, `cert_key_type`, `challenge_type`,
 `http_port`, `tls_port`, `poll_timeout`, `eab_alg`) are optional in the TOML
-file; missing fields are filled with sensible defaults on load.
+file; missing fields are filled with sensible defaults on load. The `gssapi_keytab`
+field is also optional and defaults to absent when not present.
 
 Pass the file to `renew` for zero-configuration renewal:
 
@@ -331,7 +350,7 @@ akamu-cli account deregister \
   --account-key /etc/akamu/acme.pem
 ```
 
-To use EAB during registration:
+To use manual EAB (kid + HMAC key) during registration:
 
 ```sh
 akamu-cli account register \
@@ -339,6 +358,15 @@ akamu-cli account register \
   --agree-tos \
   --eab-kid kid-from-ca \
   --eab-key base64url-hmac-key-from-ca
+```
+
+To use GSSAPI-authenticated EAB (Kerberos keytab):
+
+```sh
+akamu-cli account register \
+  --account-key /etc/akamu/acme.pem \
+  --agree-tos \
+  --gssapi-keytab /etc/akamu/client.keytab
 ```
 
 ## Logging

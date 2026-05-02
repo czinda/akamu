@@ -273,6 +273,7 @@ pub fn build_renewal_config(
         eab_kid: None,
         eab_key: None,
         eab_alg: "HS256".into(),
+        gssapi_keytab: None,
         dns_hook: dns_hook.map(str::to_string),
     };
 
@@ -410,6 +411,7 @@ account = abc123
             eab_kid: None,
             eab_key: None,
             eab_alg: "HS256".into(),
+            gssapi_keytab: None,
             dns_hook: None,
         };
 

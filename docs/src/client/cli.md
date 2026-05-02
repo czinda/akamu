@@ -59,9 +59,10 @@ akamu-cli account register --server URL --account-key FILE [OPTIONS]
 | `--key-type TYPE` | no | Key type to generate when the key file does not exist. Default: `ec:P-256`. |
 | `--contact URI` | no | Contact URI (e.g. `mailto:admin@example.com`). Repeatable. |
 | `--agree-tos` | no | Agree to the server's Terms of Service. |
-| `--eab-kid KID` | no | External Account Binding key ID. |
-| `--eab-key KEY_B64U` | no | EAB HMAC key encoded as base64url (no padding). |
+| `--eab-kid KID` | no | External Account Binding key ID. Mutually exclusive with `--gssapi-keytab`. |
+| `--eab-key KEY_B64U` | no | EAB HMAC key encoded as base64url (no padding). Mutually exclusive with `--gssapi-keytab`. |
 | `--eab-alg ALG` | no | EAB HMAC algorithm: `HS256`, `HS384`, or `HS512`. Default: `HS256`. |
+| `--gssapi-keytab PATH` | no | Path to a Kerberos keytab file. When set, the CLI performs a GSSAPI-authenticated `GET /acme/eab` request and logs the authenticated principal. Mutually exclusive with `--eab-kid` / `--eab-key`. |
 
 After registration the account URL is written to `<account-key>.account-url` (see [Sidecar files](#sidecar-files)).
 
@@ -145,8 +146,9 @@ akamu-cli issue --server URL --account-key FILE -d DOMAIN --out FILE [OPTIONS]
 | `--tls-port PORT` | no | Port for the built-in tls-alpn-01 solver. Default: `443`. |
 | `--onion-key FILE` | required for `onion-csr-01` | Ed25519 hidden-service private key PEM file. |
 | `--poll-timeout SECS` | no | Maximum seconds to wait for order/challenge validation. Default: `120`. |
-| `--eab-kid KID` | no | EAB key ID (used if no account exists yet). |
-| `--eab-key KEY_B64U` | no | EAB HMAC key (base64url). |
+| `--eab-kid KID` | no | EAB key ID (used if no account exists yet). Mutually exclusive with `--gssapi-keytab`. |
+| `--eab-key KEY_B64U` | no | EAB HMAC key (base64url). Mutually exclusive with `--gssapi-keytab`. |
+| `--gssapi-keytab PATH` | no | Path to a Kerberos keytab file. When set and no account URL sidecar exists, the CLI performs a GSSAPI-authenticated `GET /acme/eab` before registering. Mutually exclusive with `--eab-kid` / `--eab-key`. |
 
 If the account URL sidecar file does not exist, `issue` registers a new account first.
 
@@ -181,8 +183,9 @@ akamu-cli renew --server URL --account-key FILE -d DOMAIN --out FILE [OPTIONS]
 | `--poll-timeout SECS` | no | Default: `120`. |
 | `--key-type TYPE` | no | Account key type. Default: `ec:P-256`. |
 | `--cert-key-type TYPE` | no | Certificate key type. Default: `ec:P-256`. |
-| `--eab-kid KID` | no | EAB key ID. |
-| `--eab-key KEY_B64U` | no | EAB HMAC key (base64url). |
+| `--eab-kid KID` | no | EAB key ID. Mutually exclusive with `--gssapi-keytab`. |
+| `--eab-key KEY_B64U` | no | EAB HMAC key (base64url). Mutually exclusive with `--gssapi-keytab`. |
+| `--gssapi-keytab PATH` | no | Path to a Kerberos keytab file for GSSAPI-authenticated EAB. Mutually exclusive with `--eab-kid` / `--eab-key`. |
 
 Behavior when `--cert` is given (or when `--renewal-config` is used and the cert file from the config exists) and `--force` is not:
 
@@ -341,11 +344,12 @@ type  = "dns"
 value = "*.example.com"
 
 # Optional fields (omit when not applicable):
-onion_key  = "/path/to/hs_key.pem"
-contacts   = ["mailto:admin@example.com"]
-eab_kid    = "kid-from-ca"
-eab_key    = "base64url-hmac-key"
-dns_hook   = "/etc/akamu/hooks/dns-update.sh"
+onion_key       = "/path/to/hs_key.pem"
+contacts        = ["mailto:admin@example.com"]
+eab_kid         = "kid-from-ca"
+eab_key         = "base64url-hmac-key"
+gssapi_keytab   = "/etc/akamu/http.keytab"
+dns_hook        = "/etc/akamu/hooks/dns-update.sh"
 ```
 
 #### Fields
@@ -368,6 +372,7 @@ dns_hook   = "/etc/akamu/hooks/dns-update.sh"
 | `eab_kid` | — | EAB key ID |
 | `eab_key` | — | EAB HMAC key (base64url) |
 | `eab_alg` | `"HS256"` | EAB HMAC algorithm |
+| `gssapi_keytab` | — | Path to a Kerberos keytab for GSSAPI-authenticated EAB (mutually exclusive with `eab_kid` / `eab_key`) |
 | `dns_hook` | — | Hook script path for DNS TXT record management |
 
 Fields that have defaults are optional in the TOML file. Existing configs with fewer fields remain forward-compatible as new optional fields are added.
@@ -635,7 +640,11 @@ akamu-cli renew --renewal-config /etc/akamu/certs/example.com.pem.renewal.toml
 
 ## External Account Binding
 
-Some CAs require EAB credentials before accepting a new account. Obtain a KID and HMAC key from your CA's operator, then pass them to `account register` or `issue`:
+Some CAs require EAB credentials before accepting a new account. Two methods are available: manual key/ID or GSSAPI (Kerberos) authentication.
+
+### Manual EAB (kid + HMAC key)
+
+Obtain a KID and HMAC key from your CA's operator, then pass them to `account register` or `issue`:
 
 ```bash
 akamu-cli account register \
@@ -649,7 +658,21 @@ akamu-cli account register \
 
 The `--eab-key` value must be the raw HMAC key encoded as base64url without padding. Do not wrap it in additional base64 encoding.
 
-If the server has `external_account_required = true` and you omit the EAB flags, registration fails with `urn:ietf:params:acme:error:externalAccountRequired`.
+### GSSAPI-authenticated EAB
+
+When the CA uses Kerberos to authenticate EAB requests (via `/acme/eab`), supply a keytab instead:
+
+```bash
+akamu-cli account register \
+  --server https://acme.example.com/acme/directory \
+  --account-key ~/.akamu/account.pem \
+  --agree-tos \
+  --gssapi-keytab /etc/akamu/client.keytab
+```
+
+The CLI derives the target service name `HTTP@<hostname>` from the server URL and calls `GET /acme/eab` with an `Authorization: Negotiate` token. The authenticated Kerberos principal is logged. `--gssapi-keytab` and `--eab-kid` / `--eab-key` are mutually exclusive.
+
+If the server has `external_account_required = true` and you omit all EAB flags, registration fails with `urn:ietf:params:acme:error:externalAccountRequired`.
 
 ## Key type selection
 

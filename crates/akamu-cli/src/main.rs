@@ -20,8 +20,9 @@ use std::{
 };
 
 use akamu_client::{
-    AccountKey, AccountOptions, AcmeClient, ChallengeSolver as _, Dns01Helper, DnsHookSolver,
-    DnsPersist01Helper, EabOptions, Http01Solver, Identifier, RenewalConfig, TlsAlpn01Solver,
+    fetch_eab_via_gssapi, AccountKey, AccountOptions, AcmeClient, ChallengeSolver as _,
+    Dns01Helper, DnsHookSolver, DnsPersist01Helper, EabOptions, Http01Solver, Identifier,
+    RenewalConfig, TlsAlpn01Solver,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use clap::{Parser, Subcommand};
@@ -94,10 +95,18 @@ struct EabFlags {
     /// EAB HMAC algorithm: HS256 | HS384 | HS512 (default: HS256)
     #[arg(long, default_value = "HS256")]
     eab_alg: String,
+
+    /// Path to a Kerberos keytab for GSSAPI-authenticated EAB.
+    /// Mutually exclusive with --eab-kid / --eab-key.
+    #[arg(long, value_name = "PATH")]
+    gssapi_keytab: Option<PathBuf>,
 }
 
 impl EabFlags {
     fn to_eab_options(&self) -> Result<Option<(String, Vec<u8>, String)>, String> {
+        if self.gssapi_keytab.is_some() && (self.eab_kid.is_some() || self.eab_key.is_some()) {
+            return Err("--gssapi-keytab cannot be combined with --eab-kid / --eab-key".into());
+        }
         match (&self.eab_kid, &self.eab_key) {
             (Some(kid), Some(key_b64u)) => {
                 let hmac_key = URL_SAFE_NO_PAD
@@ -407,7 +416,36 @@ async fn cmd_register(args: RegisterArgs) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?;
 
-    let eab = build_eab_options(&args.eab)?;
+    let gssapi_eab = if let Some(ref keytab) = args.eab.gssapi_keytab {
+        let eab_url = derive_eab_url(&args.server)?;
+        let result = fetch_eab_via_gssapi(
+            &eab_url,
+            keytab.to_str().ok_or("keytab path is not valid UTF-8")?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        eprintln!("GSSAPI authenticated as: {}", result.principal);
+        match (result.kid, result.hmac_key, result.alg) {
+            (Some(kid), Some(hmac_key_b64u), Some(alg)) => {
+                let hmac_key = URL_SAFE_NO_PAD
+                    .decode(&hmac_key_b64u)
+                    .map_err(|e| format!("EAB hmac_key decode: {e}"))?;
+                Some((kid, hmac_key, alg))
+            }
+            _ => {
+                eprintln!(
+                    "Note: server did not return EAB credentials \
+                     (eab_master_secret not configured); proceeding without EAB."
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let cli_eab = build_eab_options(&args.eab)?;
+    let eab = gssapi_eab.or(cli_eab);
     let contact_refs: Vec<&str> = args.contacts.iter().map(String::as_str).collect();
 
     let opts = AccountOptions {
@@ -577,7 +615,35 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
     let account = if let Ok(url) = load_account_url(&args.account_key) {
         akamu_client::Account::new(url, "valid".to_string(), vec![], Arc::clone(&key))
     } else {
-        let eab = build_eab_options(&args.eab)?;
+        let gssapi_eab = if let Some(ref keytab) = args.eab.gssapi_keytab {
+            let eab_url = derive_eab_url(&args.server)?;
+            let result = fetch_eab_via_gssapi(
+                &eab_url,
+                keytab.to_str().ok_or("keytab path is not valid UTF-8")?,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            eprintln!("GSSAPI authenticated as: {}", result.principal);
+            match (result.kid, result.hmac_key, result.alg) {
+                (Some(kid), Some(hmac_key_b64u), Some(alg)) => {
+                    let hmac_key = URL_SAFE_NO_PAD
+                        .decode(&hmac_key_b64u)
+                        .map_err(|e| format!("EAB hmac_key decode: {e}"))?;
+                    Some((kid, hmac_key, alg))
+                }
+                _ => {
+                    eprintln!(
+                        "Note: server did not return EAB credentials \
+                         (eab_master_secret not configured); proceeding without EAB."
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let cli_eab = build_eab_options(&args.eab)?;
+        let eab = gssapi_eab.or(cli_eab);
         let opts = AccountOptions {
             contacts: &[],
             agree_tos: true,
@@ -968,6 +1034,7 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
         eab_kid: args.eab.eab_kid.clone(),
         eab_key: args.eab.eab_key.clone(),
         eab_alg: args.eab.eab_alg.clone(),
+        gssapi_keytab: args.eab.gssapi_keytab.clone(),
         dns_hook: args.dns_hook.clone(),
     };
     let toml_str = toml::to_string_pretty(&renewal_config)
@@ -1068,6 +1135,7 @@ async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
             eab_kid: cfg.eab_kid,
             eab_key: cfg.eab_key,
             eab_alg: cfg.eab_alg,
+            gssapi_keytab: cfg.gssapi_keytab,
         };
         let issue_args = IssueArgs {
             server: cfg.server,
@@ -1236,4 +1304,22 @@ fn load_account_url(key_path: &Path) -> Result<String, String> {
 
 fn build_eab_options(flags: &EabFlags) -> Result<Option<(String, Vec<u8>, String)>, String> {
     flags.to_eab_options()
+}
+
+/// Construct the EAB identity URL from the ACME server directory URL.
+///
+/// Extracts the scheme + host (+ port) and appends `/acme/eab`.
+fn derive_eab_url(server_url: &str) -> Result<String, String> {
+    let without_scheme = server_url
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(server_url);
+    let host_port = without_scheme.split('/').next().unwrap_or("");
+    if host_port.is_empty() {
+        return Err(format!(
+            "cannot extract host from server URL '{server_url}'"
+        ));
+    }
+    let scheme = server_url.split("://").next().unwrap_or("https");
+    Ok(format!("{scheme}://{host_port}/acme/eab"))
 }
