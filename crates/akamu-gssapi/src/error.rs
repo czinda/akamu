@@ -7,6 +7,7 @@ use crate::ffi::OmUint32;
 /// The `major` code follows the GSS-API bit layout defined in RFC 2743 §1.2.1.
 /// The `minor` code is mechanism-specific; for Kerberos it is a MIT krb5 error
 /// code that `com_err` can render as a human-readable string.
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum GssError {
     /// `gss_import_name` failed to parse the service name string.
@@ -52,4 +53,18 @@ pub enum GssError {
     /// interior NUL byte and cannot be passed to the C GSSAPI library.
     #[error("keytab path contains an interior NUL byte")]
     NulInKeytabPath,
+
+    /// `gss_accept_sec_context` succeeded but the returned `ret_flags` do not
+    /// include `GSS_C_REPLAY_FLAG`, meaning the context does not guarantee
+    /// replay detection.
+    #[error("insufficient GSSAPI context flags: ret_flags={ret_flags:#010x} (GSS_C_REPLAY_FLAG not set)")]
+    InsufficientFlags { ret_flags: OmUint32 },
+
+    /// `target_service` passed to [`crate::init_token`] contains an interior NUL byte.
+    #[error("target service name contains an interior NUL byte")]
+    NulInTargetName,
+
+    /// `gss_init_sec_context` failed to produce the initial token.
+    #[error("gss_init_sec_context failed: major={major:#010x} minor={minor:#010x}")]
+    InitContext { major: OmUint32, minor: OmUint32 },
 }
