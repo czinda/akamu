@@ -304,7 +304,10 @@ pub async fn record(
             let mut times = state
                 .violation_times
                 .lock()
-                .unwrap_or_else(|e| e.into_inner());
+                .unwrap_or_else(|e| {
+                    tracing::error!("violation_times mutex poisoned — FAU_ARP.1 alarm state may be inconsistent");
+                    e.into_inner()
+                });
             let cutoff = Instant::now() - Duration::from_secs(300);
             times.retain(|&t| t >= cutoff);
             times.push_back(Instant::now());
