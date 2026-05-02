@@ -661,6 +661,85 @@ pub fn sign_server_cert(
         .map_err(|e| AcmeError::Builder(format!("sign server cert: {e}")))
 }
 
+/// Issue a CA-signed client certificate for an admin operator.
+///
+/// Produces a certificate with `digitalSignature` KeyUsage and `clientAuth` EKU,
+/// suitable for mTLS client authentication against the admin listener.
+/// The SHA-256 fingerprint of the returned DER is the credential stored in
+/// the `operators` table.
+pub fn sign_admin_cert(
+    operator_name: &str,
+    operator_key: &synta_certificate::BackendPrivateKey,
+    ca: &CaState,
+) -> Result<Vec<u8>, AcmeError> {
+    let ca_name_der = extract_ca_subject_der(&ca.cert_der)?;
+
+    let spki_der = operator_key
+        .public_key()
+        .map_err(|e| AcmeError::Crypto(format!("operator public key: {e}")))?
+        .spki_der()
+        .to_vec();
+
+    let ca_spki_der = ca
+        .key
+        .public_key()
+        .map_err(|e| AcmeError::Crypto(format!("CA public key for AKI: {e}")))?
+        .spki_der()
+        .to_vec();
+
+    let mut serial_bytes = [0u8; 16];
+    getrandom::getrandom(&mut serial_bytes)
+        .map_err(|e| AcmeError::Internal(format!("random serial: {e}")))?;
+    serial_bytes[0] = (serial_bytes[0] & 0x7f) | 0x01;
+    let serial = synta::Integer::from_bytes(&serial_bytes);
+
+    let now = unix_now();
+    let not_before_str = unix_to_generalized_time(now);
+    let not_after_str = unix_to_generalized_time(now + ca.validity_days as i64 * 86400);
+    let not_before = synta_certificate::parse_time(&not_before_str)
+        .map_err(|e| AcmeError::Builder(format!("notBefore: {e}")))?;
+    let not_after = synta_certificate::parse_time(&not_after_str)
+        .map_err(|e| AcmeError::Builder(format!("notAfter: {e}")))?;
+
+    let subject_der = NameBuilder::new()
+        .common_name(operator_name)
+        .build()
+        .map_err(|e| AcmeError::Builder(format!("subject name: {e}")))?;
+
+    let hasher = default_key_id_hasher();
+
+    let bc_der = encode_basic_constraints(false, None)
+        .ok_or_else(|| AcmeError::Builder("BasicConstraints".into()))?;
+    let ku_der = encode_key_usage(1u16 << KEY_USAGE_DIGITAL_SIGNATURE)
+        .ok_or_else(|| AcmeError::Builder("KeyUsage".into()))?;
+    let eku_der = ExtendedKeyUsageBuilder::new()
+        .client_auth()
+        .build()
+        .map_err(|e| AcmeError::Builder(format!("EKU: {e}")))?;
+    let ski_der =
+        encode_subject_key_identifier(&spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
+            .ok_or_else(|| AcmeError::Builder("SKI".into()))?;
+    let aki_der =
+        encode_authority_key_identifier(&ca_spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
+            .ok_or_else(|| AcmeError::Builder("AKI".into()))?;
+
+    let signer = ca.key.as_signer(&ca.hash_alg);
+    CertificateBuilder::new()
+        .issuer_name(&ca_name_der)
+        .subject_name(&subject_der)
+        .public_key_der(&spki_der)
+        .serial_number(serial)
+        .not_valid_before(not_before)
+        .not_valid_after(not_after)
+        .add_extension_oid(oids::BASIC_CONSTRAINTS, false, &bc_der)
+        .add_extension_oid(oids::KEY_USAGE, true, &ku_der)
+        .add_extension_oid(oids::EXTENDED_KEY_USAGE, false, &eku_der)
+        .add_extension_oid(oids::SUBJECT_KEY_IDENTIFIER, false, &ski_der)
+        .add_extension_oid(oids::AUTHORITY_KEY_IDENTIFIER, false, &aki_der)
+        .sign(&signer)
+        .map_err(|e| AcmeError::Builder(format!("sign admin cert: {e}")))
+}
+
 /// Apply CA/B Forum BR §4.3.1.2 pre-issuance policy linting to a just-signed certificate.
 ///
 /// Validates the DER-encoded leaf against the WebPKI profile (CABF BR) using
