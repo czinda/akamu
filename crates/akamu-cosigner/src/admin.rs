@@ -70,8 +70,8 @@ pub fn lookup_session(state: &AppState, token: &str) -> Option<(String, String)>
     let ttl = std::time::Duration::from_secs(state.admin_session_ttl_secs);
     let now = std::time::Instant::now();
     let mut sessions = state.admin_sessions.lock().unwrap();
-    // Sweep expired sessions.
-    sessions.retain(|_, s| now.duration_since(s.created_at) < ttl);
+    // Sweep sessions that have been idle longer than the TTL.
+    sessions.retain(|_, s| now.duration_since(s.last_active_at) < ttl);
     if let Some(s) = sessions.get_mut(token) {
         s.last_active_at = now;
         return Some((s.name.clone(), s.role.clone()));
