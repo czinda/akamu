@@ -5,7 +5,7 @@
 -- the CHECK constraint).
 CREATE TABLE operators (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    name             TEXT    NOT NULL,
+    name             TEXT    NOT NULL UNIQUE,
     role             TEXT    NOT NULL
                              CHECK(role IN ('administrator','ca_operations','ca_ra','auditor')),
     cert_fingerprint TEXT    UNIQUE,   -- SHA-256 hex of DER leaf cert; NULL = no cert auth

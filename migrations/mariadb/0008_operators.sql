@@ -1,7 +1,7 @@
 -- PP CA v2.1 FMT: operator accounts with role-based access control.
 CREATE TABLE operators (
     id               BIGINT       NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    name             VARCHAR(255) NOT NULL,
+    name             VARCHAR(255) NOT NULL UNIQUE,
     role             VARCHAR(32)  NOT NULL,     -- administrator|ca_operations|ca_ra|auditor
     cert_fingerprint VARCHAR(128) UNIQUE,       -- SHA-256 hex; NULL = no cert auth
     gssapi_principal VARCHAR(255) UNIQUE,       -- Kerberos principal; NULL = no GSSAPI auth
