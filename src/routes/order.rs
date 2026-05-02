@@ -478,7 +478,7 @@ pub async fn new_order(
         &state.audit_policy,
         crate::audit::AuditEvent::success(crate::audit::AuditEventType::OrderCreate)
             .with_subject(&order_id)
-            .with_principal(&format!("acme:{}", ctx.jwk_thumbprint.as_deref().unwrap_or(""))),
+            .with_principal(format!("acme:{}", ctx.jwk_thumbprint.as_deref().unwrap_or(""))),
     )
     .await;
 
@@ -782,7 +782,7 @@ mod tests {
         let order = make_order("valid", None, None, None);
         let json = to_val(order_json(&order, &[], "https://acme.test"));
         // either missing or null
-        assert!(json.get("certificate").map_or(true, |v| v.is_null()));
+        assert!(json.get("certificate").is_none_or(|v| v.is_null()));
     }
 
     #[test]
@@ -797,7 +797,7 @@ mod tests {
     fn order_json_without_replaces_omits_field() {
         let order = make_order("pending", None, None, None);
         let json = to_val(order_json(&order, &[], "https://acme.test"));
-        assert!(json.get("replaces").map_or(true, |v| v.is_null()));
+        assert!(json.get("replaces").is_none_or(|v| v.is_null()));
     }
 
     #[test]
@@ -823,7 +823,7 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("order-1"));
-        assert!(json.get("certificate").map_or(true, |v| v.is_null()));
+        assert!(json.get("certificate").is_none_or(|v| v.is_null()));
         // auto-renewal object present
         let ar = &json["auto-renewal"];
         assert!(ar.is_object());
@@ -835,7 +835,7 @@ mod tests {
     fn order_json_non_star_valid_does_not_have_star_certificate() {
         let order = make_order("valid", None, Some("cert-abc"), None);
         let json = to_val(order_json(&order, &[], "https://acme.test"));
-        assert!(json.get("star-certificate").map_or(true, |v| v.is_null()));
+        assert!(json.get("star-certificate").is_none_or(|v| v.is_null()));
         assert!(json["certificate"].as_str().unwrap().contains("cert-abc"));
     }
 
@@ -871,6 +871,6 @@ mod tests {
     fn order_json_without_profile_omits_field() {
         let order = make_order("pending", None, None, None);
         let json = to_val(order_json(&order, &[], "https://acme.test"));
-        assert!(json.get("profile").map_or(true, |v| v.is_null()));
+        assert!(json.get("profile").is_none_or(|v| v.is_null()));
     }
 }

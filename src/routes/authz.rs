@@ -416,7 +416,7 @@ mod tests {
     #[test]
     fn authz_json_serializes_pending() {
         let authz = make_authz("pending", false, Some(1_700_100_000));
-        let challs = vec![
+        let challs = [
             make_challenge("http-01", "pending"),
             make_challenge("dns-01", "pending"),
         ];
@@ -499,7 +499,7 @@ mod tests {
         };
         let val = serde_json::to_value(body).unwrap();
         assert!(
-            val.get("expires").map_or(true, |v| v.is_null()),
+            val.get("expires").is_none_or(|v| v.is_null()),
             "expires should be absent when None"
         );
     }
