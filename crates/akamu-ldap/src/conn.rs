@@ -140,16 +140,28 @@ impl LdapConnection {
                 tv_sec: timeout_secs as libc::time_t,
                 tv_usec: 0,
             };
-            unsafe {
+            let rc = unsafe {
                 ffi::ldap_set_option(
                     conn.ld,
                     ffi::LDAP_OPT_NETWORK_TIMEOUT,
                     &tv as *const timeval as *const _,
+                )
+            };
+            if rc == ffi::LDAP_OPT_ERROR {
+                tracing::warn!(
+                    "ldap_set_option(NETWORK_TIMEOUT) failed; LDAP connects may block indefinitely"
                 );
+            }
+            let rc = unsafe {
                 ffi::ldap_set_option(
                     conn.ld,
                     ffi::LDAP_OPT_TIMEOUT,
                     &tv as *const timeval as *const _,
+                )
+            };
+            if rc == ffi::LDAP_OPT_ERROR {
+                tracing::warn!(
+                    "ldap_set_option(TIMEOUT) failed; LDAP operations may block indefinitely"
                 );
             }
         }
@@ -251,7 +263,19 @@ impl LdapConnection {
         // supplies all credentials so the interact callback is a no-op.
         let mut result: *mut ffi::LDAPMessage = ptr::null_mut();
         let mut rmech: *const c_char = ptr::null();
+        let mut iterations: u32 = 0;
+        const MAX_SASL_ROUNDS: u32 = 10;
         loop {
+            if iterations >= MAX_SASL_ROUNDS {
+                if !result.is_null() {
+                    unsafe { ffi::ldap_msgfree(result) };
+                }
+                return Err(LdapError::Protocol {
+                    code: -1,
+                    msg: format!("GSSAPI SASL bind exceeded {MAX_SASL_ROUNDS} rounds; aborting"),
+                });
+            }
+            iterations += 1;
             let mut msgid: c_int = -1;
             let rc = unsafe {
                 ffi::ldap_sasl_interactive_bind(
@@ -562,10 +586,14 @@ pub(crate) fn cstr(s: &str) -> Result<CString, LdapError> {
 
 /// Convert an LDAP result code to an owned error message string.
 fn err_string(code: c_int) -> String {
+    // SAFETY: ldap_err2string returns a pointer to a static string (never null
+    // for any input); the string is valid UTF-8 ASCII and has static lifetime.
     let ptr = unsafe { ffi::ldap_err2string(code) };
     if ptr.is_null() {
         return format!("code {code}");
     }
+    // SAFETY: ptr is a non-null pointer to a NUL-terminated static string
+    // returned by ldap_err2string; it remains valid for the lifetime of this call.
     unsafe { CStr::from_ptr(ptr) }
         .to_str()
         .unwrap_or("(invalid UTF-8)")
