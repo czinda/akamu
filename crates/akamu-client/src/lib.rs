@@ -4,6 +4,7 @@ pub mod client;
 pub mod csr;
 pub mod eab;
 pub mod error;
+pub mod gssapi_eab;
 pub mod onion;
 pub mod types;
 
@@ -14,6 +15,7 @@ pub use challenge::{
 pub use client::AcmeClient;
 pub use csr::build_csr;
 pub use error::ClientError;
+pub use gssapi_eab::{fetch_eab_via_gssapi, GssapiEabResult};
 pub use onion::build_onion_csr;
 pub use synta_certificate::{der_to_pem, pem_to_der};
 pub use types::{

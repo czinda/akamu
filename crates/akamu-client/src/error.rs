@@ -12,4 +12,6 @@ pub enum ClientError {
     Crypto(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("GSSAPI error: {0}")]
+    Gssapi(String),
 }

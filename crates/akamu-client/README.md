@@ -37,8 +37,13 @@ classical and post-quantum (ML-DSA) account keys.
   Short-Term, Automatically Renewed (STAR) certificate orders.  Use
   `StarOrderParams` to configure the end date, per-certificate lifetime, and
   optional `lifetime-adjust` clock-skew window.
+- **`fetch_eab_via_gssapi(eab_url, keytab_file)`** / **`GssapiEabResult`** —
+  performs a GSSAPI-authenticated `GET /acme/eab` request using a Kerberos
+  keytab, returning the authenticated principal name.  Derives the target
+  service name `HTTP@<hostname>` from the URL automatically.  The blocking
+  `gss_init_sec_context` FFI call is run via `tokio::task::spawn_blocking`.
 - **`ClientError`** — unified error type wrapping `JoseError`, HTTP errors,
-  ACME problem document errors, crypto errors, and I/O errors.
+  ACME problem document errors, crypto errors, I/O errors, and GSSAPI errors.
 
 ## End-to-end example
 
@@ -219,6 +224,7 @@ let config = RenewalConfig {
     eab_kid: None,
     eab_key: None,
     eab_alg: "HS256".into(),
+    gssapi_keytab: None,                   // optional; mutually exclusive with eab_kid/eab_key
     dns_hook: Some("/etc/akamu/hooks/dns-update.sh".into()),
 };
 

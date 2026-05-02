@@ -225,6 +225,9 @@ pub struct RenewalConfig {
     /// EAB HMAC algorithm.
     #[serde(default = "defaults::eab_alg")]
     pub eab_alg: String,
+    /// Path to a Kerberos keytab for GSSAPI-authenticated EAB fetch.
+    #[serde(default)]
+    pub gssapi_keytab: Option<PathBuf>,
     /// Hook script for DNS TXT record management.  Invoked as
     /// `<dns_hook> add|remove` with values passed via environment variables.
     pub dns_hook: Option<String>,

@@ -241,6 +241,39 @@ let account = client.new_account(Arc::clone(&key), &opts).await?;
 
 The library builds the EAB JWS internally, signs it with the HMAC key, and embeds it in the new-account request as `externalAccountBinding`.
 
+## GSSAPI-authenticated EAB fetch
+
+When the ACME server uses Kerberos to authenticate EAB requests, use
+`fetch_eab_via_gssapi` to retrieve the authenticated principal identity from the
+server's `GET /acme/eab` endpoint before registering:
+
+```rust
+use akamu_client::{fetch_eab_via_gssapi, GssapiEabResult};
+
+let result: GssapiEabResult = fetch_eab_via_gssapi(
+    "https://acme.example.com/acme/eab",
+    "/etc/akamu/client.keytab",
+).await?;
+println!("Authenticated as: {}", result.principal);
+```
+
+The function:
+
+1. Loads an initiator credential from `keytab_file` via `akamu-gssapi`.
+2. Derives the target service name as `HTTP@<hostname>` from the URL.
+3. Calls `gss_init_sec_context` (via `tokio::task::spawn_blocking`) to produce a
+   Kerberos token.
+4. Sends `GET <eab_url>` with `Authorization: Negotiate <base64-token>`.
+5. Parses `{"principal": "..."}` from the response body.
+
+The returned `GssapiEabResult` currently contains only the `principal` field.
+Full EAB key derivation is not yet implemented server-side; the endpoint echoes
+the authenticated principal name as confirmation that Kerberos authentication
+succeeded.
+
+Both `fetch_eab_via_gssapi` and `GssapiEabResult` are re-exported from the crate
+root.
+
 ## Order lifecycle
 
 ```mermaid
@@ -650,6 +683,7 @@ let config = RenewalConfig {
     eab_kid: None,
     eab_key: None,
     eab_alg: "HS256".into(),
+    gssapi_keytab: None,
     dns_hook: Some("/etc/akamu/hooks/dns-update.sh".into()),
 };
 
@@ -660,7 +694,7 @@ std::fs::write("fullchain.pem.renewal.toml", &toml)?;
 let loaded: RenewalConfig = toml::from_str(&toml)?;
 ```
 
-Fields with defaults (`account_key_type`, `cert_key_type`, `challenge_type`, `http_port`, `tls_port`, `poll_timeout`, `eab_alg`) are optional in TOML files; missing fields are filled with sensible defaults on deserialisation.
+Fields with defaults (`account_key_type`, `cert_key_type`, `challenge_type`, `http_port`, `tls_port`, `poll_timeout`, `eab_alg`) are optional in TOML files; missing fields are filled with sensible defaults on deserialisation. The `gssapi_keytab` field is also optional (defaults to absent when not present in the file, via `#[serde(default)]`).
 
 ## ClientError
 
@@ -671,6 +705,7 @@ pub enum ClientError {
     Acme { acme_type: String, detail: String },  // server returned problem+json
     Crypto(String),           // key generation or CSR error
     Io(String),               // I/O error
+    Gssapi(String),           // GSSAPI / Kerberos error from akamu-gssapi
 }
 ```
 
