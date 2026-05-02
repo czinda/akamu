@@ -306,6 +306,51 @@ pub async fn get_mtc_standalone_der(
     Ok(row.map(|(der,)| der))
 }
 
+// ── Admin search ──────────────────────────────────────────────────────────────
+
+/// Filtered, paginated search used by `GET /admin/certs`.
+///
+/// Uses `QueryBuilder` so optional filters only emit bind parameters when
+/// present, avoiding the `(? IS NULL OR ...)` pattern that misfires on
+/// Postgres with untyped NULL placeholders.
+pub async fn search(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    serial: Option<&str>,
+    account_id: Option<&str>,
+    status: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<CertificateRow>, crate::error::AcmeError> {
+    let mut qb = sqlx::QueryBuilder::<sqlx::Any>::new(
+        "SELECT id, order_id, account_id, serial_number, status, der, pem, \
+                not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created, \
+                suggested_window_start, suggested_window_end, replaced_by \
+         FROM certificates WHERE 1=1",
+    );
+    if let Some(s) = serial {
+        qb.push(" AND serial_number = ");
+        qb.push_bind(s);
+    }
+    if let Some(a) = account_id {
+        qb.push(" AND account_id = ");
+        qb.push_bind(a);
+    }
+    if let Some(st) = status {
+        qb.push(" AND status = ");
+        qb.push_bind(st);
+    }
+    qb.push(" ORDER BY created DESC LIMIT ");
+    qb.push_bind(limit);
+    qb.push(" OFFSET ");
+    qb.push_bind(offset);
+
+    let rows = qb
+        .build_query_as::<CertificateRow>()
+        .fetch_all(executor)
+        .await?;
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -558,7 +603,7 @@ mod tests {
         // Move cert-b to same account as cert-a by using same account_id in insert:
         // Actually we can't reuse account_id easily (FK requires unique account per insert_parent).
         // Instead, let's insert cert-b directly with acct-xa.
-        insert_parent_rows(&db, "acct-xa-extra", &format!("order-cert-b2")).await;
+        insert_parent_rows(&db, "acct-xa-extra", "order-cert-b2").await;
         insert(
             &db,
             CertificateRow {
@@ -767,49 +812,4 @@ mod tests {
             .unwrap();
         assert!(result.is_none());
     }
-}
-
-// ── Admin search ──────────────────────────────────────────────────────────────
-
-/// Filtered, paginated search used by `GET /admin/certs`.
-///
-/// Uses `QueryBuilder` so optional filters only emit bind parameters when
-/// present, avoiding the `(? IS NULL OR ...)` pattern that misfires on
-/// Postgres with untyped NULL placeholders.
-pub async fn search(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
-    serial: Option<&str>,
-    account_id: Option<&str>,
-    status: Option<&str>,
-    limit: i64,
-    offset: i64,
-) -> Result<Vec<CertificateRow>, crate::error::AcmeError> {
-    let mut qb = sqlx::QueryBuilder::<sqlx::Any>::new(
-        "SELECT id, order_id, account_id, serial_number, status, der, pem, \
-                not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created, \
-                suggested_window_start, suggested_window_end, replaced_by \
-         FROM certificates WHERE 1=1",
-    );
-    if let Some(s) = serial {
-        qb.push(" AND serial_number = ");
-        qb.push_bind(s);
-    }
-    if let Some(a) = account_id {
-        qb.push(" AND account_id = ");
-        qb.push_bind(a);
-    }
-    if let Some(st) = status {
-        qb.push(" AND status = ");
-        qb.push_bind(st);
-    }
-    qb.push(" ORDER BY created DESC LIMIT ");
-    qb.push_bind(limit);
-    qb.push(" OFFSET ");
-    qb.push_bind(offset);
-
-    let rows = qb
-        .build_query_as::<CertificateRow>()
-        .fetch_all(executor)
-        .await?;
-    Ok(rows)
 }
