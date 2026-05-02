@@ -39,13 +39,14 @@ pub async fn insert(
     sqlx::query(
         "INSERT INTO operators \
          (name, role, cert_fingerprint, gssapi_principal, created_at, active) \
-         VALUES (?, ?, ?, ?, ?, 1)",
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(name)
     .bind(role)
     .bind(cert_fingerprint)
     .bind(gssapi_principal)
     .bind(now)
+    .bind(1i64)
     .execute(executor)
     .await?;
     Ok(())
@@ -58,9 +59,10 @@ pub async fn get_by_fingerprint(
 ) -> Result<Option<OperatorRow>, AcmeError> {
     let row = sqlx::query_as::<_, OperatorRow>(&format!(
         "SELECT {COLUMNS} FROM operators \
-         WHERE cert_fingerprint = ? AND active = 1"
+         WHERE cert_fingerprint = ? AND active = ?"
     ))
     .bind(fingerprint)
+    .bind(1i64)
     .fetch_optional(executor)
     .await?;
     Ok(row)
@@ -73,21 +75,29 @@ pub async fn get_by_principal(
 ) -> Result<Option<OperatorRow>, AcmeError> {
     let row = sqlx::query_as::<_, OperatorRow>(&format!(
         "SELECT {COLUMNS} FROM operators \
-         WHERE gssapi_principal = ? AND active = 1"
+         WHERE gssapi_principal = ? AND active = ?"
     ))
     .bind(principal)
+    .bind(1i64)
     .fetch_optional(executor)
     .await?;
     Ok(row)
 }
 
-/// Return all operators (active and inactive) ordered by ID.
+/// Return operators (active and inactive) ordered by ID, with pagination.
+///
+/// `limit` is clamped to `[1, 1000]` by the caller; this function trusts the
+/// caller to enforce the cap before calling.
 pub async fn list(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    limit: i64,
+    offset: i64,
 ) -> Result<Vec<OperatorRow>, AcmeError> {
     let rows = sqlx::query_as::<_, OperatorRow>(&format!(
-        "SELECT {COLUMNS} FROM operators ORDER BY id ASC"
+        "SELECT {COLUMNS} FROM operators ORDER BY id ASC LIMIT ? OFFSET ?"
     ))
+    .bind(limit)
+    .bind(offset)
     .fetch_all(executor)
     .await?;
     Ok(rows)
@@ -173,7 +183,7 @@ mod tests {
         insert(&db, "bob", "auditor", None, Some("bob@REALM"), "2026-01-01T00:00:00Z")
             .await
             .unwrap();
-        let rows = list(&db).await.unwrap();
+        let rows = list(&db, 100, 0).await.unwrap();
         assert_eq!(rows.len(), 2);
     }
 
@@ -197,7 +207,7 @@ mod tests {
             .unwrap();
         let row = get_by_fingerprint(&db, "fp-c").await.unwrap().unwrap();
         update_last_seen(&db, row.id, "2026-06-01T12:00:00Z").await.unwrap();
-        let rows = list(&db).await.unwrap();
+        let rows = list(&db, 100, 0).await.unwrap();
         assert_eq!(rows[0].last_seen_at.as_deref(), Some("2026-06-01T12:00:00Z"));
     }
 }
