@@ -4,16 +4,18 @@
 //! Defaults to `cosigner.toml` in the current working directory.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use tracing_subscriber::EnvFilter;
 
 mod acme;
+mod admin;
 mod config;
 mod error;
 mod key;
 mod routes;
 mod state;
+mod util;
 
 use config::Config;
 use error::CosignerError;
@@ -94,6 +96,16 @@ async fn run() -> Result<(), CosignerError> {
     let (cosigner_hash_alg_der, cosigner_spki_der) = parse_cosigner_id(&id_cert_der)?;
 
     // ── Build application state ───────────────────────────────────────────────
+    let admin_operators = config
+        .admin
+        .as_ref()
+        .map(|a| a.operators.clone())
+        .unwrap_or_default();
+    let admin_session_ttl_secs = config
+        .admin
+        .as_ref()
+        .map(|a| a.session_ttl_secs)
+        .unwrap_or(3600);
     let state = Arc::new(AppState {
         signing_key,
         hash_alg: config.signing_key.hash_alg.clone(),
@@ -101,6 +113,12 @@ async fn run() -> Result<(), CosignerError> {
         cosigner_hash_alg_der,
         cosigner_spki_der,
         challenge_tokens: Arc::clone(&challenge_tokens),
+        admin_operators,
+        admin_sessions: Arc::new(Mutex::new(HashMap::new())),
+        admin_session_ttl_secs,
+        startup_time: std::time::Instant::now(),
+        checkpoints_signed: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        last_checkpoint_at: Arc::new(Mutex::new(None)),
     });
 
     // ── Build router ──────────────────────────────────────────────────────────

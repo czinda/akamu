@@ -86,6 +86,12 @@ pub async fn post_sign(
         .to_der()
         .map_err(|e| CosignerError::Asn1(format!("encode SubtreeSignature: {e}")))?;
 
+    // Update signing statistics for GET /admin/stats.
+    state
+        .checkpoints_signed
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    *state.last_checkpoint_at.lock().unwrap() = Some(crate::util::unix_now());
+
     Ok((
         StatusCode::OK,
         [("content-type", "application/octet-stream")],

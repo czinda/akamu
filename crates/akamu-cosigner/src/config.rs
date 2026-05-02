@@ -12,6 +12,45 @@ pub struct Config {
     pub cosigner_id: CosignerIdConfig,
     #[serde(default)]
     pub acme_bootstrap: Option<AcmeBootstrapConfig>,
+    #[serde(default)]
+    pub admin: Option<AdminConfig>,
+}
+
+/// Admin interface configuration for akamu-cosigner.
+#[derive(Debug, Deserialize, Clone)]
+pub struct AdminConfig {
+    pub listen_addr: String,
+    /// Server TLS certificate for the admin listener.
+    pub cert_file: String,
+    /// Server TLS private key for the admin listener.
+    pub key_file: String,
+    /// CA certificate(s) trusted for operator client certificates.
+    #[serde(default)]
+    pub ca_certs: Vec<String>,
+    /// Session TTL in seconds (default 3600).
+    #[serde(default = "default_session_ttl")]
+    pub session_ttl_secs: u64,
+    /// Registered operators (at least one cert_fingerprint or gssapi_principal required).
+    #[serde(default)]
+    pub operators: Vec<OperatorConfig>,
+}
+
+fn default_session_ttl() -> u64 {
+    3600
+}
+
+/// One operator entry from `[[admin.operators]]`.
+#[derive(Debug, Deserialize, Clone)]
+pub struct OperatorConfig {
+    pub name: String,
+    /// `"administrator"` or `"auditor"`.
+    pub role: String,
+    /// SHA-256 hex fingerprint of the operator's client certificate DER leaf.
+    #[serde(default)]
+    pub cert_fingerprint: Option<String>,
+    /// Kerberos principal, e.g. `alice@REALM`.
+    #[serde(default)]
+    pub gssapi_principal: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

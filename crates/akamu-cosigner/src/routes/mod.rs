@@ -10,6 +10,7 @@ use axum::{
     Router,
 };
 
+use crate::admin;
 use crate::state::AppState;
 
 /// Build the Axum router.
@@ -17,6 +18,11 @@ use crate::state::AppState;
 /// Routes:
 /// - `POST /sign`  — MTC cosigner endpoint (§6.2).
 /// - `GET  /.well-known/acme-challenge/:token` — ACME http-01 challenge server.
+/// - `POST /admin/session`   — authenticate, returns session token.
+/// - `DELETE /admin/session` — invalidate current session.
+/// - `GET  /admin/status`    — liveness check.
+/// - `GET  /admin/stats`     — signing statistics.
+/// - `GET  /admin/config`    — redacted config (administrator only).
 pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/sign", post(sign::post_sign))
@@ -24,6 +30,13 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/.well-known/acme-challenge/:token",
             get(acme_challenge_handler),
         )
+        .route(
+            "/admin/session",
+            post(admin::post_session).delete(admin::delete_session),
+        )
+        .route("/admin/status", get(admin::get_status))
+        .route("/admin/stats", get(admin::get_stats))
+        .route("/admin/config", get(admin::get_config))
         .with_state(state)
 }
 
