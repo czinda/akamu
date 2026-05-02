@@ -78,6 +78,27 @@ pub struct AdminConfig {
     /// `"syslog"` — log CRIT.  `"halt"` — halt the server.  Default: `"syslog"`.
     #[serde(default = "default_audit_alarm_action")]
     pub audit_alarm_action: String,
+    /// Hostname placed in CN and SAN of the auto-generated admin server certificate.
+    /// Only used when `cert_file`/`key_file` are absent. Default: `"localhost"`.
+    #[serde(default = "default_admin_server_name")]
+    pub server_name: String,
+    /// Key algorithm for the auto-generated admin server certificate.
+    /// Only used when `cert_file`/`key_file` are absent.
+    /// Same syntax as `ca.key_type`. Default: `"ec:P-256"`.
+    #[serde(default = "default_admin_bootstrap_key_type")]
+    pub bootstrap_key_type: String,
+    /// PEM file for the bootstrap Administrator operator's client certificate.
+    /// If set and the file is absent when the operators table is empty, a
+    /// client certificate signed by the Akāmu CA is generated automatically
+    /// and the operator is registered in the database.
+    pub bootstrap_operator_cert_file: Option<String>,
+    /// PEM file for the bootstrap Administrator operator's client private key.
+    /// Must be set alongside `bootstrap_operator_cert_file`.
+    pub bootstrap_operator_key_file: Option<String>,
+    /// Name recorded in the database for the auto-provisioned bootstrap operator.
+    /// Default: `"admin"`.
+    #[serde(default = "default_admin_bootstrap_operator_name")]
+    pub bootstrap_operator_name: String,
 }
 
 fn default_admin_session_ttl_secs() -> u64 {
@@ -91,6 +112,15 @@ fn default_audit_alarm_threshold() -> u32 {
 }
 fn default_audit_alarm_action() -> String {
     "syslog".to_owned()
+}
+fn default_admin_server_name() -> String {
+    "localhost".to_owned()
+}
+fn default_admin_bootstrap_key_type() -> String {
+    "ec:P-256".to_owned()
+}
+fn default_admin_bootstrap_operator_name() -> String {
+    "admin".to_owned()
 }
 
 impl AdminConfig {
@@ -116,6 +146,19 @@ impl AdminConfig {
                     "[admin].audit_alarm_action must be \"syslog\" or \"halt\", got \"{other}\""
                 ))
             }
+        }
+        match (
+            &self.bootstrap_operator_cert_file,
+            &self.bootstrap_operator_key_file,
+        ) {
+            (Some(_), None) | (None, Some(_)) => {
+                return Err(
+                    "[admin] bootstrap_operator_cert_file and bootstrap_operator_key_file \
+                     must be set together or not at all"
+                        .into(),
+                )
+            }
+            _ => {}
         }
         Ok(())
     }
