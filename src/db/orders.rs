@@ -107,13 +107,16 @@ pub async fn update_status(
     error: Option<String>,
     now: i64,
 ) -> Result<(), AcmeError> {
-    sqlx::query("UPDATE orders SET status = ?, error = ?, updated = ? WHERE id = ?")
+    let result = sqlx::query("UPDATE orders SET status = ?, error = ?, updated = ? WHERE id = ?")
         .bind(status)
         .bind(error)
         .bind(now)
         .bind(id)
         .execute(executor)
         .await?;
+    if result.rows_affected() == 0 {
+        return Err(AcmeError::NotFound);
+    }
     Ok(())
 }
 
@@ -123,12 +126,15 @@ pub async fn set_certificate(
     certificate_id: &str,
     now: i64,
 ) -> Result<(), AcmeError> {
-    sqlx::query("UPDATE orders SET status = 'valid', certificate_id = ?, updated = ? WHERE id = ?")
+    let result = sqlx::query("UPDATE orders SET status = 'valid', certificate_id = ?, updated = ? WHERE id = ?")
         .bind(certificate_id)
         .bind(now)
         .bind(id)
         .execute(executor)
         .await?;
+    if result.rows_affected() == 0 {
+        return Err(AcmeError::NotFound);
+    }
     Ok(())
 }
 

@@ -110,12 +110,40 @@ pub async fn mark_used(
     kid: &str,
     now: i64,
 ) -> Result<(), AcmeError> {
-    sqlx::query("UPDATE eab_keys SET used_at = ? WHERE kid = ?")
+    let result = sqlx::query("UPDATE eab_keys SET used_at = ? WHERE kid = ?")
         .bind(now)
         .bind(kid)
         .execute(executor)
         .await?;
+    if result.rows_affected() == 0 {
+        return Err(AcmeError::NotFound);
+    }
     Ok(())
+}
+
+/// List EAB keys with optional used-status filter, pagination.
+///
+/// `used_filter`: `Some(true)` = only used, `Some(false)` = only unused, `None` = all.
+pub async fn list(
+    db: &crate::db::Db,
+    used_filter: Option<bool>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<EabKeyRow>, AcmeError> {
+    let mut qb = sqlx::QueryBuilder::<sqlx::Any>::new(
+        "SELECT kid, hmac_key_b64u, created, used_at, profile_grants FROM eab_keys WHERE 1=1",
+    );
+    match used_filter {
+        Some(true) => qb.push(" AND used_at IS NOT NULL"),
+        Some(false) => qb.push(" AND used_at IS NULL"),
+        None => qb.push(""),
+    };
+    qb.push(" ORDER BY created DESC LIMIT ");
+    qb.push_bind(limit);
+    qb.push(" OFFSET ");
+    qb.push_bind(offset);
+    let rows = qb.build_query_as::<EabKeyRow>().fetch_all(db).await?;
+    Ok(rows)
 }
 
 /// Delete a key entirely (for the future admin endpoint cleanup path).
