@@ -227,24 +227,20 @@ pub async fn get_stats(
     State(state): State<Arc<AppState>>,
 ) -> Response {
     let uptime_secs = state.startup_time.elapsed().as_secs();
-    let checkpoints_signed = state
-        .checkpoints_signed
-        .load(std::sync::atomic::Ordering::Relaxed);
-    let last_checkpoint_at = state
-        .last_checkpoint_at
-        .lock()
-        .unwrap()
-        .map(|ts| {
-            synta::GeneralizedTime::from_unix(ts)
-                .map(|gt| {
-                    format!(
-                        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-                        gt.year, gt.month, gt.day, gt.hour, gt.minute, gt.second
-                    )
-                })
-                .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_string())
-        })
-        .unwrap_or_default();
+    let (checkpoints_signed, last_checkpoint_at) = {
+        let stats = state.signing_stats.lock().unwrap_or_else(|e| e.into_inner());
+        let ts_str = stats
+            .1
+            .and_then(|ts| synta::GeneralizedTime::from_unix(ts))
+            .map(|gt| {
+                format!(
+                    "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+                    gt.year, gt.month, gt.day, gt.hour, gt.minute, gt.second
+                )
+            })
+            .unwrap_or_default();
+        (stats.0, ts_str)
+    };
     (
         StatusCode::OK,
         Json(json!({

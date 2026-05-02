@@ -117,8 +117,7 @@ async fn run() -> Result<(), CosignerError> {
         admin_sessions: Arc::new(Mutex::new(HashMap::new())),
         admin_session_ttl_secs,
         startup_time: std::time::Instant::now(),
-        checkpoints_signed: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        last_checkpoint_at: Arc::new(Mutex::new(None)),
+        signing_stats: Arc::new(Mutex::new((0, None))),
     });
 
     // ── Build router ──────────────────────────────────────────────────────────

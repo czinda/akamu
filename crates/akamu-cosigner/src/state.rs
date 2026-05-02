@@ -38,10 +38,12 @@ pub struct AppState {
     pub admin_session_ttl_secs: u64,
     /// Timestamp of server startup (for uptime reporting).
     pub startup_time: Instant,
-    /// Counter for checkpoints signed (for GET /admin/stats).
-    pub checkpoints_signed: Arc<std::sync::atomic::AtomicU64>,
-    /// Unix timestamp of last checkpoint signature.
-    pub last_checkpoint_at: Arc<Mutex<Option<i64>>>,
+    /// Signing statistics: (checkpoints_signed, last_checkpoint_at_unix).
+    ///
+    /// Held under a single lock so the counter and timestamp are always
+    /// consistent with each other (no window where count incremented but
+    /// timestamp not yet updated).
+    pub signing_stats: Arc<Mutex<(u64, Option<i64>)>>,
 }
 
 pub struct CosignerSession {
