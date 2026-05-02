@@ -60,7 +60,10 @@ keytab_file  = "/etc/akamu/http.keytab"
 service_name = "HTTP"
 
 [admin]
-bearer_token = "change-me"
+listen_addr = "127.0.0.1:9443"
+cert_file   = "/etc/akamu/admin-tls.pem"
+key_file    = "/etc/akamu/admin-tls-key.pem"
+ca_certs    = ["/etc/akamu/operator-ca.pem"]
 
 [profiles]
 refresh_interval_secs = 3600
@@ -87,7 +90,7 @@ eku           = ["server_auth"]
 listen_addr = "0.0.0.0:8080"
 ```
 
-Use `127.0.0.1:8080` if you only want to accept connections from a local reverse proxy. The server does not support TLS on this socket; TLS termination must be handled upstream.
+Use `127.0.0.1:8080` if you only want to accept connections from a local reverse proxy. To enable native TLS on this socket, configure the `[tls]` section; otherwise TLS termination must be handled upstream.
 
 ### `base_url`
 
@@ -216,7 +219,7 @@ ca_validity_years = 10
 
 ### `common_name`
 
-**Optional. Default: `"Akāmu CA"`.**
+**Optional. Default: `"ACME Server CA"`.**
 
 Common Name (CN) used in the Subject and Issuer fields of the auto-generated CA certificate.
 
@@ -226,7 +229,7 @@ common_name = "Example ACME CA"
 
 ### `organization`
 
-**Optional. Default: `"Akāmu"`.**
+**Optional. Default: `"ACME Server"`.**
 
 Organization (O) used in the Subject and Issuer fields of the auto-generated CA certificate.
 
@@ -266,6 +269,19 @@ Controls the `nextUpdate` field in the CRL served at `/ca/crl`. The `nextUpdate`
 
 ```toml
 crl_next_update_secs = 86400   # one day (default)
+```
+
+### `enforce_validity_cap`
+
+**Optional. Default: `false`.**
+
+When `true`, certificate issuance is rejected at the time of signing if the computed validity period exceeds 200 days (the current CA/B Forum BR §6.3.2 hard limit since 2026-03-15). When `false` (the default), the server only emits a startup warning for validity periods exceeding the limit, allowing private or enterprise PKI deployments to use longer validity periods without chaining to a public root.
+
+Public WebPKI CAs should set this to `true` to enforce the limit at issuance time rather than relying solely on the startup warning.
+
+```toml
+[ca]
+enforce_validity_cap = true
 ```
 
 ---
@@ -521,6 +537,18 @@ TCP port used when the server fetches http-01 challenge responses. RFC 8555 §8.
 http_validation_port = 80
 ```
 
+### `http_validation_allow_private_ips`
+
+**Optional. Default: `false`.**
+
+When `false` (the default), http-01 redirect targets that resolve to private, link-local, or loopback IP addresses (RFC 1918, 169.254.0.0/16, 127.0.0.0/8, etc.) are blocked to prevent SSRF attacks against cloud metadata endpoints such as `169.254.169.254`.
+
+Set to `true` only in isolated test environments where the http-01 challenge responder intentionally runs on a private address.
+
+```toml
+http_validation_allow_private_ips = false   # default — recommended for all production deployments
+```
+
 ### `dns_persist_issuer_domains`
 
 **Optional. Default: absent (dns-persist-01 disabled).**
@@ -763,6 +791,154 @@ authenticated endpoints.
 
 ---
 
+## `[tls]`
+
+The `[tls]` section enables Akāmu to terminate TLS directly on the main `listen_addr` socket, without a reverse proxy. When this section is absent or `enabled = false`, the server operates over plain HTTP.
+
+```toml
+[tls]
+enabled    = true
+cert_file  = "/etc/akamu/server.pem"
+key_file   = "/etc/akamu/server-key.pem"
+protocols  = ["TLSv1.2", "TLSv1.3"]
+
+[tls.client_auth]
+required          = false
+ca_files          = ["/etc/akamu/client-ca.pem"]
+profile           = "webpki"
+allow_post_quantum = false
+max_chain_depth   = 8
+minimum_rsa_modulus = 2048
+```
+
+### `enabled`
+
+**Optional. Default: `false`.**
+
+When `true`, the server listens with TLS on `listen_addr`. When `false`, the socket accepts plain HTTP connections.
+
+```toml
+[tls]
+enabled = true
+```
+
+### `cert_file`
+
+**Optional.** Path to the PEM file containing the server TLS certificate chain (leaf certificate first). When this file is absent on disk and `key_file` is also absent, Akāmu generates a self-signed certificate on first run using `bootstrap_key_type` and `server_name`.
+
+```toml
+cert_file = "/etc/akamu/server.pem"
+```
+
+### `key_file`
+
+**Optional.** Path to the PEM file containing the server TLS private key (PKCS#8 or SEC1, unencrypted). Same auto-generation rules as `cert_file`.
+
+```toml
+key_file = "/etc/akamu/server-key.pem"
+```
+
+### `protocols`
+
+**Optional. Default: `["TLSv1.2", "TLSv1.3"]`.**
+
+List of TLS protocol versions the server accepts. Both TLS 1.2 and TLS 1.3 are enabled by default.
+
+```toml
+protocols = ["TLSv1.2", "TLSv1.3"]
+```
+
+### `server_name`
+
+**Optional. Default: `"localhost"`.**
+
+Hostname placed in the CN and SAN of the auto-generated server certificate. Only used when `cert_file` and `key_file` are absent on disk.
+
+```toml
+server_name = "acme.example.com"
+```
+
+### `bootstrap_key_type`
+
+**Optional. Default: `"ec:P-256"`.**
+
+Key algorithm for the auto-generated server certificate. Only used when `cert_file` and `key_file` are absent on disk. Accepts the same values as `[ca].key_type`.
+
+```toml
+bootstrap_key_type = "ec:P-256"
+```
+
+### `[tls.client_auth]`
+
+**Optional. When absent, client certificate authentication is disabled.**
+
+Configures mutual TLS (mTLS) client certificate authentication. When present, the server requests a client certificate during the TLS handshake.
+
+#### `required`
+
+**Optional. Default: `false`.**
+
+When `true`, connections that present no client certificate are rejected. When `false`, client certificates are optional — presented certificates are still verified if provided.
+
+```toml
+required = true
+```
+
+#### `ca_files`
+
+**Required within `[tls.client_auth]`.** List of PEM files containing the trusted CA certificates used to verify client certificates.
+
+```toml
+ca_files = ["/etc/akamu/client-ca.pem"]
+```
+
+#### `profile`
+
+**Optional. Default: `"webpki"`.**
+
+Certificate validation profile. Accepted values:
+
+| Value | Behaviour |
+|-------|-----------|
+| `"webpki"` | CA/Browser Forum profile — enforces WebPKI policy rules (default). |
+| `"rfc5280"` | RFC 5280 profile — less restrictive, accepts private or enterprise PKI chains. |
+
+```toml
+profile = "webpki"
+```
+
+#### `allow_post_quantum`
+
+**Optional. Default: `false`.**
+
+When `true`, ML-DSA and hybrid composite post-quantum signature algorithms (draft-ietf-lamps-pq-composite-sigs) are accepted in client certificates and `CertificateVerify` messages. When `false`, only classical algorithms are accepted.
+
+```toml
+allow_post_quantum = false
+```
+
+#### `max_chain_depth`
+
+**Optional. Default: `8`.**
+
+Maximum certificate chain depth accepted for client certificates. Chains longer than this value are rejected.
+
+```toml
+max_chain_depth = 8
+```
+
+#### `minimum_rsa_modulus`
+
+**Optional. Default: `2048`.**
+
+Minimum RSA modulus size in bits for RSA client certificates. Connections presenting an RSA certificate with a smaller key are rejected.
+
+```toml
+minimum_rsa_modulus = 2048
+```
+
+---
+
 ## `[profiles]`
 
 The `[profiles]` section configures the certificate profile subsystem. Profiles are loaded from one or more *providers* at startup, cached in memory, and refreshed periodically by a background task. `Akāmu`'s own CA always signs; profiles only control which extensions are included and with what values. When no providers are configured, every order falls back to CA defaults (`digitalSignature` KeyUsage, `serverAuth` EKU, and the `[ca]` validity/URL settings).
@@ -905,33 +1081,166 @@ See [Certificate Profiles](profiles.md) for detailed descriptions with examples.
 
 ## `[admin]`
 
-The `[admin]` section enables the server-side Admin API. When this section is absent, all admin endpoints return 404 and are effectively invisible. This is the default; no admin access is possible without explicit configuration.
+The `[admin]` section enables the server-side Admin API on a dedicated listener with mutual TLS and/or GSSAPI/Kerberos authentication. When this section is absent, all admin endpoints return 404 and are effectively invisible. This is the default; no admin access is possible without explicit configuration.
+
+Operator identity is verified by one or both of:
+
+- **mTLS client certificates** — the connecting client presents a certificate signed by one of the CAs listed in `ca_certs`.
+- **GSSAPI/Kerberos** — clients authenticate via a Kerberos session established through `[admin.gssapi]`.
+
+At least one of `ca_certs` (non-empty) or `[admin.gssapi]` must be configured; the server exits at startup if neither is set.
 
 ```toml
 [admin]
-bearer_token = "change-me-to-a-strong-random-value"
+listen_addr = "127.0.0.1:9443"
+cert_file   = "/etc/akamu/admin-tls.pem"
+key_file    = "/etc/akamu/admin-tls-key.pem"
+ca_certs    = ["/etc/akamu/operator-ca.pem"]
+
+# Optional: also accept GSSAPI-authenticated operators
+[admin.gssapi]
+keytab_file  = "/etc/akamu/http.keytab"
+service_name = "HTTP"
 ```
 
-### `bearer_token`
+### `listen_addr`
 
-**Required within `[admin]`.** The secret token that all admin API callers must supply in the `Authorization: Bearer <token>` HTTP header.
+**Required within `[admin]`.** The TCP address and port the dedicated admin listener binds to. Keep this separate from the main ACME listener and scope it to localhost or an internal management network.
 
-Generate a strong random value before deploying:
-
-```bash
-openssl rand -hex 32
+```toml
+listen_addr = "127.0.0.1:9443"
 ```
 
-When the header is absent, the endpoint returns 401. When the header is present but the token does not match, the endpoint returns 403.
+### `cert_file`
 
-**Admin endpoints exposed when this section is configured:**
+**Required within `[admin]`.** PEM file containing the admin listener's TLS server certificate chain (leaf certificate first).
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/admin/account/{id}/profile-grants` | Read current grants for an account |
-| `PUT` | `/admin/account/{id}/profile-grants` | Replace grants for an account |
-| `DELETE` | `/admin/account/{id}/profile-grants` | Revoke all grants from an account |
-| `POST` | `/admin/eab` | Provision a new EAB key with optional grants |
+```toml
+cert_file = "/etc/akamu/admin-tls.pem"
+```
+
+### `key_file`
+
+**Required within `[admin]`.** PEM file containing the admin listener's TLS private key (PKCS#8 or SEC1, unencrypted).
+
+```toml
+key_file = "/etc/akamu/admin-tls-key.pem"
+```
+
+### `ca_certs`
+
+**Optional. Default: `[]`.**
+
+List of PEM CA certificate files whose issued client certificates are accepted as operator credentials. When set, clients connecting to the admin listener must present a client certificate signed by one of these CAs. May be empty when `[admin.gssapi]` is the sole authentication method, but at least one of `ca_certs` or `[admin.gssapi]` must be configured.
+
+```toml
+ca_certs = ["/etc/akamu/operator-ca.pem"]
+```
+
+### `session_ttl_secs`
+
+**Optional. Default: `3600` (1 hour).**
+
+Inactive session expiry in seconds. Operator sessions that have had no activity for this duration are invalidated and require re-authentication.
+
+```toml
+session_ttl_secs = 3600
+```
+
+### `audit_max_rows`
+
+**Optional. Default: absent (unlimited).**
+
+Maximum number of rows to retain in the `audit_events` database table. When the limit is reached, the `audit_overflow` policy determines what happens.
+
+```toml
+audit_max_rows = 500000
+```
+
+### `audit_overflow`
+
+**Optional. Default: `"drop_oldest"`.**
+
+Policy applied when `audit_max_rows` is reached. Accepted values:
+
+| Value | Behaviour |
+|-------|-----------|
+| `"drop_oldest"` | Delete the oldest audit rows to make room for new events (default). |
+| `"halt"` | Refuse new requests until audit rows are pruned manually. |
+
+```toml
+audit_overflow = "drop_oldest"
+```
+
+### `audit_alarm_threshold`
+
+**Optional. Default: `10`.**
+
+Number of `SecurityViolation` audit events in a rolling 5-minute window that triggers the alarm response configured by `audit_alarm_action`.
+
+```toml
+audit_alarm_threshold = 10
+```
+
+### `audit_alarm_action`
+
+**Optional. Default: `"syslog"`.**
+
+Action taken when the `audit_alarm_threshold` is exceeded. Accepted values:
+
+| Value | Behaviour |
+|-------|-----------|
+| `"syslog"` | Log a `CRIT`-level message to syslog (default). |
+| `"halt"` | Halt the server process immediately. |
+
+```toml
+audit_alarm_action = "syslog"
+```
+
+### `[admin.gssapi]`
+
+**Optional. When absent, GSSAPI authentication for the admin interface is disabled.**
+
+Configures GSSAPI/Kerberos authentication for operators accessing the admin API. When set, operators can authenticate by presenting a Kerberos service ticket without requiring a client certificate.
+
+#### `keytab_file`
+
+**Required within `[admin.gssapi]`.** Path to the Kerberos keytab file for the admin service principal.
+
+```toml
+keytab_file = "/etc/akamu/http.keytab"
+```
+
+#### `service_name`
+
+**Optional. Default: `"HTTP"`.**
+
+Host-based service name. MIT Kerberos appends `@<local-hostname>` when no realm is specified.
+
+```toml
+service_name = "HTTP"
+```
+
+**Admin endpoints and RBAC roles:**
+
+| Method | Path | administrator | ca_operations | ca_ra | auditor |
+|--------|------|:---:|:---:|:---:|:---:|
+| `POST` | `/admin/session` | Y | Y | Y | Y |
+| `DELETE` | `/admin/session` | Y | Y | Y | Y |
+| `GET` | `/admin/operators` | Y | | | |
+| `POST` | `/admin/operators` | Y | | | |
+| `PATCH` | `/admin/operators/{id}` | Y | | | |
+| `GET` | `/admin/audit` | Y | | | Y |
+| `GET` | `/admin/certs` | Y | Y | | Y |
+| `GET` | `/admin/account/{id}/profile-grants` | Y | Y | Y | Y |
+| `PUT` | `/admin/account/{id}/profile-grants` | Y | Y | | |
+| `DELETE` | `/admin/account/{id}/profile-grants` | Y | | | |
+| `POST` | `/admin/eab` | Y | Y | Y | |
+| `DELETE` | `/admin/eab/{kid}` | Y | Y | | |
+| `GET` | `/admin/eab` | Y | Y | Y | Y |
+| `POST` | `/admin/crl/force` | Y | Y | | |
+| `POST` | `/admin/revoke` | Y | Y | Y | |
+| `GET` | `/admin/stats` | Y | Y | Y | Y |
 
 See [Certificate Profiles — Admin API](profiles.md#admin-api) for the full request/response format of each endpoint.
 
