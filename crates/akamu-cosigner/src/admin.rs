@@ -126,7 +126,7 @@ where
             if let Some(op) = app_state
                 .admin_operators
                 .iter()
-                .find(|o| o.cert_fingerprint.as_deref() == Some(&fp) && o.gssapi_principal.is_none())
+                .find(|o| o.cert_fingerprint.as_deref() == Some(&fp))
             {
                 let token = create_session(&app_state, &op.name, &op.role).map_err(|e| {
                     (StatusCode::INTERNAL_SERVER_ERROR, format!("session: {e}")).into_response()
