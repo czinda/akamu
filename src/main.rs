@@ -347,14 +347,14 @@ async fn run() -> Result<(), String> {
     } else {
         akamu::audit::AuditEventType::KeyGenerate
     };
-    let _ = akamu::audit::record(
+    akamu::audit::record_or_log(
         &state.db,
         &state.audit,
         &state.audit_policy,
         akamu::audit::AuditEvent::success(key_event_type),
     )
     .await;
-    let _ = akamu::audit::record(
+    akamu::audit::record_or_log(
         &state.db,
         &state.audit,
         &state.audit_policy,
@@ -427,51 +427,60 @@ async fn run() -> Result<(), String> {
             config.listen_addr,
             config.base_url
         );
+        let shutdown = tokio::signal::ctrl_c();
+        tokio::pin!(shutdown);
         loop {
-            let (stream, peer_addr) = listener
-                .accept()
-                .await
-                .map_err(|e| format!("accept: {e}"))?;
-            let acceptor = acceptor.clone();
-            let router = router.clone();
-            let tls_channel_binding = tls_channel_binding.clone();
-            tokio::spawn(async move {
-                let tls = match acceptor.accept(stream).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        tracing::warn!("TLS handshake failed: {e}");
-                        return;
-                    }
-                };
-                let io = hyper_util::rt::TokioIo::new(tls);
-                use tower::ServiceExt as _;
-                let svc = hyper::service::service_fn(
-                    move |mut req: hyper::Request<hyper::body::Incoming>| {
-                        req.extensions_mut()
-                            .insert(axum::extract::ConnectInfo(peer_addr));
-                        if let Some(ref binding) = tls_channel_binding {
-                            req.extensions_mut().insert(
-                                akamu::tls::channel_binding::TlsServerEndpointBinding(
-                                    binding.as_ref().clone(),
-                                ),
-                            );
-                        }
-                        let router = router.clone();
-                        async move {
-                            let req = req.map(axum::body::Body::new);
-                            Ok::<_, std::convert::Infallible>(router.oneshot(req).await.unwrap())
-                        }
-                    },
-                );
-                if let Err(e) = hyper_util::server::conn::auto::Builder::new(
-                    hyper_util::rt::TokioExecutor::new(),
-                )
-                .serve_connection(io, svc)
-                .await
-                {
-                    tracing::warn!("TLS connection error: {e}");
+            tokio::select! {
+                _ = &mut shutdown => {
+                    tracing::info!("received shutdown signal; stopping TLS server");
+                    break;
                 }
-            });
+                result = listener.accept() => {
+                    let (stream, peer_addr) = result.map_err(|e| format!("accept: {e}"))?;
+                    let acceptor = acceptor.clone();
+                    let router = router.clone();
+                    let tls_channel_binding = tls_channel_binding.clone();
+                    tokio::spawn(async move {
+                        let tls = match acceptor.accept(stream).await {
+                            Ok(s) => s,
+                            Err(e) => {
+                                tracing::warn!("TLS handshake failed: {e}");
+                                return;
+                            }
+                        };
+                        let io = hyper_util::rt::TokioIo::new(tls);
+                        use tower::ServiceExt as _;
+                        let svc = hyper::service::service_fn(
+                            move |mut req: hyper::Request<hyper::body::Incoming>| {
+                                req.extensions_mut()
+                                    .insert(axum::extract::ConnectInfo(peer_addr));
+                                if let Some(ref binding) = tls_channel_binding {
+                                    req.extensions_mut().insert(
+                                        akamu::tls::channel_binding::TlsServerEndpointBinding(
+                                            binding.as_ref().clone(),
+                                        ),
+                                    );
+                                }
+                                let router = router.clone();
+                                async move {
+                                    let req = req.map(axum::body::Body::new);
+                                    Ok::<_, std::convert::Infallible>(
+                                        router.oneshot(req).await.unwrap(),
+                                    )
+                                }
+                            },
+                        );
+                        if let Err(e) = hyper_util::server::conn::auto::Builder::new(
+                            hyper_util::rt::TokioExecutor::new(),
+                        )
+                        .serve_connection(io, svc)
+                        .await
+                        {
+                            tracing::warn!("TLS connection error: {e}");
+                        }
+                    });
+                }
+            }
         }
     } else {
         let listener = tokio::net::TcpListener::bind(&config.listen_addr)
@@ -486,9 +495,21 @@ async fn run() -> Result<(), String> {
             listener,
             router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
         )
+        .with_graceful_shutdown(async {
+            tokio::signal::ctrl_c().await.ok();
+            tracing::info!("received shutdown signal; stopping server");
+        })
         .await
         .map_err(|e| format!("server error: {e}"))?;
     }
+
+    akamu::audit::record_or_log(
+        &state.db,
+        &state.audit,
+        &state.audit_policy,
+        akamu::audit::AuditEvent::success(akamu::audit::AuditEventType::CaStop),
+    )
+    .await;
 
     Ok(())
 }
