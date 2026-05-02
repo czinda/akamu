@@ -114,7 +114,7 @@ async fn run() -> Result<(), CosignerError> {
         cosigner_spki_der,
         challenge_tokens: Arc::clone(&challenge_tokens),
         admin_operators,
-        admin_sessions: Arc::new(Mutex::new(HashMap::new())),
+        admin_sessions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         admin_session_ttl_secs,
         startup_time: std::time::Instant::now(),
         signing_stats: Arc::new(Mutex::new((0, None))),

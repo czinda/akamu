@@ -33,7 +33,7 @@ pub struct AppState {
     /// Registered operators (from `[[admin.operators]]` in config).
     pub admin_operators: Vec<OperatorConfig>,
     /// In-memory admin session store (token → session).
-    pub admin_sessions: Arc<Mutex<HashMap<String, CosignerSession>>>,
+    pub admin_sessions: Arc<tokio::sync::Mutex<HashMap<String, CosignerSession>>>,
     /// Admin session TTL in seconds.
     pub admin_session_ttl_secs: u64,
     /// Timestamp of server startup (for uptime reporting).
