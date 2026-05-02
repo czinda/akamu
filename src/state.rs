@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Instant;
 
 use axum::http::HeaderValue;
 use http_body_util::Empty;
@@ -11,6 +12,7 @@ use hyper_util::client::legacy::Client;
 use synta_certificate::BackendPrivateKey;
 use synta_mtc::crypto::HashAlgorithm;
 
+use crate::audit::{AuditPolicy, AuditState};
 use crate::config::Config;
 use crate::db::DbKind;
 use crate::mtc::cosign::CosignerClient;
@@ -162,6 +164,22 @@ pub struct AppState {
     /// Decoded master secret for HKDF-based EAB key derivation.
     /// `None` when `[server].eab_master_secret` is absent.
     pub eab_master_secret: Option<Arc<Vec<u8>>>,
+    /// Shared in-memory audit state (overflow flag, FAU_ARP.1 alarm counter).
+    /// Always present; operations before the admin config is loaded use the
+    /// default `AuditPolicy` (no limit, `drop_oldest`, threshold=10, `syslog`).
+    pub audit: Arc<AuditState>,
+    /// Audit policy extracted from `[admin]` at startup.  Default when `[admin]`
+    /// is absent.
+    pub audit_policy: Arc<AuditPolicy>,
+    /// Admin operator session store (FTA_SSL.3/4/EXT.1).
+    ///
+    /// Maps opaque 32-byte hex session token → `AdminSession`.  Checked on
+    /// every request to the admin listener; entries are evicted when their TTL
+    /// expires.  `None` when `[admin]` is absent.
+    pub admin_sessions: Option<Arc<Mutex<HashMap<String, AdminSession>>>>,
+    /// Time the server process started.  Used for uptime reporting in
+    /// `GET /admin/stats` and for session-expiry calculations.
+    pub startup_time: Instant,
 }
 
 /// TLS client-auth state available to handlers for introspection.
@@ -243,4 +261,57 @@ impl MtcState {
     pub fn can_checkpoint(&self) -> bool {
         self.log.is_some() && self.signing_key.is_some()
     }
+}
+
+// ── Admin operator session types ──────────────────────────────────────────────
+
+/// Role assigned to an operator account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperatorRole {
+    Administrator,
+    CaOperations,
+    CaRa,
+    Auditor,
+}
+
+impl OperatorRole {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "administrator" => Some(OperatorRole::Administrator),
+            "ca_operations" => Some(OperatorRole::CaOperations),
+            "ca_ra" => Some(OperatorRole::CaRa),
+            "auditor" => Some(OperatorRole::Auditor),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OperatorRole::Administrator => "administrator",
+            OperatorRole::CaOperations => "ca_operations",
+            OperatorRole::CaRa => "ca_ra",
+            OperatorRole::Auditor => "auditor",
+        }
+    }
+}
+
+/// How the operator authenticated for this session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdminAuthMethod {
+    /// Authenticated via an mTLS client certificate.
+    Cert,
+    /// Authenticated via GSSAPI/SPNEGO (Kerberos).
+    Gssapi,
+}
+
+/// An active admin operator session stored in `AppState::admin_sessions`.
+pub struct AdminSession {
+    pub operator_id: i64,
+    pub name: String,
+    pub role: OperatorRole,
+    /// When this session token was issued.
+    pub created_at: Instant,
+    /// Updated on every authenticated request; TTL is measured from this.
+    pub last_active_at: Instant,
+    pub auth_method: AdminAuthMethod,
 }

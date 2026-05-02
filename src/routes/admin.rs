@@ -1,9 +1,8 @@
 //! Admin API endpoints — `/admin/…`
 //!
-//! All routes require an `Authorization: Bearer <token>` header whose value
-//! matches `[admin].bearer_token` in the server configuration.  When the
-//! `[admin]` section is absent the routes return 404 (they are never
-//! registered in the router).
+//! All routes require operator authentication via mTLS client certificate or
+//! GSSAPI/Kerberos session token (see `crate::admin::auth`).  When the `[admin]`
+//! section is absent the routes return 404.
 //!
 //! # Account profile grants
 //!
@@ -34,31 +33,25 @@ use crate::state::AppState;
 
 use super::unix_now;
 
-// ── Bearer token guard ────────────────────────────────────────────────────────
+// ── Auth guard (stub) ─────────────────────────────────────────────────────────
+//
+// Full operator authentication (mTLS cert + session token + GSSAPI) is wired
+// up in `crate::admin::auth::OperatorContext`.  Until that extractor is live
+// every admin call returns 503 so that the routes compile cleanly.
 
-fn require_admin_auth(state: &AppState, headers: &HeaderMap) -> Result<(), Box<Response>> {
-    let Some(ref admin_cfg) = state.config.admin else {
+fn require_admin_auth(state: &AppState, _headers: &HeaderMap) -> Result<(), Box<Response>> {
+    if state.config.admin.is_none() {
         return Err(Box::new(
             (StatusCode::NOT_FOUND, "admin API is not configured").into_response(),
         ));
-    };
-
-    let auth = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-
-    if auth == format!("Bearer {}", admin_cfg.bearer_token) {
-        Ok(())
-    } else if auth.is_empty() {
-        Err(Box::new(
-            (StatusCode::UNAUTHORIZED, "Authorization header required").into_response(),
-        ))
-    } else {
-        Err(Box::new(
-            (StatusCode::FORBIDDEN, "Invalid admin token").into_response(),
-        ))
     }
+    Err(Box::new(
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "admin authentication not yet implemented",
+        )
+            .into_response(),
+    ))
 }
 
 // ── Payload types ─────────────────────────────────────────────────────────────

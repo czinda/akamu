@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use tracing_subscriber::EnvFilter;
 
+use akamu::audit::AuditState;
 use akamu::config::{Config, MtcSigningKeyConfig};
 use akamu::state::{AppState, CaState, MtcState, NonceBucket, TlsState};
 use akamu::{ca, db, mtc, routes, star};
@@ -325,6 +326,18 @@ async fn run() -> Result<(), String> {
         crl_cache: Default::default(),
         gss_cred,
         eab_master_secret,
+        audit: Arc::new(AuditState::new()),
+        audit_policy: Arc::new(
+            config
+                .admin
+                .as_ref()
+                .map(|a| a.audit_policy())
+                .unwrap_or_default(),
+        ),
+        admin_sessions: config.admin.as_ref().map(|_| {
+            Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))
+        }),
+        startup_time: std::time::Instant::now(),
     });
 
     // Spawn background profile refresh task (no-op when no providers configured).

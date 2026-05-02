@@ -475,6 +475,10 @@ mod tests {
             crl_cache: Default::default(),
             gss_cred: None,
             eab_master_secret: None,
+            audit: Arc::new(crate::audit::AuditState::new()),
+            audit_policy: Arc::new(crate::audit::AuditPolicy::default()),
+            admin_sessions: None,
+            startup_time: std::time::Instant::now(),
         })
     }
 
@@ -948,6 +952,10 @@ mod tests {
             crl_cache: Default::default(),
             gss_cred: None,
             eab_master_secret: None,
+            audit: Arc::new(crate::audit::AuditState::new()),
+            audit_policy: Arc::new(crate::audit::AuditPolicy::default()),
+            admin_sessions: None,
+            startup_time: std::time::Instant::now(),
         });
 
         // The identifier is just the IP address — no port embedded.
@@ -1239,6 +1247,10 @@ mod tests {
             crl_cache: Default::default(),
             gss_cred: None,
             eab_master_secret: None,
+            audit: Arc::new(crate::audit::AuditState::new()),
+            audit_policy: Arc::new(crate::audit::AuditPolicy::default()),
+            admin_sessions: None,
+            startup_time: std::time::Instant::now(),
         })
     }
 

@@ -26,20 +26,129 @@ pub struct Config {
     pub admin: Option<AdminConfig>,
 }
 
-/// Admin API configuration.
+/// Admin API configuration (PP CA v2.1 FMT + FTA_SSL).
 ///
-/// When present, the server exposes admin endpoints under `/admin/`.
-/// All requests must supply the configured bearer token in the
-/// `Authorization: Bearer <token>` header.
+/// When present, the server exposes admin endpoints on a dedicated listener.
+/// Operator authentication uses mTLS client certificates (`ca_certs`),
+/// GSSAPI/Kerberos (`[admin.gssapi]`), or both.  At least one of these must
+/// be configured.  The old shared `bearer_token` field has been removed.
 ///
 /// ```toml
 /// [admin]
-/// bearer_token = "change-me"
+/// listen_addr    = "127.0.0.1:9443"
+/// cert_file      = "/etc/akamu/admin-tls.pem"
+/// key_file       = "/etc/akamu/admin-tls-key.pem"
+/// ca_certs       = ["/etc/akamu/operator-ca.pem"]   # empty when GSSAPI-only
+/// session_ttl_secs = 3600
+///
+/// [admin.gssapi]
+/// keytab_file  = "/etc/akamu/http.keytab"
+/// service_name = "HTTP"
 /// ```
 #[derive(Debug, Deserialize, Clone)]
 pub struct AdminConfig {
-    /// Secret token required in the `Authorization` header for all admin requests.
-    pub bearer_token: String,
+    /// Address for the dedicated admin listener, e.g. `"127.0.0.1:9443"`.
+    pub listen_addr: String,
+    /// PEM file with the admin listener's server TLS certificate chain (leaf first).
+    pub cert_file: String,
+    /// PEM file with the admin listener's server TLS private key.
+    pub key_file: String,
+    /// PEM CA certificate files whose issued client certs are accepted as operator
+    /// credentials.  May be empty when `gssapi` is the sole auth method.
+    #[serde(default)]
+    pub ca_certs: Vec<String>,
+    /// GSSAPI/Kerberos authentication for operators.  When absent, only mTLS
+    /// client certificates are accepted; at least one `ca_certs` entry must be set.
+    pub gssapi: Option<AdminGssapiConfig>,
+    /// Inactive session expiry (FTA_SSL.3/4/EXT.1).  Default: 3600 s (1 h).
+    #[serde(default = "default_admin_session_ttl_secs")]
+    pub session_ttl_secs: u64,
+    /// Maximum number of `audit_events` rows (FAU_STG.4).  Absent = unlimited.
+    pub audit_max_rows: Option<i64>,
+    /// Overflow policy when `audit_max_rows` is reached (FAU_STG.4).
+    /// `"halt"` — refuse new requests.  `"drop_oldest"` — delete the oldest rows.
+    /// Default: `"drop_oldest"`.
+    #[serde(default = "default_audit_overflow")]
+    pub audit_overflow: String,
+    /// Number of `SecurityViolation` events in a rolling 5-minute window that
+    /// triggers the FAU_ARP.1 alarm response.  Default: 10.
+    #[serde(default = "default_audit_alarm_threshold")]
+    pub audit_alarm_threshold: u32,
+    /// Action taken when the FAU_ARP.1 threshold is exceeded.
+    /// `"syslog"` — log CRIT.  `"halt"` — halt the server.  Default: `"syslog"`.
+    #[serde(default = "default_audit_alarm_action")]
+    pub audit_alarm_action: String,
+}
+
+fn default_admin_session_ttl_secs() -> u64 {
+    3600
+}
+fn default_audit_overflow() -> String {
+    "drop_oldest".to_owned()
+}
+fn default_audit_alarm_threshold() -> u32 {
+    10
+}
+fn default_audit_alarm_action() -> String {
+    "syslog".to_owned()
+}
+
+impl AdminConfig {
+    /// Validate the config and return a human-readable error if invalid.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.ca_certs.is_empty() && self.gssapi.is_none() {
+            return Err(
+                "[admin] must configure at least one of `ca_certs` or `[admin.gssapi]`".into(),
+            );
+        }
+        match self.audit_overflow.as_str() {
+            "halt" | "drop_oldest" => {}
+            other => {
+                return Err(format!(
+                    "[admin].audit_overflow must be \"halt\" or \"drop_oldest\", got \"{other}\""
+                ))
+            }
+        }
+        match self.audit_alarm_action.as_str() {
+            "syslog" | "halt" => {}
+            other => {
+                return Err(format!(
+                    "[admin].audit_alarm_action must be \"syslog\" or \"halt\", got \"{other}\""
+                ))
+            }
+        }
+        Ok(())
+    }
+
+    /// Build an `AuditPolicy` from the admin config values.
+    pub fn audit_policy(&self) -> crate::audit::AuditPolicy {
+        use crate::audit::{AlarmAction, AuditPolicy, OverflowPolicy};
+        AuditPolicy {
+            max_rows: self.audit_max_rows,
+            overflow: if self.audit_overflow == "halt" {
+                OverflowPolicy::Halt
+            } else {
+                OverflowPolicy::DropOldest
+            },
+            alarm_threshold: self.audit_alarm_threshold,
+            alarm_action: if self.audit_alarm_action == "halt" {
+                AlarmAction::Halt
+            } else {
+                AlarmAction::Syslog
+            },
+        }
+    }
+}
+
+/// GSSAPI/Kerberos configuration for the admin interface.
+#[derive(Debug, Deserialize, Clone)]
+pub struct AdminGssapiConfig {
+    /// Path to the HTTP service keytab (e.g. `/etc/akamu/http.keytab`).
+    pub keytab_file: String,
+    /// Host-based service name.  MIT Kerberos appends `@<hostname>` automatically.
+    /// Default: `"HTTP"`.
+    #[serde(default = "default_gssapi_service")]
+    pub service_name: String,
 }
 
 // ── Profile subsystem configuration ──────────────────────────────────────────
@@ -1141,5 +1250,127 @@ max_body_bytes = 131072
         let cfg: Config = toml::from_str(&toml).unwrap();
         let gcfg = cfg.server.gssapi.expect("gssapi should be Some");
         assert_eq!(gcfg.service_name, "HTTP");
+    }
+
+    // ── AdminConfig tests ──────────────────────────────────────────────────────
+
+    fn admin_toml_cert_only() -> String {
+        format!(
+            r#"{}
+[admin]
+listen_addr = "127.0.0.1:9443"
+cert_file   = "/etc/akamu/admin.pem"
+key_file    = "/etc/akamu/admin-key.pem"
+ca_certs    = ["/etc/akamu/operator-ca.pem"]
+"#,
+            minimal_toml()
+        )
+    }
+
+    #[test]
+    fn admin_config_cert_only_parses() {
+        let cfg: Config = toml::from_str(&admin_toml_cert_only()).unwrap();
+        let admin = cfg.admin.expect("admin should be Some");
+        assert_eq!(admin.listen_addr, "127.0.0.1:9443");
+        assert_eq!(admin.ca_certs, vec!["/etc/akamu/operator-ca.pem"]);
+        assert!(admin.gssapi.is_none());
+        assert_eq!(admin.session_ttl_secs, 3600);
+        assert_eq!(admin.audit_overflow, "drop_oldest");
+        assert_eq!(admin.audit_alarm_threshold, 10);
+        assert_eq!(admin.audit_alarm_action, "syslog");
+        assert!(admin.audit_max_rows.is_none());
+    }
+
+    #[test]
+    fn admin_config_validate_ok_with_ca_certs() {
+        let cfg: Config = toml::from_str(&admin_toml_cert_only()).unwrap();
+        assert!(cfg.admin.unwrap().validate().is_ok());
+    }
+
+    #[test]
+    fn admin_config_validate_ok_with_gssapi_only() {
+        let toml = format!(
+            r#"{}
+[admin]
+listen_addr = "127.0.0.1:9443"
+cert_file   = "/etc/akamu/admin.pem"
+key_file    = "/etc/akamu/admin-key.pem"
+
+[admin.gssapi]
+keytab_file  = "/etc/akamu/http.keytab"
+service_name = "HTTP"
+"#,
+            minimal_toml()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        assert!(cfg.admin.unwrap().validate().is_ok());
+    }
+
+    #[test]
+    fn admin_config_validate_fails_no_auth() {
+        let toml = format!(
+            r#"{}
+[admin]
+listen_addr = "127.0.0.1:9443"
+cert_file   = "/etc/akamu/admin.pem"
+key_file    = "/etc/akamu/admin-key.pem"
+"#,
+            minimal_toml()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        let err = cfg.admin.unwrap().validate().unwrap_err();
+        assert!(err.contains("ca_certs"), "error should mention ca_certs: {err}");
+    }
+
+    #[test]
+    fn admin_config_validate_bad_overflow() {
+        let toml = format!(
+            r#"{}
+[admin]
+listen_addr    = "127.0.0.1:9443"
+cert_file      = "/etc/akamu/admin.pem"
+key_file       = "/etc/akamu/admin-key.pem"
+ca_certs       = ["/etc/akamu/operator-ca.pem"]
+audit_overflow = "delete"
+"#,
+            minimal_toml()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        let err = cfg.admin.unwrap().validate().unwrap_err();
+        assert!(err.contains("audit_overflow"), "msg: {err}");
+    }
+
+    #[test]
+    fn admin_config_audit_policy_drop_oldest() {
+        let cfg: Config = toml::from_str(&admin_toml_cert_only()).unwrap();
+        let policy = cfg.admin.unwrap().audit_policy();
+        assert!(policy.max_rows.is_none());
+        assert_eq!(policy.overflow, crate::audit::OverflowPolicy::DropOldest);
+        assert_eq!(policy.alarm_threshold, 10);
+        assert_eq!(policy.alarm_action, crate::audit::AlarmAction::Syslog);
+    }
+
+    #[test]
+    fn admin_config_audit_policy_halt() {
+        let toml = format!(
+            r#"{}
+[admin]
+listen_addr           = "127.0.0.1:9443"
+cert_file             = "/etc/akamu/admin.pem"
+key_file              = "/etc/akamu/admin-key.pem"
+ca_certs              = ["/etc/akamu/operator-ca.pem"]
+audit_max_rows        = 500000
+audit_overflow        = "halt"
+audit_alarm_threshold = 5
+audit_alarm_action    = "halt"
+"#,
+            minimal_toml()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        let policy = cfg.admin.unwrap().audit_policy();
+        assert_eq!(policy.max_rows, Some(500_000));
+        assert_eq!(policy.overflow, crate::audit::OverflowPolicy::Halt);
+        assert_eq!(policy.alarm_threshold, 5);
+        assert_eq!(policy.alarm_action, crate::audit::AlarmAction::Halt);
     }
 }

@@ -1,4 +1,5 @@
 pub mod accounts;
+pub mod audit;
 pub mod authz;
 pub mod certs;
 pub mod challenges;
@@ -7,6 +8,7 @@ pub mod cosignatures;
 pub mod eab;
 pub mod landmarks;
 pub mod nonces;
+pub mod operators;
 pub mod orders;
 pub mod schema;
 
