@@ -7,7 +7,7 @@ CREATE TABLE audit_events (
     event_type  VARCHAR(64)  NOT NULL,
     subject     VARCHAR(255),                   -- JWK thumbprint, account UUID, cert serial
     principal   VARCHAR(255),                   -- operator name or "acme:<jwk_thumbprint>"
-    outcome     VARCHAR(8)   NOT NULL,          -- 'success' | 'failure'
+    outcome     VARCHAR(8)   NOT NULL CHECK(outcome IN ('success','failure')),  -- 'success' | 'failure'
     detail      TEXT                            -- JSON object with event-specific fields
 );
 CREATE INDEX audit_idx_type ON audit_events(event_type);
