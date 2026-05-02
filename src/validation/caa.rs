@@ -355,6 +355,8 @@ mod tests {
     use hickory_resolver::config::{NameServerConfig, Protocol};
     use tokio::net::UdpSocket;
 
+    type DnsHandler = Box<dyn Fn(&[u8]) -> Vec<u8> + Send + 'static>;
+
     // ── Unit tests for build_name_walk ─────────────────────────────────────────
 
     #[test]
@@ -484,7 +486,7 @@ mod tests {
     /// The server serves queries in order. For each query it pops from the front
     /// of `responses`, which is a Vec of closures returning the response bytes.
     /// If the vec is empty, it sends NXDOMAIN.
-    async fn start_mock_dns(responses: Vec<Box<dyn Fn(&[u8]) -> Vec<u8> + Send + 'static>>) -> u16 {
+    async fn start_mock_dns(responses: Vec<DnsHandler>) -> u16 {
         let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let port = socket.local_addr().unwrap().port();
         tokio::spawn(async move {

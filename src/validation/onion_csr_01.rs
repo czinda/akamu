@@ -577,8 +577,8 @@ mod tests {
     fn decode_onion_pubkey_version3_ok() {
         // Build 35 bytes with version=0x03 and a known 32-byte public key.
         let mut raw = [0u8; 35];
-        for i in 0..32 {
-            raw[i] = (i + 1) as u8; // pubkey: 1,2,...,32
+        for (i, byte) in raw[..32].iter_mut().enumerate() {
+            *byte = (i + 1) as u8; // pubkey: 1,2,...,32
         }
         raw[32] = 0xAB; // checksum byte 0
         raw[33] = 0xCD; // checksum byte 1
@@ -588,8 +588,8 @@ mod tests {
         let pubkey = decode_onion_pubkey(&domain);
         assert!(pubkey.is_some(), "v3 address should decode OK");
         let pk = pubkey.unwrap();
-        for i in 0..32usize {
-            assert_eq!(pk[i], (i + 1) as u8);
+        for (i, &byte) in pk.iter().take(32).enumerate() {
+            assert_eq!(byte, (i + 1) as u8);
         }
     }
 

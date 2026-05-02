@@ -205,7 +205,7 @@ mod tests {
     #[test]
     fn key_usage_from_names_all_bits() {
         use synta_certificate::*;
-        let names: Vec<String> = vec![
+        let names: Vec<String> = [
             "digital_signature",
             "non_repudiation",
             "key_encipherment",

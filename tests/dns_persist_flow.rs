@@ -284,7 +284,7 @@ impl TestKey {
         let input = format!("{protected}.{payload_b64}");
         let signer = self.key.as_signer("sha256");
         let der = signer.sign_tbs(input.as_bytes()).unwrap();
-        let sig = URL_SAFE_NO_PAD.encode(&ecdsa_der_to_p1363(&der, 32).unwrap());
+        let sig = URL_SAFE_NO_PAD.encode(ecdsa_der_to_p1363(&der, 32).unwrap());
         json!({ "protected": protected, "payload": payload_b64, "signature": sig })
     }
 }
@@ -309,7 +309,7 @@ fn ecdsa_der_to_p1363(der: &[u8], half: usize) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn strip_tlv<'a>(buf: &'a [u8], tag: u8) -> Option<&'a [u8]> {
+fn strip_tlv(buf: &[u8], tag: u8) -> Option<&[u8]> {
     if *buf.first()? != tag {
         return None;
     }

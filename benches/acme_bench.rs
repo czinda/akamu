@@ -25,6 +25,7 @@
 
 use std::{
     alloc::{GlobalAlloc, Layout, System},
+    cmp::Reverse,
     collections::HashMap,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -379,7 +380,7 @@ impl AccountKey {
         let input = format!("{protected}.{payload_b64}");
         let signer = self.key.as_signer("sha256");
         let der = signer.sign_tbs(input.as_bytes()).unwrap();
-        let sig = URL_SAFE_NO_PAD.encode(&ecdsa_der_to_p1363(&der, 32).unwrap());
+        let sig = URL_SAFE_NO_PAD.encode(ecdsa_der_to_p1363(&der, 32).unwrap());
         json!({ "protected": protected, "payload": payload_b64, "signature": sig })
     }
 }
@@ -415,7 +416,7 @@ fn ecdsa_der_to_p1363(der: &[u8], half: usize) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn strip_tlv<'a>(buf: &'a [u8], tag: u8) -> Option<&'a [u8]> {
+fn strip_tlv(buf: &[u8], tag: u8) -> Option<&[u8]> {
     if *buf.first()? != tag {
         return None;
     }
@@ -774,6 +775,10 @@ async fn start_server(args: &Args) -> BenchServer {
         },
         gss_cred: None,
         eab_master_secret: None,
+        audit: Arc::new(akamu::audit::AuditState::new()),
+        audit_policy: Arc::new(akamu::audit::AuditPolicy::default()),
+        admin_sessions: None,
+        startup_time: std::time::Instant::now(),
     });
 
     let router = routes::build_router(state);
@@ -960,20 +965,27 @@ async fn get_authz(
     Ok((chall_url, token, next_nonce))
 }
 
+/// Shared per-issuance context passed to `respond_and_poll` and `finalize_and_poll`.
+struct IssuanceCtx<'a> {
+    worker: &'a WorkerState,
+    server: &'a BenchServer,
+    client: &'a HyperClient,
+    account_url: &'a str,
+}
+
 /// POST the challenge response (using the supplied nonce, no HEAD needed), then
 /// poll the order until `ready` or terminal, threading the nonce from each
 /// response to the next poll. Returns the nonce from the last poll response so
 /// the caller can chain it into the finalize request.
 async fn respond_and_poll(
-    worker: &WorkerState,
-    server: &BenchServer,
-    client: &HyperClient,
-    account_url: &str,
+    ctx: &IssuanceCtx<'_>,
     chall_url: &str,
     order_url: &str,
     nonce: &str,
     poll_ms: u64,
 ) -> Result<String, String> {
+    let (worker, server, client, account_url) =
+        (ctx.worker, ctx.server, ctx.client, ctx.account_url);
     let nonce_url = format!("{}/acme/new-nonce", server.base_url);
     let chall_path = chall_url.trim_start_matches(&server.base_url);
     let jws = worker
@@ -1024,15 +1036,14 @@ async fn respond_and_poll(
 /// and can be stored for the next issuance. The poll loop is only a fallback —
 /// this server returns status="valid" synchronously in the finalize response.
 async fn finalize_and_poll(
-    worker: &WorkerState,
-    server: &BenchServer,
-    client: &HyperClient,
-    account_url: &str,
+    ctx: &IssuanceCtx<'_>,
     order_url: &str,
     finalize_url: &str,
     key_type: &str,
     nonce: &str,
 ) -> Result<(String, Option<String>), String> {
+    let (worker, server, client, account_url) =
+        (ctx.worker, ctx.server, ctx.client, ctx.account_url);
     let nonce_url = format!("{}/acme/new-nonce", server.base_url);
     let csr_der = make_csr(&worker.domain, key_type)?;
     let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
@@ -1206,18 +1217,10 @@ async fn run_issuance(
     }
 
     // ── Trigger challenge (uses nonce from authz response) → poll until ready ──
+    let ctx = IssuanceCtx { worker, server, client, account_url: &account_url };
     let t = Instant::now();
-    let nonce = match respond_and_poll(
-        worker,
-        server,
-        client,
-        &account_url,
-        &chall_url,
-        &order_url,
-        &nonce,
-        args.poll_ms,
-    )
-    .await
+    let nonce = match respond_and_poll(&ctx, &chall_url, &order_url, &nonce, args.poll_ms)
+        .await
     {
         Ok(n) => n,
         Err(e) => return IssuanceTiming::failed(wid, request_id, format!("challenge: {e}")),
@@ -1226,18 +1229,10 @@ async fn run_issuance(
 
     // ── Finalize (uses nonce from last poll response) → cert URL ───────────────
     let t = Instant::now();
-    let (cert_url, leftover_nonce) = match finalize_and_poll(
-        worker,
-        server,
-        client,
-        &account_url,
-        &order_url,
-        &fin_url,
-        &args.key_type,
-        &nonce,
-    )
-    .await
-    {
+    let (cert_url, leftover_nonce) =
+        match finalize_and_poll(&ctx, &order_url, &fin_url, &args.key_type, &nonce)
+            .await
+        {
         Ok(v) => v,
         Err(e) => return IssuanceTiming::failed(wid, request_id, format!("finalize: {e}")),
     };
@@ -1395,7 +1390,7 @@ fn text_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64, mem: &M
                 .or_insert(0) += 1;
         }
         let mut sorted: Vec<_> = counts.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted.sort_by_key(|a| Reverse(a.1));
         println!("\n  Errors ({n_err}):");
         for (msg, count) in sorted.iter().take(10) {
             println!("    [{count}] {msg}");
@@ -1592,7 +1587,6 @@ async fn main() {
         let result_tx = result_tx.clone();
         let first_us = Arc::clone(&first_bench_us);
         let last_us = Arc::clone(&last_bench_us);
-        let t_epoch = t_epoch;
 
         handles.push(tokio::spawn(async move {
             let mut worker = WorkerState::new(worker_id, &args);

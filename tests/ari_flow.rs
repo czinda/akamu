@@ -92,7 +92,7 @@ fn ecdsa_der_to_p1363(der: &[u8], half: usize) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn strip_tlv<'a>(buf: &'a [u8], tag: u8) -> Option<&'a [u8]> {
+fn strip_tlv(buf: &[u8], tag: u8) -> Option<&[u8]> {
     if *buf.first()? != tag {
         return None;
     }
@@ -390,12 +390,12 @@ async fn issue_cert(
     assert_eq!(status, StatusCode::CREATED, "new-order: {order_body}");
     let nonce = nonce_header(&order_headers);
     let order_url = location_header(&order_headers);
-    let order_id = order_url.split('/').last().unwrap().to_string();
+    let order_id = order_url.split('/').next_back().unwrap().to_string();
 
     mark_order_ready(db, &order_id).await;
 
     // finalize
-    let csr_b64 = URL_SAFE_NO_PAD.encode(&make_csr_der(domain));
+    let csr_b64 = URL_SAFE_NO_PAD.encode(make_csr_der(domain));
     let finalize_url = format!("{base_url}/acme/order/{order_id}/finalize");
     let jws = key.jws_with_kid(
         &account_url,
@@ -489,8 +489,10 @@ async fn test_renewal_info_explanation_url() {
     let db = state.db.clone();
 
     // Rebuild state with ari_explanation_url set.
-    let mut server_cfg = ServerConfig::default();
-    server_cfg.ari_explanation_url = Some("https://ca.example/incident-42".into());
+    let server_cfg = ServerConfig {
+        ari_explanation_url: Some("https://ca.example/incident-42".into()),
+        ..ServerConfig::default()
+    };
     let config = Arc::new(Config {
         listen_addr: "127.0.0.1:0".into(),
         base_url: base_url.to_string(),
@@ -669,11 +671,11 @@ async fn test_finalize_marks_predecessor_replaced() {
     );
     let nonce = nonce_header(&order_headers);
     let order_url = location_header(&order_headers);
-    let order_id = order_url.split('/').last().unwrap().to_string();
+    let order_id = order_url.split('/').next_back().unwrap().to_string();
 
     mark_order_ready(&db, &order_id).await;
 
-    let csr_b64 = URL_SAFE_NO_PAD.encode(&make_csr_der("ari-pred2.example"));
+    let csr_b64 = URL_SAFE_NO_PAD.encode(make_csr_der("ari-pred2.example"));
     let finalize_url = format!("{base_url}/acme/order/{order_id}/finalize");
     let jws = key.jws_with_kid(
         &account_url,

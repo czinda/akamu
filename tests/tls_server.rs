@@ -131,7 +131,7 @@ fn ecdsa_der_to_p1363(der: &[u8], half: usize) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn strip_tlv<'a>(buf: &'a [u8], tag: u8) -> Option<&'a [u8]> {
+fn strip_tlv(buf: &[u8], tag: u8) -> Option<&[u8]> {
     if *buf.first()? != tag {
         return None;
     }

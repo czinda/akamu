@@ -724,7 +724,7 @@ mod tests {
     fn parse_tile_path_partial() {
         let tp = parse_tile_path("1/x001/234.p/42").unwrap();
         assert_eq!(tp.level, 1);
-        assert_eq!(tp.tile_n, 1 * 1000 + 234);
+        assert_eq!(tp.tile_n, 1000 + 234);
         assert_eq!(tp.partial_width, Some(42));
     }
 

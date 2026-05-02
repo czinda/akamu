@@ -152,7 +152,7 @@ fn ecdsa_der_to_p1363(der: &[u8], half: usize) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn strip_tlv<'a>(buf: &'a [u8], tag: u8) -> Option<&'a [u8]> {
+fn strip_tlv(buf: &[u8], tag: u8) -> Option<&[u8]> {
     if *buf.first()? != tag {
         return None;
     }
@@ -536,7 +536,7 @@ async fn full_acme_flow() {
     assert_eq!(order_body["status"].as_str().unwrap(), "pending");
 
     let order_url = location_header(&order_headers);
-    let order_id = order_url.split('/').last().unwrap().to_string();
+    let order_id = order_url.split('/').next_back().unwrap().to_string();
     let nonce = nonce_header(&order_headers);
 
     // ── Step 5: bypass challenge validation ───────────────────────────────────
@@ -731,7 +731,7 @@ async fn test_challenge_not_found() {
         .as_str()
         .unwrap()
         .to_string();
-    let authz_id = authz_url.split('/').last().unwrap();
+    let authz_id = authz_url.split('/').next_back().unwrap();
     let bogus_chall_url = format!("{base_url}/acme/chall/{authz_id}/bogus-type");
     let bogus_chall_path = format!("/acme/chall/{authz_id}/bogus-type");
 
@@ -1136,7 +1136,7 @@ async fn test_update_account_post_as_get() {
     );
     let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
     let account_url = location_header(&acct_headers);
-    let account_id = account_url.split('/').last().unwrap().to_string();
+    let account_id = account_url.split('/').next_back().unwrap().to_string();
     let nonce = nonce_header(&acct_headers);
 
     // POST-as-GET
@@ -1161,7 +1161,7 @@ async fn test_update_account_deactivate() {
     );
     let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
     let account_url = location_header(&acct_headers);
-    let account_id = account_url.split('/').last().unwrap().to_string();
+    let account_id = account_url.split('/').next_back().unwrap().to_string();
     let nonce = nonce_header(&acct_headers);
 
     let jws = key.jws_with_kid(
@@ -1298,7 +1298,7 @@ async fn test_update_account_contact() {
     );
     let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
     let account_url = location_header(&acct_headers);
-    let account_id = account_url.split('/').last().unwrap().to_string();
+    let account_id = account_url.split('/').next_back().unwrap().to_string();
     let nonce = nonce_header(&acct_headers);
 
     // Update contact.
@@ -1977,7 +1977,7 @@ async fn test_new_order_deactivated_account() {
     );
     let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
     let account_url = location_header(&acct_headers);
-    let account_id = account_url.split('/').last().unwrap().to_string();
+    let account_id = account_url.split('/').next_back().unwrap().to_string();
     let nonce = nonce_header(&acct_headers);
 
     // Deactivate the account.
@@ -2076,7 +2076,7 @@ async fn test_authz_challenge_with_validated_timestamp() {
         .as_str()
         .unwrap()
         .to_string();
-    let authz_id = authz_url.split('/').last().unwrap().to_string();
+    let authz_id = authz_url.split('/').next_back().unwrap().to_string();
 
     // Set challenge to 'valid' with a validated timestamp.
     sqlx::query(
@@ -2137,7 +2137,7 @@ async fn test_authz_challenge_with_error_field() {
         .as_str()
         .unwrap()
         .to_string();
-    let authz_id = authz_url.split('/').last().unwrap().to_string();
+    let authz_id = authz_url.split('/').next_back().unwrap().to_string();
 
     // Set challenge to 'invalid' with a JSON error string.
     let error_json = r#"{"type":"urn:ietf:params:acme:error:dns","detail":"DNS lookup failed"}"#;
@@ -2353,7 +2353,7 @@ async fn test_challenge_authz_wrong_account() {
         .as_str()
         .unwrap()
         .to_string();
-    let authz_id = authz_url.split('/').last().unwrap();
+    let authz_id = authz_url.split('/').next_back().unwrap();
     let chall_url = format!("{base_url}/acme/chall/{authz_id}/http-01");
     let chall_path = format!("/acme/chall/{authz_id}/http-01");
 
@@ -2391,7 +2391,7 @@ async fn test_challenge_authz_not_pending() {
         .as_str()
         .unwrap()
         .to_string();
-    let authz_id = authz_url.split('/').last().unwrap().to_string();
+    let authz_id = authz_url.split('/').next_back().unwrap().to_string();
 
     // Mark the authz as 'valid' to make it non-pending.
     sqlx::query("UPDATE authorizations SET status='valid' WHERE id=?")
@@ -2424,7 +2424,7 @@ async fn test_challenge_already_processing() {
         .as_str()
         .unwrap()
         .to_string();
-    let authz_id = authz_url.split('/').last().unwrap().to_string();
+    let authz_id = authz_url.split('/').next_back().unwrap().to_string();
 
     // Mark the http-01 challenge as 'processing'.
     sqlx::query("UPDATE challenges SET status='processing' WHERE authz_id=? AND type='http-01'")
