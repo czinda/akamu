@@ -335,6 +335,18 @@ pub async fn record(
     Ok(())
 }
 
+/// Like [`record`] but logs errors instead of propagating them.
+pub async fn record_or_log(
+    db: &Db,
+    state: &AuditState,
+    policy: &AuditPolicy,
+    ev: AuditEvent,
+) {
+    if let Err(e) = record(db, state, policy, ev).await {
+        tracing::error!(error = %e, "audit record failed");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

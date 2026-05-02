@@ -171,7 +171,7 @@ pub async fn new_account(
             db::eab::mark_used(&mut *tx, &eab_kid, now).await?;
         }
         tx.commit().await.map_err(AcmeError::from)?;
-        let _ = crate::audit::record(
+        crate::audit::record_or_log(
             &state.db,
             &state.audit,
             &state.audit_policy,
@@ -252,7 +252,7 @@ pub async fn update_account(
     if payload.status.as_deref() == Some("deactivated") {
         db::accounts::update_status(&state.db, &id, "deactivated", unix_now()).await?;
         state.spki_cache.write().unwrap().remove(&id);
-        let _ = crate::audit::record(
+        crate::audit::record_or_log(
             &state.db,
             &state.audit,
             &state.audit_policy,

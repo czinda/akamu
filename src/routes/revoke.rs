@@ -82,7 +82,7 @@ pub async fn revoke_cert(
         return Err(AcmeError::AlreadyRevoked);
     }
 
-    let _ = crate::audit::record(
+    crate::audit::record_or_log(
         &state.db,
         &state.audit,
         &state.audit_policy,
