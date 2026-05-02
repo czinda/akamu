@@ -510,7 +510,6 @@ macro_rules! require_role {
             return (
                 axum::http::StatusCode::FORBIDDEN,
                 axum::Json(serde_json::json!({
-                    "type": "urn:ietf:params:acme:error:serverInternal",
                     "status": 403,
                     "detail": "insufficient role for this operation",
                 })),
