@@ -277,7 +277,7 @@ pub async fn finalize_order(
         &state.audit_policy,
         crate::audit::AuditEvent::success(crate::audit::AuditEventType::OrderFinalize)
             .with_subject(&id)
-            .with_principal(&format!("acme:{}", ctx.jwk_thumbprint.as_deref().unwrap_or(""))),
+            .with_principal(format!("acme:{}", ctx.jwk_thumbprint.as_deref().unwrap_or(""))),
     )
     .await;
     crate::audit::record_or_log(
@@ -286,7 +286,7 @@ pub async fn finalize_order(
         &state.audit_policy,
         crate::audit::AuditEvent::success(crate::audit::AuditEventType::CertIssue)
             .with_subject(&issued.serial_hex)
-            .with_principal(&format!("acme:{}", ctx.jwk_thumbprint.as_deref().unwrap_or(""))),
+            .with_principal(format!("acme:{}", ctx.jwk_thumbprint.as_deref().unwrap_or(""))),
     )
     .await;
 
@@ -317,7 +317,7 @@ pub async fn finalize_order(
                         }
                     }
                     Err(e) => {
-                        tracing::warn!("MTC log append failed for cert {cert_id}: {e}");
+                        tracing::error!(cert_id, error = %e, "MTC log append failed — certificate not included in log");
                     }
                 }
             });
@@ -327,7 +327,12 @@ pub async fn finalize_order(
     // For STAR orders, persist the CSR DER so the background task can reissue.
     if order.star_end_date.is_some() {
         if let Err(e) = db::orders::set_star_csr(&state.db, &id, csr_der.clone()).await {
-            tracing::warn!("STAR order {id}: failed to store CSR DER: {e}");
+            tracing::error!(
+                order_id = %id,
+                account_id = %order.account_id,
+                error = %e,
+                "STAR CSR not stored — background renewal will fail"
+            );
         }
     }
 
