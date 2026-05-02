@@ -237,7 +237,7 @@ where
                     };
                     let _ = db::operators::update_last_seen(&app.db, op.id, &ts_str).await;
                     // Record audit event (best-effort).
-                    let _ = crate::audit::record(
+                    crate::audit::record_or_log(
                         &app.db,
                         &app.audit,
                         &app.audit_policy,
@@ -259,7 +259,7 @@ where
                     });
                 }
                 Ok(None) => {
-                    let _ = crate::audit::record(
+                    crate::audit::record_or_log(
                         &app.db,
                         &app.audit,
                         &app.audit_policy,
@@ -352,16 +352,30 @@ async fn authenticate_gssapi(
         .get::<crate::tls::channel_binding::TlsServerEndpointBinding>()
         .map(|b| b.0.clone());
 
+    // Use spawn_blocking so the synchronous GSSAPI FFI call does not block the
+    // tokio executor thread.  block_in_place would panic on the single-thread
+    // runtime used by #[tokio::test].
     let cred = Arc::clone(gss_cred);
-    let result = tokio::task::block_in_place(|| {
-        akamu_gssapi::accept_token(&cred, &token_bytes, channel_bindings.as_deref())
-    });
+    let token_bytes_owned = token_bytes.to_vec();
+    let channel_bindings_owned = channel_bindings.map(|b| b.to_vec());
+    let result = tokio::task::spawn_blocking(move || {
+        akamu_gssapi::accept_token(
+            &cred,
+            &token_bytes_owned,
+            channel_bindings_owned.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "GSSAPI spawn_blocking panicked");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    })?;
 
     let (_out_token, principal) = match result {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!(error = %e, "admin GSSAPI authentication failed");
-            let _ = crate::audit::record(
+            crate::audit::record_or_log(
                 &app.db,
                 &app.audit,
                 &app.audit_policy,
@@ -395,7 +409,7 @@ async fn authenticate_gssapi(
                 )
             };
             let _ = db::operators::update_last_seen(&app.db, op.id, &ts_str).await;
-            let _ = crate::audit::record(
+            crate::audit::record_or_log(
                 &app.db,
                 &app.audit,
                 &app.audit_policy,
@@ -415,7 +429,7 @@ async fn authenticate_gssapi(
         }
         Ok(None) => {
             tracing::warn!(principal = %principal, "GSSAPI principal not registered as operator");
-            let _ = crate::audit::record(
+            crate::audit::record_or_log(
                 &app.db,
                 &app.audit,
                 &app.audit_policy,
@@ -486,7 +500,7 @@ pub async fn delete_session(
     if let Some(token) = &operator.session_token {
         invalidate_session(&state, token);
     }
-    let _ = crate::audit::record(
+    crate::audit::record_or_log(
         &state.db,
         &state.audit,
         &state.audit_policy,
