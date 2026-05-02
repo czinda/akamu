@@ -686,7 +686,7 @@ fn is_onion_domain(value: &str) -> bool {
 
 fn gen_token() -> String {
     let mut bytes = [0u8; 32];
-    getrandom::getrandom(&mut bytes).unwrap_or(());
+    getrandom::getrandom(&mut bytes).expect("CSPRNG failure — cannot generate challenge token");
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
     URL_SAFE_NO_PAD.encode(bytes)
