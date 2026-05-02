@@ -137,19 +137,29 @@ fn is_expired(expires_at: &str, margin_secs: i64) -> bool {
         if b.len() < 20 {
             return None;
         }
-        let year: i64 = std::str::from_utf8(&b[0..4]).ok()?.parse().ok()?;
-        let month: i64 = std::str::from_utf8(&b[5..7]).ok()?.parse().ok()?;
-        let day: i64 = std::str::from_utf8(&b[8..10]).ok()?.parse().ok()?;
+        let year: i32 = std::str::from_utf8(&b[0..4]).ok()?.parse().ok()?;
+        let month: i32 = std::str::from_utf8(&b[5..7]).ok()?.parse().ok()?;
+        let day: i32 = std::str::from_utf8(&b[8..10]).ok()?.parse().ok()?;
         let hour: i64 = std::str::from_utf8(&b[11..13]).ok()?.parse().ok()?;
         let min: i64 = std::str::from_utf8(&b[14..16]).ok()?.parse().ok()?;
         let sec: i64 = std::str::from_utf8(&b[17..19]).ok()?.parse().ok()?;
-        // Simple day-of-year → Unix seconds approximation (good enough for TTL checks).
-        let days_from_epoch = (year - 1970) * 365 + (year - 1969) / 4
-            + [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
-                [(month as usize).saturating_sub(1)]
-            + day
-            - 1;
-        Some(days_from_epoch * 86400 + hour * 3600 + min * 60 + sec)
+        // Correct Gregorian leap-year check (century years divisible by 400 are leap).
+        let is_leap = |y: i32| y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+        let days_per_month = [
+            31,
+            if is_leap(year) { 29 } else { 28 },
+            31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+        ];
+        // Days elapsed since 1970-01-01.
+        let mut days: i64 = 0;
+        for y in 1970..year {
+            days += if is_leap(y) { 366 } else { 365 };
+        }
+        for m in 0..(month - 1) as usize {
+            days += days_per_month[m] as i64;
+        }
+        days += (day - 1) as i64;
+        Some(days * 86400 + hour * 3600 + min * 60 + sec)
     };
     let expires_unix = parse(expires_at).unwrap_or(0);
     let now_unix = std::time::SystemTime::now()
