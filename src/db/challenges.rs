@@ -112,6 +112,39 @@ pub async fn set_invalid(
     Ok(())
 }
 
+/// Batch-insert new challenges for a single authorization in one SQL round-trip.
+///
+/// `challenges` is a slice of `(id, type)` pairs; all rows share the same
+/// `authz_id`, `token`, and timestamps.  A no-op when `challenges` is empty.
+pub async fn insert_batch(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    authz_id: &str,
+    challenges: &[(String, String)],
+    token: &str,
+    now: i64,
+) -> Result<(), AcmeError> {
+    if challenges.is_empty() {
+        return Ok(());
+    }
+    let mut qb = sqlx::QueryBuilder::<sqlx::Any>::new(
+        "INSERT INTO challenges \
+         (id, authz_id, type, status, token, validated, error, created, updated) ",
+    );
+    qb.push_values(challenges.iter(), |mut b, (chall_id, chall_type)| {
+        b.push_bind(chall_id.as_str())
+            .push_bind(authz_id)
+            .push_bind(chall_type.as_str())
+            .push_bind("pending")
+            .push_bind(token)
+            .push_bind(None::<i64>)
+            .push_bind(None::<String>)
+            .push_bind(now)
+            .push_bind(now);
+    });
+    qb.build().execute(executor).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
