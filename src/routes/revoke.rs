@@ -88,13 +88,17 @@ pub async fn revoke_cert(
         &state.audit_policy,
         crate::audit::AuditEvent::success(crate::audit::AuditEventType::CertRevoke)
             .with_subject(&cert.serial_number)
-            .with_principal(&format!("acme:{}", ctx.jwk_thumbprint.as_deref().unwrap_or(""))),
+            .with_principal(format!("acme:{}", ctx.jwk_thumbprint.as_deref().unwrap_or(""))),
     )
     .await;
 
     // Invalidate the CRL cache so the next GET /ca/crl rebuilds with the new entry.
-    if let Ok(mut guard) = state.crl_cache.lock() {
-        *guard = None;
+    match state.crl_cache.lock() {
+        Ok(mut guard) => *guard = None,
+        Err(poisoned) => {
+            tracing::error!("CRL cache mutex poisoned — forcing invalidation to prevent stale CRL");
+            *poisoned.into_inner() = None;
+        }
     }
 
     // Return 200 with empty body (RFC 8555 §7.6).
