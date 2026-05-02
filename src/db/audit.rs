@@ -1,0 +1,209 @@
+//! Audit event persistence (FAU_STG.1).
+//!
+//! Records are append-only at the application level: this module contains no
+//! UPDATE or DELETE on `audit_events` except `delete_oldest`, which is invoked
+//! only by the overflow-management path in `crate::audit::record`.
+
+use crate::error::AcmeError;
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct AuditEventRow {
+    pub id: i64,
+    pub occurred_at: String,
+    pub event_type: String,
+    pub subject: Option<String>,
+    pub principal: Option<String>,
+    pub outcome: String,
+    pub detail: Option<String>,
+}
+
+pub async fn insert(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    occurred_at: &str,
+    event_type: &str,
+    subject: Option<&str>,
+    principal: Option<&str>,
+    outcome: &str,
+    detail: Option<&str>,
+) -> Result<(), AcmeError> {
+    sqlx::query(
+        "INSERT INTO audit_events \
+         (occurred_at, event_type, subject, principal, outcome, detail) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(occurred_at)
+    .bind(event_type)
+    .bind(subject)
+    .bind(principal)
+    .bind(outcome)
+    .bind(detail)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// Total number of audit event rows.
+pub async fn count(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+) -> Result<i64, AcmeError> {
+    let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM audit_events")
+        .fetch_one(executor)
+        .await?;
+    Ok(row.0)
+}
+
+/// Count audit events within the last `window_secs` seconds.
+pub async fn count_since(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    since_rfc3339: &str,
+) -> Result<i64, AcmeError> {
+    let row: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM audit_events WHERE occurred_at >= ?",
+    )
+    .bind(since_rfc3339)
+    .fetch_one(executor)
+    .await?;
+    Ok(row.0)
+}
+
+/// Delete the `n` oldest rows (lowest `id` values) to enforce the overflow cap.
+pub async fn delete_oldest(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    n: i64,
+) -> Result<(), AcmeError> {
+    sqlx::query(
+        "DELETE FROM audit_events WHERE id IN \
+         (SELECT id FROM audit_events ORDER BY id ASC LIMIT ?)",
+    )
+    .bind(n)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// Parameters for `query()`.  All filter fields are optional; omitting a field
+/// means "no filter on this column".
+pub struct AuditQuery<'a> {
+    pub event_type: Option<&'a str>,
+    pub subject: Option<&'a str>,
+    pub from: Option<&'a str>,
+    pub until: Option<&'a str>,
+    pub outcome: Option<&'a str>,
+    pub limit: i64,
+    pub offset: i64,
+}
+
+/// Filtered, paginated query over `audit_events`.
+///
+/// Uses `(? IS NULL OR col = ?)` for optional filters so that binding `None`
+/// (SQL NULL) is treated as "no constraint", while binding `Some(val)` applies
+/// an equality filter.  This works correctly on SQLite, PostgreSQL, and MariaDB.
+pub async fn query(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    q: &AuditQuery<'_>,
+) -> Result<Vec<AuditEventRow>, AcmeError> {
+    let rows = sqlx::query_as::<_, AuditEventRow>(
+        "SELECT id, occurred_at, event_type, subject, principal, outcome, detail \
+         FROM audit_events \
+         WHERE (? IS NULL OR event_type = ?) \
+           AND (? IS NULL OR subject = ?) \
+           AND (? IS NULL OR occurred_at >= ?) \
+           AND (? IS NULL OR occurred_at <= ?) \
+           AND (? IS NULL OR outcome = ?) \
+         ORDER BY id DESC \
+         LIMIT ? OFFSET ?",
+    )
+    .bind(q.event_type)
+    .bind(q.event_type)
+    .bind(q.subject)
+    .bind(q.subject)
+    .bind(q.from)
+    .bind(q.from)
+    .bind(q.until)
+    .bind(q.until)
+    .bind(q.outcome)
+    .bind(q.outcome)
+    .bind(q.limit)
+    .bind(q.offset)
+    .fetch_all(executor)
+    .await?;
+    Ok(rows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Db;
+
+    async fn open_db() -> Db {
+        crate::db::install_drivers();
+        crate::db::open("sqlite::memory:", 1).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn insert_and_count() {
+        let db = open_db().await;
+        assert_eq!(count(&db).await.unwrap(), 0);
+        insert(&db, "2026-01-01T00:00:00Z", "cert.issue", Some("acc1"), Some("alice"), "success", None)
+            .await
+            .unwrap();
+        assert_eq!(count(&db).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn delete_oldest_removes_rows() {
+        let db = open_db().await;
+        for i in 0..5i64 {
+            insert(
+                &db,
+                &format!("2026-01-01T00:00:{:02}Z", i),
+                "cert.issue",
+                None,
+                None,
+                "success",
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(count(&db).await.unwrap(), 5);
+        delete_oldest(&db, 2).await.unwrap();
+        assert_eq!(count(&db).await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn query_filters_by_event_type() {
+        let db = open_db().await;
+        insert(&db, "2026-01-01T00:00:00Z", "cert.issue", None, None, "success", None)
+            .await
+            .unwrap();
+        insert(&db, "2026-01-01T00:00:01Z", "auth.jws.fail", None, None, "failure", None)
+            .await
+            .unwrap();
+        let q = AuditQuery {
+            event_type: Some("cert.issue"),
+            subject: None,
+            from: None,
+            until: None,
+            outcome: None,
+            limit: 100,
+            offset: 0,
+        };
+        let rows = query(&db, &q).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].event_type, "cert.issue");
+    }
+
+    #[tokio::test]
+    async fn count_since_filters_by_time() {
+        let db = open_db().await;
+        insert(&db, "2026-01-01T00:00:00Z", "cert.issue", None, None, "success", None)
+            .await
+            .unwrap();
+        insert(&db, "2026-06-01T00:00:00Z", "cert.issue", None, None, "success", None)
+            .await
+            .unwrap();
+        let n = count_since(&db, "2026-06-01T00:00:00Z").await.unwrap();
+        assert_eq!(n, 1);
+    }
+}
