@@ -433,27 +433,14 @@ pub async fn new_order(
             )
             .await?;
 
-            if !plan.challenges.is_empty() {
-                // Batch all challenge rows for this authz into a single INSERT
-                // VALUES (...),(...),(...) statement — one DB round-trip instead
-                // of one per challenge type (typically 3 for dns/http/tls-alpn).
-                let mut qb = sqlx::QueryBuilder::new(
-                    "INSERT INTO challenges \
-                     (id, authz_id, type, status, token, validated, error, created, updated) ",
-                );
-                qb.push_values(plan.challenges.iter(), |mut b, (chall_id, chall_type)| {
-                    b.push_bind(chall_id)
-                        .push_bind(&plan.authz_id)
-                        .push_bind(chall_type)
-                        .push_bind("pending")
-                        .push_bind(&plan.token)
-                        .push_bind(None::<i64>) // validated
-                        .push_bind(None::<String>) // error
-                        .push_bind(now)
-                        .push_bind(now);
-                });
-                qb.build().execute(&mut *tx).await?;
-            }
+            db::challenges::insert_batch(
+                &mut *tx,
+                &plan.authz_id,
+                &plan.challenges,
+                &plan.token,
+                now,
+            )
+            .await?;
         }
         tx.commit().await.map_err(AcmeError::from)?;
     }

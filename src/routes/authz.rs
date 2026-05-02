@@ -210,23 +210,7 @@ pub async fn new_authz(
         .await
         .map_err(AcmeError::from)?;
 
-        for (chall_id, chall_type) in &challenges {
-            sqlx::query(
-                "INSERT INTO challenges
-                 (id, authz_id, type, status, token, validated,
-                  error, created, updated)
-                 VALUES (?, ?, ?, 'pending', ?, NULL, NULL, ?, ?)",
-            )
-            .bind(chall_id)
-            .bind(&authz_id)
-            .bind(chall_type)
-            .bind(&token)
-            .bind(now)
-            .bind(now)
-            .execute(&mut *tx)
-            .await
-            .map_err(AcmeError::from)?;
-        }
+        db::challenges::insert_batch(&mut *tx, &authz_id, &challenges, &token, now).await?;
         tx.commit().await.map_err(AcmeError::from)?;
     }
 
