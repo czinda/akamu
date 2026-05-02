@@ -444,9 +444,7 @@ async fn start_tls_server() -> TlsTestServer {
     }
 
     db::install_drivers();
-    let db_conn = db::open("sqlite::memory:", 1)
-        .await
-        .unwrap();
+    let db_conn = db::open("sqlite::memory:", 1).await.unwrap();
 
     let ca_state = Arc::new(CaState {
         key: ca_key,
@@ -504,6 +502,7 @@ async fn start_tls_server() -> TlsTestServer {
         },
         crl_cache: Default::default(),
         gss_cred: None,
+        eab_master_secret: None,
     });
 
     let router = routes::build_router(Arc::clone(&state));

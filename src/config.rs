@@ -623,6 +623,12 @@ pub struct ServerConfig {
     /// service_name = "HTTP"   # MIT Kerberos appends @<hostname> automatically
     /// ```
     pub gssapi: Option<GssapiConfig>,
+    /// Base64url-encoded master secret for HKDF-based EAB key derivation.
+    /// Must decode to ≥ 32 bytes.  When absent, `/acme/eab` returns only the
+    /// principal name (backward-compatible stub behaviour).
+    ///
+    /// Generate with: `openssl rand -base64 32 | tr '+/' '-_' | tr -d '='`
+    pub eab_master_secret: Option<String>,
 }
 
 /// Standalone GSSAPI/SPNEGO configuration for Akamu acting as its own KDC client.
@@ -1056,5 +1062,84 @@ max_body_bytes = 131072
         writeln!(f, "{}", minimal_toml()).unwrap();
         let cfg = Config::from_file(f.path().to_str().unwrap()).unwrap();
         assert_eq!(cfg.listen_addr, "127.0.0.1:8080");
+    }
+
+    #[test]
+    fn trusted_proxies_absent_defaults_to_empty() {
+        let cfg: Config = toml::from_str(minimal_toml()).unwrap();
+        assert!(cfg.server.trusted_proxies.is_empty());
+    }
+
+    #[test]
+    fn trusted_proxies_parses_cidr_list() {
+        let toml = format!(
+            "{}\n[server]\ntrusted_proxies = [\"127.0.0.1/32\", \"::1/128\", \"10.0.0.0/8\"]\n",
+            minimal_toml()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        assert_eq!(cfg.server.trusted_proxies.len(), 3);
+        let strs: Vec<String> = cfg
+            .server
+            .trusted_proxies
+            .iter()
+            .map(|n| n.to_string())
+            .collect();
+        assert!(strs.contains(&"127.0.0.1/32".to_owned()));
+        assert!(strs.contains(&"::1/128".to_owned()));
+        assert!(strs.contains(&"10.0.0.0/8".to_owned()));
+    }
+
+    #[test]
+    fn trusted_proxies_invalid_cidr_returns_error() {
+        let toml = format!(
+            "{}\n[server]\ntrusted_proxies = [\"not-a-cidr\"]\n",
+            minimal_toml()
+        );
+        assert!(toml::from_str::<Config>(&toml).is_err());
+    }
+
+    #[test]
+    fn gssapi_absent_is_none() {
+        let cfg: Config = toml::from_str(minimal_toml()).unwrap();
+        assert!(cfg.server.gssapi.is_none());
+    }
+
+    #[test]
+    fn gssapi_section_parses_explicit_values() {
+        let toml = format!(
+            "{}\n[server.gssapi]\nkeytab_file = \"/etc/akamu/http.keytab\"\nservice_name = \"HTTP@host.example.com\"\n",
+            minimal_toml()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        let gcfg = cfg.server.gssapi.expect("gssapi should be Some");
+        assert_eq!(gcfg.keytab_file, "/etc/akamu/http.keytab");
+        assert_eq!(gcfg.service_name, "HTTP@host.example.com");
+    }
+
+    #[test]
+    fn eab_master_secret_absent_is_none() {
+        let cfg: Config = toml::from_str(minimal_toml()).unwrap();
+        assert!(cfg.server.eab_master_secret.is_none());
+    }
+
+    #[test]
+    fn eab_master_secret_present_parses() {
+        let toml = format!(
+            "{}\n[server]\neab_master_secret = \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"\n",
+            minimal_toml()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        assert!(cfg.server.eab_master_secret.is_some());
+    }
+
+    #[test]
+    fn gssapi_service_name_defaults_to_http() {
+        let toml = format!(
+            "{}\n[server.gssapi]\nkeytab_file = \"/etc/akamu/http.keytab\"\n",
+            minimal_toml()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        let gcfg = cfg.server.gssapi.expect("gssapi should be Some");
+        assert_eq!(gcfg.service_name, "HTTP");
     }
 }

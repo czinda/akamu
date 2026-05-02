@@ -187,9 +187,7 @@ async fn build_state(
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
     db::install_drivers();
-    let db_conn = db::open("sqlite::memory:", 1)
-        .await
-        .unwrap();
+    let db_conn = db::open("sqlite::memory:", 1).await.unwrap();
     let ca = Arc::new(CaState {
         key: ca_key,
         cert_der: ca_cert_der,
@@ -232,6 +230,7 @@ async fn build_state(
         },
         crl_cache: Default::default(),
         gss_cred: None,
+        eab_master_secret: None,
     });
     (state, dir)
 }

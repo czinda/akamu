@@ -169,9 +169,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
     let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();
     let ca_aki_bytes = akamu::ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
     db::install_drivers();
-    let db_conn = db::open("sqlite::memory:", 1)
-        .await
-        .unwrap();
+    let db_conn = db::open("sqlite::memory:", 1).await.unwrap();
     let ca = Arc::new(CaState {
         key: ca_key,
         cert_der: ca_cert_der,
@@ -214,6 +212,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         },
         crl_cache: Default::default(),
         gss_cred: None,
+        eab_master_secret: None,
     });
     (state, dir)
 }
@@ -549,6 +548,7 @@ async fn test_renewal_info_explanation_url() {
         },
         crl_cache: Default::default(),
         gss_cred: None,
+        eab_master_secret: None,
     });
     let router = routes::build_router(Arc::clone(&state2));
 

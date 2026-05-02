@@ -6,6 +6,7 @@
 pub mod ca;
 pub mod config;
 pub mod db;
+pub mod eab_derivation;
 pub mod error;
 pub mod extract;
 pub mod jose;

@@ -159,6 +159,9 @@ pub struct AppState {
     /// the `RemoteUser` extractor uses it to validate `Authorization: Negotiate`
     /// tokens without a reverse proxy.
     pub gss_cred: Option<Arc<akamu_gssapi::GssServerCred>>,
+    /// Decoded master secret for HKDF-based EAB key derivation.
+    /// `None` when `[server].eab_master_secret` is absent.
+    pub eab_master_secret: Option<Arc<Vec<u8>>>,
 }
 
 /// TLS client-auth state available to handlers for introspection.

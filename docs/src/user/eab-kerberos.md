@@ -28,9 +28,33 @@ When the token is absent, akamu returns `401 Unauthorized` with a
 `WWW-Authenticate: Negotiate` challenge. When the token is invalid or expired,
 akamu returns `403 Forbidden`.
 
-Only one mode should be active at a time. Enabling `trusted_proxies` and
-`[server.gssapi]` simultaneously is supported but unusual: proxy headers take
-precedence for requests from trusted IPs; standalone GSSAPI handles the rest.
+Additional behaviors of this mode:
+
+- **Token size limit.** Negotiate tokens larger than 128 KiB are rejected with
+  `400 Bad Request`. Legitimate Kerberos service tickets are always smaller than
+  this limit.
+- **Case-insensitive scheme matching.** The `"Negotiate "` prefix in the
+  `Authorization` header is matched case-insensitively per RFC 7235 §2.1.
+- **TLS channel bindings.** When akamu terminates TLS itself, the
+  `tls-server-end-point` channel binding (RFC 5929 §4) is computed from the
+  server certificate and passed to `gss_accept_sec_context`. This binds the
+  Kerberos exchange to the TLS channel, preventing token relay attacks. When the
+  server certificate uses ML-DSA (pure or composite) or Ed448 — algorithms for
+  which RFC 5929 defines no canonical hash — channel bindings are disabled
+  automatically.
+- **Replay detection.** After a successful `gss_accept_sec_context` call, akamu
+  verifies that `GSS_C_REPLAY_FLAG` is set in the returned flags. Contexts
+  without replay detection are rejected with `403 Forbidden`.
+- **No authentication mechanism configured.** When neither `trusted_proxies`
+  nor `[server.gssapi]` is set, requests to authenticated endpoints return
+  `404 Not Found` rather than `403 Forbidden`.
+- **GSSAPI without TLS.** Running standalone GSSAPI without TLS is permitted
+  but emits a `warn`-level log at startup, because SPNEGO tokens are not
+  protected against interception or relay attacks without TLS.
+
+Only one mode may be active at a time. Enabling `trusted_proxies` and
+`[server.gssapi]` simultaneously is a configuration error: the server exits at
+startup with an error message if both are set.
 
 ## Deployment prerequisites
 
@@ -109,37 +133,148 @@ klist -kt /etc/akamu/http.keytab
 The `GET /acme/eab` endpoint is the entry point for EAB credential issuance.
 It requires a valid authenticated identity through one of the two modes above.
 
-### Current behaviour
+### Behaviour with `eab_master_secret` configured (full mode)
 
-The endpoint currently echoes the authenticated principal name back to the caller:
+When `[server].eab_master_secret` is set, the endpoint derives a deterministic
+EAB key identifier and HMAC secret from the master secret and the authenticated
+principal using HKDF-SHA-256 (RFC 5869):
+
+```
+kid      = base64url( HKDF-SHA256(IKM=master_secret, info="akamu-eab-v1-kid:<principal>", L=16) )
+hmac_key = base64url( HKDF-SHA256(IKM=master_secret, info="akamu-eab-v1-key:<principal>", L=32) )
+```
+
+Request:
 
 ```
 GET /acme/eab
 Authorization: Negotiate <base64-token>
 ```
 
-Response:
+Response (`200 OK`):
 
 ```json
-{ "principal": "user@EXAMPLE.COM" }
+{
+  "principal": "host/client.example.com@EXAMPLE.COM",
+  "kid":       "…22-char base64url…",
+  "hmac_key":  "…43-char base64url…",
+  "alg":       "HS256"
+}
 ```
 
-This confirms that authentication succeeded and identifies the Kerberos
-principal that will be associated with an EAB key.
+The same `(master_secret, principal)` pair always produces the same `kid` and
+`hmac_key`. Credentials are stored in the `eab_keys` table on first request and
+returned unchanged on subsequent requests by the same principal.
 
-### Planned: EAB HMAC key derivation
+Once the `kid` has been consumed by an account registration (`newAccount` with a
+valid `externalAccountBinding`), re-fetching returns `409 Conflict`. Contact
+your CA administrator to reset the credential if you need to re-register.
 
-EAB HMAC key derivation is not yet implemented. In a future release the endpoint
-will return an EAB key identifier and HMAC secret derived from:
+### Behaviour without `eab_master_secret` (stub / backward-compatible mode)
 
-- A per-deployment master secret (configured separately).
-- The authenticated principal name.
-- An HKDF expansion (RFC 5869) binding both inputs.
+When `eab_master_secret` is absent, the endpoint confirms authentication
+succeeded but returns only the principal name:
 
-The derived EAB key will be accepted in `newAccount` requests that include an
-`externalAccountBinding` field (RFC 8555 §7.3.4). This allows site
-administrators to control who may register ACME accounts by granting or revoking
-Kerberos principals access to the ACME server.
+```json
+{ "principal": "host/client.example.com@EXAMPLE.COM" }
+```
+
+This mode is useful for testing authentication configuration before enabling EAB
+enforcement.
+
+### Configuring `eab_master_secret`
+
+Generate a random 32-byte secret and encode it as base64url:
+
+```bash
+openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
+```
+
+Add the result to your configuration:
+
+```toml
+[server]
+external_account_required = true
+eab_master_secret         = "<base64url output from above>"
+```
+
+The decoded secret must be at least 32 bytes; the server exits at startup if it
+is shorter. Treat the master secret with the same care as a private key — anyone
+who holds it can derive valid EAB credentials for any principal.
+
+### Client-side usage with `akamu-cli`
+
+The `akamu-cli` and `akamu-client` library support calling this endpoint using a
+Kerberos keytab. The CLI `--gssapi-keytab` flag (shared by `account register`
+and `issue`) authenticates to the endpoint, logs the returned principal, and
+automatically uses the returned `kid` and `hmac_key` to construct the
+`externalAccountBinding` field in `newAccount` (RFC 8555 §7.3.4). No manual
+copy-paste of EAB credentials is required.
+
+The library exposes `fetch_eab_via_gssapi(eab_url, keytab_file)`, which derives
+the target service name `HTTP@<hostname>` from the URL automatically and returns
+a `GssapiEabResult` containing `principal`, `kid`, `hmac_key`, and `alg`.
+
+### Using EAB credentials with other ACME clients
+
+Any standard ACME client that supports External Account Binding can use
+credentials from `GET /acme/eab`. The pattern is to fetch the credentials in a
+pre-registration script and then pass them to the ACME client's EAB flags.
+
+**Step 1 — fetch credentials with `curl` and a Kerberos ticket**
+
+```bash
+# Obtain a Kerberos ticket first (if not already cached)
+kinit host/client.example.com@EXAMPLE.COM -k -t /etc/client.keytab
+
+# curl handles SPNEGO automatically with --negotiate
+RESPONSE=$(curl -s --negotiate -u : \
+    https://akamu.example.com/acme/eab)
+
+KID=$(echo "$RESPONSE"      | python3 -c "import sys,json; print(json.load(sys.stdin)['kid'])")
+HMAC_KEY=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['hmac_key'])")
+```
+
+**Step 2 — pass the credentials to your ACME client**
+
+Certbot:
+
+```bash
+certbot register \
+    --server https://akamu.example.com/acme/directory \
+    --eab-kid     "$KID" \
+    --eab-hmac-key "$HMAC_KEY"
+```
+
+acme.sh:
+
+```bash
+export EAB_KID="$KID"
+export EAB_HMAC_KEY="$HMAC_KEY"
+acme.sh --register-account \
+    --server https://akamu.example.com/acme/directory \
+    --eab
+```
+
+Lego:
+
+```bash
+lego --server https://akamu.example.com/acme/directory \
+     --eab \
+     --kid      "$KID" \
+     --hmac     "$HMAC_KEY" \
+     --email    "ops@example.com" \
+     run --domains client.example.com ...
+```
+
+The `kid` and `hmac_key` values are valid until the first successful
+`newAccount` call that consumes them. After registration succeeds the account
+key is the ongoing credential; the EAB pair is not needed again. If registration
+fails before `newAccount` completes, re-running the script returns the same
+`kid` and `hmac_key` (derivation is deterministic), so it is safe to retry.
+
+If `GET /acme/eab` returns `409 Conflict`, the credentials have already been
+consumed by a prior registration. Contact your CA administrator to reset them.
 
 ## Security notes
 
