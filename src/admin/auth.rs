@@ -90,20 +90,34 @@ pub async fn create_session(
         last_active_at: Instant::now(),
         auth_method,
     };
-    if let Some(ref store) = state.admin_sessions {
-        let mut map = store.lock().await;
-        // Sweep expired entries while we hold the lock.
-        let ttl = Duration::from_secs(
-            state
-                .config
-                .admin
-                .as_ref()
-                .map(|a| a.session_ttl_secs)
-                .unwrap_or(3600),
-        );
-        map.retain(|_, s| s.last_active_at.elapsed() < ttl);
-        map.insert(token.clone(), session);
+    let store = state
+        .admin_sessions
+        .as_ref()
+        .ok_or_else(|| crate::error::AcmeError::Internal("admin sessions store not initialised".into()))?;
+    let mut map = store.lock().await;
+    // Sweep expired entries while we hold the lock.
+    let ttl = Duration::from_secs(
+        state
+            .config
+            .admin
+            .as_ref()
+            .map(|a| a.session_ttl_secs)
+            .unwrap_or(3600),
+    );
+    map.retain(|_, s| s.last_active_at.elapsed() < ttl);
+    // Evict oldest session if cap reached (prevents unbounded growth under
+    // adversarial mTLS or GSSAPI authentication floods).
+    const SESSION_CAP: usize = 1000;
+    if map.len() >= SESSION_CAP {
+        if let Some(oldest_key) = map
+            .iter()
+            .min_by_key(|(_, s)| s.last_active_at)
+            .map(|(k, _)| k.clone())
+        {
+            map.remove(&oldest_key);
+        }
     }
+    map.insert(token.clone(), session);
     Ok(token)
 }
 
