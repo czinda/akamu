@@ -281,7 +281,7 @@ pub async fn record(
                         count,
                         "AUDIT OVERFLOW: halting server (FAU_STG.4)"
                     );
-                    state.should_halt.store(true, Ordering::SeqCst);
+                    state.should_halt.store(true, Ordering::Release);
                 }
                 OverflowPolicy::DropOldest => {
                     // Drop enough to stay below the cap; cap the single-pass deletion
@@ -326,7 +326,7 @@ pub async fn record(
                         window_secs = 300,
                         "SECURITY ALARM: halting server due to repeated SecurityViolation events (FAU_ARP.1)"
                     );
-                    state.should_halt.store(true, Ordering::SeqCst);
+                    state.should_halt.store(true, Ordering::Release);
                 }
             }
         }

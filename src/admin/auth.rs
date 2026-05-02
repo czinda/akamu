@@ -197,7 +197,7 @@ where
         if app
             .audit
             .should_halt
-            .load(std::sync::atomic::Ordering::SeqCst)
+            .load(std::sync::atomic::Ordering::Acquire)
         {
             return Err((
                 StatusCode::SERVICE_UNAVAILABLE,
