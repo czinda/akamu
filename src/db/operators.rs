@@ -84,6 +84,16 @@ pub async fn get_by_principal(
     Ok(row)
 }
 
+/// Return `true` when the operators table contains no rows.
+pub async fn is_empty(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+) -> Result<bool, AcmeError> {
+    let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM operators")
+        .fetch_one(executor)
+        .await?;
+    Ok(count == 0)
+}
+
 /// Return operators (active and inactive) ordered by ID, with pagination.
 ///
 /// `limit` is clamped to `[1, 1000]` by the caller; this function trusts the
