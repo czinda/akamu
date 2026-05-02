@@ -1093,9 +1093,13 @@ At least one of `ca_certs` (non-empty) or `[admin.gssapi]` must be configured; t
 ```toml
 [admin]
 listen_addr = "127.0.0.1:9443"
-cert_file   = "/etc/akamu/admin-tls.pem"
-key_file    = "/etc/akamu/admin-tls-key.pem"
-ca_certs    = ["/etc/akamu/operator-ca.pem"]
+cert_file   = "/etc/akamu/admin-tls.pem"       # auto-generated on first run if absent
+key_file    = "/etc/akamu/admin-tls-key.pem"   # auto-generated on first run if absent
+ca_certs    = ["/etc/akamu/ca.pem"]
+
+# Bootstrap operator — generated and registered on first run when operators table is empty.
+bootstrap_operator_cert_file = "/etc/akamu/admin-bootstrap.pem"
+bootstrap_operator_key_file  = "/etc/akamu/admin-bootstrap-key.pem"
 
 # Optional: also accept GSSAPI-authenticated operators
 [admin.gssapi]
@@ -1113,7 +1117,7 @@ listen_addr = "127.0.0.1:9443"
 
 ### `cert_file`
 
-**Required within `[admin]`.** PEM file containing the admin listener's TLS server certificate chain (leaf certificate first).
+**Required within `[admin]`.** PEM file containing the admin listener's TLS server certificate chain (leaf certificate first). When both `cert_file` and `key_file` are absent on disk, Akāmu generates a server certificate signed by the Akāmu CA on first run, using `server_name` and `bootstrap_key_type`.
 
 ```toml
 cert_file = "/etc/akamu/admin-tls.pem"
@@ -1121,10 +1125,60 @@ cert_file = "/etc/akamu/admin-tls.pem"
 
 ### `key_file`
 
-**Required within `[admin]`.** PEM file containing the admin listener's TLS private key (PKCS#8 or SEC1, unencrypted).
+**Required within `[admin]`.** PEM file containing the admin listener's TLS private key (PKCS#8 or SEC1, unencrypted). Auto-generated alongside `cert_file` when both are absent.
 
 ```toml
 key_file = "/etc/akamu/admin-tls-key.pem"
+```
+
+### `server_name`
+
+**Optional. Default: `"localhost"`.**
+
+Hostname placed in the CN and SAN of the auto-generated admin server certificate. Only used when `cert_file`/`key_file` are absent on first run.
+
+```toml
+server_name = "admin.akamu.internal"
+```
+
+### `bootstrap_key_type`
+
+**Optional. Default: `"ec:P-256"`.**
+
+Key algorithm used when auto-generating the admin server certificate and the bootstrap operator certificate. Same syntax as `ca.key_type`.
+
+```toml
+bootstrap_key_type = "ec:P-256"
+```
+
+### `bootstrap_operator_cert_file`
+
+**Optional.**
+
+Path where the bootstrap Administrator operator's client certificate will be written on first run. When this file (and `bootstrap_operator_key_file`) are absent and the operators table is empty, Akāmu generates a client certificate signed by the Akāmu CA and registers the operator automatically. Both fields must be set together.
+
+```toml
+bootstrap_operator_cert_file = "/etc/akamu/admin-bootstrap.pem"
+```
+
+### `bootstrap_operator_key_file`
+
+**Optional.**
+
+Path where the bootstrap Administrator operator's client private key will be written on first run. Must be set alongside `bootstrap_operator_cert_file`.
+
+```toml
+bootstrap_operator_key_file = "/etc/akamu/admin-bootstrap-key.pem"
+```
+
+### `bootstrap_operator_name`
+
+**Optional. Default: `"admin"`.**
+
+Name recorded in the operators table for the auto-provisioned bootstrap administrator.
+
+```toml
+bootstrap_operator_name = "admin"
 ```
 
 ### `ca_certs`
