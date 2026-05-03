@@ -277,8 +277,10 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         audit: std::sync::Arc::new(akamu::audit::AuditState::new()),
         audit_policy: std::sync::Arc::new(akamu::audit::AuditPolicy::default()),
         admin_sessions: None,
+        admin_auth_limiter: None,
         startup_time: std::time::Instant::now(),
         gss_cred: None,
+        admin_gss_cred: None,
         eab_master_secret: None,
     });
 
@@ -2281,8 +2283,10 @@ async fn test_directory_with_optional_fields() {
         audit: std::sync::Arc::new(akamu::audit::AuditState::new()),
         audit_policy: std::sync::Arc::new(akamu::audit::AuditPolicy::default()),
         admin_sessions: None,
+        admin_auth_limiter: None,
         startup_time: std::time::Instant::now(),
         gss_cred: None,
+        admin_gss_cred: None,
         eab_master_secret: None,
     });
     let router = routes::build_router(Arc::clone(&state));
@@ -2658,8 +2662,10 @@ async fn test_finalize_with_mtc_enabled() {
         audit: std::sync::Arc::new(akamu::audit::AuditState::new()),
         audit_policy: std::sync::Arc::new(akamu::audit::AuditPolicy::default()),
         admin_sessions: None,
+        admin_auth_limiter: None,
         startup_time: std::time::Instant::now(),
         gss_cred: None,
+        admin_gss_cred: None,
         eab_master_secret: None,
     });
 
@@ -2913,8 +2919,10 @@ async fn test_finalize_with_aia_and_cdp() {
         audit: std::sync::Arc::new(akamu::audit::AuditState::new()),
         audit_policy: std::sync::Arc::new(akamu::audit::AuditPolicy::default()),
         admin_sessions: None,
+        admin_auth_limiter: None,
         startup_time: std::time::Instant::now(),
         gss_cred: None,
+        admin_gss_cred: None,
         eab_master_secret: None,
     });
 

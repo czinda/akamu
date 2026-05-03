@@ -62,9 +62,15 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
             listen_addr: "127.0.0.1:0".into(),
             cert_file: "dummy.crt".into(),
             key_file: "dummy.key".into(),
+            server_name: "localhost".into(),
+            bootstrap_key_type: "ec:P-256".into(),
+            bootstrap_operator_cert_file: None,
+            bootstrap_operator_key_file: None,
+            bootstrap_operator_name: "admin".into(),
             ca_certs: vec![],
             gssapi: None,
             session_ttl_secs: 3600,
+            auth_rate_limit: 20,
             audit_max_rows: None,
             audit_overflow: "drop_oldest".into(),
             audit_alarm_threshold: 10,
@@ -126,8 +132,10 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         audit: Arc::new(akamu::audit::AuditState::new()),
         audit_policy: Arc::new(akamu::audit::AuditPolicy::default()),
         admin_sessions: Some(Arc::clone(&sessions)),
+        admin_auth_limiter: None,
         startup_time: Instant::now(),
         gss_cred: None,
+        admin_gss_cred: None,
         eab_master_secret: None,
     });
 
@@ -220,7 +228,7 @@ static RBAC_TABLE: &[RbacRow] = &[
 #[tokio::test]
 async fn admin_rbac_table() {
     let (state, _dir) = build_admin_state().await;
-    let router = routes::build_router(Arc::clone(&state));
+    let router = routes::build_admin_router(Arc::clone(&state));
 
     // Re-seed helper: some routes (DELETE /admin/session) consume session tokens;
     // re-insert the 4 test tokens before each row so all rows start clean.

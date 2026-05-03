@@ -3,7 +3,7 @@
 //! T-2: 3-path authentication test
 //!   - Bearer: pre-seeded token → GET /admin/stats → 200
 //!   - mTLS: inject PeerClientCert with known fingerprint → POST /admin/session → 200
-//!     and X-Session-Token header present; token usable as Bearer on GET /admin/stats
+//!     with session_token in JSON body; token usable as Bearer on GET /admin/stats
 //!   - Expired token: session past TTL → GET /admin/stats → 401
 //!
 //! T-3: Operator deactivation purges live sessions immediately.
@@ -80,6 +80,7 @@ fn generate_cert_der(key: &BackendPrivateKey) -> Vec<u8> {
 
 async fn build_state(
     session_ttl_secs: u64,
+    auth_rate_limit: u32,
 ) -> (
     Arc<AppState>,
     Arc<tokio::sync::Mutex<HashMap<String, AdminSession>>>,
@@ -124,9 +125,15 @@ async fn build_state(
             listen_addr: "127.0.0.1:0".into(),
             cert_file: "dummy.crt".into(),
             key_file: "dummy.key".into(),
+            server_name: "localhost".into(),
+            bootstrap_key_type: "ec:P-256".into(),
+            bootstrap_operator_cert_file: None,
+            bootstrap_operator_key_file: None,
+            bootstrap_operator_name: "admin".into(),
             ca_certs: vec![],
             gssapi: None,
             session_ttl_secs,
+            auth_rate_limit,
             audit_max_rows: None,
             audit_overflow: "drop_oldest".into(),
             audit_alarm_threshold: 10,
@@ -188,8 +195,10 @@ async fn build_state(
         audit: Arc::new(akamu::audit::AuditState::new()),
         audit_policy: Arc::new(akamu::audit::AuditPolicy::default()),
         admin_sessions: Some(Arc::clone(&sessions)),
+        admin_auth_limiter: Some(Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()))),
         startup_time: Instant::now(),
         gss_cred: None,
+        admin_gss_cred: None,
         eab_master_secret: None,
     });
 
@@ -212,8 +221,8 @@ async fn get_stats_bearer(router: &axum::Router, token: &str) -> axum::response:
 
 #[tokio::test]
 async fn bearer_token_grants_access() {
-    let (state, sessions, _dir) = build_state(3600).await;
-    let router = routes::build_router(Arc::clone(&state));
+    let (state, sessions, _dir) = build_state(3600, 20).await;
+    let router = routes::build_admin_router(Arc::clone(&state));
 
     sessions.lock().await.insert(
         "test-bearer-token".to_string(),
@@ -238,12 +247,12 @@ async fn bearer_token_grants_access() {
 // ── T-2: mTLS path ────────────────────────────────────────────────────────────
 
 /// POST /admin/session with a PeerClientCert:
-///   - returns 200 with X-Session-Token header
+///   - returns 200 with `session_token` in the JSON body
 ///   - the issued token can be used as Bearer for a follow-up GET /admin/stats
 #[tokio::test]
 async fn mtls_cert_issues_session_token_usable_as_bearer() {
-    let (state, _sessions, _dir) = build_state(3600).await;
-    let router = routes::build_router(Arc::clone(&state));
+    let (state, _sessions, _dir) = build_state(3600, 20).await;
+    let router = routes::build_admin_router(Arc::clone(&state));
 
     // Generate a cert and derive its fingerprint.
     let op_key = BackendPrivateKey::generate_ec("P-256").unwrap();
@@ -262,7 +271,7 @@ async fn mtls_cert_issues_session_token_usable_as_bearer() {
     .await
     .unwrap();
 
-    // Step 1: POST /admin/session with a client cert → 200 + X-Session-Token.
+    // Step 1: POST /admin/session with a client cert → 200 + session_token in JSON body.
     let mut post_req = Request::builder()
         .method(Method::POST)
         .uri("/admin/session")
@@ -276,14 +285,13 @@ async fn mtls_cert_issues_session_token_usable_as_bearer() {
         StatusCode::OK,
         "POST /admin/session with valid client cert must return 200"
     );
-    let token = post_resp
-        .headers()
-        .get("x-session-token")
-        .expect("mTLS POST /admin/session must set X-Session-Token response header")
-        .to_str()
-        .unwrap()
+    let body_bytes = axum::body::to_bytes(post_resp.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    let token = json["session_token"]
+        .as_str()
+        .expect("POST /admin/session must return session_token in JSON body")
         .to_string();
-    assert!(!token.is_empty(), "X-Session-Token must be non-empty");
+    assert!(!token.is_empty(), "session_token must be non-empty");
 
     // Step 2: use the issued token as a Bearer to access GET /admin/stats → 200.
     let stats_resp = get_stats_bearer(&router, &token).await;
@@ -298,8 +306,8 @@ async fn mtls_cert_issues_session_token_usable_as_bearer() {
 
 #[tokio::test]
 async fn expired_token_returns_401() {
-    let (state, sessions, _dir) = build_state(1).await;
-    let router = routes::build_router(Arc::clone(&state));
+    let (state, sessions, _dir) = build_state(1, 20).await;
+    let router = routes::build_admin_router(Arc::clone(&state));
 
     // Insert a session whose last_active_at is 2 seconds in the past
     // so it is already beyond the 1-second TTL on the very first lookup.
@@ -328,8 +336,8 @@ async fn expired_token_returns_401() {
 
 #[tokio::test]
 async fn operator_deactivation_purges_sessions() {
-    let (state, sessions, _dir) = build_state(3600).await;
-    let router = routes::build_router(Arc::clone(&state));
+    let (state, sessions, _dir) = build_state(3600, 20).await;
+    let router = routes::build_admin_router(Arc::clone(&state));
 
     // Seed an administrator session for the operator who performs the PATCH.
     sessions.lock().await.insert(
@@ -412,8 +420,8 @@ async fn operator_deactivation_purges_sessions() {
 
 #[tokio::test]
 async fn audit_event_visible_via_admin_api() {
-    let (state, sessions, _dir) = build_state(3600).await;
-    let router = routes::build_router(Arc::clone(&state));
+    let (state, sessions, _dir) = build_state(3600, 20).await;
+    let router = routes::build_admin_router(Arc::clone(&state));
 
     // Seed an auditor session (GET /admin/audit is allowed for auditor role).
     sessions.lock().await.insert(
@@ -471,5 +479,249 @@ async fn audit_event_visible_via_admin_api() {
         ev["subject"],
         "acme:test-account-id",
         "subject must match what was inserted"
+    );
+}
+
+// ── T-7: Session sweep removes expired entries on create ──────────────────────
+
+/// Expired sessions accumulated in the map are swept (removed) the next time
+/// `create_session` acquires the lock.  After the sweep only the newly created
+/// session remains.
+#[tokio::test]
+async fn create_session_sweeps_expired_entries() {
+    // TTL of 1 second; sessions seeded 2 s in the past are already expired.
+    let (state, sessions, _dir) = build_state(1, 20).await;
+    let router = routes::build_admin_router(Arc::clone(&state));
+
+    let stale = Instant::now() - Duration::from_secs(2);
+
+    // Pre-populate three expired sessions.
+    {
+        let mut map = sessions.lock().await;
+        for i in 0..3 {
+            map.insert(
+                format!("stale-{i}"),
+                AdminSession {
+                    operator_id: i,
+                    name: format!("stale-op-{i}"),
+                    role: OperatorRole::Auditor,
+                    created_at: stale,
+                    last_active_at: stale,
+                    auth_method: AdminAuthMethod::Cert,
+                },
+            );
+        }
+    }
+
+    // Seed an operator whose mTLS cert we will use to create a fresh session.
+    let op_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+    let cert_der = generate_cert_der(&op_key);
+    let fingerprint = sha256_hex(&cert_der);
+    db::operators::insert(
+        &state.db,
+        "sweep-test-operator",
+        "auditor",
+        Some(&fingerprint),
+        None,
+        "2026-01-01T00:00:00Z",
+    )
+    .await
+    .unwrap();
+
+    // POST /admin/session triggers create_session → map.retain → sweep.
+    let mut req = Request::builder()
+        .method(Method::POST)
+        .uri("/admin/session")
+        .body(Body::empty())
+        .unwrap();
+    req.extensions_mut().insert(PeerClientCert(cert_der));
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "POST /admin/session must succeed");
+
+    // After the sweep only the one new token should remain.
+    let map = sessions.lock().await;
+    assert_eq!(
+        map.len(),
+        1,
+        "sweep must remove expired sessions; only the new session should remain"
+    );
+}
+
+// ── T-8: Sliding TTL refreshes last_active_at on each access ─────────────────
+
+/// Every successful Bearer-token lookup updates `last_active_at`.  Verify by
+/// reading the timestamp before and after a GET /admin/stats call.
+#[tokio::test]
+async fn bearer_lookup_refreshes_last_active_at() {
+    let (state, sessions, _dir) = build_state(3600, 20).await;
+    let router = routes::build_admin_router(Arc::clone(&state));
+
+    let before = Instant::now();
+    sessions.lock().await.insert(
+        "sliding-token".to_string(),
+        AdminSession {
+            operator_id: 1,
+            name: "slide-op".to_string(),
+            role: OperatorRole::Auditor,
+            created_at: before,
+            last_active_at: before,
+            auth_method: AdminAuthMethod::Cert,
+        },
+    );
+
+    // Small pause so that a refreshed Instant is measurably newer.
+    tokio::time::sleep(Duration::from_millis(5)).await;
+
+    // Lookup via GET /admin/stats; lookup_session updates last_active_at.
+    let resp = get_stats_bearer(&router, "sliding-token").await;
+    assert_eq!(resp.status(), StatusCode::OK, "token must still be valid");
+
+    // last_active_at must be strictly later than `before`.
+    let map = sessions.lock().await;
+    let session = map.get("sliding-token").expect("session must still be in map");
+    assert!(
+        session.last_active_at > before,
+        "last_active_at must be refreshed after a successful lookup"
+    );
+}
+
+// ── T-9: Route handler audit event written to DB ──────────────────────────────
+
+/// A successful mTLS login via POST /admin/session emits an `admin.login`
+/// event through `state.record_audit`.  The event must be visible when queried
+/// via GET /admin/audit — verifying the full path from handler to DB to API.
+#[tokio::test]
+async fn login_via_handler_emits_audit_event() {
+    let (state, sessions, _dir) = build_state(3600, 20).await;
+    let router = routes::build_admin_router(Arc::clone(&state));
+
+    // Seed an auditor session to call GET /admin/audit.
+    sessions.lock().await.insert(
+        "auditor-tok".to_string(),
+        AdminSession {
+            operator_id: 999,
+            name: "audit-reader".to_string(),
+            role: OperatorRole::Auditor,
+            created_at: Instant::now(),
+            last_active_at: Instant::now(),
+            auth_method: AdminAuthMethod::Cert,
+        },
+    );
+
+    // Create and register an operator whose cert will trigger an AdminLogin event.
+    let op_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+    let cert_der = generate_cert_der(&op_key);
+    let fingerprint = sha256_hex(&cert_der);
+    db::operators::insert(
+        &state.db,
+        "login-audit-operator",
+        "administrator",
+        Some(&fingerprint),
+        None,
+        "2026-01-01T00:00:00Z",
+    )
+    .await
+    .unwrap();
+
+    // POST /admin/session — the handler calls state.record_audit(AdminLogin::success).
+    let mut req = Request::builder()
+        .method(Method::POST)
+        .uri("/admin/session")
+        .body(Body::empty())
+        .unwrap();
+    req.extensions_mut().insert(PeerClientCert(cert_der));
+    let resp = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "POST /admin/session must succeed");
+
+    // Query GET /admin/audit?type=admin.login via the API.
+    let query_req = Request::builder()
+        .method(Method::GET)
+        .uri("/admin/audit?type=admin.login")
+        .header(header::AUTHORIZATION, "Bearer auditor-tok")
+        .body(Body::empty())
+        .unwrap();
+    let query_resp = router.oneshot(query_req).await.unwrap();
+    assert_eq!(query_resp.status(), StatusCode::OK, "GET /admin/audit must return 200");
+
+    let body = axum::body::to_bytes(query_resp.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let events = json["events"].as_array().expect("response must have events array");
+    assert!(
+        !events.is_empty(),
+        "at least one admin.login event must appear after a successful mTLS login"
+    );
+    let ev = events.iter().find(|e| {
+        e["event_type"].as_str() == Some("admin.login") && e["outcome"].as_str() == Some("success")
+    });
+    assert!(
+        ev.is_some(),
+        "a successful admin.login event must be recorded in the audit log"
+    );
+}
+
+// ── T-6: Auth rate limit (H-12) ───────────────────────────────────────────────
+
+#[tokio::test]
+async fn auth_rate_limit_returns_429_after_limit_exceeded() {
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    // Use a very low rate limit (2 per 5 minutes) so we can trigger it easily.
+    let (state, _sessions, _dir) = build_state(3600, 2).await;
+    let router = routes::build_admin_router(Arc::clone(&state));
+
+    // A fake source IP that will be tracked by the rate limiter.
+    let peer: SocketAddr = SocketAddr::new(Ipv4Addr::new(10, 0, 0, 1).into(), 55000);
+
+    // Send `limit` requests with a GSSAPI Negotiate header (invalid token —
+    // GSSAPI is not configured so each is rejected 401, but each increments
+    // the per-IP counter).
+    for attempt in 1..=2 {
+        let mut req = Request::builder()
+            .method(Method::POST)
+            .uri("/admin/session")
+            .header(header::AUTHORIZATION, "Negotiate dGVzdA==")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(peer));
+        let resp = router.clone().oneshot(req).await.unwrap();
+        assert_ne!(
+            resp.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "attempt {attempt}: must not be 429 while below the limit"
+        );
+    }
+
+    // The (limit + 1)-th request from the same IP must be rate-limited.
+    let mut req = Request::builder()
+        .method(Method::POST)
+        .uri("/admin/session")
+        .header(header::AUTHORIZATION, "Negotiate dGVzdA==")
+        .body(Body::empty())
+        .unwrap();
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(peer));
+    let resp = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "request exceeding rate limit must return 429"
+    );
+
+    // A different source IP must NOT be rate-limited.
+    let other_peer: SocketAddr = SocketAddr::new(Ipv4Addr::new(10, 0, 0, 2).into(), 55001);
+    let mut req = Request::builder()
+        .method(Method::POST)
+        .uri("/admin/session")
+        .header(header::AUTHORIZATION, "Negotiate dGVzdA==")
+        .body(Body::empty())
+        .unwrap();
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(other_peer));
+    let resp = router.clone().oneshot(req).await.unwrap();
+    assert_ne!(
+        resp.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "a different source IP must not be affected by another IP's rate limit"
     );
 }
