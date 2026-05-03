@@ -76,6 +76,10 @@ The cache is not bounded in size because the number of accounts is expected to b
 10. Check that the new thumbprint is not already in use by another account: `db::accounts::get_by_thumbprint(&state.db, &new_thumbprint)`.
 11. Call `db::accounts::update_key(&state.db, &account_id, new_spki, new_thumbprint, now)`.
 12. Evict the old SPKI from the cache: `state.spki_cache.write().unwrap().remove(&account_id)`.
+13. Emit an `AccountKeyChange` (`"account.key-change"`) audit event with:
+    - `subject`: the account ID.
+    - `principal`: `"acme:<old_thumbprint>"` (the thumbprint of the key that was replaced).
+    - `detail`: `"new_key=<new_thumbprint>"` (the thumbprint of the replacement key).
 
 `db::accounts::update_key` updates both `public_key` (the DER BLOB) and `jwk_thumbprint` (the unique TEXT) atomically in a single SQL `UPDATE`:
 
