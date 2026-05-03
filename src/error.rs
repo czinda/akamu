@@ -233,10 +233,15 @@ impl IntoResponse for AcmeError {
         if status.is_server_error() {
             tracing::error!(error = %self, status = status.as_u16(), "internal server error");
         }
+        let detail = if status.is_server_error() {
+            "internal server error".to_string()
+        } else {
+            self.to_string()
+        };
         let body = json!({
             "type": self.acme_type(),
             "status": status.as_u16(),
-            "detail": self.to_string(),
+            "detail": detail,
         });
         let mut resp = (status, Json(body)).into_response();
         resp.headers_mut().insert(
