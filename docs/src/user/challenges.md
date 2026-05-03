@@ -323,6 +323,28 @@ dns_resolver_addr        = "127.0.0.1:5353"   # used for dns-01 and CAA
 dns_persist01_resolver_addr = "127.0.0.1:5354" # used only for dns-persist-01
 ```
 
+#### `dns_dot_server_name`
+
+**Optional. Default: absent (plain UDP).**
+
+TLS server name (SNI hostname) for DNS-over-TLS (DoT, RFC 7858). When set, all DNS challenge validation queries — `dns-01`, `dns-persist-01`, and CAA record lookups — are sent over TLS instead of plain UDP. `dns_resolver_addr` must be set to the DoT server's IP address and port 853.
+
+Use DoT when the path between the Akāmu server and its resolver is untrusted (e.g. a public resolver reached over the open Internet, an ISP that intercepts cleartext DNS queries, or a network with strict privacy requirements). The TLS certificate presented by the resolver is verified against the system root CA store. LDAP SRV lookups for certificate profile providers are unaffected.
+
+DoT and DNSSEC validation (`validate_dnssec = true`) are independent and can be used together: DoT protects the transport channel while DNSSEC authenticates the response data.
+
+```toml
+[server]
+# DoT only
+dns_resolver_addr   = "1.1.1.1:853"
+dns_dot_server_name = "cloudflare-dns.com"
+
+# DoT + DNSSEC
+dns_resolver_addr   = "1.1.1.1:853"
+dns_dot_server_name = "cloudflare-dns.com"
+validate_dnssec     = true
+```
+
 ### Limitations
 
 - **No IP address identifier support.** `dns-persist-01` is defined only for DNS name identifiers; IP address identifiers are not supported (no TXT record format is specified in `draft-ietf-acme-dns-persist` for IP identifiers).

@@ -51,7 +51,10 @@ star_min_lifetime_secs      = 86400
 star_max_duration_secs      = 31536000
 star_allow_certificate_get  = true
 tor_connectivity_enabled    = false
+dns_resolver_addr           = "1.1.1.1:853"
+dns_dot_server_name         = "cloudflare-dns.com"
 dns_persist01_resolver_addr = "127.0.0.1:5354"
+validate_dnssec             = true
 trusted_proxies             = ["127.0.0.1/32"]
 eab_master_secret           = "Zm9vYmFyYmF6cXV4cXV1eGZvb2JhcmJhenF1eHF1dXg"
 
@@ -573,7 +576,7 @@ dns_persist_issuer_domains = ["acme.example.com", "acme.example.org"]
 
 **Optional. Default: absent (system resolver).**
 
-Override the DNS resolver used for `dns-01` and `dns-persist-01` challenge validation. Format: `"<ip>:<port>"`. When absent, the system default resolver is used. Useful for split-horizon DNS deployments where the ACME server cannot reach the public resolver, and for integration testing against a local stub server.
+Override the DNS resolver used for `dns-01`, `dns-persist-01`, and CAA record lookups. Format: `"<ip>:<port>"`. When absent, the system default resolver is used. Useful for split-horizon DNS deployments where the ACME server cannot reach the public resolver, and for integration testing against a local stub server.
 
 ```toml
 dns_resolver_addr = "127.0.0.1:5353"
@@ -588,6 +591,31 @@ Resolver override used exclusively for `dns-persist-01` TXT lookups at `_validat
 ```toml
 dns_resolver_addr           = "127.0.0.1:5353"   # used for dns-01 and CAA
 dns_persist01_resolver_addr = "127.0.0.1:5354"   # used only for dns-persist-01
+```
+
+### `dns_dot_server_name`
+
+**Optional. Default: absent (plain UDP).**
+
+TLS server name (SNI hostname) for DNS-over-TLS (DoT, RFC 7858). When set, all DNS challenge validation queries — `dns-01`, `dns-persist-01`, and CAA record lookups — are sent over TLS to the resolver specified by `dns_resolver_addr` instead of plain UDP.
+
+Use DoT when the network path between the Akāmu server and its resolver is untrusted: for example, when the resolver is a public DNS provider reached over the Internet, when the operator wants to prevent on-path DNS hijacking by an ISP, or to satisfy privacy requirements that prohibit cleartext DNS queries.
+
+`dns_resolver_addr` must be set to the DoT server's IP address and port 853 when this field is present. The TLS certificate presented by the resolver is verified against the system root CA store (system OpenSSL). LDAP SRV lookups for certificate profile providers are unaffected — they always use plain UDP.
+
+DoT and DNSSEC validation (`validate_dnssec = true`) are independent and can be enabled at the same time. DoT protects the query transport channel; DNSSEC authenticates the DNS response data itself.
+
+```toml
+# DoT only — encrypt queries to Cloudflare's resolver
+dns_resolver_addr    = "1.1.1.1:853"
+dns_dot_server_name  = "cloudflare-dns.com"
+```
+
+```toml
+# DoT + DNSSEC — encrypted transport and cryptographic response validation
+dns_resolver_addr    = "1.1.1.1:853"
+dns_dot_server_name  = "cloudflare-dns.com"
+validate_dnssec      = true
 ```
 
 ### `ari_retry_after_secs`
