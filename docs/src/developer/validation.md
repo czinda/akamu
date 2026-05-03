@@ -9,24 +9,36 @@ The entry point is `validation::validate_challenge` in `src/validation/mod.rs`. 
 ```rust
 pub async fn validate_challenge(
     state: &Arc<AppState>,
-    challenge_id: &str,
-    authz_id: &str,
-    chall_type: &str,
-    id_type: &str,
-    id_value: &str,
-    key_auth: &str,
-    token: &str,
-)
+    params: ChallengeParams<'_>,
+) -> &'static str
 ```
 
-`validate_challenge` calls `dispatch(chall_type, ...)`, which routes to one of four validators:
+`ChallengeParams` carries all per-challenge inputs as named fields:
+
+```rust
+pub struct ChallengeParams<'a> {
+    pub challenge_id: &'a str,
+    pub authz_id: &'a str,
+    pub order_id: &'a str,
+    pub chall_type: &'a str,
+    pub id_type: &'a str,
+    pub id_value: &'a str,
+    pub key_auth: &'a str,
+    pub token: &'a str,
+    pub onion_csr_der: Option<&'a [u8]>,
+    pub account_id: &'a str,
+}
+```
+
+`validate_challenge` calls `dispatch(...)`, which routes to one of five validators:
 
 | `chall_type` | Module | Function |
 |---|---|---|
-| `"http-01"` | `validation::http01` | `validate(domain, token, key_auth)` |
-| `"dns-01"` | `validation::dns01` | `validate(domain, key_auth)` |
-| `"tls-alpn-01"` | `validation::tls_alpn01` | `validate(domain, key_auth)` |
-| `"dns-persist-01"` | `validation::dns_persist_01` | `validate(domain, account_uri, issuer_domain, resolver_addr)` |
+| `"http-01"` | `validation::http01` | `validate(domain, token, key_auth, port, allow_private_ips, client)` |
+| `"dns-01"` | `validation::dns01` | `validate(domain, key_auth, validate_dnssec)` |
+| `"tls-alpn-01"` | `validation::tls_alpn01` | `validate(id_type, domain, key_auth)` |
+| `"dns-persist-01"` | `validation::dns_persist_01` | `validate(domain, key_auth, issuer_domains, resolver_addr, validate_dnssec)` |
+| `"onion-csr-01"` | `validation::onion_csr_01` | `validate(domain, csr_der, key_auth)` |
 | Any other | — | Returns `AcmeError::IncorrectResponse` |
 
 After `dispatch` returns, `validate_challenge` calls either `on_valid` or `on_invalid` to update the database.
@@ -67,15 +79,14 @@ sequenceDiagram
         V->DB: BEGIN TRANSACTION
         V->DB: challenge -> valid (+ validated timestamp)
         V->DB: authorization -> valid
-        V->DB: count non-valid authzs for order
-        alt all authorizations now valid
-            V->DB: order -> ready
-        end
+        V->DB: order -> ready (conditional UPDATE, no extra round-trip)
         V->DB: COMMIT
     else probe failed
+        V->DB: BEGIN TRANSACTION
         V->DB: challenge -> invalid (+ error JSON)
         V->DB: authorization -> invalid
         V->DB: order -> invalid
+        V->DB: COMMIT
     end
 
     Note over Client: Client polls authorization URL (POST-as-GET)
@@ -89,13 +100,18 @@ Validation runs inside a `tokio::spawn` task, not in the request handler's async
 let handle = tokio::spawn(async move {
     validation::validate_challenge(
         &state_clone,
-        &challenge_id,
-        &authz_id_clone,
-        &chall_type_clone,
-        &id_type,
-        &id_value,
-        &key_auth,
-        &token,
+        ChallengeParams {
+            challenge_id: &challenge_id,
+            authz_id: &authz_id,
+            order_id: &order_id,
+            chall_type: &chall_type,
+            id_type: &id_type,
+            id_value: &id_value,
+            key_auth: &key_auth,
+            token: &token,
+            onion_csr_der: None,
+            account_id: &account_id,
+        },
     )
     .await;
 });
@@ -140,29 +156,28 @@ stateDiagram-v2
     }
 
     chall --> authz : atomic DB transaction
-    authz --> ord : atomic DB transaction (on_valid)<br/>independent steps (on_invalid)
+    authz --> ord : atomic DB transaction
 ```
 
 ## State transitions on success (`on_valid`)
 
-All three updates run inside a single SQLite transaction:
+All three updates run inside a single database transaction:
 
 1. `UPDATE challenges SET status = 'valid', validated = <now> WHERE id = <challenge_id>`
 2. `UPDATE authorizations SET status = 'valid' WHERE id = <authz_id>`
-3. `SELECT order_id FROM authorizations WHERE id = <authz_id>`
-4. `SELECT COUNT(*) FROM authorizations WHERE order_id = <order_id> AND status != 'valid'`
-5. If count is zero: `UPDATE orders SET status = 'ready' WHERE id = <order_id>`
+3. Conditionally advance the order to `ready` using a single `UPDATE orders SET status = 'ready' WHERE id = <order_id> AND NOT EXISTS (SELECT 1 FROM authorizations WHERE order_id = <order_id> AND status != 'valid')`. This replaces the previous SELECT COUNT(*) + conditional UPDATE pattern; it saves a round-trip on the common single-identifier path.
 
-If any step fails (e.g., a database error), a warning is logged and the transaction is rolled back. The challenge remains in `processing` status until the next validation attempt or a timeout.
+If any step fails (e.g., a database error), a warning is logged and the transaction is rolled back. The challenge remains in `processing` status.
 
 ## State transitions on failure (`on_invalid`)
 
-1. `db::challenges::set_invalid(challenge_id, error_json, now)` — marks the challenge `invalid` and stores the error JSON.
-2. `db::authz::update_status(authz_id, "invalid", now)` — marks the authorization `invalid`.
-3. `db::authz::get_by_id(authz_id)` — finds the parent order ID.
-4. `db::orders::update_status(order_id, "invalid", None, now)` — marks the order `invalid`.
+All three updates run inside a single database transaction:
 
-Each step is independent; a failure in one step logs a warning but does not prevent the others from running. This is intentional: if the database is in a degraded state, we still attempt to record as much of the failure as possible.
+1. `UPDATE challenges SET status = 'invalid', error = <json> WHERE id = <challenge_id>`
+2. `UPDATE authorizations SET status = 'invalid' WHERE id = <authz_id>`
+3. Look up the parent order ID and mark the order `invalid`.
+
+If the transaction fails (e.g., a database error), a warning is logged.
 
 ## http-01 validator (`src/validation/http01.rs`)
 
@@ -170,17 +185,21 @@ Uses `hyper` (already a transitive dependency via axum) as the HTTP client.
 
 Validation steps:
 1. Construct the URL `http://<domain>/.well-known/acme-challenge/<token>`.
-2. Send a GET request via `hyper_util::client::legacy::Client`.
-3. Check that the response status is 2xx.
-4. Read up to 8192 bytes of the response body.
-5. Decode as UTF-8 and trim whitespace.
-6. Compare with `key_auth`. Any mismatch returns `AcmeError::IncorrectResponse`.
+2. **SSRF guard — initial target**: before making any connection, resolve the target host and reject it if any returned address is in a private, loopback, link-local, or otherwise non-globally-routable range (RFC 1918, `169.254.0.0/16`, `::1`, `fe80::/10`, `fc00::/7`, etc.). This guard applies to both IP literals and hostnames. Bypassed only when `http_validation_allow_private_ips = true`.
+3. Send a GET request via `hyper_util::client::legacy::Client`.
+4. Check the response status. 3xx redirects are followed (up to 10 hops, including redirects to HTTPS targets).
+5. **SSRF guard — redirect targets**: each redirect target is also subjected to the same IP check before following it.
+6. Check that the final response status is 2xx.
+7. Read up to 1 MiB of the response body.
+8. Decode as UTF-8 and trim whitespace.
+9. Compare with `key_auth`. Any mismatch returns `AcmeError::IncorrectResponse`.
 
 Error mapping:
 - Connection or parse failure → `AcmeError::Connection`
 - Non-2xx status → `AcmeError::IncorrectResponse`
-- Body too large → `AcmeError::IncorrectResponse`
+- Body exceeds 1 MiB → `AcmeError::IncorrectResponse`
 - Key auth mismatch → `AcmeError::IncorrectResponse`
+- Initial or redirect target resolves to blocked IP → `AcmeError::IncorrectResponse`
 
 ## dns-01 validator (`src/validation/dns01.rs`)
 
