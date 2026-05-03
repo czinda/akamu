@@ -3,10 +3,12 @@
 //! Queries TXT records for `_acme-challenge.{domain}` and checks that at least
 //! one value equals `BASE64URL(SHA-256(keyAuthorization))`.
 
+use std::net::SocketAddr;
+use std::str::FromStr;
+
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use hickory_resolver::config::{ResolverConfig, ResolverOpts};
-use hickory_resolver::TokioAsyncResolver;
+use hickory_client::proto::rr::{Name, RData, RecordType};
 use synta_certificate::{default_data_hasher, DataHasher};
 
 use crate::error::AcmeError;
@@ -22,22 +24,21 @@ pub async fn validate(
     key_auth: &str,
     validate_dnssec: bool,
 ) -> Result<(), AcmeError> {
-    let mut opts = ResolverOpts::default();
-    opts.validate = validate_dnssec;
-    let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), opts);
-    validate_with_resolver(domain, key_auth, resolver).await
+    let resolver_addr = crate::dns::system_resolver_addr();
+    validate_with_resolver(domain, key_auth, resolver_addr, validate_dnssec).await
 }
 
-/// Inner implementation that takes a custom resolver for testability.
+/// Inner implementation that takes a resolver address for testability.
 async fn validate_with_resolver(
     domain: &str,
     key_auth: &str,
-    resolver: TokioAsyncResolver,
+    resolver_addr: SocketAddr,
+    validate_dnssec: bool,
 ) -> Result<(), AcmeError> {
     // RFC 8555 §8.4: for wildcard orders the identifier has the `*.` prefix
     // stripped when forming the DNS query.
     let base_domain = domain.strip_prefix("*.").unwrap_or(domain);
-    let query_name = format!("_acme-challenge.{}", base_domain);
+    let query_name = format!("_acme-challenge.{base_domain}.");
 
     // Compute expected TXT value: base64url(SHA-256(keyAuthorization)).
     let digest = default_data_hasher()
@@ -45,19 +46,22 @@ async fn validate_with_resolver(
         .map_err(|e| AcmeError::Crypto(format!("SHA-256 digest: {e}")))?;
     let expected = URL_SAFE_NO_PAD.encode(&digest);
 
-    let lookup = resolver
-        .txt_lookup(&query_name)
+    let fqdn = Name::from_str(&query_name)
+        .map_err(|e| AcmeError::Dns(format!("invalid DNS name '{query_name}': {e}")))?;
+    let resp = crate::dns::dns_query(resolver_addr, validate_dnssec, fqdn, RecordType::TXT)
         .await
         .map_err(|e| AcmeError::Dns(format!("TXT lookup for '{query_name}': {e}")))?;
 
-    for record in lookup.iter() {
-        // TXT records may be split across multiple character-strings; join them.
-        let value: String = record
-            .iter()
-            .map(|s| String::from_utf8_lossy(s).into_owned())
-            .collect();
-        if value.trim() == expected {
-            return Ok(());
+    for answer in resp.answers() {
+        if let Some(RData::TXT(txt)) = answer.data() {
+            // TXT records may be split across multiple character-strings; join them.
+            let value: String = txt
+                .iter()
+                .map(|s| String::from_utf8_lossy(s).into_owned())
+                .collect();
+            if value.trim() == expected {
+                return Ok(());
+            }
         }
     }
 
@@ -69,7 +73,6 @@ async fn validate_with_resolver(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hickory_resolver::config::{NameServerConfig, Protocol};
     use tokio::net::UdpSocket;
 
     /// Constructs a minimal DNS TXT response packet by echoing the question section
@@ -125,12 +128,9 @@ mod tests {
         port
     }
 
-    /// Build a resolver config pointing at a local UDP nameserver on `port`.
-    fn local_resolver(port: u16) -> (ResolverConfig, ResolverOpts) {
-        let mut config = ResolverConfig::new();
-        let ns = NameServerConfig::new(format!("127.0.0.1:{port}").parse().unwrap(), Protocol::Udp);
-        config.add_name_server(ns);
-        (config, ResolverOpts::default())
+    /// Return a resolver address pointing at a local UDP nameserver on `port`.
+    fn local_resolver(port: u16) -> SocketAddr {
+        format!("127.0.0.1:{port}").parse().unwrap()
     }
 
     /// Covers dns01.rs lines 36-43: TXT record found and value matches → Ok(()).
@@ -143,10 +143,9 @@ mod tests {
         let expected = URL_SAFE_NO_PAD.encode(&digest);
 
         let port = start_txt_dns_server(expected).await;
-        let (config, opts) = local_resolver(port);
-        let resolver = TokioAsyncResolver::tokio(config, opts);
+        let resolver_addr = local_resolver(port);
 
-        let result = validate_with_resolver("example.test", key_auth, resolver).await;
+        let result = validate_with_resolver("example.test", key_auth, resolver_addr, false).await;
         assert!(
             result.is_ok(),
             "expected Ok for matching TXT record: {result:?}"
@@ -157,10 +156,10 @@ mod tests {
     #[tokio::test]
     async fn validate_wrong_txt_returns_incorrect_response() {
         let port = start_txt_dns_server("wrong-value-that-does-not-match".to_string()).await;
-        let (config, opts) = local_resolver(port);
-        let resolver = TokioAsyncResolver::tokio(config, opts);
+        let resolver_addr = local_resolver(port);
 
-        let result = validate_with_resolver("example.test", "token.thumbprint", resolver).await;
+        let result =
+            validate_with_resolver("example.test", "token.thumbprint", resolver_addr, false).await;
         assert!(
             matches!(result, Err(AcmeError::IncorrectResponse(_))),
             "expected IncorrectResponse for wrong TXT value: {result:?}"

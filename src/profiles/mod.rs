@@ -42,9 +42,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
-use hickory_resolver::config::{ResolverConfig, ResolverOpts};
-use hickory_resolver::TokioAsyncResolver;
-
 use crate::config::{ProfilesConfig, ProviderConfig};
 use crate::state::CaState;
 
@@ -197,10 +194,9 @@ pub struct ProfileRegistry {
     providers_cfg: ProfilesConfig,
     /// CA defaults for inheriting validity/hash/URLs during loading.
     ca_defaults: CaDefaults,
-    /// Shared DNS resolver for SRV-based LDAP discovery.  `None` when no
-    /// provider uses `srv_domain` (avoids allocating background tasks for a
-    /// feature that is not in use).
-    dns_resolver: Option<TokioAsyncResolver>,
+    /// DNS resolver address for SRV-based LDAP discovery.  `None` when no
+    /// provider uses `srv_domain`.
+    dns_resolver: Option<std::net::SocketAddr>,
 }
 
 impl ProfileRegistry {
@@ -214,14 +210,11 @@ impl ProfileRegistry {
     pub async fn new(cfg: &ProfilesConfig, ca: &CaState) -> Result<Arc<Self>, String> {
         let ca_defaults = CaDefaults::from_ca(ca);
         let dns_resolver = if needs_dns_resolver(cfg) {
-            Some(TokioAsyncResolver::tokio(
-                ResolverConfig::default(),
-                ResolverOpts::default(),
-            ))
+            Some(crate::dns::system_resolver_addr())
         } else {
             None
         };
-        let profiles = load_all_providers(cfg, &ca_defaults, dns_resolver.as_ref()).await?;
+        let profiles = load_all_providers(cfg, &ca_defaults, dns_resolver).await?;
 
         let registry = Arc::new(Self {
             cache: RwLock::new(ProfileCache {
@@ -285,7 +278,7 @@ impl ProfileRegistry {
         let profiles = load_all_providers(
             &self.providers_cfg,
             &self.ca_defaults,
-            self.dns_resolver.as_ref(),
+            self.dns_resolver,
         )
         .await?;
         let count = profiles.len();
@@ -347,7 +340,7 @@ impl ProfileRegistry {
 async fn load_all_providers(
     cfg: &ProfilesConfig,
     ca: &CaDefaults,
-    resolver: Option<&TokioAsyncResolver>,
+    resolver: Option<std::net::SocketAddr>,
 ) -> Result<HashMap<String, (String, CertificateParameters)>, String> {
     let mut merged: HashMap<String, (String, CertificateParameters)> = HashMap::new();
 

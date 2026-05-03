@@ -10,9 +10,10 @@
 //! The resulting ordered list is joined with spaces and passed to
 //! `ldap_initialize`, which tries each URI in turn for failover.
 
-use hickory_resolver::config::{ResolverConfig, ResolverOpts};
-use hickory_resolver::proto::rr::{RData, RecordType};
-use hickory_resolver::TokioAsyncResolver;
+use std::net::SocketAddr;
+use std::str::FromStr;
+
+use hickory_client::proto::rr::{Name, RData, RecordType};
 
 use crate::config::LdapConfig;
 
@@ -27,7 +28,7 @@ use crate::config::LdapConfig;
 pub async fn resolve_ldap_uris(
     cfg: &LdapConfig,
     provider_name: &str,
-    resolver: Option<&TokioAsyncResolver>,
+    resolver: Option<SocketAddr>,
 ) -> Result<String, String> {
     let mut uris: Vec<String> = Vec::new();
 
@@ -73,20 +74,18 @@ async fn resolve_srv(
     domain: &str,
     scheme: &str,
     provider_name: &str,
-    resolver: Option<&TokioAsyncResolver>,
+    resolver: Option<SocketAddr>,
 ) -> Result<Vec<String>, String> {
-    let owned;
-    let resolver = match resolver {
-        Some(r) => r,
-        None => {
-            owned = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
-            &owned
-        }
-    };
+    let addr = resolver.unwrap_or_else(crate::dns::system_resolver_addr);
 
-    let srv_name = format!("_ldap._tcp.{}.", domain);
-    let response = resolver
-        .lookup(&srv_name, RecordType::SRV)
+    let srv_name = format!("_ldap._tcp.{domain}.");
+    let fqdn = Name::from_str(&srv_name).map_err(|e| {
+        format!(
+            "profiles provider '{provider_name}': \
+             invalid SRV name '{srv_name}': {e}"
+        )
+    })?;
+    let resp = crate::dns::dns_query(addr, false, fqdn, RecordType::SRV)
         .await
         .map_err(|e| {
             format!(
@@ -96,13 +95,14 @@ async fn resolve_srv(
         })?;
 
     // Collect (priority, weight, uri) tuples.
-    let mut records: Vec<(u16, u16, String)> = response
+    let mut records: Vec<(u16, u16, String)> = resp
+        .answers()
         .iter()
-        .filter_map(|rdata| {
-            if let RData::SRV(srv) = rdata {
+        .filter_map(|answer| {
+            if let Some(RData::SRV(srv)) = answer.data() {
                 let host = srv.target().to_utf8();
                 let host = host.trim_end_matches('.');
-                let uri = format!("{}://{}:{}", scheme, host, srv.port());
+                let uri = format!("{scheme}://{host}:{}", srv.port());
                 Some((srv.priority(), srv.weight(), uri))
             } else {
                 None

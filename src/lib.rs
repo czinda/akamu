@@ -8,6 +8,7 @@ pub mod audit;
 pub mod ca;
 pub mod config;
 pub mod db;
+pub mod dns;
 pub mod eab_derivation;
 pub mod error;
 pub mod extract;

@@ -25,8 +25,6 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use hickory_resolver::TokioAsyncResolver;
-
 use crate::config::DogtagProviderConfig;
 use crate::profiles::{cfg, CaDefaults, CertificateParameters};
 
@@ -38,7 +36,7 @@ pub async fn load_dogtag(
     provider_name: &str,
     dcfg: &DogtagProviderConfig,
     ca: &CaDefaults,
-    resolver: Option<&TokioAsyncResolver>,
+    resolver: Option<std::net::SocketAddr>,
 ) -> Result<HashMap<String, (String, CertificateParameters)>, String> {
     if let Some(ldap_cfg) = &dcfg.ldap {
         return load_from_ldap(provider_name, ldap_cfg, &dcfg.profiles, ca, resolver).await;
@@ -148,7 +146,7 @@ async fn load_from_ldap(
     ldap_cfg: &crate::config::LdapConfig,
     filter: &[String],
     ca: &CaDefaults,
-    resolver: Option<&TokioAsyncResolver>,
+    resolver: Option<std::net::SocketAddr>,
 ) -> Result<HashMap<String, (String, CertificateParameters)>, String> {
     crate::profiles::ldap_session::load_profiles_from_ldap(
         provider_name,

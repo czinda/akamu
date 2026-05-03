@@ -9,11 +9,14 @@
 //! - `validationmethods`: the challenge type used must appear in the list.
 //! - `accounturi`: the requesting ACME account URL must match the parameter value.
 
-use hickory_resolver::config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts};
-use hickory_resolver::proto::rr::RData;
-use hickory_resolver::proto::rr::RecordType;
-use hickory_resolver::TokioAsyncResolver;
+use std::net::SocketAddr;
+use std::str::FromStr;
 
+use hickory_client::op::ResponseCode;
+use hickory_client::proto::rr::rdata::CAA;
+use hickory_client::proto::rr::{Name, RData, RecordType};
+
+use crate::dns;
 use crate::error::AcmeError;
 
 /// Check CAA records for `domain` before issuing a certificate.
@@ -41,19 +44,20 @@ pub async fn check_caa(
         return Ok(());
     }
 
-    let resolver = build_resolver(resolver_addr, validate_dnssec)?;
+    let addr = build_resolver_addr(resolver_addr)?;
     check_caa_with_resolver(
         domain,
         ca_identities,
         is_wildcard,
         challenge_type,
         account_url,
-        resolver,
+        addr,
+        validate_dnssec,
     )
     .await
 }
 
-/// Inner implementation that takes a custom resolver for testability.
+/// Inner implementation that takes a resolver address for testability.
 ///
 /// `account_url` is the full ACME account URL passed through to
 /// `evaluate_caa_record_set` for RFC 8657 §4 `accounturi` enforcement.
@@ -63,7 +67,8 @@ pub(crate) async fn check_caa_with_resolver(
     is_wildcard: bool,
     challenge_type: &str,
     account_url: Option<&str>,
-    resolver: TokioAsyncResolver,
+    resolver_addr: SocketAddr,
+    validate_dnssec: bool,
 ) -> Result<(), AcmeError> {
     // Step 2: Build a list of DNS names to check, walking up to (but not including) the TLD.
     let names_to_check = build_name_walk(domain);
@@ -74,83 +79,76 @@ pub(crate) async fn check_caa_with_resolver(
 
         tracing::debug!(domain, query_name, is_wildcard, "caa: querying CAA records");
 
-        let result = resolver.lookup(query_name.as_str(), RecordType::CAA).await;
+        let fqdn = Name::from_str(&query_name).map_err(|e| {
+            AcmeError::Internal(format!("invalid DNS name '{query_name}': {e}"))
+        })?;
+        let result = dns::dns_query(resolver_addr, validate_dnssec, fqdn, RecordType::CAA).await;
 
         match result {
-            Ok(lookup) => {
-                // Collect CAA records from the response.
-                let caa_records: Vec<&hickory_resolver::proto::rr::rdata::CAA> = lookup
-                    .iter()
-                    .filter_map(|rdata| {
-                        if let RData::CAA(caa) = rdata {
-                            Some(caa)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                if caa_records.is_empty() {
-                    // No CAA records at this label — continue walking up.
-                    tracing::debug!(query_name, "caa: no CAA records found, walking up");
-                    continue;
-                }
-
-                // Step 4 (inline): Found a CAA record set — evaluate it and stop walking.
-                tracing::debug!(
-                    query_name,
-                    count = caa_records.len(),
-                    "caa: evaluating CAA record set"
-                );
-                return evaluate_caa_record_set(
-                    &caa_records,
-                    domain,
-                    ca_identities,
-                    is_wildcard,
-                    challenge_type,
-                    account_url,
-                );
-            }
-            Err(e) => {
-                use hickory_resolver::error::ResolveErrorKind;
-                use hickory_resolver::proto::op::ResponseCode;
-
-                match e.kind() {
-                    ResolveErrorKind::NoRecordsFound { response_code, .. } => {
-                        match response_code {
-                            // SERVFAIL / REFUSED: the lookup failed — deny issuance per RFC 8659 §4.
-                            ResponseCode::ServFail | ResponseCode::Refused => {
-                                tracing::warn!(
-                                    query_name,
-                                    error = %e,
-                                    "caa: DNS lookup returned SERVFAIL/REFUSED"
-                                );
-                                return Err(AcmeError::Caa(format!(
-                                    "CAA lookup failed for '{name}': {e}"
-                                )));
-                            }
-                            // NXDOMAIN or NOERROR with no records → continue walking up.
-                            _ => {
-                                tracing::debug!(
-                                    query_name,
-                                    "caa: NXDOMAIN or no records, walking up"
-                                );
-                                continue;
-                            }
-                        }
-                    }
-                    // Network / timeout / proto errors → fail closed.
-                    _ => {
+            Ok(resp) => {
+                match resp.response_code() {
+                    // SERVFAIL / REFUSED: deny issuance per RFC 8659 §4.
+                    ResponseCode::ServFail | ResponseCode::Refused => {
                         tracing::warn!(
                             query_name,
-                            error = %e,
-                            "caa: DNS lookup error"
+                            rcode = ?resp.response_code(),
+                            "caa: DNS lookup returned SERVFAIL/REFUSED"
                         );
                         return Err(AcmeError::Caa(format!(
-                            "CAA lookup failed for '{name}': {e}"
+                            "CAA lookup failed for '{name}': DNS {:?}",
+                            resp.response_code()
+                        )));
+                    }
+                    // NXDOMAIN or NOERROR → check whether there are any CAA records.
+                    ResponseCode::NXDomain | ResponseCode::NoError => {
+                        let caa_records: Vec<&CAA> = resp
+                            .answers()
+                            .iter()
+                            .filter_map(|r| {
+                                if let Some(RData::CAA(caa)) = r.data() {
+                                    Some(caa)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+
+                        if caa_records.is_empty() {
+                            // No CAA records at this label — continue walking up.
+                            tracing::debug!(query_name, "caa: no CAA records found, walking up");
+                            continue;
+                        }
+
+                        // Step 4 (inline): Found a CAA record set — evaluate it and stop walking.
+                        tracing::debug!(
+                            query_name,
+                            count = caa_records.len(),
+                            "caa: evaluating CAA record set"
+                        );
+                        return evaluate_caa_record_set(
+                            &caa_records,
+                            domain,
+                            ca_identities,
+                            is_wildcard,
+                            challenge_type,
+                            account_url,
+                        );
+                    }
+                    // Any other DNS error code → fail closed.
+                    rcode => {
+                        tracing::warn!(query_name, ?rcode, "caa: DNS lookup error");
+                        return Err(AcmeError::Caa(format!(
+                            "CAA lookup failed for '{name}': DNS {rcode:?}"
                         )));
                     }
                 }
+            }
+            Err(e) => {
+                // Transport / timeout error → fail closed.
+                tracing::warn!(query_name, error = %e, "caa: DNS lookup error");
+                return Err(AcmeError::Caa(format!(
+                    "CAA lookup failed for '{name}': {e}"
+                )));
             }
         }
     }
@@ -201,14 +199,14 @@ fn build_name_walk(domain: &str) -> Vec<String> {
 /// parameter when present (RFC 8657 §4); a `None` value causes any record that
 /// carries `accounturi` to be rejected.
 fn evaluate_caa_record_set(
-    records: &[&hickory_resolver::proto::rr::rdata::CAA],
+    records: &[&CAA],
     domain: &str,
     ca_identities: &[String],
     is_wildcard: bool,
     challenge_type: &str,
     account_url: Option<&str>,
 ) -> Result<(), AcmeError> {
-    use hickory_resolver::proto::rr::rdata::caa::Value;
+    use hickory_client::proto::rr::rdata::caa::Value;
 
     // RFC 8659 §4: for wildcards, if `issuewild` records are present in the set,
     // use them. If absent, fall back to `issue` records.
@@ -326,25 +324,14 @@ fn evaluate_caa_record_set(
     )))
 }
 
-/// Build a resolver, optionally using an override address.
-fn build_resolver(
-    resolver_addr: Option<&str>,
-    validate_dnssec: bool,
-) -> Result<TokioAsyncResolver, AcmeError> {
-    let mut opts = ResolverOpts::default();
-    opts.validate = validate_dnssec;
-    let resolver = match resolver_addr {
-        Some(addr) => {
-            let socket_addr = addr.parse::<std::net::SocketAddr>().map_err(|e| {
-                AcmeError::Internal(format!("invalid dns_resolver_addr '{addr}': {e}"))
-            })?;
-            let mut config = ResolverConfig::new();
-            config.add_name_server(NameServerConfig::new(socket_addr, Protocol::Udp));
-            TokioAsyncResolver::tokio(config, opts)
-        }
-        None => TokioAsyncResolver::tokio(ResolverConfig::default(), opts),
-    };
-    Ok(resolver)
+/// Resolve the configured DNS resolver address, or fall back to the system default.
+fn build_resolver_addr(resolver_addr: Option<&str>) -> Result<SocketAddr, AcmeError> {
+    match resolver_addr {
+        Some(addr) => addr.parse::<SocketAddr>().map_err(|e| {
+            AcmeError::Internal(format!("invalid dns_resolver_addr '{addr}': {e}"))
+        }),
+        None => Ok(dns::system_resolver_addr()),
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -352,7 +339,6 @@ fn build_resolver(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hickory_resolver::config::{NameServerConfig, Protocol};
     use tokio::net::UdpSocket;
 
     type DnsHandler = Box<dyn Fn(&[u8]) -> Vec<u8> + Send + 'static>;
@@ -504,15 +490,8 @@ mod tests {
         port
     }
 
-    fn local_resolver(port: u16) -> TokioAsyncResolver {
-        let mut config = ResolverConfig::new();
-        let ns = NameServerConfig::new(format!("127.0.0.1:{port}").parse().unwrap(), Protocol::Udp);
-        config.add_name_server(ns);
-        let mut opts = ResolverOpts::default();
-        // Disable search path expansion for tests.
-        opts.ndots = 0;
-        opts.attempts = 1;
-        TokioAsyncResolver::tokio(config, opts)
+    fn local_resolver(port: u16) -> SocketAddr {
+        format!("127.0.0.1:{port}").parse().unwrap()
     }
 
     // ── DNS-based integration tests ────────────────────────────────────────────
@@ -530,6 +509,7 @@ mod tests {
             "http-01",
             None,
             resolver,
+            false,
         )
         .await;
         assert!(
@@ -553,6 +533,7 @@ mod tests {
             "http-01",
             None,
             resolver,
+            false,
         )
         .await;
         assert!(
@@ -576,6 +557,7 @@ mod tests {
             "http-01",
             None,
             resolver,
+            false,
         )
         .await;
         assert!(
@@ -602,6 +584,7 @@ mod tests {
             "dns-01",
             None,
             resolver,
+            false,
         )
         .await;
         assert!(
@@ -626,6 +609,7 @@ mod tests {
             "dns-01",
             None,
             resolver,
+            false,
         )
         .await;
         assert!(
@@ -649,6 +633,7 @@ mod tests {
             "dns-01",
             None,
             resolver,
+            false,
         )
         .await;
         assert!(
@@ -678,6 +663,7 @@ mod tests {
             "http-01",
             None,
             resolver,
+            false,
         )
         .await;
         assert!(
@@ -702,6 +688,7 @@ mod tests {
             "http-01", // not in validationmethods
             None,
             resolver,
+            false,
         )
         .await;
         assert!(
@@ -726,6 +713,7 @@ mod tests {
             "http-01",
             None,
             resolver,
+            false,
         )
         .await;
         // iodef-only → no issue/issuewild restriction
@@ -751,6 +739,7 @@ mod tests {
             "http-01",
             None,
             resolver,
+            false,
         )
         .await;
         assert!(
@@ -779,6 +768,7 @@ mod tests {
             "http-01",
             Some("https://acme.example.com/acme/account/42"),
             resolver,
+            false,
         )
         .await;
         assert!(
@@ -807,6 +797,7 @@ mod tests {
             "http-01",
             Some("https://acme.example.com/acme/account/99"), // different account
             resolver,
+            false,
         )
         .await;
         assert!(

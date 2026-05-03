@@ -7,7 +7,6 @@
 use std::collections::HashMap;
 
 use akamu_ldap::{AsyncLdapConnection, Auth, Scope};
-use hickory_resolver::TokioAsyncResolver;
 
 use crate::config::LdapConfig;
 use crate::profiles::{cfg, CaDefaults, CertificateParameters};
@@ -26,7 +25,7 @@ pub(crate) async fn load_profiles_from_ldap(
     ldap_cfg: &LdapConfig,
     filter: &[String],
     ca: &CaDefaults,
-    resolver: Option<&TokioAsyncResolver>,
+    resolver: Option<std::net::SocketAddr>,
 ) -> Result<HashMap<String, (String, CertificateParameters)>, String> {
     let auth = if ldap_cfg.gssapi {
         Auth::Gssapi

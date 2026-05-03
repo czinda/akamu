@@ -15,8 +15,9 @@
 //!   "<issuer-domain>; accounturi=<uri>[; policy=wildcard][; persistUntil=<ISO8601Z>]"
 //! ```
 
-use hickory_resolver::config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts};
-use hickory_resolver::TokioAsyncResolver;
+use std::str::FromStr;
+
+use hickory_client::proto::rr::{Name, RData, RecordType};
 
 use crate::error::AcmeError;
 use crate::util::unix_now;
@@ -37,28 +38,20 @@ pub async fn validate(
     resolver_addr: Option<std::net::SocketAddr>,
     validate_dnssec: bool,
 ) -> Result<(), AcmeError> {
-    let mut opts = ResolverOpts::default();
-    opts.validate = validate_dnssec;
-    let resolver = match resolver_addr {
-        Some(addr) => {
-            let mut config = ResolverConfig::new();
-            config.add_name_server(NameServerConfig::new(addr, Protocol::Udp));
-            TokioAsyncResolver::tokio(config, opts)
-        }
-        None => TokioAsyncResolver::tokio(ResolverConfig::default(), opts),
-    };
-    validate_with_resolver(domain, account_uri, issuer_domains, resolver).await
+    let addr = resolver_addr.unwrap_or_else(crate::dns::system_resolver_addr);
+    validate_with_resolver(domain, account_uri, issuer_domains, addr, validate_dnssec).await
 }
 
 async fn validate_with_resolver(
     domain: &str,
     account_uri: &str,
     issuer_domains: &[&str],
-    resolver: TokioAsyncResolver,
+    resolver_addr: std::net::SocketAddr,
+    validate_dnssec: bool,
 ) -> Result<(), AcmeError> {
     let base_domain = domain.strip_prefix("*.").unwrap_or(domain);
     let is_wildcard = domain.starts_with("*.");
-    let query_name = format!("_validation-persist.{base_domain}");
+    let query_name = format!("_validation-persist.{base_domain}.");
 
     let now = unix_now();
 
@@ -71,17 +64,26 @@ async fn validate_with_resolver(
         "dns-persist-01: querying TXT records"
     );
 
-    let lookup = resolver
-        .txt_lookup(&query_name)
-        .await
-        .map_err(|e| AcmeError::Dns(format!("TXT lookup for '{query_name}': {e}")))?;
+    let fqdn = Name::from_str(&query_name)
+        .map_err(|e| AcmeError::Dns(format!("invalid DNS name '{query_name}': {e}")))?;
+    let resp =
+        crate::dns::dns_query(resolver_addr, validate_dnssec, fqdn, RecordType::TXT)
+            .await
+            .map_err(|e| AcmeError::Dns(format!("TXT lookup for '{query_name}': {e}")))?;
 
-    let records: Vec<String> = lookup
+    let records: Vec<String> = resp
+        .answers()
         .iter()
-        .map(|r| {
-            r.iter()
-                .map(|s| String::from_utf8_lossy(s).into_owned())
-                .collect()
+        .filter_map(|answer| {
+            if let Some(RData::TXT(txt)) = answer.data() {
+                Some(
+                    txt.iter()
+                        .map(|s| String::from_utf8_lossy(s).into_owned())
+                        .collect(),
+                )
+            } else {
+                None
+            }
         })
         .collect();
 
@@ -245,7 +247,6 @@ fn parse_persist_until(s: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hickory_resolver::config::{NameServerConfig, Protocol};
     use tokio::net::UdpSocket;
 
     // ── parse_persist_until ───────────────────────────────────────────────────
@@ -527,11 +528,8 @@ mod tests {
         port
     }
 
-    fn local_resolver(port: u16) -> (hickory_resolver::config::ResolverConfig, ResolverOpts) {
-        let mut config = hickory_resolver::config::ResolverConfig::new();
-        let ns = NameServerConfig::new(format!("127.0.0.1:{port}").parse().unwrap(), Protocol::Udp);
-        config.add_name_server(ns);
-        (config, ResolverOpts::default())
+    fn local_resolver(port: u16) -> std::net::SocketAddr {
+        format!("127.0.0.1:{port}").parse().unwrap()
     }
 
     // ── validate_with_resolver integration tests ──────────────────────────────
@@ -542,10 +540,9 @@ mod tests {
         let account_uri = "https://acme.example.com/acme/account/42";
         let txt = format!("{issuer}; accounturi={account_uri}");
         let port = start_txt_dns_server(txt).await;
-        let (config, opts) = local_resolver(port);
-        let resolver = TokioAsyncResolver::tokio(config, opts);
+        let resolver_addr = local_resolver(port);
 
-        let result = validate_with_resolver("example.test", account_uri, &[issuer], resolver).await;
+        let result = validate_with_resolver("example.test", account_uri, &[issuer], resolver_addr, false).await;
         assert!(
             result.is_ok(),
             "expected Ok for matching record: {result:?}"
@@ -557,11 +554,10 @@ mod tests {
         let account_uri = "https://acme.example.com/acme/account/42";
         let txt = format!("evil.example.com; accounturi={account_uri}");
         let port = start_txt_dns_server(txt).await;
-        let (config, opts) = local_resolver(port);
-        let resolver = TokioAsyncResolver::tokio(config, opts);
+        let resolver_addr = local_resolver(port);
 
         let result =
-            validate_with_resolver("example.test", account_uri, &["acme.example.com"], resolver)
+            validate_with_resolver("example.test", account_uri, &["acme.example.com"], resolver_addr, false)
                 .await;
         assert!(
             matches!(result, Err(AcmeError::IncorrectResponse(_))),
@@ -576,11 +572,10 @@ mod tests {
         let account_uri = "https://acme.example.com/acme/account/1";
         let txt = format!("{issuer}; accounturi={account_uri}; policy=wildcard");
         let port = start_txt_dns_server(txt).await;
-        let (config, opts) = local_resolver(port);
-        let resolver = TokioAsyncResolver::tokio(config, opts);
+        let resolver_addr = local_resolver(port);
 
         let result =
-            validate_with_resolver("*.example.test", account_uri, &[issuer], resolver).await;
+            validate_with_resolver("*.example.test", account_uri, &[issuer], resolver_addr, false).await;
         assert!(
             result.is_ok(),
             "wildcard validation should succeed: {result:?}"
@@ -594,11 +589,10 @@ mod tests {
         let account_uri = "https://acme.example.com/acme/account/1";
         let txt = format!("{issuer}; accounturi={account_uri}");
         let port = start_txt_dns_server(txt).await;
-        let (config, opts) = local_resolver(port);
-        let resolver = TokioAsyncResolver::tokio(config, opts);
+        let resolver_addr = local_resolver(port);
 
         let result =
-            validate_with_resolver("*.example.test", account_uri, &[issuer], resolver).await;
+            validate_with_resolver("*.example.test", account_uri, &[issuer], resolver_addr, false).await;
         assert!(
             matches!(result, Err(AcmeError::IncorrectResponse(_))),
             "expected IncorrectResponse for missing wildcard policy: {result:?}"

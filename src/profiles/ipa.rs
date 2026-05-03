@@ -28,8 +28,6 @@
 
 use std::collections::HashMap;
 
-use hickory_resolver::TokioAsyncResolver;
-
 use crate::config::IpaProviderConfig;
 use crate::profiles::{CaDefaults, CertificateParameters};
 
@@ -41,7 +39,7 @@ pub async fn load_ipa(
     provider_name: &str,
     icfg: &IpaProviderConfig,
     ca: &CaDefaults,
-    resolver: Option<&TokioAsyncResolver>,
+    resolver: Option<std::net::SocketAddr>,
 ) -> Result<HashMap<String, (String, CertificateParameters)>, String> {
     if let Some(ldap_cfg) = &icfg.ldap {
         return load_from_ldap(provider_name, ldap_cfg, &icfg.profiles, ca, resolver).await;
@@ -69,7 +67,7 @@ async fn load_from_ldap(
     ldap_cfg: &crate::config::LdapConfig,
     filter: &[String],
     ca: &CaDefaults,
-    resolver: Option<&TokioAsyncResolver>,
+    resolver: Option<std::net::SocketAddr>,
 ) -> Result<HashMap<String, (String, CertificateParameters)>, String> {
     crate::profiles::ldap_session::load_profiles_from_ldap(
         provider_name,
