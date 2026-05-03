@@ -914,6 +914,7 @@ mod tests {
             },
             server: ServerConfig {
                 http_validation_port: addr.port(),
+                http_validation_allow_private_ips: true,
                 ..ServerConfig::default()
             },
             tls: Default::default(),

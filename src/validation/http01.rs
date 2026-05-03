@@ -94,8 +94,9 @@ async fn check_redirect_host(
 /// * `token`             — the challenge token stored in the database.
 /// * `key_auth`          — `{token}.{jwk_thumbprint}` (expected response body).
 /// * `port`              — TCP port to connect to (RFC 8555 §8.3 requires 80; override for testing).
-/// * `allow_private_ips` — when `false`, redirects to RFC-1918/loopback/link-local
-///   addresses are rejected (SSRF guard).  Set to `true` only
+/// * `allow_private_ips` — when `false`, both the initial target and any
+///   redirect targets are checked against `is_blocked_ip`; RFC-1918, loopback,
+///   and link-local addresses are rejected (SSRF guard).  Set to `true` only
 ///   in isolated test environments.
 /// * `client`            — shared hyper client; reusing it avoids a TCP handshake per validation.
 pub async fn validate(
@@ -124,6 +125,12 @@ pub async fn validate(
     let mut uri: Uri = url
         .parse()
         .map_err(|e| AcmeError::Connection(format!("invalid http-01 URL '{url}': {e}")))?;
+
+    // SSRF guard: check the initial target before making any connection.
+    // check_redirect_host handles both IP literals and hostname resolution.
+    if let Some(host) = uri.host() {
+        check_redirect_host(host, allow_private_ips, &url).await?;
+    }
 
     for _ in 0..=MAX_REDIRECTS {
         let current_url = uri.to_string();
@@ -286,7 +293,7 @@ mod tests {
             "mytoken",
             "mytoken.thumbprint",
             addr.port(),
-            false,
+            true, // test server is on loopback
             &test_client(),
         )
         .await;
@@ -305,7 +312,7 @@ mod tests {
             "token",
             "expected",
             addr.port(),
-            false,
+            true, // test server is on loopback
             &test_client(),
         )
         .await;
@@ -327,7 +334,7 @@ mod tests {
             "token",
             "expected",
             addr.port(),
-            false,
+            true, // test server is on loopback
             &test_client(),
         )
         .await;
@@ -349,13 +356,31 @@ mod tests {
             "token",
             "correct-auth",
             addr.port(),
-            false,
+            true, // test server is on loopback
             &test_client(),
         )
         .await;
         assert!(
             matches!(result, Err(AcmeError::IncorrectResponse(_))),
             "expected IncorrectResponse for mismatch, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_blocks_private_ip_initial_target() {
+        // Direct connection to a private IP (not via redirect) must be blocked.
+        let result = validate(
+            "192.168.1.1",
+            "token",
+            "key",
+            80,
+            false, // SSRF guard enabled
+            &test_client(),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(AcmeError::IncorrectResponse(_))),
+            "expected IncorrectResponse for private-IP initial target, got: {result:?}"
         );
     }
 
@@ -443,7 +468,9 @@ mod tests {
 
     #[tokio::test]
     async fn validate_blocks_redirect_to_private_ip() {
-        // Server that redirects to a link-local address (169.254.x.x — cloud metadata pattern).
+        // The initial domain is 127.0.0.1; with the SSRF guard enabled the initial
+        // IP check fires before any connection is made.  The assertion verifies
+        // that a private-IP target (whether initial or redirect) is rejected.
         let addr = start_server(Router::new().route(
             "/.well-known/acme-challenge/token",
             get(|| async {
@@ -463,13 +490,13 @@ mod tests {
             "token",
             "key",
             addr.port(),
-            false, // SSRF guard enabled
+            false, // SSRF guard enabled — blocks both initial and redirect targets
             &test_client(),
         )
         .await;
         assert!(
             matches!(result, Err(AcmeError::IncorrectResponse(_))),
-            "expected IncorrectResponse for private-IP redirect, got: {result:?}"
+            "expected IncorrectResponse for private-IP target, got: {result:?}"
         );
     }
 
