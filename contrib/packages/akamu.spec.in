@@ -107,9 +107,16 @@ BuildRequires:  rust-synta-devel
 BuildRequires:  rust-synta-certificate-devel
 BuildRequires:  rust-synta-x509-verification-devel
 BuildRequires:  rust-synta-mtc-devel
+# Documentation build tool; not yet packaged in Fedora — install into the mock
+# chroot before rebuilding this SRPM:
+#   mock --install mdbook mdbook-mermaid
+BuildRequires:  mdbook
+BuildRequires:  mdbook-mermaid
 # Systemd scriptlet support
 BuildRequires:  systemd-rpm-macros
 %{?systemd_requires}
+
+Requires:       akamuctl = %{version}-%{release}
 
 %description
 akamu is an ACME (RFC 8555) certificate authority server that supports
@@ -132,6 +139,7 @@ compressed certificate delivery.
 %package -n akamu-cosigner
 Summary:        MTC cosigner daemon for akamu
 License:        GPL-3.0-or-later
+Requires:       akamuctl = %{version}-%{release}
 %{?systemd_requires}
 
 %description -n akamu-cosigner
@@ -167,6 +175,41 @@ tls-alpn-01, and onion-csr-01 challenges, and supports ARI-aware renewal
 %license LICENSE
 %license LICENSE.dependencies
 %{_bindir}/akamu-cli
+
+
+# ── Subpackage: server administration CLI ─────────────────────────────────────
+%package -n akamuctl
+Summary:        akamu server administration CLI
+License:        GPL-3.0-or-later
+Requires:       krb5-libs
+
+%description -n akamuctl
+akamuctl is a command-line administration tool for the akamu ACME server.
+It communicates with the akamu admin API over mTLS and GSSAPI/Kerberos
+authentication, and provides commands for managing accounts, orders,
+external account bindings, and server state.
+
+%files -n akamuctl
+%license LICENSE
+%license LICENSE.dependencies
+%license cargo-vendor.txt
+%{_bindir}/akamuctl
+
+
+# ── Subpackage: HTML documentation ────────────────────────────────────────────
+%package -n akamu-doc
+Summary:        HTML documentation for akamu
+License:        GPL-3.0-or-later
+BuildArch:      noarch
+
+%description -n akamu-doc
+This package contains the akamu project documentation built from the mdBook
+source tree under docs/.  The documentation covers ACME server configuration,
+the MTC cosigner protocol, administration via akamuctl, and the public API.
+
+%files -n akamu-doc
+%license LICENSE
+%{_docdir}/akamu-doc/html
 
 
 # ── Prep ───────────────────────────────────────────────────────────────────────
@@ -210,6 +253,9 @@ EOF
 # Pass the feature list explicitly; --no-default-features keeps the set minimal
 # (only what %{_akamu_features} requests, always at least backend-sqlite).
 %cargo_build -- --workspace --no-default-features --features %{_akamu_features}
+# Build the HTML documentation from the mdBook source tree.
+# book.toml is at docs/book.toml; mdBook writes output to docs/book/html/.
+mdbook build docs
 # Generate the bundled-dependency license summary required by Fedora policy.
 %{cargo_license_summary}
 %{cargo_license} > LICENSE.dependencies
@@ -224,6 +270,7 @@ EOF
 install -Dpm 0755 target/rpm/akamu           %{buildroot}%{_bindir}/akamu
 install -Dpm 0755 target/rpm/akamu-cli       %{buildroot}%{_bindir}/akamu-cli
 install -Dpm 0755 target/rpm/akamu-cosigner  %{buildroot}%{_bindir}/akamu-cosigner
+install -Dpm 0755 target/rpm/akamuctl        %{buildroot}%{_bindir}/akamuctl
 
 # Systemd service units
 install -Dpm 0644 %{SOURCE2} %{buildroot}%{_unitdir}/akamu.service
@@ -234,6 +281,10 @@ install -Dpm 0644 %{SOURCE3} %{buildroot}%{_sysconfdir}/akamu/config.toml.exampl
 
 # Create the cosigner configuration directory
 install -dm 0755 %{buildroot}%{_sysconfdir}/akamu-cosigner
+
+# Install the mdBook-generated HTML documentation
+install -dm 0755 %{buildroot}%{_docdir}/akamu-doc
+cp -a docs/book/html %{buildroot}%{_docdir}/akamu-doc/html
 
 
 # ── Check ──────────────────────────────────────────────────────────────────────
