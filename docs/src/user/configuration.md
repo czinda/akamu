@@ -519,12 +519,14 @@ authz_expiry_secs = 86400
 
 ### `max_body_bytes`
 
-**Optional. Default: `65536` (64 KiB).**
+**Optional. Default: `0` (uses 2 MiB built-in limit).**
 
-Maximum size in bytes of JOSE+JSON request bodies. Requests larger than this limit are rejected with HTTP 413. This applies to all POST endpoints that carry ACME payloads.
+Maximum size in bytes of JOSE+JSON request bodies. Requests larger than this limit are rejected with HTTP 413. This applies to all POST endpoints that carry ACME payloads, and also to the admin API listener.
+
+When `max_body_bytes` is `0` (the default), the server applies a built-in limit of **2 MiB** (`2 * 1024 * 1024` bytes). Setting this to `0` does **not** disable the body limit; the 2 MiB default always applies. To use a smaller limit than 2 MiB, set an explicit non-zero value.
 
 ```toml
-max_body_bytes = 65536
+max_body_bytes = 65536   # 64 KiB
 ```
 
 ### `http_validation_port`
@@ -541,7 +543,7 @@ http_validation_port = 80
 
 **Optional. Default: `false`.**
 
-When `false` (the default), http-01 redirect targets that resolve to private, link-local, or loopback IP addresses (RFC 1918, 169.254.0.0/16, 127.0.0.0/8, etc.) are blocked to prevent SSRF attacks against cloud metadata endpoints such as `169.254.169.254`.
+When `false` (the default), the **initial connection target** and any **redirect targets** that resolve to private, link-local, or loopback IP addresses (RFC 1918, 169.254.0.0/16, 127.0.0.0/8, fc00::/7, fe80::/10, etc.) are blocked to prevent SSRF attacks against cloud metadata endpoints such as `169.254.169.254`. Both IP literals and hostnames are checked: for hostnames, every resolved address must be globally routable.
 
 Set to `true` only in isolated test environments where the http-01 challenge responder intentionally runs on a private address.
 

@@ -112,7 +112,7 @@ For Apache or nginx, ensure that requests to `/.well-known/acme-challenge/` are 
 ### Constraints
 
 - Port 80 must be reachable from the ACME server.
-- The response body must be less than 8 KiB.
+- The response body must be less than 1 MiB.
 - HTTP 3xx redirects are followed (up to 10 hops), including redirects to HTTPS targets.
 - IPv6 addresses are supported as `ip` type identifiers; the URL literal uses bracket notation (e.g., `http://[2001:db8::1]/.well-known/acme-challenge/<token>`).
 - Wildcard identifiers (`*.example.com`) cannot be validated with http-01 (RFC 8555 §7.1.3).
