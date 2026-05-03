@@ -105,18 +105,25 @@ pub async fn insert_with_grants(
 ///
 /// Pass `&mut *tx` to call this atomically within an existing transaction,
 /// ensuring the key is consumed only when account creation fully commits.
+///
+/// Returns `Conflict` when `rows_affected == 0`, which means the key was
+/// already consumed by a concurrent request between the outer `get_by_kid`
+/// check and the transaction commit (TOCTOU guard).
 pub async fn mark_used(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     kid: &str,
     now: i64,
 ) -> Result<(), AcmeError> {
-    let result = sqlx::query("UPDATE eab_keys SET used_at = ? WHERE kid = ?")
-        .bind(now)
-        .bind(kid)
-        .execute(executor)
-        .await?;
+    let result =
+        sqlx::query("UPDATE eab_keys SET used_at = ? WHERE kid = ? AND used_at IS NULL")
+            .bind(now)
+            .bind(kid)
+            .execute(executor)
+            .await?;
     if result.rows_affected() == 0 {
-        return Err(AcmeError::NotFound);
+        return Err(AcmeError::Conflict(
+            "EAB key already consumed by a concurrent request".into(),
+        ));
     }
     Ok(())
 }
