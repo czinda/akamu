@@ -58,8 +58,8 @@ async fn halt_check(
 
 /// Build the main axum router with all ACME endpoints.
 pub fn build_router(state: Arc<AppState>) -> Router {
-    // max_body_bytes = 0 means "use axum's built-in default (2 MiB)".
-    // Only install DefaultBodyLimit when explicitly configured.
+    // max_body_bytes = 0 means "use the 2 MiB default".
+    // Never disable the limit entirely — that would allow unbounded request bodies.
     let max_body = state.config.server.max_body_bytes;
 
     // ACME routes: subject to FAU_STG.4 halt_check middleware.
@@ -143,11 +143,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .merge(acme_router)
         .merge(other_router)
-        .layer(if max_body > 0 {
-            axum::extract::DefaultBodyLimit::max(max_body)
+        .layer(axum::extract::DefaultBodyLimit::max(if max_body > 0 {
+            max_body
         } else {
-            axum::extract::DefaultBodyLimit::disable()
-        })
+            2 * 1024 * 1024
+        }))
         .layer(
             TraceLayer::new_for_http()
                 .on_request(())
@@ -191,11 +191,11 @@ pub fn build_admin_router(state: Arc<AppState>) -> Router {
         .route("/admin/crl/force", post(admin::post_crl_force))
         .route("/admin/revoke", post(admin::post_revoke))
         .route("/admin/stats", axum::routing::get(admin::get_stats))
-        .layer(if max_body > 0 {
-            axum::extract::DefaultBodyLimit::max(max_body)
+        .layer(axum::extract::DefaultBodyLimit::max(if max_body > 0 {
+            max_body
         } else {
-            axum::extract::DefaultBodyLimit::disable()
-        })
+            2 * 1024 * 1024
+        }))
         .layer(
             TraceLayer::new_for_http()
                 .on_request(())
