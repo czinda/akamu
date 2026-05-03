@@ -52,7 +52,7 @@ type     = "ipa"
 profiles = ["caIPAserviceCert", "IECUserRoles"]
 
 [profiles.providers.ipa_prod.ldap]
-uri     = "ldap://ipa.example.com:7389"
+uri     = "ldap://ipa.example.com:389"
 base_dn = "o=ipaca"
 gssapi  = true
 ```
@@ -188,7 +188,7 @@ Unrecognised policy class IDs are silently skipped.
 
 ### `ipa` — FreeIPA / IPAThinCA
 
-Load profiles from a FreeIPA or IPAThinCA instance. Profile `.cfg` files use the same Dogtag format. The standard location for IPA-embedded Dogtag is `/etc/pki/pki-tomcat/ca/profiles/ca` on the IPA server, and LDAP profiles are stored at `ou=certificateProfiles,ou=ca,o=ipaca` on port 7389.
+Load profiles from a FreeIPA or IPAThinCA instance. Profile `.cfg` files use the same Dogtag format. The standard location for IPA-embedded Dogtag is `/etc/pki/pki-tomcat/ca/profiles/ca` on the IPA server, and LDAP profiles are stored at `ou=certificateProfiles,ou=ca,o=ipaca` — accessible on the standard LDAP ports (389 for plain/STARTTLS, 636 for LDAPS).
 
 ```toml
 # Filesystem source
@@ -203,9 +203,9 @@ type     = "ipa"
 profiles = ["caIPAserviceCert"]
 
 [profiles.providers.ipa_ldap.ldap]
-uri                = "ldap://ipa.example.com:7389"
+uri                = "ldap://ipa.example.com:389"
 base_dn            = "o=ipaca"
-bind_dn            = "uid=admin,ou=people,o=ipaca"
+bind_dn            = "uid=admin,cn=users,cn=accounts,dc=example,dc=com"
 bind_password_file = "/etc/akamu/ipa-ldap-password"
 
 # LDAP source — multiple servers (failover list), GSSAPI
@@ -214,7 +214,7 @@ type     = "ipa"
 profiles = ["caIPAserviceCert"]
 
 [profiles.providers.ipa_ha.ldap]
-uris    = ["ldap://ipa1.example.com:7389", "ldap://ipa2.example.com:7389"]
+uris    = ["ldap://ipa1.example.com:389", "ldap://ipa2.example.com:389"]
 base_dn = "o=ipaca"
 gssapi  = true
 
@@ -420,20 +420,11 @@ The download endpoint auto-detects MTC certificates by their PEM marker and swit
 
 ## Admin API
 
-The admin API is enabled by adding an `[admin]` section to `config.toml`:
+The admin API is enabled by adding an `[admin]` section to `config.toml` with a `listen_addr` and at least one of `ca_certs` (for mTLS client certificates) or `[admin.gssapi]` (for Kerberos). See [Configuration Reference — `[admin]`](configuration.md#admin) for all configuration keys.
 
-```toml
-[admin]
-bearer_token = "change-me-to-a-strong-random-value"
-```
+Operators authenticate via mTLS client certificate or GSSAPI/Kerberos session token. A successful login returns a `session_token` that is passed as `Authorization: Bearer <token>` on subsequent requests. Each endpoint enforces a role-based access policy; see [Admin API — Endpoint reference](admin-api.md#endpoint-reference) for the full role matrix.
 
-All admin endpoints require:
-
-```
-Authorization: Bearer <bearer_token>
-```
-
-When `[admin]` is absent from the configuration every admin endpoint returns **404**. When the section is present but the token is wrong or missing, the endpoints return **401** (missing header) or **403** (wrong token).
+When `[admin]` is absent from the configuration, the admin listener is not started and all admin endpoints are unreachable.
 
 ### Account profile grants
 
