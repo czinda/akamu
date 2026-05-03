@@ -125,6 +125,7 @@ pub async fn validate_challenge(
         })
         .or(dns_resolver_addr);
     let validate_dnssec = state.config.server.validate_dnssec;
+    let dot_server_name = state.config.server.dns_dot_server_name.clone();
     let result = dispatch(DispatchParams {
         chall_type,
         id_type,
@@ -136,6 +137,7 @@ pub async fn validate_challenge(
         issuer_domains: &issuer_domain_refs,
         dns_persist01_resolver_addr,
         validate_dnssec,
+        dot_server_name: dot_server_name.as_deref(),
         validation_client: &state.validation_client,
         onion_csr_der,
     })
@@ -165,6 +167,7 @@ struct DispatchParams<'a> {
     issuer_domains: &'a [&'a str],
     dns_persist01_resolver_addr: Option<std::net::SocketAddr>,
     validate_dnssec: bool,
+    dot_server_name: Option<&'a str>,
     validation_client: &'a crate::state::ValidationClient,
     onion_csr_der: Option<&'a [u8]>,
 }
@@ -185,6 +188,7 @@ async fn dispatch(
         issuer_domains,
         dns_persist01_resolver_addr,
         validate_dnssec,
+        dot_server_name,
         validation_client,
         onion_csr_der,
     }: DispatchParams<'_>,
@@ -201,7 +205,7 @@ async fn dispatch(
             )
             .await
         }
-        "dns-01" => dns01::validate(id_value, key_auth, validate_dnssec).await,
+        "dns-01" => dns01::validate(id_value, key_auth, validate_dnssec, dot_server_name).await,
         "tls-alpn-01" => tls_alpn01::validate(id_type, id_value, key_auth).await,
         "dns-persist-01" => {
             dns_persist_01::validate(
@@ -210,6 +214,7 @@ async fn dispatch(
                 issuer_domains,
                 dns_persist01_resolver_addr,
                 validate_dnssec,
+                dot_server_name,
             )
             .await
         }
@@ -553,6 +558,7 @@ mod tests {
             issuer_domains: &["acme.test"],
             dns_persist01_resolver_addr: None,
             validate_dnssec: false,
+            dot_server_name: None,
             validation_client: &client,
             onion_csr_der: None,
         })

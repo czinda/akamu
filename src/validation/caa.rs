@@ -30,6 +30,7 @@ use crate::error::AcmeError;
 /// * `challenge_type`  — e.g. `"http-01"`, `"dns-01"` — for `validationmethods` checking.
 /// * `account_url`     — The full ACME account URL for `accounturi` enforcement (RFC 8657 §4).
 /// * `resolver_addr`   — Optional DNS resolver override from config.
+/// * `dot_server_name` — Optional DoT SNI hostname; when set, queries use TLS.
 pub async fn check_caa(
     domain: &str,
     ca_identities: &[String],
@@ -38,6 +39,7 @@ pub async fn check_caa(
     account_url: Option<&str>,
     resolver_addr: Option<&str>,
     validate_dnssec: bool,
+    dot_server_name: Option<&str>,
 ) -> Result<(), AcmeError> {
     // Step 1: If ca_identities is empty → no-op (open policy).
     if ca_identities.is_empty() {
@@ -53,6 +55,7 @@ pub async fn check_caa(
         account_url,
         addr,
         validate_dnssec,
+        dot_server_name,
     )
     .await
 }
@@ -69,6 +72,7 @@ pub(crate) async fn check_caa_with_resolver(
     account_url: Option<&str>,
     resolver_addr: SocketAddr,
     validate_dnssec: bool,
+    dot_server_name: Option<&str>,
 ) -> Result<(), AcmeError> {
     // Step 2: Build a list of DNS names to check, walking up to (but not including) the TLD.
     let names_to_check = build_name_walk(domain);
@@ -82,7 +86,9 @@ pub(crate) async fn check_caa_with_resolver(
         let fqdn = Name::from_str(&query_name).map_err(|e| {
             AcmeError::Internal(format!("invalid DNS name '{query_name}': {e}"))
         })?;
-        let result = dns::dns_query(resolver_addr, validate_dnssec, fqdn, RecordType::CAA).await;
+        let result =
+            dns::dns_query(resolver_addr, validate_dnssec, dot_server_name, fqdn, RecordType::CAA)
+                .await;
 
         match result {
             Ok(resp) => {
@@ -388,7 +394,8 @@ mod tests {
     #[tokio::test]
     async fn empty_ca_identities_returns_ok() {
         // When ca_identities is empty, check_caa is a no-op regardless of anything else.
-        let result = check_caa("example.com", &[], false, "http-01", None, None, false).await;
+        let result =
+            check_caa("example.com", &[], false, "http-01", None, None, false, None).await;
         assert!(
             result.is_ok(),
             "empty identities should always return Ok: {result:?}"
@@ -510,6 +517,7 @@ mod tests {
             None,
             resolver,
             false,
+            None,
         )
         .await;
         assert!(
@@ -534,6 +542,7 @@ mod tests {
             None,
             resolver,
             false,
+            None,
         )
         .await;
         assert!(
@@ -558,6 +567,7 @@ mod tests {
             None,
             resolver,
             false,
+            None,
         )
         .await;
         assert!(
@@ -585,6 +595,7 @@ mod tests {
             None,
             resolver,
             false,
+            None,
         )
         .await;
         assert!(
@@ -610,6 +621,7 @@ mod tests {
             None,
             resolver,
             false,
+            None,
         )
         .await;
         assert!(
@@ -634,6 +646,7 @@ mod tests {
             None,
             resolver,
             false,
+            None,
         )
         .await;
         assert!(
@@ -664,6 +677,7 @@ mod tests {
             None,
             resolver,
             false,
+            None,
         )
         .await;
         assert!(
@@ -689,6 +703,7 @@ mod tests {
             None,
             resolver,
             false,
+            None,
         )
         .await;
         assert!(
@@ -714,6 +729,7 @@ mod tests {
             None,
             resolver,
             false,
+            None,
         )
         .await;
         // iodef-only → no issue/issuewild restriction
@@ -740,6 +756,7 @@ mod tests {
             None,
             resolver,
             false,
+            None,
         )
         .await;
         assert!(
@@ -769,6 +786,7 @@ mod tests {
             Some("https://acme.example.com/acme/account/42"),
             resolver,
             false,
+            None,
         )
         .await;
         assert!(
@@ -798,6 +816,7 @@ mod tests {
             Some("https://acme.example.com/acme/account/99"), // different account
             resolver,
             false,
+            None,
         )
         .await;
         assert!(

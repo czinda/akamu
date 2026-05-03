@@ -19,13 +19,15 @@ use crate::error::AcmeError;
 ///   before querying.
 /// * `key_auth`        — `{token}.{jwk_thumbprint}`.
 /// * `validate_dnssec` — require DNSSEC-validated answers (CA/B Forum BR §3.2.2.4).
+/// * `dot_server_name` — optional DoT SNI hostname; when set, queries use TLS.
 pub async fn validate(
     domain: &str,
     key_auth: &str,
     validate_dnssec: bool,
+    dot_server_name: Option<&str>,
 ) -> Result<(), AcmeError> {
     let resolver_addr = crate::dns::system_resolver_addr();
-    validate_with_resolver(domain, key_auth, resolver_addr, validate_dnssec).await
+    validate_with_resolver(domain, key_auth, resolver_addr, validate_dnssec, dot_server_name).await
 }
 
 /// Inner implementation that takes a resolver address for testability.
@@ -34,6 +36,7 @@ async fn validate_with_resolver(
     key_auth: &str,
     resolver_addr: SocketAddr,
     validate_dnssec: bool,
+    dot_server_name: Option<&str>,
 ) -> Result<(), AcmeError> {
     // RFC 8555 §8.4: for wildcard orders the identifier has the `*.` prefix
     // stripped when forming the DNS query.
@@ -48,9 +51,10 @@ async fn validate_with_resolver(
 
     let fqdn = Name::from_str(&query_name)
         .map_err(|e| AcmeError::Dns(format!("invalid DNS name '{query_name}': {e}")))?;
-    let resp = crate::dns::dns_query(resolver_addr, validate_dnssec, fqdn, RecordType::TXT)
-        .await
-        .map_err(|e| AcmeError::Dns(format!("TXT lookup for '{query_name}': {e}")))?;
+    let resp =
+        crate::dns::dns_query(resolver_addr, validate_dnssec, dot_server_name, fqdn, RecordType::TXT)
+            .await
+            .map_err(|e| AcmeError::Dns(format!("TXT lookup for '{query_name}': {e}")))?;
 
     for answer in resp.answers() {
         if let Some(RData::TXT(txt)) = answer.data() {
@@ -145,7 +149,8 @@ mod tests {
         let port = start_txt_dns_server(expected).await;
         let resolver_addr = local_resolver(port);
 
-        let result = validate_with_resolver("example.test", key_auth, resolver_addr, false).await;
+        let result =
+            validate_with_resolver("example.test", key_auth, resolver_addr, false, None).await;
         assert!(
             result.is_ok(),
             "expected Ok for matching TXT record: {result:?}"
@@ -159,7 +164,8 @@ mod tests {
         let resolver_addr = local_resolver(port);
 
         let result =
-            validate_with_resolver("example.test", "token.thumbprint", resolver_addr, false).await;
+            validate_with_resolver("example.test", "token.thumbprint", resolver_addr, false, None)
+                .await;
         assert!(
             matches!(result, Err(AcmeError::IncorrectResponse(_))),
             "expected IncorrectResponse for wrong TXT value: {result:?}"
@@ -173,6 +179,7 @@ mod tests {
             "invalid.localhost.acme-test-nonexistent.invalid",
             "token.thumbprint",
             false,
+            None,
         )
         .await;
         // Should return a Dns error or IncorrectResponse
@@ -184,7 +191,8 @@ mod tests {
         // Wildcard domain "*.example.invalid" should query "_acme-challenge.example.invalid",
         // not "_acme-challenge.*.example.invalid". The DNS lookup will fail (domain doesn't exist),
         // but the error message should reference the stripped domain.
-        let result = validate("*.acme-test-nonexistent.invalid", "token.thumbprint", false).await;
+        let result =
+            validate("*.acme-test-nonexistent.invalid", "token.thumbprint", false, None).await;
         assert!(result.is_err());
         // The error must reference "acme-test-nonexistent.invalid" (stripped domain)
         let msg = result.unwrap_err().to_string();

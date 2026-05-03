@@ -50,7 +50,7 @@ base64 = "0.22"
 # DNS resolution for dns-01 challenge validation
 # dnssec-ring enables actual DNSSEC validation; without it ResolverOpts::validate
 # is compiled in but silently has no effect (opts.validate = true is a no-op).
-hickory-client = { version = "0.24", features = ["dnssec-ring"] }
+hickory-client = { version = "0.24", features = ["dnssec-ring", "dns-over-native-tls"] }
 
 # TLS client for tls-alpn-01 challenge validation
 # TLS 1.2 enabled for compatibility with applicant servers not yet on TLS 1.3

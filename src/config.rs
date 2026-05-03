@@ -692,6 +692,11 @@ pub struct ServerConfig {
     /// Useful when TXT records for persistent challenges are served by a different
     /// resolver than the one used for dns-01 and CAA lookups.
     pub dns_persist01_resolver_addr: Option<String>,
+    /// TLS server name (SNI hostname) for DNS-over-TLS (DoT, RFC 7858).
+    /// When set, all DNS challenge queries use DoT on port 853.
+    /// `dns_resolver_addr` must point to the DoT server (e.g. `"1.1.1.1:853"`).
+    /// Example: `dns_dot_server_name = "cloudflare-dns.com"`.
+    pub dns_dot_server_name: Option<String>,
     /// Retry-After interval in seconds for `GET /acme/renewal-info` responses (RFC 9773 §4.3).
     #[serde(default = "default_ari_retry_after_secs")]
     pub ari_retry_after_secs: u64,

@@ -85,7 +85,7 @@ async fn resolve_srv(
              invalid SRV name '{srv_name}': {e}"
         )
     })?;
-    let resp = crate::dns::dns_query(addr, false, fqdn, RecordType::SRV)
+    let resp = crate::dns::dns_query(addr, false, None, fqdn, RecordType::SRV)
         .await
         .map_err(|e| {
             format!(

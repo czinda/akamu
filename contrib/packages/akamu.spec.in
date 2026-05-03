@@ -22,6 +22,8 @@
 #   sqlx-postgres + deps   — needed when %%{with backend_postgres}
 #   sqlx-mysql + deps      — needed when %%{with backend_mariadb}
 # hickory-client 0.24 is used for DNS (available as a Fedora system package).
+# tokio-native-tls 0.3 — used for DNS-over-TLS (DoT) support via hickory-client's
+#   dns-over-native-tls feature; relies on system OpenSSL already in the vendor tree.
 #
 # PREREQUISITE: install synta* into the mock chroot before rebuilding:
 #   mock --install rust-synta-devel rust-synta-certificate-devel \

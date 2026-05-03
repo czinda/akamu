@@ -125,6 +125,7 @@ pub async fn finalize_order(
                     Some(account_url.as_str()),
                     state.config.server.dns_resolver_addr.as_deref(),
                     state.config.server.validate_dnssec,
+                    state.config.server.dns_dot_server_name.as_deref(),
                 )
                 .await?;
             }
