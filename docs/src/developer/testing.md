@@ -156,8 +156,12 @@ Tests use a local axum HTTP server on an ephemeral port:
 - Correct key auth returns `Ok`.
 - Unreachable domain returns `AcmeError::Connection`.
 - HTTP 404 response returns `AcmeError::IncorrectResponse`.
-- Response body over 8 KiB returns `AcmeError::IncorrectResponse`.
+- Response body over 1 MiB returns `AcmeError::IncorrectResponse`.
 - Key auth mismatch returns `AcmeError::IncorrectResponse`.
+- Direct connection to a private IP (e.g. `192.168.1.1`) with `allow_private_ips = false` returns `AcmeError::IncorrectResponse` (SSRF guard on initial target).
+- Redirect to a private/link-local IP (e.g. `169.254.169.254`) returns `AcmeError::IncorrectResponse` (SSRF guard on redirect target).
+- Redirect followed successfully when `allow_private_ips = true` (test-only override).
+- More than 10 redirects returns `AcmeError::IncorrectResponse`.
 
 ### `src/validation/dns01.rs`
 
