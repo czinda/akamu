@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use synta_certificate::BackendPrivateKey;
 
-use crate::config::OperatorConfig;
+use crate::config::{CosignerRole, OperatorConfig};
 
 /// Shared application state threaded through all Axum handlers.
 pub struct AppState {
@@ -48,7 +48,9 @@ pub struct AppState {
 
 pub struct CosignerSession {
     pub name: String,
-    pub role: String,
+    pub role: CosignerRole,
+    /// Position of the operator in `AppState::admin_operators` (0-based, cast to i64).
+    pub operator_id: i64,
     pub created_at: Instant,
     pub last_active_at: Instant,
 }

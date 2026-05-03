@@ -5,6 +5,10 @@ edition = "2021"
 license = "GPL-3.0-or-later"
 description = "MTC cosigner daemon — signs checkpoints and returns DER SubtreeSignature"
 
+[lib]
+name = "akamu_cosigner"
+path = "src/lib.rs"
+
 [[bin]]
 name = "akamu-cosigner"
 path = "src/main.rs"
@@ -21,7 +25,6 @@ synta-certificate = { version = ">=0.2.0", features = ["std", "pqc"] }
 synta-mtc         = { version = ">=0.2.0", features = ["std"] }
 synta             = { version = ">=0.2.0", default-features = false, features = ["std", "derive"] }
 native-ossl       = "0.1.8"
-getrandom         = "0.2"
 
 # HTTP server
 axum = { version = "0.8", features = ["http1"] }
@@ -48,9 +51,6 @@ thiserror = "2"
 # Logging
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-# Constant-time comparisons (session token validation)
-subtle = "2"
 
 # Base64 for EAB HMAC key decoding
 base64 = "0.22"

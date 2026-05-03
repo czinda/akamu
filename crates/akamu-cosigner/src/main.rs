@@ -8,18 +8,10 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use tracing_subscriber::EnvFilter;
 
-mod acme;
-mod admin;
-mod config;
-mod error;
-mod key;
-mod routes;
-mod state;
-mod util;
-
-use config::Config;
-use error::CosignerError;
-use state::AppState;
+use akamu_cosigner::config::Config;
+use akamu_cosigner::error::CosignerError;
+use akamu_cosigner::state::AppState;
+use akamu_cosigner::{acme, key, routes};
 
 #[tokio::main]
 async fn main() {
@@ -205,13 +197,6 @@ fn generate_self_signed_cert(
 }
 
 /// Extract `(hash_alg_der, spki_der)` from a DER-encoded cosigner-id certificate.
-///
-/// `hash_alg_der` is the DER encoding of `tbs_certificate.signature`
-/// (`AlgorithmIdentifier` — e.g. ecdsa-with-sha256).  Both the cosigner daemon
-/// and the server-side verifier extract this same field from the same
-/// certificate, so `CosignerID` equality checks will pass.
-///
-/// `spki_der` is the DER encoding of `tbs_certificate.subject_public_key_info`.
 fn parse_cosigner_id(cert_der: &[u8]) -> Result<(Vec<u8>, Vec<u8>), CosignerError> {
     use synta::traits::Encode;
     use synta::{Decoder, Encoder, Encoding};
@@ -221,7 +206,6 @@ fn parse_cosigner_id(cert_der: &[u8]) -> Result<(Vec<u8>, Vec<u8>), CosignerErro
         .decode()
         .map_err(|e| CosignerError::Asn1(format!("decode cert for cosigner-id: {e}")))?;
 
-    // DER-encode the signature AlgorithmIdentifier (e.g. ecdsa-with-sha256).
     let mut enc = Encoder::new(Encoding::Der);
     cert.tbs_certificate
         .signature
@@ -231,7 +215,6 @@ fn parse_cosigner_id(cert_der: &[u8]) -> Result<(Vec<u8>, Vec<u8>), CosignerErro
         .finish()
         .map_err(|e| CosignerError::Asn1(format!("finish hash_alg DER: {e}")))?;
 
-    // DER-encode the SubjectPublicKeyInfo.
     let mut enc2 = Encoder::new(Encoding::Der);
     cert.tbs_certificate
         .subject_public_key_info
@@ -247,7 +230,7 @@ fn parse_cosigner_id(cert_der: &[u8]) -> Result<(Vec<u8>, Vec<u8>), CosignerErro
 async fn start_tls_server(
     router: axum::Router,
     listen_addr: &str,
-    tls_cfg: &config::TlsConfig,
+    tls_cfg: &akamu_cosigner::config::TlsConfig,
 ) -> Result<(), CosignerError> {
     use std::sync::Arc;
 
@@ -319,7 +302,6 @@ fn extract_hostname(url: &str) -> String {
         .next()
         .unwrap_or("localhost");
 
-    // IPv6 literal: "[::1]" or "[::1]:port" — return the bracketed address.
     if authority.starts_with('[') {
         return authority
             .split(']')
@@ -328,7 +310,6 @@ fn extract_hostname(url: &str) -> String {
             .unwrap_or_else(|| "localhost".to_owned());
     }
 
-    // IPv4 / hostname: strip optional ":port".
     authority
         .split(':')
         .next()

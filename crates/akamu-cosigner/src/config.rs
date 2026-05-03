@@ -1,7 +1,32 @@
-use serde::Deserialize;
+use std::fmt;
 use std::path::Path;
 
+use serde::Deserialize;
+
 use crate::error::CosignerError;
+
+/// Role of a cosigner operator.
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CosignerRole {
+    Administrator,
+    Auditor,
+}
+
+impl CosignerRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CosignerRole::Administrator => "administrator",
+            CosignerRole::Auditor => "auditor",
+        }
+    }
+}
+
+impl fmt::Display for CosignerRole {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -43,8 +68,7 @@ fn default_session_ttl() -> u64 {
 #[derive(Debug, Deserialize, Clone)]
 pub struct OperatorConfig {
     pub name: String,
-    /// `"administrator"` or `"auditor"`.
-    pub role: String,
+    pub role: CosignerRole,
     /// SHA-256 hex fingerprint of the operator's client certificate DER leaf.
     #[serde(default)]
     pub cert_fingerprint: Option<String>,
