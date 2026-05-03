@@ -46,32 +46,30 @@ pub struct PeerClientCert(pub Vec<u8>);
 // ── Session token generation ──────────────────────────────────────────────────
 
 /// Generate a cryptographically random 32-byte hex-encoded session token.
-fn generate_token() -> Result<String, crate::error::AcmeError> {
+pub fn generate_token() -> Result<String, String> {
     let mut bytes = [0u8; 32];
-    getrandom::getrandom(&mut bytes)
-        .map_err(|e| crate::error::AcmeError::Internal(format!("getrandom: {e}")))?;
+    getrandom::getrandom(&mut bytes).map_err(|e| format!("getrandom: {e}"))?;
     Ok(native_ossl::util::hex_encode(bytes))
 }
 
-// ── SHA-256 fingerprint ───────────────────────────────────────────────────────
-
-/// Compute the SHA-256 fingerprint of DER bytes and return it as a lowercase
-/// hex string.
-pub(crate) fn sha256_hex(data: &[u8]) -> Result<String, crate::error::AcmeError> {
-    let alg = native_ossl::digest::DigestAlg::fetch(c"SHA2-256", None)
-        .map_err(|e| crate::error::AcmeError::Internal(format!("SHA2-256 fetch: {e}")))?;
-    let mut ctx = alg
-        .new_context()
-        .map_err(|e| crate::error::AcmeError::Internal(format!("digest context: {e}")))?;
-    ctx.update(data)
-        .map_err(|e| crate::error::AcmeError::Internal(format!("digest update: {e}")))?;
-    let mut out = [0u8; 32];
-    ctx.finish(&mut out)
-        .map_err(|e| crate::error::AcmeError::Internal(format!("digest finish: {e}")))?;
-    Ok(native_ossl::util::hex_encode(out))
-}
-
 // ── Session store helpers ─────────────────────────────────────────────────────
+
+/// Constant-time lookup of `token` among the keys of `map`.
+///
+/// Uses `subtle::ConstantTimeEq` to prevent timing side-channels.  Residual:
+/// `find()` short-circuits on the first match, leaking the map position.
+/// HashMap iteration order is randomised by the std hasher; this residual is
+/// accepted.
+pub fn find_session_token<V>(map: &std::collections::HashMap<String, V>, token: &str) -> Option<String> {
+    use subtle::ConstantTimeEq as _;
+    let token_bytes = token.as_bytes();
+    map.keys()
+        .find(|k| {
+            let kb = k.as_bytes();
+            kb.len() == token_bytes.len() && kb.ct_eq(token_bytes).into()
+        })
+        .cloned()
+}
 
 /// Create a new session for `operator_id` and return the token.
 pub async fn create_session(
@@ -81,7 +79,7 @@ pub async fn create_session(
     role: OperatorRole,
     auth_method: AdminAuthMethod,
 ) -> Result<String, crate::error::AcmeError> {
-    let token = generate_token()?;
+    let token = generate_token().map_err(crate::error::AcmeError::Internal)?;
     let session = AdminSession {
         operator_id,
         name,
@@ -123,11 +121,7 @@ pub async fn create_session(
 
 /// Look up a session by token.  Sweeps expired entries; updates `last_active_at`
 /// on a hit.  Returns `None` when the token is absent or expired.
-///
-/// Token comparison uses `subtle::ConstantTimeEq` to prevent timing side-channels
-/// that could leak information about valid vs. invalid token prefixes.
 async fn lookup_session(state: &AppState, token: &str) -> Option<(i64, String, OperatorRole, AdminAuthMethod)> {
-    use subtle::ConstantTimeEq as _;
     let store = state.admin_sessions.as_ref()?;
     let ttl = Duration::from_secs(
         state
@@ -139,16 +133,7 @@ async fn lookup_session(state: &AppState, token: &str) -> Option<(i64, String, O
     );
     let mut map = store.lock().await;
     map.retain(|_, s| s.last_active_at.elapsed() < ttl);
-    let token_bytes = token.as_bytes();
-    // Scan all entries so the iteration time is independent of position.
-    let found_key = map
-        .keys()
-        .find(|k| {
-            let kb = k.as_bytes();
-            kb.len() == token_bytes.len() && kb.ct_eq(token_bytes).into()
-        })
-        .cloned();
-    let key = found_key?;
+    let key = find_session_token(&map, token)?;
     let session = map.get_mut(&key)?;
     session.last_active_at = Instant::now();
     Some((session.operator_id, session.name.clone(), session.role, session.auth_method))
@@ -213,6 +198,54 @@ where
             .unwrap_or("")
             .to_string();
 
+        // ── Auth rate limit (FAU_STG.4 / FAU_ARP.1 self-DoS guard) ───────────
+        // Count new credential presentations (mTLS cert or GSSAPI Negotiate
+        // token) from each source IP in a rolling 5-minute window.  Bearer
+        // token reuse is not counted: it is a cheap in-memory lookup that does
+        // not emit an audit event on failure.  When the per-IP limit is
+        // exceeded we return 429 without recording an audit event, preventing
+        // a flood of AdminLogin failures from filling the audit log and
+        // triggering the FAU_STG.4 Halt policy or the FAU_ARP.1 alarm.
+        if let (true, Some(peer_addr), Some(limiter)) = (
+            parts.extensions.get::<PeerClientCert>().is_some()
+                || auth_header.starts_with("Negotiate "),
+            parts
+                .extensions
+                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>(),
+            app.admin_auth_limiter.as_ref(),
+        ) {
+            let ip = peer_addr.0.ip();
+            let rate_limit = app
+                .config
+                .admin
+                .as_ref()
+                .map(|a| a.auth_rate_limit)
+                .unwrap_or(20);
+            let now = Instant::now();
+            let cutoff = now - Duration::from_secs(300);
+            let mut map = limiter.lock().await;
+            let times = map.entry(ip).or_default();
+            times.retain(|&t| t >= cutoff);
+            if times.len() as u32 >= rate_limit {
+                tracing::warn!(
+                    ip = %ip,
+                    attempts = times.len(),
+                    limit = rate_limit,
+                    "admin auth rate limit exceeded"
+                );
+                return Err((
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "authentication rate limit exceeded; try again later",
+                )
+                    .into_response());
+            }
+            times.push_back(now);
+            // Periodic sweep to prevent unbounded map growth under many source IPs.
+            if map.len() > 500 {
+                map.retain(|_, v| !v.is_empty());
+            }
+        }
+
         // ── Path 1: Bearer session token ──────────────────────────────────────
         if let Some(token) = auth_header.strip_prefix("Bearer ") {
             if let Some((id, name, role, method)) = lookup_session(&app, token).await {
@@ -234,7 +267,7 @@ where
 
         // ── Path 2: mTLS client certificate ──────────────────────────────────
         if let Some(PeerClientCert(der)) = parts.extensions.get::<PeerClientCert>() {
-            let fingerprint = sha256_hex(der).map_err(|e| {
+            let fingerprint = crate::util::sha256_hex(der).map_err(|e| {
                 tracing::error!(error = %e, "cert fingerprint computation failed");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             })?;
@@ -253,30 +286,18 @@ where
                                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
                             })?;
                     // Update last_seen_at in the DB (best-effort; ignore errors).
-                    let ts = crate::util::unix_now();
-                    let ts_str = {
-                        let gt = synta::GeneralizedTime::from_unix(ts)
-                            .unwrap_or_else(|| synta::GeneralizedTime::from_unix(0).unwrap());
-                        format!(
-                            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-                            gt.year, gt.month, gt.day, gt.hour, gt.minute, gt.second
-                        )
-                    };
+                    let ts_str = crate::util::rfc3339_now();
                     let _ = db::operators::update_last_seen(&app.db, op.id, &ts_str).await;
                     // Record audit event (best-effort).
-                    crate::audit::record_or_log(
-                        &app.db,
-                        &app.audit,
-                        &app.audit_policy,
+                    let session_prefix = token.get(..8).unwrap_or(&token);
+                    app.record_audit(
                         AuditEvent::success(AuditEventType::AdminLogin)
                             .with_principal(&op.name)
-                            .with_detail("{\"method\":\"cert\"}"),
+                            .with_detail(format!(
+                                r#"{{"method":"cert","session_prefix":"{session_prefix}"}}"#,
+                            )),
                     )
                     .await;
-                    // Attach the new session token as a response extension so
-                    // the admin router middleware can forward it in the
-                    // `X-Session-Token` response header.
-                    parts.extensions.insert(NewSessionToken(token.clone()));
                     return Ok(OperatorContext {
                         operator_id: op.id,
                         name: op.name,
@@ -286,10 +307,7 @@ where
                     });
                 }
                 Ok(None) => {
-                    crate::audit::record_or_log(
-                        &app.db,
-                        &app.audit,
-                        &app.audit_policy,
+                    app.record_audit(
                         AuditEvent::failure(AuditEventType::AdminLogin)
                             .with_detail("{\"method\":\"cert\",\"reason\":\"fingerprint not found\"}"),
                     )
@@ -338,12 +356,6 @@ where
     }
 }
 
-/// Marker extension set by the `OperatorContext` extractor when a new session
-/// token is issued (cert or GSSAPI path).  Admin route middleware reads this
-/// and injects it into the response as `X-Session-Token`.
-#[derive(Clone)]
-pub struct NewSessionToken(pub String);
-
 /// Optional GSSAPI out-token (base64-encoded) to be returned in a
 /// `WWW-Authenticate: Negotiate <token>` response header.
 #[derive(Clone)]
@@ -370,13 +382,17 @@ async fn authenticate_gssapi(
 
     // Use the admin-specific GSSAPI credential if configured, otherwise fall
     // back to the server-wide credential (`app.gss_cred`).
-    let gss_cred = app.gss_cred.as_ref().ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            "GSSAPI not configured for admin interface",
-        )
-            .into_response()
-    })?;
+    let gss_cred = app
+        .admin_gss_cred
+        .as_ref()
+        .or(app.gss_cred.as_ref())
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                "GSSAPI not configured for admin interface",
+            )
+                .into_response()
+        })?;
 
     // Channel binding: read from request extensions (injected by TLS accept loop).
     let channel_bindings = parts
@@ -407,10 +423,7 @@ async fn authenticate_gssapi(
         Ok(p) => p,
         Err(e) => {
             tracing::warn!(error = %e, "admin GSSAPI authentication failed");
-            crate::audit::record_or_log(
-                &app.db,
-                &app.audit,
-                &app.audit_policy,
+            app.record_audit(
                 AuditEvent::failure(AuditEventType::AdminLogin)
                     .with_detail("{\"method\":\"gssapi\",\"reason\":\"token rejected\"}"),
             )
@@ -432,26 +445,17 @@ async fn authenticate_gssapi(
                     tracing::error!(error = %e, "session creation failed");
                     StatusCode::INTERNAL_SERVER_ERROR.into_response()
                 })?;
-            let ts = crate::util::unix_now();
-            let ts_str = {
-                let gt = synta::GeneralizedTime::from_unix(ts)
-                    .unwrap_or_else(|| synta::GeneralizedTime::from_unix(0).unwrap());
-                format!(
-                    "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-                    gt.year, gt.month, gt.day, gt.hour, gt.minute, gt.second
-                )
-            };
+            let ts_str = crate::util::rfc3339_now();
             let _ = db::operators::update_last_seen(&app.db, op.id, &ts_str).await;
-            crate::audit::record_or_log(
-                &app.db,
-                &app.audit,
-                &app.audit_policy,
+            let session_prefix = token.get(..8).unwrap_or(&token);
+            app.record_audit(
                 AuditEvent::success(AuditEventType::AdminLogin)
                     .with_principal(&op.name)
-                    .with_detail("{\"method\":\"gssapi\"}"),
+                    .with_detail(format!(
+                        r#"{{"method":"gssapi","session_prefix":"{session_prefix}"}}"#,
+                    )),
             )
             .await;
-            parts.extensions.insert(NewSessionToken(token.clone()));
             if !out_token.is_empty() {
                 let encoded = base64::engine::general_purpose::STANDARD.encode(&out_token);
                 parts.extensions.insert(GssapiOutToken(encoded));
@@ -466,10 +470,7 @@ async fn authenticate_gssapi(
         }
         Ok(None) => {
             tracing::warn!(principal = %principal, "GSSAPI principal not registered as operator");
-            crate::audit::record_or_log(
-                &app.db,
-                &app.audit,
-                &app.audit_policy,
+            app.record_audit(
                 AuditEvent::failure(AuditEventType::AdminLogin)
                     .with_principal(&principal)
                     .with_detail("{\"method\":\"gssapi\",\"reason\":\"principal not registered\"}"),
@@ -510,12 +511,7 @@ pub async fn post_session(
         .unwrap_or(3600);
 
     let expires_unix = crate::util::unix_now() + ttl_secs as i64;
-    let gt = synta::GeneralizedTime::from_unix(expires_unix)
-        .unwrap_or_else(|| synta::GeneralizedTime::from_unix(0).unwrap());
-    let expires_at = format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        gt.year, gt.month, gt.day, gt.hour, gt.minute, gt.second
-    );
+    let expires_at = crate::util::unix_to_rfc3339(expires_unix);
 
     let token = operator.session_token.as_deref().unwrap_or("");
     let mut resp = (
@@ -528,11 +524,6 @@ pub async fn post_session(
     )
         .into_response();
 
-    if !token.is_empty() {
-        if let Ok(hv) = axum::http::HeaderValue::from_str(token) {
-            resp.headers_mut().insert("X-Session-Token", hv);
-        }
-    }
     if let Some(axum::extract::Extension(GssapiOutToken(b64))) = gssapi_out {
         let negotiate = format!("Negotiate {b64}");
         if let Ok(hv) = axum::http::HeaderValue::from_str(&negotiate) {
@@ -552,27 +543,36 @@ pub async fn delete_session(
     if let Some(token) = &operator.session_token {
         invalidate_session(&state, token).await;
     }
-    crate::audit::record_or_log(
-        &state.db,
-        &state.audit,
-        &state.audit_policy,
-        AuditEvent::success(AuditEventType::AdminLogout).with_principal(&operator.name),
-    )
-    .await;
+    state
+        .record_audit(AuditEvent::success(AuditEventType::AdminLogout).with_principal(&operator.name))
+        .await;
     StatusCode::NO_CONTENT
 }
 
 // ── Role enforcement macro ────────────────────────────────────────────────────
 
 /// Return a 403 response if `$ctx.role` is not one of the listed `OperatorRole`
-/// variants.
+/// variants.  Emits an `AdminAction` failure audit event before returning.
 ///
-/// Usage: `require_role!(ctx, Administrator | CaOperations);`
+/// Usage: `require_role!(ctx, state, Administrator | CaOperations);`
 #[macro_export]
 macro_rules! require_role {
-    ($ctx:expr, $($role:ident)|+) => {{
+    ($ctx:expr, $state:expr, $($role:ident)|+) => {{
         let allowed = false $(|| $ctx.role == $crate::state::OperatorRole::$role)+;
         if !allowed {
+            let required = concat!($(stringify!($role), " | "),+);
+            let required = required.trim_end_matches(" | ");
+            $state
+                .record_audit(
+                    crate::audit::AuditEvent::failure(crate::audit::AuditEventType::AdminAction)
+                        .with_principal($ctx.name.clone())
+                        .with_detail(format!(
+                            r#"{{"error":"insufficient role","required":"{}","actual":"{}"}}"#,
+                            required,
+                            $ctx.role.as_str(),
+                        )),
+                )
+                .await;
             return (
                 axum::http::StatusCode::FORBIDDEN,
                 axum::Json(serde_json::json!({

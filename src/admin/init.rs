@@ -14,15 +14,16 @@
 //!    inserts an Administrator row into the database.  On every subsequent
 //!    startup the files exist and the row exists, so this becomes a no-op.
 
+use std::io::Write as _;
+
 use synta_certificate::der_to_pem;
 
-use crate::admin::auth::sha256_hex;
 use crate::ca::init::{generate_backend_key, unix_to_generalized_time};
 use crate::ca::issue::{sign_admin_cert, sign_server_cert};
 use crate::config::AdminConfig;
 use crate::db::Db;
 use crate::state::CaState;
-use crate::util::unix_now;
+use crate::util::{sha256_hex, unix_now};
 
 /// Ensure the admin listener TLS cert and key files exist, generating them from
 /// the Akāmu CA if absent.
@@ -59,7 +60,7 @@ pub fn load_or_generate_server_cert(cfg: &AdminConfig, ca: &CaState) -> Result<(
     let key_pem = key
         .to_pem(None)
         .map_err(|e| format!("admin server key to PEM: {e}"))?;
-    std::fs::write(&cfg.key_file, &key_pem)
+    write_secret_file(&cfg.key_file, &key_pem)
         .map_err(|e| format!("write admin key '{}': {e}", cfg.key_file))?;
 
     // Chain: leaf + CA cert so clients can build a complete chain.
@@ -93,6 +94,19 @@ pub async fn bootstrap_operator_if_needed(
     let key_exists = std::path::Path::new(key_path).exists();
 
     if cert_exists && key_exists {
+        // Files already on disk.  Verify the DB row also exists to catch
+        // the partial-write scenario (files written, DB insert crashed).
+        let fingerprint = read_cert_fingerprint(cert_path)?;
+        let existing = crate::db::operators::get_by_fingerprint(db, &fingerprint)
+            .await
+            .map_err(|e| format!("operators DB lookup: {e}"))?;
+        if existing.is_none() {
+            return Err(format!(
+                "bootstrap operator cert/key files exist ('{cert_path}', '{key_path}') \
+                 but no matching operator row was found in the database; \
+                 re-register manually with akamuctl or delete the files to re-provision"
+            ));
+        }
         return Ok(());
     }
     if cert_exists != key_exists {
@@ -138,7 +152,7 @@ pub async fn bootstrap_operator_if_needed(
     let key_pem = key
         .to_pem(None)
         .map_err(|e| format!("bootstrap operator key to PEM: {e}"))?;
-    std::fs::write(key_path, &key_pem)
+    write_secret_file(key_path, &key_pem)
         .map_err(|e| format!("write bootstrap operator key '{key_path}': {e}"))?;
 
     let cert_pem = der_to_pem("CERTIFICATE", &cert_der);
@@ -146,7 +160,9 @@ pub async fn bootstrap_operator_if_needed(
         .map_err(|e| format!("write bootstrap operator cert '{cert_path}': {e}"))?;
 
     let now = unix_to_generalized_time(unix_now());
-    crate::db::operators::insert(
+    // Use INSERT OR IGNORE semantics: if a concurrent startup already inserted
+    // the row, this is a no-op and we log a warning rather than failing.
+    let inserted = crate::db::operators::insert_if_absent(
         db,
         &cfg.bootstrap_operator_name,
         "administrator",
@@ -157,10 +173,50 @@ pub async fn bootstrap_operator_if_needed(
     .await
     .map_err(|e| format!("insert bootstrap operator: {e}"))?;
 
-    tracing::info!(
-        "bootstrap Administrator '{}' registered (fingerprint prefix: {}…)",
-        cfg.bootstrap_operator_name,
-        &fingerprint[..16],
-    );
+    if inserted {
+        tracing::info!(
+            "bootstrap Administrator '{}' registered (fingerprint prefix: {}…)",
+            cfg.bootstrap_operator_name,
+            &fingerprint[..16],
+        );
+    } else {
+        tracing::warn!(
+            "bootstrap Administrator '{}' already exists (concurrent startup?); skipping",
+            cfg.bootstrap_operator_name,
+        );
+    }
     Ok(())
+}
+
+// ── Private helpers ───────────────────────────────────────────────────────────
+
+/// Write `data` to `path` with mode 0o600 (owner read/write only).
+/// Creates the file if absent; truncates it if it exists.
+fn write_secret_file(path: &str, data: &[u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        f.write_all(data)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, data)
+    }
+}
+
+/// Read the PEM certificate at `path` and compute its SHA-256 fingerprint.
+fn read_cert_fingerprint(path: &str) -> Result<String, String> {
+    let pem = std::fs::read(path).map_err(|e| format!("read cert '{path}': {e}"))?;
+    let ders = synta_certificate::pem_to_der(&pem);
+    let der = ders
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("cert file '{path}' contains no certificates"))?;
+    sha256_hex(&der).map_err(|e| format!("fingerprint '{path}': {e}"))
 }
