@@ -21,14 +21,20 @@ These map to ACME problem type URNs (`urn:ietf:params:acme:error:*`):
 | `RejectedIdentifier(String)` | `rejectedIdentifier` | 400 |
 | `UnsupportedIdentifier(String)` | `unsupportedIdentifier` | 400 |
 | `OrderNotReady` | `orderNotReady` | 403 |
+| `CertAlreadyReplaced` | `alreadyReplaced` | 409 |
 | `BadCsr(String)` | `badCSR` | 400 |
 | `BadRevocationReason` | `badRevocationReason` | 400 |
 | `AlreadyRevoked` | `alreadyRevoked` | 400 |
 | `Caa(String)` | `caa` | 403 |
+| `ExternalAccountRequired` | `externalAccountRequired` | 403 |
 | `Connection(String)` | `connection` | 400 |
 | `Dns(String)` | `dns` | 400 |
 | `IncorrectResponse(String)` | `incorrectResponse` | 400 |
 | `Tls(String)` | `tls` | 400 |
+| `AutoRenewalCanceled` | `autoRenewalCanceled` | 403 |
+| `AutoRenewalCancellationInvalid` | `autoRenewalCancellationInvalid` | 400 |
+| `AutoRenewalRevocationNotSupported` | `autoRenewalRevocationNotSupported` | 403 |
+| `InvalidProfile(String)` | `invalidProfile` | 400 |
 
 ### Generic HTTP-mapped errors
 
@@ -71,7 +77,9 @@ These indicate server-side failures. They map to `serverInternal` in the ACME er
 }
 ```
 
-The `detail` field is the `Display` string of the variant, which for parameterized variants includes the inner string.
+For responses with an HTTP 4xx status, the `detail` field is the `Display` string of the variant, which for parameterized variants includes the inner string.
+
+For responses with an HTTP 5xx status (server errors), the `detail` field is always the fixed string `"internal server error"`, regardless of the underlying cause. The actual error is logged server-side at `ERROR` level but is never included in the response body.
 
 ## From implementations
 
@@ -95,6 +103,7 @@ db::accounts::get_by_id(&db, &id).await?
   ↓ returned from handler as Err(AcmeError::Database(...))
   ↓ axum calls AcmeError::into_response()
   ↓ HTTP 500 with application/problem+json body
+  ↓ detail field = "internal server error" (not the database message)
 ```
 
 ## Error handling in background tasks
@@ -104,5 +113,5 @@ Background validation tasks (`tokio::spawn`) must not panic and must not propaga
 ## Design principles
 
 - **No `unwrap()` in production paths.** All fallible operations use `?` or explicit error handling.
-- **Internal errors do not leak details to clients.** `AcmeError::Internal` and `AcmeError::Database` both map to `serverInternal` and HTTP 500. The `detail` field is included in the response because ACME clients need some indication of what went wrong, but sensitive internal state is not exposed.
+- **Internal errors do not leak details to clients.** `AcmeError::Internal`, `AcmeError::Database`, `AcmeError::Crypto`, `AcmeError::Builder`, and `AcmeError::Mtc` all produce HTTP 500 responses whose `detail` field is the fixed string `"internal server error"`. The actual error message is written to the server log only.
 - **Challenge errors are ACME errors.** The validation layer converts `hyper`, `hickory-resolver`, and `rustls` errors into specific `AcmeError` variants (`Connection`, `Dns`, `Tls`, `IncorrectResponse`) so the client receives a meaningful ACME error type.
