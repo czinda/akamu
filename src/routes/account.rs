@@ -140,6 +140,15 @@ pub async fn new_account(
                             .with_subject(&kid),
                     )
                     .await;
+                state
+                    .record_audit(
+                        crate::audit::AuditEvent::failure(
+                            crate::audit::AuditEventType::SecurityViolation,
+                        )
+                        .with_subject(&kid)
+                        .with_detail("EAB HMAC verification failed"),
+                    )
+                    .await;
                 return Err(e);
             }
             state
