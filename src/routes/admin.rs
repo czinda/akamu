@@ -406,7 +406,7 @@ pub async fn get_account_profile_grants(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Response {
-    let _ = operator; // any role allowed
+    require_role!(operator, state, Administrator | CaOperations | CaRa | Auditor);
 
     match db::accounts::get_profile_grants(&state.db, &id).await {
         Err(e) => {
@@ -522,7 +522,7 @@ pub async fn get_eab(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let _ = operator; // any role
+    require_role!(operator, state, Administrator | CaOperations | CaRa | Auditor);
 
     let used_filter = params.get("used").and_then(|v| match v.as_str() {
         "true" => Some(true),
@@ -757,7 +757,7 @@ pub async fn get_stats(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    let _ = operator;
+    require_role!(operator, state, Administrator | CaOperations | CaRa | Auditor);
 
     let uptime_secs = state.startup_time.elapsed().as_secs();
 
