@@ -82,15 +82,13 @@ pub async fn revoke_cert(
         return Err(AcmeError::AlreadyRevoked);
     }
 
-    crate::audit::record_or_log(
-        &state.db,
-        &state.audit,
-        &state.audit_policy,
-        crate::audit::AuditEvent::success(crate::audit::AuditEventType::CertRevoke)
-            .with_subject(&cert.serial_number)
-            .with_principal(format!("acme:{}", ctx.jwk_thumbprint.as_deref().unwrap_or(""))),
-    )
-    .await;
+    state
+        .record_audit(
+            crate::audit::AuditEvent::success(crate::audit::AuditEventType::CertRevoke)
+                .with_subject(&cert.serial_number)
+                .with_principal(format!("acme:{}", ctx.jwk_thumbprint.as_deref().unwrap_or(""))),
+        )
+        .await;
 
     // Invalidate the CRL cache so the next GET /ca/crl rebuilds with the new entry.
     match state.crl_cache.lock() {

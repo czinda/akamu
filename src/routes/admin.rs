@@ -44,18 +44,6 @@ use crate::state::AppState;
 
 use super::unix_now;
 
-// ── Shared guard ──────────────────────────────────────────────────────────────
-
-/// Return a 404 response when `[admin]` is absent, or `None` when configured.
-/// All admin handlers call this before accessing the operator context.
-fn admin_configured(state: &AppState) -> Option<Response> {
-    if state.config.admin.is_none() {
-        Some((StatusCode::NOT_FOUND, "admin API is not configured").into_response())
-    } else {
-        None
-    }
-}
-
 // ── Payload types ─────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -106,16 +94,6 @@ fn grants_to_json(grants: Option<Vec<String>>) -> Result<Option<String>, String>
     }
 }
 
-fn now_rfc3339() -> String {
-    let unix = unix_now();
-    let gt = synta::GeneralizedTime::from_unix(unix)
-        .unwrap_or_else(|| synta::GeneralizedTime::from_unix(0).unwrap());
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        gt.year, gt.month, gt.day, gt.hour, gt.minute, gt.second
-    )
-}
-
 // ── Operator management ───────────────────────────────────────────────────────
 
 /// `GET /admin/operators`
@@ -128,10 +106,7 @@ pub async fn get_operators(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    if let Some(r) = admin_configured(&state) {
-        return r;
-    }
-    require_role!(operator, Administrator);
+    require_role!(operator, state, Administrator);
 
     let limit: i64 = params
         .get("limit")
@@ -180,10 +155,7 @@ pub async fn post_operators(
     State(state): State<Arc<AppState>>,
     body: Bytes,
 ) -> Response {
-    if let Some(r) = admin_configured(&state) {
-        return r;
-    }
-    require_role!(operator, Administrator);
+    require_role!(operator, state, Administrator);
 
     let payload: NewOperatorPayload = match serde_json::from_slice(&body) {
         Ok(p) => p,
@@ -211,7 +183,7 @@ pub async fn post_operators(
             .into_response();
     }
 
-    let now = now_rfc3339();
+    let now = crate::util::rfc3339_now();
     let result = db::operators::insert(
         &state.db,
         &payload.name,
@@ -224,17 +196,16 @@ pub async fn post_operators(
 
     match result {
         Ok(()) => {
-            crate::audit::record_or_log(
-                &state.db,
-                &state.audit,
-                &state.audit_policy,
-                AuditEvent::success(AuditEventType::AdminAction)
-                    .with_principal(&operator.name)
-                    .with_detail(
-                        json!({"action": "operator.create", "name": payload.name}).to_string(),
-                    ),
-            )
-            .await;
+            state
+                .record_audit(
+                    AuditEvent::success(AuditEventType::AdminAction)
+                        .with_principal(&operator.name)
+                        .with_detail(
+                            json!({"action": "operator.create", "name": payload.name})
+                                .to_string(),
+                        ),
+                )
+                .await;
             (StatusCode::CREATED, Json(json!({"name": payload.name, "created_at": now}))).into_response()
         }
         Err(crate::error::AcmeError::Database(ref msg))
@@ -263,17 +234,14 @@ pub async fn patch_operator(
     Path(id): Path<i64>,
     body: Bytes,
 ) -> Response {
-    if let Some(r) = admin_configured(&state) {
-        return r;
-    }
-    require_role!(operator, Administrator);
+    require_role!(operator, state, Administrator);
 
     let payload: PatchOperatorPayload = match serde_json::from_slice(&body) {
         Ok(p) => p,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("JSON: {e}")).into_response(),
     };
 
-    let now = now_rfc3339();
+    let now = crate::util::rfc3339_now();
     match db::operators::set_active(&state.db, id, payload.active, &now).await {
         Ok(0) => (StatusCode::NOT_FOUND, Json(json!({"status": 404, "detail": "operator not found"}))).into_response(),
         Ok(_) => {
@@ -288,17 +256,15 @@ pub async fn patch_operator(
                     sessions.lock().await.retain(|_, s| s.operator_id != id);
                 }
             }
-            crate::audit::record_or_log(
-                &state.db,
-                &state.audit,
-                &state.audit_policy,
-                AuditEvent::success(AuditEventType::AdminAction)
-                    .with_principal(&operator.name)
-                    .with_detail(
-                        json!({"action": action, "operator_id": id}).to_string(),
-                    ),
-            )
-            .await;
+            state
+                .record_audit(
+                    AuditEvent::success(AuditEventType::AdminAction)
+                        .with_principal(&operator.name)
+                        .with_detail(
+                            json!({"action": action, "operator_id": id}).to_string(),
+                        ),
+                )
+                .await;
             StatusCode::NO_CONTENT.into_response()
         }
         Err(e) => {
@@ -321,10 +287,7 @@ pub async fn get_audit(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    if let Some(r) = admin_configured(&state) {
-        return r;
-    }
-    require_role!(operator, Administrator | Auditor);
+    require_role!(operator, state, Administrator | Auditor);
 
     let limit: i64 = params
         .get("limit")
@@ -386,10 +349,7 @@ pub async fn get_certs(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    if let Some(r) = admin_configured(&state) {
-        return r;
-    }
-    require_role!(operator, Administrator | CaOperations | Auditor);
+    require_role!(operator, state, Administrator | CaOperations | Auditor);
 
     let limit: i64 = params
         .get("limit")
@@ -446,9 +406,6 @@ pub async fn get_account_profile_grants(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Response {
-    if let Some(r) = admin_configured(&state) {
-        return r;
-    }
     let _ = operator; // any role allowed
 
     match db::accounts::get_profile_grants(&state.db, &id).await {
@@ -458,9 +415,17 @@ pub async fn get_account_profile_grants(
         }
         Ok(None) => (StatusCode::NOT_FOUND, "account not found").into_response(),
         Ok(Some(grants_json)) => {
-            let grants: Option<Vec<String>> = grants_json
-                .as_deref()
-                .and_then(|j| serde_json::from_str(j).ok());
+            let grants: Option<Vec<String>> = grants_json.as_deref().and_then(|j| {
+                serde_json::from_str(j)
+                    .map_err(|e| {
+                        tracing::warn!(
+                            account_id = %id,
+                            error = %e,
+                            "profile_grants column contains malformed JSON; treating as no grants"
+                        );
+                    })
+                    .ok()
+            });
             (StatusCode::OK, Json(json!({"profile_grants": grants}))).into_response()
         }
     }
@@ -476,10 +441,7 @@ pub async fn put_account_profile_grants(
     Path(id): Path<String>,
     body: Bytes,
 ) -> Response {
-    if let Some(r) = admin_configured(&state) {
-        return r;
-    }
-    require_role!(operator, Administrator | CaOperations);
+    require_role!(operator, state, Administrator | CaOperations);
 
     let payload: ProfileGrantsPayload = match serde_json::from_slice(&body) {
         Ok(p) => p,
@@ -501,16 +463,14 @@ pub async fn put_account_profile_grants(
         }
         Ok(false) => (StatusCode::NOT_FOUND, "account not found or deactivated").into_response(),
         Ok(true) => {
-            crate::audit::record_or_log(
-                &state.db,
-                &state.audit,
-                &state.audit_policy,
-                AuditEvent::success(AuditEventType::AdminAction)
-                    .with_principal(&operator.name)
-                    .with_subject(&id)
-                    .with_detail("{\"action\":\"account.grants.set\"}"),
-            )
-            .await;
+            state
+                .record_audit(
+                    AuditEvent::success(AuditEventType::AdminAction)
+                        .with_principal(&operator.name)
+                        .with_subject(&id)
+                        .with_detail("{\"action\":\"account.grants.set\"}"),
+                )
+                .await;
             StatusCode::NO_CONTENT.into_response()
         }
     }
@@ -525,10 +485,7 @@ pub async fn delete_account_profile_grants(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Response {
-    if let Some(r) = admin_configured(&state) {
-        return r;
-    }
-    require_role!(operator, Administrator);
+    require_role!(operator, state, Administrator);
 
     let now = unix_now();
     match db::accounts::set_profile_grants(&state.db, &id, None, now).await {
@@ -538,16 +495,14 @@ pub async fn delete_account_profile_grants(
         }
         Ok(false) => (StatusCode::NOT_FOUND, "account not found or deactivated").into_response(),
         Ok(true) => {
-            crate::audit::record_or_log(
-                &state.db,
-                &state.audit,
-                &state.audit_policy,
-                AuditEvent::success(AuditEventType::AdminAction)
-                    .with_principal(&operator.name)
-                    .with_subject(&id)
-                    .with_detail("{\"action\":\"account.grants.clear\"}"),
-            )
-            .await;
+            state
+                .record_audit(
+                    AuditEvent::success(AuditEventType::AdminAction)
+                        .with_principal(&operator.name)
+                        .with_subject(&id)
+                        .with_detail("{\"action\":\"account.grants.clear\"}"),
+                )
+                .await;
             StatusCode::NO_CONTENT.into_response()
         }
     }
@@ -567,9 +522,6 @@ pub async fn get_eab(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    if let Some(r) = admin_configured(&state) {
-        return r;
-    }
     let _ = operator; // any role
 
     let used_filter = params.get("used").and_then(|v| match v.as_str() {
@@ -619,10 +571,7 @@ pub async fn post_eab(
     State(state): State<Arc<AppState>>,
     body: Bytes,
 ) -> Response {
-    if let Some(r) = admin_configured(&state) {
-        return r;
-    }
-    require_role!(operator, Administrator | CaOperations | CaRa);
+    require_role!(operator, state, Administrator | CaOperations | CaRa);
 
     let payload: NewEabPayload = match serde_json::from_slice(&body) {
         Ok(p) => p,
@@ -655,16 +604,14 @@ pub async fn post_eab(
     .await
     {
         Ok(()) => {
-            crate::audit::record_or_log(
-                &state.db,
-                &state.audit,
-                &state.audit_policy,
-                AuditEvent::success(AuditEventType::AdminAction)
-                    .with_principal(&operator.name)
-                    .with_subject(&payload.kid)
-                    .with_detail("{\"action\":\"eab.create\"}"),
-            )
-            .await;
+            state
+                .record_audit(
+                    AuditEvent::success(AuditEventType::AdminAction)
+                        .with_principal(&operator.name)
+                        .with_subject(&payload.kid)
+                        .with_detail("{\"action\":\"eab.create\"}"),
+                )
+                .await;
             (
                 StatusCode::CREATED,
                 Json(json!({"kid": payload.kid, "created": now})),
@@ -680,7 +627,14 @@ pub async fn post_eab(
             )
                 .into_response()
         }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, kid = %payload.kid, "post_eab: db error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": 500, "detail": "database error"})),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -693,24 +647,19 @@ pub async fn delete_eab(
     State(state): State<Arc<AppState>>,
     Path(kid): Path<String>,
 ) -> Response {
-    if let Some(r) = admin_configured(&state) {
-        return r;
-    }
-    require_role!(operator, Administrator | CaOperations);
+    require_role!(operator, state, Administrator | CaOperations);
 
     match db::eab::delete(&state.db, &kid).await {
         Ok(0) => (StatusCode::NOT_FOUND, Json(json!({"status": 404, "detail": "EAB key not found"}))).into_response(),
         Ok(_) => {
-            crate::audit::record_or_log(
-                &state.db,
-                &state.audit,
-                &state.audit_policy,
-                AuditEvent::success(AuditEventType::AdminAction)
-                    .with_principal(&operator.name)
-                    .with_subject(&kid)
-                    .with_detail("{\"action\":\"eab.delete\"}"),
-            )
-            .await;
+            state
+                .record_audit(
+                    AuditEvent::success(AuditEventType::AdminAction)
+                        .with_principal(&operator.name)
+                        .with_subject(&kid)
+                        .with_detail("{\"action\":\"eab.delete\"}"),
+                )
+                .await;
             StatusCode::NO_CONTENT.into_response()
         }
         Err(e) => {
@@ -730,23 +679,18 @@ pub async fn post_crl_force(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    if let Some(r) = admin_configured(&state) {
-        return r;
-    }
-    require_role!(operator, Administrator | CaOperations);
+    require_role!(operator, state, Administrator | CaOperations);
 
     // Drop the cached CRL; the next GET /ca/crl will regenerate it.
     *state.crl_cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
 
-    crate::audit::record_or_log(
-        &state.db,
-        &state.audit,
-        &state.audit_policy,
-        AuditEvent::success(AuditEventType::CrlGenerate)
-            .with_principal(&operator.name)
-            .with_detail("{\"action\":\"crl.force\"}"),
-    )
-    .await;
+    state
+        .record_audit(
+            AuditEvent::success(AuditEventType::CrlGenerate)
+                .with_principal(&operator.name)
+                .with_detail("{\"action\":\"crl.force\"}"),
+        )
+        .await;
     StatusCode::NO_CONTENT.into_response()
 }
 
@@ -759,33 +703,41 @@ pub async fn post_revoke(
     State(state): State<Arc<AppState>>,
     body: Bytes,
 ) -> Response {
-    if let Some(r) = admin_configured(&state) {
-        return r;
-    }
-    require_role!(operator, Administrator | CaOperations | CaRa);
+    require_role!(operator, state, Administrator | CaOperations | CaRa);
 
     let payload: RevokePayload = match serde_json::from_slice(&body) {
         Ok(p) => p,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("JSON: {e}")).into_response(),
     };
 
+    // RFC 5280 §5.3.1: valid reason codes are 0–10, excluding 7 (unused).
+    if payload.reason == 7 || payload.reason > 10 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "status": 400,
+                "detail": "revocation reason must be 0–10 excluding 7 (RFC 5280 §5.3.1)",
+            })),
+        )
+            .into_response();
+    }
+
     let now = unix_now();
     match db::certs::revoke(&state.db, &payload.cert_id, Some(payload.reason as i64), now).await {
         Ok(true) => {
             // Invalidate CRL cache.
             *state.crl_cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
-            crate::audit::record_or_log(
-                &state.db,
-                &state.audit,
-                &state.audit_policy,
-                AuditEvent::success(AuditEventType::CertRevoke)
-                    .with_principal(&operator.name)
-                    .with_subject(&payload.cert_id)
-                    .with_detail(
-                        json!({"action": "admin.revoke", "reason": payload.reason}).to_string(),
-                    ),
-            )
-            .await;
+            state
+                .record_audit(
+                    AuditEvent::success(AuditEventType::CertRevoke)
+                        .with_principal(&operator.name)
+                        .with_subject(&payload.cert_id)
+                        .with_detail(
+                            json!({"action": "admin.revoke", "reason": payload.reason})
+                                .to_string(),
+                        ),
+                )
+                .await;
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => (StatusCode::NOT_FOUND, "certificate not found or already revoked").into_response(),
@@ -805,9 +757,6 @@ pub async fn get_stats(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    if let Some(r) = admin_configured(&state) {
-        return r;
-    }
     let _ = operator;
 
     let uptime_secs = state.startup_time.elapsed().as_secs();

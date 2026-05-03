@@ -296,14 +296,12 @@ async fn on_valid(state: &AppState, challenge_id: &str, authz_id: &str, order_id
             tracing::warn!("authz {authz_id_log}: on_valid transaction failed: {e}");
         }
     }
-    crate::audit::record_or_log(
-        &state.db,
-        &state.audit,
-        &state.audit_policy,
-        crate::audit::AuditEvent::success(crate::audit::AuditEventType::AuthChallengeOk)
-            .with_subject(authz_id),
-    )
-    .await;
+    state
+        .record_audit(
+            crate::audit::AuditEvent::success(crate::audit::AuditEventType::AuthChallengeOk)
+                .with_subject(authz_id),
+        )
+        .await;
 }
 
 /// Handle a failed challenge validation.
@@ -376,14 +374,12 @@ async fn on_invalid(
     if let Err(e) = result {
         tracing::warn!("authz {authz_id_log}: on_invalid transaction failed: {e}");
     }
-    crate::audit::record_or_log(
-        &state.db,
-        &state.audit,
-        &state.audit_policy,
-        crate::audit::AuditEvent::failure(crate::audit::AuditEventType::AuthChallengeFail)
-            .with_subject(authz_id),
-    )
-    .await;
+    state
+        .record_audit(
+            crate::audit::AuditEvent::failure(crate::audit::AuditEventType::AuthChallengeFail)
+                .with_subject(authz_id),
+        )
+        .await;
 }
 
 fn err_type(e: &AcmeError) -> &'static str {
@@ -490,10 +486,12 @@ mod tests {
             },
             crl_cache: Default::default(),
             gss_cred: None,
+            admin_gss_cred: None,
             eab_master_secret: None,
             audit: Arc::new(crate::audit::AuditState::new()),
             audit_policy: Arc::new(crate::audit::AuditPolicy::default()),
             admin_sessions: None,
+            admin_auth_limiter: None,
             startup_time: std::time::Instant::now(),
         })
     }
@@ -967,10 +965,12 @@ mod tests {
             },
             crl_cache: Default::default(),
             gss_cred: None,
+            admin_gss_cred: None,
             eab_master_secret: None,
             audit: Arc::new(crate::audit::AuditState::new()),
             audit_policy: Arc::new(crate::audit::AuditPolicy::default()),
             admin_sessions: None,
+            admin_auth_limiter: None,
             startup_time: std::time::Instant::now(),
         });
 
@@ -1262,10 +1262,12 @@ mod tests {
             },
             crl_cache: Default::default(),
             gss_cred: None,
+            admin_gss_cred: None,
             eab_master_secret: None,
             audit: Arc::new(crate::audit::AuditState::new()),
             audit_policy: Arc::new(crate::audit::AuditPolicy::default()),
             admin_sessions: None,
+            admin_auth_limiter: None,
             startup_time: std::time::Instant::now(),
         })
     }

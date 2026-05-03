@@ -130,17 +130,42 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             halt_check,
         ));
 
-    // Non-ACME routes: CRL/OCSP (public, read-only) and admin (operators need
-    // access even when the server is halted for audit-overflow remediation).
+    // Non-ACME routes: CRL/OCSP (public, read-only).  Admin routes are served
+    // on the dedicated admin listener via `build_admin_router`; they are not
+    // registered here so the main ACME listener never handles /admin/* paths.
     let other_router = Router::new()
         // CRL (RFC 5280) — public, no auth required
         .route("/ca/crl", get(crl::get_crl))
         // OCSP (RFC 6960) — public, no auth required
         .route("/ca/ocsp", post(ocsp::post_ocsp))
-        .route("/ca/ocsp/{request}", get(ocsp::get_ocsp))
-        // Admin API — only registered when [admin] is configured in config.toml.
-        // Full operator authentication (mTLS cert + session token + GSSAPI) is
-        // enforced by the OperatorContext extractor in crate::admin::auth.
+        .route("/ca/ocsp/{request}", get(ocsp::get_ocsp));
+
+    Router::new()
+        .merge(acme_router)
+        .merge(other_router)
+        .layer(if max_body > 0 {
+            axum::extract::DefaultBodyLimit::max(max_body)
+        } else {
+            axum::extract::DefaultBodyLimit::disable()
+        })
+        .layer(
+            TraceLayer::new_for_http()
+                .on_request(())
+                .on_eos(()),
+        )
+        .with_state(state)
+}
+
+/// Build the admin-only axum router served on the dedicated admin listener.
+///
+/// Admin routes intentionally bypass `halt_check` so operators can query status
+/// and resolve audit-overflow conditions even when the ACME listener is halted.
+/// Full operator authentication (mTLS cert + session token + GSSAPI) is enforced
+/// by the `OperatorContext` extractor in `crate::admin::auth`.
+pub fn build_admin_router(state: Arc<AppState>) -> Router {
+    let max_body = state.config.server.max_body_bytes;
+
+    Router::new()
         .route(
             "/admin/session",
             post(crate::admin::auth::post_session).delete(crate::admin::auth::delete_session),
@@ -165,11 +190,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/admin/certs", axum::routing::get(admin::get_certs))
         .route("/admin/crl/force", post(admin::post_crl_force))
         .route("/admin/revoke", post(admin::post_revoke))
-        .route("/admin/stats", axum::routing::get(admin::get_stats));
-
-    Router::new()
-        .merge(acme_router)
-        .merge(other_router)
+        .route("/admin/stats", axum::routing::get(admin::get_stats))
         .layer(if max_body > 0 {
             axum::extract::DefaultBodyLimit::max(max_body)
         } else {
@@ -286,28 +307,20 @@ pub(crate) async fn parse_jws(
             .as_deref()
             .map(|id| format!("acme:{id}"))
             .unwrap_or_else(|| "acme:unknown".to_string());
-        crate::audit::record_or_log(
-            &state.db,
-            &state.audit,
-            &state.audit_policy,
-            crate::audit::AuditEvent::failure(crate::audit::AuditEventType::AuthJwsFail)
-                .with_principal(&principal),
-        )
-        .await;
+        state
+            .record_audit(
+                crate::audit::AuditEvent::failure(crate::audit::AuditEventType::AuthJwsFail)
+                    .with_principal(&principal),
+            )
+            .await;
         return Err(e.into());
     }
-    crate::audit::record_or_log(
-        &state.db,
-        &state.audit,
-        &state.audit_policy,
-        crate::audit::AuditEvent::success(crate::audit::AuditEventType::AuthJwsOk)
-            .with_principal(
-                account_id
-                    .as_deref()
-                    .unwrap_or("new-account"),
-            ),
-    )
-    .await;
+    state
+        .record_audit(
+            crate::audit::AuditEvent::success(crate::audit::AuditEventType::AuthJwsOk)
+                .with_principal(account_id.as_deref().unwrap_or("new-account")),
+        )
+        .await;
 
     let payload = jws.decode_payload()?;
     Ok(JwsContext {

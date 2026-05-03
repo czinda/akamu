@@ -271,24 +271,20 @@ pub async fn finalize_order(
         (authz_ids, pred_already_replaced)
     };
 
-    crate::audit::record_or_log(
-        &state.db,
-        &state.audit,
-        &state.audit_policy,
-        crate::audit::AuditEvent::success(crate::audit::AuditEventType::OrderFinalize)
-            .with_subject(&id)
-            .with_principal(format!("acme:{}", ctx.jwk_thumbprint.as_deref().unwrap_or(""))),
-    )
-    .await;
-    crate::audit::record_or_log(
-        &state.db,
-        &state.audit,
-        &state.audit_policy,
-        crate::audit::AuditEvent::success(crate::audit::AuditEventType::CertIssue)
-            .with_subject(&issued.serial_hex)
-            .with_principal(format!("acme:{}", ctx.jwk_thumbprint.as_deref().unwrap_or(""))),
-    )
-    .await;
+    state
+        .record_audit(
+            crate::audit::AuditEvent::success(crate::audit::AuditEventType::OrderFinalize)
+                .with_subject(&id)
+                .with_principal(format!("acme:{}", ctx.jwk_thumbprint.as_deref().unwrap_or(""))),
+        )
+        .await;
+    state
+        .record_audit(
+            crate::audit::AuditEvent::success(crate::audit::AuditEventType::CertIssue)
+                .with_subject(&issued.serial_hex)
+                .with_principal(format!("acme:{}", ctx.jwk_thumbprint.as_deref().unwrap_or(""))),
+        )
+        .await;
 
     // RFC 9773 §5: return 409 alreadyReplaced if another order concurrently
     // replaced the same predecessor certificate during this finalization.

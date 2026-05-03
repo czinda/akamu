@@ -1,6 +1,7 @@
 //! Shared application state threaded through axum handlers via `Arc<AppState>`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
@@ -161,6 +162,10 @@ pub struct AppState {
     /// the `RemoteUser` extractor uses it to validate `Authorization: Negotiate`
     /// tokens without a reverse proxy.
     pub gss_cred: Option<Arc<akamu_gssapi::GssServerCred>>,
+    /// Admin-specific GSSAPI credential, acquired from `[admin.gssapi]` at startup.
+    /// Takes precedence over `gss_cred` for admin SPNEGO authentication.
+    /// `None` when `[admin.gssapi]` is absent.
+    pub admin_gss_cred: Option<Arc<akamu_gssapi::GssServerCred>>,
     /// Decoded master secret for HKDF-based EAB key derivation.
     /// `None` when `[server].eab_master_secret` is absent.
     pub eab_master_secret: Option<Arc<Vec<u8>>>,
@@ -177,9 +182,26 @@ pub struct AppState {
     /// every request to the admin listener; entries are evicted when their TTL
     /// expires.  `None` when `[admin]` is absent.
     pub admin_sessions: Option<Arc<tokio::sync::Mutex<HashMap<String, AdminSession>>>>,
+    /// Per-source-IP credential-attempt timestamps for admin auth rate-limiting.
+    ///
+    /// Each entry holds the `Instant`s of recent attempts from that IP within
+    /// the rolling 5-minute window.  Entries are swept lazily on each check.
+    /// `None` when `[admin]` is absent.
+    pub admin_auth_limiter: Option<Arc<tokio::sync::Mutex<HashMap<IpAddr, VecDeque<Instant>>>>>,
     /// Time the server process started.  Used for uptime reporting in
     /// `GET /admin/stats` and for session-expiry calculations.
     pub startup_time: Instant,
+}
+
+impl AppState {
+    /// Record an audit event, logging (but not propagating) any DB error.
+    ///
+    /// Convenience wrapper over [`crate::audit::record_or_log`] that bundles
+    /// the three audit-related `AppState` fields so call sites pass only the
+    /// event.
+    pub async fn record_audit(&self, ev: crate::audit::AuditEvent) {
+        crate::audit::record_or_log(&self.db, &self.audit, &self.audit_policy, ev).await;
+    }
 }
 
 /// TLS client-auth state available to handlers for introspection.

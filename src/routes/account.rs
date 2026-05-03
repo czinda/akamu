@@ -134,24 +134,20 @@ pub async fn new_account(
             if let Err(e) = crate::jose::eab::verify_eab_jws(
                 eab_val, &url, &kid, &thumbprint, &hmac_key,
             ) {
-                crate::audit::record_or_log(
-                    &state.db,
-                    &state.audit,
-                    &state.audit_policy,
-                    crate::audit::AuditEvent::failure(crate::audit::AuditEventType::EabReject)
+                state
+                    .record_audit(
+                        crate::audit::AuditEvent::failure(crate::audit::AuditEventType::EabReject)
+                            .with_subject(&kid),
+                    )
+                    .await;
+                return Err(e);
+            }
+            state
+                .record_audit(
+                    crate::audit::AuditEvent::success(crate::audit::AuditEventType::EabUse)
                         .with_subject(&kid),
                 )
                 .await;
-                return Err(e);
-            }
-            crate::audit::record_or_log(
-                &state.db,
-                &state.audit,
-                &state.audit_policy,
-                crate::audit::AuditEvent::success(crate::audit::AuditEventType::EabUse)
-                    .with_subject(&kid),
-            )
-            .await;
 
             // Capture grants before dropping key_row.
             let grants = key_row.profile_grants.clone();
@@ -191,14 +187,12 @@ pub async fn new_account(
             db::eab::mark_used(&mut *tx, &eab_kid, now).await?;
         }
         tx.commit().await.map_err(AcmeError::from)?;
-        crate::audit::record_or_log(
-            &state.db,
-            &state.audit,
-            &state.audit_policy,
-            crate::audit::AuditEvent::success(crate::audit::AuditEventType::AccountCreate)
-                .with_subject(&id),
-        )
-        .await;
+        state
+            .record_audit(
+                crate::audit::AuditEvent::success(crate::audit::AuditEventType::AccountCreate)
+                    .with_subject(&id),
+            )
+            .await;
     }
 
     let row = AccountRow {
@@ -272,14 +266,12 @@ pub async fn update_account(
     if payload.status.as_deref() == Some("deactivated") {
         db::accounts::update_status(&state.db, &id, "deactivated", unix_now()).await?;
         state.spki_cache.write().unwrap().remove(&id);
-        crate::audit::record_or_log(
-            &state.db,
-            &state.audit,
-            &state.audit_policy,
-            crate::audit::AuditEvent::success(crate::audit::AuditEventType::AccountDeactivate)
-                .with_subject(&id),
-        )
-        .await;
+        state
+            .record_audit(
+                crate::audit::AuditEvent::success(crate::audit::AuditEventType::AccountDeactivate)
+                    .with_subject(&id),
+            )
+            .await;
         let mut deactivated = account.clone();
         deactivated.status = "deactivated".into();
         let contacts = parse_contacts(&deactivated.contact);

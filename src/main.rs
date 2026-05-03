@@ -180,6 +180,9 @@ async fn run() -> Result<(), String> {
 
     // ── Admin bootstrap (auto-generate server cert and bootstrap operator) ───
     if let Some(ref admin_cfg) = config.admin {
+        admin_cfg
+            .validate()
+            .map_err(|e| format!("admin config: {e}"))?;
         akamu::admin::init::load_or_generate_server_cert(admin_cfg, &ca)
             .map_err(|e| format!("admin TLS init: {e}"))?;
         akamu::admin::init::bootstrap_operator_if_needed(admin_cfg, &ca, &db)
@@ -281,6 +284,23 @@ async fn run() -> Result<(), String> {
         None
     };
 
+    // ── Admin-specific GSSAPI credential ──────────────────────────────────────
+    let admin_gss_cred = if let Some(ref admin_cfg) = config.admin {
+        if let Some(ref gcfg) = admin_cfg.gssapi {
+            tracing::info!(
+                "initializing admin GSSAPI credential for service '{}'",
+                gcfg.service_name
+            );
+            let cred = akamu_gssapi::GssServerCred::acquire(&gcfg.service_name, &gcfg.keytab_file)
+                .map_err(|e| format!("admin GSSAPI credential init: {e}"))?;
+            Some(Arc::new(cred))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     // ── EAB master secret ─────────────────────────────────────────────────────
     let eab_master_secret = match config.server.eab_master_secret.as_deref() {
         None => None,
@@ -334,20 +354,29 @@ async fn run() -> Result<(), String> {
         },
         crl_cache: Default::default(),
         gss_cred,
+        admin_gss_cred,
         eab_master_secret,
         audit: Arc::new(AuditState::new()),
         audit_policy: Arc::new(
             config
                 .admin
                 .as_ref()
-                .map(|a| a.audit_policy())
+                .map(|a| akamu::audit::AuditPolicy::from_admin_config(a))
                 .unwrap_or_default(),
         ),
         admin_sessions: config.admin.as_ref().map(|_| {
             Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()))
         }),
+        admin_auth_limiter: config.admin.as_ref().map(|_| {
+            Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()))
+        }),
         startup_time: std::time::Instant::now(),
     });
+
+    // ── Seed audit row counter ────────────────────────────────────────────────
+    if let Err(e) = state.audit.seed_row_count(&state.db).await {
+        tracing::warn!(error = %e, "could not seed audit row count; will fall back to COUNT(*) on first overflow check");
+    }
 
     // ── Startup audit records ─────────────────────────────────────────────────
     let key_file_exists = std::path::Path::new(&config.ca.key_file).exists();
@@ -356,20 +385,14 @@ async fn run() -> Result<(), String> {
     } else {
         akamu::audit::AuditEventType::KeyGenerate
     };
-    akamu::audit::record_or_log(
-        &state.db,
-        &state.audit,
-        &state.audit_policy,
-        akamu::audit::AuditEvent::success(key_event_type),
-    )
-    .await;
-    akamu::audit::record_or_log(
-        &state.db,
-        &state.audit,
-        &state.audit_policy,
-        akamu::audit::AuditEvent::success(akamu::audit::AuditEventType::CaStart),
-    )
-    .await;
+    state
+        .record_audit(akamu::audit::AuditEvent::success(key_event_type))
+        .await;
+    state
+        .record_audit(akamu::audit::AuditEvent::success(
+            akamu::audit::AuditEventType::CaStart,
+        ))
+        .await;
 
     // Spawn background profile refresh task (no-op when no providers configured).
     profile_registry.spawn_refresh_task();
@@ -392,6 +415,103 @@ async fn run() -> Result<(), String> {
 
     // ── STAR background reissuance task ──────────────────────────────────────
     let _star_task = star::spawn(Arc::clone(&state));
+
+    // ── Dedicated admin listener ──────────────────────────────────────────────
+    if let Some(ref admin_cfg) = config.admin {
+        let mut admin_server_cfg = akamu::tls::build_admin_rustls_server_config(admin_cfg)
+            .map_err(|e| format!("admin TLS config: {e}"))?;
+        admin_server_cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let admin_acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(admin_server_cfg));
+
+        // Channel binding for admin cert (RFC 5929 §4), injected per-connection
+        // so GSSAPI can perform mutual auth with the admin server endpoint.
+        let admin_channel_binding: Option<Arc<Vec<u8>>> = match akamu::tls::loader::load_server_cert_chain(
+            &admin_cfg.cert_file,
+        )
+        .ok()
+        .and_then(|chain| chain.into_iter().next())
+        .map(|c| c.to_vec())
+        {
+            Some(der) => {
+                akamu::tls::channel_binding::tls_server_endpoint_binding(&der).map(Arc::new)
+            }
+            None => None,
+        };
+
+        let admin_addr: std::net::SocketAddr = admin_cfg
+            .listen_addr
+            .parse()
+            .map_err(|e| format!("parse admin listen addr '{}': {e}", admin_cfg.listen_addr))?;
+        let admin_listener = tokio::net::TcpListener::bind(admin_addr)
+            .await
+            .map_err(|e| format!("bind admin '{}': {e}", admin_cfg.listen_addr))?;
+        tracing::info!("admin listener on {}", admin_cfg.listen_addr);
+
+        let admin_router = routes::build_admin_router(Arc::clone(&state));
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, peer_addr)) = admin_listener.accept().await else {
+                    tracing::warn!("admin listener accept error; retrying");
+                    continue;
+                };
+                let acceptor = admin_acceptor.clone();
+                let router = admin_router.clone();
+                let channel_binding = admin_channel_binding.clone();
+                tokio::spawn(async move {
+                    let tls = match acceptor.accept(stream).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::warn!("admin TLS handshake failed: {e}");
+                            return;
+                        }
+                    };
+                    // Extract peer certificate DER from the completed TLS session.
+                    // Must be read before `tls` is moved into `TokioIo::new`.
+                    let peer_cert: Option<Vec<u8>> = tls
+                        .get_ref()
+                        .1
+                        .peer_certificates()
+                        .and_then(|certs| certs.first())
+                        .map(|c| c.as_ref().to_vec());
+                    let io = hyper_util::rt::TokioIo::new(tls);
+                    use tower::ServiceExt as _;
+                    let svc = hyper::service::service_fn(
+                        move |mut req: hyper::Request<hyper::body::Incoming>| {
+                            req.extensions_mut()
+                                .insert(axum::extract::ConnectInfo(peer_addr));
+                            if let Some(ref der) = peer_cert {
+                                req.extensions_mut().insert(
+                                    akamu::admin::auth::PeerClientCert(der.clone()),
+                                );
+                            }
+                            if let Some(ref binding) = channel_binding {
+                                req.extensions_mut().insert(
+                                    akamu::tls::channel_binding::TlsServerEndpointBinding(
+                                        binding.as_ref().clone(),
+                                    ),
+                                );
+                            }
+                            let router = router.clone();
+                            async move {
+                                let req = req.map(axum::body::Body::new);
+                                Ok::<_, std::convert::Infallible>(
+                                    router.oneshot(req).await.unwrap(),
+                                )
+                            }
+                        },
+                    );
+                    if let Err(e) = hyper_util::server::conn::auto::Builder::new(
+                        hyper_util::rt::TokioExecutor::new(),
+                    )
+                    .serve_connection(io, svc)
+                    .await
+                    {
+                        tracing::warn!("admin connection error: {e}");
+                    }
+                });
+            }
+        });
+    }
 
     // ── HTTP / TLS server ─────────────────────────────────────────────────────
     let router = routes::build_router(Arc::clone(&state));
@@ -512,13 +632,11 @@ async fn run() -> Result<(), String> {
         .map_err(|e| format!("server error: {e}"))?;
     }
 
-    akamu::audit::record_or_log(
-        &state.db,
-        &state.audit,
-        &state.audit_policy,
-        akamu::audit::AuditEvent::success(akamu::audit::AuditEventType::CaStop),
-    )
-    .await;
+    state
+        .record_audit(akamu::audit::AuditEvent::success(
+            akamu::audit::AuditEventType::CaStop,
+        ))
+        .await;
 
     Ok(())
 }

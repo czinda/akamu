@@ -472,15 +472,13 @@ pub async fn new_order(
         star_csr_der: None,
         profile: order_profile,
     };
-    crate::audit::record_or_log(
-        &state.db,
-        &state.audit,
-        &state.audit_policy,
-        crate::audit::AuditEvent::success(crate::audit::AuditEventType::OrderCreate)
-            .with_subject(&order_id)
-            .with_principal(format!("acme:{}", ctx.jwk_thumbprint.as_deref().unwrap_or(""))),
-    )
-    .await;
+    state
+        .record_audit(
+            crate::audit::AuditEvent::success(crate::audit::AuditEventType::OrderCreate)
+                .with_subject(&order_id)
+                .with_principal(format!("acme:{}", ctx.jwk_thumbprint.as_deref().unwrap_or(""))),
+        )
+        .await;
 
     let mut resp = json_response(
         &state,
