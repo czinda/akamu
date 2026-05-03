@@ -104,8 +104,21 @@ if key_row.used_at.is_some() {
 }
 
 let hmac_key = URL_SAFE_NO_PAD.decode(&key_row.hmac_key_b64u)?;
-crate::jose::eab::verify_eab_jws(eab_val, &url, &kid, &thumbprint, &hmac_key)?;
+if let Err(e) = crate::jose::eab::verify_eab_jws(eab_val, &url, &kid, &thumbprint, &hmac_key) {
+    // On HMAC verification failure, two audit events are emitted:
+    //   EabReject  ("eab.reject", failure)  — records the rejected kid.
+    //   SecurityViolation ("security.violation", failure) — feeds the FAU_ARP.1 alarm counter.
+    state.record_audit(AuditEvent::failure(AuditEventType::EabReject).with_subject(&kid)).await;
+    state.record_audit(
+        AuditEvent::failure(AuditEventType::SecurityViolation)
+            .with_subject(&kid)
+            .with_detail("EAB HMAC verification failed"),
+    ).await;
+    return Err(e);
+}
 ```
+
+On successful HMAC verification an `EabUse` (`"eab.use"`, success) audit event is emitted for the `kid`.
 
 After verification, `verified_eab_kid` is `Some(kid)` and the account insert, EAB mark, and profile grant transfer are committed atomically:
 
@@ -133,7 +146,7 @@ When the EAB key's `profile_grants` is `NULL`, the new account's `profile_grants
 | `insert(executor, kid, hmac_key_b64u, now)` | Unconditional insert without grants; returns `Conflict` if `kid` exists |
 | `insert_with_grants(executor, kid, hmac_key_b64u, profile_grants, now)` | Unconditional insert with optional grants (used by the Admin API); returns `Conflict` if `kid` exists |
 | `get_by_kid(executor, kid)` | Fetch `EabKeyRow`; returns `None` for unknown `kid` |
-| `mark_used(executor, kid, now)` | Set `used_at`; intended to be called within a write transaction |
+| `mark_used(executor, kid, now)` | Set `used_at`; intended to be called within a write transaction. Returns `Conflict` when `rows_affected == 0`, meaning the key was already consumed by a concurrent request between the outer `get_by_kid` check and the transaction commit (TOCTOU guard). |
 | `delete(executor, kid)` | Remove the key entirely |
 
 `EabKeyRow` mirrors the table columns:
@@ -152,13 +165,11 @@ pub struct EabKeyRow {
 
 ## Admin API internals (`src/routes/admin.rs`)
 
-The Admin API exposes four endpoints under `/admin/`. All routes are registered unconditionally in the axum router, but each handler calls `require_admin_auth` first, which returns:
+The Admin API routes are served on a dedicated admin listener built by `routes::build_admin_router`. Each handler enforces role-based access using the `require_role!` macro, which delegates to the `OperatorContext` extractor. The `OperatorContext` verifies the operator's session token and looks up their role in the `operators` table.
 
-- **404** when `config.admin` is `None` (the `[admin]` section is absent).
-- **401** when the `Authorization` header is absent.
-- **403** when the header is present but the token does not match `config.admin.bearer_token`.
+When the `[admin]` section is absent from the configuration, the admin router is not started and all admin endpoints are unreachable.
 
-This means admin endpoints are never reachable without explicit configuration, and callers cannot distinguish "not configured" from "not found" for a missing `[admin]` section.
+Role enforcement is applied per endpoint. A request from a role that is not authorised for that endpoint receives `403 Forbidden`. The full role matrix is documented in [Admin API and Operator Management](../user/admin-api.md).
 
 ### Account profile grants endpoints
 
