@@ -936,6 +936,7 @@ dependencies = [
  "ipnet",
  "once_cell",
  "rand",
+ "ring",
  "thiserror 1.0.69",
  "tinyvec",
  "tokio",

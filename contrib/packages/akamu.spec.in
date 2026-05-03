@@ -107,11 +107,6 @@ BuildRequires:  rust-synta-devel
 BuildRequires:  rust-synta-certificate-devel
 BuildRequires:  rust-synta-x509-verification-devel
 BuildRequires:  rust-synta-mtc-devel
-# Documentation build tool; not yet packaged in Fedora — install into the mock
-# chroot before rebuilding this SRPM:
-#   mock --install mdbook mdbook-mermaid
-BuildRequires:  mdbook
-BuildRequires:  mdbook-mermaid
 # Systemd scriptlet support
 BuildRequires:  systemd-rpm-macros
 %{?systemd_requires}
@@ -196,20 +191,20 @@ external account bindings, and server state.
 %{_bindir}/akamuctl
 
 
-# ── Subpackage: HTML documentation ────────────────────────────────────────────
+# ── Subpackage: documentation (markdown sources) ──────────────────────────────
 %package -n akamu-doc
-Summary:        HTML documentation for akamu
+Summary:        Documentation for akamu (markdown)
 License:        GPL-3.0-or-later
 BuildArch:      noarch
 
 %description -n akamu-doc
-This package contains the akamu project documentation built from the mdBook
-source tree under docs/.  The documentation covers ACME server configuration,
-the MTC cosigner protocol, administration via akamuctl, and the public API.
+Markdown documentation for the akamu ACME server, covering server
+configuration, challenge validation, MTC cosigner protocol, administration
+via akamuctl, certificate profiles, and the admin API.
 
 %files -n akamu-doc
 %license LICENSE
-%{_docdir}/akamu-doc/html
+%doc docs/src
 
 
 # ── Prep ───────────────────────────────────────────────────────────────────────
@@ -253,9 +248,6 @@ EOF
 # Pass the feature list explicitly; --no-default-features keeps the set minimal
 # (only what %{_akamu_features} requests, always at least backend-sqlite).
 %cargo_build -- --workspace --no-default-features --features %{_akamu_features}
-# Build the HTML documentation from the mdBook source tree.
-# book.toml is at docs/book.toml; mdBook writes output to docs/book/html/.
-mdbook build docs
 # Generate the bundled-dependency license summary required by Fedora policy.
 %{cargo_license_summary}
 %{cargo_license} > LICENSE.dependencies
@@ -282,9 +274,6 @@ install -Dpm 0644 %{SOURCE3} %{buildroot}%{_sysconfdir}/akamu/config.toml.exampl
 # Create the cosigner configuration directory
 install -dm 0755 %{buildroot}%{_sysconfdir}/akamu-cosigner
 
-# Install the mdBook-generated HTML documentation
-install -dm 0755 %{buildroot}%{_docdir}/akamu-doc
-cp -a docs/book/html %{buildroot}%{_docdir}/akamu-doc/html
 
 
 # ── Check ──────────────────────────────────────────────────────────────────────
