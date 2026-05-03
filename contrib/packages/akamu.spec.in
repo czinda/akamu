@@ -21,9 +21,12 @@
 #   sqlx + drivers 0.8     — not packaged in Fedora / RHEL 10
 #   sqlx-postgres + deps   — needed when %%{with backend_postgres}
 #   sqlx-mysql + deps      — needed when %%{with backend_mariadb}
-# hickory-client 0.24 is used for DNS (available as a Fedora system package).
-# tokio-native-tls 0.3 — used for DNS-over-TLS (DoT) support via hickory-client's
-#   dns-over-native-tls feature; relies on system OpenSSL already in the vendor tree.
+# hickory-resolver 0.24 is vendored (Fedora ships 0.25 with an incompatible API).
+#   hickory-client was removed from the hickory project after 0.24.4 and Fedora does
+#   not build its TLS features; hickory-resolver with dns-over-native-tls is the
+#   supported path for DoT.  dnssec-openssl is used instead of dnssec-ring so that
+#   DNSSEC validation shares the same OpenSSL instance as the rest of the server.
+# tokio-native-tls 0.3 — DNS-over-TLS transport (system OpenSSL, no rustls conflict).
 #
 # PREREQUISITE: install synta* into the mock chroot before rebuilding:
 #   mock --install rust-synta-devel rust-synta-certificate-devel \

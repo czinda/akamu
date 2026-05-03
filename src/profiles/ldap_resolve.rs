@@ -13,7 +13,7 @@
 use std::net::SocketAddr;
 use std::str::FromStr;
 
-use hickory_client::proto::rr::{Name, RData, RecordType};
+use hickory_resolver::proto::rr::{Name, RData, RecordType};
 
 use crate::config::LdapConfig;
 
@@ -85,7 +85,7 @@ async fn resolve_srv(
              invalid SRV name '{srv_name}': {e}"
         )
     })?;
-    let resp = crate::dns::dns_query(addr, false, None, fqdn, RecordType::SRV)
+    let lookup = crate::dns::dns_query(addr, false, None, fqdn, RecordType::SRV)
         .await
         .map_err(|e| {
             format!(
@@ -95,20 +95,23 @@ async fn resolve_srv(
         })?;
 
     // Collect (priority, weight, uri) tuples.
-    let mut records: Vec<(u16, u16, String)> = resp
-        .answers()
-        .iter()
-        .filter_map(|answer| {
-            if let Some(RData::SRV(srv)) = answer.data() {
-                let host = srv.target().to_utf8();
-                let host = host.trim_end_matches('.');
-                let uri = format!("{scheme}://{host}:{}", srv.port());
-                Some((srv.priority(), srv.weight(), uri))
-            } else {
-                None
-            }
+    let mut records: Vec<(u16, u16, String)> = lookup
+        .as_ref()
+        .map(|l| {
+            l.iter()
+                .filter_map(|rdata| {
+                    if let RData::SRV(srv) = rdata {
+                        let host = srv.target().to_utf8();
+                        let host = host.trim_end_matches('.');
+                        let uri = format!("{scheme}://{host}:{}", srv.port());
+                        Some((srv.priority(), srv.weight(), uri))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
         })
-        .collect();
+        .unwrap_or_default();
 
     // Ascending priority; within the same priority, descending weight (higher
     // weight = more preferred = listed earlier so ldap_initialize tries it first).

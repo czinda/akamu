@@ -1,23 +1,22 @@
-//! Thin DNS query helper built on hickory-client.
+//! Thin DNS query helper built on hickory-resolver.
 //!
-//! `hickory-resolver` 0.25 (available in Fedora) has an incompatible API with
-//! the 0.24 we require, so we use `hickory-client` 0.24 directly.  Each call
-//! to [`dns_query`] opens a new socket, sends one query, and closes it.
+//! Each call to [`dns_query`] creates a single-shot [`TokioAsyncResolver`]
+//! pointing at the configured nameserver, performs one query, and returns
+//! the result.  No connection pooling is done; the resolver is cheap to
+//! construct and its background task exits as soon as the query completes.
 //!
 //! When `dot_server_name` is `Some`, queries are sent over DNS-over-TLS
-//! (DoT, RFC 7858) using the system OpenSSL via the `native-tls` crate.
+//! (DoT, RFC 7858) using system OpenSSL via the `native-tls` crate.
 //! The TLS certificate is verified against the system root CA store.
 
 use std::net::SocketAddr;
 
-use hickory_client::client::{AsyncClient, AsyncDnssecClient, ClientHandle};
-use hickory_client::op::DnsResponse;
-use hickory_client::proto::iocompat::AsyncIoTokioAsStd;
-use hickory_client::proto::native_tls::TlsClientStreamBuilder;
-use hickory_client::proto::rr::{DNSClass, Name, RecordType};
-use hickory_client::proto::udp::UdpClientStream;
-use hickory_client::proto::DnssecDnsHandle;
-use tokio::net::{TcpStream, UdpSocket};
+use hickory_resolver::config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts};
+use hickory_resolver::error::ResolveErrorKind;
+use hickory_resolver::lookup::Lookup;
+use hickory_resolver::proto::op::ResponseCode;
+use hickory_resolver::proto::rr::{Name, RecordType};
+use hickory_resolver::TokioAsyncResolver;
 
 use crate::error::AcmeError;
 
@@ -37,82 +36,69 @@ pub fn system_resolver_addr() -> SocketAddr {
     "127.0.0.53:53".parse().expect("hardcoded addr is valid")
 }
 
-/// Send a single DNS query and return the full DNS response.
+/// Send a single DNS query and return the result.
 ///
-/// When `dot_server_name` is `Some(hostname)`, the query is sent over
-/// DNS-over-TLS (DoT, RFC 7858) to `server_addr` using `hostname` for
-/// TLS SNI and certificate verification.  When `None`, plain UDP is used.
+/// Returns:
+/// - `Ok(Some(lookup))` — records found (NOERROR with answers).
+/// - `Ok(None)` — no records (NXDOMAIN or NOERROR with empty answer section);
+///   callers that walk up the DNS tree treat this as "no constraint at this label".
+/// - `Err(AcmeError::Dns(...))` — DNS failure (SERVFAIL, REFUSED, network
+///   error, DNSSEC validation failure); callers must treat this as a hard error.
 ///
-/// When `validate_dnssec` is `true`, DNSSEC signatures are validated
-/// against the built-in ICANN root trust anchor regardless of transport.
+/// When `dot_server_name` is `Some(hostname)`, queries use DNS-over-TLS
+/// (port 853) with `hostname` as the TLS SNI and certificate CN to verify.
+/// `server_addr` must point at port 853 when using DoT.
+///
+/// When `validate_dnssec` is `true`, DNSSEC signatures are validated against
+/// the built-in ICANN root trust anchor.
 pub async fn dns_query(
     server_addr: SocketAddr,
     validate_dnssec: bool,
     dot_server_name: Option<&str>,
     name: Name,
     record_type: RecordType,
-) -> Result<DnsResponse, AcmeError> {
-    if let Some(sni) = dot_server_name {
-        dot_query(server_addr, sni, validate_dnssec, name, record_type).await
-    } else {
-        udp_query(server_addr, validate_dnssec, name, record_type).await
+) -> Result<Option<Lookup>, AcmeError> {
+    let resolver = build_resolver(server_addr, validate_dnssec, dot_server_name)?;
+
+    match resolver.lookup(name.clone(), record_type).await {
+        Ok(lookup) => Ok(Some(lookup)),
+        Err(e) => match e.kind() {
+            ResolveErrorKind::NoRecordsFound { response_code, .. } => {
+                match response_code {
+                    // Benign: domain or record type does not exist — tell the
+                    // caller "no records" so it can decide (e.g. walk up the tree).
+                    ResponseCode::NXDomain | ResponseCode::NoError => Ok(None),
+                    // Hard failure: SERVFAIL, REFUSED, malformed response, etc.
+                    rcode => Err(AcmeError::Dns(format!(
+                        "DNS {rcode} querying {record_type} for {name}: {e}"
+                    ))),
+                }
+            }
+            _ => Err(AcmeError::Dns(format!(
+                "DNS error querying {record_type} for {name}: {e}"
+            ))),
+        },
     }
 }
 
-async fn udp_query(
+fn build_resolver(
     server_addr: SocketAddr,
     validate_dnssec: bool,
-    name: Name,
-    record_type: RecordType,
-) -> Result<DnsResponse, AcmeError> {
-    let stream = UdpClientStream::<UdpSocket>::new(server_addr);
-
-    if validate_dnssec {
-        let (mut client, bg) = AsyncDnssecClient::connect(stream)
-            .await
-            .map_err(|e| AcmeError::Dns(format!("DNS connect to {server_addr}: {e}")))?;
-        tokio::spawn(bg);
-        client
-            .query(name, DNSClass::IN, record_type)
-            .await
-            .map_err(|e| AcmeError::Dns(format!("DNS query to {server_addr}: {e}")))
+    dot_server_name: Option<&str>,
+) -> Result<TokioAsyncResolver, AcmeError> {
+    let protocol = if dot_server_name.is_some() {
+        Protocol::Tls
     } else {
-        let (mut client, bg) = AsyncClient::connect(stream)
-            .await
-            .map_err(|e| AcmeError::Dns(format!("DNS connect to {server_addr}: {e}")))?;
-        tokio::spawn(bg);
-        client
-            .query(name, DNSClass::IN, record_type)
-            .await
-            .map_err(|e| AcmeError::Dns(format!("DNS query to {server_addr}: {e}")))
-    }
-}
+        Protocol::Udp
+    };
+    let mut ns = NameServerConfig::new(server_addr, protocol);
+    ns.tls_dns_name = dot_server_name.map(str::to_owned);
 
-async fn dot_query(
-    server_addr: SocketAddr,
-    sni: &str,
-    validate_dnssec: bool,
-    name: Name,
-    record_type: RecordType,
-) -> Result<DnsResponse, AcmeError> {
-    let builder = TlsClientStreamBuilder::<AsyncIoTokioAsStd<TcpStream>>::new();
-    let (stream_future, sender) = builder.build(server_addr, sni.to_owned());
-    let (plain_client, bg) = AsyncClient::new(stream_future, sender, None)
-        .await
-        .map_err(|e| AcmeError::Dns(format!("DoT connect to {server_addr}: {e}")))?;
-    tokio::spawn(bg);
+    let mut config = ResolverConfig::new();
+    config.add_name_server(ns);
 
-    if validate_dnssec {
-        let mut client = DnssecDnsHandle::new(plain_client);
-        client
-            .query(name, DNSClass::IN, record_type)
-            .await
-            .map_err(|e| AcmeError::Dns(format!("DoT query to {server_addr}: {e}")))
-    } else {
-        let mut client = plain_client;
-        client
-            .query(name, DNSClass::IN, record_type)
-            .await
-            .map_err(|e| AcmeError::Dns(format!("DoT query to {server_addr}: {e}")))
-    }
+    let mut opts = ResolverOpts::default();
+    opts.validate = validate_dnssec;
+
+    Ok(TokioAsyncResolver::tokio(config, opts))
 }

@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use hickory_client::proto::rr::{Name, RData, RecordType};
+use hickory_resolver::proto::rr::{Name, RData, RecordType};
 use synta_certificate::{default_data_hasher, DataHasher};
 
 use crate::error::AcmeError;
@@ -51,20 +51,21 @@ async fn validate_with_resolver(
 
     let fqdn = Name::from_str(&query_name)
         .map_err(|e| AcmeError::Dns(format!("invalid DNS name '{query_name}': {e}")))?;
-    let resp =
+    let lookup =
         crate::dns::dns_query(resolver_addr, validate_dnssec, dot_server_name, fqdn, RecordType::TXT)
-            .await
-            .map_err(|e| AcmeError::Dns(format!("TXT lookup for '{query_name}': {e}")))?;
+            .await?;
 
-    for answer in resp.answers() {
-        if let Some(RData::TXT(txt)) = answer.data() {
-            // TXT records may be split across multiple character-strings; join them.
-            let value: String = txt
-                .iter()
-                .map(|s| String::from_utf8_lossy(s).into_owned())
-                .collect();
-            if value.trim() == expected {
-                return Ok(());
+    if let Some(lookup) = lookup {
+        for rdata in lookup.iter() {
+            if let RData::TXT(txt) = rdata {
+                // TXT records may be split across multiple character-strings; join them.
+                let value: String = txt
+                    .iter()
+                    .map(|s| String::from_utf8_lossy(s).into_owned())
+                    .collect();
+                if value.trim() == expected {
+                    return Ok(());
+                }
             }
         }
     }

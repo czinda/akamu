@@ -12,9 +12,8 @@
 use std::net::SocketAddr;
 use std::str::FromStr;
 
-use hickory_client::op::ResponseCode;
-use hickory_client::proto::rr::rdata::CAA;
-use hickory_client::proto::rr::{Name, RData, RecordType};
+use hickory_resolver::proto::rr::rdata::CAA;
+use hickory_resolver::proto::rr::{Name, RData, RecordType};
 
 use crate::dns;
 use crate::error::AcmeError;
@@ -91,67 +90,47 @@ pub(crate) async fn check_caa_with_resolver(
                 .await;
 
         match result {
-            Ok(resp) => {
-                match resp.response_code() {
-                    // SERVFAIL / REFUSED: deny issuance per RFC 8659 §4.
-                    ResponseCode::ServFail | ResponseCode::Refused => {
-                        tracing::warn!(
-                            query_name,
-                            rcode = ?resp.response_code(),
-                            "caa: DNS lookup returned SERVFAIL/REFUSED"
-                        );
-                        return Err(AcmeError::Caa(format!(
-                            "CAA lookup failed for '{name}': DNS {:?}",
-                            resp.response_code()
-                        )));
-                    }
-                    // NXDOMAIN or NOERROR → check whether there are any CAA records.
-                    ResponseCode::NXDomain | ResponseCode::NoError => {
-                        let caa_records: Vec<&CAA> = resp
-                            .answers()
-                            .iter()
-                            .filter_map(|r| {
-                                if let Some(RData::CAA(caa)) = r.data() {
-                                    Some(caa)
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
-
-                        if caa_records.is_empty() {
-                            // No CAA records at this label — continue walking up.
-                            tracing::debug!(query_name, "caa: no CAA records found, walking up");
-                            continue;
-                        }
-
-                        // Step 4 (inline): Found a CAA record set — evaluate it and stop walking.
-                        tracing::debug!(
-                            query_name,
-                            count = caa_records.len(),
-                            "caa: evaluating CAA record set"
-                        );
-                        return evaluate_caa_record_set(
-                            &caa_records,
-                            domain,
-                            ca_identities,
-                            is_wildcard,
-                            challenge_type,
-                            account_url,
-                        );
-                    }
-                    // Any other DNS error code → fail closed.
-                    rcode => {
-                        tracing::warn!(query_name, ?rcode, "caa: DNS lookup error");
-                        return Err(AcmeError::Caa(format!(
-                            "CAA lookup failed for '{name}': DNS {rcode:?}"
-                        )));
-                    }
-                }
+            // NXDOMAIN or NOERROR with no records — continue walking up the tree.
+            Ok(None) => {
+                tracing::debug!(query_name, "caa: no CAA records found, walking up");
+                continue;
             }
+            // NOERROR with records — evaluate the CAA record set.
+            Ok(Some(lookup)) => {
+                let caa_records: Vec<&CAA> = lookup
+                    .iter()
+                    .filter_map(|rdata| {
+                        if let RData::CAA(caa) = rdata {
+                            Some(caa)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                if caa_records.is_empty() {
+                    // Lookup returned records but none were CAA (e.g. CNAME) — walk up.
+                    tracing::debug!(query_name, "caa: no CAA records found, walking up");
+                    continue;
+                }
+
+                tracing::debug!(
+                    query_name,
+                    count = caa_records.len(),
+                    "caa: evaluating CAA record set"
+                );
+                return evaluate_caa_record_set(
+                    &caa_records,
+                    domain,
+                    ca_identities,
+                    is_wildcard,
+                    challenge_type,
+                    account_url,
+                );
+            }
+            // SERVFAIL, REFUSED, network error, DNSSEC failure → fail closed.
             Err(e) => {
-                // Transport / timeout error → fail closed.
-                tracing::warn!(query_name, error = %e, "caa: DNS lookup error");
+                tracing::warn!(query_name, error = %e, "caa: DNS lookup failed");
                 return Err(AcmeError::Caa(format!(
                     "CAA lookup failed for '{name}': {e}"
                 )));
@@ -212,7 +191,7 @@ fn evaluate_caa_record_set(
     challenge_type: &str,
     account_url: Option<&str>,
 ) -> Result<(), AcmeError> {
-    use hickory_client::proto::rr::rdata::caa::Value;
+    use hickory_resolver::proto::rr::rdata::caa::Value;
 
     // RFC 8659 §4: for wildcards, if `issuewild` records are present in the set,
     // use them. If absent, fall back to `issue` records.

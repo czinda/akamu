@@ -17,7 +17,7 @@
 
 use std::str::FromStr;
 
-use hickory_client::proto::rr::{Name, RData, RecordType};
+use hickory_resolver::proto::rr::{Name, RData, RecordType};
 
 use crate::error::AcmeError;
 use crate::util::unix_now;
@@ -69,26 +69,28 @@ async fn validate_with_resolver(
 
     let fqdn = Name::from_str(&query_name)
         .map_err(|e| AcmeError::Dns(format!("invalid DNS name '{query_name}': {e}")))?;
-    let resp =
+    let lookup =
         crate::dns::dns_query(resolver_addr, validate_dnssec, dot_server_name, fqdn, RecordType::TXT)
-            .await
-            .map_err(|e| AcmeError::Dns(format!("TXT lookup for '{query_name}': {e}")))?;
+            .await?;
 
-    let records: Vec<String> = resp
-        .answers()
-        .iter()
-        .filter_map(|answer| {
-            if let Some(RData::TXT(txt)) = answer.data() {
-                Some(
-                    txt.iter()
-                        .map(|s| String::from_utf8_lossy(s).into_owned())
-                        .collect(),
-                )
-            } else {
-                None
-            }
+    let records: Vec<String> = lookup
+        .as_ref()
+        .map(|l| {
+            l.iter()
+                .filter_map(|rdata| {
+                    if let RData::TXT(txt) = rdata {
+                        Some(
+                            txt.iter()
+                                .map(|s| String::from_utf8_lossy(s).into_owned())
+                                .collect(),
+                        )
+                    } else {
+                        None
+                    }
+                })
+                .collect()
         })
-        .collect();
+        .unwrap_or_default();
 
     tracing::debug!(
         query_name,
