@@ -94,9 +94,19 @@ pub async fn key_change(
 
     // Update the account key and evict from the SPKI cache so the next
     // request re-loads the new key from the database.
+    let old_thumbprint = ctx.jwk_thumbprint.clone().unwrap_or_default();
     let now = unix_now();
-    db::accounts::update_key(&state.db, &account_id, new_spki, new_thumbprint, now).await?;
+    db::accounts::update_key(&state.db, &account_id, new_spki, new_thumbprint.clone(), now).await?;
     state.spki_cache.write().unwrap().remove(&account_id);
+
+    state
+        .record_audit(
+            crate::audit::AuditEvent::success(crate::audit::AuditEventType::AccountKeyChange)
+                .with_subject(&account_id)
+                .with_principal(format!("acme:{old_thumbprint}"))
+                .with_detail(format!("new_key={new_thumbprint}")),
+        )
+        .await;
 
     let account = db::accounts::get_by_id(&state.db, &account_id)
         .await?

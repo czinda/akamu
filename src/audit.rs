@@ -37,6 +37,7 @@ pub enum AuditEventType {
     // Account management
     AccountCreate,
     AccountDeactivate,
+    AccountKeyChange,
     // Order / certificate lifecycle
     OrderCreate,
     OrderFinalize,
@@ -70,6 +71,7 @@ impl AuditEventType {
             AuditEventType::CaStop => "ca.stop",
             AuditEventType::AccountCreate => "account.create",
             AuditEventType::AccountDeactivate => "account.deactivate",
+            AuditEventType::AccountKeyChange => "account.key-change",
             AuditEventType::OrderCreate => "order.create",
             AuditEventType::OrderFinalize => "order.finalize",
             AuditEventType::CertIssue => "cert.issue",
