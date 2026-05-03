@@ -20,7 +20,7 @@ graph TB
         jose["akamu-jose<br/>JWK / JWS verification<br/>EAB HMAC check"]
         ca["CA module<br/>· CSR validation · certificate issuance · CRL generation"]
         db[("SQL database<br/>· accounts · orders · authzs · challenges · certs · nonces")]
-        val["Validators<br/>· http-01 · dns-01 · tls-alpn-01 · dns-persist-01"]
+        val["Validators<br/>· http-01 · dns-01 · tls-alpn-01 · dns-persist-01 · onion-csr-01"]
         mtc["MTC log<br/>synta-mtc<br/>(optional)"]
     end
 
@@ -156,7 +156,10 @@ src/
     mtc.rs         GET /acme/mtc/tree-size, /root, /inclusion-proof/{id},
                    /cert/{id}/standalone, /landmarks, /landmarks/{seq}/cert
     admin.rs       GET/PUT/DELETE /admin/account/{id}/profile-grants,
-                   POST /admin/eab (bearer-token guarded; 404 when [admin] absent)
+                   POST/GET/DELETE /admin/eab, GET /admin/audit,
+                   GET /admin/certs, POST /admin/crl/force, POST /admin/revoke,
+                   GET /admin/stats, GET/POST/PATCH /admin/operators
+                   (role-based access control; admin listener not started when [admin] absent)
 
   ca/
     mod.rs         Re-exports ca submodules
@@ -177,10 +180,13 @@ src/
                      URI string for ldap_initialize; SRV records sorted per RFC 2782
 
   validation/
-    mod.rs         Challenge dispatch and DB state transitions (validate_challenge)
-    http01.rs      http-01 validation (hyper HTTP client)
-    dns01.rs       dns-01 validation (hickory-resolver)
-    tls_alpn01.rs  tls-alpn-01 validation (rustls TLS client)
+    mod.rs             Challenge dispatch and DB state transitions (validate_challenge)
+    http01.rs          http-01 validation (hyper HTTP client)
+    dns01.rs           dns-01 validation (hickory-resolver)
+    tls_alpn01.rs      tls-alpn-01 validation (rustls TLS client)
+    dns_persist_01.rs  dns-persist-01 validation (hickory-resolver; persistent TXT records)
+    onion_csr_01.rs    onion-csr-01 validation (CSR-based; .onion identifiers)
+    caa.rs             CAA record validation (RFC 8659 + RFC 8657)
 
   mtc/
     mod.rs         Re-exports mtc submodules
