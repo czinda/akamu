@@ -255,7 +255,14 @@ pub async fn finalize_order(
         )
         .await?;
 
-        db::orders::set_certificate(&mut *tx, &id, &cert_id, now).await?;
+        // Conflict means a concurrent finalization already committed this
+        // order to 'valid'; surface as OrderNotReady per RFC 8555 §7.4.
+        db::orders::set_certificate(&mut *tx, &id, &cert_id, now)
+            .await
+            .map_err(|e| match e {
+                AcmeError::Conflict(_) => AcmeError::OrderNotReady,
+                other => other,
+            })?;
 
         // Mark predecessor certificate as replaced (RFC 9773 §5).
         let pred_already_replaced = if let Some(ref pred_uuid) = pred_cert_uuid {

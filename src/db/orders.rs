@@ -126,14 +126,20 @@ pub async fn set_certificate(
     certificate_id: &str,
     now: i64,
 ) -> Result<(), AcmeError> {
-    let result = sqlx::query("UPDATE orders SET status = 'valid', certificate_id = ?, updated = ? WHERE id = ?")
-        .bind(certificate_id)
-        .bind(now)
-        .bind(id)
-        .execute(executor)
-        .await?;
+    // AND status = 'ready' is an atomic finalization guard: if a concurrent
+    // request already committed this order to 'valid', rows_affected == 0 and
+    // we return Conflict instead of silently overwriting the certificate_id.
+    let result = sqlx::query(
+        "UPDATE orders SET status = 'valid', certificate_id = ?, updated = ? \
+         WHERE id = ? AND status = 'ready'",
+    )
+    .bind(certificate_id)
+    .bind(now)
+    .bind(id)
+    .execute(executor)
+    .await?;
     if result.rows_affected() == 0 {
-        return Err(AcmeError::NotFound);
+        return Err(AcmeError::Conflict("order already finalized".into()));
     }
     Ok(())
 }
@@ -359,6 +365,10 @@ mod tests {
         let db = open_db().await;
         insert_account(&db, "acct-4").await;
         insert(&db, sample_order("order-4", "acct-4"))
+            .await
+            .unwrap();
+        // set_certificate requires status = 'ready'
+        update_status(&db, "order-4", "ready", None, 1_700_000_000)
             .await
             .unwrap();
 
