@@ -6,17 +6,26 @@
 
 use crate::error::AcmeError;
 
+/// A row from the `operators` table.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct OperatorRow {
     pub id: i64,
     pub name: String,
+    /// Role string stored in the DB: `"administrator"`, `"ca_operations"`, `"ca_ra"`, `"auditor"`.
     pub role: String,
+    /// SHA-256 hex fingerprint of the operator's mTLS certificate, or `None`.
     pub cert_fingerprint: Option<String>,
+    /// Kerberos principal (e.g. `"alice@REALM"`) for GSSAPI authentication, or `None`.
     pub gssapi_principal: Option<String>,
+    /// RFC 3339 timestamp when the operator was created.
     pub created_at: String,
+    /// RFC 3339 timestamp of the last successful authentication, or `None` if never.
     pub last_seen_at: Option<String>,
+    /// `1` when the account is active; `0` when deactivated.
     pub active: i64,
+    /// Number of consecutive authentication failures since last successful login (FIA_AFL.1).
     pub failed_attempts: i64,
+    /// RFC 3339 timestamp until which the account is locked, or `None` when not locked.
     pub locked_until: Option<String>,
 }
 

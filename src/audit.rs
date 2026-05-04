@@ -65,6 +65,7 @@ pub enum AuditEventType {
 }
 
 impl AuditEventType {
+    /// Return the canonical dot-separated string for this event type (e.g. `"cert.issue"`).
     pub fn as_str(self) -> &'static str {
         match self {
             AuditEventType::CaStart => "ca.start",
@@ -95,13 +96,17 @@ impl AuditEventType {
 
 // ── Outcome ────────────────────────────────────────────────────────────────────
 
+/// Outcome of an auditable operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditOutcome {
+    /// The operation completed without error.
     Success,
+    /// The operation failed or was denied.
     Failure,
 }
 
 impl AuditOutcome {
+    /// Return the string representation stored in the database (`"success"` or `"failure"`).
     pub fn as_str(self) -> &'static str {
         match self {
             AuditOutcome::Success => "success",
@@ -125,6 +130,7 @@ pub struct AuditEvent {
 }
 
 impl AuditEvent {
+    /// Construct a successful event of the given type.
     pub fn success(event_type: AuditEventType) -> Self {
         Self {
             event_type,
@@ -135,6 +141,7 @@ impl AuditEvent {
         }
     }
 
+    /// Construct a failure event of the given type.
     pub fn failure(event_type: AuditEventType) -> Self {
         Self {
             event_type,
@@ -145,16 +152,19 @@ impl AuditEvent {
         }
     }
 
+    /// Set the subject (e.g. account UUID, certificate serial, JWK thumbprint).
     pub fn with_subject(mut self, subject: impl Into<String>) -> Self {
         self.subject = Some(subject.into());
         self
     }
 
+    /// Set the principal (operator name or `"acme:<thumbprint>"`).
     pub fn with_principal(mut self, principal: impl Into<String>) -> Self {
         self.principal = Some(principal.into());
         self
     }
 
+    /// Attach a JSON detail string with event-specific context.
     pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = Some(detail.into());
         self
@@ -186,10 +196,12 @@ pub enum AlarmAction {
 pub struct AuditPolicy {
     /// Maximum number of `audit_events` rows.  `None` = unlimited.
     pub max_rows: Option<i64>,
+    /// Action to take when `max_rows` is reached.
     pub overflow: OverflowPolicy,
     /// Number of `SecurityViolation` events in a rolling 5-minute window that
     /// triggers the FAU_ARP.1 alarm response.
     pub alarm_threshold: u32,
+    /// Action to take when `alarm_threshold` is reached.
     pub alarm_action: AlarmAction,
 }
 

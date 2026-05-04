@@ -249,8 +249,11 @@ pub struct CaState {
 /// Cached account key material stored in `AppState::spki_cache`.
 #[derive(Clone)]
 pub struct CachedAccount {
+    /// DER-encoded SubjectPublicKeyInfo of the account key.
     pub spki_der: Vec<u8>,
+    /// RFC 7638 JWK thumbprint (base64url SHA-256 of the canonical JWK).
     pub jwk_thumbprint: String,
+    /// Account status string: `"valid"`, `"deactivated"`, or `"revoked"`.
     pub status: String,
 }
 
@@ -292,9 +295,13 @@ impl MtcState {
 /// Role assigned to an operator account.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperatorRole {
+    /// Full administrative access.
     Administrator,
+    /// Manages CA operations (issuance, CRL).
     CaOperations,
+    /// Registration Authority role (can approve orders).
     CaRa,
+    /// Read-only access to audit logs and statistics.
     Auditor,
 }
 
@@ -312,6 +319,7 @@ impl std::str::FromStr for OperatorRole {
 }
 
 impl OperatorRole {
+    /// Return the canonical lowercase string representation of the role.
     pub fn as_str(self) -> &'static str {
         match self {
             OperatorRole::Administrator => "administrator",
