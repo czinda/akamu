@@ -287,8 +287,8 @@ pub fn build_renewal_config(
 /// Handles certbot's wildcard encoding where `*.example.com` is stored as
 /// `_wildcard.example.com/` in `live/`.
 pub fn live_cert_paths(certbot_dir: &Path, domain: &str) -> (PathBuf, PathBuf) {
-    let live_domain = if domain.starts_with("*.") {
-        format!("_wildcard.{}", &domain[2..])
+    let live_domain = if let Some(rest) = domain.strip_prefix("*.") {
+        format!("_wildcard.{rest}")
     } else {
         domain.to_string()
     };

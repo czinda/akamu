@@ -194,8 +194,8 @@ fn is_expired(expires_at: &str, margin_secs: i64) -> bool {
         for y in 1970..year {
             days += if is_leap(y) { 366 } else { 365 };
         }
-        for m in 0..(month - 1) as usize {
-            days += days_per_month[m] as i64;
+        for d in &days_per_month[..(month - 1) as usize] {
+            days += *d as i64;
         }
         days += (day - 1) as i64;
         Some(days * 86400 + hour * 3600 + min * 60 + sec)

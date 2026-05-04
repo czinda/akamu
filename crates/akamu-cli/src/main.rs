@@ -1087,11 +1087,7 @@ async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
 
         // Check ARI if --cert or cert_path from config exists and --force is not set.
         if !args.force {
-            let cert_path = args
-                .cert
-                .as_ref()
-                .map(PathBuf::as_path)
-                .unwrap_or(&cfg.cert_path);
+            let cert_path = args.cert.as_deref().unwrap_or(&cfg.cert_path);
             if cert_path.exists() {
                 let client = AcmeClient::new(&cfg.server)
                     .await

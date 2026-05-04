@@ -75,7 +75,7 @@ pub async fn lookup_session(state: &AppState, token: &str) -> Option<(String, Co
     let key = akamu::admin::auth::find_session_token(&sessions, token)?;
     let s = sessions.get_mut(&key)?;
     s.last_active_at = now;
-    Some((s.name.to_string(), s.role.clone(), s.operator_id))
+    Some((s.name.to_string(), s.role, s.operator_id))
 }
 
 pub async fn invalidate_session(state: &AppState, token: &str) {
@@ -151,7 +151,7 @@ where
                 tracing::info!(operator = %op.name, role = %op.role, "cosigner admin: mTLS cert accepted, session created");
                 return Ok(OperatorContext {
                     name: op.name.clone(),
-                    role: op.role.clone(),
+                    role: op.role,
                     operator_id,
                     session_token: Some(token),
                 });
@@ -262,7 +262,7 @@ pub async fn get_stats(_operator: OperatorContext, State(state): State<Arc<AppSt
             .unwrap_or_else(|e| e.into_inner());
         let ts_str = stats
             .1
-            .and_then(|ts| synta::GeneralizedTime::from_unix(ts))
+            .and_then(synta::GeneralizedTime::from_unix)
             .map(|gt| {
                 format!(
                     "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",

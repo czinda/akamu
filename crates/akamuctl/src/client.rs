@@ -65,7 +65,7 @@ pub fn build_tls_config(
         let cert_ders: Vec<rustls_pki_types::CertificateDer<'static>> =
             synta_certificate::pem_to_der(cert_pem)
                 .into_iter()
-                .map(|d| rustls_pki_types::CertificateDer::from(d))
+                .map(rustls_pki_types::CertificateDer::from)
                 .collect();
         if cert_ders.is_empty() {
             return Err(CtlError::Config(
