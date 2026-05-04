@@ -76,6 +76,7 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
             ca_certs: vec![],
             gssapi: None,
             session_ttl_secs: 3600,
+            session_lock_secs: 900,
             auth_rate_limit: 20,
             audit_max_rows: None,
             audit_overflow: "drop_oldest".into(),

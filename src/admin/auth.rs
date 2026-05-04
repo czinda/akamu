@@ -121,32 +121,51 @@ pub async fn create_session(
     Ok(token)
 }
 
+/// Result of a session token lookup.
+enum SessionLookup {
+    /// Session is valid and active; contains operator details.
+    Active(i64, String, OperatorRole, AdminAuthMethod),
+    /// Session exists but is locked due to inactivity (FTA_SSL_EXT.1).
+    Locked,
+    /// Token is absent, expired, or invalid.
+    NotFound,
+}
+
 /// Look up a session by token.  Sweeps expired entries; updates `last_active_at`
-/// on a hit.  Returns `None` when the token is absent or expired.
-async fn lookup_session(
-    state: &AppState,
-    token: &str,
-) -> Option<(i64, String, OperatorRole, AdminAuthMethod)> {
-    let store = state.admin_sessions.as_ref()?;
-    let ttl = Duration::from_secs(
-        state
-            .config
-            .admin
-            .as_ref()
-            .map(|a| a.session_ttl_secs)
-            .unwrap_or(3600),
-    );
+/// on a hit.  Returns [`SessionLookup::Locked`] when the session is idle longer
+/// than `session_lock_secs` but has not yet reached `session_ttl_secs`.
+async fn lookup_session(state: &AppState, token: &str) -> SessionLookup {
+    let store = match state.admin_sessions.as_ref() {
+        Some(s) => s,
+        None => return SessionLookup::NotFound,
+    };
+    let admin = state.config.admin.as_ref();
+    let ttl = Duration::from_secs(admin.map(|a| a.session_ttl_secs).unwrap_or(3600));
+    let lock_secs = admin.map(|a| a.session_lock_secs).unwrap_or(900);
+    let lock_threshold = Duration::from_secs(lock_secs);
+
     let mut map = store.lock().await;
     map.retain(|_, s| s.last_active_at.elapsed() < ttl);
-    let key = find_session_token(&map, token)?;
-    let session = map.get_mut(&key)?;
+    let key = match find_session_token(&map, token) {
+        Some(k) => k,
+        None => return SessionLookup::NotFound,
+    };
+    let session = match map.get_mut(&key) {
+        Some(s) => s,
+        None => return SessionLookup::NotFound,
+    };
+
+    if session.last_active_at.elapsed() >= lock_threshold {
+        return SessionLookup::Locked;
+    }
+
     session.last_active_at = Instant::now();
-    Some((
+    SessionLookup::Active(
         session.operator_id,
         String::clone(&session.name),
         session.role,
         session.auth_method,
-    ))
+    )
 }
 
 /// Remove a session token from the store.  No-op if the token is unknown.
@@ -258,21 +277,34 @@ where
 
         // ── Path 1: Bearer session token ──────────────────────────────────────
         if let Some(token) = auth_header.strip_prefix("Bearer ") {
-            if let Some((id, name, role, method)) = lookup_session(&app, token).await {
-                return Ok(OperatorContext {
-                    operator_id: id,
-                    name,
-                    role,
-                    auth_method: method,
-                    session_token: Some(token.to_string()),
-                });
+            match lookup_session(&app, token).await {
+                SessionLookup::Active(id, name, role, method) => {
+                    return Ok(OperatorContext {
+                        operator_id: id,
+                        name,
+                        role,
+                        auth_method: method,
+                        session_token: Some(token.to_string()),
+                    });
+                }
+                SessionLookup::Locked => {
+                    return Err((
+                        StatusCode::LOCKED,
+                        axum::Json(serde_json::json!({
+                            "error": "session_locked",
+                            "message": "session locked due to inactivity; re-authenticate"
+                        })),
+                    )
+                        .into_response());
+                }
+                SessionLookup::NotFound => {
+                    return Err((
+                        StatusCode::UNAUTHORIZED,
+                        "session token expired or invalid; please re-authenticate",
+                    )
+                        .into_response());
+                }
             }
-            // Token not found or expired.
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                "session token expired or invalid; please re-authenticate",
-            )
-                .into_response());
         }
 
         // ── Path 2: mTLS client certificate ──────────────────────────────────

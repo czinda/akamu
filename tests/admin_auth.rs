@@ -139,6 +139,7 @@ async fn build_state(
             ca_certs: vec![],
             gssapi: None,
             session_ttl_secs,
+            session_lock_secs: 900,
             auth_rate_limit,
             audit_max_rows: None,
             audit_overflow: "drop_oldest".into(),

@@ -63,6 +63,15 @@ pub struct AdminConfig {
     /// Inactive session expiry (FTA_SSL.3/4/EXT.1).  Default: 3600 s (1 h).
     #[serde(default = "default_admin_session_ttl_secs")]
     pub session_ttl_secs: u64,
+    /// Inactivity threshold before a session enters locked state
+    /// (FTA_SSL_EXT.1).  Default: 900 s (15 min).
+    ///
+    /// After this much idle time, requests with the session token receive
+    /// `423 Locked` instead of `401 Unauthorized`.  The session is not
+    /// destroyed; the operator must re-authenticate to obtain a new token.
+    /// Must be less than `session_ttl_secs`.
+    #[serde(default = "default_admin_session_lock_secs")]
+    pub session_lock_secs: u64,
     /// Maximum credential presentations (Bearer token, mTLS cert, or GSSAPI token)
     /// from a single source IP in a rolling 5-minute window before the source
     /// receives 429 responses.  Prevents audit-log floods that could trigger the
@@ -115,6 +124,9 @@ pub struct AdminConfig {
 
 fn default_admin_session_ttl_secs() -> u64 {
     3600
+}
+fn default_admin_session_lock_secs() -> u64 {
+    900
 }
 fn default_admin_auth_rate_limit() -> u32 {
     20
