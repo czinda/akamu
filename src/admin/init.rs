@@ -22,12 +22,13 @@ use crate::ca::init::{generate_backend_key, unix_to_generalized_time};
 use crate::ca::issue::{sign_admin_cert, sign_server_cert};
 use crate::config::AdminConfig;
 use crate::db::Db;
+use crate::error::AcmeError;
 use crate::state::CaState;
 use crate::util::{sha256_hex, unix_now};
 
 /// Ensure the admin listener TLS cert and key files exist, generating them from
 /// the Akāmu CA if absent.
-pub fn load_or_generate_server_cert(cfg: &AdminConfig, ca: &CaState) -> Result<(), String> {
+pub fn load_or_generate_server_cert(cfg: &AdminConfig, ca: &CaState) -> Result<(), AcmeError> {
     let cert_exists = std::path::Path::new(&cfg.cert_file).exists();
     let key_exists = std::path::Path::new(&cfg.key_file).exists();
 
@@ -35,11 +36,11 @@ pub fn load_or_generate_server_cert(cfg: &AdminConfig, ca: &CaState) -> Result<(
         return Ok(());
     }
     if cert_exists != key_exists {
-        return Err(format!(
+        return Err(AcmeError::Config(format!(
             "admin cert and key must both be present or both absent; \
              cert='{}' exists={cert_exists}, key='{}' exists={key_exists}",
             cfg.cert_file, cfg.key_file
-        ));
+        )));
     }
 
     tracing::info!(
@@ -52,26 +53,26 @@ pub fn load_or_generate_server_cert(cfg: &AdminConfig, ca: &CaState) -> Result<(
     );
 
     let key = generate_backend_key(&cfg.bootstrap_key_type).map_err(|e| {
-        format!(
+        AcmeError::Config(format!(
             "generate admin server key (type '{}'): {e}",
             cfg.bootstrap_key_type
-        )
+        ))
     })?;
 
     let cert_der = sign_server_cert(&cfg.server_name, &key, ca)
-        .map_err(|e| format!("sign admin server cert: {e}"))?;
+        .map_err(|e| AcmeError::Config(format!("sign admin server cert: {e}")))?;
 
     let key_pem = key
         .to_pem(None)
-        .map_err(|e| format!("admin server key to PEM: {e}"))?;
+        .map_err(|e| AcmeError::Config(format!("admin server key to PEM: {e}")))?;
     write_secret_file(&cfg.key_file, &key_pem)
-        .map_err(|e| format!("write admin key '{}': {e}", cfg.key_file))?;
+        .map_err(|e| AcmeError::Config(format!("write admin key '{}': {e}", cfg.key_file)))?;
 
     // Chain: leaf + CA cert so clients can build a complete chain.
     let mut chain = der_to_pem("CERTIFICATE", &cert_der);
     chain.extend_from_slice(&der_to_pem("CERTIFICATE", &ca.cert_der));
     std::fs::write(&cfg.cert_file, &chain)
-        .map_err(|e| format!("write admin cert '{}': {e}", cfg.cert_file))?;
+        .map_err(|e| AcmeError::Config(format!("write admin cert '{}': {e}", cfg.cert_file)))?;
 
     tracing::info!("admin server certificate generated successfully");
     Ok(())
@@ -94,23 +95,23 @@ pub async fn bootstrap_operator_if_needed(
     cfg: &AdminConfig,
     ca: &CaState,
     db: &Db,
-) -> Result<(), String> {
+) -> Result<(), AcmeError> {
     // ── GSSAPI bootstrap ──────────────────────────────────────────────────────
     if let Some(ref principal) = cfg.bootstrap_operator_gssapi_principal {
         let existing = crate::db::operators::get_by_principal(db, principal)
             .await
-            .map_err(|e| format!("operators DB lookup: {e}"))?;
+            .map_err(|e| AcmeError::Config(format!("operators DB lookup: {e}")))?;
         if existing.is_none() {
             let empty = crate::db::operators::is_empty(db)
                 .await
-                .map_err(|e| format!("operators DB check: {e}"))?;
+                .map_err(|e| AcmeError::Config(format!("operators DB check: {e}")))?;
             if !empty {
-                return Err(format!(
+                return Err(AcmeError::Config(format!(
                     "bootstrap GSSAPI principal '{principal}' is not registered \
                      but operators already exist in the database; \
                      add the operator manually with akamuctl or remove \
                      bootstrap_operator_gssapi_principal from the config"
-                ));
+                )));
             }
             tracing::info!(
                 "no operators found — registering bootstrap Administrator operator \
@@ -127,7 +128,7 @@ pub async fn bootstrap_operator_if_needed(
                 &now,
             )
             .await
-            .map_err(|e| format!("insert bootstrap GSSAPI operator: {e}"))?;
+            .map_err(|e| AcmeError::Config(format!("insert bootstrap GSSAPI operator: {e}")))?;
             if inserted {
                 tracing::info!(
                     "bootstrap Administrator '{}' registered with GSSAPI principal '{principal}'",
@@ -160,36 +161,36 @@ pub async fn bootstrap_operator_if_needed(
         let fingerprint = read_cert_fingerprint(cert_path)?;
         let existing = crate::db::operators::get_by_fingerprint(db, &fingerprint)
             .await
-            .map_err(|e| format!("operators DB lookup: {e}"))?;
+            .map_err(|e| AcmeError::Config(format!("operators DB lookup: {e}")))?;
         if existing.is_none() {
-            return Err(format!(
+            return Err(AcmeError::Config(format!(
                 "bootstrap operator cert/key files exist ('{cert_path}', '{key_path}') \
                  but no matching operator row was found in the database; \
                  re-register manually with akamuctl or delete the files to re-provision"
-            ));
+            )));
         }
         return Ok(());
     }
     if cert_exists != key_exists {
-        return Err(format!(
+        return Err(AcmeError::Config(format!(
             "bootstrap operator cert and key must both be present or both absent; \
              cert='{cert_path}' exists={cert_exists}, key='{key_path}' exists={key_exists}"
-        ));
+        )));
     }
 
     // Files absent — only proceed if the operators table is empty to avoid
     // silently creating a second Administrator on a misconfigured restart.
     let empty = crate::db::operators::is_empty(db)
         .await
-        .map_err(|e| format!("operators DB check: {e}"))?;
+        .map_err(|e| AcmeError::Config(format!("operators DB check: {e}")))?;
 
     if !empty {
-        return Err(format!(
+        return Err(AcmeError::Config(format!(
             "bootstrap operator cert/key ('{cert_path}', '{key_path}') are absent \
              but operators already exist in the database; \
              either restore the files or remove bootstrap_operator_cert_file / \
              bootstrap_operator_key_file from the config and manage operators via akamuctl"
-        ));
+        )));
     }
 
     tracing::info!(
@@ -202,23 +203,25 @@ pub async fn bootstrap_operator_if_needed(
     );
 
     let key = generate_backend_key(&cfg.bootstrap_key_type)
-        .map_err(|e| format!("generate bootstrap operator key: {e}"))?;
+        .map_err(|e| AcmeError::Config(format!("generate bootstrap operator key: {e}")))?;
 
     let cert_der = sign_admin_cert(&cfg.bootstrap_operator_name, &key, ca)
-        .map_err(|e| format!("sign bootstrap operator cert: {e}"))?;
+        .map_err(|e| AcmeError::Config(format!("sign bootstrap operator cert: {e}")))?;
 
-    let fingerprint =
-        sha256_hex(&cert_der).map_err(|e| format!("bootstrap operator cert fingerprint: {e}"))?;
+    let fingerprint = sha256_hex(&cert_der)
+        .map_err(|e| AcmeError::Config(format!("bootstrap operator cert fingerprint: {e}")))?;
 
     let key_pem = key
         .to_pem(None)
-        .map_err(|e| format!("bootstrap operator key to PEM: {e}"))?;
-    write_secret_file(key_path, &key_pem)
-        .map_err(|e| format!("write bootstrap operator key '{key_path}': {e}"))?;
+        .map_err(|e| AcmeError::Config(format!("bootstrap operator key to PEM: {e}")))?;
+    write_secret_file(key_path, &key_pem).map_err(|e| {
+        AcmeError::Config(format!("write bootstrap operator key '{key_path}': {e}"))
+    })?;
 
     let cert_pem = der_to_pem("CERTIFICATE", &cert_der);
-    std::fs::write(cert_path, &cert_pem)
-        .map_err(|e| format!("write bootstrap operator cert '{cert_path}': {e}"))?;
+    std::fs::write(cert_path, &cert_pem).map_err(|e| {
+        AcmeError::Config(format!("write bootstrap operator cert '{cert_path}': {e}"))
+    })?;
 
     let now = unix_to_generalized_time(unix_now());
     // Use INSERT OR IGNORE semantics: if a concurrent startup already inserted
@@ -232,7 +235,7 @@ pub async fn bootstrap_operator_if_needed(
         &now,
     )
     .await
-    .map_err(|e| format!("insert bootstrap operator: {e}"))?;
+    .map_err(|e| AcmeError::Config(format!("insert bootstrap operator: {e}")))?;
 
     if inserted {
         tracing::info!(
@@ -272,12 +275,13 @@ fn write_secret_file(path: &str, data: &[u8]) -> std::io::Result<()> {
 }
 
 /// Read the PEM certificate at `path` and compute its SHA-256 fingerprint.
-fn read_cert_fingerprint(path: &str) -> Result<String, String> {
-    let pem = std::fs::read(path).map_err(|e| format!("read cert '{path}': {e}"))?;
+fn read_cert_fingerprint(path: &str) -> Result<String, AcmeError> {
+    let pem =
+        std::fs::read(path).map_err(|e| AcmeError::Config(format!("read cert '{path}': {e}")))?;
     let ders = synta_certificate::pem_to_der(&pem);
     let der = ders
         .into_iter()
         .next()
-        .ok_or_else(|| format!("cert file '{path}' contains no certificates"))?;
-    sha256_hex(&der).map_err(|e| format!("fingerprint '{path}': {e}"))
+        .ok_or_else(|| AcmeError::Config(format!("cert file '{path}' contains no certificates")))?;
+    sha256_hex(&der).map_err(|e| AcmeError::Config(format!("fingerprint '{path}': {e}")))
 }
