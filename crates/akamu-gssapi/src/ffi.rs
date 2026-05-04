@@ -3,7 +3,7 @@
 //! Only the subset needed for server-side SPNEGO acceptance is declared here.
 //! All pointer types use opaque enum structs to prevent accidental dereferencing.
 
-use libc::{c_char, c_void};
+use libc::{c_char, c_uint, c_void, size_t};
 use std::ptr;
 
 pub type OmUint32 = u32;
@@ -27,14 +27,14 @@ pub type GssOidSetT = *mut GssOidSetStruct;
 /// Variable-length byte buffer used for tokens and name strings.
 #[repr(C)]
 pub struct GssBufferDesc {
-    pub length: usize,
+    pub length: size_t,
     pub value: *mut c_void,
 }
 
 /// OID descriptor: a DER-encoded object identifier.
 #[repr(C)]
 pub struct GssOidDesc {
-    pub length: u32,
+    pub length: c_uint,
     pub elements: *mut c_void,
 }
 

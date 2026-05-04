@@ -12,7 +12,8 @@
 //! For each incoming `Authorization: Negotiate <base64>` request, call:
 //!
 //! ```no_run
-//! # let cred = unsafe { std::mem::zeroed() };
+//! # let cred = akamu_gssapi::GssServerCred::acquire("HTTP", "/etc/akamu/http.keytab")
+//! #     .expect("GSSAPI credential");
 //! # let token_bytes: Vec<u8> = vec![];
 //! let (out_token, principal) = akamu_gssapi::accept_token(&cred, &token_bytes, None)
 //!     .expect("GSSAPI accept");
@@ -22,10 +23,11 @@
 //!
 //! # Thread safety
 //!
-//! [`GssServerCred`] is `Send + Sync`.  MIT Kerberos allows concurrent
-//! `gss_accept_sec_context` calls against the same acceptor credential, so a
-//! single `Arc<GssServerCred>` shared across all request-handling threads is
-//! the expected usage pattern.
+//! [`GssServerCred`] is `Send`.  When built against MIT Kerberos (the default;
+//! controlled by `cfg(mit_kerberos)` in `build.rs`), it is also `Sync`, allowing
+//! a single `Arc<GssServerCred>` to be shared across all request-handling threads.
+//! MIT Kerberos guarantees that `gss_accept_sec_context` is safe for concurrent
+//! use with the same acceptor credential; Heimdal does not.
 
 pub mod error;
 mod ffi;
@@ -56,16 +58,15 @@ impl std::fmt::Debug for GssServerCred {
     }
 }
 
-// SAFETY: gss_cred_id_t may be used concurrently from multiple threads for
-// accept operations.
-//
-// THIS IMPL IS ONLY SOUND WHEN LINKED AGAINST MIT KERBEROS.  MIT Kerberos
-// explicitly documents that gss_accept_sec_context is thread-safe for concurrent
-// use with the same acceptor credential (see the MIT Kerberos thread-safety
-// documentation at https://web.mit.edu/kerberos/krb5-latest/doc/appdev/refs/).
-// Heimdal and other GSSAPI implementations do NOT make this guarantee; using
-// this type with a non-MIT Kerberos library is unsound.
+// SAFETY: gss_cred_id_t is a pointer owned exclusively by this struct.
+// Moving it to another thread is safe; the raw pointer carries no thread affinity.
 unsafe impl Send for GssServerCred {}
+
+// SAFETY: MIT Kerberos explicitly documents that gss_accept_sec_context is
+// thread-safe for concurrent calls with the same acceptor credential.
+// This impl is gated on cfg(mit_kerberos) (set by build.rs) because Heimdal
+// and other GSSAPI implementations do NOT make this guarantee.
+#[cfg(mit_kerberos)]
 unsafe impl Sync for GssServerCred {}
 
 impl Drop for GssServerCred {
@@ -210,6 +211,7 @@ impl std::fmt::Debug for GssClientCred {
 // SAFETY: same MIT Kerberos thread-safety guarantee as GssServerCred.
 // THIS IMPL IS ONLY SOUND WHEN LINKED AGAINST MIT KERBEROS.
 unsafe impl Send for GssClientCred {}
+#[cfg(mit_kerberos)]
 unsafe impl Sync for GssClientCred {}
 
 impl Drop for GssClientCred {
@@ -598,6 +600,9 @@ pub fn accept_token(
     // SAFETY: src_name is a valid GssNameT set by gss_accept_sec_context.
     let major_dn =
         unsafe { ffi::gss_display_name(&mut minor, src_name, &mut name_buf, ptr::null_mut()) };
+    // Snapshot minor before gss_release_name overwrites it, so DisplayName errors
+    // carry the actual failure status rather than the release-name minor code.
+    let dn_minor = minor;
     // SAFETY: src_name is valid; gss_release_name takes ownership.
     unsafe { ffi::gss_release_name(&mut minor, &mut src_name) };
 
@@ -634,7 +639,7 @@ pub fn accept_token(
         }
         return Err(GssError::DisplayName {
             major: major_dn,
-            minor,
+            minor: dn_minor,
         });
     };
 
