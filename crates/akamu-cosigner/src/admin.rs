@@ -107,7 +107,8 @@ where
         if let Some(auth) = parts.headers.get(axum::http::header::AUTHORIZATION) {
             if let Ok(s) = auth.to_str() {
                 if let Some(token) = s.strip_prefix("Bearer ") {
-                    if let Some((name, role, operator_id)) = lookup_session(&app_state, token).await {
+                    if let Some((name, role, operator_id)) = lookup_session(&app_state, token).await
+                    {
                         tracing::info!(operator = %name, role = %role, "cosigner admin: bearer token accepted");
                         return Ok(OperatorContext {
                             name,
@@ -117,7 +118,9 @@ where
                         });
                     }
                     tracing::warn!("cosigner admin: bearer token invalid or expired");
-                    return Err((StatusCode::UNAUTHORIZED, "session expired or invalid").into_response());
+                    return Err(
+                        (StatusCode::UNAUTHORIZED, "session expired or invalid").into_response()
+                    );
                 }
             }
         }
@@ -126,7 +129,11 @@ where
         if let Some(ext) = parts.extensions.get::<PeerClientCert>() {
             let fp = akamu::util::sha256_hex(&ext.0).map_err(|e| {
                 tracing::error!(error = %e, "cosigner admin: fingerprint computation failed");
-                (StatusCode::INTERNAL_SERVER_ERROR, format!("fingerprint: {e}")).into_response()
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("fingerprint: {e}"),
+                )
+                    .into_response()
             })?;
             if let Some((idx, op)) = app_state
                 .admin_operators
@@ -135,10 +142,12 @@ where
                 .find(|(_, o)| o.cert_fingerprint.as_deref() == Some(&fp))
             {
                 let operator_id = idx as i64;
-                let token = create_session(&app_state, &op.name, op.role, operator_id).await.map_err(|e| {
-                    tracing::error!(error = %e, "cosigner admin: session creation failed");
-                    (StatusCode::INTERNAL_SERVER_ERROR, format!("session: {e}")).into_response()
-                })?;
+                let token = create_session(&app_state, &op.name, op.role, operator_id)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!(error = %e, "cosigner admin: session creation failed");
+                        (StatusCode::INTERNAL_SERVER_ERROR, format!("session: {e}")).into_response()
+                    })?;
                 tracing::info!(operator = %op.name, role = %op.role, "cosigner admin: mTLS cert accepted, session created");
                 return Ok(OperatorContext {
                     name: op.name.clone(),
@@ -149,11 +158,19 @@ where
             }
             // Cert presented but not registered.
             tracing::warn!(fingerprint = %fp, "cosigner admin: mTLS cert not registered as operator");
-            return Err((StatusCode::UNAUTHORIZED, "client certificate not registered as operator").into_response());
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                "client certificate not registered as operator",
+            )
+                .into_response());
         }
 
         tracing::warn!("cosigner admin: request with no authentication");
-        Err((StatusCode::UNAUTHORIZED, "authentication required (Bearer token or mTLS)").into_response())
+        Err((
+            StatusCode::UNAUTHORIZED,
+            "authentication required (Bearer token or mTLS)",
+        )
+            .into_response())
     }
 }
 
@@ -236,13 +253,13 @@ pub async fn get_status(
 /// `GET /admin/stats`
 ///
 /// Signing statistics.  All authenticated operators may call this.
-pub async fn get_stats(
-    _operator: OperatorContext,
-    State(state): State<Arc<AppState>>,
-) -> Response {
+pub async fn get_stats(_operator: OperatorContext, State(state): State<Arc<AppState>>) -> Response {
     let uptime_secs = state.startup_time.elapsed().as_secs();
     let (checkpoints_signed, last_checkpoint_at) = {
-        let stats = state.signing_stats.lock().unwrap_or_else(|e| e.into_inner());
+        let stats = state
+            .signing_stats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let ts_str = stats
             .1
             .and_then(|ts| synta::GeneralizedTime::from_unix(ts))
@@ -270,10 +287,7 @@ pub async fn get_stats(
 ///
 /// Returns a redacted view of the cosigner configuration.
 /// Only accessible to the `administrator` role.
-pub async fn get_config(
-    operator: OperatorContext,
-    State(state): State<Arc<AppState>>,
-) -> Response {
+pub async fn get_config(operator: OperatorContext, State(state): State<Arc<AppState>>) -> Response {
     if operator.role != CosignerRole::Administrator {
         return forbidden("administrator role required");
     }

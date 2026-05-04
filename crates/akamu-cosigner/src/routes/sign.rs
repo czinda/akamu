@@ -88,7 +88,10 @@ pub async fn post_sign(
 
     // Update signing statistics for GET /admin/stats (single lock for consistency).
     {
-        let mut stats = state.signing_stats.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stats = state
+            .signing_stats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         stats.0 += 1;
         stats.1 = Some(crate::util::unix_now());
     }

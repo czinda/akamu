@@ -46,7 +46,11 @@ async fn seed_session(state: &Arc<AppState>, token: &str, role: CosignerRole) {
     );
 }
 
-async fn get_with_bearer(router: &axum::Router, path: &str, token: &str) -> axum::response::Response {
+async fn get_with_bearer(
+    router: &axum::Router,
+    path: &str,
+    token: &str,
+) -> axum::response::Response {
     let req = Request::builder()
         .method(Method::GET)
         .uri(path)
@@ -63,9 +67,15 @@ async fn get_status_returns_ok() {
     seed_session(&state, "tok-status", CosignerRole::Auditor).await;
 
     let resp = get_with_bearer(&router, "/admin/status", "tok-status").await;
-    assert_eq!(resp.status(), StatusCode::OK, "GET /admin/status must return 200");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "GET /admin/status must return 200"
+    );
 
-    let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["status"], "ok", "status field must be \"ok\"");
     assert!(json["uptime_secs"].is_u64(), "uptime_secs must be a number");
@@ -78,13 +88,25 @@ async fn get_stats_returns_counters() {
     seed_session(&state, "tok-stats", CosignerRole::Auditor).await;
 
     let resp = get_with_bearer(&router, "/admin/stats", "tok-stats").await;
-    assert_eq!(resp.status(), StatusCode::OK, "GET /admin/stats must return 200");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "GET /admin/stats must return 200"
+    );
 
-    let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert!(json["uptime_secs"].is_u64(), "uptime_secs must be present");
-    assert!(json["checkpoints_signed"].is_u64(), "checkpoints_signed must be present");
-    assert_eq!(json["checkpoints_signed"], 0, "fresh server must have 0 checkpoints signed");
+    assert!(
+        json["checkpoints_signed"].is_u64(),
+        "checkpoints_signed must be present"
+    );
+    assert_eq!(
+        json["checkpoints_signed"], 0,
+        "fresh server must have 0 checkpoints signed"
+    );
 }
 
 #[tokio::test]
@@ -100,13 +122,28 @@ async fn post_session_with_bearer_returns_token() {
         .body(Body::empty())
         .unwrap();
     let resp = router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "POST /admin/session must return 200");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "POST /admin/session must return 200"
+    );
 
-    let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["session_token"], "tok-session", "session_token in body must match Bearer token");
-    assert_eq!(json["role"], "administrator", "role in body must match session role");
-    assert!(json["expires_at"].is_string(), "expires_at must be a string");
+    assert_eq!(
+        json["session_token"], "tok-session",
+        "session_token in body must match Bearer token"
+    );
+    assert_eq!(
+        json["role"], "administrator",
+        "role in body must match session role"
+    );
+    assert!(
+        json["expires_at"].is_string(),
+        "expires_at must be a string"
+    );
 }
 
 #[tokio::test]
@@ -120,7 +157,11 @@ async fn unauthenticated_request_returns_401() {
         .body(Body::empty())
         .unwrap();
     let resp = router.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "unauthenticated request must return 401");
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "unauthenticated request must return 401"
+    );
 }
 
 #[tokio::test]
@@ -178,14 +219,26 @@ async fn mtls_cert_issues_session_token() {
     req.extensions_mut().insert(PeerClientCert(cert_der));
 
     let resp = router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "POST /admin/session with valid mTLS cert must return 200");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "POST /admin/session with valid mTLS cert must return 200"
+    );
 
-    let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let token = json["session_token"].as_str().expect("session_token must be present");
+    let token = json["session_token"]
+        .as_str()
+        .expect("session_token must be present");
     assert!(!token.is_empty(), "session_token must be non-empty");
 
     // Use the issued token as Bearer on GET /admin/stats.
     let stats_resp = get_with_bearer(&router, "/admin/stats", token).await;
-    assert_eq!(stats_resp.status(), StatusCode::OK, "mTLS-issued token must work as Bearer");
+    assert_eq!(
+        stats_resp.status(),
+        StatusCode::OK,
+        "mTLS-issued token must work as Bearer"
+    );
 }
