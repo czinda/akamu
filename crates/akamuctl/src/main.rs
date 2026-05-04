@@ -121,12 +121,19 @@ enum Commands {
     },
     /// Force immediate CRL regeneration.
     CrlForce,
+    /// Show cached session identity.
+    Whoami,
     /// Cosigner administration.
     #[command(subcommand)]
     Cosigner(CosignerCmd),
     /// Configuration utilities.
     #[command(subcommand)]
     Config(ConfigCmd),
+    /// Generate shell completions.
+    Completions {
+        /// Shell to generate completions for.
+        shell: clap_complete::Shell,
+    },
 }
 
 #[derive(Subcommand)]
@@ -136,6 +143,8 @@ enum ConfigCmd {
     /// Redirect to a file as a starting point:
     ///   akamuctl config generate > ~/.config/akamu/akamuctl.toml
     Generate,
+    /// Validate the configuration file.
+    Validate,
 }
 
 #[derive(Subcommand)]
@@ -584,6 +593,9 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
         Commands::CrlForce => {
             commands::server::crl_force(&server_client).await?;
         }
+        Commands::Whoami => {
+            commands::config_cmd::whoami(&session_cache, &fmt);
+        }
         Commands::Cosigner(cos_cmd) => {
             let cosigner_client = commands::cosigner::build_client(
                 cfg.cosigner.as_ref(),
@@ -614,7 +626,13 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
             ConfigCmd::Generate => {
                 commands::config_cmd::generate();
             }
+            ConfigCmd::Validate => {
+                commands::config_cmd::validate(&config_path, &cfg);
+            }
         },
+        Commands::Completions { shell } => {
+            commands::config_cmd::completions(shell);
+        }
     }
 
     Ok(())

@@ -33,6 +33,7 @@ toml           = "0.8"
 
 # Command-line argument parsing
 clap           = { version = "4", features = ["derive", "env"] }
+clap_complete  = "4"
 
 # PEM parsing for cert/key files
 synta-certificate = { version = ">=0.2.0", features = ["std", "pqc"] }
