@@ -501,20 +501,20 @@ pub async fn delete_session(
 /// Return a 403 response if `$ctx.role` is not one of the listed `OperatorRole`
 /// variants.
 ///
-/// Usage: `require_role!(ctx, Administrator | CaOperations)?;`
+/// Usage: `require_role!(ctx, Administrator | CaOperations);`
 #[macro_export]
 macro_rules! require_role {
     ($ctx:expr, $($role:ident)|+) => {{
         let allowed = false $(|| $ctx.role == $crate::state::OperatorRole::$role)+;
         if !allowed {
-            return Ok((
+            return (
                 axum::http::StatusCode::FORBIDDEN,
                 axum::Json(serde_json::json!({
                     "type": "urn:ietf:params:acme:error:serverInternal",
                     "status": 403,
                     "detail": "insufficient role for this operation",
                 })),
-            ).into_response());
+            ).into_response();
         }
     }};
 }

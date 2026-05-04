@@ -112,12 +112,26 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             post(crate::admin::auth::post_session).delete(crate::admin::auth::delete_session),
         )
         .route(
+            "/admin/operators",
+            axum::routing::get(admin::get_operators).post(admin::post_operators),
+        )
+        .route("/admin/operators/{id}", axum::routing::patch(admin::patch_operator))
+        .route(
             "/admin/account/{id}/profile-grants",
             axum::routing::get(admin::get_account_profile_grants)
                 .put(admin::put_account_profile_grants)
                 .delete(admin::delete_account_profile_grants),
         )
-        .route("/admin/eab", post(admin::post_eab))
+        .route(
+            "/admin/eab",
+            axum::routing::get(admin::get_eab).post(admin::post_eab),
+        )
+        .route("/admin/eab/{kid}", axum::routing::delete(admin::delete_eab))
+        .route("/admin/audit", axum::routing::get(admin::get_audit))
+        .route("/admin/certs", axum::routing::get(admin::get_certs))
+        .route("/admin/crl/force", post(admin::post_crl_force))
+        .route("/admin/revoke", post(admin::post_revoke))
+        .route("/admin/stats", axum::routing::get(admin::get_stats))
         // EAB identity — returns authenticated principal (proxy header or GSSAPI)
         .route("/acme/eab", get(eab_identity::get_eab_identity))
         .layer(if max_body > 0 {
