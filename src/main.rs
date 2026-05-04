@@ -258,6 +258,29 @@ async fn run() -> Result<(), String> {
         None
     };
 
+    // ── EAB master secret ─────────────────────────────────────────────────────
+    let eab_master_secret = match config.server.eab_master_secret.as_deref() {
+        None => None,
+        Some(b64u) => {
+            use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+            let bytes = URL_SAFE_NO_PAD
+                .decode(b64u)
+                .map_err(|e| format!("eab_master_secret base64url decode error: {e}"))?;
+            if bytes.len() < 32 {
+                return Err(format!(
+                    "eab_master_secret must be ≥ 32 bytes after decoding, got {}",
+                    bytes.len()
+                ));
+            }
+            tracing::info!(
+                "EAB HKDF master secret loaded ({} bytes); \
+                 /acme/eab will return full credentials",
+                bytes.len()
+            );
+            Some(Arc::new(bytes))
+        }
+    };
+
     // ── Application state ─────────────────────────────────────────────────────
     let nonces = Arc::new(NonceBucket::new());
     let state = Arc::new(AppState {
@@ -288,6 +311,7 @@ async fn run() -> Result<(), String> {
         },
         crl_cache: Default::default(),
         gss_cred,
+        eab_master_secret,
     });
 
     // Spawn background profile refresh task (no-op when no providers configured).
