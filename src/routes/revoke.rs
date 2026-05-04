@@ -86,7 +86,10 @@ pub async fn revoke_cert(
         .record_audit(
             crate::audit::AuditEvent::success(crate::audit::AuditEventType::CertRevoke)
                 .with_subject(&cert.serial_number)
-                .with_principal(format!("acme:{}", ctx.jwk_thumbprint.as_deref().unwrap_or(""))),
+                .with_principal(format!(
+                    "acme:{}",
+                    ctx.jwk_thumbprint.as_deref().unwrap_or("")
+                )),
         )
         .await;
 

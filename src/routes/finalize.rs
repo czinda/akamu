@@ -285,14 +285,20 @@ pub async fn finalize_order(
         .record_audit(
             crate::audit::AuditEvent::success(crate::audit::AuditEventType::OrderFinalize)
                 .with_subject(&id)
-                .with_principal(format!("acme:{}", ctx.jwk_thumbprint.as_deref().unwrap_or(""))),
+                .with_principal(format!(
+                    "acme:{}",
+                    ctx.jwk_thumbprint.as_deref().unwrap_or("")
+                )),
         )
         .await;
     state
         .record_audit(
             crate::audit::AuditEvent::success(crate::audit::AuditEventType::CertIssue)
                 .with_subject(&issued.serial_hex)
-                .with_principal(format!("acme:{}", ctx.jwk_thumbprint.as_deref().unwrap_or(""))),
+                .with_principal(format!(
+                    "acme:{}",
+                    ctx.jwk_thumbprint.as_deref().unwrap_or("")
+                )),
         )
         .await;
 

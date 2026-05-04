@@ -131,9 +131,9 @@ pub async fn new_account(
                 })?;
 
             // Full HMAC verification: alg, url, payload-key, and MAC.
-            if let Err(e) = crate::jose::eab::verify_eab_jws(
-                eab_val, &url, &kid, &thumbprint, &hmac_key,
-            ) {
+            if let Err(e) =
+                crate::jose::eab::verify_eab_jws(eab_val, &url, &kid, &thumbprint, &hmac_key)
+            {
                 state
                     .record_audit(
                         crate::audit::AuditEvent::failure(crate::audit::AuditEventType::EabReject)

@@ -96,7 +96,14 @@ pub async fn key_change(
     // request re-loads the new key from the database.
     let old_thumbprint = ctx.jwk_thumbprint.clone().unwrap_or_default();
     let now = unix_now();
-    db::accounts::update_key(&state.db, &account_id, new_spki, new_thumbprint.clone(), now).await?;
+    db::accounts::update_key(
+        &state.db,
+        &account_id,
+        new_spki,
+        new_thumbprint.clone(),
+        now,
+    )
+    .await?;
     state.spki_cache.write().unwrap().remove(&account_id);
 
     state

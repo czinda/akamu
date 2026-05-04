@@ -255,7 +255,9 @@ pub async fn new_order(
             }
         }
         if ar.lifetime > i64::MAX as u64 {
-            return Err(AcmeError::BadRequest("auto-renewal lifetime out of range".into()));
+            return Err(AcmeError::BadRequest(
+                "auto-renewal lifetime out of range".into(),
+            ));
         }
         (
             start_ts,
@@ -476,7 +478,10 @@ pub async fn new_order(
         .record_audit(
             crate::audit::AuditEvent::success(crate::audit::AuditEventType::OrderCreate)
                 .with_subject(&order_id)
-                .with_principal(format!("acme:{}", ctx.jwk_thumbprint.as_deref().unwrap_or(""))),
+                .with_principal(format!(
+                    "acme:{}",
+                    ctx.jwk_thumbprint.as_deref().unwrap_or("")
+                )),
         )
         .await;
 
