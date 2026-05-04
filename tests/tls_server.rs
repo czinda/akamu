@@ -410,6 +410,8 @@ async fn start_tls_server() -> TlsTestServer {
             ca_validity_years: 10,
             crl_next_update_secs: 86400,
             enforce_validity_cap: false,
+            require_encrypted_key: false,
+            key_password_file: None,
         },
         mtc: MtcConfig {
             log_path: "/dev/null".into(),
@@ -960,6 +962,8 @@ async fn test_tls_untrusted_ca_rejected() {
         ca_validity_years: 10,
         crl_next_update_secs: 86400,
         enforce_validity_cap: false,
+        require_encrypted_key: false,
+        key_password_file: None,
     };
     let (_, other_ca_der) = ca::init::load_or_generate(&unrelated_ca_cfg).unwrap();
     tracing::info!("Attempting TLS handshake with unrelated CA trust store…");

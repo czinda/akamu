@@ -150,6 +150,8 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             ca_validity_years: 10,
             crl_next_update_secs: 86400,
             enforce_validity_cap: false,
+            require_encrypted_key: false,
+            key_password_file: None,
         },
         mtc: MtcConfig {
             log_path: "/dev/null".into(),
@@ -517,6 +519,8 @@ async fn test_renewal_info_explanation_url() {
             ca_validity_years: 10,
             crl_next_update_secs: 86400,
             enforce_validity_cap: false,
+            require_encrypted_key: false,
+            key_password_file: None,
         },
         mtc: MtcConfig {
             log_path: "/dev/null".into(),

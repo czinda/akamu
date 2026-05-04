@@ -569,6 +569,19 @@ pub struct CaConfig {
     /// issuance time rather than relying solely on the startup warning.
     #[serde(default)]
     pub enforce_validity_cap: bool,
+    /// Require the CA private key PEM to be encrypted (FCS_STG_EXT.1).
+    ///
+    /// When `true`, the server refuses to load a plaintext (unencrypted) PEM
+    /// private key from a file.  Only PKCS#8 encrypted PEM (`ENCRYPTED PRIVATE
+    /// KEY`) or PKCS#11 URIs are accepted.  Set `key_password_file` to a file
+    /// containing the decryption passphrase.
+    #[serde(default)]
+    pub require_encrypted_key: bool,
+    /// Path to a file containing the passphrase for an encrypted PEM CA key.
+    /// Required when `require_encrypted_key` is `true` and `key_file` is a
+    /// filesystem path (not a PKCS#11 URI).  The file is read once at startup;
+    /// trailing newlines are stripped.
+    pub key_password_file: Option<String>,
 }
 
 /// MTC signing key parameters for checkpoint production.

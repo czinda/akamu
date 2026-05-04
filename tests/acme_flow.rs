@@ -211,6 +211,8 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             ca_validity_years: 10,
             crl_next_update_secs: 86400,
             enforce_validity_cap: false,
+            require_encrypted_key: false,
+            key_password_file: None,
         },
         mtc: MtcConfig {
             log_path: "/dev/null".into(),
@@ -2216,6 +2218,8 @@ async fn test_directory_with_optional_fields() {
             ca_validity_years: 10,
             crl_next_update_secs: 86400,
             enforce_validity_cap: false,
+            require_encrypted_key: false,
+            key_password_file: None,
         },
         mtc: akamu::config::MtcConfig {
             log_path: "/dev/null".into(),
@@ -2597,6 +2601,8 @@ async fn test_finalize_with_mtc_enabled() {
             ca_validity_years: 10,
             crl_next_update_secs: 86400,
             enforce_validity_cap: false,
+            require_encrypted_key: false,
+            key_password_file: None,
         },
         mtc: MtcConfig {
             log_path: log_path.clone(),
@@ -2860,6 +2866,8 @@ async fn test_finalize_with_aia_and_cdp() {
             ca_validity_years: 10,
             crl_next_update_secs: 86400,
             enforce_validity_cap: false,
+            require_encrypted_key: false,
+            key_password_file: None,
         },
         mtc: MtcConfig {
             log_path: "/dev/null".into(),

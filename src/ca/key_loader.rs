@@ -53,16 +53,55 @@ impl<'a> CaKeyLoader<'a> {
     /// For PKCS#11 URIs the pkcs11-provider (OpenSSL) or NSS secmod database
     /// must be configured externally before calling this — e.g. via
     /// `OPENSSL_CONF`.
+    ///
+    /// When `require_encrypted_key` is set in the CA config, file-based PEM
+    /// keys must use PKCS#8 encrypted format (`ENCRYPTED PRIVATE KEY`).
     pub fn load_key(&self) -> Result<BackendPrivateKey, AcmeError> {
         match self.source() {
             CaKeySource::File(path) => {
                 let pem = std::fs::read(path)
                     .map_err(|e| AcmeError::Internal(format!("read CA key '{}': {e}", path)))?;
-                BackendPrivateKey::from_pem(&pem, None)
+
+                let password = if self.config.require_encrypted_key {
+                    Self::require_encrypted_pem(&pem)?;
+                    Some(Self::read_password(self.config)?)
+                } else {
+                    None
+                };
+
+                BackendPrivateKey::from_pem(&pem, password.as_deref().map(|s| s.as_bytes()))
                     .map_err(|e| AcmeError::Crypto(format!("parse CA key: {e}")))
             }
             CaKeySource::Pkcs11Uri(uri) => BackendPrivateKey::from_pkcs11_uri(uri)
                 .map_err(|e| AcmeError::Crypto(format!("PKCS#11 key load: {e}"))),
         }
+    }
+
+    /// Verify the PEM data contains an encrypted private key header.
+    fn require_encrypted_pem(pem: &[u8]) -> Result<(), AcmeError> {
+        let pem_str = std::str::from_utf8(pem)
+            .map_err(|_| AcmeError::Config("CA key file is not valid UTF-8".to_owned()))?;
+        if pem_str.contains("-----BEGIN ENCRYPTED PRIVATE KEY-----") {
+            Ok(())
+        } else {
+            Err(AcmeError::Config(
+                "ca.require_encrypted_key is set but the CA key file contains an unencrypted \
+                 private key; use PKCS#8 encrypted PEM or a PKCS#11 URI"
+                    .to_owned(),
+            ))
+        }
+    }
+
+    /// Read the decryption passphrase from `key_password_file`.
+    fn read_password(config: &CaConfig) -> Result<String, AcmeError> {
+        let path = config.key_password_file.as_deref().ok_or_else(|| {
+            AcmeError::Config(
+                "ca.require_encrypted_key is set but ca.key_password_file is not configured"
+                    .to_owned(),
+            )
+        })?;
+        let raw = std::fs::read_to_string(path)
+            .map_err(|e| AcmeError::Config(format!("read ca.key_password_file '{}': {e}", path)))?;
+        Ok(raw.trim_end_matches('\n').trim_end_matches('\r').to_owned())
     }
 }
