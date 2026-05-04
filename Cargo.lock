@@ -155,6 +155,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "akamuctl"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "http-body-util",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "native-ossl",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "synta-certificate",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-rustls",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
