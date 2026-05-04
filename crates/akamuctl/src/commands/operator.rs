@@ -43,6 +43,42 @@ pub async fn add(
     Ok(())
 }
 
+pub async fn show(client: &AdminClient, fmt: &Format, id: i64) -> Result<(), CtlError> {
+    let resp = client.get(&format!("/admin/operators/{id}")).await?;
+    print(fmt, &resp);
+    Ok(())
+}
+
+pub async fn update(
+    client: &AdminClient,
+    id: i64,
+    name: Option<String>,
+    role: Option<String>,
+    cert_file: Option<PathBuf>,
+    gssapi_principal: Option<String>,
+) -> Result<(), CtlError> {
+    let cert_fp = if let Some(path) = cert_file {
+        let pem = std::fs::read(&path)?;
+        let ders = synta_certificate::pem_to_der(&pem);
+        let der = ders
+            .into_iter()
+            .next()
+            .ok_or_else(|| CtlError::Config("cert_file contains no certificate".into()))?;
+        Some(sha256_hex(&der)?)
+    } else {
+        None
+    };
+    let body = json!({
+        "name": name,
+        "role": role,
+        "cert_fingerprint": cert_fp,
+        "gssapi_principal": gssapi_principal,
+    });
+    client.put(&format!("/admin/operators/{id}"), &body).await?;
+    println!("operator {id} updated");
+    Ok(())
+}
+
 pub async fn remove(client: &AdminClient, fmt: &Format, id: i64) -> Result<(), CtlError> {
     let body = json!({"active": false});
     let resp = client

@@ -100,9 +100,17 @@ enum Commands {
     /// Manage certificates.
     #[command(subcommand)]
     Cert(CertCmd),
-    /// Manage account profile grants.
+    /// Manage accounts.
     #[command(subcommand)]
     Account(AccountCmd),
+    /// Manage certificate profiles.
+    #[command(subcommand)]
+    Profile(ProfileCmd),
+    /// Manage orders.
+    #[command(subcommand)]
+    Order(OrderCmd),
+    /// Show redacted server configuration.
+    ServerConfig,
     /// Revoke a certificate.
     Revoke {
         /// Certificate ID to revoke.
@@ -134,12 +142,32 @@ enum ConfigCmd {
 enum OperatorCmd {
     /// List all operators.
     List,
+    /// Show an operator's details.
+    Show {
+        /// Operator ID.
+        id: i64,
+    },
     /// Add a new operator.
     Add {
         #[arg(long)]
         name: String,
         #[arg(long)]
         role: String,
+        /// Path to operator's client certificate (for fingerprint extraction).
+        #[arg(long, value_name = "FILE")]
+        cert_file: Option<PathBuf>,
+        /// GSSAPI Kerberos principal.
+        #[arg(long)]
+        gssapi_principal: Option<String>,
+    },
+    /// Update an operator's fields.
+    Update {
+        /// Operator ID.
+        id: i64,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        role: Option<String>,
         /// Path to operator's client certificate (for fingerprint extraction).
         #[arg(long, value_name = "FILE")]
         cert_file: Option<PathBuf>,
@@ -168,6 +196,8 @@ enum EabCmd {
         #[arg(long)]
         unused: bool,
     },
+    /// Show an EAB key's details.
+    Show { kid: String },
     /// Provision a new EAB key.
     Add {
         #[arg(long)]
@@ -202,12 +232,77 @@ enum CertCmd {
         #[arg(long, default_value = "0")]
         offset: u32,
     },
+    /// Show a certificate's metadata.
+    Show {
+        /// Certificate ID (UUID).
+        id: String,
+    },
+    /// Download a certificate as PEM or DER.
+    Download {
+        /// Certificate ID (UUID).
+        id: String,
+        /// Output format: pem (default) or der.
+        #[arg(long, default_value = "pem")]
+        format: String,
+        /// Write to file instead of stdout.
+        #[arg(long, short = 'o', value_name = "FILE")]
+        output: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
 enum AccountCmd {
+    /// List accounts.
+    List {
+        /// Filter by status (valid, deactivated).
+        #[arg(long)]
+        status: Option<String>,
+        #[arg(long, default_value = "100")]
+        limit: u32,
+        #[arg(long, default_value = "0")]
+        offset: u32,
+    },
+    /// Show an account's details.
+    Show {
+        /// Account ID (UUID).
+        id: String,
+    },
+    /// Admin-initiated account deactivation.
+    Deactivate {
+        /// Account ID (UUID).
+        id: String,
+    },
+    /// Manage profile grants.
     #[command(subcommand)]
     Grants(AccountGrantsCmd),
+}
+
+#[derive(Subcommand)]
+enum ProfileCmd {
+    /// List loaded certificate profiles.
+    List,
+}
+
+#[derive(Subcommand)]
+enum OrderCmd {
+    /// List orders.
+    List {
+        /// Filter by account ID.
+        #[arg(long)]
+        account_id: Option<String>,
+        /// Filter by status.
+        #[arg(long)]
+        status: Option<String>,
+        #[arg(long, default_value = "100")]
+        limit: u32,
+        #[arg(long, default_value = "0")]
+        offset: u32,
+    },
+    /// Show an order's details.
+    Show {
+        /// Order ID (UUID).
+        id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -337,6 +432,9 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
             OperatorCmd::List => {
                 commands::operator::list(&server_client, &fmt).await?;
             }
+            OperatorCmd::Show { id } => {
+                commands::operator::show(&server_client, &fmt, id).await?;
+            }
             OperatorCmd::Add {
                 name,
                 role,
@@ -346,6 +444,23 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
                 commands::operator::add(
                     &server_client,
                     &fmt,
+                    name,
+                    role,
+                    cert_file,
+                    gssapi_principal,
+                )
+                .await?;
+            }
+            OperatorCmd::Update {
+                id,
+                name,
+                role,
+                cert_file,
+                gssapi_principal,
+            } => {
+                commands::operator::update(
+                    &server_client,
+                    id,
                     name,
                     role,
                     cert_file,
@@ -370,6 +485,9 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
                 profiles,
             } => {
                 commands::eab::add(&server_client, &fmt, kid, hmac_key, profiles).await?;
+            }
+            EabCmd::Show { kid } => {
+                commands::eab::show(&server_client, &fmt, &kid).await?;
             }
             EabCmd::Remove { kid } => {
                 commands::eab::remove(&server_client, &kid).await?;
@@ -398,8 +516,27 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
                 )
                 .await?;
             }
+            CertCmd::Show { id } => {
+                commands::cert::show(&server_client, &fmt, &id).await?;
+            }
+            CertCmd::Download { id, format, output } => {
+                commands::cert::download(&server_client, &id, &format, output.as_deref()).await?;
+            }
         },
         Commands::Account(acct_cmd) => match acct_cmd {
+            AccountCmd::List {
+                status,
+                limit,
+                offset,
+            } => {
+                commands::account::list(&server_client, &fmt, status, limit, offset).await?;
+            }
+            AccountCmd::Show { id } => {
+                commands::account::show(&server_client, &fmt, &id).await?;
+            }
+            AccountCmd::Deactivate { id } => {
+                commands::account::deactivate(&server_client, &id).await?;
+            }
             AccountCmd::Grants(grants_cmd) => match grants_cmd {
                 AccountGrantsCmd::Get { id } => {
                     commands::account::grants_get(&server_client, &fmt, &id).await?;
@@ -412,6 +549,35 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
                 }
             },
         },
+        Commands::Profile(prof_cmd) => match prof_cmd {
+            ProfileCmd::List => {
+                commands::server::profile_list(&server_client, &fmt).await?;
+            }
+        },
+        Commands::Order(order_cmd) => match order_cmd {
+            OrderCmd::List {
+                account_id,
+                status,
+                limit,
+                offset,
+            } => {
+                commands::server::order_list(
+                    &server_client,
+                    &fmt,
+                    account_id,
+                    status,
+                    limit,
+                    offset,
+                )
+                .await?;
+            }
+            OrderCmd::Show { id } => {
+                commands::server::order_show(&server_client, &fmt, &id).await?;
+            }
+        },
+        Commands::ServerConfig => {
+            commands::server::config(&server_client, &fmt).await?;
+        }
         Commands::Revoke { cert_id, reason } => {
             commands::server::revoke(&server_client, &cert_id, reason).await?;
         }

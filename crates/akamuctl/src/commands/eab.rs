@@ -44,6 +44,12 @@ pub async fn add(
     Ok(())
 }
 
+pub async fn show(client: &AdminClient, fmt: &Format, kid: &str) -> Result<(), CtlError> {
+    let resp = client.get(&format!("/admin/eab/{}", urlenc(kid))).await?;
+    print(fmt, &resp);
+    Ok(())
+}
+
 pub async fn remove(client: &AdminClient, kid: &str) -> Result<(), CtlError> {
     client
         .delete(&format!("/admin/eab/{}", urlenc(kid)))
