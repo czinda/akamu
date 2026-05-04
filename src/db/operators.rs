@@ -18,9 +18,6 @@ pub struct OperatorRow {
     pub active: i64,
 }
 
-const COLUMNS: &str =
-    "id, name, role, cert_fingerprint, gssapi_principal, created_at, last_seen_at, active";
-
 /// Insert a new operator.
 ///
 /// The caller can retrieve the assigned `id` immediately afterwards using
@@ -57,10 +54,11 @@ pub async fn get_by_fingerprint(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     fingerprint: &str,
 ) -> Result<Option<OperatorRow>, AcmeError> {
-    let row = sqlx::query_as::<_, OperatorRow>(&format!(
-        "SELECT {COLUMNS} FROM operators \
-         WHERE cert_fingerprint = ? AND active = ?"
-    ))
+    let row = sqlx::query_as::<_, OperatorRow>(
+        "SELECT id, name, role, cert_fingerprint, gssapi_principal, \
+         created_at, last_seen_at, active \
+         FROM operators WHERE cert_fingerprint = ? AND active = ?",
+    )
     .bind(fingerprint)
     .bind(1i64)
     .fetch_optional(executor)
@@ -73,15 +71,43 @@ pub async fn get_by_principal(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     principal: &str,
 ) -> Result<Option<OperatorRow>, AcmeError> {
-    let row = sqlx::query_as::<_, OperatorRow>(&format!(
-        "SELECT {COLUMNS} FROM operators \
-         WHERE gssapi_principal = ? AND active = ?"
-    ))
+    let row = sqlx::query_as::<_, OperatorRow>(
+        "SELECT id, name, role, cert_fingerprint, gssapi_principal, \
+         created_at, last_seen_at, active \
+         FROM operators WHERE gssapi_principal = ? AND active = ?",
+    )
     .bind(principal)
     .bind(1i64)
     .fetch_optional(executor)
     .await?;
     Ok(row)
+}
+
+/// Insert an operator only if no row with the same `cert_fingerprint` (or
+/// `gssapi_principal`) already exists.  Returns `true` when a new row was
+/// inserted, `false` when the row already existed (idempotent).
+pub async fn insert_if_absent(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    name: &str,
+    role: &str,
+    cert_fingerprint: Option<&str>,
+    gssapi_principal: Option<&str>,
+    now: &str,
+) -> Result<bool, AcmeError> {
+    let result = sqlx::query(
+        "INSERT OR IGNORE INTO operators \
+         (name, role, cert_fingerprint, gssapi_principal, created_at, active) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(name)
+    .bind(role)
+    .bind(cert_fingerprint)
+    .bind(gssapi_principal)
+    .bind(now)
+    .bind(1i64)
+    .execute(executor)
+    .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 /// Return `true` when the operators table contains no rows.
@@ -103,9 +129,11 @@ pub async fn list(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<OperatorRow>, AcmeError> {
-    let rows = sqlx::query_as::<_, OperatorRow>(&format!(
-        "SELECT {COLUMNS} FROM operators ORDER BY id ASC LIMIT ? OFFSET ?"
-    ))
+    let rows = sqlx::query_as::<_, OperatorRow>(
+        "SELECT id, name, role, cert_fingerprint, gssapi_principal, \
+         created_at, last_seen_at, active \
+         FROM operators ORDER BY id ASC LIMIT ? OFFSET ?",
+    )
     .bind(limit)
     .bind(offset)
     .fetch_all(executor)
