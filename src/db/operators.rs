@@ -85,9 +85,13 @@ pub async fn get_by_principal(
     Ok(row)
 }
 
-/// Insert an operator only if no row with the same `cert_fingerprint` (or
-/// `gssapi_principal`) already exists.  Returns `true` when a new row was
-/// inserted, `false` when the row already existed (idempotent).
+/// Insert an operator only if no row with the same name already exists.
+/// Returns `true` when a new row was inserted, `false` when the row already
+/// existed (idempotent).
+///
+/// Uses a portable `WHERE NOT EXISTS` subquery so the query works on SQLite,
+/// PostgreSQL, and MariaDB.  This replaces `INSERT OR IGNORE` which is
+/// SQLite-specific.
 pub async fn insert_if_absent(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     name: &str,
@@ -97,9 +101,10 @@ pub async fn insert_if_absent(
     now: &str,
 ) -> Result<bool, AcmeError> {
     let result = sqlx::query(
-        "INSERT OR IGNORE INTO operators \
+        "INSERT INTO operators \
          (name, role, cert_fingerprint, gssapi_principal, created_at, active) \
-         VALUES (?, ?, ?, ?, ?, ?)",
+         SELECT ?, ?, ?, ?, ?, ? \
+         WHERE NOT EXISTS (SELECT 1 FROM operators WHERE name = ?)",
     )
     .bind(name)
     .bind(role)
@@ -107,6 +112,7 @@ pub async fn insert_if_absent(
     .bind(gssapi_principal)
     .bind(now)
     .bind(1i64)
+    .bind(name)
     .execute(executor)
     .await?;
     Ok(result.rows_affected() > 0)
