@@ -10,7 +10,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde::Deserialize;
 
-use synta_certificate::der_to_pem;
+use synta::{Decoder, Encoding};
+use synta_certificate::{der_to_pem, format_dn, Certificate};
 
 use crate::ca;
 use crate::db;
@@ -211,6 +212,14 @@ pub async fn finalize_order(
         (issued.cert_der.clone(), issued.cert_pem.clone(), None)
     };
 
+    // Extract subject DN from the leaf cert for searchability (FAU_SCR_EXT.1).
+    let subject_dn = {
+        let mut dec = Decoder::new(&issued.cert_der, Encoding::Der);
+        dec.decode::<Certificate>()
+            .ok()
+            .map(|cert| format_dn(cert.tbs_certificate.subject.as_bytes()))
+    };
+
     let now = unix_now();
 
     // If this order carries a `replaces` cert_id, resolve the predecessor UUID
@@ -254,6 +263,7 @@ pub async fn finalize_order(
                 suggested_window_start: None,
                 suggested_window_end: None,
                 replaced_by: None,
+                subject_dn,
             },
         )
         .await?;

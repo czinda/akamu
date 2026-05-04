@@ -86,7 +86,7 @@ async fn run_once(state: &Arc<AppState>) {
         let latest_cert = match sqlx::query_as::<_, CertificateRow>(
             "SELECT id, order_id, account_id, serial_number, status, der, pem,
              not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-             suggested_window_start, suggested_window_end, replaced_by
+             suggested_window_start, suggested_window_end, replaced_by, subject_dn
              FROM certificates
              WHERE order_id = ?
              ORDER BY created DESC

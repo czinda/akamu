@@ -401,8 +401,10 @@ pub async fn get_certs(
     let serial = params.get("serial").map(String::as_str);
     let account_id = params.get("account_id").map(String::as_str);
     let status = params.get("status").map(String::as_str);
+    let subject_dn = params.get("subject").map(String::as_str);
 
-    let result = db::certs::search(&state.db, serial, account_id, status, limit, offset).await;
+    let result =
+        db::certs::search(&state.db, serial, account_id, status, subject_dn, limit, offset).await;
 
     match result {
         Ok(rows) => {
@@ -413,6 +415,7 @@ pub async fn get_certs(
                         "id": r.id,
                         "account_id": r.account_id,
                         "serial_number": r.serial_number,
+                        "subject_dn": r.subject_dn,
                         "status": r.status,
                         "not_before": r.not_before,
                         "not_after": r.not_after,

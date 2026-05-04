@@ -9,8 +9,8 @@ pub async fn insert(
         "INSERT INTO certificates
          (id, order_id, account_id, serial_number, status, der, pem,
           not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-          suggested_window_start, suggested_window_end, replaced_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+          suggested_window_start, suggested_window_end, replaced_by, subject_dn)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
     )
     .bind(&row.id)
     .bind(&row.order_id)
@@ -27,6 +27,7 @@ pub async fn insert(
     .bind(row.created)
     .bind(row.suggested_window_start)
     .bind(row.suggested_window_end)
+    .bind(&row.subject_dn)
     .execute(executor)
     .await?;
     Ok(())
@@ -39,7 +40,7 @@ pub async fn get_by_id(
     let row = sqlx::query_as::<_, CertificateRow>(
         "SELECT id, order_id, account_id, serial_number, status, der, pem,
          not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-         suggested_window_start, suggested_window_end, replaced_by
+         suggested_window_start, suggested_window_end, replaced_by, subject_dn
          FROM certificates WHERE id = ?",
     )
     .bind(id)
@@ -55,7 +56,7 @@ pub async fn get_by_serial(
     let row = sqlx::query_as::<_, CertificateRow>(
         "SELECT id, order_id, account_id, serial_number, status, der, pem,
          not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-         suggested_window_start, suggested_window_end, replaced_by
+         suggested_window_start, suggested_window_end, replaced_by, subject_dn
          FROM certificates WHERE serial_number = ?",
     )
     .bind(serial)
@@ -179,7 +180,7 @@ pub async fn list_revoked(
     let rows = sqlx::query_as::<_, CertificateRow>(
         "SELECT id, order_id, account_id, serial_number, status, der, pem,
          not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-         suggested_window_start, suggested_window_end, replaced_by
+         suggested_window_start, suggested_window_end, replaced_by, subject_dn
          FROM certificates WHERE status = 'revoked'",
     )
     .fetch_all(executor)
@@ -196,7 +197,7 @@ pub async fn list_valid_for_account(
     let rows = sqlx::query_as::<_, CertificateRow>(
         "SELECT id, order_id, account_id, serial_number, status, der, pem,
          not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-         suggested_window_start, suggested_window_end, replaced_by
+         suggested_window_start, suggested_window_end, replaced_by, subject_dn
          FROM certificates
          WHERE account_id = ? AND status = 'valid' AND not_after > ?",
     )
@@ -218,7 +219,7 @@ pub async fn get_latest_for_order(
     let row = sqlx::query_as::<_, CertificateRow>(
         "SELECT id, order_id, account_id, serial_number, status, der, pem,
          not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-         suggested_window_start, suggested_window_end, replaced_by
+         suggested_window_start, suggested_window_end, replaced_by, subject_dn
          FROM certificates
          WHERE order_id = ?
          ORDER BY created DESC
@@ -281,7 +282,7 @@ pub async fn get_representative_for_landmark(
     let row = sqlx::query_as::<_, CertificateRow>(
         "SELECT id, order_id, account_id, serial_number, status, der, pem,
          not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-         suggested_window_start, suggested_window_end, replaced_by
+         suggested_window_start, suggested_window_end, replaced_by, subject_dn
          FROM certificates
          WHERE mtc_log_index IS NOT NULL AND mtc_log_index < ?
          ORDER BY mtc_log_index ASC
@@ -318,13 +319,14 @@ pub async fn search(
     serial: Option<&str>,
     account_id: Option<&str>,
     status: Option<&str>,
+    subject_dn: Option<&str>,
     limit: i64,
     offset: i64,
 ) -> Result<Vec<CertificateRow>, crate::error::AcmeError> {
     let mut qb = sqlx::QueryBuilder::<sqlx::Any>::new(
         "SELECT id, order_id, account_id, serial_number, status, der, pem, \
                 not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created, \
-                suggested_window_start, suggested_window_end, replaced_by \
+                suggested_window_start, suggested_window_end, replaced_by, subject_dn \
          FROM certificates WHERE 1=1",
     );
     if let Some(s) = serial {
@@ -338,6 +340,11 @@ pub async fn search(
     if let Some(st) = status {
         qb.push(" AND status = ");
         qb.push_bind(st);
+    }
+    if let Some(dn) = subject_dn {
+        qb.push(" AND subject_dn LIKE '%' || ");
+        qb.push_bind(dn);
+        qb.push(" || '%'");
     }
     qb.push(" ORDER BY created DESC LIMIT ");
     qb.push_bind(limit);
@@ -420,6 +427,7 @@ mod tests {
             suggested_window_start: None,
             suggested_window_end: None,
             replaced_by: None,
+            subject_dn: None,
         }
     }
 
@@ -623,6 +631,7 @@ mod tests {
                 suggested_window_start: None,
                 suggested_window_end: None,
                 replaced_by: None,
+                subject_dn: None,
             },
         )
         .await
@@ -674,6 +683,7 @@ mod tests {
             suggested_window_start: None,
             suggested_window_end: None,
             replaced_by: None,
+            subject_dn: None,
         };
         assert!(insert(&raw, row).await.is_err());
         assert!(get_by_id(&raw, "any").await.is_err());
