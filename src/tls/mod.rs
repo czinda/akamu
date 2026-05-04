@@ -79,3 +79,43 @@ pub fn build_rustls_server_config(
 
     Ok(cfg)
 }
+
+/// Build a `rustls::ServerConfig` for the dedicated admin listener.
+///
+/// Client auth is optional so the same listener serves both mTLS (cert path)
+/// and GSSAPI (no cert presented) connections.  `ca_certs` may be empty when
+/// `[admin.gssapi]` is the sole authentication method.
+pub fn build_admin_rustls_server_config(
+    admin: &crate::config::AdminConfig,
+) -> Result<rustls::ServerConfig, String> {
+    let certs = loader::load_server_cert_chain(&admin.cert_file)?;
+    let key = loader::load_server_private_key(&admin.key_file)?;
+    let provider = Arc::new(rustls_native_ossl::default_provider());
+
+    let builder = rustls::ServerConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
+        .map_err(|e| format!("admin TLS protocol versions: {e}"))?;
+
+    let cfg = if admin.ca_certs.is_empty() {
+        builder.with_no_client_auth()
+    } else {
+        let ca_ders = loader::load_ca_certs(&admin.ca_certs)?;
+        let client_auth_cfg = crate::config::ClientAuthConfig {
+            ca_files: admin.ca_certs.clone(),
+            required: false,
+            profile: "rfc5280".into(),
+            max_chain_depth: 5,
+            minimum_rsa_modulus: 2048,
+            allow_post_quantum: false,
+        };
+        let verifier = Arc::new(
+            verifier::SyntaClientCertVerifier::new(&ca_ders, &client_auth_cfg)
+                .map_err(|e| format!("admin client-auth verifier: {e}"))?,
+        );
+        builder.with_client_cert_verifier(verifier)
+    }
+    .with_single_cert(certs, key)
+    .map_err(|e| format!("admin TLS server certificate: {e}"))?;
+
+    Ok(cfg)
+}

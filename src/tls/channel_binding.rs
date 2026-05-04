@@ -2,8 +2,10 @@
 
 use native_ossl::digest::DigestAlg;
 use synta::Decoder;
+use synta::ToDer as _;
 use synta::Encoding;
 use synta_certificate::oids;
+use synta_certificate::pkcs1_types::RsassaPssParams;
 use synta_certificate::Certificate;
 
 /// Typed extension injected per-connection when TLS is terminated by this server.
@@ -25,13 +27,19 @@ pub struct TlsServerEndpointBinding(pub Vec<u8>);
 pub fn tls_server_endpoint_binding(cert_der: &[u8]) -> Option<Vec<u8>> {
     let cert: Certificate<'_> = Decoder::new(cert_der, Encoding::Der).decode().ok()?;
 
-    let oid = cert.tbs_certificate.signature.algorithm.components();
-    let alg_name = sig_oid_to_alg_name(oid)?;
+    let sig_alg = &cert.tbs_certificate.signature;
+    let oid = sig_alg.algorithm.components();
+    let alg_name = sig_oid_to_alg_name(oid, sig_alg.parameters.as_ref())?;
     let alg = DigestAlg::fetch(alg_name, None).ok()?;
     alg.digest_to_vec(cert_der).ok()
 }
 
-fn sig_oid_to_alg_name(oid: &[u32]) -> Option<&'static std::ffi::CStr> {
+/// Map a signature algorithm OID (and optional AlgorithmIdentifier parameters)
+/// to the OpenSSL digest name for `tls-server-end-point` channel binding (RFC 5929 §4).
+fn sig_oid_to_alg_name<'a>(
+    oid: &[u32],
+    params: Option<&synta::Element<'a>>,
+) -> Option<&'static std::ffi::CStr> {
     match oid {
         // ecdsa-with-SHA256 / sha256WithRSAEncryption /
         // md5WithRSAEncryption (RFC 5929 override) / sha1WithRSAEncryption (override)
@@ -40,9 +48,9 @@ fn sig_oid_to_alg_name(oid: &[u32]) -> Option<&'static std::ffi::CStr> {
         | oids::MD5_WITH_RSA
         | oids::SHA1_WITH_RSA => Some(c"SHA2-256"),
 
-        // id-RSASSA-PSS: hash is in the parameters, but SHA-256 is the
-        // recommended default; treat as SHA-256 for channel-binding purposes.
-        oids::RSASSA_PSS => Some(c"SHA2-256"),
+        // id-RSASSA-PSS: hash algorithm is encoded in the RSASSA-PSS-params SEQUENCE
+        // (RFC 4055 §3.1).  RFC 5929 §4 overrides SHA-1 to SHA-256.
+        oids::RSASSA_PSS => pss_hash_alg_name(params?),
 
         // ecdsa-with-SHA384 / sha384WithRSAEncryption
         oids::ECDSA_WITH_SHA384 | oids::SHA384_WITH_RSA => Some(c"SHA2-384"),
@@ -62,6 +70,29 @@ fn sig_oid_to_alg_name(oid: &[u32]) -> Option<&'static std::ffi::CStr> {
         oids::ED448 => None,
 
         // Unknown: skip channel bindings (safe conservative default)
+        _ => None,
+    }
+}
+
+/// Extract the digest name from an `RSASSA-PSS-params` element (RFC 4055 §3.1).
+///
+/// The default `hashAlgorithm` when absent is id-sha1; RFC 5929 §4 overrides
+/// SHA-1 to SHA-256.  Returns `None` for unknown or undecodable parameters.
+fn pss_hash_alg_name(params_elem: &synta::Element<'_>) -> Option<&'static std::ffi::CStr> {
+    let params_der = params_elem.to_der().ok()?;
+    let pss: RsassaPssParams<'_> = Decoder::new(&params_der, Encoding::Der).decode().ok()?;
+    // RFC 4055 §3.1 default: absent hashAlgorithm means id-sha1.
+    let hash_oid: &[u32] = pss
+        .hash_algorithm
+        .as_ref()
+        .map(|h| h.algorithm.components())
+        .unwrap_or(oids::ID_SHA1);
+    match hash_oid {
+        // id-sha1 → SHA-256 override per RFC 5929 §4
+        oids::ID_SHA1 | oids::ID_SHA256 => Some(c"SHA2-256"),
+        oids::ID_SHA384 => Some(c"SHA2-384"),
+        oids::ID_SHA512 => Some(c"SHA2-512"),
+        // Unknown hash — skip channel bindings conservatively
         _ => None,
     }
 }
