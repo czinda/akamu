@@ -121,17 +121,30 @@ fn now_rfc3339() -> String {
 /// `GET /admin/operators`
 ///
 /// List all operators (active and inactive).
+/// Query params: `limit` (≤1000, default 1000), `offset` (default 0).
 /// Requires: `administrator`.
 pub async fn get_operators(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     if let Some(r) = admin_configured(&state) {
         return r;
     }
     require_role!(operator, Administrator);
 
-    match db::operators::list(&state.db).await {
+    let limit: i64 = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000)
+        .clamp(1, 1000);
+    let offset: i64 = params
+        .get("offset")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
+        .max(0);
+
+    match db::operators::list(&state.db, limit, offset).await {
         Ok(rows) => {
             let list: Vec<_> = rows
                 .into_iter()
@@ -150,7 +163,10 @@ pub async fn get_operators(
                 .collect();
             (StatusCode::OK, Json(json!({"operators": list}))).into_response()
         }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "get_operators: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"status": 500, "detail": "database error"}))).into_response()
+        }
     }
 }
 
@@ -214,10 +230,9 @@ pub async fn post_operators(
                 &state.audit_policy,
                 AuditEvent::success(AuditEventType::AdminAction)
                     .with_principal(&operator.name)
-                    .with_detail(&format!(
-                        "{{\"action\":\"operator.create\",\"name\":\"{}\"}}",
-                        payload.name
-                    )),
+                    .with_detail(
+                        json!({"action": "operator.create", "name": payload.name}).to_string(),
+                    ),
             )
             .await;
             (StatusCode::CREATED, Json(json!({"name": payload.name, "created_at": now}))).into_response()
@@ -231,7 +246,10 @@ pub async fn post_operators(
             )
                 .into_response()
         }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "post_operators: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"status": 500, "detail": "database error"}))).into_response()
+        }
     }
 }
 
@@ -276,14 +294,17 @@ pub async fn patch_operator(
                 &state.audit_policy,
                 AuditEvent::success(AuditEventType::AdminAction)
                     .with_principal(&operator.name)
-                    .with_detail(&format!(
-                        "{{\"action\":\"{action}\",\"operator_id\":{id}}}"
-                    )),
+                    .with_detail(
+                        json!({"action": action, "operator_id": id}).to_string(),
+                    ),
             )
             .await;
             StatusCode::NO_CONTENT.into_response()
         }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "patch_operator: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"status": 500, "detail": "database error"}))).into_response()
+        }
     }
 }
 
@@ -345,7 +366,10 @@ pub async fn get_audit(
             (StatusCode::OK, Json(json!({"events": events, "limit": limit, "offset": offset})))
                 .into_response()
         }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "get_audit: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"status": 500, "detail": "database error"}))).into_response()
+        }
     }
 }
 
@@ -404,7 +428,10 @@ pub async fn get_certs(
             (StatusCode::OK, Json(json!({"certs": certs, "limit": limit, "offset": offset})))
                 .into_response()
         }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "get_certs: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"status": 500, "detail": "database error"}))).into_response()
+        }
     }
 }
 
@@ -425,7 +452,10 @@ pub async fn get_account_profile_grants(
     let _ = operator; // any role allowed
 
     match db::accounts::get_profile_grants(&state.db, &id).await {
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "get_account_profile_grants: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"status": 500, "detail": "database error"}))).into_response()
+        }
         Ok(None) => (StatusCode::NOT_FOUND, "account not found").into_response(),
         Ok(Some(grants_json)) => {
             let grants: Option<Vec<String>> = grants_json
@@ -465,7 +495,10 @@ pub async fn put_account_profile_grants(
         }
     };
     match db::accounts::set_profile_grants(&state.db, &id, grants_str.as_deref(), now).await {
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "put_account_profile_grants: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"status": 500, "detail": "database error"}))).into_response()
+        }
         Ok(false) => (StatusCode::NOT_FOUND, "account not found or deactivated").into_response(),
         Ok(true) => {
             crate::audit::record_or_log(
@@ -499,7 +532,10 @@ pub async fn delete_account_profile_grants(
 
     let now = unix_now();
     match db::accounts::set_profile_grants(&state.db, &id, None, now).await {
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "delete_account_profile_grants: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"status": 500, "detail": "database error"}))).into_response()
+        }
         Ok(false) => (StatusCode::NOT_FOUND, "account not found or deactivated").into_response(),
         Ok(true) => {
             crate::audit::record_or_log(
@@ -544,29 +580,15 @@ pub async fn get_eab(
     let limit: i64 = params
         .get("limit")
         .and_then(|v| v.parse().ok())
-        .unwrap_or(200);
+        .unwrap_or(200)
+        .clamp(1, 1000);
     let offset: i64 = params
         .get("offset")
         .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .max(0);
 
-    let mut sql = "SELECT kid, hmac_key_b64u, created, used_at, profile_grants \
-                   FROM eab_keys"
-        .to_string();
-    match used_filter {
-        Some(true) => sql.push_str(" WHERE used_at IS NOT NULL"),
-        Some(false) => sql.push_str(" WHERE used_at IS NULL"),
-        None => {}
-    }
-    sql.push_str(" ORDER BY created DESC LIMIT ? OFFSET ?");
-
-    let rows = sqlx::query_as::<_, db::eab::EabKeyRow>(&sql)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&state.db)
-        .await;
-
-    match rows {
+    match db::eab::list(&state.db, used_filter, limit, offset).await {
         Ok(rows) => {
             let keys: Vec<_> = rows
                 .into_iter()
@@ -581,7 +603,10 @@ pub async fn get_eab(
                 .collect();
             (StatusCode::OK, Json(json!({"eab_keys": keys}))).into_response()
         }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "get_eab: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"status": 500, "detail": "database error"}))).into_response()
+        }
     }
 }
 
@@ -688,7 +713,10 @@ pub async fn delete_eab(
             .await;
             StatusCode::NO_CONTENT.into_response()
         }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "delete_eab: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"status": 500, "detail": "database error"}))).into_response()
+        }
     }
 }
 
@@ -753,16 +781,18 @@ pub async fn post_revoke(
                 AuditEvent::success(AuditEventType::CertRevoke)
                     .with_principal(&operator.name)
                     .with_subject(&payload.cert_id)
-                    .with_detail(&format!(
-                        "{{\"action\":\"admin.revoke\",\"reason\":{}}}",
-                        payload.reason
-                    )),
+                    .with_detail(
+                        json!({"action": "admin.revoke", "reason": payload.reason}).to_string(),
+                    ),
             )
             .await;
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => (StatusCode::NOT_FOUND, "certificate not found or already revoked").into_response(),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "post_revoke: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"status": 500, "detail": "database error"}))).into_response()
+        }
     }
 }
 
