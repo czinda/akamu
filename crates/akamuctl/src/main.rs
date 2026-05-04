@@ -230,10 +230,16 @@ enum AccountGrantsCmd {
 
 #[derive(Subcommand)]
 enum CosignerCmd {
+    /// Authenticate and cache cosigner session token.
+    Login,
+    /// Invalidate cosigner session token.
+    Logout,
     /// Cosigner status.
     Status,
     /// Cosigner statistics.
     Stats,
+    /// Show redacted cosigner configuration.
+    Config,
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -536,12 +542,25 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
                 cos_gssapi,
             )?;
             match cos_cmd {
+                CosignerCmd::Login => {
+                    let resp = cosigner_client.post("/admin/session", None).await?;
+                    print(&fmt, &resp);
+                }
+                CosignerCmd::Logout => {
+                    cosigner_client.delete("/admin/session").await?;
+                    cosigner_client.clear_session();
+                    println!("logged out (cosigner)");
+                }
                 CosignerCmd::Status => {
                     let resp = cosigner_client.get("/admin/status").await?;
                     print(&fmt, &resp);
                 }
                 CosignerCmd::Stats => {
                     let resp = cosigner_client.get("/admin/stats").await?;
+                    print(&fmt, &resp);
+                }
+                CosignerCmd::Config => {
+                    let resp = cosigner_client.get("/admin/config").await?;
                     print(&fmt, &resp);
                 }
             }
