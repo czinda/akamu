@@ -78,7 +78,7 @@ mod tests {
     #[tokio::test]
     async fn spki_for_kid_account_not_found() {
         crate::db::install_drivers();
-        let db = crate::db::open("sqlite::memory:", 1).await.unwrap();
+        let db = crate::db::open("sqlite::memory:", 1, false).await.unwrap();
         let result = spki_for_kid(
             &db,
             "https://acme.test",
@@ -96,7 +96,7 @@ mod tests {
     async fn spki_for_kid_deactivated_account_returns_error() {
         use crate::db::schema::AccountRow;
         crate::db::install_drivers();
-        let db = crate::db::open("sqlite::memory:", 1).await.unwrap();
+        let db = crate::db::open("sqlite::memory:", 1, false).await.unwrap();
         crate::db::accounts::insert(
             &db,
             AccountRow {
@@ -130,7 +130,7 @@ mod tests {
     async fn spki_for_kid_valid_account_returns_spki() {
         use crate::db::schema::AccountRow;
         crate::db::install_drivers();
-        let db = crate::db::open("sqlite::memory:", 1).await.unwrap();
+        let db = crate::db::open("sqlite::memory:", 1, false).await.unwrap();
         let spki = vec![0xDE, 0xAD, 0xBE, 0xEF];
         crate::db::accounts::insert(
             &db,

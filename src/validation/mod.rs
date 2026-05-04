@@ -414,6 +414,7 @@ mod tests {
             database: DatabaseConfig {
                 url: "sqlite::memory:".into(),
                 max_connections: None,
+                require_tls: false,
             },
             ca: CaConfig {
                 key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
@@ -447,7 +448,7 @@ mod tests {
 
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
         db::install_drivers();
-        let db_conn = db::open("sqlite::memory:", 1).await.unwrap();
+        let db_conn = db::open("sqlite::memory:", 1, false).await.unwrap();
 
         let ca = Arc::new(CaState {
             key: ca_key,
@@ -893,6 +894,7 @@ mod tests {
             database: DatabaseConfig {
                 url: "sqlite::memory:".into(),
                 max_connections: None,
+                require_tls: false,
             },
             ca: CaConfig {
                 key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
@@ -929,7 +931,7 @@ mod tests {
         });
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
         db::install_drivers();
-        let db_conn = db::open("sqlite::memory:", 1).await.unwrap();
+        let db_conn = db::open("sqlite::memory:", 1, false).await.unwrap();
         let ca = Arc::new(CaState {
             key: ca_key,
             cert_der: ca_cert_der,
@@ -1196,6 +1198,7 @@ mod tests {
             database: DatabaseConfig {
                 url: "sqlite::memory:".into(),
                 max_connections: None,
+                require_tls: false,
             },
             ca: CaConfig {
                 key_file: dir.path().join("ca-p.key").to_string_lossy().into_owned(),
@@ -1372,7 +1375,7 @@ mod tests {
     #[tokio::test]
     async fn on_valid_orders_update_fails() {
         crate::db::install_drivers();
-        let db_conn = crate::db::open("sqlite::memory:", 1).await.unwrap();
+        let db_conn = crate::db::open("sqlite::memory:", 1, false).await.unwrap();
         insert_test_rows(&db_conn, "acc-ov", "ord-ov", "authz-ov", "chall-ov").await;
 
         // Both DDL statements must run on the same connection: PRAGMA is
@@ -1399,7 +1402,7 @@ mod tests {
     #[tokio::test]
     async fn on_invalid_orders_update_fails() {
         crate::db::install_drivers();
-        let db_conn = crate::db::open("sqlite::memory:", 1).await.unwrap();
+        let db_conn = crate::db::open("sqlite::memory:", 1, false).await.unwrap();
         insert_test_rows(&db_conn, "acc-oi", "ord-oi", "authz-oi", "chall-oi").await;
 
         // Both DDL statements must run on the same connection (PRAGMA is

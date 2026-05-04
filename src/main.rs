@@ -109,7 +109,7 @@ async fn run() -> Result<(), String> {
         _ => 10,
     });
     tracing::info!("opening database '{}'", config.database.url);
-    let db = db::open(&config.database.url, max_connections)
+    let db = db::open(&config.database.url, max_connections, config.database.require_tls)
         .await
         .map_err(|e| format!("database init: {e}"))?;
 

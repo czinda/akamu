@@ -122,6 +122,9 @@ pub enum AcmeError {
     #[error("MTC error: {0}")]
     Mtc(String),
 
+    #[error("configuration error: {0}")]
+    Config(String),
+
     #[error("internal server error: {0}")]
     Internal(String),
 }

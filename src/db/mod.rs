@@ -51,6 +51,44 @@ pub fn install_drivers() {
     sqlx::any::install_default_drivers();
 }
 
+/// Validate that `url` contains an SSL/TLS mode parameter appropriate for
+/// the database backend.  Called at startup when `database.require_tls` is set.
+fn validate_db_tls(url: &str) -> Result<(), AcmeError> {
+    match DbKind::from_url(url) {
+        DbKind::Sqlite => Ok(()),
+        DbKind::Postgres => {
+            let lower = url.to_lowercase();
+            if lower.contains("sslmode=require")
+                || lower.contains("sslmode=verify-ca")
+                || lower.contains("sslmode=verify-full")
+            {
+                Ok(())
+            } else {
+                Err(AcmeError::Config(
+                    "database.require_tls is set but the PostgreSQL URL does not contain \
+                     sslmode=require, sslmode=verify-ca, or sslmode=verify-full"
+                        .to_owned(),
+                ))
+            }
+        }
+        DbKind::MariaDb => {
+            let lower = url.to_lowercase();
+            if lower.contains("ssl-mode=required")
+                || lower.contains("ssl-mode=verify_ca")
+                || lower.contains("ssl-mode=verify_identity")
+            {
+                Ok(())
+            } else {
+                Err(AcmeError::Config(
+                    "database.require_tls is set but the MariaDB/MySQL URL does not contain \
+                     ssl-mode=REQUIRED, ssl-mode=VERIFY_CA, or ssl-mode=VERIFY_IDENTITY"
+                        .to_owned(),
+                ))
+            }
+        }
+    }
+}
+
 /// Open a connection pool and run pending migrations.
 ///
 /// `url` is a database URL: `sqlite://path`, `sqlite::memory:`,
@@ -59,7 +97,14 @@ pub fn install_drivers() {
 /// `max_connections` controls pool size.  Pass `1` for SQLite (multiple
 /// connections cause `SQLITE_BUSY_SNAPSHOT` in WAL mode); pass a higher value
 /// for PostgreSQL / MariaDB where MVCC allows real concurrency.
-pub async fn open(url: &str, max_connections: u32) -> Result<Db, AcmeError> {
+///
+/// When `require_tls` is `true`, the URL is checked for an SSL/TLS mode
+/// parameter before any connection is attempted (FPT_ITT.1).
+pub async fn open(url: &str, max_connections: u32, require_tls: bool) -> Result<Db, AcmeError> {
+    if require_tls {
+        validate_db_tls(url)?;
+    }
+
     // For SQLite file-backed databases, ensure the file is created on first
     // open.  The sqlx URL parser sets create_if_missing=false by default;
     // appending ?mode=rwc (read-write-create) enables it via the SQLite URI
@@ -143,7 +188,7 @@ mod tests {
     #[tokio::test]
     async fn open_in_memory_succeeds() {
         install_drivers();
-        let pool = open("sqlite::memory:", 1).await.unwrap();
+        let pool = open("sqlite::memory:", 1, false).await.unwrap();
         let row: (i64,) = sqlx::query_as("SELECT 1").fetch_one(&pool).await.unwrap();
         assert_eq!(row.0, 1);
     }
@@ -153,7 +198,7 @@ mod tests {
         install_drivers();
         let dir = tempfile::tempdir().unwrap();
         let path = format!("sqlite://{}", dir.path().join("test.db").to_string_lossy());
-        let pool = open(&path, 1).await.unwrap();
+        let pool = open(&path, 1, false).await.unwrap();
         let row: (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='accounts'",
         )
@@ -181,5 +226,29 @@ mod tests {
             DbKind::MariaDb
         );
         assert_eq!(DbKind::from_url("mysql://localhost/acme"), DbKind::MariaDb);
+    }
+
+    #[test]
+    fn validate_db_tls_sqlite_always_ok() {
+        assert!(validate_db_tls("sqlite::memory:").is_ok());
+        assert!(validate_db_tls("sqlite:///tmp/foo.db").is_ok());
+    }
+
+    #[test]
+    fn validate_db_tls_postgres_requires_sslmode() {
+        assert!(validate_db_tls("postgres://localhost/acme").is_err());
+        assert!(validate_db_tls("postgres://localhost/acme?sslmode=prefer").is_err());
+        assert!(validate_db_tls("postgres://localhost/acme?sslmode=require").is_ok());
+        assert!(validate_db_tls("postgres://localhost/acme?sslmode=verify-ca").is_ok());
+        assert!(validate_db_tls("postgres://localhost/acme?sslmode=verify-full").is_ok());
+    }
+
+    #[test]
+    fn validate_db_tls_mariadb_requires_ssl_mode() {
+        assert!(validate_db_tls("mysql://localhost/acme").is_err());
+        assert!(validate_db_tls("mariadb://localhost/acme").is_err());
+        assert!(validate_db_tls("mysql://localhost/acme?ssl-mode=REQUIRED").is_ok());
+        assert!(validate_db_tls("mariadb://localhost/acme?ssl-mode=VERIFY_CA").is_ok());
+        assert!(validate_db_tls("mysql://localhost/acme?ssl-mode=VERIFY_IDENTITY").is_ok());
     }
 }

@@ -678,6 +678,7 @@ async fn start_server(args: &Args) -> BenchServer {
         database: DatabaseConfig {
             url: args.db.clone(),
             max_connections: None,
+                require_tls: false,
         },
         ca: CaConfig {
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
@@ -727,7 +728,7 @@ async fn start_server(args: &Args) -> BenchServer {
     } else {
         args.pool_connections.max(1)
     };
-    let db_conn = db::open(&args.db, effective_pool).await.unwrap();
+    let db_conn = db::open(&args.db, effective_pool, false).await.unwrap();
     let ca = Arc::new(CaState {
         key: ca_key,
         cert_der: ca_cert_der,

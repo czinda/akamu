@@ -501,6 +501,15 @@ pub struct DatabaseConfig {
     /// Defaults to 1 for SQLite (multiple connections cause SQLITE_BUSY_SNAPSHOT),
     /// 10 for PostgreSQL/MariaDB.
     pub max_connections: Option<u32>,
+    /// Require TLS for database connections (FPT_ITT.1).
+    ///
+    /// When `true`, the server refuses to start unless the database URL contains
+    /// an SSL/TLS mode parameter that enforces encryption:
+    /// - PostgreSQL: `sslmode=require`, `sslmode=verify-ca`, or `sslmode=verify-full`
+    /// - MariaDB/MySQL: `ssl-mode=REQUIRED`, `ssl-mode=VERIFY_CA`, or `ssl-mode=VERIFY_IDENTITY`
+    /// - SQLite: ignored (local file, no network transport)
+    #[serde(default)]
+    pub require_tls: bool,
 }
 
 #[derive(Debug, Deserialize)]

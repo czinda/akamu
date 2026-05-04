@@ -95,6 +95,7 @@ async fn build_state(
         database: DatabaseConfig {
             url: "sqlite::memory:".into(),
             max_connections: None,
+                require_tls: false,
         },
         ca: CaConfig {
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
@@ -148,7 +149,7 @@ async fn build_state(
     let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();
     let ca_aki_bytes = ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
     db::install_drivers();
-    let db_conn = db::open("sqlite::memory:", 1).await.unwrap();
+    let db_conn = db::open("sqlite::memory:", 1, false).await.unwrap();
 
     let ca = Arc::new(CaState {
         key: ca_key,

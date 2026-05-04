@@ -344,6 +344,7 @@ async fn build_akamu_state(
         database: DatabaseConfig {
             url: "sqlite::memory:".into(),
             max_connections: None,
+                require_tls: false,
         },
         ca: CaConfig {
             key_file: dir.join("ca.key").to_string_lossy().into_owned(),
@@ -391,7 +392,7 @@ async fn build_akamu_state(
     let ca_aki_bytes = ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
 
     db::install_drivers();
-    let db_conn = db::open("sqlite::memory:", 1).await.unwrap();
+    let db_conn = db::open("sqlite::memory:", 1, false).await.unwrap();
 
     // Generate MTC signing key directly (avoids needing to call main.rs helpers).
     let mtc_key = BackendPrivateKey::generate_ec("P-256").unwrap();
