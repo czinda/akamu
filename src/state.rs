@@ -170,7 +170,7 @@ pub struct AppState {
     pub admin_gss_cred: Option<Arc<akamu_gssapi::GssServerCred>>,
     /// Decoded master secret for HKDF-based EAB key derivation.
     /// `None` when `[server].eab_master_secret` is absent.
-    pub eab_master_secret: Option<Arc<Vec<u8>>>,
+    pub eab_master_secret: Option<Arc<zeroize::Zeroizing<Vec<u8>>>>,
     /// Shared in-memory audit state (overflow flag, FAU_ARP.1 alarm counter).
     /// Always present; operations before the admin config is loaded use the
     /// default `AuditPolicy` (no limit, `drop_oldest`, threshold=10, `syslog`).

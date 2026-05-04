@@ -325,7 +325,7 @@ async fn run() -> Result<(), String> {
                  /acme/eab will return full credentials",
                 bytes.len()
             );
-            Some(Arc::new(bytes))
+            Some(Arc::new(zeroize::Zeroizing::new(bytes)))
         }
     };
 
