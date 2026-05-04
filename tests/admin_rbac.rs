@@ -67,6 +67,7 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
             bootstrap_operator_cert_file: None,
             bootstrap_operator_key_file: None,
             bootstrap_operator_name: "admin".into(),
+            bootstrap_operator_gssapi_principal: None,
             ca_certs: vec![],
             gssapi: None,
             session_ttl_secs: 3600,
