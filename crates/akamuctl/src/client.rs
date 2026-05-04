@@ -230,44 +230,59 @@ impl AdminClient {
         Ok(token)
     }
 
-    /// Make an authenticated GET request; returns parsed JSON.
-    pub async fn get(&self, path: &str) -> Result<Value, CtlError> {
+    /// Make a bearer-authenticated request, retrying once on 401.
+    ///
+    /// A 401 means the server rejected the cached session token (e.g. the
+    /// server restarted and its in-memory session store was cleared, or the
+    /// server-side sliding-window TTL elapsed before the client-side
+    /// `expires_at` timestamp).  On 401 we clear the local cache and
+    /// reauthenticate transparently so the caller does not need to remove
+    /// `session.json` by hand.
+    async fn authed(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&str>,
+    ) -> Result<RawResponse, CtlError> {
         let token = self.session_token().await?;
         let resp = self
-            .raw_request(Method::GET, path, Some(&token), None, None)
+            .raw_request(method.clone(), path, Some(&token), body, None)
             .await?;
+        if resp.status != StatusCode::UNAUTHORIZED {
+            return Ok(resp);
+        }
+        // Cached token rejected — evict it and reauthenticate once.
+        self.clear_session();
+        let token = self.session_token().await?;
+        self.raw_request(method, path, Some(&token), body, None).await
+    }
+
+    /// Make an authenticated GET request; returns parsed JSON.
+    pub async fn get(&self, path: &str) -> Result<Value, CtlError> {
+        let resp = self.authed(Method::GET, path, None).await?;
         check_status(&resp)?;
         parse_json(&resp.body)
     }
 
     /// Make an authenticated POST request with optional JSON body.
     pub async fn post(&self, path: &str, body: Option<&Value>) -> Result<Value, CtlError> {
-        let token = self.session_token().await?;
         let body_str = body.map(|v| v.to_string());
-        let resp = self
-            .raw_request(Method::POST, path, Some(&token), body_str.as_deref(), None)
-            .await?;
+        let resp = self.authed(Method::POST, path, body_str.as_deref()).await?;
         check_status(&resp)?;
         parse_json(&resp.body)
     }
 
     /// Make an authenticated PUT request with JSON body.
     pub async fn put(&self, path: &str, body: &Value) -> Result<Value, CtlError> {
-        let token = self.session_token().await?;
         let body_str = body.to_string();
-        let resp = self
-            .raw_request(Method::PUT, path, Some(&token), Some(&body_str), None)
-            .await?;
+        let resp = self.authed(Method::PUT, path, Some(&body_str)).await?;
         check_status(&resp)?;
         parse_json(&resp.body)
     }
 
     /// Make an authenticated DELETE request.
     pub async fn delete(&self, path: &str) -> Result<(), CtlError> {
-        let token = self.session_token().await?;
-        let resp = self
-            .raw_request(Method::DELETE, path, Some(&token), None, None)
-            .await?;
+        let resp = self.authed(Method::DELETE, path, None).await?;
         if resp.status == StatusCode::NO_CONTENT || resp.status.is_success() {
             return Ok(());
         }
@@ -279,11 +294,8 @@ impl AdminClient {
 
     /// Make an authenticated PATCH request with JSON body.
     pub async fn patch(&self, path: &str, body: &Value) -> Result<Value, CtlError> {
-        let token = self.session_token().await?;
         let body_str = body.to_string();
-        let resp = self
-            .raw_request(Method::PATCH, path, Some(&token), Some(&body_str), None)
-            .await?;
+        let resp = self.authed(Method::PATCH, path, Some(&body_str)).await?;
         check_status(&resp)?;
         parse_json(&resp.body)
     }
