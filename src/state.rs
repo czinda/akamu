@@ -5,6 +5,8 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
+type AdminAuthLimiter = Arc<tokio::sync::Mutex<HashMap<IpAddr, VecDeque<Instant>>>>;
+
 use axum::http::HeaderValue;
 use http_body_util::Empty;
 use hyper_rustls::HttpsConnector;
@@ -187,7 +189,7 @@ pub struct AppState {
     /// Each entry holds the `Instant`s of recent attempts from that IP within
     /// the rolling 5-minute window.  Entries are swept lazily on each check.
     /// `None` when `[admin]` is absent.
-    pub admin_auth_limiter: Option<Arc<tokio::sync::Mutex<HashMap<IpAddr, VecDeque<Instant>>>>>,
+    pub admin_auth_limiter: Option<AdminAuthLimiter>,
     /// Time the server process started.  Used for uptime reporting in
     /// `GET /admin/stats` and for session-expiry calculations.
     pub startup_time: Instant,

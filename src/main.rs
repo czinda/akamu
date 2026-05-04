@@ -361,7 +361,7 @@ async fn run() -> Result<(), String> {
             config
                 .admin
                 .as_ref()
-                .map(|a| akamu::audit::AuditPolicy::from_admin_config(a))
+                .map(akamu::audit::AuditPolicy::from_admin_config)
                 .unwrap_or_default(),
         ),
         admin_sessions: config.admin.as_ref().map(|_| {
