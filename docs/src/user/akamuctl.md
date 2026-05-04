@@ -257,6 +257,20 @@ Re-enable a previously deactivated operator:
 akamuctl operator activate 3
 ```
 
+### `operator unlock`
+
+Reset the failed-authentication counter for a locked-out operator:
+
+```bash
+akamuctl operator unlock 3
+```
+
+Use this when an operator has been locked out due to exceeding
+`max_failed_auth` in the server configuration. Calls
+`POST /admin/operators/{id}/unlock` (FIA_AFL.1).
+
+Requires the `administrator` role.
+
 ## EAB key management
 
 ### `eab list`
@@ -484,6 +498,50 @@ Returns the profile ID, description, validity period (days), hash algorithm,
 extended key usages, and whether MTC issuance is enabled.
 
 All authenticated roles may list profiles.
+
+### `profile add`
+
+Add a new certificate profile to the runtime cache:
+
+```bash
+akamuctl profile add codesigning --params-file /tmp/codesigning.json
+```
+
+The JSON file must contain the profile parameters accepted by
+`POST /admin/profiles`. At minimum it should include `description`;
+all other fields have defaults. Example file:
+
+```json
+{
+  "description": "Code signing certificate",
+  "validity_days": 365,
+  "extended_key_usages": ["code_signing"],
+  "require_account_grant": true
+}
+```
+
+Requires the `administrator` role.
+
+### `profile update`
+
+Replace an existing certificate profile in the runtime cache:
+
+```bash
+akamuctl profile update codesigning --params-file /tmp/codesigning-v2.json
+```
+
+The JSON file uses the same schema as `profile add` (without the `id` field).
+Requires the `administrator` role.
+
+### `profile remove`
+
+Remove a certificate profile from the runtime cache:
+
+```bash
+akamuctl profile remove codesigning
+```
+
+Requires the `administrator` role.
 
 ## Order management
 

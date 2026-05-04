@@ -140,6 +140,28 @@ url      = "postgres://akamu:secret@localhost/akamu"
 max_connections = 20
 ```
 
+### `require_tls`
+
+**Optional. Default: `false`.**
+
+When `true`, the server refuses to start unless the database URL explicitly
+enables SSL/TLS encryption:
+
+| Backend | Required URL parameter |
+|---------|------------------------|
+| PostgreSQL | `sslmode=require`, `sslmode=verify-ca`, or `sslmode=verify-full` |
+| MariaDB/MySQL | `ssl-mode=REQUIRED`, `ssl-mode=VERIFY_CA`, or `ssl-mode=VERIFY_IDENTITY` |
+| SQLite | Ignored (local file, no network transport) |
+
+Set `true` in production deployments where the database is not co-located
+with the server process (FPT_ITT.1).
+
+```toml
+[database]
+url         = "postgres://akamu:secret@db.example.com/akamu?sslmode=verify-full"
+require_tls = true
+```
+
 ---
 
 ## `[ca]`
@@ -285,6 +307,35 @@ Public WebPKI CAs should set this to `true` to enforce the limit at issuance tim
 ```toml
 [ca]
 enforce_validity_cap = true
+```
+
+### `require_encrypted_key`
+
+**Optional. Default: `false`.**
+
+When `true`, the server refuses to load a plaintext (unencrypted) PEM private key
+from a file (FCS_STG_EXT.1). Only PKCS#8 encrypted PEM (`ENCRYPTED PRIVATE KEY`)
+or PKCS#11 URIs are accepted. Use `key_password_file` to supply the decryption
+passphrase when using an encrypted PEM file.
+
+```toml
+[ca]
+require_encrypted_key = true
+key_password_file     = "/etc/akamu/ca-key-passphrase"
+```
+
+### `key_password_file`
+
+**Optional. Default: absent.**
+
+Path to a file containing the passphrase used to decrypt an encrypted PEM CA
+private key. The file is read once at startup; trailing newlines are stripped.
+Required when `require_encrypted_key = true` and `key_file` points to a
+filesystem path (not a PKCS#11 URI).
+
+```toml
+[ca]
+key_password_file = "/etc/akamu/ca-key-passphrase"
 ```
 
 ---
@@ -522,11 +573,10 @@ authz_expiry_secs = 86400
 
 ### `max_body_bytes`
 
-**Optional. Default: `0` (uses 2 MiB built-in limit).**
+**Optional. Default: `65536` (64 KiB).**
 
 Maximum size in bytes of JOSE+JSON request bodies. Requests larger than this limit are rejected with HTTP 413. This applies to all POST endpoints that carry ACME payloads, and also to the admin API listener.
 
-When `max_body_bytes` is `0` (the default), the server applies a built-in limit of **2 MiB** (`2 * 1024 * 1024` bytes). Setting this to `0` does **not** disable the body limit; the 2 MiB default always applies. To use a smaller limit than 2 MiB, set an explicit non-zero value.
 
 ```toml
 max_body_bytes = 65536   # 64 KiB
@@ -1245,6 +1295,45 @@ Inactive session expiry in seconds. Operator sessions that have had no activity 
 session_ttl_secs = 3600
 ```
 
+### `session_lock_secs`
+
+**Optional. Default: `900` (15 minutes).**
+
+Inactivity threshold before a session enters locked state (FTA_SSL_EXT.1). After
+this many idle seconds, requests that present the session token receive
+`423 Locked` instead of `401 Unauthorized`. The session is not destroyed; the
+operator must re-authenticate to obtain a fresh token. This value must be less
+than `session_ttl_secs`.
+
+```toml
+session_lock_secs = 900
+```
+
+### `max_failed_auth`
+
+**Optional. Default: `5`.**
+
+Maximum number of failed authentication attempts allowed for an operator before
+the account is locked (FIA_AFL.1). Once the threshold is exceeded, further
+authentication attempts return `423 Locked` until an administrator calls
+`POST /admin/operators/{id}/unlock` (or uses `akamuctl operator unlock`).
+
+```toml
+max_failed_auth = 5
+```
+
+### `lockout_duration_secs`
+
+**Optional. Default: `1800` (30 minutes).**
+
+How long in seconds the operator account remains locked after exceeding
+`max_failed_auth` (FIA_AFL.1). After this duration the lock is automatically
+cleared; an administrator may also clear it early with `operator unlock`.
+
+```toml
+lockout_duration_secs = 1800
+```
+
 ### `audit_max_rows`
 
 **Optional. Default: absent (unlimited).**
@@ -1327,18 +1416,34 @@ service_name = "HTTP"
 | `DELETE` | `/admin/session` | Y | Y | Y | Y |
 | `GET` | `/admin/operators` | Y | | | |
 | `POST` | `/admin/operators` | Y | | | |
+| `GET` | `/admin/operators/{id}` | Y | | | |
+| `PUT` | `/admin/operators/{id}` | Y | | | |
 | `PATCH` | `/admin/operators/{id}` | Y | | | |
+| `POST` | `/admin/operators/{id}/unlock` | Y | | | |
 | `GET` | `/admin/audit` | Y | | | Y |
-| `GET` | `/admin/certs` | Y | Y | | Y |
+| `GET` | `/admin/profiles` | Y | Y | Y | Y |
+| `POST` | `/admin/profiles` | Y | | | |
+| `PUT` | `/admin/profiles/{id}` | Y | | | |
+| `DELETE` | `/admin/profiles/{id}` | Y | | | |
+| `GET` | `/admin/accounts` | Y | Y | Y | Y |
+| `GET` | `/admin/account/{id}` | Y | Y | Y | Y |
+| `POST` | `/admin/account/{id}/deactivate` | Y | | | |
 | `GET` | `/admin/account/{id}/profile-grants` | Y | Y | Y | Y |
 | `PUT` | `/admin/account/{id}/profile-grants` | Y | Y | | |
 | `DELETE` | `/admin/account/{id}/profile-grants` | Y | | | |
+| `GET` | `/admin/certs` | Y | Y | | Y |
+| `GET` | `/admin/certs/{id}` | Y | Y | | Y |
+| `GET` | `/admin/certs/{id}/download` | Y | Y | | |
 | `POST` | `/admin/eab` | Y | Y | Y | |
+| `GET` | `/admin/eab/{kid}` | Y | Y | Y | Y |
 | `DELETE` | `/admin/eab/{kid}` | Y | Y | | |
 | `GET` | `/admin/eab` | Y | Y | Y | Y |
+| `GET` | `/admin/orders` | Y | Y | Y | Y |
+| `GET` | `/admin/orders/{id}` | Y | Y | Y | Y |
+| `GET` | `/admin/config` | Y | | | |
 | `POST` | `/admin/crl/force` | Y | Y | | |
 | `POST` | `/admin/revoke` | Y | Y | Y | |
 | `GET` | `/admin/stats` | Y | Y | Y | Y |
 
-See [Certificate Profiles — Admin API](profiles.md#admin-api) for the full request/response format of each endpoint.
+See [Admin API and Operator Management](admin-api.md) for the full request/response format of each endpoint.
 

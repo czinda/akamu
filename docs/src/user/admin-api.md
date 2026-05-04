@@ -75,8 +75,12 @@ field controls the address; the default in the configuration example is
 | `GET` | `/admin/operators/{id}` | Y | | | |
 | `PUT` | `/admin/operators/{id}` | Y | | | |
 | `PATCH` | `/admin/operators/{id}` | Y | | | |
+| `POST` | `/admin/operators/{id}/unlock` | Y | | | |
 | `GET` | `/admin/audit` | Y | | | Y |
 | `GET` | `/admin/profiles` | Y | Y | Y | Y |
+| `POST` | `/admin/profiles` | Y | | | |
+| `PUT` | `/admin/profiles/{id}` | Y | | | |
+| `DELETE` | `/admin/profiles/{id}` | Y | | | |
 | `GET` | `/admin/accounts` | Y | Y | Y | Y |
 | `GET` | `/admin/account/{id}` | Y | Y | Y | Y |
 | `POST` | `/admin/account/{id}/deactivate` | Y | | | |
@@ -140,7 +144,9 @@ Query parameters: `limit` (1–1000, default 1000), `offset` (default 0).
       "gssapi_principal": null,
       "created_at": "2026-05-01T09:00:00Z",
       "last_seen_at": "2026-05-02T08:30:00Z",
-      "active": true
+      "active": true,
+      "failed_attempts": 0,
+      "locked_until": null
     }
   ]
 }
@@ -190,7 +196,9 @@ Show a single operator's details.
   "gssapi_principal": null,
   "created_at": "2026-05-01T09:00:00Z",
   "last_seen_at": "2026-05-02T08:30:00Z",
-  "active": true
+  "active": true,
+  "failed_attempts": 0,
+  "locked_until": null
 }
 ```
 
@@ -230,6 +238,15 @@ Activate or deactivate an operator.
 
 Set `active` to `false` to deactivate, `true` to reactivate.  Deactivating an
 operator immediately invalidates all of that operator's active session tokens.
+
+**Response: `204 No Content`** on success, `404 Not Found` when the ID does not
+exist.
+
+### `POST /admin/operators/{id}/unlock`
+
+Reset the operator's failed-authentication counter and clear the lockout
+timestamp (FIA_AFL.1).  Use this when an operator has been locked out due to
+exceeding `max_failed_auth`.
 
 **Response: `204 No Content`** on success, `404 Not Found` when the ID does not
 exist.
@@ -293,6 +310,52 @@ List all loaded certificate profiles with their parameters.
   ]
 }
 ```
+
+### `POST /admin/profiles`
+
+Add a new certificate profile to the runtime cache (FPT_NPE_EXT.1).
+Requires the `administrator` role.
+
+**Request body:**
+
+```json
+{
+  "id": "codesigning",
+  "description": "Code signing certificate",
+  "validity_days": 365,
+  "hash_alg": "sha256",
+  "extended_key_usages": ["code_signing"],
+  "require_account_grant": true
+}
+```
+
+All fields except `id` are optional and have defaults (90 days validity, `sha256`
+hash, no extended key usage restriction).  Returns `409 Conflict` when a profile
+with the same `id` already exists.
+
+**Response `201 Created`:**
+
+```json
+{ "id": "codesigning", "description": "Code signing certificate" }
+```
+
+### `PUT /admin/profiles/{id}`
+
+Replace an existing certificate profile in the runtime cache (FPT_NPE_EXT.1).
+The profile is identified by `{id}` in the URL path; the request body uses the
+same schema as `POST /admin/profiles` but without the `id` field.
+Requires the `administrator` role.
+
+**Response: `204 No Content`** on success, `404 Not Found` when the profile does
+not exist.
+
+### `DELETE /admin/profiles/{id}`
+
+Remove a certificate profile from the runtime cache (FPT_NPE_EXT.1).
+Requires the `administrator` role.
+
+**Response: `204 No Content`** on success, `404 Not Found` when the profile does
+not exist.
 
 ### `GET /admin/accounts`
 
@@ -394,9 +457,9 @@ Clear all profile restrictions.  Sets `profile_grants` to `null`
 
 Search the certificate table.
 
-Query parameters: `serial`, `account_id`, `after` (RFC 3339), `before`
-(RFC 3339), `status` (`active` or `revoked`), `limit` (1–1000, default 100),
-`offset`.
+Query parameters: `serial`, `subject` (subject DN substring match), `account_id`,
+`after` (RFC 3339), `before` (RFC 3339), `status` (`active` or `revoked`),
+`limit` (1–1000, default 100), `offset`.
 
 **Response `200 OK`:**
 
