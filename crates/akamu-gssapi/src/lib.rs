@@ -271,7 +271,7 @@ impl GssClientCred {
                 0,               // GSS_C_INDEFINITE
                 ffi::GSS_C_NO_OID_SET,
                 ffi::GSS_C_INITIATE,
-                ptr::null(),     // cred_store = GSS_C_NO_CRED_STORE → default ccache
+                ptr::null(), // cred_store = GSS_C_NO_CRED_STORE → default ccache
                 &mut cred_handle,
                 &mut actual_mechs,
                 &mut time_rec,
@@ -289,7 +289,10 @@ impl GssClientCred {
             if !cred_handle.is_null() {
                 unsafe { ffi::gss_release_cred(&mut minor, &mut cred_handle) };
             }
-            return Err(GssError::AcquireCred { major, minor: error_minor });
+            return Err(GssError::AcquireCred {
+                major,
+                minor: error_minor,
+            });
         }
 
         Ok(GssClientCred { raw: cred_handle })
@@ -439,11 +442,15 @@ impl GssClientContext {
         };
         let mut target_name: ffi::GssNameT = ptr::null_mut();
         // SAFETY: svc_buf wraps a live CString; target_name is a valid output pointer.
-        let major = unsafe { ffi::gss_import_name(&mut minor, &svc_buf, &svc_oid, &mut target_name) };
+        let major =
+            unsafe { ffi::gss_import_name(&mut minor, &svc_buf, &svc_oid, &mut target_name) };
         if major != ffi::GSS_S_COMPLETE {
             return Err(GssError::ImportName { major, minor });
         }
-        Ok(GssClientContext { raw: ffi::GSS_C_NO_CONTEXT, target_name })
+        Ok(GssClientContext {
+            raw: ffi::GSS_C_NO_CONTEXT,
+            target_name,
+        })
     }
 
     /// Advance the exchange by one step.
@@ -522,9 +529,9 @@ impl GssClientContext {
                 cred.raw,
                 &mut self.raw,
                 self.target_name,
-                ptr::null(),     // mech_type = default (SPNEGO)
+                ptr::null(), // mech_type = default (SPNEGO)
                 ffi::GSS_C_MUTUAL_FLAG,
-                0,               // time_req = library default
+                0, // time_req = library default
                 chan_bindings_ptr,
                 input_ptr,
                 ptr::null_mut(), // actual_mech_type — not needed
@@ -550,7 +557,10 @@ impl GssClientContext {
         };
 
         if major != ffi::GSS_S_COMPLETE && major != ffi::GSS_S_CONTINUE_NEEDED {
-            return Err(GssError::InitContext { major, minor: error_minor });
+            return Err(GssError::InitContext {
+                major,
+                minor: error_minor,
+            });
         }
 
         Ok((out_token, major == ffi::GSS_S_COMPLETE))
@@ -567,12 +577,18 @@ pub enum AcceptStep {
     /// Exchange is complete.  `principal` is the authenticated client identity
     /// (e.g. `"user@REALM"`).  `out_token` is the optional mutual-authentication
     /// response; encode it as `WWW-Authenticate: Negotiate <base64>` if non-empty.
-    Complete { out_token: Vec<u8>, principal: String },
+    Complete {
+        out_token: Vec<u8>,
+        principal: String,
+    },
     /// The mechanism needs another round-trip.  Send `out_token` as
     /// `WWW-Authenticate: Negotiate <base64>` with `401 Unauthorized`, then call
     /// [`GssServerContext::step`] with the client's next `Authorization: Negotiate`
     /// token.  `ctx` must be kept alive between the two HTTP requests.
-    Continue { out_token: Vec<u8>, ctx: GssServerContext },
+    Continue {
+        out_token: Vec<u8>,
+        ctx: GssServerContext,
+    },
 }
 
 /// In-progress GSSAPI server-side security context for multi-round-trip exchange.
@@ -730,10 +746,7 @@ impl GssServerContext {
                 let principal = if major_dn == ffi::GSS_S_COMPLETE && !name_buf.value.is_null() {
                     // SAFETY: name_buf.value is valid for name_buf.length bytes.
                     let slice = unsafe {
-                        std::slice::from_raw_parts(
-                            name_buf.value as *const u8,
-                            name_buf.length,
-                        )
+                        std::slice::from_raw_parts(name_buf.value as *const u8, name_buf.length)
                     };
                     let s = std::str::from_utf8(slice)
                         .map(|s| s.to_owned())
@@ -751,7 +764,10 @@ impl GssServerContext {
                 };
 
                 // self goes out of scope here; Drop deletes self.raw.
-                Ok(AcceptStep::Complete { out_token, principal })
+                Ok(AcceptStep::Complete {
+                    out_token,
+                    principal,
+                })
             }
 
             ffi::GSS_S_CONTINUE_NEEDED => {
@@ -763,7 +779,10 @@ impl GssServerContext {
                 // Setting self.raw to null prevents Drop from double-freeing.
                 let raw = self.raw;
                 self.raw = ffi::GSS_C_NO_CONTEXT;
-                Ok(AcceptStep::Continue { out_token, ctx: GssServerContext { raw } })
+                Ok(AcceptStep::Continue {
+                    out_token,
+                    ctx: GssServerContext { raw },
+                })
             }
 
             _ => {
@@ -772,7 +791,10 @@ impl GssServerContext {
                     unsafe { ffi::gss_release_name(&mut minor, &mut src_name) };
                 }
                 // self goes out of scope here; Drop deletes self.raw.
-                Err(GssError::AcceptContext { major, minor: error_minor })
+                Err(GssError::AcceptContext {
+                    major,
+                    minor: error_minor,
+                })
             }
         }
     }
@@ -791,7 +813,10 @@ pub enum InitStep {
     /// The mechanism needs at least one more round-trip.  Send `token` to the
     /// server; if the server replies with `WWW-Authenticate: Negotiate <base64>`,
     /// decode the server token and pass it to [`GssClientContext::step`] on `ctx`.
-    Continue { token: Vec<u8>, ctx: GssClientContext },
+    Continue {
+        token: Vec<u8>,
+        ctx: GssClientContext,
+    },
 }
 
 // ── init_token ────────────────────────────────────────────────────────────────
@@ -852,7 +877,10 @@ pub fn accept_token(
     input_token: &[u8],
     channel_binding: Option<&[u8]>,
 ) -> Result<AcceptStep, GssError> {
-    GssServerContext { raw: ffi::GSS_C_NO_CONTEXT }.step(cred, input_token, channel_binding)
+    GssServerContext {
+        raw: ffi::GSS_C_NO_CONTEXT,
+    }
+    .step(cred, input_token, channel_binding)
 }
 
 #[cfg(test)]
