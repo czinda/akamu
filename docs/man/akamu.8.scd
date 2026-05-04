@@ -86,6 +86,33 @@ Start the server with a non-default configuration file:
 
 	akamu /etc/akamu/staging.toml
 
+# CONFIGURATION FILE
+
+The configuration file is a TOML document.  An annotated example is
+installed at */etc/akamu/config.toml.example*.
+
+## [admin] — bootstrap operator fields
+
+*bootstrap_operator_cert_file* = _path_
+	Path where the bootstrap Administrator client certificate is written on
+	first run.  When this file and *bootstrap_operator_key_file* are absent
+	and the operators table is empty, a client certificate is generated and
+	the operator is registered automatically.  Both fields must be set
+	together.  Mutually exclusive with *bootstrap_operator_gssapi_principal*.
+
+*bootstrap_operator_key_file* = _path_
+	Path where the bootstrap Administrator client private key is written on
+	first run.  Must be set alongside *bootstrap_operator_cert_file*.
+	Mutually exclusive with *bootstrap_operator_gssapi_principal*.
+
+*bootstrap_operator_gssapi_principal* = _principal_
+	Kerberos principal for the GSSAPI bootstrap Administrator operator
+	(e.g. _admin@EXAMPLE.COM_).  When set and the operators table is empty
+	at startup, the principal is registered as Administrator so the first
+	*akamuctl login --gssapi* succeeds without manual operator registration.
+	Mutually exclusive with *bootstrap_operator_cert_file* /
+	*bootstrap_operator_key_file*.
+
 # SEE ALSO
 
 *akamu-cosigner*(8), *akamuctl*(1), *akamu-cli*(1),
