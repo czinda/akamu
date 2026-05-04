@@ -178,7 +178,16 @@ fn is_expired(expires_at: &str, margin_secs: i64) -> bool {
         let days_per_month = [
             31,
             if is_leap(year) { 29 } else { 28 },
-            31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+            31,
+            30,
+            31,
+            30,
+            31,
+            31,
+            30,
+            31,
+            30,
+            31,
         ];
         // Days elapsed since 1970-01-01.
         let mut days: i64 = 0;

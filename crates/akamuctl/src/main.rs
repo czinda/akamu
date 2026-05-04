@@ -217,9 +217,7 @@ enum EabCmd {
         profiles: Vec<String>,
     },
     /// Deactivate an EAB key.
-    Remove {
-        kid: String,
-    },
+    Remove { kid: String },
 }
 
 #[derive(Subcommand)]
@@ -317,9 +315,7 @@ enum OrderCmd {
 #[derive(Subcommand)]
 enum AccountGrantsCmd {
     /// Show profile grants for an account.
-    Get {
-        id: String,
-    },
+    Get { id: String },
     /// Set profile grants for an account.
     Set {
         id: String,
@@ -327,9 +323,7 @@ enum AccountGrantsCmd {
         profiles: Vec<String>,
     },
     /// Clear all profile grants (unrestricted).
-    Clear {
-        id: String,
-    },
+    Clear { id: String },
 }
 
 #[derive(Subcommand)]
@@ -362,10 +356,7 @@ async fn main() {
 
 async fn run(cli: Cli) -> Result<(), CtlError> {
     // Load config.
-    let config_path = cli
-        .config
-        .clone()
-        .unwrap_or_else(Config::default_path);
+    let config_path = cli.config.clone().unwrap_or_else(Config::default_path);
     let cfg = if config_path.exists() {
         Config::from_file(&config_path).unwrap_or_default()
     } else {
@@ -382,9 +373,21 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
         .unwrap_or_else(|| "https://localhost:9443".into());
 
     // Read cert/key/ca-cert bytes.
-    let ca_cert_bytes = read_file_opt(cli.ca_cert.as_deref().or_else(|| cfg.server.ca_cert.as_deref().map(std::path::Path::new)))?;
-    let cert_bytes = read_file_opt(cli.cert.as_deref().or_else(|| cfg.server.cert_file.as_deref().map(std::path::Path::new)))?;
-    let key_bytes = read_file_opt(cli.key.as_deref().or_else(|| cfg.server.key_file.as_deref().map(std::path::Path::new)))?;
+    let ca_cert_bytes = read_file_opt(
+        cli.ca_cert
+            .as_deref()
+            .or_else(|| cfg.server.ca_cert.as_deref().map(std::path::Path::new)),
+    )?;
+    let cert_bytes = read_file_opt(
+        cli.cert
+            .as_deref()
+            .or_else(|| cfg.server.cert_file.as_deref().map(std::path::Path::new)),
+    )?;
+    let key_bytes = read_file_opt(
+        cli.key
+            .as_deref()
+            .or_else(|| cfg.server.key_file.as_deref().map(std::path::Path::new)),
+    )?;
 
     let server_client = AdminClient::new(
         server_url.clone(),
@@ -700,7 +703,11 @@ async fn system_fqdn() -> Option<String> {
     if ret != 0 {
         return None;
     }
-    let name = CStr::from_bytes_until_nul(&buf).ok()?.to_str().ok()?.to_owned();
+    let name = CStr::from_bytes_until_nul(&buf)
+        .ok()?
+        .to_str()
+        .ok()?
+        .to_owned();
     if name.contains('.') {
         return Some(name);
     }
@@ -730,7 +737,11 @@ async fn ptr_lookup_with(
     let name = lookup.into_iter().next()?;
     let s = name.to_utf8();
     let s = s.trim_end_matches('.');
-    if s.is_empty() || s == ip.to_string() { None } else { Some(s.to_owned()) }
+    if s.is_empty() || s == ip.to_string() {
+        None
+    } else {
+        Some(s.to_owned())
+    }
 }
 
 /// Build a hickory resolver pointed at the system nameserver.

@@ -14,7 +14,9 @@ impl std::str::FromStr for Format {
         match s {
             "json" => Ok(Format::Json),
             "table" => Ok(Format::Table),
-            other => Err(format!("unknown output format '{other}'; expected 'json' or 'table'")),
+            other => Err(format!(
+                "unknown output format '{other}'; expected 'json' or 'table'"
+            )),
         }
     }
 }
@@ -23,7 +25,10 @@ impl std::str::FromStr for Format {
 pub fn print(fmt: &Format, value: &Value) {
     match fmt {
         Format::Json => {
-            println!("{}", serde_json::to_string_pretty(value).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(value).unwrap_or_default()
+            );
         }
         Format::Table => print_table(value),
     }

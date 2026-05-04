@@ -3,11 +3,11 @@
 use std::sync::Arc;
 
 use base64::Engine as _;
+use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper::{Method, Request, StatusCode};
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
-use http_body_util::{BodyExt, Full};
 use rustls::ClientConfig;
 use serde_json::Value;
 
@@ -31,7 +31,9 @@ pub fn build_tls_config(
     if let Some(pem) = ca_cert_pem {
         let certs = synta_certificate::pem_to_der(pem);
         if certs.is_empty() {
-            return Err(CtlError::Config("ca_cert PEM contains no certificates".into()));
+            return Err(CtlError::Config(
+                "ca_cert PEM contains no certificates".into(),
+            ));
         }
         for der in certs {
             root_store
@@ -66,7 +68,9 @@ pub fn build_tls_config(
                 .map(|d| rustls_pki_types::CertificateDer::from(d))
                 .collect();
         if cert_ders.is_empty() {
-            return Err(CtlError::Config("cert_file PEM contains no certificates".into()));
+            return Err(CtlError::Config(
+                "cert_file PEM contains no certificates".into(),
+            ));
         }
         let key_ders = synta_certificate::pem_to_der(key_pem);
         let key_der = key_ders
@@ -162,7 +166,13 @@ impl AdminClient {
                     base64::engine::general_purpose::STANDARD.encode(&token_bytes)
                 );
                 let resp = self
-                    .raw_request(Method::POST, "/admin/session", None, None, Some(&negotiate_hdr))
+                    .raw_request(
+                        Method::POST,
+                        "/admin/session",
+                        None,
+                        None,
+                        Some(&negotiate_hdr),
+                    )
                     .await?;
                 if resp.status == StatusCode::OK {
                     break resp;
@@ -174,7 +184,9 @@ impl AdminClient {
                             server_token = Some(
                                 base64::engine::general_purpose::STANDARD
                                     .decode(b64.trim())
-                                    .map_err(|e| CtlError::Auth(format!("decode server GSSAPI token: {e}")))?,
+                                    .map_err(|e| {
+                                        CtlError::Auth(format!("decode server GSSAPI token: {e}"))
+                                    })?,
                             );
                             continue;
                         }
@@ -254,7 +266,8 @@ impl AdminClient {
         // Cached token rejected — evict it and reauthenticate once.
         self.clear_session();
         let token = self.session_token().await?;
-        self.raw_request(method, path, Some(&token), body, None).await
+        self.raw_request(method, path, Some(&token), body, None)
+            .await
     }
 
     /// Make an authenticated GET request; returns parsed JSON.
@@ -359,7 +372,11 @@ impl AdminClient {
             .map_err(|e| CtlError::Http(format!("read body: {e}")))?
             .to_bytes();
         let body = String::from_utf8_lossy(&body_bytes).into_owned();
-        Ok(RawResponse { status, body, www_authenticate })
+        Ok(RawResponse {
+            status,
+            body,
+            www_authenticate,
+        })
     }
 }
 
