@@ -78,6 +78,11 @@ pub fn gss_c_no_buffer() -> GssBufferDesc {
 /// Usage flag: credential may be used by an initiator (client).
 pub const GSS_C_INITIATE: i32 = 1;
 
+/// Status type: interpret `status_value` as a GSS-API major code.
+pub const GSS_C_GSS_CODE: i32 = 1;
+/// Status type: interpret `status_value` as a mechanism-specific minor code.
+pub const GSS_C_MECH_CODE: i32 = 2;
+
 /// Request flag: ask the acceptor to perform mutual authentication.
 pub const GSS_C_MUTUAL_FLAG: OmUint32 = 2;
 
@@ -183,6 +188,16 @@ extern "C" {
 
     /// Release an OID set (e.g. from gss_acquire_cred_from actual_mechs output).
     pub fn gss_release_oid_set(minor_status: *mut OmUint32, set: *mut GssOidSetT) -> OmUint32;
+
+    /// Convert a major or minor status code to a human-readable string.
+    pub fn gss_display_status(
+        minor_status: *mut OmUint32,
+        status_value: OmUint32,
+        status_type: i32,
+        mech_type: *const GssOidDesc,
+        message_context: *mut OmUint32,
+        status_string: *mut GssBufferDesc,
+    ) -> OmUint32;
 
     /// Initiate a security context (client side); produces the outbound SPNEGO token.
     pub fn gss_init_sec_context(

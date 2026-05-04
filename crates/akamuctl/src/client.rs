@@ -153,14 +153,24 @@ impl AdminClient {
         let session_resp = if let Some(ref spn) = self.gssapi_service {
             // GSSAPI multi-round-trip loop: step → send → check for server token → repeat.
             let cred = akamu_gssapi::GssClientCred::from_ccache()
-                .map_err(|e| CtlError::Auth(format!("GSSAPI ccache: {e}")))?;
+                .map_err(|e| {
+                    CtlError::Auth(format!(
+                        "GSSAPI ccache: {e}\n\nhint: run 'kinit' to obtain a Kerberos ticket, then retry"
+                    ))
+                })?;
             let mut ctx = akamu_gssapi::GssClientContext::new(spn)
                 .map_err(|e| CtlError::Auth(format!("GSSAPI context for '{spn}': {e}")))?;
             let mut server_token: Option<Vec<u8>> = None;
             loop {
                 let (token_bytes, _complete) = ctx
                     .step(&cred, server_token.as_deref(), None)
-                    .map_err(|e| CtlError::Auth(format!("GSSAPI step for '{spn}': {e}")))?;
+                    .map_err(|e| {
+                        CtlError::Auth(format!(
+                            "GSSAPI authentication failed for '{spn}': {e}\n\n\
+                             hint: your Kerberos credentials may have expired; \
+                             run 'kinit' to renew them, then retry"
+                        ))
+                    })?;
                 let negotiate_hdr = format!(
                     "Negotiate {}",
                     base64::engine::general_purpose::STANDARD.encode(&token_bytes)

@@ -13,8 +13,12 @@ pub enum GssError {
     /// `gss_import_name` failed to parse the service name string.
     ///
     /// This typically indicates an empty or structurally invalid service name.
-    #[error("gss_import_name failed: major={major:#010x} minor={minor:#010x}")]
-    ImportName { major: OmUint32, minor: OmUint32 },
+    #[error("gss_import_name failed: {detail}")]
+    ImportName {
+        major: OmUint32,
+        minor: OmUint32,
+        detail: String,
+    },
 
     /// `gss_acquire_cred_from` failed to load acceptor credentials from the
     /// keytab.
@@ -22,20 +26,32 @@ pub enum GssError {
     /// Common causes: the keytab file does not exist or is not readable by the
     /// akamu process, the file does not contain a key for the requested
     /// service principal, or the Kerberos libraries are not installed.
-    #[error("gss_acquire_cred_from failed: major={major:#010x} minor={minor:#010x}")]
-    AcquireCred { major: OmUint32, minor: OmUint32 },
+    #[error("gss_acquire_cred_from failed: {detail}")]
+    AcquireCred {
+        major: OmUint32,
+        minor: OmUint32,
+        detail: String,
+    },
 
     /// `gss_accept_sec_context` rejected the client token.
     ///
     /// Common causes: the service ticket has expired, the client targeted the
     /// wrong service principal, the token was replayed, or it was forged.
-    #[error("gss_accept_sec_context failed: major={major:#010x} minor={minor:#010x}")]
-    AcceptContext { major: OmUint32, minor: OmUint32 },
+    #[error("gss_accept_sec_context failed: {detail}")]
+    AcceptContext {
+        major: OmUint32,
+        minor: OmUint32,
+        detail: String,
+    },
 
     /// `gss_display_name` failed to convert the authenticated name to a
     /// printable string.
-    #[error("gss_display_name failed: major={major:#010x} minor={minor:#010x}")]
-    DisplayName { major: OmUint32, minor: OmUint32 },
+    #[error("gss_display_name failed: {detail}")]
+    DisplayName {
+        major: OmUint32,
+        minor: OmUint32,
+        detail: String,
+    },
 
     /// The display name returned by `gss_display_name` is not valid UTF-8.
     ///
@@ -70,6 +86,14 @@ pub enum GssError {
     NulInTargetName,
 
     /// `gss_init_sec_context` failed to produce the initial token.
-    #[error("gss_init_sec_context failed: major={major:#010x} minor={minor:#010x}")]
-    InitContext { major: OmUint32, minor: OmUint32 },
+    ///
+    /// Common causes: the Kerberos TGT in the default ccache has expired
+    /// (run `kinit` to obtain a new one), the KDC is unreachable, or the
+    /// target service principal does not exist in the Kerberos database.
+    #[error("gss_init_sec_context failed: {detail}")]
+    InitContext {
+        major: OmUint32,
+        minor: OmUint32,
+        detail: String,
+    },
 }
