@@ -294,6 +294,16 @@ where
             if map.len() > 500 {
                 map.retain(|_, v| !v.is_empty());
             }
+        } else if parts.extensions.get::<PeerClientCert>().is_some()
+            || auth_header.starts_with("Negotiate ")
+        {
+            static WARN_ONCE: std::sync::Once = std::sync::Once::new();
+            WARN_ONCE.call_once(|| {
+                tracing::warn!(
+                    "admin auth rate limiter inactive: ConnectInfo not available \
+                     (reverse proxy?) or limiter not configured"
+                );
+            });
         }
 
         // ── Path 1: Bearer session token ──────────────────────────────────────
@@ -436,6 +446,18 @@ async fn authenticate_gssapi(
     negotiate_token: &str,
     parts: &mut Parts,
 ) -> Result<OperatorContext, Response> {
+    // Reject oversized tokens before allocating for the base64 decode.
+    // 128 KiB decoded ≈ 175 KiB base64-encoded (4/3 ratio + padding).
+    const MAX_NEGOTIATE_DECODED: usize = 128 * 1024;
+    const MAX_NEGOTIATE_ENCODED: usize = MAX_NEGOTIATE_DECODED * 4 / 3 + 4;
+    if negotiate_token.len() > MAX_NEGOTIATE_ENCODED {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Negotiate token exceeds size limit",
+        )
+            .into_response());
+    }
+
     // Decode the base64 SPNEGO token.
     let token_bytes = URL_SAFE_NO_PAD
         .decode(negotiate_token)
@@ -443,14 +465,6 @@ async fn authenticate_gssapi(
         .map_err(|_| {
             (StatusCode::BAD_REQUEST, "invalid base64 in Negotiate token").into_response()
         })?;
-
-    if token_bytes.len() > 128 * 1024 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "Negotiate token exceeds size limit",
-        )
-            .into_response());
-    }
 
     // Use the admin-specific GSSAPI credential if configured, otherwise fall
     // back to the server-wide credential (`app.gss_cred`).
