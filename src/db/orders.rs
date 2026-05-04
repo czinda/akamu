@@ -233,6 +233,38 @@ pub async fn get_with_authz_ids(
     Ok(Some((order, authz_ids)))
 }
 
+/// List orders with optional filters and pagination.
+pub async fn list(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    account_id: Option<&str>,
+    status: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<OrderRow>, AcmeError> {
+    let mut qb = sqlx::QueryBuilder::<sqlx::Any>::new(
+        "SELECT id, account_id, status, expires, identifiers, \
+         not_before, not_after, error, certificate_id, replaces, created, updated, \
+         star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs, \
+         star_allow_cert_get, star_canceled_at, star_csr_der, profile \
+         FROM orders WHERE 1=1",
+    );
+    if let Some(a) = account_id {
+        qb.push(" AND account_id = ");
+        qb.push_bind(a);
+    }
+    if let Some(st) = status {
+        qb.push(" AND status = ");
+        qb.push_bind(st);
+    }
+    qb.push(" ORDER BY created DESC LIMIT ");
+    qb.push_bind(limit);
+    qb.push(" OFFSET ");
+    qb.push_bind(offset);
+
+    let rows = qb.build_query_as::<OrderRow>().fetch_all(executor).await?;
+    Ok(rows)
+}
+
 /// List all authorization IDs belonging to an order.
 pub async fn list_authz_ids(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,

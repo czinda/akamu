@@ -159,6 +159,60 @@ pub async fn set_active(
     Ok(result.rows_affected())
 }
 
+/// Look up an operator by ID (active or inactive).
+pub async fn get_by_id(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    id: i64,
+) -> Result<Option<OperatorRow>, AcmeError> {
+    let row = sqlx::query_as::<_, OperatorRow>(
+        "SELECT id, name, role, cert_fingerprint, gssapi_principal, \
+         created_at, last_seen_at, active \
+         FROM operators WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(executor)
+    .await?;
+    Ok(row)
+}
+
+/// Update operator fields.  Only non-`None` parameters are changed.
+///
+/// Returns `true` when the operator was found and updated, `false` when no
+/// row with the given `id` exists.
+pub async fn update(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    id: i64,
+    name: Option<&str>,
+    role: Option<&str>,
+    cert_fingerprint: Option<&str>,
+    gssapi_principal: Option<&str>,
+    now: &str,
+) -> Result<bool, AcmeError> {
+    let mut qb = sqlx::QueryBuilder::<sqlx::Any>::new("UPDATE operators SET last_seen_at = ");
+    qb.push_bind(now);
+    if let Some(n) = name {
+        qb.push(", name = ");
+        qb.push_bind(n);
+    }
+    if let Some(r) = role {
+        qb.push(", role = ");
+        qb.push_bind(r);
+    }
+    if let Some(fp) = cert_fingerprint {
+        qb.push(", cert_fingerprint = ");
+        qb.push_bind(fp);
+    }
+    if let Some(p) = gssapi_principal {
+        qb.push(", gssapi_principal = ");
+        qb.push_bind(p);
+    }
+    qb.push(" WHERE id = ");
+    qb.push_bind(id);
+
+    let result = qb.build().execute(executor).await?;
+    Ok(result.rows_affected() > 0)
+}
+
 /// Bump `last_seen_at` on successful authentication.
 pub async fn update_last_seen(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,

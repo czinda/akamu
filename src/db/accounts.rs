@@ -148,6 +148,33 @@ pub async fn get_profile_grants(
     Ok(row.map(|(grants,)| grants))
 }
 
+/// List accounts with optional status filter and pagination.
+pub async fn list(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    status: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<AccountRow>, AcmeError> {
+    let mut qb = sqlx::QueryBuilder::<sqlx::Any>::new(
+        "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated, profile_grants \
+         FROM accounts WHERE 1=1",
+    );
+    if let Some(st) = status {
+        qb.push(" AND status = ");
+        qb.push_bind(st);
+    }
+    qb.push(" ORDER BY created DESC LIMIT ");
+    qb.push_bind(limit);
+    qb.push(" OFFSET ");
+    qb.push_bind(offset);
+
+    let rows = qb
+        .build_query_as::<AccountRow>()
+        .fetch_all(executor)
+        .await?;
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
