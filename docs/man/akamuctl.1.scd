@@ -113,6 +113,11 @@ Session tokens obtained after *login* are cached in
 	List all registered operators with their ID, name, role,
 	and active status.
 
+*operator show* _ID_
+	Show the details of a single operator by numeric ID, including
+	certificate fingerprint, GSSAPI principal, creation time, and
+	last-seen timestamp.
+
 *operator add* --name _NAME_ --role _ROLE_ [OPTIONS]
 	Register a new operator.
 
@@ -120,7 +125,7 @@ Session tokens obtained after *login* are cached in
 		Display name for the operator.
 
 	*--role* _ROLE_
-		Role: *administrator* or *auditor*.
+		Role: *administrator*, *ca_operations*, *ca_ra*, or *auditor*.
 
 	*--cert-file* _FILE_
 		Path to the operator's client certificate.  The SHA-256
@@ -128,6 +133,23 @@ Session tokens obtained after *login* are cached in
 
 	*--gssapi-principal* _PRINCIPAL_
 		Kerberos principal (e.g. *alice@REALM*) for GSSAPI auth.
+
+*operator update* _ID_ [OPTIONS]
+	Update fields of an existing operator.  Only provided fields are
+	changed; omitted fields remain unchanged.
+
+	*--name* _NAME_
+		New display name.
+
+	*--role* _ROLE_
+		New role: *administrator*, *ca_operations*, *ca_ra*, or *auditor*.
+
+	*--cert-file* _FILE_
+		Path to a new client certificate.  The SHA-256 fingerprint
+		is extracted and replaces the stored fingerprint.
+
+	*--gssapi-principal* _PRINCIPAL_
+		New Kerberos principal.
 
 *operator remove* _ID_
 	Deactivate the operator with the given numeric ID.
@@ -142,6 +164,10 @@ Session tokens obtained after *login* are cached in
 	List External Account Binding (EAB) keys.
 	*--used* shows only consumed keys; *--unused* shows only
 	available keys.  Without flags, shows all keys.
+
+*eab show* _KID_
+	Show details of a single EAB key by its key identifier,
+	including creation time, usage status, and profile grants.
 
 *eab add* [OPTIONS]
 	Provision a new EAB key.
@@ -185,6 +211,20 @@ Session tokens obtained after *login* are cached in
 	*--offset* _N_
 		Pagination offset (default: 0).
 
+*cert show* _CERT_ID_
+	Show a certificate's metadata by its UUID, including order ID,
+	account ID, serial number, validity window, revocation status,
+	MTC log index, and ARI renewal window.
+
+*cert download* _CERT_ID_ [OPTIONS]
+	Download a certificate's content.
+
+	*--format* _FORMAT_
+		Output format: *pem* (default) or *der*.
+
+	*-o*, *--output* _FILE_
+		Write to file instead of standard output.
+
 *revoke* _CERT_ID_ [--reason _CODE_]
 	Revoke a certificate by its database ID.
 	_CODE_ is an RFC 5280 CRL reason code (default: 0 = unspecified).
@@ -193,6 +233,27 @@ Session tokens obtained after *login* are cached in
 	Force immediate regeneration of the CRL.
 
 ## Account management
+
+*account list* [OPTIONS]
+	List ACME accounts.
+
+	*--status* _STATUS_
+		Filter by status: *valid* or *deactivated*.
+
+	*--limit* _N_
+		Maximum results (default: 100).
+
+	*--offset* _N_
+		Pagination offset (default: 0).
+
+*account show* _ACCOUNT_ID_
+	Show details of a single ACME account by its UUID, including
+	status, contact information, JWK thumbprint, creation and
+	update times, and profile grants.
+
+*account deactivate* _ACCOUNT_ID_
+	Admin-initiated account deactivation.  The account is set to
+	*deactivated* status and can no longer issue certificates.
 
 *account grants get* _ACCOUNT_ID_
 	Show the certificate profile grants for an ACME account.
@@ -204,7 +265,57 @@ Session tokens obtained after *login* are cached in
 *account grants clear* _ACCOUNT_ID_
 	Remove all profile grants from an account (unrestricted access).
 
+## Profile management
+
+*profile list*
+	List all loaded certificate profiles with their parameters,
+	including validity period, hash algorithm, extended key usages,
+	and MTC issuance settings.
+
+## Order management
+
+*order list* [OPTIONS]
+	List certificate orders.
+
+	*--account-id* _ACCOUNT_ID_
+		Filter by account UUID.
+
+	*--status* _STATUS_
+		Filter by order status (e.g. *pending*, *ready*, *valid*,
+		*invalid*).
+
+	*--limit* _N_
+		Maximum results (default: 100).
+
+	*--offset* _N_
+		Pagination offset (default: 0).
+
+*order show* _ORDER_ID_
+	Show a single order's details by its UUID, including identifiers,
+	associated authorization IDs, certificate ID, profile, and
+	timing fields.
+
+## Server configuration
+
+*server-config*
+	Show the server's redacted runtime configuration.  Sensitive
+	fields such as the database URL are masked.
+
+## Session inspection
+
+*whoami*
+	Show information about the locally cached session tokens for
+	both server and cosigner.  Displays the server URL and token
+	expiry time.  Does not contact the server.
+
 ## Cosigner administration
+
+*cosigner login*
+	Authenticate with the cosigner admin API and cache the session
+	token.
+
+*cosigner logout*
+	Invalidate the cosigner session token.
 
 *cosigner status*
 	Print cosigner connectivity and identity information.
@@ -212,13 +323,31 @@ Session tokens obtained after *login* are cached in
 *cosigner stats*
 	Print cosigner statistics (signing counts, uptime, etc.).
 
-## Configuration
+*cosigner config*
+	Show the cosigner's redacted runtime configuration.
+
+## Configuration utilities
 
 *config generate*
 	Print an annotated example *akamuctl.toml* to standard output.
 	Redirect to a file as a starting point for your configuration:
 
 		akamuctl config generate > ~/.config/akamu/akamuctl.toml
+
+*config validate*
+	Validate the configuration file.  Checks that referenced files
+	(certificates, keys) exist on disk and that the server URL is
+	well-formed.
+
+## Shell completions
+
+*completions* _SHELL_
+	Generate shell completion scripts for the given shell.
+	Supported values: *bash*, *zsh*, *fish*, *elvish*, *powershell*.
+
+	Example:
+
+		akamuctl completions bash > /etc/bash_completion.d/akamuctl
 
 # CONFIGURATION FILE
 
