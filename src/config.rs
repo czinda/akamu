@@ -78,6 +78,14 @@ pub struct AdminConfig {
     /// FAU_STG.4 overflow halt or FAU_ARP.1 alarm.  Default: 20.
     #[serde(default = "default_admin_auth_rate_limit")]
     pub auth_rate_limit: u32,
+    /// Maximum failed authentication attempts per operator before lockout
+    /// (FIA_AFL.1).  Default: 5.
+    #[serde(default = "default_max_failed_auth")]
+    pub max_failed_auth: u32,
+    /// Lockout duration in seconds after exceeding `max_failed_auth`
+    /// (FIA_AFL.1).  Default: 1800 s (30 min).
+    #[serde(default = "default_lockout_duration_secs")]
+    pub lockout_duration_secs: u64,
     /// Maximum number of `audit_events` rows (FAU_STG.4).  Absent = unlimited.
     pub audit_max_rows: Option<i64>,
     /// Overflow policy when `audit_max_rows` is reached (FAU_STG.4).
@@ -130,6 +138,12 @@ fn default_admin_session_lock_secs() -> u64 {
 }
 fn default_admin_auth_rate_limit() -> u32 {
     20
+}
+fn default_max_failed_auth() -> u32 {
+    5
+}
+fn default_lockout_duration_secs() -> u64 {
+    1800
 }
 fn default_audit_overflow() -> String {
     "drop_oldest".to_owned()

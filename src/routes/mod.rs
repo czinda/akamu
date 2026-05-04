@@ -207,6 +207,10 @@ pub fn build_admin_router(state: Arc<AppState>) -> Router {
                 .put(admin::put_operator)
                 .patch(admin::patch_operator),
         )
+        .route(
+            "/admin/operators/{id}/unlock",
+            post(admin::unlock_operator),
+        )
         .route("/admin/orders", axum::routing::get(admin::get_orders))
         .route("/admin/orders/{id}", axum::routing::get(admin::get_order))
         .route("/admin/config", axum::routing::get(admin::get_config))

@@ -194,6 +194,11 @@ enum OperatorCmd {
         /// Operator ID.
         id: i64,
     },
+    /// Unlock a locked operator (reset failed auth counter).
+    Unlock {
+        /// Operator ID.
+        id: i64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -485,6 +490,9 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
             }
             OperatorCmd::Activate { id } => {
                 commands::operator::activate(&server_client, &fmt, id).await?;
+            }
+            OperatorCmd::Unlock { id } => {
+                commands::operator::unlock(&server_client, &fmt, id).await?;
             }
         },
         Commands::Eab(eab_cmd) => match eab_cmd {

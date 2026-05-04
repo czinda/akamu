@@ -35,6 +35,26 @@ use crate::audit::{AuditEvent, AuditEventType};
 use crate::db;
 use crate::state::{AdminAuthMethod, AdminSession, AppState, OperatorRole};
 
+// ── Lockout helpers (FIA_AFL.1) ───────────────────────────────────────────────
+
+/// Check whether `op` is currently locked and return a 403 error response if so.
+fn check_lockout(op: &db::operators::OperatorRow) -> Result<(), Response> {
+    let now = crate::util::rfc3339_now();
+    if db::operators::is_locked(op, &now) {
+        Err((
+            StatusCode::FORBIDDEN,
+            axum::Json(json!({
+                "error": "account_locked",
+                "message": "operator account locked due to repeated authentication failures; \
+                            contact an administrator to unlock"
+            })),
+        )
+            .into_response())
+    } else {
+        Ok(())
+    }
+}
+
 // ── PeerClientCert extension ──────────────────────────────────────────────────
 
 /// DER-encoded leaf client certificate injected into request extensions by the
@@ -315,10 +335,13 @@ where
             })?;
             match db::operators::get_by_fingerprint(&app.db, &fingerprint).await {
                 Ok(Some(op)) => {
+                    check_lockout(&op)?;
                     let role = op.role.parse::<OperatorRole>().map_err(|_| {
                         tracing::error!(role = %op.role, "operator has unknown role");
                         StatusCode::INTERNAL_SERVER_ERROR.into_response()
                     })?;
+                    // Successful auth — reset failure counter (FIA_AFL.1).
+                    let _ = db::operators::reset_failed(&app.db, op.id).await;
                     // Issue a session token for subsequent requests.
                     let token =
                         create_session(&app, op.id, op.name.clone(), role, AdminAuthMethod::Cert)
@@ -493,10 +516,13 @@ async fn authenticate_gssapi(
     // Look up the principal in the operators table.
     match db::operators::get_by_principal(&app.db, &principal).await {
         Ok(Some(op)) => {
+            check_lockout(&op)?;
             let role = op.role.parse::<OperatorRole>().map_err(|_| {
                 tracing::error!(role = %op.role, "operator has unknown role");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             })?;
+            // Successful auth — reset failure counter (FIA_AFL.1).
+            let _ = db::operators::reset_failed(&app.db, op.id).await;
             let token = create_session(app, op.id, op.name.clone(), role, AdminAuthMethod::Gssapi)
                 .await
                 .map_err(|e| {

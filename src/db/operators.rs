@@ -16,6 +16,8 @@ pub struct OperatorRow {
     pub created_at: String,
     pub last_seen_at: Option<String>,
     pub active: i64,
+    pub failed_attempts: i64,
+    pub locked_until: Option<String>,
 }
 
 /// Insert a new operator.
@@ -56,7 +58,7 @@ pub async fn get_by_fingerprint(
 ) -> Result<Option<OperatorRow>, AcmeError> {
     let row = sqlx::query_as::<_, OperatorRow>(
         "SELECT id, name, role, cert_fingerprint, gssapi_principal, \
-         created_at, last_seen_at, active \
+         created_at, last_seen_at, active, failed_attempts, locked_until \
          FROM operators WHERE cert_fingerprint = ? AND active = ?",
     )
     .bind(fingerprint)
@@ -73,7 +75,7 @@ pub async fn get_by_principal(
 ) -> Result<Option<OperatorRow>, AcmeError> {
     let row = sqlx::query_as::<_, OperatorRow>(
         "SELECT id, name, role, cert_fingerprint, gssapi_principal, \
-         created_at, last_seen_at, active \
+         created_at, last_seen_at, active, failed_attempts, locked_until \
          FROM operators WHERE gssapi_principal = ? AND active = ?",
     )
     .bind(principal)
@@ -131,7 +133,7 @@ pub async fn list(
 ) -> Result<Vec<OperatorRow>, AcmeError> {
     let rows = sqlx::query_as::<_, OperatorRow>(
         "SELECT id, name, role, cert_fingerprint, gssapi_principal, \
-         created_at, last_seen_at, active \
+         created_at, last_seen_at, active, failed_attempts, locked_until \
          FROM operators ORDER BY id ASC LIMIT ? OFFSET ?",
     )
     .bind(limit)
@@ -166,7 +168,7 @@ pub async fn get_by_id(
 ) -> Result<Option<OperatorRow>, AcmeError> {
     let row = sqlx::query_as::<_, OperatorRow>(
         "SELECT id, name, role, cert_fingerprint, gssapi_principal, \
-         created_at, last_seen_at, active \
+         created_at, last_seen_at, active, failed_attempts, locked_until \
          FROM operators WHERE id = ?",
     )
     .bind(id)
@@ -225,6 +227,68 @@ pub async fn update_last_seen(
         .execute(executor)
         .await?;
     Ok(())
+}
+
+/// Increment `failed_attempts` and, when the new count reaches `max_attempts`,
+/// set `locked_until` (FIA_AFL.1).  Uses a single UPDATE with CASE so only one
+/// executor use is needed.
+pub async fn increment_failed(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    id: i64,
+    max_attempts: u32,
+    lock_until_rfc3339: &str,
+) -> Result<(), AcmeError> {
+    sqlx::query(
+        "UPDATE operators \
+         SET failed_attempts = failed_attempts + 1, \
+             locked_until = CASE \
+                 WHEN failed_attempts + 1 >= ? THEN ? \
+                 ELSE locked_until \
+             END \
+         WHERE id = ?",
+    )
+    .bind(max_attempts as i64)
+    .bind(lock_until_rfc3339)
+    .bind(id)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// Reset `failed_attempts` to 0 and clear `locked_until` (on successful auth).
+pub async fn reset_failed(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    id: i64,
+) -> Result<(), AcmeError> {
+    sqlx::query(
+        "UPDATE operators SET failed_attempts = 0, locked_until = NULL WHERE id = ?",
+    )
+    .bind(id)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// Administrator unlock: reset `failed_attempts` and clear `locked_until`.
+pub async fn unlock(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    id: i64,
+) -> Result<bool, AcmeError> {
+    let result = sqlx::query(
+        "UPDATE operators SET failed_attempts = 0, locked_until = NULL WHERE id = ?",
+    )
+    .bind(id)
+    .execute(executor)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Check whether an operator is currently locked.  Returns `true` when
+/// `locked_until` is set and `>= now_rfc3339`.
+pub fn is_locked(op: &OperatorRow, now_rfc3339: &str) -> bool {
+    op.locked_until
+        .as_deref()
+        .is_some_and(|until| until >= now_rfc3339)
 }
 
 #[cfg(test)]

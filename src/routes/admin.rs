@@ -15,6 +15,7 @@
 //! | `GET /admin/operators/{id}` | ✓ | | | |
 //! | `PUT /admin/operators/{id}` | ✓ | | | |
 //! | `PATCH /admin/operators/{id}` | ✓ | | | |
+//! | `POST /admin/operators/{id}/unlock` | ✓ | | | |
 //! | `GET /admin/audit` | ✓ | | | ✓ |
 //! | `GET /admin/certs` | ✓ | ✓ | | ✓ |
 //! | `GET /admin/certs/{id}` | ✓ | ✓ | | ✓ |
@@ -145,6 +146,8 @@ pub async fn get_operators(
                         "created_at": r.created_at,
                         "last_seen_at": r.last_seen_at,
                         "active": r.active != 0,
+                        "failed_attempts": r.failed_attempts,
+                        "locked_until": r.locked_until,
                     })
                 })
                 .collect();
@@ -294,6 +297,46 @@ pub async fn patch_operator(
         }
         Err(e) => {
             tracing::error!(error = %e, "patch_operator: db error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": 500, "detail": "database error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// `POST /admin/operators/{id}/unlock`
+///
+/// Reset an operator's failed-authentication counter and clear the lockout
+/// timestamp (FIA_AFL.1).  Requires: `administrator`.
+pub async fn unlock_operator(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+) -> Response {
+    require_role!(operator, state, Administrator);
+
+    match db::operators::unlock(&state.db, id).await {
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"status": 404, "detail": "operator not found"})),
+        )
+            .into_response(),
+        Ok(true) => {
+            state
+                .record_audit(
+                    AuditEvent::success(AuditEventType::AdminAction)
+                        .with_principal(&operator.name)
+                        .with_detail(
+                            json!({"action": "operator.unlock", "operator_id": id}).to_string(),
+                        ),
+                )
+                .await;
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "unlock_operator: db error");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"status": 500, "detail": "database error"})),
@@ -1114,6 +1157,8 @@ pub async fn get_operator(
                 "created_at": r.created_at,
                 "last_seen_at": r.last_seen_at,
                 "active": r.active != 0,
+                "failed_attempts": r.failed_attempts,
+                "locked_until": r.locked_until,
             })),
         )
             .into_response(),

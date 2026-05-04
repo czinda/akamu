@@ -96,3 +96,11 @@ pub async fn activate(client: &AdminClient, fmt: &Format, id: i64) -> Result<(),
     print(fmt, &resp);
     Ok(())
 }
+
+pub async fn unlock(client: &AdminClient, fmt: &Format, id: i64) -> Result<(), CtlError> {
+    let resp = client
+        .post(&format!("/admin/operators/{id}/unlock"), None)
+        .await?;
+    print(fmt, &resp);
+    Ok(())
+}

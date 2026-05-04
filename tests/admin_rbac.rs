@@ -82,6 +82,8 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
             audit_overflow: "drop_oldest".into(),
             audit_alarm_threshold: 10,
             audit_alarm_action: "syslog".into(),
+            max_failed_auth: 5,
+            lockout_duration_secs: 1800,
         }),
     });
 
