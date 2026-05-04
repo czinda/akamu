@@ -73,10 +73,7 @@ pub async fn get_crl(State(state): State<Arc<AppState>>) -> Result<Response, Acm
             let revoked_at = match r.revoked_at {
                 Some(ts) => ts,
                 None => {
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs() as i64;
+                    let now = crate::util::unix_now();
                     tracing::warn!(
                         serial = %r.serial_number,
                         "CRL: revoked_at is NULL; using current timestamp"

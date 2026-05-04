@@ -115,10 +115,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/admin/eab", post(admin::post_eab))
         // EAB identity — returns authenticated principal (proxy header or GSSAPI)
-        .route(
-            "/acme/eab",
-            get(eab_identity::get_eab_identity),
-        )
+        .route("/acme/eab", get(eab_identity::get_eab_identity))
         .layer(if max_body > 0 {
             axum::extract::DefaultBodyLimit::max(max_body)
         } else {

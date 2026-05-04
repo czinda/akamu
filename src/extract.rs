@@ -37,8 +37,11 @@ use crate::state::AppState;
 /// |-----------|--------|------|
 /// | Trusted proxy, header absent or empty | 401 | `X-Remote-User header required` |
 /// | GSSAPI configured, no `Authorization` header | 401 | `WWW-Authenticate: Negotiate` challenge |
+/// | GSSAPI token exceeds 128 KiB | 400 | `Negotiate token exceeds size limit` |
 /// | GSSAPI configured, token invalid or expired | 403 | `GSSAPI authentication failed` |
-/// | Neither mechanism configured | 403 | configuration error message |
+/// | GSSAPI context lacks `GSS_C_REPLAY_FLAG` | 403 | `GSSAPI authentication failed` |
+/// | Neither mechanism configured | 404 | `no authentication mechanism configured for this endpoint` |
+/// | `trusted_proxies` set but `ConnectInfo` absent | 500 | server misconfiguration message |
 pub struct RemoteUser(pub String);
 
 impl<S> FromRequestParts<S> for RemoteUser
@@ -48,21 +51,32 @@ where
 {
     type Rejection = Response;
 
+    #[allow(clippy::result_large_err)]
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Response> {
         let app = Arc::<AppState>::from_ref(state);
 
         // ── Proxy path ────────────────────────────────────────────────────────
         if !app.config.server.trusted_proxies.is_empty() {
-            if let Some(ConnectInfo(peer)) = parts.extensions.get::<ConnectInfo<SocketAddr>>() {
+            let Some(ConnectInfo(peer)) = parts.extensions.get::<ConnectInfo<SocketAddr>>() else {
+                tracing::warn!(
+                    "trusted_proxies is configured but ConnectInfo is absent from request \
+                     extensions; router may not be wired with into_make_service_with_connect_info"
+                );
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "server misconfiguration: peer address unavailable",
+                )
+                    .into_response());
+            };
+            {
                 let peer_ip = peer.ip();
                 // Map IPv4-mapped IPv6 addresses (::ffff:a.b.c.d) to plain IPv4
                 // so they match IPv4 CIDR entries in trusted_proxies.
                 let peer_ip = match peer_ip {
-                    std::net::IpAddr::V6(v6) => {
-                        v6.to_ipv4_mapped()
-                            .map(std::net::IpAddr::V4)
-                            .unwrap_or(std::net::IpAddr::V6(v6))
-                    }
+                    std::net::IpAddr::V6(v6) => v6
+                        .to_ipv4_mapped()
+                        .map(std::net::IpAddr::V4)
+                        .unwrap_or(std::net::IpAddr::V6(v6)),
                     v4 => v4,
                 };
                 let trusted = app
@@ -88,12 +102,16 @@ where
 
         // ── Standalone GSSAPI path ────────────────────────────────────────────
         if let Some(ref cred) = app.gss_cred {
-            return negotiate(parts, cred);
+            // accept_token invokes gss_accept_sec_context, a blocking C FFI call
+            // that may perform KDC network I/O.  block_in_place keeps the work on
+            // the current Tokio thread without consuming a spawn_blocking slot, and
+            // avoids parking the executor while the FFI call is in progress.
+            return tokio::task::block_in_place(|| negotiate(parts, cred));
         }
 
         // Neither proxy headers nor GSSAPI is configured.
         Err((
-            StatusCode::FORBIDDEN,
+            StatusCode::NOT_FOUND,
             "no authentication mechanism configured for this endpoint",
         )
             .into_response())
@@ -106,6 +124,7 @@ where
 ///
 /// Returns the authenticated principal on success, or an HTTP response (401
 /// challenge or 403 rejection) on failure.
+#[allow(clippy::result_large_err)]
 fn negotiate(
     parts: &mut Parts,
     cred: &akamu_gssapi::GssServerCred,
@@ -121,9 +140,11 @@ fn negotiate(
         return Err(negotiate_challenge());
     }
 
-    let token_b64 = match auth.strip_prefix("Negotiate ") {
-        Some(t) => t,
-        None => return Err(negotiate_challenge()),
+    // RFC 7235 §2.1 / RFC 4559 §3: auth-scheme is case-insensitive.
+    let token_b64 = if auth.len() > 10 && auth[..10].eq_ignore_ascii_case("Negotiate ") {
+        &auth[10..]
+    } else {
+        return Err(negotiate_challenge());
     };
 
     let token = match base64::engine::general_purpose::STANDARD.decode(token_b64) {
@@ -133,7 +154,21 @@ fn negotiate(
         }
     };
 
-    match akamu_gssapi::accept_token(cred, &token) {
+    const MAX_NEGOTIATE_TOKEN_BYTES: usize = 128 * 1024;
+    if token.len() > MAX_NEGOTIATE_TOKEN_BYTES {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Negotiate token exceeds size limit",
+        )
+            .into_response());
+    }
+
+    let binding: Option<&[u8]> = parts
+        .extensions
+        .get::<crate::tls::channel_binding::TlsServerEndpointBinding>()
+        .map(|b| b.0.as_slice());
+
+    match akamu_gssapi::accept_token(cred, &token, binding) {
         Ok((out_token, principal)) => {
             // Attach the mutual-auth response token to the *request* extensions so
             // the route handler can forward it via WWW-Authenticate if desired.
@@ -148,7 +183,7 @@ fn negotiate(
             Ok(RemoteUser(principal))
         }
         Err(e) => {
-            tracing::debug!("GSSAPI accept_token failed: {e}");
+            tracing::warn!("GSSAPI accept_token failed: {e}");
             Err((StatusCode::FORBIDDEN, "GSSAPI authentication failed").into_response())
         }
     }

@@ -244,15 +244,28 @@ async fn run() -> Result<(), String> {
     };
 
     // ── GSSAPI server credential ──────────────────────────────────────────────
+    if !config.server.trusted_proxies.is_empty() && config.server.gssapi.is_some() {
+        return Err(
+            "server.trusted_proxies and server.gssapi cannot both be configured; \
+             they are mutually exclusive authentication mechanisms"
+                .into(),
+        );
+    }
+
     let gss_cred = if let Some(ref gcfg) = config.server.gssapi {
         tracing::info!(
-            "initializing GSSAPI credential for service '{}' from '{}'",
-            gcfg.service_name,
-            gcfg.keytab_file
+            "initializing GSSAPI credential for service '{}'",
+            gcfg.service_name
         );
-        let cred =
-            akamu_gssapi::GssServerCred::acquire(&gcfg.service_name, &gcfg.keytab_file)
-                .map_err(|e| format!("GSSAPI credential init: {e}"))?;
+        tracing::debug!("GSSAPI keytab: '{}'", gcfg.keytab_file);
+        if !config.tls.enabled {
+            tracing::warn!(
+                "GSSAPI is configured without TLS; SPNEGO tokens are not protected against \
+                 interception or relay attacks — enable TLS or use a TLS-terminating proxy"
+            );
+        }
+        let cred = akamu_gssapi::GssServerCred::acquire(&gcfg.service_name, &gcfg.keytab_file)
+            .map_err(|e| format!("GSSAPI credential init: {e}"))?;
         Some(Arc::new(cred))
     } else {
         None
@@ -344,6 +357,29 @@ async fn run() -> Result<(), String> {
             .map_err(|e| format!("TLS config: {e}"))?;
         server_cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_cfg));
+
+        // Pre-compute tls-server-end-point channel binding (RFC 5929 §4) once at
+        // startup so each connection can inject it without re-reading the cert.
+        // Returns None for ML-DSA server certs (no defined hash algorithm).
+        let tls_channel_binding: Option<Arc<Vec<u8>>> = {
+            match akamu::tls::leaf_cert_der(&config.tls) {
+                Err(e) => {
+                    tracing::warn!("could not load leaf cert for channel binding: {e}");
+                    None
+                }
+                Ok(der) => {
+                    let b = akamu::tls::channel_binding::tls_server_endpoint_binding(&der);
+                    if b.is_none() {
+                        tracing::info!(
+                            "TLS server cert uses ML-DSA or unknown algorithm; \
+                             GSSAPI channel bindings disabled"
+                        );
+                    }
+                    b.map(Arc::new)
+                }
+            }
+        };
+
         let addr: std::net::SocketAddr = config
             .listen_addr
             .parse()
@@ -363,6 +399,7 @@ async fn run() -> Result<(), String> {
                 .map_err(|e| format!("accept: {e}"))?;
             let acceptor = acceptor.clone();
             let router = router.clone();
+            let tls_channel_binding = tls_channel_binding.clone();
             tokio::spawn(async move {
                 let tls = match acceptor.accept(stream).await {
                     Ok(s) => s,
@@ -377,6 +414,13 @@ async fn run() -> Result<(), String> {
                     move |mut req: hyper::Request<hyper::body::Incoming>| {
                         req.extensions_mut()
                             .insert(axum::extract::ConnectInfo(peer_addr));
+                        if let Some(ref binding) = tls_channel_binding {
+                            req.extensions_mut().insert(
+                                akamu::tls::channel_binding::TlsServerEndpointBinding(
+                                    binding.as_ref().clone(),
+                                ),
+                            );
+                        }
                         let router = router.clone();
                         async move {
                             let req = req.map(axum::body::Body::new);
