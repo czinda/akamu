@@ -81,6 +81,8 @@ Source7:        akamu-tmpfiles.conf
 Source8:        akamu-cosigner-tmpfiles.conf
 # Example configuration file; installed as %%{_sysconfdir}/akamu/config.toml.example
 Source3:        config.toml.example
+# Example akamuctl configuration file; installed as a doc file.
+Source9:        akamuctl.toml.example
 
 ExclusiveArch:  %{rust_arches}
 
@@ -115,6 +117,8 @@ BuildRequires:  rust-synta-devel
 BuildRequires:  rust-synta-certificate-devel
 BuildRequires:  rust-synta-x509-verification-devel
 BuildRequires:  rust-synta-mtc-devel
+# Man page compiler
+BuildRequires:  scdoc
 # Systemd scriptlet support
 BuildRequires:  systemd-rpm-macros
 %{?systemd_requires}
@@ -139,6 +143,7 @@ compressed certificate delivery.
 %dir %{_sysconfdir}/akamu
 %config(noreplace) %{_sysconfdir}/akamu/config.toml.example
 %ghost %dir %attr(0750,akamu,akamu) %{_sharedstatedir}/akamu
+%{_mandir}/man8/akamu.8.gz
 
 
 # ── Subpackage: MTC cosigner daemon ───────────────────────────────────────────
@@ -166,6 +171,7 @@ identity certificate at first run.
 %{_tmpfilesdir}/akamu-cosigner.conf
 %dir %{_sysconfdir}/akamu-cosigner
 %ghost %dir %attr(0750,akamu-cosigner,akamu-cosigner) %{_sharedstatedir}/akamu-cosigner
+%{_mandir}/man8/akamu-cosigner.8.gz
 
 
 # ── Subpackage: CLI client binary ──────────────────────────────────────────────
@@ -203,6 +209,8 @@ external account bindings, and server state.
 %license LICENSE.dependencies
 %license cargo-vendor.txt
 %{_bindir}/akamuctl
+%{_mandir}/man1/akamuctl.1.gz
+%doc %{_docdir}/akamuctl/akamuctl.toml.example
 
 
 # ── Subpackage: documentation (markdown sources) ──────────────────────────────
@@ -268,6 +276,10 @@ EOF
 %{cargo_license_summary}
 %{cargo_license} > LICENSE.dependencies
 %{cargo_vendor_manifest}
+# Compile man pages from scdoc sources.
+scdoc < docs/man/akamu.8.scd          | gzip -9 > akamu.8.gz
+scdoc < docs/man/akamu-cosigner.8.scd | gzip -9 > akamu-cosigner.8.gz
+scdoc < docs/man/akamuctl.1.scd       | gzip -9 > akamuctl.1.gz
 
 
 # ── Install ────────────────────────────────────────────────────────────────────
@@ -292,8 +304,14 @@ install -Dpm 0644 %{SOURCE6} %{buildroot}%{_sysusersdir}/akamu-cosigner.conf
 install -Dpm 0644 %{SOURCE7} %{buildroot}%{_tmpfilesdir}/akamu.conf
 install -Dpm 0644 %{SOURCE8} %{buildroot}%{_tmpfilesdir}/akamu-cosigner.conf
 
-# Example configuration file
+# Example configuration files
 install -Dpm 0644 %{SOURCE3} %{buildroot}%{_sysconfdir}/akamu/config.toml.example
+install -Dpm 0644 %{SOURCE9} %{buildroot}%{_docdir}/akamuctl/akamuctl.toml.example
+
+# Man pages (compiled from scdoc sources in %build)
+install -Dpm 0644 akamu.8.gz          %{buildroot}%{_mandir}/man8/akamu.8.gz
+install -Dpm 0644 akamu-cosigner.8.gz %{buildroot}%{_mandir}/man8/akamu-cosigner.8.gz
+install -Dpm 0644 akamuctl.1.gz       %{buildroot}%{_mandir}/man1/akamuctl.1.gz
 
 # Create the cosigner configuration directory
 install -dm 0755 %{buildroot}%{_sysconfdir}/akamu-cosigner
