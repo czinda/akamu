@@ -103,10 +103,38 @@ where
         // ── Standalone GSSAPI path ────────────────────────────────────────────
         if let Some(ref cred) = app.gss_cred {
             // accept_token invokes gss_accept_sec_context, a blocking C FFI call
-            // that may perform KDC network I/O.  block_in_place keeps the work on
-            // the current Tokio thread without consuming a spawn_blocking slot, and
-            // avoids parking the executor while the FFI call is in progress.
-            return tokio::task::block_in_place(|| negotiate(parts, cred));
+            // that may perform KDC network I/O.  Use spawn_blocking so the call
+            // runs on a dedicated thread pool rather than blocking a tokio worker
+            // (block_in_place panics on the single-thread runtime used by
+            // #[tokio::test]).
+            let auth = parts
+                .headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+            let binding: Option<Vec<u8>> = parts
+                .extensions
+                .get::<crate::tls::channel_binding::TlsServerEndpointBinding>()
+                .map(|b| b.0.clone());
+            let cred = Arc::clone(cred);
+            let gss_result = tokio::task::spawn_blocking(move || {
+                gssapi_negotiate(&auth, binding.as_deref(), &cred)
+            })
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "GSSAPI spawn_blocking panicked");
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            })??;
+            if !gss_result.out_token.is_empty() {
+                let hv = HeaderValue::from_str(&format!(
+                    "Negotiate {}",
+                    base64::engine::general_purpose::STANDARD.encode(&gss_result.out_token)
+                ))
+                .unwrap_or_else(|_| HeaderValue::from_static("Negotiate"));
+                parts.extensions.insert(NegotiateResponse(hv));
+            }
+            return Ok(RemoteUser(gss_result.principal));
         }
 
         // Neither proxy headers nor GSSAPI is configured.
@@ -120,21 +148,22 @@ where
 
 // ── SPNEGO helpers ────────────────────────────────────────────────────────────
 
-/// Attempt SPNEGO token validation from `Authorization: Negotiate <base64>`.
-///
-/// Returns the authenticated principal on success, or an HTTP response (401
-/// challenge or 403 rejection) on failure.
-#[allow(clippy::result_large_err)]
-fn negotiate(
-    parts: &mut Parts,
-    cred: &akamu_gssapi::GssServerCred,
-) -> Result<RemoteUser, Response> {
-    let auth = parts
-        .headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+struct GssapiResult {
+    principal: String,
+    out_token: Vec<u8>,
+}
 
+/// Synchronous SPNEGO token validation suitable for use inside spawn_blocking.
+///
+/// Takes ownership of the already-extracted `auth` header value and optional
+/// channel binding bytes so that no references to `Parts` cross the thread
+/// boundary.
+#[allow(clippy::result_large_err)]
+fn gssapi_negotiate(
+    auth: &str,
+    binding: Option<&[u8]>,
+    cred: &akamu_gssapi::GssServerCred,
+) -> Result<GssapiResult, Response> {
     // No Authorization header — send a standard SPNEGO challenge.
     if auth.is_empty() {
         return Err(negotiate_challenge());
@@ -156,32 +185,11 @@ fn negotiate(
 
     const MAX_NEGOTIATE_TOKEN_BYTES: usize = 128 * 1024;
     if token.len() > MAX_NEGOTIATE_TOKEN_BYTES {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "Negotiate token exceeds size limit",
-        )
-            .into_response());
+        return Err((StatusCode::BAD_REQUEST, "Negotiate token exceeds size limit").into_response());
     }
 
-    let binding: Option<&[u8]> = parts
-        .extensions
-        .get::<crate::tls::channel_binding::TlsServerEndpointBinding>()
-        .map(|b| b.0.as_slice());
-
     match akamu_gssapi::accept_token(cred, &token, binding) {
-        Ok((out_token, principal)) => {
-            // Attach the mutual-auth response token to the *request* extensions so
-            // the route handler can forward it via WWW-Authenticate if desired.
-            // For the stub EAB endpoint we don't strictly need this, but it allows
-            // the infrastructure to support mutual authentication later.
-            if !out_token.is_empty() {
-                let encoded = base64::engine::general_purpose::STANDARD.encode(&out_token);
-                let hv = HeaderValue::from_str(&format!("Negotiate {encoded}"))
-                    .unwrap_or_else(|_| HeaderValue::from_static("Negotiate"));
-                parts.extensions.insert(NegotiateResponse(hv));
-            }
-            Ok(RemoteUser(principal))
-        }
+        Ok((out_token, principal)) => Ok(GssapiResult { principal, out_token }),
         Err(e) => {
             tracing::warn!("GSSAPI accept_token failed: {e}");
             Err((StatusCode::FORBIDDEN, "GSSAPI authentication failed").into_response())
