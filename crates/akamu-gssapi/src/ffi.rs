@@ -81,6 +81,9 @@ pub const GSS_C_INITIATE: i32 = 1;
 /// Request flag: ask the acceptor to perform mutual authentication.
 pub const GSS_C_MUTUAL_FLAG: OmUint32 = 2;
 
+/// Return flag: replay detection is active on this context (RFC 2744).
+pub const GSS_C_REPLAY_FLAG: OmUint32 = 4;
+
 /// Address family "unset" — used in channel bindings for non-IP endpoints.
 pub const GSS_C_AF_UNSET: OmUint32 = 0;
 

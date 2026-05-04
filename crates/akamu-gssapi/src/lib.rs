@@ -732,6 +732,9 @@ impl GssServerContext {
 
         match major {
             ffi::GSS_S_COMPLETE => {
+                if ret_flags & ffi::GSS_C_REPLAY_FLAG == 0 {
+                    tracing::warn!("GSSAPI context established without replay detection flag");
+                }
                 // Extract the principal name string.
                 let mut name_buf = ffi::gss_c_no_buffer();
                 // SAFETY: src_name is a valid GssNameT set by gss_accept_sec_context.

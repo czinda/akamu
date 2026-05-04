@@ -130,6 +130,7 @@ dependencies = [
  "libc",
  "pkg-config",
  "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
