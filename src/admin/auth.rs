@@ -38,6 +38,7 @@ use crate::state::{AdminAuthMethod, AdminSession, AppState, OperatorRole};
 // ── Lockout helpers (FIA_AFL.1) ───────────────────────────────────────────────
 
 /// Check whether `op` is currently locked and return a 403 error response if so.
+#[allow(clippy::result_large_err)]
 fn check_lockout(op: &db::operators::OperatorRow) -> Result<(), Response> {
     let now = crate::util::rfc3339_now();
     if db::operators::is_locked(op, &now) {
