@@ -902,7 +902,15 @@ impl AcmeClient {
             .request(req)
             .await
             .map_err(|e| ClientError::Http(format!("HEAD new-nonce: {e}")))?;
-        nonce_from_headers(resp.headers())
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        nonce_from_headers(&headers).map_err(|_| {
+            ClientError::Http(format!(
+                "HEAD {url} returned {status} without Replay-Nonce header \
+                 (check that the server base_url in its config includes the correct host and port)",
+                url = self.new_nonce_url,
+            ))
+        })
     }
 }
 
