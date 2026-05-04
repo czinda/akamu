@@ -420,7 +420,18 @@ async fn authenticate_gssapi(
     })?;
 
     let (out_token, principal) = match result {
-        Ok(p) => p,
+        Ok(akamu_gssapi::AcceptStep::Complete { out_token, principal }) => (out_token, principal),
+        Ok(akamu_gssapi::AcceptStep::Continue { out_token, ctx: _ }) => {
+            // Mechanism needs another round-trip.  Return 401 with the continuation
+            // token; the client will re-send and a fresh context will be started.
+            let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&out_token);
+            let mut resp = (StatusCode::UNAUTHORIZED, "").into_response();
+            if let Ok(hv) = axum::http::HeaderValue::from_str(&format!("Negotiate {b64}")) {
+                resp.headers_mut()
+                    .insert(axum::http::header::WWW_AUTHENTICATE, hv);
+            }
+            return Err(resp);
+        }
         Err(e) => {
             tracing::warn!(error = %e, "admin GSSAPI authentication failed");
             app.record_audit(
@@ -564,7 +575,7 @@ macro_rules! require_role {
             let required = required.trim_end_matches(" | ");
             $state
                 .record_audit(
-                    crate::audit::AuditEvent::failure(crate::audit::AuditEventType::AdminAction)
+                    $crate::audit::AuditEvent::failure($crate::audit::AuditEventType::AdminAction)
                         .with_principal($ctx.name.clone())
                         .with_detail(format!(
                             r#"{{"error":"insufficient role","required":"{}","actual":"{}"}}"#,

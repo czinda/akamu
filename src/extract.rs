@@ -189,7 +189,19 @@ fn gssapi_negotiate(
     }
 
     match akamu_gssapi::accept_token(cred, &token, binding) {
-        Ok((out_token, principal)) => Ok(GssapiResult { principal, out_token }),
+        Ok(akamu_gssapi::AcceptStep::Complete { out_token, principal }) => {
+            Ok(GssapiResult { principal, out_token })
+        }
+        Ok(akamu_gssapi::AcceptStep::Continue { out_token, ctx: _ }) => {
+            // Mechanism needs another round-trip.  Return 401 with the continuation
+            // token; the client will re-send and a fresh context will be started.
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&out_token);
+            let mut resp = (StatusCode::UNAUTHORIZED, "").into_response();
+            if let Ok(hv) = HeaderValue::from_str(&format!("Negotiate {b64}")) {
+                resp.headers_mut().insert("WWW-Authenticate", hv);
+            }
+            Err(resp)
+        }
         Err(e) => {
             tracing::warn!("GSSAPI accept_token failed: {e}");
             Err((StatusCode::FORBIDDEN, "GSSAPI authentication failed").into_response())
