@@ -54,6 +54,17 @@ pub enum GssError {
     #[error("keytab path contains an interior NUL byte")]
     NulInKeytabPath,
 
+    /// The keytab file does not exist or is not readable by the current process.
+    ///
+    /// Checked before calling into the GSSAPI library so the error message names
+    /// the missing path explicitly rather than surfacing an opaque minor status.
+    #[error("keytab file not readable: {path}: {source}")]
+    KeytabNotReadable {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
     /// `gss_accept_sec_context` succeeded but the returned `ret_flags` do not
     /// include `GSS_C_REPLAY_FLAG`, meaning the context does not guarantee
     /// replay detection.

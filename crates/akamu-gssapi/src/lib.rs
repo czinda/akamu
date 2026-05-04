@@ -101,6 +101,14 @@ impl GssServerCred {
     /// - [`GssError::AcquireCred`] — `gss_acquire_cred_from` failed (keytab
     ///   missing, wrong principal, or Kerberos library error).
     pub fn acquire(service_name: &str, keytab_file: &str) -> Result<Self, GssError> {
+        // Check readability before calling into the GSSAPI library so that a
+        // missing or wrong-path keytab produces a clear error rather than an
+        // opaque major/minor status pair.
+        std::fs::File::open(keytab_file).map_err(|e| GssError::KeytabNotReadable {
+            path: keytab_file.to_owned(),
+            source: e,
+        })?;
+
         let svc_cstr = CString::new(service_name).map_err(|_| GssError::NulInServiceName)?;
         let kt_cstr = CString::new(keytab_file).map_err(|_| GssError::NulInKeytabPath)?;
 
@@ -239,6 +247,11 @@ impl GssClientCred {
     /// - [`GssError::AcquireCred`] — `gss_acquire_cred_from` failed (keytab
     ///   missing, no usable credential, or Kerberos library error).
     pub fn from_keytab(keytab_file: &str) -> Result<Self, GssError> {
+        std::fs::File::open(keytab_file).map_err(|e| GssError::KeytabNotReadable {
+            path: keytab_file.to_owned(),
+            source: e,
+        })?;
+
         let kt_cstr = CString::new(keytab_file).map_err(|_| GssError::NulInKeytabPath)?;
 
         let mut minor: ffi::OmUint32 = 0;

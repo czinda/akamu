@@ -270,7 +270,7 @@ async fn run() -> Result<(), String> {
             "initializing GSSAPI credential for service '{}'",
             gcfg.service_name
         );
-        tracing::debug!("GSSAPI keytab: '{}'", gcfg.keytab_file);
+        tracing::info!("GSSAPI keytab: '{}'", gcfg.keytab_file);
         if !config.tls.enabled {
             tracing::warn!(
                 "GSSAPI is configured without TLS; SPNEGO tokens are not protected against \
@@ -288,8 +288,8 @@ async fn run() -> Result<(), String> {
     let admin_gss_cred = if let Some(ref admin_cfg) = config.admin {
         if let Some(ref gcfg) = admin_cfg.gssapi {
             tracing::info!(
-                "initializing admin GSSAPI credential for service '{}'",
-                gcfg.service_name
+                "initializing admin GSSAPI credential for service '{}', keytab: '{}'",
+                gcfg.service_name, gcfg.keytab_file
             );
             let cred = akamu_gssapi::GssServerCred::acquire(&gcfg.service_name, &gcfg.keytab_file)
                 .map_err(|e| format!("admin GSSAPI credential init: {e}"))?;
