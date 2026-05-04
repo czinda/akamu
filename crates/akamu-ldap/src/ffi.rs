@@ -209,7 +209,7 @@ extern "C" {
     /// Asynchronous SASL interactive bind — used for GSSAPI and EXTERNAL.
     ///
     /// libldap calls `proc_` for each required SASL prompt.  For GSSAPI, pass
-    /// `LDAP_SASL_QUIET` and [`sasl_interact_noop`][super::conn::sasl_interact_noop]
+    /// `LDAP_SASL_QUIET` and `sasl_interact_noop`
     /// so the Kerberos credential cache supplies all credentials automatically.
     ///
     /// When the SASL exchange requires multiple round-trips, libldap returns
