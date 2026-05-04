@@ -158,11 +158,14 @@ dependencies = [
 name = "akamuctl"
 version = "0.1.0"
 dependencies = [
+ "akamu-gssapi",
+ "base64",
  "clap",
  "http-body-util",
  "hyper",
  "hyper-rustls",
  "hyper-util",
+ "libc",
  "native-ossl",
  "percent-encoding",
  "rustls",
