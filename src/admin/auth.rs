@@ -352,7 +352,9 @@ where
                         StatusCode::INTERNAL_SERVER_ERROR.into_response()
                     })?;
                     // Successful auth — reset failure counter (FIA_AFL.1).
-                    let _ = db::operators::reset_failed(&app.db, op.id).await;
+                    if let Err(e) = db::operators::reset_failed(&app.db, op.id).await {
+                        tracing::warn!(error = %e, operator_id = op.id, "failed to reset auth failure counter");
+                    }
                     // Issue a session token for subsequent requests.
                     let token =
                         create_session(&app, op.id, op.name.clone(), role, AdminAuthMethod::Cert)
@@ -361,9 +363,10 @@ where
                                 tracing::error!(error = %e, "session creation failed");
                                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
                             })?;
-                    // Update last_seen_at in the DB (best-effort; ignore errors).
                     let ts_str = crate::util::rfc3339_now();
-                    let _ = db::operators::update_last_seen(&app.db, op.id, &ts_str).await;
+                    if let Err(e) = db::operators::update_last_seen(&app.db, op.id, &ts_str).await {
+                        tracing::warn!(error = %e, operator_id = op.id, "failed to update last_seen_at");
+                    }
                     // Record audit event (best-effort).
                     let session_prefix = token.get(..8).unwrap_or(&token);
                     app.record_audit(
@@ -537,7 +540,9 @@ async fn authenticate_gssapi(
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             })?;
             // Successful auth — reset failure counter (FIA_AFL.1).
-            let _ = db::operators::reset_failed(&app.db, op.id).await;
+            if let Err(e) = db::operators::reset_failed(&app.db, op.id).await {
+                tracing::warn!(error = %e, operator_id = op.id, "failed to reset auth failure counter");
+            }
             let token = create_session(app, op.id, op.name.clone(), role, AdminAuthMethod::Gssapi)
                 .await
                 .map_err(|e| {
@@ -545,7 +550,9 @@ async fn authenticate_gssapi(
                     StatusCode::INTERNAL_SERVER_ERROR.into_response()
                 })?;
             let ts_str = crate::util::rfc3339_now();
-            let _ = db::operators::update_last_seen(&app.db, op.id, &ts_str).await;
+            if let Err(e) = db::operators::update_last_seen(&app.db, op.id, &ts_str).await {
+                tracing::warn!(error = %e, operator_id = op.id, "failed to update last_seen_at");
+            }
             let session_prefix = token.get(..8).unwrap_or(&token);
             app.record_audit(
                 AuditEvent::success(AuditEventType::AdminLogin)
