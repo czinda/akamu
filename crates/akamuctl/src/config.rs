@@ -23,10 +23,10 @@ url = "https://akamu.example.com:9443"
 # key_file  = "/home/alice/.config/akamu/operator.key.pem"
 
 # GSSAPI/Kerberos authentication (alternative to mTLS).
-# When set, 'akamuctl login' sends Authorization: Negotiate using the
-# ambient Kerberos ccache (run 'kinit' first).
-# When absent and no cert_file/key_file are configured, the service name
-# is derived automatically as HTTP@<hostname> from the server URL.
+# Used by 'akamuctl login --gssapi'. Requires a valid Kerberos TGT in the
+# default ccache (run 'kinit' first).
+# Overrides the automatic HTTP@<hostname> SPN derivation from the server URL.
+# Omit to let the SPN be derived automatically.
 # gssapi_service = "HTTP@akamu.example.com"
 
 # ── Cosigner admin API ────────────────────────────────────────────────────────
