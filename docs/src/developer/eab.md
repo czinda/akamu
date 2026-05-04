@@ -196,3 +196,48 @@ or `{"profile_grants": null}` for a NULL column. Returns 404 when the account ID
 `profile_grants` is optional (absent or `null` = no restriction). The handler calls `db::eab::insert_with_grants`, which inserts the key row with the `profile_grants` column set accordingly. Returns 201 with `{"kid": "...", "created": <unix-epoch>}`; returns 409 when the `kid` already exists (detected by a `UNIQUE` constraint violation).
 
 Keys provisioned via this endpoint behave identically to keys seeded from `[server.eab_keys]` during EAB verification. The only difference is that config-file keys have `profile_grants = NULL` always (they are seeded via `insert_if_absent`, which does not write the `profile_grants` column), while admin-provisioned keys may carry grants.
+
+---
+
+## HKDF-SHA-256 EAB credential derivation (`src/eab_derivation.rs`)
+
+When `[server].eab_master_secret` is configured, EAB credentials for Kerberos-authenticated clients are derived deterministically rather than stored in advance.  The derivation is implemented in `src/eab_derivation.rs` and called from the `GET /acme/eab` handler in `src/routes/eab_identity.rs`.
+
+### Public function
+
+```rust
+pub fn derive_eab_credentials(
+    master_secret: &[u8],
+    principal: &str,
+) -> Result<(String, String), AcmeError>
+```
+
+Returns `(kid_b64u, hmac_key_b64u)` — both values are base64url-encoded (no padding).
+
+### Derivation scheme
+
+Two independent HKDF-SHA-256 (RFC 5869) invocations are performed, one for the kid and one for the HMAC key:
+
+```
+kid      = base64url( HKDF-Extract-Expand(IKM=master_secret, salt=<none>, info="akamu-eab-v1-kid:" + principal, L=16) )
+hmac_key = base64url( HKDF-Extract-Expand(IKM=master_secret, salt=<none>, info="akamu-eab-v1-key:" + principal, L=32) )
+```
+
+No explicit salt is supplied to HKDF-Extract; RFC 5869 §2.2 specifies that an absent salt is treated as a string of zeroes of length `HashLen` (32 bytes for SHA-256).  This is acceptable because `master_secret` is already high-entropy input key material (at least 32 random bytes) and does not require additional salt-based extraction to achieve uniform randomness.
+
+The `info` field domain-separates the two outputs, ensuring that the kid and HMAC key bytes are independent even though they share the same IKM and salt.
+
+### Output sizes
+
+| Output | Raw bytes | Base64url chars |
+|--------|-----------|-----------------|
+| `kid` | 16 | 22 (no padding) |
+| `hmac_key` | 32 | 43 (no padding) |
+
+### Determinism guarantee
+
+The same `(master_secret, principal)` pair always yields identical `kid` and `hmac_key` values.  The `GET /acme/eab` handler inserts the derived key into `eab_keys` on the first call (using `insert_if_absent`) and returns the same values on subsequent calls.  This lets clients retry a failed registration without administrator intervention.
+
+### Keying material lifetime
+
+Once the `kid` has been consumed by a successful `newAccount` request, the `eab_keys.used_at` column is set and further calls to `GET /acme/eab` by the same principal return `409 Conflict`.  The administrator must delete the consumed key row (via the Admin API or `akamuctl eab remove`) to allow the principal to re-register.
