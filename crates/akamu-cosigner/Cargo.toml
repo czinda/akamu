@@ -54,3 +54,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Base64 for EAB HMAC key decoding
 base64 = "0.22"
+
+# Residual information protection (FDP_RIP.1)
+zeroize = "1"

@@ -57,7 +57,7 @@ pub async fn create_session(
     sessions.insert(
         token.clone(),
         CosignerSession {
-            name: name.to_string(),
+            name: zeroize::Zeroizing::new(name.to_string()),
             role,
             operator_id,
             created_at: now,
@@ -75,7 +75,7 @@ pub async fn lookup_session(state: &AppState, token: &str) -> Option<(String, Co
     let key = akamu::admin::auth::find_session_token(&sessions, token)?;
     let s = sessions.get_mut(&key)?;
     s.last_active_at = now;
-    Some((s.name.clone(), s.role.clone(), s.operator_id))
+    Some((s.name.to_string(), s.role.clone(), s.operator_id))
 }
 
 pub async fn invalidate_session(state: &AppState, token: &str) {

@@ -47,7 +47,7 @@ pub struct AppState {
 }
 
 pub struct CosignerSession {
-    pub name: String,
+    pub name: zeroize::Zeroizing<String>,
     pub role: CosignerRole,
     /// Position of the operator in `AppState::admin_operators` (0-based, cast to i64).
     pub operator_id: i64,
