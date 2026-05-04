@@ -452,12 +452,12 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
         },
         Commands::Revoke { cert_id, reason } => {
             let body = json!({"cert_id": cert_id, "reason": reason});
-            let resp = server_client.post("/admin/revoke", Some(&body)).await?;
-            print(&fmt, &resp);
+            server_client.post("/admin/revoke", Some(&body)).await?;
+            println!("certificate {cert_id} revoked");
         }
         Commands::CrlForce => {
-            let resp = server_client.post("/admin/crl/force", None).await?;
-            print(&fmt, &resp);
+            server_client.post("/admin/crl/force", None).await?;
+            println!("CRL regeneration triggered");
         }
         Commands::Cosigner(cos_cmd) => {
             let cosigner_url = cfg
@@ -520,15 +520,8 @@ fn read_file_opt(path: Option<&std::path::Path>) -> Result<Option<Vec<u8>>, CtlE
 }
 
 fn urlenc(s: &str) -> String {
-    s.bytes()
-        .flat_map(|b| {
-            if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'~' {
-                vec![b as char]
-            } else {
-                format!("%{b:02X}").chars().collect()
-            }
-        })
-        .collect()
+    use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+    utf8_percent_encode(s, NON_ALPHANUMERIC).to_string()
 }
 
 fn sha256_hex(data: &[u8]) -> Result<String, CtlError> {

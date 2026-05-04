@@ -39,8 +39,19 @@ pub fn build_tls_config(
         }
     } else {
         let native_certs = rustls_native_certs::load_native_certs();
+        if !native_certs.errors.is_empty() {
+            eprintln!(
+                "warning: {} native certificate(s) failed to load",
+                native_certs.errors.len()
+            );
+            for e in &native_certs.errors {
+                eprintln!("  {e}");
+            }
+        }
         for cert in native_certs.certs {
-            root_store.add(cert).ok();
+            if let Err(e) = root_store.add(cert) {
+                eprintln!("warning: skipping native cert: {e}");
+            }
         }
     }
 
@@ -122,7 +133,7 @@ impl AdminClient {
         let cached = self
             .session_cache
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get_valid_token(&self.base_url, self.is_cosigner);
         if let Some(token) = cached {
             return Ok(token);
@@ -143,7 +154,7 @@ impl AdminClient {
             .to_string();
         let expires_at = body["expires_at"]
             .as_str()
-            .unwrap_or("1970-01-01T00:00:00Z")
+            .ok_or_else(|| CtlError::Api("no expires_at in session response".into()))?
             .to_string();
 
         // Cache the new token.
@@ -153,13 +164,15 @@ impl AdminClient {
             expires_at,
         };
         {
-            let mut cache = self.session_cache.lock().unwrap();
+            let mut cache = self.session_cache.lock().unwrap_or_else(|e| e.into_inner());
             if self.is_cosigner {
                 cache.cosigner = Some(entry);
             } else {
                 cache.server = Some(entry);
             }
-            let _ = cache.save();
+            if let Err(e) = cache.save() {
+                eprintln!("warning: failed to save session cache: {e}");
+            }
         }
         Ok(token)
     }
@@ -224,13 +237,15 @@ impl AdminClient {
 
     /// Invalidate the local session cache entry.
     pub fn clear_session(&self) {
-        let mut cache = self.session_cache.lock().unwrap();
+        let mut cache = self.session_cache.lock().unwrap_or_else(|e| e.into_inner());
         if self.is_cosigner {
             cache.cosigner = None;
         } else {
             cache.server = None;
         }
-        let _ = cache.save();
+        if let Err(e) = cache.save() {
+            eprintln!("warning: failed to save session cache: {e}");
+        }
     }
 
     async fn raw_request(
