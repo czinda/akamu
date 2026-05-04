@@ -22,6 +22,13 @@ pub fn derive_eab_credentials(
     let mut key_info = b"akamu-eab-v1-key:".to_vec();
     key_info.extend_from_slice(principal.as_bytes());
 
+    // No explicit salt is provided; RFC 5869 §2.2 specifies that HKDF-Extract
+    // uses a zero-length salt (i.e. 0^HashLen) in this case.  This is
+    // acceptable here because `master_secret` is already a high-entropy IKM
+    // (≥ 32 bytes of random data) that does not require salt-based extraction
+    // to achieve uniform randomness.  The domain-separated `info` fields
+    // (`akamu-eab-v1-kid:` / `akamu-eab-v1-key:` + principal) ensure key
+    // separation between the kid and hmac_key outputs.
     let kid_raw = HkdfBuilder::new(&sha256)
         .key(master_secret)
         .info(&kid_info)
