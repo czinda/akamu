@@ -18,6 +18,12 @@ url = "sqlite:///var/lib/akamu/acme.db"
 # Default: 1 for SQLite (avoids SQLITE_BUSY_SNAPSHOT), 10 for PostgreSQL/MariaDB.
 # max_connections = 10
 
+# Require TLS for database connections (FPT_ITT.1).
+# When true, the server refuses to start unless the database URL explicitly
+# enables SSL/TLS (sslmode=require or equivalent for PostgreSQL/MariaDB).
+# Ignored for SQLite (local file, no network transport). Default: false.
+# require_tls = false
+
 # ── CA ────────────────────────────────────────────────────────────────────────
 [ca]
 # Paths to the CA private key and certificate PEM files.
@@ -60,6 +66,18 @@ organization = "Example Org"
 # Enforce the CA/B Forum BR §6.3.2 maximum 200-day validity cap at issuance time.
 # Default: false.  Public WebPKI CAs should set this to true.
 # enforce_validity_cap = false
+
+# Require the CA private key PEM to be encrypted (FCS_STG_EXT.1).
+# When true, plaintext (unencrypted) PEM private keys are rejected at startup.
+# Only PKCS#8 encrypted PEM or PKCS#11 URIs are accepted.
+# Set key_password_file to a file containing the decryption passphrase.
+# Default: false.
+# require_encrypted_key = false
+
+# Path to a file containing the passphrase for an encrypted PEM CA key.
+# Required when require_encrypted_key = true and key_file is a filesystem path.
+# The file is read once at startup; trailing newlines are stripped.
+# key_password_file = "/etc/akamu/ca-key-passphrase"
 
 # ── Merkle Tree Certificates ──────────────────────────────────────────────────
 [mtc]
@@ -219,6 +237,20 @@ validate_dnssec = true
 #
 # Inactive session expiry (seconds). Default: 3600 (1 hour).
 # session_ttl_secs = 3600
+#
+# Inactivity threshold before a session enters locked state (FTA_SSL_EXT.1).
+# After this many idle seconds the session token returns 423 Locked rather than
+# 401 Unauthorized. The operator must re-authenticate to obtain a new token.
+# Must be less than session_ttl_secs. Default: 900 (15 minutes).
+# session_lock_secs = 900
+#
+# Maximum failed authentication attempts per operator before lockout (FIA_AFL.1).
+# Default: 5.
+# max_failed_auth = 5
+#
+# Lockout duration in seconds after exceeding max_failed_auth (FIA_AFL.1).
+# Default: 1800 (30 minutes).
+# lockout_duration_secs = 1800
 #
 # Maximum credential presentations from one source IP in a 5-minute window.
 # Prevents audit-log floods. Default: 20.
