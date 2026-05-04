@@ -17,7 +17,9 @@ use axum::http::{header, Method, Request, StatusCode};
 use tower::ServiceExt;
 
 use akamu::config::{AdminConfig, CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
-use akamu::state::{AdminAuthMethod, AdminSession, AppState, CaState, MtcState, NonceBucket, OperatorRole};
+use akamu::state::{
+    AdminAuthMethod, AdminSession, AppState, CaState, MtcState, NonceBucket, OperatorRole,
+};
 use akamu::{ca, db, routes};
 
 // ── Test state helpers ────────────────────────────────────────────────────────
@@ -206,22 +208,104 @@ const ALL_ROLES: [OperatorRole; 4] = [
 type RbacRow = (&'static str, Method, &'static str, &'static [OperatorRole]);
 
 static RBAC_TABLE: &[RbacRow] = &[
-    ("POST /admin/session",    Method::POST,   "/admin/session",    &ALL_ROLES),
-    ("DELETE /admin/session",  Method::DELETE, "/admin/session",    &ALL_ROLES),
-    ("GET /admin/stats",       Method::GET,    "/admin/stats",      &ALL_ROLES),
-    ("GET /admin/eab",         Method::GET,    "/admin/eab",        &ALL_ROLES),
-    ("GET /admin/account/1/profile-grants", Method::GET, "/admin/account/1/profile-grants", &ALL_ROLES),
-    ("GET /admin/certs",       Method::GET,    "/admin/certs",      &[OperatorRole::Administrator, OperatorRole::CaOperations, OperatorRole::Auditor]),
-    ("POST /admin/eab",        Method::POST,   "/admin/eab",        &[OperatorRole::Administrator, OperatorRole::CaOperations, OperatorRole::CaRa]),
-    ("POST /admin/revoke",     Method::POST,   "/admin/revoke",     &[OperatorRole::Administrator, OperatorRole::CaOperations, OperatorRole::CaRa]),
-    ("DELETE /admin/eab/x",    Method::DELETE, "/admin/eab/no-such-kid", &[OperatorRole::Administrator, OperatorRole::CaOperations]),
-    ("GET /admin/operators",   Method::GET,    "/admin/operators",  &[OperatorRole::Administrator]),
-    ("POST /admin/operators",  Method::POST,   "/admin/operators",  &[OperatorRole::Administrator]),
-    ("PATCH /admin/operators/1", Method::PATCH, "/admin/operators/1", &[OperatorRole::Administrator]),
-    ("GET /admin/audit",       Method::GET,    "/admin/audit",      &[OperatorRole::Administrator, OperatorRole::Auditor]),
-    ("PUT /admin/account/1/profile-grants",  Method::PUT,    "/admin/account/1/profile-grants", &[OperatorRole::Administrator, OperatorRole::CaOperations]),
-    ("DELETE /admin/account/1/profile-grants", Method::DELETE, "/admin/account/1/profile-grants", &[OperatorRole::Administrator]),
-    ("POST /admin/crl/force",  Method::POST,   "/admin/crl/force",  &[OperatorRole::Administrator, OperatorRole::CaOperations]),
+    (
+        "POST /admin/session",
+        Method::POST,
+        "/admin/session",
+        &ALL_ROLES,
+    ),
+    (
+        "DELETE /admin/session",
+        Method::DELETE,
+        "/admin/session",
+        &ALL_ROLES,
+    ),
+    ("GET /admin/stats", Method::GET, "/admin/stats", &ALL_ROLES),
+    ("GET /admin/eab", Method::GET, "/admin/eab", &ALL_ROLES),
+    (
+        "GET /admin/account/1/profile-grants",
+        Method::GET,
+        "/admin/account/1/profile-grants",
+        &ALL_ROLES,
+    ),
+    (
+        "GET /admin/certs",
+        Method::GET,
+        "/admin/certs",
+        &[
+            OperatorRole::Administrator,
+            OperatorRole::CaOperations,
+            OperatorRole::Auditor,
+        ],
+    ),
+    (
+        "POST /admin/eab",
+        Method::POST,
+        "/admin/eab",
+        &[
+            OperatorRole::Administrator,
+            OperatorRole::CaOperations,
+            OperatorRole::CaRa,
+        ],
+    ),
+    (
+        "POST /admin/revoke",
+        Method::POST,
+        "/admin/revoke",
+        &[
+            OperatorRole::Administrator,
+            OperatorRole::CaOperations,
+            OperatorRole::CaRa,
+        ],
+    ),
+    (
+        "DELETE /admin/eab/x",
+        Method::DELETE,
+        "/admin/eab/no-such-kid",
+        &[OperatorRole::Administrator, OperatorRole::CaOperations],
+    ),
+    (
+        "GET /admin/operators",
+        Method::GET,
+        "/admin/operators",
+        &[OperatorRole::Administrator],
+    ),
+    (
+        "POST /admin/operators",
+        Method::POST,
+        "/admin/operators",
+        &[OperatorRole::Administrator],
+    ),
+    (
+        "PATCH /admin/operators/1",
+        Method::PATCH,
+        "/admin/operators/1",
+        &[OperatorRole::Administrator],
+    ),
+    (
+        "GET /admin/audit",
+        Method::GET,
+        "/admin/audit",
+        &[OperatorRole::Administrator, OperatorRole::Auditor],
+    ),
+    (
+        "PUT /admin/account/1/profile-grants",
+        Method::PUT,
+        "/admin/account/1/profile-grants",
+        &[OperatorRole::Administrator, OperatorRole::CaOperations],
+    ),
+    (
+        "DELETE /admin/account/1/profile-grants",
+        Method::DELETE,
+        "/admin/account/1/profile-grants",
+        &[OperatorRole::Administrator],
+    ),
+    (
+        "POST /admin/crl/force",
+        Method::POST,
+        "/admin/crl/force",
+        &[OperatorRole::Administrator, OperatorRole::CaOperations],
+    ),
 ];
 
 // ── Test ──────────────────────────────────────────────────────────────────────
@@ -240,7 +324,7 @@ async fn admin_rbac_table() {
             for (token, role) in [
                 ("tok-admin", OperatorRole::Administrator),
                 ("tok-caops", OperatorRole::CaOperations),
-                ("tok-cara",  OperatorRole::CaRa),
+                ("tok-cara", OperatorRole::CaRa),
                 ("tok-audit", OperatorRole::Auditor),
             ] {
                 map.insert(

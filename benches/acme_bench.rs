@@ -1217,11 +1217,14 @@ async fn run_issuance(
     }
 
     // ── Trigger challenge (uses nonce from authz response) → poll until ready ──
-    let ctx = IssuanceCtx { worker, server, client, account_url: &account_url };
+    let ctx = IssuanceCtx {
+        worker,
+        server,
+        client,
+        account_url: &account_url,
+    };
     let t = Instant::now();
-    let nonce = match respond_and_poll(&ctx, &chall_url, &order_url, &nonce, args.poll_ms)
-        .await
-    {
+    let nonce = match respond_and_poll(&ctx, &chall_url, &order_url, &nonce, args.poll_ms).await {
         Ok(n) => n,
         Err(e) => return IssuanceTiming::failed(wid, request_id, format!("challenge: {e}")),
     };
@@ -1230,12 +1233,10 @@ async fn run_issuance(
     // ── Finalize (uses nonce from last poll response) → cert URL ───────────────
     let t = Instant::now();
     let (cert_url, leftover_nonce) =
-        match finalize_and_poll(&ctx, &order_url, &fin_url, &args.key_type, &nonce)
-            .await
-        {
-        Ok(v) => v,
-        Err(e) => return IssuanceTiming::failed(wid, request_id, format!("finalize: {e}")),
-    };
+        match finalize_and_poll(&ctx, &order_url, &fin_url, &args.key_type, &nonce).await {
+            Ok(v) => v,
+            Err(e) => return IssuanceTiming::failed(wid, request_id, format!("finalize: {e}")),
+        };
     // Store the nonce for the next issuance (cert download is a GET — no nonce used).
     worker.last_nonce = leftover_nonce;
     let finalize_us = t.elapsed().as_micros() as u64;

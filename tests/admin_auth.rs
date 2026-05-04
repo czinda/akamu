@@ -21,7 +21,9 @@ use tower::ServiceExt;
 
 use akamu::admin::auth::PeerClientCert;
 use akamu::config::{AdminConfig, CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
-use akamu::state::{AdminAuthMethod, AdminSession, AppState, CaState, MtcState, NonceBucket, OperatorRole};
+use akamu::state::{
+    AdminAuthMethod, AdminSession, AppState, CaState, MtcState, NonceBucket, OperatorRole,
+};
 use akamu::{ca, db, routes};
 
 use synta_certificate::{BackendPrivateKey, CertificateBuilder, NameBuilder, PrivateKey as _};
@@ -196,7 +198,9 @@ async fn build_state(
         audit: Arc::new(akamu::audit::AuditState::new()),
         audit_policy: Arc::new(akamu::audit::AuditPolicy::default()),
         admin_sessions: Some(Arc::clone(&sessions)),
-        admin_auth_limiter: Some(Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()))),
+        admin_auth_limiter: Some(Arc::new(tokio::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        ))),
         startup_time: Instant::now(),
         gss_cred: None,
         admin_gss_cred: None,
@@ -286,7 +290,9 @@ async fn mtls_cert_issues_session_token_usable_as_bearer() {
         StatusCode::OK,
         "POST /admin/session with valid client cert must return 200"
     );
-    let body_bytes = axum::body::to_bytes(post_resp.into_body(), usize::MAX).await.unwrap();
+    let body_bytes = axum::body::to_bytes(post_resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
     let token = json["session_token"]
         .as_str()
@@ -470,15 +476,23 @@ async fn audit_event_visible_via_admin_api() {
         .to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    let events = json["events"].as_array().expect("response must have events array");
-    assert_eq!(events.len(), 1, "exactly one account.create event must be returned");
+    let events = json["events"]
+        .as_array()
+        .expect("response must have events array");
+    assert_eq!(
+        events.len(),
+        1,
+        "exactly one account.create event must be returned"
+    );
 
     let ev = &events[0];
-    assert_eq!(ev["event_type"], "account.create", "event_type must match filter");
+    assert_eq!(
+        ev["event_type"], "account.create",
+        "event_type must match filter"
+    );
     assert_eq!(ev["outcome"], "success", "outcome must be success");
     assert_eq!(
-        ev["subject"],
-        "acme:test-account-id",
+        ev["subject"], "acme:test-account-id",
         "subject must match what was inserted"
     );
 }
@@ -537,7 +551,11 @@ async fn create_session_sweeps_expired_entries() {
         .unwrap();
     req.extensions_mut().insert(PeerClientCert(cert_der));
     let resp = router.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "POST /admin/session must succeed");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "POST /admin/session must succeed"
+    );
 
     // After the sweep only the one new token should remain.
     let map = sessions.lock().await;
@@ -579,7 +597,9 @@ async fn bearer_lookup_refreshes_last_active_at() {
 
     // last_active_at must be strictly later than `before`.
     let map = sessions.lock().await;
-    let session = map.get("sliding-token").expect("session must still be in map");
+    let session = map
+        .get("sliding-token")
+        .expect("session must still be in map");
     assert!(
         session.last_active_at > before,
         "last_active_at must be refreshed after a successful lookup"
@@ -632,7 +652,11 @@ async fn login_via_handler_emits_audit_event() {
         .unwrap();
     req.extensions_mut().insert(PeerClientCert(cert_der));
     let resp = router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "POST /admin/session must succeed");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "POST /admin/session must succeed"
+    );
 
     // Query GET /admin/audit?type=admin.login via the API.
     let query_req = Request::builder()
@@ -642,11 +666,19 @@ async fn login_via_handler_emits_audit_event() {
         .body(Body::empty())
         .unwrap();
     let query_resp = router.oneshot(query_req).await.unwrap();
-    assert_eq!(query_resp.status(), StatusCode::OK, "GET /admin/audit must return 200");
+    assert_eq!(
+        query_resp.status(),
+        StatusCode::OK,
+        "GET /admin/audit must return 200"
+    );
 
-    let body = axum::body::to_bytes(query_resp.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(query_resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let events = json["events"].as_array().expect("response must have events array");
+    let events = json["events"]
+        .as_array()
+        .expect("response must have events array");
     assert!(
         !events.is_empty(),
         "at least one admin.login event must appear after a successful mTLS login"
