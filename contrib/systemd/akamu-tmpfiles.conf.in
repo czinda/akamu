@@ -1,0 +1,4 @@
+# systemd-tmpfiles(8) — persistent state directory for the akamu ACME server.
+d /var/lib/akamu   0750 akamu akamu -
+# Certificate store: auto-generated CA key/cert and TLS server key/cert.
+d /etc/akamu/certs 0750 akamu akamu -

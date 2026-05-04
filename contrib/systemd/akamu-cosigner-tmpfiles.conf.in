@@ -1,0 +1,2 @@
+# systemd-tmpfiles(8) — persistent state directory for the akamu MTC cosigner.
+d /var/lib/akamu-cosigner 0750 akamu-cosigner akamu-cosigner -

@@ -175,16 +175,24 @@ srpm: sources
 	    -e "s/^%global snapdate[[:space:]].*/%global snapdate    $(SNAPDATE)/" \
 	    -e "s/^%global snapcommit[[:space:]].*/%global snapcommit  $(SNAPCOMMIT)/" \
 	    "$(SPEC)" > "$(SPEC_TMP)"
-	@# Service units now live in contrib/systemd/; copy them into _sourcedir
-	@# so rpmbuild can locate Source2 and Source4 in the offline build.
+	@# Service units live in contrib/systemd/ as plain files; sysusers.d and
+	@# tmpfiles.d sources use the .conf.in convention and are copied to .conf
+	@# here.  All are placed in _sourcedir so rpmbuild can locate Source2–Source8.
 	cp "$(REPOROOT)/contrib/systemd/akamu.service" .
 	cp "$(REPOROOT)/contrib/systemd/akamu-cosigner.service" .
+	cp "$(REPOROOT)/contrib/systemd/akamu-sysusers.conf.in"          akamu-sysusers.conf
+	cp "$(REPOROOT)/contrib/systemd/akamu-cosigner-sysusers.conf.in" akamu-cosigner-sysusers.conf
+	cp "$(REPOROOT)/contrib/systemd/akamu-tmpfiles.conf.in"          akamu-tmpfiles.conf
+	cp "$(REPOROOT)/contrib/systemd/akamu-cosigner-tmpfiles.conf.in" akamu-cosigner-tmpfiles.conf
 	rpmbuild -bs \
 	    --define "_sourcedir $(CURDIR)" \
 	    --define "_specdir   $(CURDIR)" \
 	    --define "_srcrpmdir $(CURDIR)" \
 	    "$(SPEC_TMP)"
-	rm -f "$(SPEC_TMP)" akamu.service akamu-cosigner.service
+	rm -f "$(SPEC_TMP)" \
+	      akamu.service akamu-cosigner.service \
+	      akamu-sysusers.conf akamu-cosigner-sysusers.conf \
+	      akamu-tmpfiles.conf akamu-cosigner-tmpfiles.conf
 
 # ── mock ──────────────────────────────────────────────────────────────────────
 

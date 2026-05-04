@@ -10,7 +10,6 @@ ExecStart=/usr/bin/akamu-cosigner /etc/akamu-cosigner/cosigner.toml
 Restart=on-failure
 RestartSec=5s
 
-# Run as a dedicated system user (create with: useradd -r -s /sbin/nologin akamu-cosigner)
 User=akamu-cosigner
 Group=akamu-cosigner
 

@@ -1,0 +1,2 @@
+# systemd-sysusers(8) — system user for the akamu MTC cosigner daemon.
+u akamu-cosigner - "akamu MTC cosigner" /var/lib/akamu-cosigner /sbin/nologin

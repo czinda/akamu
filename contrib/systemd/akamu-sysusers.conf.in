@@ -1,0 +1,2 @@
+# systemd-sysusers(8) — system user for the akamu ACME server.
+u akamu - "akamu ACME server" /var/lib/akamu /sbin/nologin

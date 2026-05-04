@@ -10,7 +10,6 @@ ExecStart=/usr/bin/akamu /etc/akamu/config.toml
 Restart=on-failure
 RestartSec=5s
 
-# Run as a dedicated system user (create with: useradd -r -s /sbin/nologin akamu)
 User=akamu
 Group=akamu
 
