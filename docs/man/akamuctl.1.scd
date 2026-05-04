@@ -67,9 +67,10 @@ Session tokens obtained after *login* are cached in
 		    _localhost.localdomain_, _ip6-loopback_) and loopback IP
 		    addresses (127.x.x.x, ::1) → replaced with the machine's
 		    own FQDN via *gethostname*(2) and forward/reverse DNS.
-		  - Non-loopback IP addresses → resolved to a hostname via
-		    *getnameinfo*(3); a warning is printed and the IP is used
-		    as a fallback if reverse DNS fails.
+		  - Non-loopback IP addresses → resolved to a hostname via a
+		    DNS PTR lookup using *hickory-resolver*; a warning is
+		    printed and the IP is used as a fallback if reverse DNS
+		    fails.
 		  - DNS hostnames → used directly.
 
 *logout*
