@@ -46,13 +46,14 @@ use super::unix_now;
 
 // ── Shared guard ──────────────────────────────────────────────────────────────
 
-/// Return 404 early when `[admin]` is absent.  All admin handlers call this
-/// before accessing the operator context.
-fn admin_configured(state: &AppState) -> Result<(), Response> {
+/// Return a 404 response when `[admin]` is absent, or `None` when configured.
+/// All admin handlers call this before accessing the operator context.
+fn admin_configured(state: &AppState) -> Option<Response> {
     if state.config.admin.is_none() {
-        return Err((StatusCode::NOT_FOUND, "admin API is not configured").into_response());
+        Some((StatusCode::NOT_FOUND, "admin API is not configured").into_response())
+    } else {
+        None
     }
-    Ok(())
 }
 
 // ── Payload types ─────────────────────────────────────────────────────────────
@@ -95,11 +96,13 @@ struct RevokePayload {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn grants_to_json(grants: Option<Vec<String>>) -> Option<String> {
+fn grants_to_json(grants: Option<Vec<String>>) -> Result<Option<String>, String> {
     match grants {
-        None => None,
-        Some(ref vec) if vec.is_empty() => None,
-        Some(ref vec) => serde_json::to_string(vec).ok(),
+        None => Ok(None),
+        Some(ref vec) if vec.is_empty() => Ok(None),
+        Some(ref vec) => serde_json::to_string(vec)
+            .map(Some)
+            .map_err(|e| format!("serialize profile_grants: {e}")),
     }
 }
 
@@ -123,7 +126,7 @@ pub async fn get_operators(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    if let Err(r) = admin_configured(&state) {
+    if let Some(r) = admin_configured(&state) {
         return r;
     }
     require_role!(operator, Administrator);
@@ -161,7 +164,7 @@ pub async fn post_operators(
     State(state): State<Arc<AppState>>,
     body: Bytes,
 ) -> Response {
-    if let Err(r) = admin_configured(&state) {
+    if let Some(r) = admin_configured(&state) {
         return r;
     }
     require_role!(operator, Administrator);
@@ -242,7 +245,7 @@ pub async fn patch_operator(
     Path(id): Path<i64>,
     body: Bytes,
 ) -> Response {
-    if let Err(r) = admin_configured(&state) {
+    if let Some(r) = admin_configured(&state) {
         return r;
     }
     require_role!(operator, Administrator);
@@ -297,7 +300,7 @@ pub async fn get_audit(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    if let Err(r) = admin_configured(&state) {
+    if let Some(r) = admin_configured(&state) {
         return r;
     }
     require_role!(operator, Administrator | Auditor);
@@ -359,7 +362,7 @@ pub async fn get_certs(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    if let Err(r) = admin_configured(&state) {
+    if let Some(r) = admin_configured(&state) {
         return r;
     }
     require_role!(operator, Administrator | CaOperations | Auditor);
@@ -416,7 +419,7 @@ pub async fn get_account_profile_grants(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Response {
-    if let Err(r) = admin_configured(&state) {
+    if let Some(r) = admin_configured(&state) {
         return r;
     }
     let _ = operator; // any role allowed
@@ -443,7 +446,7 @@ pub async fn put_account_profile_grants(
     Path(id): Path<String>,
     body: Bytes,
 ) -> Response {
-    if let Err(r) = admin_configured(&state) {
+    if let Some(r) = admin_configured(&state) {
         return r;
     }
     require_role!(operator, Administrator | CaOperations);
@@ -454,7 +457,13 @@ pub async fn put_account_profile_grants(
     };
 
     let now = unix_now();
-    let grants_str = grants_to_json(payload.profile_grants);
+    let grants_str = match grants_to_json(payload.profile_grants) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(error = %e, "put_account_profile_grants: serialize grants");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"status": 500, "detail": "internal error"}))).into_response();
+        }
+    };
     match db::accounts::set_profile_grants(&state.db, &id, grants_str.as_deref(), now).await {
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         Ok(false) => (StatusCode::NOT_FOUND, "account not found or deactivated").into_response(),
@@ -483,7 +492,7 @@ pub async fn delete_account_profile_grants(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Response {
-    if let Err(r) = admin_configured(&state) {
+    if let Some(r) = admin_configured(&state) {
         return r;
     }
     require_role!(operator, Administrator);
@@ -522,7 +531,7 @@ pub async fn get_eab(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    if let Err(r) = admin_configured(&state) {
+    if let Some(r) = admin_configured(&state) {
         return r;
     }
     let _ = operator; // any role
@@ -585,7 +594,7 @@ pub async fn post_eab(
     State(state): State<Arc<AppState>>,
     body: Bytes,
 ) -> Response {
-    if let Err(r) = admin_configured(&state) {
+    if let Some(r) = admin_configured(&state) {
         return r;
     }
     require_role!(operator, Administrator | CaOperations | CaRa);
@@ -604,7 +613,13 @@ pub async fn post_eab(
     }
 
     let now = unix_now();
-    let grants_str = grants_to_json(payload.profile_grants);
+    let grants_str = match grants_to_json(payload.profile_grants) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(error = %e, "post_eab: serialize grants");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"status": 500, "detail": "internal error"}))).into_response();
+        }
+    };
     match db::eab::insert_with_grants(
         &state.db,
         &payload.kid,
@@ -653,7 +668,7 @@ pub async fn delete_eab(
     State(state): State<Arc<AppState>>,
     Path(kid): Path<String>,
 ) -> Response {
-    if let Err(r) = admin_configured(&state) {
+    if let Some(r) = admin_configured(&state) {
         return r;
     }
     require_role!(operator, Administrator | CaOperations);
@@ -687,7 +702,7 @@ pub async fn post_crl_force(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    if let Err(r) = admin_configured(&state) {
+    if let Some(r) = admin_configured(&state) {
         return r;
     }
     require_role!(operator, Administrator | CaOperations);
@@ -716,7 +731,7 @@ pub async fn post_revoke(
     State(state): State<Arc<AppState>>,
     body: Bytes,
 ) -> Response {
-    if let Err(r) = admin_configured(&state) {
+    if let Some(r) = admin_configured(&state) {
         return r;
     }
     require_role!(operator, Administrator | CaOperations | CaRa);
@@ -760,7 +775,7 @@ pub async fn get_stats(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    if let Err(r) = admin_configured(&state) {
+    if let Some(r) = admin_configured(&state) {
         return r;
     }
     let _ = operator;
