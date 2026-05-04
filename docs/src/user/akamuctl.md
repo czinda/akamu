@@ -136,8 +136,9 @@ The GSSAPI service principal name (SPN) is resolved as follows:
      `ip6-loopback`) and loopback IP addresses (`127.x.x.x`, `::1`) →
      replaced with the machine's own FQDN via `gethostname(2)` and
      forward/reverse DNS.
-   - Non-loopback IP addresses → resolved to a hostname via `getnameinfo(3)`;
-     a warning is printed and the bare IP is used if reverse DNS fails.
+   - Non-loopback IP addresses → resolved to a hostname via a DNS PTR
+     lookup using hickory-resolver; a warning is printed and the bare IP
+     is used as a fallback if reverse DNS fails.
    - DNS hostnames → used directly.
 
 ### `logout`
@@ -440,6 +441,18 @@ By default, `akamuctl` prints results as aligned tables.  Use `--output json`
 ```bash
 akamuctl -o json operator list | jq '.operators[] | select(.role == "auditor")'
 ```
+
+### Table output
+
+When the server response is a JSON object with a single array-valued field
+(the common case for paginated endpoints such as `cert list` and `audit`),
+the array is rendered as an aligned table and any remaining scalar fields
+(e.g. `total`, `offset`, `limit`) are printed as a key-value footer
+below the table.  When the response is a plain JSON array the table is
+printed directly.  Scalar responses are printed as a single line.
+
+When a paginated query returns no rows, `(no results)` is printed instead
+of an empty table.
 
 ## Exit codes
 
