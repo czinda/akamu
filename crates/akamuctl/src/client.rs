@@ -145,30 +145,62 @@ impl AdminClient {
             return Ok(token);
         }
 
-        // Build Authorization: Negotiate header when GSSAPI is requested.
-        let negotiate_header = if let Some(ref spn) = self.gssapi_service {
+        // POST /admin/session — mTLS cert or GSSAPI Negotiate authenticates the operator.
+        let session_resp = if let Some(ref spn) = self.gssapi_service {
+            // GSSAPI multi-round-trip loop: step → send → check for server token → repeat.
             let cred = akamu_gssapi::GssClientCred::from_ccache()
                 .map_err(|e| CtlError::Auth(format!("GSSAPI ccache: {e}")))?;
-            let token_bytes = akamu_gssapi::init_token(&cred, spn, None)
-                .map_err(|e| CtlError::Auth(format!("GSSAPI token for '{spn}': {e}")))?;
-            Some(format!(
-                "Negotiate {}",
-                base64::engine::general_purpose::STANDARD.encode(&token_bytes)
-            ))
+            let mut ctx = akamu_gssapi::GssClientContext::new(spn)
+                .map_err(|e| CtlError::Auth(format!("GSSAPI context for '{spn}': {e}")))?;
+            let mut server_token: Option<Vec<u8>> = None;
+            loop {
+                let (token_bytes, _complete) = ctx
+                    .step(&cred, server_token.as_deref(), None)
+                    .map_err(|e| CtlError::Auth(format!("GSSAPI step for '{spn}': {e}")))?;
+                let negotiate_hdr = format!(
+                    "Negotiate {}",
+                    base64::engine::general_purpose::STANDARD.encode(&token_bytes)
+                );
+                let resp = self
+                    .raw_request(Method::POST, "/admin/session", None, None, Some(&negotiate_hdr))
+                    .await?;
+                if resp.status == StatusCode::OK {
+                    break resp;
+                }
+                // 401 with a server-side GSSAPI token — continue the exchange.
+                if resp.status == StatusCode::UNAUTHORIZED {
+                    if let Some(www) = &resp.www_authenticate {
+                        if let Some(b64) = www.strip_prefix("Negotiate ") {
+                            server_token = Some(
+                                base64::engine::general_purpose::STANDARD
+                                    .decode(b64.trim())
+                                    .map_err(|e| CtlError::Auth(format!("decode server GSSAPI token: {e}")))?,
+                            );
+                            continue;
+                        }
+                    }
+                }
+                return Err(CtlError::Auth(format!(
+                    "POST /admin/session returned {}",
+                    resp.status
+                )));
+            }
         } else {
-            None
+            // mTLS path — single request; the client certificate authenticates.
+            let resp = self
+                .raw_request(Method::POST, "/admin/session", None, None, None)
+                .await?;
+            if resp.status != StatusCode::OK {
+                return Err(CtlError::Auth(format!(
+                    "POST /admin/session returned {}",
+                    resp.status
+                )));
+            }
+            resp
         };
 
-        // POST /admin/session — mTLS cert or Negotiate header authenticates the operator.
-        let resp = self.raw_request(Method::POST, "/admin/session", None, None, negotiate_header.as_deref()).await?;
-        if resp.status != StatusCode::OK {
-            return Err(CtlError::Auth(format!(
-                "POST /admin/session returned {}",
-                resp.status
-            )));
-        }
-        let body: Value =
-            serde_json::from_str(&resp.body).map_err(|e| CtlError::Api(format!("session JSON: {e}")))?;
+        let body: Value = serde_json::from_str(&session_resp.body)
+            .map_err(|e| CtlError::Api(format!("session JSON: {e}")))?;
         let token = body["session_token"]
             .as_str()
             .ok_or_else(|| CtlError::Api("no session_token in response".into()))?
@@ -303,6 +335,11 @@ impl AdminClient {
             .await
             .map_err(|e| CtlError::Http(format!("{url}: {e}")))?;
         let status = resp.status();
+        let www_authenticate = resp
+            .headers()
+            .get("www-authenticate")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
         let body_bytes = resp
             .into_body()
             .collect()
@@ -310,13 +347,14 @@ impl AdminClient {
             .map_err(|e| CtlError::Http(format!("read body: {e}")))?
             .to_bytes();
         let body = String::from_utf8_lossy(&body_bytes).into_owned();
-        Ok(RawResponse { status, body })
+        Ok(RawResponse { status, body, www_authenticate })
     }
 }
 
 struct RawResponse {
     status: StatusCode,
     body: String,
+    www_authenticate: Option<String>,
 }
 
 fn check_status(resp: &RawResponse) -> Result<(), CtlError> {
