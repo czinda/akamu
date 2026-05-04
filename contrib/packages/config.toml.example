@@ -243,6 +243,10 @@ validate_dnssec = true
 # bootstrap_operator_key_file  = "/etc/akamu/bootstrap-admin.key"
 # bootstrap_operator_name      = "admin"
 #
+# Bootstrap operator (GSSAPI) — mutually exclusive with cert bootstrap above.
+# When operators table is empty at startup, registers this principal as Administrator.
+# bootstrap_operator_gssapi_principal = "admin@EXAMPLE.COM"
+#
 # GSSAPI/Kerberos authentication for admin operators.
 # [admin.gssapi]
 # keytab_file  = "/etc/akamu/http.keytab"
