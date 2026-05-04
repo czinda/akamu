@@ -25,6 +25,7 @@
 - [EAB and Kerberos Authentication](user/eab-kerberos.md)
 - [Admin API and Operator Management](user/admin-api.md)
 - [akamuctl — Admin CLI](user/akamuctl.md)
+- [Backup and Restore](user/backup-restore.md)
 
 # Client Libraries
 
