@@ -158,6 +158,11 @@ Session tokens obtained after *login* are cached in
 *operator activate* _ID_
 	Re-activate a previously deactivated operator.
 
+*operator unlock* _ID_
+	Reset the failed-authentication counter for a locked operator
+	and clear the lockout timestamp (FIA_AFL.1).  Use this after an
+	operator has been locked out by exceeding *max_failed_auth*.
+
 ## EAB key management
 
 *eab list* [--used] [--unused]
@@ -271,6 +276,25 @@ Session tokens obtained after *login* are cached in
 	List all loaded certificate profiles with their parameters,
 	including validity period, hash algorithm, extended key usages,
 	and MTC issuance settings.
+
+*profile add* _ID_ --params-file _FILE_
+	Add a new certificate profile to the runtime cache (FPT_NPE_EXT.1).
+	_FILE_ must be a JSON file whose fields match the profile payload
+	accepted by *POST /admin/profiles*.  Requires the *administrator* role.
+
+	*--params-file* _FILE_
+		Path to the JSON file with profile parameters.
+
+*profile update* _ID_ --params-file _FILE_
+	Replace an existing certificate profile in the runtime cache.
+	Requires the *administrator* role.
+
+	*--params-file* _FILE_
+		Path to the JSON file with updated profile parameters.
+
+*profile remove* _ID_
+	Remove a certificate profile from the runtime cache.
+	Requires the *administrator* role.
 
 ## Order management
 

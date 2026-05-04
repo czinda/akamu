@@ -91,6 +91,49 @@ Start the server with a non-default configuration file:
 The configuration file is a TOML document.  An annotated example is
 installed at */etc/akamu/config.toml.example*.
 
+## [database] — new keys
+
+*require_tls* = _bool_
+	When *true*, the server refuses to start unless the database URL
+	explicitly enables SSL/TLS (FPT_ITT.1).  PostgreSQL requires
+	_sslmode=require_ (or stronger); MariaDB/MySQL requires
+	_ssl-mode=REQUIRED_ (or stronger).  Ignored for SQLite.
+	Default: *false*.
+
+## [ca] — encrypted key enforcement
+
+*require_encrypted_key* = _bool_
+	When *true*, plaintext PEM private keys are rejected at startup
+	(FCS_STG_EXT.1).  Only PKCS#8 encrypted PEM
+	(*ENCRYPTED PRIVATE KEY*) or PKCS#11 URIs are accepted.
+	Set *key_password_file* to supply the decryption passphrase.
+	Default: *false*.
+
+*key_password_file* = _path_
+	Path to a file containing the passphrase for the encrypted PEM CA
+	private key.  The file is read once at startup; trailing newlines are
+	stripped.  Required when *require_encrypted_key* is *true* and
+	*key_file* is a filesystem path (not a PKCS#11 URI).
+
+## [admin] — session locking and operator lockout
+
+*session_lock_secs* = _seconds_
+	Inactivity threshold before a session is locked (FTA_SSL_EXT.1).
+	After this many idle seconds, the session token returns *423 Locked*
+	rather than *401 Unauthorized*.  The operator must re-authenticate
+	to obtain a new token.  Must be less than *session_ttl_secs*.
+	Default: *900* (15 min).
+
+*max_failed_auth* = _count_
+	Maximum failed authentication attempts per operator before lockout
+	(FIA_AFL.1).  Once exceeded, further attempts return *423 Locked*
+	until the lockout expires or an administrator unlocks the operator.
+	Default: *5*.
+
+*lockout_duration_secs* = _seconds_
+	How long the operator account remains locked after exceeding
+	*max_failed_auth* (FIA_AFL.1).  Default: *1800* (30 min).
+
 ## [admin] — bootstrap operator fields
 
 *bootstrap_operator_cert_file* = _path_
