@@ -240,9 +240,16 @@ mod tests {
     #[tokio::test]
     async fn insert_and_get_by_fingerprint() {
         let db = open_db().await;
-        insert(&db, "alice", "administrator", Some("aabbcc"), None, "2026-01-01T00:00:00Z")
-            .await
-            .unwrap();
+        insert(
+            &db,
+            "alice",
+            "administrator",
+            Some("aabbcc"),
+            None,
+            "2026-01-01T00:00:00Z",
+        )
+        .await
+        .unwrap();
         let row = get_by_fingerprint(&db, "aabbcc").await.unwrap().unwrap();
         assert_eq!(row.name, "alice");
         assert_eq!(row.role, "administrator");
@@ -252,9 +259,16 @@ mod tests {
     #[tokio::test]
     async fn insert_and_get_by_principal() {
         let db = open_db().await;
-        insert(&db, "bob", "auditor", None, Some("bob@REALM"), "2026-01-01T00:00:00Z")
-            .await
-            .unwrap();
+        insert(
+            &db,
+            "bob",
+            "auditor",
+            None,
+            Some("bob@REALM"),
+            "2026-01-01T00:00:00Z",
+        )
+        .await
+        .unwrap();
         let row = get_by_principal(&db, "bob@REALM").await.unwrap().unwrap();
         assert_eq!(row.name, "bob");
         assert_eq!(row.role, "auditor");
@@ -269,12 +283,26 @@ mod tests {
     #[tokio::test]
     async fn list_returns_all_rows() {
         let db = open_db().await;
-        insert(&db, "alice", "administrator", Some("fp-a"), None, "2026-01-01T00:00:00Z")
-            .await
-            .unwrap();
-        insert(&db, "bob", "auditor", None, Some("bob@REALM"), "2026-01-01T00:00:00Z")
-            .await
-            .unwrap();
+        insert(
+            &db,
+            "alice",
+            "administrator",
+            Some("fp-a"),
+            None,
+            "2026-01-01T00:00:00Z",
+        )
+        .await
+        .unwrap();
+        insert(
+            &db,
+            "bob",
+            "auditor",
+            None,
+            Some("bob@REALM"),
+            "2026-01-01T00:00:00Z",
+        )
+        .await
+        .unwrap();
         let rows = list(&db, 100, 0).await.unwrap();
         assert_eq!(rows.len(), 2);
     }
@@ -282,24 +310,45 @@ mod tests {
     #[tokio::test]
     async fn set_active_false_hides_from_fingerprint_lookup() {
         let db = open_db().await;
-        insert(&db, "alice", "administrator", Some("fp-b"), None, "2026-01-01T00:00:00Z")
-            .await
-            .unwrap();
+        insert(
+            &db,
+            "alice",
+            "administrator",
+            Some("fp-b"),
+            None,
+            "2026-01-01T00:00:00Z",
+        )
+        .await
+        .unwrap();
         // Retrieve ID via fingerprint lookup.
         let row = get_by_fingerprint(&db, "fp-b").await.unwrap().unwrap();
-        set_active(&db, row.id, false, "2026-01-02T00:00:00Z").await.unwrap();
+        set_active(&db, row.id, false, "2026-01-02T00:00:00Z")
+            .await
+            .unwrap();
         assert!(get_by_fingerprint(&db, "fp-b").await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn update_last_seen_stores_timestamp() {
         let db = open_db().await;
-        insert(&db, "carol", "ca_ra", Some("fp-c"), None, "2026-01-01T00:00:00Z")
+        insert(
+            &db,
+            "carol",
+            "ca_ra",
+            Some("fp-c"),
+            None,
+            "2026-01-01T00:00:00Z",
+        )
+        .await
+        .unwrap();
+        let row = get_by_fingerprint(&db, "fp-c").await.unwrap().unwrap();
+        update_last_seen(&db, row.id, "2026-06-01T12:00:00Z")
             .await
             .unwrap();
-        let row = get_by_fingerprint(&db, "fp-c").await.unwrap().unwrap();
-        update_last_seen(&db, row.id, "2026-06-01T12:00:00Z").await.unwrap();
         let rows = list(&db, 100, 0).await.unwrap();
-        assert_eq!(rows[0].last_seen_at.as_deref(), Some("2026-06-01T12:00:00Z"));
+        assert_eq!(
+            rows[0].last_seen_at.as_deref(),
+            Some("2026-06-01T12:00:00Z")
+        );
     }
 }

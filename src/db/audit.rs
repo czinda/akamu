@@ -57,12 +57,10 @@ pub async fn count_since(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     since_rfc3339: &str,
 ) -> Result<i64, AcmeError> {
-    let row: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM audit_events WHERE occurred_at >= ?",
-    )
-    .bind(since_rfc3339)
-    .fetch_one(executor)
-    .await?;
+    let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM audit_events WHERE occurred_at >= ?")
+        .bind(since_rfc3339)
+        .fetch_one(executor)
+        .await?;
     Ok(row.0)
 }
 
@@ -155,9 +153,17 @@ mod tests {
     async fn insert_and_count() {
         let db = open_db().await;
         assert_eq!(count(&db).await.unwrap(), 0);
-        insert(&db, "2026-01-01T00:00:00Z", "cert.issue", Some("acc1"), Some("alice"), "success", None)
-            .await
-            .unwrap();
+        insert(
+            &db,
+            "2026-01-01T00:00:00Z",
+            "cert.issue",
+            Some("acc1"),
+            Some("alice"),
+            "success",
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(count(&db).await.unwrap(), 1);
     }
 
@@ -185,12 +191,28 @@ mod tests {
     #[tokio::test]
     async fn query_filters_by_event_type() {
         let db = open_db().await;
-        insert(&db, "2026-01-01T00:00:00Z", "cert.issue", None, None, "success", None)
-            .await
-            .unwrap();
-        insert(&db, "2026-01-01T00:00:01Z", "auth.jws.fail", None, None, "failure", None)
-            .await
-            .unwrap();
+        insert(
+            &db,
+            "2026-01-01T00:00:00Z",
+            "cert.issue",
+            None,
+            None,
+            "success",
+            None,
+        )
+        .await
+        .unwrap();
+        insert(
+            &db,
+            "2026-01-01T00:00:01Z",
+            "auth.jws.fail",
+            None,
+            None,
+            "failure",
+            None,
+        )
+        .await
+        .unwrap();
         let q = AuditQuery {
             event_type: Some("cert.issue"),
             subject: None,
@@ -208,12 +230,28 @@ mod tests {
     #[tokio::test]
     async fn count_since_filters_by_time() {
         let db = open_db().await;
-        insert(&db, "2026-01-01T00:00:00Z", "cert.issue", None, None, "success", None)
-            .await
-            .unwrap();
-        insert(&db, "2026-06-01T00:00:00Z", "cert.issue", None, None, "success", None)
-            .await
-            .unwrap();
+        insert(
+            &db,
+            "2026-01-01T00:00:00Z",
+            "cert.issue",
+            None,
+            None,
+            "success",
+            None,
+        )
+        .await
+        .unwrap();
+        insert(
+            &db,
+            "2026-06-01T00:00:00Z",
+            "cert.issue",
+            None,
+            None,
+            "success",
+            None,
+        )
+        .await
+        .unwrap();
         let n = count_since(&db, "2026-06-01T00:00:00Z").await.unwrap();
         assert_eq!(n, 1);
     }

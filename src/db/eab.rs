@@ -114,12 +114,11 @@ pub async fn mark_used(
     kid: &str,
     now: i64,
 ) -> Result<(), AcmeError> {
-    let result =
-        sqlx::query("UPDATE eab_keys SET used_at = ? WHERE kid = ? AND used_at IS NULL")
-            .bind(now)
-            .bind(kid)
-            .execute(executor)
-            .await?;
+    let result = sqlx::query("UPDATE eab_keys SET used_at = ? WHERE kid = ? AND used_at IS NULL")
+        .bind(now)
+        .bind(kid)
+        .execute(executor)
+        .await?;
     if result.rows_affected() == 0 {
         return Err(AcmeError::Conflict(
             "EAB key already consumed by a concurrent request".into(),
