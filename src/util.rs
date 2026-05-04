@@ -41,6 +41,30 @@ pub fn sha256_hex(data: &[u8]) -> Result<String, String> {
     Ok(native_ossl::util::hex_encode(out))
 }
 
+/// Write a private key PEM to `path` with mode 0o640 (owner rw, group r, other none).
+///
+/// Group-readable so that services running as the `akamu` group can access keys
+/// generated on first run.  Uses `OpenOptions` with an explicit mode rather than
+/// `fs::write` to avoid the process umask widening the permissions.
+pub fn write_key_file(path: &str, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o640)
+            .open(path)?;
+        f.write_all(data)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, data)
+    }
+}
+
 /// Extract the DER-encoded subject Name from a DER-encoded certificate.
 pub(crate) fn extract_ca_subject_der(ca_cert_der: &[u8]) -> Result<Vec<u8>, AcmeError> {
     let mut dec = Decoder::new(ca_cert_der, Encoding::Der);

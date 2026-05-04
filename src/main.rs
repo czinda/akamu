@@ -57,7 +57,7 @@ fn load_or_generate_mtc_key(
         let pem = key
             .to_pem(None)
             .map_err(|e| format!("MTC signing key to PEM: {e}"))?;
-        std::fs::write(&cfg.key_file, &pem)
+        akamu::util::write_key_file(&cfg.key_file, &pem)
             .map_err(|e| format!("write MTC signing key '{}': {e}", cfg.key_file))?;
         Ok(key)
     }

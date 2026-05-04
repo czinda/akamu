@@ -111,7 +111,7 @@ fn generate(config: &CaConfig) -> Result<(BackendPrivateKey, Vec<u8>), AcmeError
     let key_pem_out = backend_key
         .to_pem(None)
         .map_err(|e| AcmeError::Crypto(format!("CA key to PEM: {}", e)))?;
-    std::fs::write(&config.key_file, &key_pem_out)
+    crate::util::write_key_file(&config.key_file, &key_pem_out)
         .map_err(|e| AcmeError::Internal(format!("write CA key '{}': {}", config.key_file, e)))?;
 
     let spki_der = backend_key

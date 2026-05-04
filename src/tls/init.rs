@@ -60,7 +60,7 @@ pub fn load_or_generate(tls: &TlsConfig, ca: &CaState) -> Result<(), String> {
     let key_pem = server_key
         .to_pem(None)
         .map_err(|e| format!("TLS key to PEM: {e}"))?;
-    std::fs::write(&tls.key_file, &key_pem)
+    crate::util::write_key_file(&tls.key_file, &key_pem)
         .map_err(|e| format!("write TLS key '{}': {e}", tls.key_file))?;
 
     // Write cert chain PEM: leaf cert + CA cert (PEM-concatenated).
