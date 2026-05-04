@@ -62,7 +62,6 @@ pub const GSS_S_CONTINUE_NEEDED: OmUint32 = 1;
 pub const GSS_C_ACCEPT: i32 = 2;
 
 /// Flag bit: context provides per-message replay detection (RFC 2743 §1.2.3).
-pub const GSS_C_REPLAY_FLAG: OmUint32 = 4;
 
 pub const GSS_C_NO_CONTEXT: GssCtxIdT = ptr::null_mut();
 #[allow(dead_code)]

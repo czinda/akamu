@@ -589,8 +589,6 @@ pub fn init_token(
 ///
 /// - [`GssError::AcceptContext`] — `gss_accept_sec_context` rejected the token
 ///   (expired ticket, wrong service, replay, or forged token).
-/// - [`GssError::InsufficientFlags`] — the accepted context does not have
-///   replay detection enabled (`GSS_C_REPLAY_FLAG` not set in `ret_flags`).
 /// - [`GssError::DisplayName`] — the authenticated name could not be converted
 ///   to a printable string by `gss_display_name`.
 /// - [`GssError::InvalidUtf8`] — the display name returned by the GSSAPI
@@ -700,25 +698,6 @@ pub fn accept_token(
             major,
             minor: error_minor,
         });
-    }
-
-    // Require anti-replay protection; reject contexts where the GSSAPI library
-    // does not guarantee replay detection.
-    if ret_flags & ffi::GSS_C_REPLAY_FLAG == 0 {
-        if !ctx.is_null() {
-            let mut discard = ffi::gss_c_no_buffer();
-            // SAFETY: ctx is a valid context handle set by gss_accept_sec_context.
-            unsafe { ffi::gss_delete_sec_context(&mut minor, &mut ctx, &mut discard) };
-            if discard.length > 0 && !discard.value.is_null() {
-                // SAFETY: discard is a non-null, non-empty buffer from gss_delete_sec_context.
-                unsafe { ffi::gss_release_buffer(&mut minor, &mut discard) };
-            }
-        }
-        if !src_name.is_null() {
-            // SAFETY: src_name is a valid GssNameT set by gss_accept_sec_context.
-            unsafe { ffi::gss_release_name(&mut minor, &mut src_name) };
-        }
-        return Err(GssError::InsufficientFlags { ret_flags });
     }
 
     // Extract the principal name string.

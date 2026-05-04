@@ -65,12 +65,6 @@ pub enum GssError {
         source: std::io::Error,
     },
 
-    /// `gss_accept_sec_context` succeeded but the returned `ret_flags` do not
-    /// include `GSS_C_REPLAY_FLAG`, meaning the context does not guarantee
-    /// replay detection.
-    #[error("insufficient GSSAPI context flags: ret_flags={ret_flags:#010x} (GSS_C_REPLAY_FLAG not set)")]
-    InsufficientFlags { ret_flags: OmUint32 },
-
     /// `target_service` passed to [`crate::init_token`] contains an interior NUL byte.
     #[error("target service name contains an interior NUL byte")]
     NulInTargetName,
