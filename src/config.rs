@@ -63,6 +63,12 @@ pub struct AdminConfig {
     /// Inactive session expiry (FTA_SSL.3/4/EXT.1).  Default: 3600 s (1 h).
     #[serde(default = "default_admin_session_ttl_secs")]
     pub session_ttl_secs: u64,
+    /// Maximum credential presentations (Bearer token, mTLS cert, or GSSAPI token)
+    /// from a single source IP in a rolling 5-minute window before the source
+    /// receives 429 responses.  Prevents audit-log floods that could trigger the
+    /// FAU_STG.4 overflow halt or FAU_ARP.1 alarm.  Default: 20.
+    #[serde(default = "default_admin_auth_rate_limit")]
+    pub auth_rate_limit: u32,
     /// Maximum number of `audit_events` rows (FAU_STG.4).  Absent = unlimited.
     pub audit_max_rows: Option<i64>,
     /// Overflow policy when `audit_max_rows` is reached (FAU_STG.4).
@@ -103,6 +109,9 @@ pub struct AdminConfig {
 
 fn default_admin_session_ttl_secs() -> u64 {
     3600
+}
+fn default_admin_auth_rate_limit() -> u32 {
+    20
 }
 fn default_audit_overflow() -> String {
     "drop_oldest".to_owned()
@@ -163,24 +172,6 @@ impl AdminConfig {
         Ok(())
     }
 
-    /// Build an `AuditPolicy` from the admin config values.
-    pub fn audit_policy(&self) -> crate::audit::AuditPolicy {
-        use crate::audit::{AlarmAction, AuditPolicy, OverflowPolicy};
-        AuditPolicy {
-            max_rows: self.audit_max_rows,
-            overflow: if self.audit_overflow == "halt" {
-                OverflowPolicy::Halt
-            } else {
-                OverflowPolicy::DropOldest
-            },
-            alarm_threshold: self.audit_alarm_threshold,
-            alarm_action: if self.audit_alarm_action == "halt" {
-                AlarmAction::Halt
-            } else {
-                AlarmAction::Syslog
-            },
-        }
-    }
 }
 
 /// GSSAPI/Kerberos configuration for the admin interface.
@@ -1386,7 +1377,7 @@ audit_overflow = "delete"
     #[test]
     fn admin_config_audit_policy_drop_oldest() {
         let cfg: Config = toml::from_str(&admin_toml_cert_only()).unwrap();
-        let policy = cfg.admin.unwrap().audit_policy();
+        let policy = crate::audit::AuditPolicy::from_admin_config(&cfg.admin.unwrap());
         assert!(policy.max_rows.is_none());
         assert_eq!(policy.overflow, crate::audit::OverflowPolicy::DropOldest);
         assert_eq!(policy.alarm_threshold, 10);
@@ -1410,7 +1401,7 @@ audit_alarm_action    = "halt"
             minimal_toml()
         );
         let cfg: Config = toml::from_str(&toml).unwrap();
-        let policy = cfg.admin.unwrap().audit_policy();
+        let policy = crate::audit::AuditPolicy::from_admin_config(&cfg.admin.unwrap());
         assert_eq!(policy.max_rows, Some(500_000));
         assert_eq!(policy.overflow, crate::audit::OverflowPolicy::Halt);
         assert_eq!(policy.alarm_threshold, 5);
