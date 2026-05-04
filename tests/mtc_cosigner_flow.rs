@@ -382,6 +382,7 @@ async fn build_akamu_state(
         server: {
             let mut s = ServerConfig::default();
             s.http_validation_port = http01_port;
+            s.http_validation_allow_private_ips = true;
             s
         },
         tls: Default::default(),
