@@ -72,15 +72,27 @@ field controls the address; the default in the configuration example is
 | `DELETE` | `/admin/session` | Y | Y | Y | Y |
 | `GET` | `/admin/operators` | Y | | | |
 | `POST` | `/admin/operators` | Y | | | |
+| `GET` | `/admin/operators/{id}` | Y | | | |
+| `PUT` | `/admin/operators/{id}` | Y | | | |
 | `PATCH` | `/admin/operators/{id}` | Y | | | |
 | `GET` | `/admin/audit` | Y | | | Y |
-| `GET` | `/admin/certs` | Y | Y | | Y |
+| `GET` | `/admin/profiles` | Y | Y | Y | Y |
+| `GET` | `/admin/accounts` | Y | Y | Y | Y |
+| `GET` | `/admin/account/{id}` | Y | Y | Y | Y |
+| `POST` | `/admin/account/{id}/deactivate` | Y | | | |
 | `GET` | `/admin/account/{id}/profile-grants` | Y | Y | Y | Y |
 | `PUT` | `/admin/account/{id}/profile-grants` | Y | Y | | |
 | `DELETE` | `/admin/account/{id}/profile-grants` | Y | | | |
+| `GET` | `/admin/certs` | Y | Y | | Y |
+| `GET` | `/admin/certs/{id}` | Y | Y | | Y |
+| `GET` | `/admin/certs/{id}/download` | Y | Y | | |
 | `POST` | `/admin/eab` | Y | Y | Y | |
+| `GET` | `/admin/eab/{kid}` | Y | Y | Y | Y |
 | `DELETE` | `/admin/eab/{kid}` | Y | Y | | |
 | `GET` | `/admin/eab` | Y | Y | Y | Y |
+| `GET` | `/admin/orders` | Y | Y | Y | Y |
+| `GET` | `/admin/orders/{id}` | Y | Y | Y | Y |
+| `GET` | `/admin/config` | Y | | | |
 | `POST` | `/admin/crl/force` | Y | Y | | |
 | `POST` | `/admin/revoke` | Y | Y | Y | |
 | `GET` | `/admin/stats` | Y | Y | Y | Y |
@@ -163,6 +175,49 @@ computes this automatically.
 Returns `409 Conflict` when an operator with the same fingerprint or principal
 already exists.
 
+### `GET /admin/operators/{id}`
+
+Show a single operator's details.
+
+**Response `200 OK`:**
+
+```json
+{
+  "id": 3,
+  "name": "alice",
+  "role": "administrator",
+  "cert_fingerprint": "a3b4c5…",
+  "gssapi_principal": null,
+  "created_at": "2026-05-01T09:00:00Z",
+  "last_seen_at": "2026-05-02T08:30:00Z",
+  "active": true
+}
+```
+
+Returns `404 Not Found` when the ID does not exist.
+
+### `PUT /admin/operators/{id}`
+
+Update operator fields.  Only provided fields are changed; omitted fields remain
+unchanged.
+
+**Request body:**
+
+```json
+{
+  "name": "Alice Smith",
+  "role": "ca_operations",
+  "cert_fingerprint": "d4e5f6…",
+  "gssapi_principal": "alice@NEWREALM.COM"
+}
+```
+
+All fields are optional.  `role` must be one of `administrator`, `ca_operations`,
+`ca_ra`, or `auditor` when provided.
+
+**Response: `204 No Content`** on success, `404 Not Found` when the ID does not
+exist.
+
 ### `PATCH /admin/operators/{id}`
 
 Activate or deactivate an operator.
@@ -218,34 +273,86 @@ Results are ordered newest-first.
 }
 ```
 
-### `GET /admin/certs`
+### `GET /admin/profiles`
 
-Search the certificate table.
-
-Query parameters: `serial`, `account_id`, `after` (RFC 3339), `before`
-(RFC 3339), `status` (`active` or `revoked`), `limit` (1–1000, default 100),
-`offset`.
+List all loaded certificate profiles with their parameters.
 
 **Response `200 OK`:**
 
 ```json
 {
-  "certs": [
+  "profiles": [
     {
-      "id": "3fa85f64-…",
-      "account_id": "d290f1ee-…",
-      "serial_number": "0a1b2c3d",
-      "status": "active",
-      "not_before": "2026-05-01T00:00:00Z",
-      "not_after": "2026-07-30T00:00:00Z",
-      "revoked_at": null,
-      "revocation_reason": null
+      "id": "tlsserver",
+      "description": "TLS server certificate",
+      "validity_days": 90,
+      "hash_alg": "SHA256",
+      "extended_key_usages": ["serverAuth"],
+      "issue_as_mtc": false
+    }
+  ]
+}
+```
+
+### `GET /admin/accounts`
+
+List ACME accounts with optional filtering and pagination.
+
+Query parameters:
+
+| Parameter | Description |
+|-----------|-------------|
+| `status` | Filter by account status (`valid` or `deactivated`). |
+| `limit` | 1–1000, default 100. |
+| `offset` | Default 0. |
+
+**Response `200 OK`:**
+
+```json
+{
+  "accounts": [
+    {
+      "id": "d290f1ee-…",
+      "status": "valid",
+      "contact": "[\"mailto:admin@example.com\"]",
+      "jwk_thumbprint": "xZ9gF…",
+      "created": 1746154800,
+      "updated": 1746241200,
+      "profile_grants": "[\"tlsserver\"]"
     }
   ],
   "limit": 100,
   "offset": 0
 }
 ```
+
+### `GET /admin/account/{id}`
+
+Show a single account's details.
+
+**Response `200 OK`:**
+
+```json
+{
+  "id": "d290f1ee-…",
+  "status": "valid",
+  "contact": "[\"mailto:admin@example.com\"]",
+  "jwk_thumbprint": "xZ9gF…",
+  "created": 1746154800,
+  "updated": 1746241200,
+  "profile_grants": "[\"tlsserver\"]"
+}
+```
+
+Returns `404 Not Found` when the account does not exist.
+
+### `POST /admin/account/{id}/deactivate`
+
+Admin-initiated account deactivation.  Sets the account status to `deactivated`.
+The account can no longer create orders or issue certificates.
+
+**Response: `204 No Content`** on success, `404 Not Found` when the account
+does not exist.
 
 ### `GET /admin/account/{id}/profile-grants`
 
@@ -283,6 +390,80 @@ Clear all profile restrictions.  Sets `profile_grants` to `null`
 
 **Response: `204 No Content`.**
 
+### `GET /admin/certs`
+
+Search the certificate table.
+
+Query parameters: `serial`, `account_id`, `after` (RFC 3339), `before`
+(RFC 3339), `status` (`active` or `revoked`), `limit` (1–1000, default 100),
+`offset`.
+
+**Response `200 OK`:**
+
+```json
+{
+  "certs": [
+    {
+      "id": "3fa85f64-…",
+      "account_id": "d290f1ee-…",
+      "serial_number": "0a1b2c3d",
+      "status": "active",
+      "not_before": "2026-05-01T00:00:00Z",
+      "not_after": "2026-07-30T00:00:00Z",
+      "revoked_at": null,
+      "revocation_reason": null
+    }
+  ],
+  "limit": 100,
+  "offset": 0
+}
+```
+
+### `GET /admin/certs/{id}`
+
+Show a single certificate's metadata.  Does not return the PEM or DER content
+(use the download endpoint for that).
+
+**Response `200 OK`:**
+
+```json
+{
+  "id": "3fa85f64-…",
+  "order_id": "7b2e1a3f-…",
+  "account_id": "d290f1ee-…",
+  "serial_number": "0a1b2c3d",
+  "status": "active",
+  "not_before": "2026-05-01T00:00:00Z",
+  "not_after": "2026-07-30T00:00:00Z",
+  "revoked_at": null,
+  "revocation_reason": null,
+  "mtc_log_index": null,
+  "created": 1746154800,
+  "suggested_window_start": 1750000000,
+  "suggested_window_end": 1751000000,
+  "replaced_by": null
+}
+```
+
+Returns `404 Not Found` when the certificate does not exist.
+
+### `GET /admin/certs/{id}/download`
+
+Download a certificate's content as PEM or DER.
+
+Query parameters:
+
+| Parameter | Description |
+|-----------|-------------|
+| `format` | `pem` (default) or `der`. |
+
+**Response `200 OK`:**
+
+- PEM format: `Content-Type: application/pem-certificate-chain`
+- DER format: `Content-Type: application/pkix-cert`
+
+Returns `404 Not Found` when the certificate does not exist.
+
 ### `POST /admin/eab`
 
 Provision a new External Account Binding key.
@@ -305,6 +486,23 @@ key.  Returns `409 Conflict` when the `kid` already exists.
 ```json
 { "kid": "my-device-001", "created": 1746154800 }
 ```
+
+### `GET /admin/eab/{kid}`
+
+Show a single EAB key's details.
+
+**Response `200 OK`:**
+
+```json
+{
+  "kid": "my-device-001",
+  "created": 1746154800,
+  "used_at": null,
+  "profile_grants": "[\"tlsserver\"]"
+}
+```
+
+Returns `404 Not Found` when the key does not exist.
 
 ### `DELETE /admin/eab/{kid}`
 
@@ -332,6 +530,84 @@ Query parameters: `used` (`true`/`false` to filter by usage status), `limit`
       "profile_grants": "[\"tlsserver\"]"
     }
   ]
+}
+```
+
+### `GET /admin/orders`
+
+List certificate orders with optional filtering and pagination.
+
+Query parameters:
+
+| Parameter | Description |
+|-----------|-------------|
+| `account_id` | Filter by account UUID. |
+| `status` | Filter by order status (`pending`, `ready`, `processing`, `valid`, `invalid`). |
+| `limit` | 1–1000, default 100. |
+| `offset` | Default 0. |
+
+**Response `200 OK`:**
+
+```json
+{
+  "orders": [
+    {
+      "id": "7b2e1a3f-…",
+      "account_id": "d290f1ee-…",
+      "status": "valid",
+      "identifiers": "[{\"type\":\"dns\",\"value\":\"example.com\"}]",
+      "certificate_id": "3fa85f64-…",
+      "profile": "tlsserver",
+      "created": 1746154800,
+      "updated": 1746241200,
+      "expires": 1746760800
+    }
+  ],
+  "limit": 100,
+  "offset": 0
+}
+```
+
+### `GET /admin/orders/{id}`
+
+Show a single order's details, including authorization IDs.
+
+**Response `200 OK`:**
+
+```json
+{
+  "id": "7b2e1a3f-…",
+  "account_id": "d290f1ee-…",
+  "status": "valid",
+  "identifiers": "[{\"type\":\"dns\",\"value\":\"example.com\"}]",
+  "certificate_id": "3fa85f64-…",
+  "profile": "tlsserver",
+  "created": 1746154800,
+  "updated": 1746241200,
+  "expires": 1746760800,
+  "not_before": null,
+  "not_after": null,
+  "replaces": null,
+  "authorization_ids": ["a1b2c3d4-…", "e5f6a7b8-…"]
+}
+```
+
+Returns `404 Not Found` when the order does not exist.
+
+### `GET /admin/config`
+
+Show the server's redacted runtime configuration.  Sensitive values such as the
+database URL are masked.
+
+**Response `200 OK`:**
+
+```json
+{
+  "base_url": "https://acme.example.com",
+  "db_url": "***",
+  "mtc_enabled": false,
+  "caa_identities": ["example.com"],
+  "validate_dnssec": true
 }
 ```
 
