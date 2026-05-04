@@ -174,7 +174,6 @@ pub fn build_admin_router(state: Arc<AppState>) -> Router {
             "/admin/operators",
             axum::routing::get(admin::get_operators).post(admin::post_operators),
         )
-        .route("/admin/operators/{id}", axum::routing::patch(admin::patch_operator))
         .route(
             "/admin/account/{id}/profile-grants",
             axum::routing::get(admin::get_account_profile_grants)
@@ -185,9 +184,36 @@ pub fn build_admin_router(state: Arc<AppState>) -> Router {
             "/admin/eab",
             axum::routing::get(admin::get_eab).post(admin::post_eab),
         )
-        .route("/admin/eab/{kid}", axum::routing::delete(admin::delete_eab))
+        .route(
+            "/admin/eab/{kid}",
+            axum::routing::get(admin::get_eab_key).delete(admin::delete_eab),
+        )
         .route("/admin/audit", axum::routing::get(admin::get_audit))
         .route("/admin/certs", axum::routing::get(admin::get_certs))
+        .route("/admin/certs/{id}", axum::routing::get(admin::get_cert))
+        .route(
+            "/admin/certs/{id}/download",
+            axum::routing::get(admin::get_cert_download),
+        )
+        .route("/admin/profiles", axum::routing::get(admin::get_profiles))
+        .route("/admin/accounts", axum::routing::get(admin::get_accounts))
+        .route(
+            "/admin/account/{id}",
+            axum::routing::get(admin::get_account),
+        )
+        .route(
+            "/admin/account/{id}/deactivate",
+            post(admin::post_account_deactivate),
+        )
+        .route(
+            "/admin/operators/{id}",
+            axum::routing::get(admin::get_operator)
+                .put(admin::put_operator)
+                .patch(admin::patch_operator),
+        )
+        .route("/admin/orders", axum::routing::get(admin::get_orders))
+        .route("/admin/orders/{id}", axum::routing::get(admin::get_order))
+        .route("/admin/config", axum::routing::get(admin::get_config))
         .route("/admin/crl/force", post(admin::post_crl_force))
         .route("/admin/revoke", post(admin::post_revoke))
         .route("/admin/stats", axum::routing::get(admin::get_stats))

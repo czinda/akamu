@@ -12,15 +12,27 @@
 //! | `DELETE /admin/session` | ✓ | ✓ | ✓ | ✓ |
 //! | `GET /admin/operators` | ✓ | | | |
 //! | `POST /admin/operators` | ✓ | | | |
+//! | `GET /admin/operators/{id}` | ✓ | | | |
+//! | `PUT /admin/operators/{id}` | ✓ | | | |
 //! | `PATCH /admin/operators/{id}` | ✓ | | | |
 //! | `GET /admin/audit` | ✓ | | | ✓ |
 //! | `GET /admin/certs` | ✓ | ✓ | | ✓ |
+//! | `GET /admin/certs/{id}` | ✓ | ✓ | | ✓ |
+//! | `GET /admin/certs/{id}/download` | ✓ | ✓ | | |
+//! | `GET /admin/profiles` | ✓ | ✓ | ✓ | ✓ |
+//! | `GET /admin/accounts` | ✓ | ✓ | ✓ | ✓ |
+//! | `GET /admin/account/{id}` | ✓ | ✓ | ✓ | ✓ |
+//! | `POST /admin/account/{id}/deactivate` | ✓ | | | |
 //! | `GET /admin/account/{id}/profile-grants` | ✓ | ✓ | ✓ | ✓ |
 //! | `PUT /admin/account/{id}/profile-grants` | ✓ | ✓ | | |
 //! | `DELETE /admin/account/{id}/profile-grants` | ✓ | | | |
 //! | `POST /admin/eab` | ✓ | ✓ | ✓ | |
+//! | `GET /admin/eab/{kid}` | ✓ | ✓ | ✓ | ✓ |
 //! | `DELETE /admin/eab/{kid}` | ✓ | ✓ | | |
 //! | `GET /admin/eab` | ✓ | ✓ | ✓ | ✓ |
+//! | `GET /admin/orders` | ✓ | ✓ | ✓ | ✓ |
+//! | `GET /admin/orders/{id}` | ✓ | ✓ | ✓ | ✓ |
+//! | `GET /admin/config` | ✓ | | | |
 //! | `POST /admin/crl/force` | ✓ | ✓ | | |
 //! | `POST /admin/revoke` | ✓ | ✓ | ✓ | |
 //! | `GET /admin/stats` | ✓ | ✓ | ✓ | ✓ |
@@ -746,6 +758,591 @@ pub async fn post_revoke(
             (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"status": 500, "detail": "database error"}))).into_response()
         }
     }
+}
+
+// ── Profiles ─────────────────────────────────────────────────────────────
+
+/// `GET /admin/profiles`
+///
+/// List all loaded certificate profiles with their parameters.
+/// Requires: any role.
+pub async fn get_profiles(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    require_role!(
+        operator,
+        state,
+        Administrator | CaOperations | CaRa | Auditor
+    );
+
+    let profiles = state.profiles.all_profiles();
+    let mut list: Vec<serde_json::Value> = profiles
+        .iter()
+        .map(|(id, description)| {
+            let mut entry = json!({
+                "id": id,
+                "description": description,
+            });
+            if let Some(params) = state.profiles.resolve(id) {
+                entry["validity_days"] = json!(params.validity_days);
+                entry["hash_alg"] = json!(params.hash_alg);
+                entry["extended_key_usages"] = json!(params.extended_key_usages);
+                entry["issue_as_mtc"] = json!(params.issue_as_mtc);
+            }
+            entry
+        })
+        .collect();
+    list.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+
+    (StatusCode::OK, Json(json!({"profiles": list}))).into_response()
+}
+
+// ── Accounts ─────────────────────────────────────────────────────────────
+
+/// `GET /admin/accounts`
+///
+/// List accounts with optional status filter and pagination.
+/// Requires: any role.
+pub async fn get_accounts(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    require_role!(
+        operator,
+        state,
+        Administrator | CaOperations | CaRa | Auditor
+    );
+
+    let limit: i64 = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100)
+        .clamp(1, 1000);
+    let offset: i64 = params
+        .get("offset")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
+        .max(0);
+    let status = params.get("status").map(String::as_str);
+
+    match db::accounts::list(&state.db, status, limit, offset).await {
+        Ok(rows) => {
+            let accounts: Vec<_> = rows
+                .into_iter()
+                .map(|r| {
+                    json!({
+                        "id": r.id,
+                        "status": r.status,
+                        "contact": r.contact,
+                        "jwk_thumbprint": r.jwk_thumbprint,
+                        "created": r.created,
+                        "updated": r.updated,
+                        "profile_grants": r.profile_grants,
+                    })
+                })
+                .collect();
+            (
+                StatusCode::OK,
+                Json(json!({"accounts": accounts, "limit": limit, "offset": offset})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "get_accounts: db error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": 500, "detail": "database error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// `GET /admin/account/{id}`
+///
+/// Show a single account's details.
+/// Requires: any role.
+pub async fn get_account(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    require_role!(
+        operator,
+        state,
+        Administrator | CaOperations | CaRa | Auditor
+    );
+
+    match db::accounts::get_by_id(&state.db, &id).await {
+        Ok(Some(r)) => (
+            StatusCode::OK,
+            Json(json!({
+                "id": r.id,
+                "status": r.status,
+                "contact": r.contact,
+                "jwk_thumbprint": r.jwk_thumbprint,
+                "created": r.created,
+                "updated": r.updated,
+                "profile_grants": r.profile_grants,
+            })),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"status": 404, "detail": "account not found"})),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "get_account: db error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": 500, "detail": "database error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+// ── Certificate detail + download ────────────────────────────────────────
+
+/// `GET /admin/certs/{id}`
+///
+/// Show a single certificate's metadata (no PEM/DER blobs).
+/// Requires: `administrator`, `ca_operations`, or `auditor`.
+pub async fn get_cert(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    require_role!(operator, state, Administrator | CaOperations | Auditor);
+
+    match db::certs::get_by_id(&state.db, &id).await {
+        Ok(Some(r)) => (
+            StatusCode::OK,
+            Json(json!({
+                "id": r.id,
+                "order_id": r.order_id,
+                "account_id": r.account_id,
+                "serial_number": r.serial_number,
+                "status": r.status,
+                "not_before": r.not_before,
+                "not_after": r.not_after,
+                "revoked_at": r.revoked_at,
+                "revocation_reason": r.revocation_reason,
+                "mtc_log_index": r.mtc_log_index,
+                "created": r.created,
+                "suggested_window_start": r.suggested_window_start,
+                "suggested_window_end": r.suggested_window_end,
+                "replaced_by": r.replaced_by,
+            })),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"status": 404, "detail": "certificate not found"})),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "get_cert: db error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": 500, "detail": "database error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// `GET /admin/certs/{id}/download`
+///
+/// Download a certificate as PEM (default) or DER.
+/// Query params: `format=pem` (default) or `format=der`.
+/// Requires: `administrator` or `ca_operations`.
+pub async fn get_cert_download(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    require_role!(operator, state, Administrator | CaOperations);
+
+    let format = params.get("format").map(String::as_str).unwrap_or("pem");
+
+    match db::certs::get_by_id(&state.db, &id).await {
+        Ok(Some(r)) => match format {
+            "der" => (
+                StatusCode::OK,
+                [("content-type", "application/pkix-cert")],
+                r.der,
+            )
+                .into_response(),
+            _ => (
+                StatusCode::OK,
+                [("content-type", "application/pem-certificate-chain")],
+                r.pem,
+            )
+                .into_response(),
+        },
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"status": 404, "detail": "certificate not found"})),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "get_cert_download: db error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": 500, "detail": "database error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+// ── Operator detail ─────────────────────────────────────────────────────
+
+/// `GET /admin/operators/{id}`
+///
+/// Show a single operator's details.
+/// Requires: `administrator`.
+pub async fn get_operator(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+) -> Response {
+    require_role!(operator, state, Administrator);
+
+    match db::operators::get_by_id(&state.db, id).await {
+        Ok(Some(r)) => (
+            StatusCode::OK,
+            Json(json!({
+                "id": r.id,
+                "name": r.name,
+                "role": r.role,
+                "cert_fingerprint": r.cert_fingerprint,
+                "gssapi_principal": r.gssapi_principal,
+                "created_at": r.created_at,
+                "last_seen_at": r.last_seen_at,
+                "active": r.active != 0,
+            })),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"status": 404, "detail": "operator not found"})),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "get_operator: db error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": 500, "detail": "database error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// `PUT /admin/operators/{id}`
+///
+/// Update operator fields (name, role, cert_fingerprint, gssapi_principal).
+/// Only provided fields are updated.
+/// Requires: `administrator`.
+pub async fn put_operator(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    body: Bytes,
+) -> Response {
+    require_role!(operator, state, Administrator);
+
+    #[derive(Deserialize)]
+    struct PutOperatorPayload {
+        name: Option<String>,
+        role: Option<String>,
+        cert_fingerprint: Option<String>,
+        gssapi_principal: Option<String>,
+    }
+
+    let payload: PutOperatorPayload = match serde_json::from_slice(&body) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("JSON: {e}")).into_response(),
+    };
+
+    if let Some(ref r) = payload.role {
+        match r.as_str() {
+            "administrator" | "ca_operations" | "ca_ra" | "auditor" => {}
+            _ => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "role must be administrator, ca_operations, ca_ra, or auditor",
+                )
+                    .into_response()
+            }
+        }
+    }
+
+    let now = crate::util::rfc3339_now();
+    match db::operators::update(
+        &state.db,
+        id,
+        payload.name.as_deref(),
+        payload.role.as_deref(),
+        payload.cert_fingerprint.as_deref(),
+        payload.gssapi_principal.as_deref(),
+        &now,
+    )
+    .await
+    {
+        Ok(true) => {
+            state
+                .record_audit(
+                    AuditEvent::success(AuditEventType::AdminAction)
+                        .with_principal(&operator.name)
+                        .with_detail(
+                            json!({"action": "operator.update", "operator_id": id}).to_string(),
+                        ),
+                )
+                .await;
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"status": 404, "detail": "operator not found"})),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "put_operator: db error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": 500, "detail": "database error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+// ── Orders ──────────────────────────────────────────────────────────────
+
+/// `GET /admin/orders`
+///
+/// List orders with optional filters and pagination.
+/// Requires: any role.
+pub async fn get_orders(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    require_role!(
+        operator,
+        state,
+        Administrator | CaOperations | CaRa | Auditor
+    );
+
+    let limit: i64 = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100)
+        .clamp(1, 1000);
+    let offset: i64 = params
+        .get("offset")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
+        .max(0);
+    let account_id = params.get("account_id").map(String::as_str);
+    let status = params.get("status").map(String::as_str);
+
+    match db::orders::list(&state.db, account_id, status, limit, offset).await {
+        Ok(rows) => {
+            let orders: Vec<_> = rows
+                .into_iter()
+                .map(|r| {
+                    json!({
+                        "id": r.id,
+                        "account_id": r.account_id,
+                        "status": r.status,
+                        "identifiers": r.identifiers,
+                        "certificate_id": r.certificate_id,
+                        "profile": r.profile,
+                        "created": r.created,
+                        "updated": r.updated,
+                        "expires": r.expires,
+                    })
+                })
+                .collect();
+            (
+                StatusCode::OK,
+                Json(json!({"orders": orders, "limit": limit, "offset": offset})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "get_orders: db error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": 500, "detail": "database error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// `GET /admin/orders/{id}`
+///
+/// Show a single order's details with authorization IDs.
+/// Requires: any role.
+pub async fn get_order(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    require_role!(
+        operator,
+        state,
+        Administrator | CaOperations | CaRa | Auditor
+    );
+
+    match db::orders::get_with_authz_ids(&state.db, &id).await {
+        Ok(Some((r, authz_ids))) => (
+            StatusCode::OK,
+            Json(json!({
+                "id": r.id,
+                "account_id": r.account_id,
+                "status": r.status,
+                "identifiers": r.identifiers,
+                "certificate_id": r.certificate_id,
+                "profile": r.profile,
+                "created": r.created,
+                "updated": r.updated,
+                "expires": r.expires,
+                "not_before": r.not_before,
+                "not_after": r.not_after,
+                "replaces": r.replaces,
+                "authorization_ids": authz_ids,
+            })),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"status": 404, "detail": "order not found"})),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "get_order: db error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": 500, "detail": "database error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+// ── Account deactivation ────────────────────────────────────────────────
+
+/// `POST /admin/account/{id}/deactivate`
+///
+/// Admin-initiated account deactivation.
+/// Requires: `administrator`.
+pub async fn post_account_deactivate(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    require_role!(operator, state, Administrator);
+
+    let now = unix_now();
+    match db::accounts::update_status(&state.db, &id, "deactivated", now).await {
+        Ok(true) => {
+            state
+                .record_audit(
+                    AuditEvent::success(AuditEventType::AdminAction)
+                        .with_principal(&operator.name)
+                        .with_subject(&id)
+                        .with_detail("{\"action\":\"account.deactivate\"}"),
+                )
+                .await;
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(false) => (StatusCode::NOT_FOUND, "account not found").into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "post_account_deactivate: db error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": 500, "detail": "database error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+// ── EAB key detail ──────────────────────────────────────────────────────
+
+/// `GET /admin/eab/{kid}`
+///
+/// Show a single EAB key's details.
+/// Requires: any role.
+pub async fn get_eab_key(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+    Path(kid): Path<String>,
+) -> Response {
+    require_role!(
+        operator,
+        state,
+        Administrator | CaOperations | CaRa | Auditor
+    );
+
+    match db::eab::get_by_kid(&state.db, &kid).await {
+        Ok(Some(r)) => (
+            StatusCode::OK,
+            Json(json!({
+                "kid": r.kid,
+                "created": r.created,
+                "used_at": r.used_at,
+                "profile_grants": r.profile_grants,
+            })),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"status": 404, "detail": "EAB key not found"})),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "get_eab_key: db error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": 500, "detail": "database error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+// ── Server config ────────────────────────────────────────────────────────
+
+/// `GET /admin/config`
+///
+/// Show redacted server configuration.
+/// Requires: `administrator`.
+pub async fn get_config(operator: OperatorContext, State(state): State<Arc<AppState>>) -> Response {
+    require_role!(operator, state, Administrator);
+
+    let cfg = &state.config;
+    (
+        StatusCode::OK,
+        Json(json!({
+            "base_url": cfg.base_url,
+            "db_url": "***",
+            "mtc_enabled": state.mtc.is_enabled(),
+            "caa_identities": cfg.server.caa_identities,
+            "validate_dnssec": cfg.server.validate_dnssec,
+        })),
+    )
+        .into_response()
 }
 
 // ── Statistics ────────────────────────────────────────────────────────────────
