@@ -279,7 +279,7 @@ impl ProfileRegistry {
             load_all_providers(&self.providers_cfg, &self.ca_defaults, self.dns_resolver).await?;
         let count = profiles.len();
         {
-            let mut cache = self.cache.write().unwrap();
+            let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
             cache.profiles = profiles;
             cache.loaded_at = Instant::now();
         }
@@ -295,7 +295,7 @@ impl ProfileRegistry {
     pub fn resolve(&self, profile_name: &str) -> Option<CertificateParameters> {
         self.cache
             .read()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .profiles
             .get(profile_name)
             .map(|(_, p)| p.clone())
@@ -308,7 +308,7 @@ impl ProfileRegistry {
     pub fn all_profiles(&self) -> HashMap<String, String> {
         self.cache
             .read()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .profiles
             .iter()
             .map(|(id, (desc, _))| (id.clone(), desc.clone()))
@@ -317,7 +317,11 @@ impl ProfileRegistry {
 
     /// Return `true` when no profiles are currently cached.
     pub fn is_empty(&self) -> bool {
-        self.cache.read().unwrap().profiles.is_empty()
+        self.cache
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .profiles
+            .is_empty()
     }
 
     /// Add a profile to the runtime cache (FPT_NPE_EXT.1).
@@ -329,7 +333,7 @@ impl ProfileRegistry {
         description: String,
         params: CertificateParameters,
     ) -> bool {
-        let mut cache = self.cache.write().unwrap();
+        let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
         if cache.profiles.contains_key(&id) {
             return false;
         }
@@ -341,7 +345,12 @@ impl ProfileRegistry {
     ///
     /// Returns `true` when the profile existed and was removed.
     pub fn remove_profile(&self, id: &str) -> bool {
-        self.cache.write().unwrap().profiles.remove(id).is_some()
+        self.cache
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .profiles
+            .remove(id)
+            .is_some()
     }
 
     /// Replace an existing profile in the runtime cache (FPT_NPE_EXT.1).
@@ -353,7 +362,7 @@ impl ProfileRegistry {
         description: String,
         params: CertificateParameters,
     ) -> bool {
-        let mut cache = self.cache.write().unwrap();
+        let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
         if let Some(entry) = cache.profiles.get_mut(id) {
             *entry = (description, params);
             true
