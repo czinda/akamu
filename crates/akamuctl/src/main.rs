@@ -9,9 +9,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use clap::{Parser, Subcommand};
-use serde_json::{json, Value};
 
 mod client;
+mod commands;
 mod config;
 mod error;
 mod output;
@@ -19,7 +19,7 @@ mod output;
 use client::AdminClient;
 use config::{Config, SessionCache};
 use error::CtlError;
-use output::{Format, print};
+use output::Format;
 
 #[derive(Parser)]
 #[command(name = "akamuctl", about = "akamu server administration CLI")]
@@ -294,38 +294,22 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
 
     match cli.command {
         Commands::Login { gssapi } => {
-            if gssapi {
-                // Resolve SPN: explicit config > derive HTTP@<host> from URL.
-                let spn = match cfg.server.gssapi_service.clone() {
-                    Some(s) => s,
-                    None => derive_spn(&server_url).await,
-                };
-                let gss_client = AdminClient::new(
-                    server_url.clone(),
-                    ca_cert_bytes.clone(),
-                    None, // no mTLS cert needed for GSSAPI
-                    None,
-                    Arc::clone(&session_cache),
-                    false,
-                    Some(spn),
-                )?;
-                let resp = gss_client.post("/admin/session", None).await?;
-                print(&fmt, &resp);
-            } else {
-                let resp = server_client.post("/admin/session", None).await?;
-                print(&fmt, &resp);
-            }
+            commands::session::login(
+                &server_url,
+                ca_cert_bytes,
+                Arc::clone(&session_cache),
+                gssapi,
+                cfg.server.gssapi_service.clone(),
+                &server_client,
+                &fmt,
+            )
+            .await?;
         }
         Commands::Logout => {
-            server_client.delete("/admin/session").await?;
-            server_client.clear_session();
-            if cfg!(not(test)) {
-                println!("logged out");
-            }
+            commands::session::logout(&server_client).await?;
         }
         Commands::Stats => {
-            let resp = server_client.get("/admin/stats").await?;
-            print(&fmt, &resp);
+            commands::server::stats(&server_client, &fmt).await?;
         }
         Commands::Audit {
             r#type,
@@ -336,29 +320,22 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
             limit,
             offset,
         } => {
-            let mut path = format!("/admin/audit?limit={limit}&offset={offset}");
-            if let Some(t) = &r#type {
-                path.push_str(&format!("&type={}", urlenc(t)));
-            }
-            if let Some(s) = &subject {
-                path.push_str(&format!("&subject={}", urlenc(s)));
-            }
-            if let Some(f) = &from {
-                path.push_str(&format!("&from={}", urlenc(f)));
-            }
-            if let Some(u) = &until {
-                path.push_str(&format!("&until={}", urlenc(u)));
-            }
-            if let Some(o) = &outcome {
-                path.push_str(&format!("&outcome={}", urlenc(o)));
-            }
-            let resp = server_client.get(&path).await?;
-            print(&fmt, &resp);
+            commands::audit::query(
+                &server_client,
+                &fmt,
+                r#type,
+                subject,
+                from,
+                until,
+                outcome,
+                limit,
+                offset,
+            )
+            .await?;
         }
         Commands::Operator(op_cmd) => match op_cmd {
             OperatorCmd::List => {
-                let resp = server_client.get("/admin/operators").await?;
-                print(&fmt, &resp);
+                commands::operator::list(&server_client, &fmt).await?;
             }
             OperatorCmd::Add {
                 name,
@@ -366,77 +343,36 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
                 cert_file,
                 gssapi_principal,
             } => {
-                let cert_fp = if let Some(path) = cert_file {
-                    let pem = std::fs::read(&path)?;
-                    let ders = synta_certificate::pem_to_der(&pem);
-                    let der = ders
-                        .into_iter()
-                        .next()
-                        .ok_or_else(|| CtlError::Config("cert_file contains no certificate".into()))?;
-                    Some(sha256_hex(&der)?)
-                } else {
-                    None
-                };
-                let body = json!({
-                    "name": name,
-                    "role": role,
-                    "cert_fingerprint": cert_fp,
-                    "gssapi_principal": gssapi_principal,
-                });
-                let resp = server_client.post("/admin/operators", Some(&body)).await?;
-                print(&fmt, &resp);
+                commands::operator::add(
+                    &server_client,
+                    &fmt,
+                    name,
+                    role,
+                    cert_file,
+                    gssapi_principal,
+                )
+                .await?;
             }
             OperatorCmd::Remove { id } => {
-                let body = json!({"active": false});
-                let resp = server_client
-                    .patch(&format!("/admin/operators/{id}"), &body)
-                    .await?;
-                print(&fmt, &resp);
+                commands::operator::remove(&server_client, &fmt, id).await?;
             }
             OperatorCmd::Activate { id } => {
-                let body = json!({"active": true});
-                let resp = server_client
-                    .patch(&format!("/admin/operators/{id}"), &body)
-                    .await?;
-                print(&fmt, &resp);
+                commands::operator::activate(&server_client, &fmt, id).await?;
             }
         },
         Commands::Eab(eab_cmd) => match eab_cmd {
             EabCmd::List { used, unused } => {
-                let mut path = "/admin/eab".to_string();
-                if used && !unused {
-                    path.push_str("?used=true");
-                } else if unused && !used {
-                    path.push_str("?used=false");
-                }
-                let resp = server_client.get(&path).await?;
-                print(&fmt, &resp);
+                commands::eab::list(&server_client, &fmt, used, unused).await?;
             }
             EabCmd::Add {
                 kid,
                 hmac_key,
                 profiles,
             } => {
-                let mut body = json!({});
-                if let Some(k) = kid {
-                    body["kid"] = Value::String(k);
-                }
-                if let Some(h) = hmac_key {
-                    body["hmac_key_b64u"] = Value::String(h);
-                }
-                if !profiles.is_empty() {
-                    body["profile_grants"] = Value::Array(
-                        profiles.into_iter().map(Value::String).collect(),
-                    );
-                }
-                let resp = server_client.post("/admin/eab", Some(&body)).await?;
-                print(&fmt, &resp);
+                commands::eab::add(&server_client, &fmt, kid, hmac_key, profiles).await?;
             }
             EabCmd::Remove { kid } => {
-                server_client
-                    .delete(&format!("/admin/eab/{}", urlenc(&kid)))
-                    .await?;
-                println!("EAB key {} deactivated", kid);
+                commands::eab::remove(&server_client, &kid).await?;
             }
         },
         Commands::Cert(cert_cmd) => match cert_cmd {
@@ -449,125 +385,68 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
                 limit,
                 offset,
             } => {
-                let mut path = format!("/admin/certs?limit={limit}&offset={offset}");
-                if let Some(s) = &serial {
-                    path.push_str(&format!("&serial={}", urlenc(s)));
-                }
-                if let Some(s) = &subject {
-                    path.push_str(&format!("&subject={}", urlenc(s)));
-                }
-                if let Some(a) = &after {
-                    path.push_str(&format!("&after={}", urlenc(a)));
-                }
-                if let Some(b) = &before {
-                    path.push_str(&format!("&before={}", urlenc(b)));
-                }
-                if let Some(st) = &status {
-                    path.push_str(&format!("&status={}", urlenc(st)));
-                }
-                let resp = server_client.get(&path).await?;
-                print(&fmt, &resp);
+                commands::cert::list(
+                    &server_client,
+                    &fmt,
+                    serial,
+                    subject,
+                    after,
+                    before,
+                    status,
+                    limit,
+                    offset,
+                )
+                .await?;
             }
         },
         Commands::Account(acct_cmd) => match acct_cmd {
             AccountCmd::Grants(grants_cmd) => match grants_cmd {
                 AccountGrantsCmd::Get { id } => {
-                    let resp = server_client
-                        .get(&format!("/admin/account/{}/profile-grants", urlenc(&id)))
-                        .await?;
-                    print(&fmt, &resp);
+                    commands::account::grants_get(&server_client, &fmt, &id).await?;
                 }
                 AccountGrantsCmd::Set { id, profiles } => {
-                    let body = json!({"profile_grants": profiles});
-                    let resp = server_client
-                        .put(
-                            &format!("/admin/account/{}/profile-grants", urlenc(&id)),
-                            &body,
-                        )
-                        .await?;
-                    print(&fmt, &resp);
+                    commands::account::grants_set(&server_client, &fmt, &id, profiles).await?;
                 }
                 AccountGrantsCmd::Clear { id } => {
-                    server_client
-                        .delete(&format!("/admin/account/{}/profile-grants", urlenc(&id)))
-                        .await?;
-                    println!("profile grants cleared for account {id}");
+                    commands::account::grants_clear(&server_client, &id).await?;
                 }
             },
         },
         Commands::Revoke { cert_id, reason } => {
-            let body = json!({"cert_id": cert_id, "reason": reason});
-            server_client.post("/admin/revoke", Some(&body)).await?;
-            println!("certificate {cert_id} revoked");
+            commands::server::revoke(&server_client, &cert_id, reason).await?;
         }
         Commands::CrlForce => {
-            server_client.post("/admin/crl/force", None).await?;
-            println!("CRL regeneration triggered");
+            commands::server::crl_force(&server_client).await?;
         }
         Commands::Cosigner(cos_cmd) => {
-            let cosigner_url = cfg
-                .cosigner
-                .as_ref()
-                .and_then(|c| c.url.clone())
-                .unwrap_or_else(|| "https://localhost:9444".into());
-            let cos_ca = read_file_opt(
-                cfg.cosigner
-                    .as_ref()
-                    .and_then(|c| c.ca_cert.as_deref())
-                    .map(std::path::Path::new),
-            )?
-            .or(ca_cert_bytes);
-            let cos_cert = read_file_opt(
-                cfg.cosigner
-                    .as_ref()
-                    .and_then(|c| c.cert_file.as_deref())
-                    .map(std::path::Path::new),
-            )?
-            .or(cert_bytes);
-            let cos_key = read_file_opt(
-                cfg.cosigner
-                    .as_ref()
-                    .and_then(|c| c.key_file.as_deref())
-                    .map(std::path::Path::new),
-            )?
-            .or(key_bytes);
-            let cos_gssapi = cfg.cosigner.as_ref().and_then(|c| c.gssapi_service.clone());
-            let cosigner_client = AdminClient::new(
-                cosigner_url,
-                cos_ca,
-                cos_cert,
-                cos_key,
+            let cosigner_client = commands::cosigner::build_client(
+                cfg.cosigner.as_ref(),
+                ca_cert_bytes,
+                cert_bytes,
+                key_bytes,
                 Arc::clone(&session_cache),
-                true,
-                cos_gssapi,
             )?;
             match cos_cmd {
                 CosignerCmd::Login => {
-                    let resp = cosigner_client.post("/admin/session", None).await?;
-                    print(&fmt, &resp);
+                    commands::cosigner::login(&cosigner_client, &fmt).await?;
                 }
                 CosignerCmd::Logout => {
-                    cosigner_client.delete("/admin/session").await?;
-                    cosigner_client.clear_session();
-                    println!("logged out (cosigner)");
+                    commands::cosigner::logout(&cosigner_client).await?;
                 }
                 CosignerCmd::Status => {
-                    let resp = cosigner_client.get("/admin/status").await?;
-                    print(&fmt, &resp);
+                    commands::cosigner::status(&cosigner_client, &fmt).await?;
                 }
                 CosignerCmd::Stats => {
-                    let resp = cosigner_client.get("/admin/stats").await?;
-                    print(&fmt, &resp);
+                    commands::cosigner::stats(&cosigner_client, &fmt).await?;
                 }
                 CosignerCmd::Config => {
-                    let resp = cosigner_client.get("/admin/config").await?;
-                    print(&fmt, &resp);
+                    commands::cosigner::config(&cosigner_client, &fmt).await?;
                 }
             }
         }
         Commands::Config(cfg_cmd) => match cfg_cmd {
             ConfigCmd::Generate => {
-                print!("{}", config::EXAMPLE_CONFIG);
+                commands::config_cmd::generate();
             }
         },
     }
@@ -585,7 +464,7 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
 /// - Other IPs are resolved to a hostname via reverse PTR lookup.
 ///
 /// If reverse DNS fails, the raw IP is used and a warning is printed.
-async fn derive_spn(url: &str) -> String {
+pub(crate) async fn derive_spn(url: &str) -> String {
     let host = url
         .trim_start_matches("https://")
         .trim_start_matches("http://")
@@ -696,19 +575,19 @@ fn system_resolver_addr() -> std::net::SocketAddr {
     "127.0.0.53:53".parse().expect("hardcoded addr is valid")
 }
 
-fn read_file_opt(path: Option<&std::path::Path>) -> Result<Option<Vec<u8>>, CtlError> {
+pub(crate) fn read_file_opt(path: Option<&std::path::Path>) -> Result<Option<Vec<u8>>, CtlError> {
     let Some(p) = path else {
         return Ok(None);
     };
     Ok(Some(std::fs::read(p)?))
 }
 
-fn urlenc(s: &str) -> String {
+pub(crate) fn urlenc(s: &str) -> String {
     use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
     utf8_percent_encode(s, NON_ALPHANUMERIC).to_string()
 }
 
-fn sha256_hex(data: &[u8]) -> Result<String, CtlError> {
+pub(crate) fn sha256_hex(data: &[u8]) -> Result<String, CtlError> {
     use native_ossl::digest::DigestAlg;
     let alg = DigestAlg::fetch(c"SHA2-256", None)
         .map_err(|e| CtlError::Config(format!("SHA2-256 fetch: {e}")))?;
@@ -720,5 +599,5 @@ fn sha256_hex(data: &[u8]) -> Result<String, CtlError> {
     let mut out = [0u8; 32];
     ctx.finish(&mut out)
         .map_err(|e| CtlError::Config(format!("digest finish: {e}")))?;
-    Ok(native_ossl::util::hex_encode(&out))
+    Ok(native_ossl::util::hex_encode(out))
 }
