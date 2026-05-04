@@ -14,6 +14,7 @@ implementation, and the certbot migration flow.
 | `crates/akamu-client/src/types.rs` | `Identifier`, `Order`, `Authorization`, `Challenge`, `RenewalConfig`, `AccountOptions`, `EabOptions`, `StarOrderParams`, `StarOrder`, `RenewalInfo` |
 | `crates/akamu-client/src/client.rs` | `AcmeClient` — directory-aware async HTTP client with nonce management |
 | `crates/akamu-client/src/csr.rs` | `build_csr` — DER-encoded CSR construction |
+| `crates/akamu-client/src/gssapi_eab.rs` | `fetch_eab_via_gssapi`, `GssapiEabResult` — GSSAPI-authenticated EAB credential fetch |
 | `crates/akamu-cli/src/import/certbot.rs` | `discover_accounts`, `discover_renewals`, `jwk_to_account_key`, `map_challenge_type`, `build_renewal_config`, `live_cert_paths` |
 
 ---
@@ -253,6 +254,55 @@ message.
 `DnsHookSolver` does not implement the `ChallengeSolver` trait directly
 because the trait's `present`/`cleanup` signatures do not carry the domain
 name.  Callers use `deploy` and `clean` explicitly.
+
+---
+
+## `fetch_eab_via_gssapi` (`gssapi_eab.rs`)
+
+`fetch_eab_via_gssapi` performs a one-shot authenticated GET to the server's
+`/acme/eab` endpoint using a Kerberos keytab and returns the EAB credentials
+ready for use in a `newAccount` request.
+
+### Public types
+
+```rust
+pub struct GssapiEabResult {
+    pub principal: String,       // e.g. "host/client.example.com@REALM"
+    pub kid:       Option<String>, // present when eab_master_secret is configured
+    pub hmac_key:  Option<String>, // base64url-encoded HMAC key
+    pub alg:       Option<String>, // e.g. "HS256"
+}
+
+pub async fn fetch_eab_via_gssapi(
+    eab_url:      &str,
+    keytab_file:  &str,
+) -> Result<GssapiEabResult, ClientError>
+```
+
+### Internal steps
+
+1. Calls `GssClientCred::from_keytab(keytab_file)` (from `akamu-gssapi`) to
+   load the initiator credential from the keytab.
+2. Calls `derive_service_name(eab_url)` to compute the target SPN as
+   `HTTP@<hostname>` by stripping the URL scheme, port, and path.
+3. Calls `akamu_gssapi::init_token(&cred, &target, None)` inside
+   `tokio::task::spawn_blocking` to avoid blocking the async executor on the
+   `gss_init_sec_context` FFI call.
+4. Base64-encodes the resulting token and sends a single GET request with
+   `Authorization: Negotiate <base64-token>`.
+5. Parses the JSON response into `GssapiEabResult`.
+
+Note: this function performs a **single** GSSAPI step (no multi-round-trip
+loop).  Kerberos AP-REQ exchanges are typically single-round-trip, so one
+step is sufficient.  Multi-round-trip SPNEGO is handled by
+`AdminClient::session_token` in `akamuctl` for the admin API path.
+
+### `derive_service_name`
+
+A private helper that strips the URL scheme (`https://` or `http://`), path,
+and port from `eab_url` to extract the bare hostname, then returns
+`HTTP@<hostname>`.  Returns `ClientError::Http` when no non-empty host
+component can be extracted.
 
 ---
 
