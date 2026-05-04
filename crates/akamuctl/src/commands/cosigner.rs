@@ -1,3 +1,5 @@
+//! Cosigner admin subcommands (akamuctl cosigner …).
+
 use std::sync::{Arc, Mutex};
 
 use crate::client::AdminClient;
@@ -6,6 +8,10 @@ use crate::error::CtlError;
 use crate::output::{print, Format};
 use crate::read_file_opt;
 
+/// Construct an `AdminClient` pointed at the cosigner admin endpoint.
+///
+/// Falls back to TLS credential and URL defaults in the order: cosigner config
+/// section, then caller-supplied PEM bytes.
 pub fn build_client(
     cosigner_cfg: Option<&CosignerConfig>,
     ca_cert_fallback: Option<Vec<u8>>,
@@ -46,12 +52,14 @@ pub fn build_client(
     )
 }
 
+/// Authenticate to the cosigner admin API and cache the session token.
 pub async fn login(client: &AdminClient, fmt: &Format) -> Result<(), CtlError> {
     let resp = client.post("/admin/session", None).await?;
     print(fmt, &resp);
     Ok(())
 }
 
+/// Invalidate the current cosigner session and clear the local token cache.
 pub async fn logout(client: &AdminClient) -> Result<(), CtlError> {
     client.delete("/admin/session").await?;
     client.clear_session();
@@ -59,18 +67,21 @@ pub async fn logout(client: &AdminClient) -> Result<(), CtlError> {
     Ok(())
 }
 
+/// Print the cosigner service status (health, uptime).
 pub async fn status(client: &AdminClient, fmt: &Format) -> Result<(), CtlError> {
     let resp = client.get("/admin/status").await?;
     print(fmt, &resp);
     Ok(())
 }
 
+/// Print cosigner signing statistics.
 pub async fn stats(client: &AdminClient, fmt: &Format) -> Result<(), CtlError> {
     let resp = client.get("/admin/stats").await?;
     print(fmt, &resp);
     Ok(())
 }
 
+/// Print the running cosigner configuration.
 pub async fn config(client: &AdminClient, fmt: &Format) -> Result<(), CtlError> {
     let resp = client.get("/admin/config").await?;
     print(fmt, &resp);

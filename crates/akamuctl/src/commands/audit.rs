@@ -1,8 +1,11 @@
+//! Audit log query subcommand (akamuctl audit …).
+
 use crate::client::AdminClient;
 use crate::error::CtlError;
 use crate::output::{print, Format};
 use crate::urlenc;
 
+/// Query the structured audit event log with optional filters.
 #[allow(clippy::too_many_arguments)]
 pub async fn query(
     client: &AdminClient,

@@ -1,3 +1,5 @@
+//! Config subcommands (akamuctl config …).
+
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -6,10 +8,12 @@ use serde_json::json;
 use crate::config::{self, Config, SessionCache};
 use crate::output::{print, Format};
 
+/// Print an annotated example akamuctl.toml to stdout.
 pub fn generate() {
     print!("{}", config::EXAMPLE_CONFIG);
 }
 
+/// Validate an akamuctl.toml file and report problems.
 pub fn validate(config_path: &Path, cfg: &Config) {
     println!("config: {}", config_path.display());
 
@@ -69,6 +73,7 @@ pub fn validate(config_path: &Path, cfg: &Config) {
     }
 }
 
+/// Print information about the current session (server and cosigner).
 pub fn whoami(session_cache: &Arc<Mutex<SessionCache>>, fmt: &Format) {
     let cache = session_cache.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -94,6 +99,7 @@ pub fn whoami(session_cache: &Arc<Mutex<SessionCache>>, fmt: &Format) {
     print(fmt, &info);
 }
 
+/// Generate shell completion scripts for the given shell.
 pub fn completions(shell: clap_complete::Shell) {
     use clap::CommandFactory;
     clap_complete::generate(

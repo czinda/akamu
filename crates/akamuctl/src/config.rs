@@ -43,6 +43,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+/// Top-level akamuctl configuration, deserialized from `akamuctl.toml`.
 #[derive(Debug, Default, Deserialize)]
 pub struct Config {
     #[serde(default)]
@@ -51,6 +52,7 @@ pub struct Config {
     pub cosigner: Option<CosignerConfig>,
 }
 
+/// Connection parameters for the akamu server admin API.
 #[derive(Debug, Default, Deserialize)]
 pub struct ServerConfig {
     pub url: Option<String>,
@@ -62,6 +64,7 @@ pub struct ServerConfig {
     pub gssapi_service: Option<String>,
 }
 
+/// Connection parameters for the akamu-cosigner admin API.
 #[derive(Debug, Default, Deserialize)]
 pub struct CosignerConfig {
     pub url: Option<String>,
@@ -79,6 +82,7 @@ impl Config {
         toml::from_str(&s).map_err(|e| format!("parse config '{}': {e}", path.display()))
     }
 
+    /// Return the default path to the session cache file.
     pub fn default_path() -> PathBuf {
         dirs_home()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -92,16 +96,25 @@ fn dirs_home() -> Option<PathBuf> {
 
 // ── Session cache ─────────────────────────────────────────────────────────────
 
+/// On-disk session token cache stored at `~/.config/akamu/session.json`.
+///
+/// Avoids re-authenticating on every command when a valid session exists.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct SessionCache {
+    /// Cached session for the akamu server admin API.
     pub server: Option<SessionEntry>,
+    /// Cached session for the akamu-cosigner admin API.
     pub cosigner: Option<SessionEntry>,
 }
 
+/// A single cached session entry (server or cosigner).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionEntry {
+    /// Admin API base URL this token was issued for.
     pub url: String,
+    /// Bearer session token returned by `POST /admin/session`.
     pub token: String,
+    /// RFC 3339 expiry timestamp from the session response.
     pub expires_at: String,
 }
 
@@ -112,6 +125,7 @@ impl SessionCache {
             .join(".config/akamu/session.json")
     }
 
+    /// Load the session cache from disk; returns an empty cache on any I/O or parse error.
     pub fn load() -> Self {
         let path = Self::default_path();
         let Ok(s) = std::fs::read_to_string(&path) else {
@@ -120,6 +134,7 @@ impl SessionCache {
         serde_json::from_str(&s).unwrap_or_default()
     }
 
+    /// Persist the session cache to disk at mode 0600 (user-readable only).
     pub fn save(&self) -> Result<(), String> {
         use std::io::Write as _;
         use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};

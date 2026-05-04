@@ -2,8 +2,11 @@
 
 use serde_json::Value;
 
+/// Output format selected with `--output`.
 pub enum Format {
+    /// Render as a human-readable ASCII table (default).
     Table,
+    /// Render as pretty-printed JSON.
     Json,
 }
 

@@ -1,3 +1,5 @@
+//! Certificate management subcommands (akamuctl cert …).
+
 use std::path::Path;
 
 use crate::client::AdminClient;
@@ -5,6 +7,7 @@ use crate::error::CtlError;
 use crate::output::{print, Format};
 use crate::urlenc;
 
+/// List issued certificates with optional filters.
 #[allow(clippy::too_many_arguments)]
 pub async fn list(
     client: &AdminClient,
@@ -38,12 +41,14 @@ pub async fn list(
     Ok(())
 }
 
+/// Show metadata for a single certificate by serial or database ID.
 pub async fn show(client: &AdminClient, fmt: &Format, id: &str) -> Result<(), CtlError> {
     let resp = client.get(&format!("/admin/certs/{}", urlenc(id))).await?;
     print(fmt, &resp);
     Ok(())
 }
 
+/// Download a certificate in PEM or DER format, writing to a file or stdout.
 pub async fn download(
     client: &AdminClient,
     id: &str,

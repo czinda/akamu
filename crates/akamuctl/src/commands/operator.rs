@@ -1,3 +1,5 @@
+//! Operator management subcommands (akamuctl operator …).
+
 use std::path::PathBuf;
 
 use serde_json::json;
@@ -7,12 +9,16 @@ use crate::error::CtlError;
 use crate::output::{print, Format};
 use crate::sha256_hex;
 
+/// List all registered operators.
 pub async fn list(client: &AdminClient, fmt: &Format) -> Result<(), CtlError> {
     let resp = client.get("/admin/operators").await?;
     print(fmt, &resp);
     Ok(())
 }
 
+/// Register a new operator with the specified role and credentials.
+///
+/// At least one of `cert_file` or `gssapi_principal` must be provided.
 pub async fn add(
     client: &AdminClient,
     fmt: &Format,
@@ -43,12 +49,14 @@ pub async fn add(
     Ok(())
 }
 
+/// Show details for a single operator by ID.
 pub async fn show(client: &AdminClient, fmt: &Format, id: i64) -> Result<(), CtlError> {
     let resp = client.get(&format!("/admin/operators/{id}")).await?;
     print(fmt, &resp);
     Ok(())
 }
 
+/// Update an operator's name, role, or authentication credentials.
 pub async fn update(
     client: &AdminClient,
     id: i64,
@@ -79,6 +87,7 @@ pub async fn update(
     Ok(())
 }
 
+/// Deactivate an operator account (sets `active = false`).
 pub async fn remove(client: &AdminClient, fmt: &Format, id: i64) -> Result<(), CtlError> {
     let body = json!({"active": false});
     let resp = client
@@ -88,6 +97,7 @@ pub async fn remove(client: &AdminClient, fmt: &Format, id: i64) -> Result<(), C
     Ok(())
 }
 
+/// Re-activate a previously deactivated operator account.
 pub async fn activate(client: &AdminClient, fmt: &Format, id: i64) -> Result<(), CtlError> {
     let body = json!({"active": true});
     let resp = client
@@ -97,6 +107,7 @@ pub async fn activate(client: &AdminClient, fmt: &Format, id: i64) -> Result<(),
     Ok(())
 }
 
+/// Clear the authentication lockout on an operator account (FIA_AFL.1).
 pub async fn unlock(client: &AdminClient, fmt: &Format, id: i64) -> Result<(), CtlError> {
     let resp = client
         .post(&format!("/admin/operators/{id}/unlock"), None)

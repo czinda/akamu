@@ -1,3 +1,5 @@
+//! Server administration subcommands (akamuctl server …).
+
 use serde_json::json;
 
 use crate::client::AdminClient;
@@ -5,24 +7,28 @@ use crate::error::CtlError;
 use crate::output::{print, Format};
 use crate::urlenc;
 
+/// Print server runtime statistics (issuance rate, uptime, counts).
 pub async fn stats(client: &AdminClient, fmt: &Format) -> Result<(), CtlError> {
     let resp = client.get("/admin/stats").await?;
     print(fmt, &resp);
     Ok(())
 }
 
+/// Print the running server configuration.
 pub async fn config(client: &AdminClient, fmt: &Format) -> Result<(), CtlError> {
     let resp = client.get("/admin/config").await?;
     print(fmt, &resp);
     Ok(())
 }
 
+/// List all certificate profiles currently loaded in the server.
 pub async fn profile_list(client: &AdminClient, fmt: &Format) -> Result<(), CtlError> {
     let resp = client.get("/admin/profiles").await?;
     print(fmt, &resp);
     Ok(())
 }
 
+/// Add a new certificate profile to the server's runtime registry.
 pub async fn profile_add(
     client: &AdminClient,
     fmt: &Format,
@@ -38,6 +44,7 @@ pub async fn profile_add(
     Ok(())
 }
 
+/// Replace an existing certificate profile in the server's runtime registry.
 pub async fn profile_update(
     client: &AdminClient,
     fmt: &Format,
@@ -52,10 +59,12 @@ pub async fn profile_update(
     Ok(())
 }
 
+/// Remove a certificate profile from the server's runtime registry.
 pub async fn profile_remove(client: &AdminClient, _fmt: &Format, id: &str) -> Result<(), CtlError> {
     client.delete(&format!("/admin/profiles/{id}")).await
 }
 
+/// List ACME orders with optional account or status filter.
 #[allow(clippy::too_many_arguments)]
 pub async fn order_list(
     client: &AdminClient,
@@ -77,12 +86,14 @@ pub async fn order_list(
     Ok(())
 }
 
+/// Show details for a single ACME order by ID.
 pub async fn order_show(client: &AdminClient, fmt: &Format, id: &str) -> Result<(), CtlError> {
     let resp = client.get(&format!("/admin/orders/{}", urlenc(id))).await?;
     print(fmt, &resp);
     Ok(())
 }
 
+/// Revoke a certificate by database ID with the given RFC 5280 reason code.
 pub async fn revoke(client: &AdminClient, cert_id: &str, reason: u8) -> Result<(), CtlError> {
     let body = json!({"cert_id": cert_id, "reason": reason});
     client.post("/admin/revoke", Some(&body)).await?;
@@ -90,6 +101,7 @@ pub async fn revoke(client: &AdminClient, cert_id: &str, reason: u8) -> Result<(
     Ok(())
 }
 
+/// Force an immediate CRL regeneration regardless of the normal schedule.
 pub async fn crl_force(client: &AdminClient) -> Result<(), CtlError> {
     client.post("/admin/crl/force", None).await?;
     println!("CRL regeneration triggered");

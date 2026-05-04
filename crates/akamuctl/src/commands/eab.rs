@@ -1,3 +1,5 @@
+//! External Account Binding (EAB) key management subcommands (akamuctl eab …).
+
 use serde_json::{json, Value};
 
 use crate::client::AdminClient;
@@ -5,6 +7,7 @@ use crate::error::CtlError;
 use crate::output::{print, Format};
 use crate::urlenc;
 
+/// List EAB keys, optionally filtering to used or unused only.
 pub async fn list(
     client: &AdminClient,
     fmt: &Format,
@@ -22,6 +25,7 @@ pub async fn list(
     Ok(())
 }
 
+/// Provision a new EAB key, optionally specifying KID, HMAC key, and profile grants.
 pub async fn add(
     client: &AdminClient,
     fmt: &Format,
@@ -44,12 +48,14 @@ pub async fn add(
     Ok(())
 }
 
+/// Show details for a single EAB key by KID.
 pub async fn show(client: &AdminClient, fmt: &Format, kid: &str) -> Result<(), CtlError> {
     let resp = client.get(&format!("/admin/eab/{}", urlenc(kid))).await?;
     print(fmt, &resp);
     Ok(())
 }
 
+/// Deactivate an EAB key so it can no longer be used for account creation.
 pub async fn remove(client: &AdminClient, kid: &str) -> Result<(), CtlError> {
     client
         .delete(&format!("/admin/eab/{}", urlenc(kid)))
