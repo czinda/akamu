@@ -17,12 +17,15 @@ The binary is placed at `target/release/akamuctl`.
 ## Quick start
 
 ```bash
-# Log in (authenticates via mTLS and caches a session token)
+# Log in via mTLS client certificate (caches a session token)
 akamuctl --server-url https://admin.example.com:9443 \
-          --ca-cert /etc/akamu/admin-ca.pem \
-          --cert    /etc/akamu/operator.pem \
-          --key     /etc/akamu/operator.key \
+          --ca-cert /etc/akamu/certs/ca.cert.pem \
+          --cert    /etc/akamu/certs/operator.cert.pem \
+          --key     /etc/akamu/certs/operator.key.pem \
           login
+
+# Log in via Kerberos/GSSAPI (uses the ambient ccache from 'kinit')
+akamuctl --server-url https://admin.example.com:9443 login --gssapi
 
 # List operators
 akamuctl operator list
@@ -44,20 +47,31 @@ commands until it expires (default 1 hour).
 `akamuctl` reads `~/.config/akamu/akamuctl.toml` if it exists.
 Command-line flags take precedence over the config file.
 
+Use `akamuctl config generate` to print an annotated template you can save as a
+starting point:
+
+```bash
+akamuctl config generate > ~/.config/akamu/akamuctl.toml
+```
+
 ### Full example
 
 ```toml
 [server]
-url       = "https://admin.example.com:9443"
-ca_cert   = "/etc/akamu/admin-ca.pem"
-cert_file = "/etc/akamu/operator.pem"
-key_file  = "/etc/akamu/operator.key"
+url            = "https://admin.example.com:9443"
+ca_cert        = "/etc/akamu/certs/ca.cert.pem"
+cert_file      = "/etc/akamu/certs/operator.cert.pem"
+key_file       = "/etc/akamu/certs/operator.key.pem"
+# Optional: override the GSSAPI SPN used by 'akamuctl login --gssapi'.
+# When absent the SPN is derived automatically as HTTP@<hostname>.
+# gssapi_service = "HTTP@admin.example.com"
 
 [cosigner]
-url       = "https://cosigner.example.com:9444"
-ca_cert   = "/etc/akamu/cosigner-ca.pem"
-cert_file = "/etc/akamu/operator.pem"
-key_file  = "/etc/akamu/operator.key"
+url            = "https://cosigner.example.com:9444"
+ca_cert        = "/etc/akamu/certs/ca.cert.pem"
+cert_file      = "/etc/akamu/certs/operator.cert.pem"
+key_file       = "/etc/akamu/certs/operator.key.pem"
+# gssapi_service = "HTTP@cosigner.example.com"
 ```
 
 ### `[server]`
@@ -68,6 +82,7 @@ key_file  = "/etc/akamu/operator.key"
 | `ca_cert` | PEM CA certificate used to verify the server's TLS certificate. When absent, the system trust store is used. |
 | `cert_file` | PEM client certificate presented for mTLS authentication. |
 | `key_file` | PEM private key matching `cert_file`. |
+| `gssapi_service` | GSSAPI service principal name used by `akamuctl login --gssapi`. Overrides the automatic `HTTP@<hostname>` derivation from `url`. |
 
 ### `[cosigner]`
 
@@ -92,14 +107,38 @@ Falls back to `[server]` values for any field that is absent.
 Authenticate with the server and save a session token:
 
 ```bash
+# mTLS — uses cert_file / key_file from config or --cert / --key flags
 akamuctl login
+
+# GSSAPI/Kerberos — uses the ambient Kerberos credential cache
+kinit alice@EXAMPLE.COM   # obtain a TGT if not already present
+akamuctl login --gssapi
 ```
 
-Presents the configured mTLS client certificate to `POST /admin/session`.
-On success the returned token is saved to `~/.config/akamu/session.json`
-with mode `0600` (user-readable only).  Subsequent commands reuse this token
-without re-presenting the client certificate.  A 30-second expiry margin
-triggers automatic re-authentication before the server would reject the token.
+Both forms POST to `/admin/session`.  On success the returned token is saved to
+`~/.config/akamu/session.json` with mode `0600` (user-readable only).
+Subsequent commands reuse this token without re-authenticating.  A 30-second
+expiry margin triggers automatic re-authentication before the server would
+reject the token.
+
+#### `--gssapi` flag
+
+Sends an `Authorization: Negotiate` header built from the ambient Kerberos
+ccache instead of presenting an mTLS client certificate.  No keytab is
+required — only a valid TGT (run `kinit` first).
+
+The GSSAPI service principal name (SPN) is resolved as follows:
+
+1. If `gssapi_service` is set in `[server]` config, it is used as-is.
+2. Otherwise the SPN is derived from the server URL as `HTTP@<hostname>`,
+   where `<hostname>` is determined by:
+   - Loopback names (`localhost`, `localhost.localdomain`, `ip6-localhost`,
+     `ip6-loopback`) and loopback IP addresses (`127.x.x.x`, `::1`) →
+     replaced with the machine's own FQDN via `gethostname(2)` and
+     forward/reverse DNS.
+   - Non-loopback IP addresses → resolved to a hostname via `getnameinfo(3)`;
+     a warning is printed and the bare IP is used if reverse DNS fails.
+   - DNS hostnames → used directly.
 
 ### `logout`
 
