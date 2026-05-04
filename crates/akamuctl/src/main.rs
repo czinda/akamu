@@ -57,8 +57,8 @@ enum Commands {
     /// Authenticate and cache session token.
     Login {
         /// Use GSSAPI/Kerberos (Negotiate) instead of mTLS.
-        /// The service principal is taken from [server].gssapi_service in the
-        /// config, or derived automatically as HTTP@<hostname> from the server URL.
+        /// The service principal is taken from `[server].gssapi_service` in the
+        /// config, or derived automatically as `HTTP@<hostname>` from the server URL.
         /// Requires a valid Kerberos TGT in the ccache (run kinit first).
         #[arg(long)]
         gssapi: bool,
