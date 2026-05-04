@@ -342,9 +342,8 @@ pub async fn search(
         qb.push_bind(st);
     }
     if let Some(dn) = subject_dn {
-        qb.push(" AND subject_dn LIKE '%' || ");
-        qb.push_bind(dn);
-        qb.push(" || '%'");
+        qb.push(" AND subject_dn LIKE ");
+        qb.push_bind(format!("%{dn}%"));
     }
     qb.push(" ORDER BY created DESC LIMIT ");
     qb.push_bind(limit);
