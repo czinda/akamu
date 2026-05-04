@@ -1,7 +1,8 @@
-//! Admin HTTP client with mTLS and session token support.
+//! Admin HTTP client with mTLS, GSSAPI, and session token support.
 
 use std::sync::Arc;
 
+use base64::Engine as _;
 use hyper::body::Bytes;
 use hyper::{Method, Request, StatusCode};
 use hyper_util::client::legacy::Client;
@@ -102,6 +103,9 @@ pub struct AdminClient {
     client: HttpsClient,
     session_cache: Arc<std::sync::Mutex<SessionCache>>,
     is_cosigner: bool,
+    /// When set, `session_token()` sends `Authorization: Negotiate` using the
+    /// ambient Kerberos ccache rather than relying on the mTLS client certificate.
+    gssapi_service: Option<String>,
 }
 
 impl AdminClient {
@@ -113,6 +117,7 @@ impl AdminClient {
         key_pem: Option<Vec<u8>>,
         session_cache: Arc<std::sync::Mutex<SessionCache>>,
         is_cosigner: bool,
+        gssapi_service: Option<String>,
     ) -> Result<Self, CtlError> {
         let tls_config = build_tls_config(
             ca_cert_pem.as_deref(),
@@ -125,6 +130,7 @@ impl AdminClient {
             client,
             session_cache,
             is_cosigner,
+            gssapi_service,
         })
     }
 
@@ -138,8 +144,23 @@ impl AdminClient {
         if let Some(token) = cached {
             return Ok(token);
         }
-        // Authenticate: POST /admin/session without a Bearer token (uses mTLS).
-        let resp = self.raw_request(Method::POST, "/admin/session", None, None).await?;
+
+        // Build Authorization: Negotiate header when GSSAPI is requested.
+        let negotiate_header = if let Some(ref spn) = self.gssapi_service {
+            let cred = akamu_gssapi::GssClientCred::from_ccache()
+                .map_err(|e| CtlError::Auth(format!("GSSAPI ccache: {e}")))?;
+            let token_bytes = akamu_gssapi::init_token(&cred, spn, None)
+                .map_err(|e| CtlError::Auth(format!("GSSAPI token for '{spn}': {e}")))?;
+            Some(format!(
+                "Negotiate {}",
+                base64::engine::general_purpose::STANDARD.encode(&token_bytes)
+            ))
+        } else {
+            None
+        };
+
+        // POST /admin/session — mTLS cert or Negotiate header authenticates the operator.
+        let resp = self.raw_request(Method::POST, "/admin/session", None, None, negotiate_header.as_deref()).await?;
         if resp.status != StatusCode::OK {
             return Err(CtlError::Auth(format!(
                 "POST /admin/session returned {}",
@@ -181,7 +202,7 @@ impl AdminClient {
     pub async fn get(&self, path: &str) -> Result<Value, CtlError> {
         let token = self.session_token().await?;
         let resp = self
-            .raw_request(Method::GET, path, Some(&token), None)
+            .raw_request(Method::GET, path, Some(&token), None, None)
             .await?;
         check_status(&resp)?;
         parse_json(&resp.body)
@@ -192,7 +213,7 @@ impl AdminClient {
         let token = self.session_token().await?;
         let body_str = body.map(|v| v.to_string());
         let resp = self
-            .raw_request(Method::POST, path, Some(&token), body_str.as_deref())
+            .raw_request(Method::POST, path, Some(&token), body_str.as_deref(), None)
             .await?;
         check_status(&resp)?;
         parse_json(&resp.body)
@@ -203,7 +224,7 @@ impl AdminClient {
         let token = self.session_token().await?;
         let body_str = body.to_string();
         let resp = self
-            .raw_request(Method::PUT, path, Some(&token), Some(&body_str))
+            .raw_request(Method::PUT, path, Some(&token), Some(&body_str), None)
             .await?;
         check_status(&resp)?;
         parse_json(&resp.body)
@@ -213,7 +234,7 @@ impl AdminClient {
     pub async fn delete(&self, path: &str) -> Result<(), CtlError> {
         let token = self.session_token().await?;
         let resp = self
-            .raw_request(Method::DELETE, path, Some(&token), None)
+            .raw_request(Method::DELETE, path, Some(&token), None, None)
             .await?;
         if resp.status == StatusCode::NO_CONTENT || resp.status.is_success() {
             return Ok(());
@@ -229,7 +250,7 @@ impl AdminClient {
         let token = self.session_token().await?;
         let body_str = body.to_string();
         let resp = self
-            .raw_request(Method::PATCH, path, Some(&token), Some(&body_str))
+            .raw_request(Method::PATCH, path, Some(&token), Some(&body_str), None)
             .await?;
         check_status(&resp)?;
         parse_json(&resp.body)
@@ -254,6 +275,7 @@ impl AdminClient {
         path: &str,
         bearer_token: Option<&str>,
         body: Option<&str>,
+        auth_header: Option<&str>,
     ) -> Result<RawResponse, CtlError> {
         let url = format!("{}{}", self.base_url.trim_end_matches('/'), path);
         let mut req_builder = Request::builder()
@@ -262,6 +284,8 @@ impl AdminClient {
             .header("accept", "application/json");
         if let Some(token) = bearer_token {
             req_builder = req_builder.header("authorization", format!("Bearer {token}"));
+        } else if let Some(hdr) = auth_header {
+            req_builder = req_builder.header("authorization", hdr);
         }
         let body_bytes: Bytes = if let Some(json) = body {
             req_builder = req_builder.header("content-type", "application/json");

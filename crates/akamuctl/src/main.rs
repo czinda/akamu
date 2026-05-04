@@ -55,7 +55,14 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Authenticate and cache session token.
-    Login,
+    Login {
+        /// Use GSSAPI/Kerberos (Negotiate) instead of mTLS.
+        /// The service principal is taken from [server].gssapi_service in the
+        /// config, or derived automatically as HTTP@<hostname> from the server URL.
+        /// Requires a valid Kerberos TGT in the ccache (run kinit first).
+        #[arg(long)]
+        gssapi: bool,
+    },
     /// Invalidate current session token.
     Logout,
     /// Print server and cosigner statistics.
@@ -276,12 +283,31 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
         key_bytes.clone(),
         Arc::clone(&session_cache),
         false,
+        None, // gssapi_service resolved per-command below
     )?;
 
     match cli.command {
-        Commands::Login => {
-            let resp = server_client.post("/admin/session", None).await?;
-            print(&fmt, &resp);
+        Commands::Login { gssapi } => {
+            if gssapi {
+                // Resolve SPN: explicit config > derive HTTP@<host> from URL.
+                let spn = cfg.server.gssapi_service.clone().unwrap_or_else(|| {
+                    derive_spn(&server_url)
+                });
+                let gss_client = AdminClient::new(
+                    server_url.clone(),
+                    ca_cert_bytes.clone(),
+                    None, // no mTLS cert needed for GSSAPI
+                    None,
+                    Arc::clone(&session_cache),
+                    false,
+                    Some(spn),
+                )?;
+                let resp = gss_client.post("/admin/session", None).await?;
+                print(&fmt, &resp);
+            } else {
+                let resp = server_client.post("/admin/session", None).await?;
+                print(&fmt, &resp);
+            }
         }
         Commands::Logout => {
             server_client.delete("/admin/session").await?;
@@ -505,6 +531,7 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
                 cos_key,
                 Arc::clone(&session_cache),
                 true,
+                None,
             )?;
             match cos_cmd {
                 CosignerCmd::Status => {
@@ -528,6 +555,137 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Build `HTTP@<hostname>` from a server URL for use as a GSSAPI SPN.
+///
+/// If the host portion of the URL is an IP address or a loopback name
+/// ("localhost", "localhost.localdomain", "ip6-localhost", etc.):
+/// - Loopback addresses / names are replaced with the machine's own FQDN.
+/// - Other IPs are resolved to a hostname via reverse DNS (`getnameinfo`).
+///
+/// If reverse DNS fails, the raw IP is used and a warning is printed.
+fn derive_spn(url: &str) -> String {
+    let host = url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap_or(url)
+        .split(':') // strip port
+        .next()
+        .unwrap_or(url);
+    format!("HTTP@{}", resolve_host_for_spn(host))
+}
+
+/// Resolve a URL host component to a hostname suitable for a Kerberos SPN.
+fn resolve_host_for_spn(host: &str) -> String {
+    use std::net::IpAddr;
+
+    // Loopback hostnames — replace with the machine's own FQDN.
+    let is_loopback_name = matches!(
+        host,
+        "localhost" | "localhost.localdomain" | "ip6-localhost" | "ip6-loopback"
+    );
+    if is_loopback_name {
+        return system_fqdn().unwrap_or_else(|| host.to_owned());
+    }
+
+    // If the host is an IP address, perform loopback check or reverse DNS.
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        if ip.is_loopback() {
+            return system_fqdn().unwrap_or_else(|| host.to_owned());
+        }
+        return getnameinfo(ip).unwrap_or_else(|| {
+            eprintln!("warning: reverse DNS for {ip} failed; SPN will use the IP address");
+            host.to_owned()
+        });
+    }
+
+    // Already a proper DNS hostname.
+    host.to_owned()
+}
+
+/// Return the machine's fully-qualified hostname via `gethostname(2)`.
+///
+/// If the result contains no dot (a bare short name), performs a forward
+/// lookup and then a reverse PTR lookup to obtain the FQDN.
+fn system_fqdn() -> Option<String> {
+    use std::ffi::CStr;
+    let mut buf = [0u8; 256];
+    let ret = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+    if ret != 0 {
+        return None;
+    }
+    let name = CStr::from_bytes_until_nul(&buf).ok()?.to_str().ok()?.to_owned();
+    if name.contains('.') {
+        return Some(name);
+    }
+    // Short hostname — attempt forward + reverse to get the FQDN.
+    use std::net::ToSocketAddrs;
+    let addrs: Vec<_> = (name.as_str(), 0u16).to_socket_addrs().ok()?.collect();
+    for sa in addrs {
+        if let Some(fqdn) = getnameinfo(sa.ip()) {
+            if fqdn.contains('.') {
+                return Some(fqdn);
+            }
+        }
+    }
+    Some(name)
+}
+
+/// Reverse-resolve an IP address to a hostname via `getnameinfo(3)`.
+///
+/// Returns `None` if the lookup fails or returns the bare IP string back.
+fn getnameinfo(ip: std::net::IpAddr) -> Option<String> {
+    use std::ffi::CStr;
+    use std::net::SocketAddr;
+
+    let sa = SocketAddr::new(ip, 0);
+    let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    let salen: libc::socklen_t;
+
+    match sa {
+        SocketAddr::V4(v4) => {
+            // SAFETY: storage is zeroed and large enough for sockaddr_in.
+            let sin: &mut libc::sockaddr_in =
+                unsafe { &mut *std::ptr::addr_of_mut!(storage).cast() };
+            sin.sin_family = libc::AF_INET as libc::sa_family_t;
+            sin.sin_addr.s_addr = u32::from_ne_bytes(v4.ip().octets());
+            sin.sin_port = 0;
+            salen = std::mem::size_of::<libc::sockaddr_in>() as _;
+        }
+        SocketAddr::V6(v6) => {
+            // SAFETY: storage is zeroed and large enough for sockaddr_in6.
+            let sin6: &mut libc::sockaddr_in6 =
+                unsafe { &mut *std::ptr::addr_of_mut!(storage).cast() };
+            sin6.sin6_family = libc::AF_INET6 as libc::sa_family_t;
+            sin6.sin6_addr.s6_addr = v6.ip().octets();
+            sin6.sin6_port = 0;
+            sin6.sin6_flowinfo = v6.flowinfo();
+            sin6.sin6_scope_id = v6.scope_id();
+            salen = std::mem::size_of::<libc::sockaddr_in6>() as _;
+        }
+    }
+
+    let mut host_buf = [0u8; 1025]; // NI_MAXHOST
+    // SAFETY: storage is initialised above; host_buf is valid writable memory.
+    let ret = unsafe {
+        libc::getnameinfo(
+            std::ptr::addr_of!(storage).cast(),
+            salen,
+            host_buf.as_mut_ptr().cast(),
+            host_buf.len() as libc::socklen_t,
+            std::ptr::null_mut(), // no service name lookup
+            0,
+            libc::NI_NAMEREQD, // fail rather than return the IP string
+        )
+    };
+    if ret != 0 {
+        return None;
+    }
+    let s = CStr::from_bytes_until_nul(&host_buf).ok()?.to_str().ok()?.to_owned();
+    if s.is_empty() || s == ip.to_string() { None } else { Some(s) }
+}
 
 fn read_file_opt(path: Option<&std::path::Path>) -> Result<Option<Vec<u8>>, CtlError> {
     let Some(p) = path else {

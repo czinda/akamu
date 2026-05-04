@@ -235,6 +235,58 @@ impl Drop for GssClientCred {
 }
 
 impl GssClientCred {
+    /// Acquire an initiator credential from the default Kerberos credential
+    /// cache (ccache).
+    ///
+    /// The calling process must already hold a valid TGT (e.g. from `kinit`).
+    /// No keytab is required.  Passing `GSS_C_NO_CRED_STORE` (NULL) for the
+    /// credential store makes MIT Kerberos use the ambient ccache, identical
+    /// to calling `gss_acquire_cred()` with default arguments.
+    ///
+    /// # Errors
+    ///
+    /// - [`GssError::AcquireCred`] — no valid TGT in the ccache, or the
+    ///   Kerberos library returned an error.
+    pub fn from_ccache() -> Result<Self, GssError> {
+        let mut minor: ffi::OmUint32 = 0;
+        let mut cred_handle: ffi::GssCredIdT = ptr::null_mut();
+        let mut actual_mechs: ffi::GssOidSetT = ptr::null_mut();
+        let mut time_rec: ffi::OmUint32 = 0;
+
+        // SAFETY: NULL for cred_store == GSS_C_NO_CRED_STORE; MIT Kerberos
+        // falls back to the default ccache, matching gss_acquire_cred() behaviour.
+        // desired_name = GSS_C_NO_NAME selects the default principal.
+        let major = unsafe {
+            ffi::gss_acquire_cred_from(
+                &mut minor,
+                ptr::null_mut(), // desired_name = GSS_C_NO_NAME
+                0,               // GSS_C_INDEFINITE
+                ffi::GSS_C_NO_OID_SET,
+                ffi::GSS_C_INITIATE,
+                ptr::null(),     // cred_store = GSS_C_NO_CRED_STORE → default ccache
+                &mut cred_handle,
+                &mut actual_mechs,
+                &mut time_rec,
+            )
+        };
+
+        let error_minor = minor;
+        unsafe {
+            if !actual_mechs.is_null() {
+                ffi::gss_release_oid_set(&mut minor, &mut actual_mechs);
+            }
+        }
+
+        if major != ffi::GSS_S_COMPLETE {
+            if !cred_handle.is_null() {
+                unsafe { ffi::gss_release_cred(&mut minor, &mut cred_handle) };
+            }
+            return Err(GssError::AcquireCred { major, minor: error_minor });
+        }
+
+        Ok(GssClientCred { raw: cred_handle })
+    }
+
     /// Acquire an initiator credential from the keytab at `keytab_file`.
     ///
     /// Passes `desired_name = NULL` so the GSSAPI library selects the credential

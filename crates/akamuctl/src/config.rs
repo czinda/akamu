@@ -22,6 +22,13 @@ url = "https://akamu.example.com:9443"
 # cert_file = "/home/alice/.config/akamu/operator.cert.pem"
 # key_file  = "/home/alice/.config/akamu/operator.key.pem"
 
+# GSSAPI/Kerberos authentication (alternative to mTLS).
+# When set, 'akamuctl login' sends Authorization: Negotiate using the
+# ambient Kerberos ccache (run 'kinit' first).
+# When absent and no cert_file/key_file are configured, the service name
+# is derived automatically as HTTP@<hostname> from the server URL.
+# gssapi_service = "HTTP@akamu.example.com"
+
 # ── Cosigner admin API ────────────────────────────────────────────────────────
 # Required only for 'akamuctl cosigner' commands.
 # [cosigner]
@@ -29,6 +36,7 @@ url = "https://akamu.example.com:9443"
 # ca_cert = "/etc/akamu/certs/ca.cert.pem"
 # cert_file = "/home/alice/.config/akamu/cosigner-operator.cert.pem"
 # key_file  = "/home/alice/.config/akamu/cosigner-operator.key.pem"
+# gssapi_service = "HTTP@cosigner.example.com"
 "#;
 
 use std::path::PathBuf;
@@ -49,6 +57,9 @@ pub struct ServerConfig {
     pub ca_cert: Option<String>,
     pub cert_file: Option<String>,
     pub key_file: Option<String>,
+    /// GSSAPI service principal name for Negotiate login (e.g. `HTTP@akamu.example.com`).
+    /// When set, `akamuctl login` uses the ambient Kerberos ccache instead of mTLS.
+    pub gssapi_service: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -57,6 +68,8 @@ pub struct CosignerConfig {
     pub ca_cert: Option<String>,
     pub cert_file: Option<String>,
     pub key_file: Option<String>,
+    /// GSSAPI service principal name for Negotiate login to the cosigner admin API.
+    pub gssapi_service: Option<String>,
 }
 
 impl Config {

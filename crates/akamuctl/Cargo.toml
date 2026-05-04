@@ -40,5 +40,10 @@ synta-certificate = { version = ">=0.2.0", features = ["std", "pqc"] }
 # URL encoding for query parameters
 percent-encoding = "2"
 
+# GSSAPI / Kerberos (ccache-based login)
+akamu-gssapi   = { path = "../akamu-gssapi" }
+base64         = "0.22"
+libc           = "0.2"
+
 # Error handling
 thiserror      = "2"
