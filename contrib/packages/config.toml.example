@@ -1,23 +1,33 @@
 # ACME server configuration — copy to config.toml and adjust as needed.
 
-# Address and port to listen on.  TLS termination is expected upstream
-# (e.g. nginx or a load balancer); the server speaks plain HTTP internally.
+# Address and port to listen on.
 listen_addr = "0.0.0.0:8080"
 
 # Public base URL of the ACME server, used in all URLs returned to clients.
 base_url = "https://acme.example.com"
 
+# ── Database ──────────────────────────────────────────────────────────────────
 [database]
-# Path to the SQLite database file.  Will be created on first run.
-path = "/var/lib/akamu/acme.db"
+# Database URL.
+#   SQLite:     sqlite:///var/lib/akamu/acme.db   (file is created on first run)
+#   PostgreSQL: postgres://akamu:pass@localhost/akamu
+#   MariaDB:    mariadb://akamu:pass@localhost/akamu
+url = "sqlite:///var/lib/akamu/acme.db"
 
+# Maximum pooled connections.
+# Default: 1 for SQLite (avoids SQLITE_BUSY_SNAPSHOT), 10 for PostgreSQL/MariaDB.
+# max_connections = 10
+
+# ── CA ────────────────────────────────────────────────────────────────────────
 [ca]
 # Paths to the CA private key and certificate PEM files.
-# Both files are auto-generated on first run if neither exists.
-key_file  = "/etc/akamu/ca.key.pem"
-cert_file = "/etc/akamu/ca.cert.pem"
+# Both are auto-generated on first run if neither exists.
+# PKCS#11 URIs (pkcs11:token=…;object=…;type=private) are also accepted for
+# HSM-backed keys; the pkcs11-provider OpenSSL module must be loaded beforehand.
+key_file  = "/etc/akamu/certs/ca.key.pem"
+cert_file = "/etc/akamu/certs/ca.cert.pem"
 
-# Key algorithm for auto-generated CA key.
+# Key algorithm for the auto-generated CA key.
 # Choices: "ec:P-256", "ec:P-384", "ec:P-521", "rsa:2048", "rsa:3072", "rsa:4096", "ed25519"
 key_type = "ec:P-256"
 
@@ -36,11 +46,22 @@ common_name  = "Example ACME CA"
 organization = "Example Org"
 
 # Optional CRL distribution point URL (omit to skip the CDP extension).
+# Set to "{base_url}/ca/crl" to use the built-in CRL endpoint.
 # crl_url = "http://acme.example.com/crl/ca.crl"
 
 # Optional OCSP responder URL (omit to skip the AIA OCSP extension).
+# Set to "{base_url}/ca/ocsp" to use the built-in OCSP endpoint.
 # ocsp_url = "http://ocsp.example.com"
 
+# nextUpdate validity window for the built-in CRL endpoint (seconds).
+# Default: 86400 (1 day).
+# crl_next_update_secs = 86400
+
+# Enforce the CA/B Forum BR §6.3.2 maximum 200-day validity cap at issuance time.
+# Default: false.  Public WebPKI CAs should set this to true.
+# enforce_validity_cap = false
+
+# ── Merkle Tree Certificates ──────────────────────────────────────────────────
 [mtc]
 # Path for the MTC (Merkle Tree Certificate) transparency log.
 log_path = "/var/lib/akamu/mtc.log"
@@ -48,6 +69,32 @@ log_path = "/var/lib/akamu/mtc.log"
 # Set to true to append issued certificates to the MTC log.
 enabled = false
 
+# How often the checkpoint background task fires (seconds). Default: 3600 (1 h).
+# checkpoint_interval_secs = 3600
+
+# How often a new landmark tree size is frozen (seconds). Default: 86400 (1 day).
+# landmark_interval_secs = 86400
+
+# Maximum number of active (non-expired) landmarks to retain. Default: 100.
+# max_active_landmarks = 100
+
+# Maximum number of checkpoints to retain in the database. Default: 1000.
+# checkpoint_retention_count = 1000
+
+# MTC signing key for checkpoint production.  Absent → checkpoints are disabled.
+# Must use a key distinct from the X.509 CA key (MTC §5.5).
+# [mtc.signing_key]
+# key_file = "/var/lib/akamu/mtc-signing.key"   # auto-generated if absent
+# key_type = "ec:P-256"
+# hash_alg = "sha256"
+
+# External cosigners — repeat the block for multiple cosigners.
+# Akamu POSTs the DER-encoded Checkpoint; the cosigner returns a DER SubtreeSignature.
+# [[mtc.cosigners]]
+# url = "https://cosigner.example.com/sign"
+# cosigner_id_cert_pem = "/etc/akamu/cosigner.pem"  # optional; verifies the signature
+
+# ── ACME server behaviour ─────────────────────────────────────────────────────
 [server]
 # Optional Terms of Service URL advertised in /acme/directory.
 # terms_of_service_url = "https://acme.example.com/tos.html"
@@ -55,7 +102,7 @@ enabled = false
 # Optional website URL advertised in /acme/directory.
 # website_url = "https://acme.example.com"
 
-# CAA identity strings.  Clients may check CAA records for these identifiers.
+# CAA identity strings.  Checked against CAA DNS records for all orders.
 # caa_identities = ["acme.example.com"]
 
 # Set to true to require External Account Binding (EAB) for new accounts.
@@ -67,3 +114,186 @@ authz_expiry_secs = 86400   # 1 day
 
 # Maximum JOSE+JSON request body size (bytes).
 max_body_bytes = 65536
+
+# TCP port used when fetching http-01 challenge responses.
+# RFC 8555 §8.3 requires port 80 in production.  Override only for testing.
+# http_validation_port = 80
+
+# Allow http-01 redirect targets that resolve to private/loopback IP addresses.
+# Default: false.  Set to true only in isolated test environments (SSRF risk).
+# http_validation_allow_private_ips = false
+
+# Issuer domain(s) placed in dns-persist-01 "issuer-domain-names" and matched
+# against TXT records.  Defaults to the host portion of base_url when absent.
+# Accepts a single string or an array.
+# dns_persist_issuer_domains = "acme.example.com"
+# dns_persist_issuer_domains = ["acme.example.com", "acme.example.org"]
+
+# DNS resolver for challenge validation (dns-01, dns-persist-01, and CAA).
+# Format: "ip:port".  Defaults to the system resolver from /etc/resolv.conf.
+# Useful for split-horizon DNS or testing.
+# dns_resolver_addr = "127.0.0.53:53"
+
+# Separate DNS resolver for dns-persist-01 validation only.
+# Falls back to dns_resolver_addr when absent.
+# dns_persist01_resolver_addr = "127.0.0.53:53"
+
+# DNS-over-TLS (DoT, RFC 7858): TLS SNI hostname of the resolver.
+# When set, all DNS challenge queries are sent over TLS on port 853.
+# dns_resolver_addr must point to the DoT server (e.g. "1.1.1.1:853").
+# dns_dot_server_name = "cloudflare-dns.com"
+
+# Enable DNSSEC validation for dns-01, dns-persist-01, and CAA lookups.
+# Required by CA/B Forum BR §3.2.2.4 since 2026-03-15.
+# Set to false only for testing or in DNSSEC-unsigned environments (non-compliant).
+validate_dnssec = true
+
+# Retry-After interval (seconds) in GET /acme/renewal-info responses (RFC 9773 §4.3).
+# Default: 21600 (6 hours).
+# ari_retry_after_secs = 21600
+
+# URL included in GET /acme/renewal-info responses as explanationURL (RFC 9773 §4.1).
+# ari_explanation_url = "https://acme.example.com/renewal-info"
+
+# Advertise RFC 9444 subdomain authorization support in the directory meta.
+# allow_subdomain_auth = false
+
+# STAR certificate support (RFC 8739).
+# star_min_lifetime_secs  = 86400      # minimum STAR certificate lifetime
+# star_max_duration_secs  = 31536000   # maximum STAR order duration (1 year)
+# star_allow_certificate_get = true    # allow unauthenticated GET of STAR certs
+
+# Enable Tor network connectivity for .onion identifiers (RFC 9799 §4).
+# Set to true only when the server can reach the Tor network outbound.
+# tor_connectivity_enabled = false
+
+# CIDR blocks trusted to supply X-Remote-User (set by a Kerberos/SPNEGO reverse proxy).
+# Requests from other source IPs never have X-Remote-User honoured.
+# trusted_proxies = ["127.0.0.1/32", "::1/128"]
+
+# Base64url-encoded master secret for HKDF-based EAB key derivation (≥ 32 bytes).
+# Generate with: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
+# eab_master_secret = "..."
+
+# Static EAB pre-shared keys seeded into the database at startup (RFC 8555 §7.3.4).
+# Keys are inserted with INSERT OR IGNORE — runtime-provisioned keys are never overwritten.
+# [server.eab_keys]
+# "my-kid" = "base64url-encoded-hmac-key"
+
+# Standalone GSSAPI/SPNEGO authentication (alternative to a Kerberos reverse proxy).
+# When set, akamu handles Authorization: Negotiate directly.
+# [server.gssapi]
+# keytab_file  = "/etc/akamu/http.keytab"
+# service_name = "HTTP"   # MIT Kerberos appends @<hostname> automatically
+
+# ── Server-side TLS ───────────────────────────────────────────────────────────
+# When absent or enabled = false, the server speaks plain HTTP.
+# Typical production setup: TLS termination upstream (nginx, haproxy).
+# [tls]
+# enabled   = true
+# cert_file = "/etc/akamu/server.pem"    # leaf certificate, then chain
+# key_file  = "/etc/akamu/server.key"
+# protocols = ["TLSv1.2", "TLSv1.3"]    # default; drop TLSv1.2 for strict configs
+#
+# Auto-generated self-signed certificate (testing only; omit cert_file/key_file):
+# server_name        = "acme.example.com"
+# bootstrap_key_type = "ec:P-256"
+#
+# Mutual TLS client certificate authentication:
+# [tls.client_auth]
+# required             = false
+# ca_files             = ["/etc/akamu/client-ca.pem"]
+# profile              = "webpki"   # "webpki" or "rfc5280"
+# allow_post_quantum   = false      # accept ML-DSA / hybrid composite keys
+# max_chain_depth      = 8
+# minimum_rsa_modulus  = 2048
+
+# ── Admin API ─────────────────────────────────────────────────────────────────
+# When absent, all /admin/* endpoints return 404.
+# At least one of ca_certs or [admin.gssapi] must be configured.
+# [admin]
+# listen_addr = "127.0.0.1:9443"
+# cert_file   = "/etc/akamu/admin-tls.pem"
+# key_file    = "/etc/akamu/admin-tls-key.pem"
+# ca_certs    = ["/etc/akamu/operator-ca.pem"]   # omit when using GSSAPI-only auth
+#
+# Inactive session expiry (seconds). Default: 3600 (1 hour).
+# session_ttl_secs = 3600
+#
+# Maximum credential presentations from one source IP in a 5-minute window.
+# Prevents audit-log floods. Default: 20.
+# auth_rate_limit = 20
+#
+# Audit log overflow policy (FAU_STG.4).
+# audit_max_rows = 1000000        # absent = unlimited
+# audit_overflow = "drop_oldest"  # "drop_oldest" or "halt"
+#
+# Security alarm (FAU_ARP.1): fires when this many SecurityViolation events occur
+# within a rolling 5-minute window.
+# audit_alarm_threshold = 10
+# audit_alarm_action    = "syslog"   # "syslog" or "halt"
+#
+# Auto-generated admin TLS certificate (testing only; omit cert_file/key_file):
+# server_name        = "localhost"
+# bootstrap_key_type = "ec:P-256"
+#
+# Bootstrap an initial Administrator operator on first run (optional).
+# The operator is registered only when the operators table is empty.
+# bootstrap_operator_cert_file = "/etc/akamu/bootstrap-admin.pem"
+# bootstrap_operator_key_file  = "/etc/akamu/bootstrap-admin.key"
+# bootstrap_operator_name      = "admin"
+#
+# GSSAPI/Kerberos authentication for admin operators.
+# [admin.gssapi]
+# keytab_file  = "/etc/akamu/http.keytab"
+# service_name = "HTTP"
+
+# ── Certificate profiles ──────────────────────────────────────────────────────
+# When absent, the deprecated [server].profiles map governs directory advertisement
+# and the local CA applies its defaults to all orders.
+# [profiles]
+# refresh_interval_secs = 3600   # how often providers are re-read. Default: 1 hour.
+#
+# Built-in profiles defined inline:
+# [profiles.providers.local]
+# type = "builtin"
+#
+# [profiles.providers.local.profiles.tlsserver]
+# description   = "TLS server certificate"
+# validity_days = 90
+# hash_alg      = "sha256"           # inherits from [ca] when absent
+# key_usage     = ["digital_signature", "key_encipherment"]
+# eku           = ["server_auth"]
+# # allowed_key_types      = ["ec:P-256", "ec:P-384"]   # empty = any key type
+# # certificate_policies   = [{oid = "2.23.140.1.2.1"}]  # BR DV-SSL OID
+# # crl_url                = ""                           # "" suppresses inherited CDP
+# # ocsp_url               = ""                           # "" suppresses inherited OCSP
+# # allowed_identifiers    = ["dns:.*\\.example\\.com"]
+# # identifier_match       = "all"   # "all" or "any"
+# # require_account_grant  = false
+# # auth_hook              = "/usr/libexec/akamu/authorize"
+# # auth_hook_timeout_secs = 30
+# # issue_as               = "x509"  # "x509" or "mtc"
+#
+# Dogtag PKI profiles from the filesystem:
+# [profiles.providers.dogtag]
+# type        = "dogtag"
+# profile_dir = "/etc/pki/pki-tomcat/ca/profiles/ca"
+# profiles    = []   # empty = load all .cfg files in the directory
+#
+# FreeIPA / IPAThinCA profiles via GSSAPI LDAP:
+# [profiles.providers.ipa]
+# type     = "ipa"
+# profiles = ["caIPAserviceCert", "IECUserRoles"]
+#
+# [profiles.providers.ipa.ldap]
+# uri          = "ldap://ipa.example.com:7389"
+# base_dn      = "o=ipaca"
+# gssapi       = true
+# keytab_file  = "/etc/akamu/akamu.keytab"
+# principal    = "akamu/akamu.example.com@EXAMPLE.COM"
+# # timeout_secs     = 10
+# # starttls         = false
+# # tls_ca_cert_file = "/etc/ipa/ca.crt"
+# # srv_domain       = "example.com"   # discover via _ldap._tcp SRV records
+# # srv_scheme       = "ldap"          # "ldap" or "ldaps" for SRV-discovered servers
