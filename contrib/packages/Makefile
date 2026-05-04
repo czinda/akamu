@@ -184,7 +184,6 @@ srpm: sources
 	cp "$(REPOROOT)/contrib/systemd/akamu-cosigner-sysusers.conf.in" akamu-cosigner-sysusers.conf
 	cp "$(REPOROOT)/contrib/systemd/akamu-tmpfiles.conf.in"          akamu-tmpfiles.conf
 	cp "$(REPOROOT)/contrib/systemd/akamu-cosigner-tmpfiles.conf.in" akamu-cosigner-tmpfiles.conf
-	cp "$(REPOROOT)/contrib/packages/akamuctl.toml.example" .
 	rpmbuild -bs \
 	    --define "_sourcedir $(CURDIR)" \
 	    --define "_specdir   $(CURDIR)" \
@@ -193,8 +192,7 @@ srpm: sources
 	rm -f "$(SPEC_TMP)" \
 	      akamu.service akamu-cosigner.service \
 	      akamu-sysusers.conf akamu-cosigner-sysusers.conf \
-	      akamu-tmpfiles.conf akamu-cosigner-tmpfiles.conf \
-	      akamuctl.toml.example
+	      akamu-tmpfiles.conf akamu-cosigner-tmpfiles.conf
 
 # ── mock ──────────────────────────────────────────────────────────────────────
 
