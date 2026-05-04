@@ -46,11 +46,19 @@ pub struct AppState {
     pub signing_stats: Arc<Mutex<(u64, Option<i64>)>>,
 }
 
+/// An active admin session in the cosigner session store.
+///
+/// Stores operator identity and timing data for TTL enforcement and for
+/// audit event attribution.
 pub struct CosignerSession {
+    /// Operator name, zeroed on drop (FDP_RIP.1).
     pub name: zeroize::Zeroizing<String>,
+    /// Role governing which admin endpoints this session may access.
     pub role: CosignerRole,
     /// Position of the operator in `AppState::admin_operators` (0-based, cast to i64).
     pub operator_id: i64,
+    /// When this session token was issued.
     pub created_at: Instant,
+    /// Updated on every authenticated request; TTL is measured from this.
     pub last_active_at: Instant,
 }
