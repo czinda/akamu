@@ -178,16 +178,13 @@ impl AdminConfig {
         if self.bootstrap_operator_gssapi_principal.is_some()
             && self.bootstrap_operator_cert_file.is_some()
         {
-            return Err(
-                "[admin] bootstrap_operator_gssapi_principal and \
+            return Err("[admin] bootstrap_operator_gssapi_principal and \
                  bootstrap_operator_cert_file / bootstrap_operator_key_file \
                  are mutually exclusive; choose one bootstrap method"
-                    .into(),
-            );
+                .into());
         }
         Ok(())
     }
-
 }
 
 /// GSSAPI/Kerberos configuration for the admin interface.
@@ -1374,7 +1371,10 @@ key_file    = "/etc/akamu/admin-key.pem"
         );
         let cfg: Config = toml::from_str(&toml).unwrap();
         let err = cfg.admin.unwrap().validate().unwrap_err();
-        assert!(err.contains("ca_certs"), "error should mention ca_certs: {err}");
+        assert!(
+            err.contains("ca_certs"),
+            "error should mention ca_certs: {err}"
+        );
     }
 
     #[test]

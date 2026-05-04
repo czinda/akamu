@@ -2,8 +2,8 @@
 
 use native_ossl::digest::DigestAlg;
 use synta::Decoder;
-use synta::ToDer as _;
 use synta::Encoding;
+use synta::ToDer as _;
 use synta_certificate::oids;
 use synta_certificate::pkcs1_types::RsassaPssParams;
 use synta_certificate::Certificate;

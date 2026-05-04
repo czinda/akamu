@@ -185,13 +185,21 @@ fn gssapi_negotiate(
 
     const MAX_NEGOTIATE_TOKEN_BYTES: usize = 128 * 1024;
     if token.len() > MAX_NEGOTIATE_TOKEN_BYTES {
-        return Err((StatusCode::BAD_REQUEST, "Negotiate token exceeds size limit").into_response());
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Negotiate token exceeds size limit",
+        )
+            .into_response());
     }
 
     match akamu_gssapi::accept_token(cred, &token, binding) {
-        Ok(akamu_gssapi::AcceptStep::Complete { out_token, principal }) => {
-            Ok(GssapiResult { principal, out_token })
-        }
+        Ok(akamu_gssapi::AcceptStep::Complete {
+            out_token,
+            principal,
+        }) => Ok(GssapiResult {
+            principal,
+            out_token,
+        }),
         Ok(akamu_gssapi::AcceptStep::Continue { out_token, ctx: _ }) => {
             // Mechanism needs another round-trip.  Return 401 with the continuation
             // token; the client will re-send and a fresh context will be started.

@@ -359,13 +359,12 @@ pub async fn record(
     // FAU_ARP.1: rolling-window alarm for repeated SecurityViolation events.
     if is_violation {
         let threshold_exceeded = {
-            let mut times = state
-                .violation_times
-                .lock()
-                .unwrap_or_else(|e| {
-                    tracing::error!("violation_times mutex poisoned — FAU_ARP.1 alarm state may be inconsistent");
-                    e.into_inner()
-                });
+            let mut times = state.violation_times.lock().unwrap_or_else(|e| {
+                tracing::error!(
+                    "violation_times mutex poisoned — FAU_ARP.1 alarm state may be inconsistent"
+                );
+                e.into_inner()
+            });
             let cutoff = Instant::now() - Duration::from_secs(300);
             times.retain(|&t| t >= cutoff);
             times.push_back(Instant::now());
@@ -397,12 +396,7 @@ pub async fn record(
 }
 
 /// Like [`record`] but logs errors instead of propagating them.
-pub async fn record_or_log(
-    db: &Db,
-    state: &AuditState,
-    policy: &AuditPolicy,
-    ev: AuditEvent,
-) {
+pub async fn record_or_log(db: &Db, state: &AuditState, policy: &AuditPolicy, ev: AuditEvent) {
     let ev_type = ev.event_type.as_str();
     let ev_outcome = ev.outcome.as_str();
     if let Err(e) = record(db, state, policy, ev).await {

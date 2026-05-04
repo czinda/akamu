@@ -289,7 +289,8 @@ async fn run() -> Result<(), String> {
         if let Some(ref gcfg) = admin_cfg.gssapi {
             tracing::info!(
                 "initializing admin GSSAPI credential for service '{}', keytab: '{}'",
-                gcfg.service_name, gcfg.keytab_file
+                gcfg.service_name,
+                gcfg.keytab_file
             );
             let cred = akamu_gssapi::GssServerCred::acquire(&gcfg.service_name, &gcfg.keytab_file)
                 .map_err(|e| format!("admin GSSAPI credential init: {e}"))?;
@@ -364,12 +365,14 @@ async fn run() -> Result<(), String> {
                 .map(akamu::audit::AuditPolicy::from_admin_config)
                 .unwrap_or_default(),
         ),
-        admin_sessions: config.admin.as_ref().map(|_| {
-            Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()))
-        }),
-        admin_auth_limiter: config.admin.as_ref().map(|_| {
-            Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()))
-        }),
+        admin_sessions: config
+            .admin
+            .as_ref()
+            .map(|_| Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()))),
+        admin_auth_limiter: config
+            .admin
+            .as_ref()
+            .map(|_| Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()))),
         startup_time: std::time::Instant::now(),
     });
 
@@ -425,18 +428,17 @@ async fn run() -> Result<(), String> {
 
         // Channel binding for admin cert (RFC 5929 §4), injected per-connection
         // so GSSAPI can perform mutual auth with the admin server endpoint.
-        let admin_channel_binding: Option<Arc<Vec<u8>>> = match akamu::tls::loader::load_server_cert_chain(
-            &admin_cfg.cert_file,
-        )
-        .ok()
-        .and_then(|chain| chain.into_iter().next())
-        .map(|c| c.to_vec())
-        {
-            Some(der) => {
-                akamu::tls::channel_binding::tls_server_endpoint_binding(&der).map(Arc::new)
-            }
-            None => None,
-        };
+        let admin_channel_binding: Option<Arc<Vec<u8>>> =
+            match akamu::tls::loader::load_server_cert_chain(&admin_cfg.cert_file)
+                .ok()
+                .and_then(|chain| chain.into_iter().next())
+                .map(|c| c.to_vec())
+            {
+                Some(der) => {
+                    akamu::tls::channel_binding::tls_server_endpoint_binding(&der).map(Arc::new)
+                }
+                None => None,
+            };
 
         let admin_addr: std::net::SocketAddr = admin_cfg
             .listen_addr
@@ -480,9 +482,8 @@ async fn run() -> Result<(), String> {
                             req.extensions_mut()
                                 .insert(axum::extract::ConnectInfo(peer_addr));
                             if let Some(ref der) = peer_cert {
-                                req.extensions_mut().insert(
-                                    akamu::admin::auth::PeerClientCert(der.clone()),
-                                );
+                                req.extensions_mut()
+                                    .insert(akamu::admin::auth::PeerClientCert(der.clone()));
                             }
                             if let Some(ref binding) = channel_binding {
                                 req.extensions_mut().insert(

@@ -275,12 +275,8 @@ impl ProfileRegistry {
 
     /// Re-read all providers and atomically replace the cache.
     pub async fn refresh(&self) -> Result<(), String> {
-        let profiles = load_all_providers(
-            &self.providers_cfg,
-            &self.ca_defaults,
-            self.dns_resolver,
-        )
-        .await?;
+        let profiles =
+            load_all_providers(&self.providers_cfg, &self.ca_defaults, self.dns_resolver).await?;
         let count = profiles.len();
         {
             let mut cache = self.cache.write().unwrap();

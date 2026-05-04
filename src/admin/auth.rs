@@ -60,7 +60,10 @@ pub fn generate_token() -> Result<String, String> {
 /// `find()` short-circuits on the first match, leaking the map position.
 /// HashMap iteration order is randomised by the std hasher; this residual is
 /// accepted.
-pub fn find_session_token<V>(map: &std::collections::HashMap<String, V>, token: &str) -> Option<String> {
+pub fn find_session_token<V>(
+    map: &std::collections::HashMap<String, V>,
+    token: &str,
+) -> Option<String> {
     use subtle::ConstantTimeEq as _;
     let token_bytes = token.as_bytes();
     map.keys()
@@ -88,10 +91,9 @@ pub async fn create_session(
         last_active_at: Instant::now(),
         auth_method,
     };
-    let store = state
-        .admin_sessions
-        .as_ref()
-        .ok_or_else(|| crate::error::AcmeError::Internal("admin sessions store not initialised".into()))?;
+    let store = state.admin_sessions.as_ref().ok_or_else(|| {
+        crate::error::AcmeError::Internal("admin sessions store not initialised".into())
+    })?;
     let mut map = store.lock().await;
     // Sweep expired entries while we hold the lock.
     let ttl = Duration::from_secs(
@@ -121,7 +123,10 @@ pub async fn create_session(
 
 /// Look up a session by token.  Sweeps expired entries; updates `last_active_at`
 /// on a hit.  Returns `None` when the token is absent or expired.
-async fn lookup_session(state: &AppState, token: &str) -> Option<(i64, String, OperatorRole, AdminAuthMethod)> {
+async fn lookup_session(
+    state: &AppState,
+    token: &str,
+) -> Option<(i64, String, OperatorRole, AdminAuthMethod)> {
     let store = state.admin_sessions.as_ref()?;
     let ttl = Duration::from_secs(
         state
@@ -136,7 +141,12 @@ async fn lookup_session(state: &AppState, token: &str) -> Option<(i64, String, O
     let key = find_session_token(&map, token)?;
     let session = map.get_mut(&key)?;
     session.last_active_at = Instant::now();
-    Some((session.operator_id, session.name.clone(), session.role, session.auth_method))
+    Some((
+        session.operator_id,
+        session.name.clone(),
+        session.role,
+        session.auth_method,
+    ))
 }
 
 /// Remove a session token from the store.  No-op if the token is unknown.
@@ -308,11 +318,13 @@ where
                 }
                 Ok(None) => {
                     app.record_audit(
-                        AuditEvent::failure(AuditEventType::AdminLogin)
-                            .with_detail("{\"method\":\"cert\",\"reason\":\"fingerprint not found\"}"),
+                        AuditEvent::failure(AuditEventType::AdminLogin).with_detail(
+                            "{\"method\":\"cert\",\"reason\":\"fingerprint not found\"}",
+                        ),
                     )
                     .await;
-                    return Err((StatusCode::FORBIDDEN, "client certificate not recognized").into_response());
+                    return Err((StatusCode::FORBIDDEN, "client certificate not recognized")
+                        .into_response());
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "operator DB lookup failed");
@@ -377,7 +389,11 @@ async fn authenticate_gssapi(
         })?;
 
     if token_bytes.len() > 128 * 1024 {
-        return Err((StatusCode::BAD_REQUEST, "Negotiate token exceeds size limit").into_response());
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Negotiate token exceeds size limit",
+        )
+            .into_response());
     }
 
     // Use the admin-specific GSSAPI credential if configured, otherwise fall
@@ -407,11 +423,7 @@ async fn authenticate_gssapi(
     let token_bytes_owned = token_bytes.to_vec();
     let channel_bindings_owned = channel_bindings.map(|b| b.to_vec());
     let result = tokio::task::spawn_blocking(move || {
-        akamu_gssapi::accept_token(
-            &cred,
-            &token_bytes_owned,
-            channel_bindings_owned.as_deref(),
-        )
+        akamu_gssapi::accept_token(&cred, &token_bytes_owned, channel_bindings_owned.as_deref())
     })
     .await
     .map_err(|e| {
@@ -420,7 +432,10 @@ async fn authenticate_gssapi(
     })?;
 
     let (out_token, principal) = match result {
-        Ok(akamu_gssapi::AcceptStep::Complete { out_token, principal }) => (out_token, principal),
+        Ok(akamu_gssapi::AcceptStep::Complete {
+            out_token,
+            principal,
+        }) => (out_token, principal),
         Ok(akamu_gssapi::AcceptStep::Continue { out_token, ctx: _ }) => {
             // Mechanism needs another round-trip.  Return 401 with the continuation
             // token; the client will re-send and a fresh context will be started.
@@ -487,7 +502,11 @@ async fn authenticate_gssapi(
                     .with_detail("{\"method\":\"gssapi\",\"reason\":\"principal not registered\"}"),
             )
             .await;
-            Err((StatusCode::FORBIDDEN, "Kerberos principal is not a registered operator").into_response())
+            Err((
+                StatusCode::FORBIDDEN,
+                "Kerberos principal is not a registered operator",
+            )
+                .into_response())
         }
         Err(e) => {
             tracing::error!(error = %e, "operator DB lookup failed");
@@ -555,7 +574,9 @@ pub async fn delete_session(
         invalidate_session(&state, token).await;
     }
     state
-        .record_audit(AuditEvent::success(AuditEventType::AdminLogout).with_principal(&operator.name))
+        .record_audit(
+            AuditEvent::success(AuditEventType::AdminLogout).with_principal(&operator.name),
+        )
         .await;
     StatusCode::NO_CONTENT
 }

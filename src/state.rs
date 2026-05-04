@@ -312,7 +312,6 @@ impl std::str::FromStr for OperatorRole {
 }
 
 impl OperatorRole {
-
     pub fn as_str(self) -> &'static str {
         match self {
             OperatorRole::Administrator => "administrator",

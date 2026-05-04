@@ -51,8 +51,12 @@ pub fn load_or_generate_server_cert(cfg: &AdminConfig, ca: &CaState) -> Result<(
         cfg.bootstrap_key_type,
     );
 
-    let key = generate_backend_key(&cfg.bootstrap_key_type)
-        .map_err(|e| format!("generate admin server key (type '{}'): {e}", cfg.bootstrap_key_type))?;
+    let key = generate_backend_key(&cfg.bootstrap_key_type).map_err(|e| {
+        format!(
+            "generate admin server key (type '{}'): {e}",
+            cfg.bootstrap_key_type
+        )
+    })?;
 
     let cert_der = sign_server_cert(&cfg.server_name, &key, ca)
         .map_err(|e| format!("sign admin server cert: {e}"))?;
@@ -203,8 +207,8 @@ pub async fn bootstrap_operator_if_needed(
     let cert_der = sign_admin_cert(&cfg.bootstrap_operator_name, &key, ca)
         .map_err(|e| format!("sign bootstrap operator cert: {e}"))?;
 
-    let fingerprint = sha256_hex(&cert_der)
-        .map_err(|e| format!("bootstrap operator cert fingerprint: {e}"))?;
+    let fingerprint =
+        sha256_hex(&cert_der).map_err(|e| format!("bootstrap operator cert fingerprint: {e}"))?;
 
     let key_pem = key
         .to_pem(None)
