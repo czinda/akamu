@@ -161,6 +161,7 @@ dependencies = [
  "akamu-gssapi",
  "base64",
  "clap",
+ "hickory-resolver",
  "http-body-util",
  "hyper",
  "hyper-rustls",

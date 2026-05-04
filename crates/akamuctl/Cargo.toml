@@ -40,6 +40,9 @@ synta-certificate = { version = ">=0.2.0", features = ["std", "pqc"] }
 # URL encoding for query parameters
 percent-encoding = "2"
 
+# DNS resolution for SPN derivation
+hickory-resolver = { version = "0.24" }
+
 # GSSAPI / Kerberos (ccache-based login)
 akamu-gssapi   = { path = "../akamu-gssapi" }
 base64         = "0.22"
