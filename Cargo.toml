@@ -85,6 +85,9 @@ getrandom = "0.2"
 # Constant-time byte comparison (session token lookup defense against timing attacks)
 subtle = "2"
 
+# Secure memory wiping on drop (FDP_RIP.1 — residual information protection)
+zeroize = { version = "1", features = ["zeroize_derive"] }
+
 # Regular expressions (profile identifier authorization)
 regex = { version = "1", default-features = false, features = ["std", "unicode-bool"] }
 # POSIX file locking (flock) for MTC log exclusion

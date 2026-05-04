@@ -85,7 +85,7 @@ pub async fn create_session(
     let token = generate_token().map_err(crate::error::AcmeError::Internal)?;
     let session = AdminSession {
         operator_id,
-        name,
+        name: zeroize::Zeroizing::new(name),
         role,
         created_at: Instant::now(),
         last_active_at: Instant::now(),
@@ -143,7 +143,7 @@ async fn lookup_session(
     session.last_active_at = Instant::now();
     Some((
         session.operator_id,
-        session.name.clone(),
+        String::clone(&session.name),
         session.role,
         session.auth_method,
     ))

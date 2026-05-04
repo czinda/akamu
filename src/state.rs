@@ -332,9 +332,12 @@ pub enum AdminAuthMethod {
 }
 
 /// An active admin operator session stored in `AppState::admin_sessions`.
+///
+/// Implements [`Drop`] to zeroize the operator name, satisfying FDP_RIP.1
+/// (residual information protection).
 pub struct AdminSession {
     pub operator_id: i64,
-    pub name: String,
+    pub name: zeroize::Zeroizing<String>,
     pub role: OperatorRole,
     /// When this session token was issued.
     pub created_at: Instant,

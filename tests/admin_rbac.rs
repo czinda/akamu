@@ -158,7 +158,7 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
                 token.to_string(),
                 AdminSession {
                     operator_id: 1,
-                    name: format!("test-{}", role.as_str()),
+                    name: zeroize::Zeroizing::new(format!("test-{}", role.as_str())),
                     role,
                     created_at: Instant::now(),
                     last_active_at: Instant::now(),
@@ -334,7 +334,7 @@ async fn admin_rbac_table() {
                     token.to_string(),
                     akamu::state::AdminSession {
                         operator_id: 1,
-                        name: format!("test-{}", role.as_str()),
+                        name: zeroize::Zeroizing::new(format!("test-{}", role.as_str())),
                         role,
                         created_at: Instant::now(),
                         last_active_at: Instant::now(),
