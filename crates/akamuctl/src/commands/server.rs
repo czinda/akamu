@@ -23,6 +23,47 @@ pub async fn profile_list(client: &AdminClient, fmt: &Format) -> Result<(), CtlE
     Ok(())
 }
 
+pub async fn profile_add(
+    client: &AdminClient,
+    fmt: &Format,
+    id: &str,
+    params_file: &std::path::Path,
+) -> Result<(), CtlError> {
+    let data = std::fs::read_to_string(params_file)?;
+    let mut body: serde_json::Value = serde_json::from_str(&data)
+        .map_err(|e| CtlError::Api(format!("parsing {}: {e}", params_file.display())))?;
+    body["id"] = json!(id);
+    let resp = client.post("/admin/profiles", Some(&body)).await?;
+    print(fmt, &resp);
+    Ok(())
+}
+
+pub async fn profile_update(
+    client: &AdminClient,
+    fmt: &Format,
+    id: &str,
+    params_file: &std::path::Path,
+) -> Result<(), CtlError> {
+    let data = std::fs::read_to_string(params_file)?;
+    let body: serde_json::Value = serde_json::from_str(&data)
+        .map_err(|e| CtlError::Api(format!("parsing {}: {e}", params_file.display())))?;
+    let resp = client
+        .put(&format!("/admin/profiles/{id}"), &body)
+        .await?;
+    print(fmt, &resp);
+    Ok(())
+}
+
+pub async fn profile_remove(
+    client: &AdminClient,
+    _fmt: &Format,
+    id: &str,
+) -> Result<(), CtlError> {
+    client
+        .delete(&format!("/admin/profiles/{id}"))
+        .await
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn order_list(
     client: &AdminClient,

@@ -191,7 +191,14 @@ pub fn build_admin_router(state: Arc<AppState>) -> Router {
             "/admin/certs/{id}/download",
             axum::routing::get(admin::get_cert_download),
         )
-        .route("/admin/profiles", axum::routing::get(admin::get_profiles))
+        .route(
+            "/admin/profiles",
+            axum::routing::get(admin::get_profiles).post(admin::post_profiles),
+        )
+        .route(
+            "/admin/profiles/{id}",
+            axum::routing::put(admin::put_profile).delete(admin::delete_profile),
+        )
         .route("/admin/accounts", axum::routing::get(admin::get_accounts))
         .route(
             "/admin/account/{id}",

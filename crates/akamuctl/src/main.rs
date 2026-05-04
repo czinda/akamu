@@ -293,6 +293,27 @@ enum AccountCmd {
 enum ProfileCmd {
     /// List loaded certificate profiles.
     List,
+    /// Add a new certificate profile.
+    Add {
+        /// Profile ID.
+        id: String,
+        /// JSON file with profile parameters.
+        #[arg(long, value_name = "FILE")]
+        params_file: PathBuf,
+    },
+    /// Update an existing certificate profile.
+    Update {
+        /// Profile ID.
+        id: String,
+        /// JSON file with profile parameters.
+        #[arg(long, value_name = "FILE")]
+        params_file: PathBuf,
+    },
+    /// Remove a certificate profile.
+    Remove {
+        /// Profile ID.
+        id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -572,6 +593,15 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
         Commands::Profile(prof_cmd) => match prof_cmd {
             ProfileCmd::List => {
                 commands::server::profile_list(&server_client, &fmt).await?;
+            }
+            ProfileCmd::Add { id, params_file } => {
+                commands::server::profile_add(&server_client, &fmt, &id, &params_file).await?;
+            }
+            ProfileCmd::Update { id, params_file } => {
+                commands::server::profile_update(&server_client, &fmt, &id, &params_file).await?;
+            }
+            ProfileCmd::Remove { id } => {
+                commands::server::profile_remove(&server_client, &fmt, &id).await?;
             }
         },
         Commands::Order(order_cmd) => match order_cmd {

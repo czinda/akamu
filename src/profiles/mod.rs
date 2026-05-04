@@ -319,6 +319,48 @@ impl ProfileRegistry {
     pub fn is_empty(&self) -> bool {
         self.cache.read().unwrap().profiles.is_empty()
     }
+
+    /// Add a profile to the runtime cache (FPT_NPE_EXT.1).
+    ///
+    /// Returns `false` when a profile with the same `id` already exists.
+    pub fn add_profile(
+        &self,
+        id: String,
+        description: String,
+        params: CertificateParameters,
+    ) -> bool {
+        let mut cache = self.cache.write().unwrap();
+        if cache.profiles.contains_key(&id) {
+            return false;
+        }
+        cache.profiles.insert(id, (description, params));
+        true
+    }
+
+    /// Remove a profile from the runtime cache (FPT_NPE_EXT.1).
+    ///
+    /// Returns `true` when the profile existed and was removed.
+    pub fn remove_profile(&self, id: &str) -> bool {
+        self.cache.write().unwrap().profiles.remove(id).is_some()
+    }
+
+    /// Replace an existing profile in the runtime cache (FPT_NPE_EXT.1).
+    ///
+    /// Returns `true` when the profile existed and was updated.
+    pub fn update_profile(
+        &self,
+        id: &str,
+        description: String,
+        params: CertificateParameters,
+    ) -> bool {
+        let mut cache = self.cache.write().unwrap();
+        if let Some(entry) = cache.profiles.get_mut(id) {
+            *entry = (description, params);
+            true
+        } else {
+            false
+        }
+    }
 }
 
 // ── Internal loader ───────────────────────────────────────────────────────────

@@ -21,6 +21,9 @@
 //! | `GET /admin/certs/{id}` | ✓ | ✓ | | ✓ |
 //! | `GET /admin/certs/{id}/download` | ✓ | ✓ | | |
 //! | `GET /admin/profiles` | ✓ | ✓ | ✓ | ✓ |
+//! | `POST /admin/profiles` | ✓ | | | |
+//! | `PUT /admin/profiles/{id}` | ✓ | | | |
+//! | `DELETE /admin/profiles/{id}` | ✓ | | | |
 //! | `GET /admin/accounts` | ✓ | ✓ | ✓ | ✓ |
 //! | `GET /admin/account/{id}` | ✓ | ✓ | ✓ | ✓ |
 //! | `POST /admin/account/{id}/deactivate` | ✓ | | | |
@@ -927,6 +930,198 @@ pub async fn get_profiles(
     list.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
 
     (StatusCode::OK, Json(json!({"profiles": list}))).into_response()
+}
+
+/// JSON payload for `POST /admin/profiles` and `PUT /admin/profiles/{id}`.
+#[derive(Deserialize)]
+struct ProfilePayload {
+    #[serde(default)]
+    description: String,
+    #[serde(default = "default_profile_validity_days")]
+    validity_days: u32,
+    #[serde(default = "default_profile_hash_alg")]
+    hash_alg: String,
+    #[serde(default)]
+    key_usage_bits: u16,
+    #[serde(default)]
+    extended_key_usages: Vec<String>,
+    #[serde(default)]
+    crl_url: Option<String>,
+    #[serde(default)]
+    ocsp_url: Option<String>,
+    #[serde(default)]
+    allowed_key_types: Vec<String>,
+    #[serde(default)]
+    certificate_policies: Vec<(String, Option<String>)>,
+    #[serde(default)]
+    issue_as_mtc: bool,
+    #[serde(default)]
+    allowed_identifier_patterns: Vec<String>,
+    #[serde(default = "default_true")]
+    identifier_match_all: bool,
+    #[serde(default)]
+    auth_hook: Option<String>,
+    #[serde(default = "default_auth_hook_timeout")]
+    auth_hook_timeout_secs: u64,
+    #[serde(default)]
+    require_account_grant: bool,
+}
+
+fn default_profile_validity_days() -> u32 {
+    90
+}
+fn default_profile_hash_alg() -> String {
+    "sha256".to_string()
+}
+fn default_true() -> bool {
+    true
+}
+fn default_auth_hook_timeout() -> u64 {
+    30
+}
+
+impl ProfilePayload {
+    fn into_params(self) -> crate::profiles::CertificateParameters {
+        crate::profiles::CertificateParameters {
+            validity_days: self.validity_days,
+            hash_alg: self.hash_alg,
+            key_usage_bits: self.key_usage_bits,
+            extended_key_usages: self.extended_key_usages,
+            crl_url: self.crl_url,
+            ocsp_url: self.ocsp_url,
+            allowed_key_types: self.allowed_key_types,
+            certificate_policies: self.certificate_policies,
+            issue_as_mtc: self.issue_as_mtc,
+            allowed_identifier_patterns: self.allowed_identifier_patterns,
+            identifier_match_all: self.identifier_match_all,
+            auth_hook: self.auth_hook,
+            auth_hook_timeout_secs: self.auth_hook_timeout_secs,
+            require_account_grant: self.require_account_grant,
+        }
+    }
+}
+
+/// JSON payload for `POST /admin/profiles` (creation includes the profile ID).
+#[derive(Deserialize)]
+struct ProfileCreatePayload {
+    id: String,
+    #[serde(flatten)]
+    inner: ProfilePayload,
+}
+
+/// `POST /admin/profiles`
+///
+/// Add a new certificate profile to the runtime cache (FPT_NPE_EXT.1).
+/// Requires: `administrator`.
+pub async fn post_profiles(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+    body: Bytes,
+) -> Response {
+    require_role!(operator, state, Administrator);
+
+    let payload: ProfileCreatePayload = match serde_json::from_slice(&body) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("JSON: {e}")).into_response(),
+    };
+
+    if payload.id.is_empty() {
+        return (StatusCode::BAD_REQUEST, "id is required").into_response();
+    }
+
+    let id = payload.id.clone();
+    let desc = payload.inner.description.clone();
+    if state
+        .profiles
+        .add_profile(id.clone(), desc.clone(), payload.inner.into_params())
+    {
+        state
+            .record_audit(
+                AuditEvent::success(AuditEventType::AdminAction)
+                    .with_principal(&operator.name)
+                    .with_detail(json!({"action": "profile.create", "id": id}).to_string()),
+            )
+            .await;
+        (
+            StatusCode::CREATED,
+            Json(json!({"id": id, "description": desc})),
+        )
+            .into_response()
+    } else {
+        (
+            StatusCode::CONFLICT,
+            Json(json!({"status": 409, "detail": "profile already exists"})),
+        )
+            .into_response()
+    }
+}
+
+/// `PUT /admin/profiles/{id}`
+///
+/// Replace an existing certificate profile in the runtime cache (FPT_NPE_EXT.1).
+/// Requires: `administrator`.
+pub async fn put_profile(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Response {
+    require_role!(operator, state, Administrator);
+
+    let payload: ProfilePayload = match serde_json::from_slice(&body) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("JSON: {e}")).into_response(),
+    };
+
+    let desc = payload.description.clone();
+    if state
+        .profiles
+        .update_profile(&id, desc, payload.into_params())
+    {
+        state
+            .record_audit(
+                AuditEvent::success(AuditEventType::AdminAction)
+                    .with_principal(&operator.name)
+                    .with_detail(json!({"action": "profile.update", "id": id}).to_string()),
+            )
+            .await;
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({"status": 404, "detail": "profile not found"})),
+        )
+            .into_response()
+    }
+}
+
+/// `DELETE /admin/profiles/{id}`
+///
+/// Remove a certificate profile from the runtime cache (FPT_NPE_EXT.1).
+/// Requires: `administrator`.
+pub async fn delete_profile(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    require_role!(operator, state, Administrator);
+
+    if state.profiles.remove_profile(&id) {
+        state
+            .record_audit(
+                AuditEvent::success(AuditEventType::AdminAction)
+                    .with_principal(&operator.name)
+                    .with_detail(json!({"action": "profile.delete", "id": id}).to_string()),
+            )
+            .await;
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({"status": 404, "detail": "profile not found"})),
+        )
+            .into_response()
+    }
 }
 
 // ── Accounts ─────────────────────────────────────────────────────────────
