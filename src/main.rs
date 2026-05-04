@@ -109,9 +109,13 @@ async fn run() -> Result<(), String> {
         _ => 10,
     });
     tracing::info!("opening database '{}'", config.database.url);
-    let db = db::open(&config.database.url, max_connections, config.database.require_tls)
-        .await
-        .map_err(|e| format!("database init: {e}"))?;
+    let db = db::open(
+        &config.database.url,
+        max_connections,
+        config.database.require_tls,
+    )
+    .await
+    .map_err(|e| format!("database init: {e}"))?;
 
     // Sweep DB nonces older than 24 h at startup (best-effort; handles any
     // nonces written by a previous process that used the DB-backed store).

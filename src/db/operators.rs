@@ -260,12 +260,10 @@ pub async fn reset_failed(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: i64,
 ) -> Result<(), AcmeError> {
-    sqlx::query(
-        "UPDATE operators SET failed_attempts = 0, locked_until = NULL WHERE id = ?",
-    )
-    .bind(id)
-    .execute(executor)
-    .await?;
+    sqlx::query("UPDATE operators SET failed_attempts = 0, locked_until = NULL WHERE id = ?")
+        .bind(id)
+        .execute(executor)
+        .await?;
     Ok(())
 }
 
@@ -274,12 +272,11 @@ pub async fn unlock(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: i64,
 ) -> Result<bool, AcmeError> {
-    let result = sqlx::query(
-        "UPDATE operators SET failed_attempts = 0, locked_until = NULL WHERE id = ?",
-    )
-    .bind(id)
-    .execute(executor)
-    .await?;
+    let result =
+        sqlx::query("UPDATE operators SET failed_attempts = 0, locked_until = NULL WHERE id = ?")
+            .bind(id)
+            .execute(executor)
+            .await?;
     Ok(result.rows_affected() > 0)
 }
 

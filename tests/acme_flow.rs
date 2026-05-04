@@ -196,7 +196,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         database: DatabaseConfig {
             url: "sqlite::memory:".into(),
             max_connections: None,
-                require_tls: false,
+            require_tls: false,
         },
         ca: CaConfig {
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
@@ -2203,7 +2203,7 @@ async fn test_directory_with_optional_fields() {
         database: DatabaseConfig {
             url: "sqlite::memory:".into(),
             max_connections: None,
-                require_tls: false,
+            require_tls: false,
         },
         ca: CaConfig {
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
@@ -2586,7 +2586,7 @@ async fn test_finalize_with_mtc_enabled() {
         database: DatabaseConfig {
             url: "sqlite::memory:".into(),
             max_connections: None,
-                require_tls: false,
+            require_tls: false,
         },
         ca: CaConfig {
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
@@ -2851,7 +2851,7 @@ async fn test_finalize_with_aia_and_cdp() {
         database: DatabaseConfig {
             url: "sqlite::memory:".into(),
             max_connections: None,
-                require_tls: false,
+            require_tls: false,
         },
         ca: CaConfig {
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),

@@ -429,8 +429,8 @@ mod tests {
                 ca_validity_years: 10,
                 crl_next_update_secs: 86400,
                 enforce_validity_cap: false,
-            require_encrypted_key: false,
-            key_password_file: None,
+                require_encrypted_key: false,
+                key_password_file: None,
             },
             mtc: MtcConfig {
                 log_path: "/dev/null".into(),
@@ -911,8 +911,8 @@ mod tests {
                 ca_validity_years: 10,
                 crl_next_update_secs: 86400,
                 enforce_validity_cap: false,
-            require_encrypted_key: false,
-            key_password_file: None,
+                require_encrypted_key: false,
+                key_password_file: None,
             },
             mtc: MtcConfig {
                 log_path: "/dev/null".into(),
@@ -1217,8 +1217,8 @@ mod tests {
                 ca_validity_years: 10,
                 crl_next_update_secs: 86400,
                 enforce_validity_cap: false,
-            require_encrypted_key: false,
-            key_password_file: None,
+                require_encrypted_key: false,
+                key_password_file: None,
             },
             mtc: MtcConfig {
                 log_path: "/dev/null".into(),

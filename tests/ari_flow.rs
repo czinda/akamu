@@ -135,7 +135,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         database: DatabaseConfig {
             url: "sqlite::memory:".into(),
             max_connections: None,
-                require_tls: false,
+            require_tls: false,
         },
         ca: CaConfig {
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
@@ -504,7 +504,7 @@ async fn test_renewal_info_explanation_url() {
         database: DatabaseConfig {
             url: "sqlite::memory:".into(),
             max_connections: None,
-                require_tls: false,
+            require_tls: false,
         },
         ca: CaConfig {
             key_file: "/dev/null".into(),

@@ -62,7 +62,7 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
         database: DatabaseConfig {
             url: "sqlite::memory:".into(),
             max_connections: None,
-                require_tls: false,
+            require_tls: false,
         },
         ca: CaConfig {
             key_file: dir.join("ca.key").to_string_lossy().into_owned(),

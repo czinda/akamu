@@ -449,8 +449,10 @@ pub async fn get_certs(
     let status = params.get("status").map(String::as_str);
     let subject_dn = params.get("subject").map(String::as_str);
 
-    let result =
-        db::certs::search(&state.db, serial, account_id, status, subject_dn, limit, offset).await;
+    let result = db::certs::search(
+        &state.db, serial, account_id, status, subject_dn, limit, offset,
+    )
+    .await;
 
     match result {
         Ok(rows) => {

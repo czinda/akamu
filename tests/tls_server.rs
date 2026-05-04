@@ -395,7 +395,7 @@ async fn start_tls_server() -> TlsTestServer {
         database: DatabaseConfig {
             url: "sqlite::memory:".into(),
             max_connections: None,
-                require_tls: false,
+            require_tls: false,
         },
         ca: CaConfig {
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),

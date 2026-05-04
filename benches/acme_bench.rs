@@ -678,7 +678,7 @@ async fn start_server(args: &Args) -> BenchServer {
         database: DatabaseConfig {
             url: args.db.clone(),
             max_connections: None,
-                require_tls: false,
+            require_tls: false,
         },
         ca: CaConfig {
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
