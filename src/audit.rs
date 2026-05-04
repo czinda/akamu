@@ -240,6 +240,9 @@ pub struct AuditState {
     /// decrements to avoid `SELECT COUNT(*)` on every insert.  A value of `-1`
     /// means "not yet seeded"; `record` falls back to a DB count query in that case.
     pub row_count: AtomicI64,
+    /// Consecutive audit insert failures (FAU_STG.1).  Reset to 0 on success;
+    /// when this reaches `alarm_threshold`, `should_halt` is set.
+    pub consecutive_insert_failures: std::sync::atomic::AtomicU32,
 }
 
 impl AuditState {
@@ -248,6 +251,7 @@ impl AuditState {
             violation_times: Mutex::new(VecDeque::new()),
             should_halt: AtomicBool::new(false),
             row_count: AtomicI64::new(-1),
+            consecutive_insert_failures: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
@@ -396,16 +400,36 @@ pub async fn record(
 }
 
 /// Like [`record`] but logs errors instead of propagating them.
+///
+/// Tracks consecutive insert failures; when they reach `alarm_threshold`,
+/// sets `should_halt` (FAU_STG.1 — audit store unavailable).
 pub async fn record_or_log(db: &Db, state: &AuditState, policy: &AuditPolicy, ev: AuditEvent) {
     let ev_type = ev.event_type.as_str();
     let ev_outcome = ev.outcome.as_str();
     if let Err(e) = record(db, state, policy, ev).await {
+        let n = state
+            .consecutive_insert_failures
+            .fetch_add(1, Ordering::AcqRel)
+            + 1;
         tracing::error!(
             error = %e,
             event_type = ev_type,
             outcome = ev_outcome,
+            consecutive_failures = n,
             "audit record failed"
         );
+        if n >= policy.alarm_threshold {
+            tracing::error!(
+                consecutive_failures = n,
+                threshold = policy.alarm_threshold,
+                "AUDIT UNAVAILABLE: halting server after repeated insert failures (FAU_STG.1)"
+            );
+            state.should_halt.store(true, Ordering::Release);
+        }
+    } else {
+        state
+            .consecutive_insert_failures
+            .store(0, Ordering::Release);
     }
 }
 
