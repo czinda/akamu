@@ -274,6 +274,10 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
                 .build(https)
         },
         crl_cache: Default::default(),
+        audit: std::sync::Arc::new(akamu::audit::AuditState::new()),
+        audit_policy: std::sync::Arc::new(akamu::audit::AuditPolicy::default()),
+        admin_sessions: None,
+        startup_time: std::time::Instant::now(),
         gss_cred: None,
         eab_master_secret: None,
     });
@@ -2274,6 +2278,10 @@ async fn test_directory_with_optional_fields() {
                 .build(https)
         },
         crl_cache: Default::default(),
+        audit: std::sync::Arc::new(akamu::audit::AuditState::new()),
+        audit_policy: std::sync::Arc::new(akamu::audit::AuditPolicy::default()),
+        admin_sessions: None,
+        startup_time: std::time::Instant::now(),
         gss_cred: None,
         eab_master_secret: None,
     });
@@ -2647,6 +2655,10 @@ async fn test_finalize_with_mtc_enabled() {
                 .build(https)
         },
         crl_cache: Default::default(),
+        audit: std::sync::Arc::new(akamu::audit::AuditState::new()),
+        audit_policy: std::sync::Arc::new(akamu::audit::AuditPolicy::default()),
+        admin_sessions: None,
+        startup_time: std::time::Instant::now(),
         gss_cred: None,
         eab_master_secret: None,
     });
@@ -2898,6 +2910,10 @@ async fn test_finalize_with_aia_and_cdp() {
                 .build(https)
         },
         crl_cache: Default::default(),
+        audit: std::sync::Arc::new(akamu::audit::AuditState::new()),
+        audit_policy: std::sync::Arc::new(akamu::audit::AuditPolicy::default()),
+        admin_sessions: None,
+        startup_time: std::time::Instant::now(),
         gss_cred: None,
         eab_master_secret: None,
     });

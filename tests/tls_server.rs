@@ -501,6 +501,10 @@ async fn start_tls_server() -> TlsTestServer {
                 .build(https)
         },
         crl_cache: Default::default(),
+        audit: std::sync::Arc::new(akamu::audit::AuditState::new()),
+        audit_policy: std::sync::Arc::new(akamu::audit::AuditPolicy::default()),
+        admin_sessions: None,
+        startup_time: std::time::Instant::now(),
         gss_cred: None,
         eab_master_secret: None,
     });
