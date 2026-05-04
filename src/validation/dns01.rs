@@ -27,7 +27,14 @@ pub async fn validate(
     dot_server_name: Option<&str>,
 ) -> Result<(), AcmeError> {
     let resolver_addr = crate::dns::system_resolver_addr();
-    validate_with_resolver(domain, key_auth, resolver_addr, validate_dnssec, dot_server_name).await
+    validate_with_resolver(
+        domain,
+        key_auth,
+        resolver_addr,
+        validate_dnssec,
+        dot_server_name,
+    )
+    .await
 }
 
 /// Inner implementation that takes a resolver address for testability.
@@ -51,9 +58,14 @@ async fn validate_with_resolver(
 
     let fqdn = Name::from_str(&query_name)
         .map_err(|e| AcmeError::Dns(format!("invalid DNS name '{query_name}': {e}")))?;
-    let lookup =
-        crate::dns::dns_query(resolver_addr, validate_dnssec, dot_server_name, fqdn, RecordType::TXT)
-            .await?;
+    let lookup = crate::dns::dns_query(
+        resolver_addr,
+        validate_dnssec,
+        dot_server_name,
+        fqdn,
+        RecordType::TXT,
+    )
+    .await?;
 
     if let Some(lookup) = lookup {
         for rdata in lookup.iter() {
@@ -164,9 +176,14 @@ mod tests {
         let port = start_txt_dns_server("wrong-value-that-does-not-match".to_string()).await;
         let resolver_addr = local_resolver(port);
 
-        let result =
-            validate_with_resolver("example.test", "token.thumbprint", resolver_addr, false, None)
-                .await;
+        let result = validate_with_resolver(
+            "example.test",
+            "token.thumbprint",
+            resolver_addr,
+            false,
+            None,
+        )
+        .await;
         assert!(
             matches!(result, Err(AcmeError::IncorrectResponse(_))),
             "expected IncorrectResponse for wrong TXT value: {result:?}"
@@ -192,8 +209,13 @@ mod tests {
         // Wildcard domain "*.example.invalid" should query "_acme-challenge.example.invalid",
         // not "_acme-challenge.*.example.invalid". The DNS lookup will fail (domain doesn't exist),
         // but the error message should reference the stripped domain.
-        let result =
-            validate("*.acme-test-nonexistent.invalid", "token.thumbprint", false, None).await;
+        let result = validate(
+            "*.acme-test-nonexistent.invalid",
+            "token.thumbprint",
+            false,
+            None,
+        )
+        .await;
         assert!(result.is_err());
         // The error must reference "acme-test-nonexistent.invalid" (stripped domain)
         let msg = result.unwrap_err().to_string();

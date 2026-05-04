@@ -42,7 +42,10 @@ pub struct CaaParams<'a> {
 /// When `params.ca_identities` is empty the check is skipped (open policy).
 ///
 /// `resolver_addr` is an optional DNS resolver override from config (e.g. `"127.0.0.1:53"`).
-pub async fn check_caa(params: CaaParams<'_>, resolver_addr: Option<&str>) -> Result<(), AcmeError> {
+pub async fn check_caa(
+    params: CaaParams<'_>,
+    resolver_addr: Option<&str>,
+) -> Result<(), AcmeError> {
     // Step 1: If ca_identities is empty → no-op (open policy).
     if params.ca_identities.is_empty() {
         return Ok(());
@@ -76,12 +79,16 @@ pub(crate) async fn check_caa_with_resolver(
 
         tracing::debug!(domain, query_name, is_wildcard, "caa: querying CAA records");
 
-        let fqdn = Name::from_str(&query_name).map_err(|e| {
-            AcmeError::Internal(format!("invalid DNS name '{query_name}': {e}"))
-        })?;
-        let result =
-            dns::dns_query(resolver_addr, validate_dnssec, dot_server_name, fqdn, RecordType::CAA)
-                .await;
+        let fqdn = Name::from_str(&query_name)
+            .map_err(|e| AcmeError::Internal(format!("invalid DNS name '{query_name}': {e}")))?;
+        let result = dns::dns_query(
+            resolver_addr,
+            validate_dnssec,
+            dot_server_name,
+            fqdn,
+            RecordType::CAA,
+        )
+        .await;
 
         match result {
             // NXDOMAIN or NOERROR with no records — continue walking up the tree.
@@ -306,9 +313,9 @@ fn evaluate_caa_record_set(
 /// Resolve the configured DNS resolver address, or fall back to the system default.
 fn build_resolver_addr(resolver_addr: Option<&str>) -> Result<SocketAddr, AcmeError> {
     match resolver_addr {
-        Some(addr) => addr.parse::<SocketAddr>().map_err(|e| {
-            AcmeError::Internal(format!("invalid dns_resolver_addr '{addr}': {e}"))
-        }),
+        Some(addr) => addr
+            .parse::<SocketAddr>()
+            .map_err(|e| AcmeError::Internal(format!("invalid dns_resolver_addr '{addr}': {e}"))),
         None => Ok(dns::system_resolver_addr()),
     }
 }
@@ -367,20 +374,19 @@ mod tests {
     #[tokio::test]
     async fn empty_ca_identities_returns_ok() {
         // When ca_identities is empty, check_caa is a no-op regardless of anything else.
-        let result =
-            check_caa(
-                CaaParams {
-                    domain: "example.com",
-                    ca_identities: &[],
-                    is_wildcard: false,
-                    challenge_type: "http-01",
-                    account_url: None,
-                    validate_dnssec: false,
-                    dot_server_name: None,
-                },
-                None,
-            )
-            .await;
+        let result = check_caa(
+            CaaParams {
+                domain: "example.com",
+                ca_identities: &[],
+                is_wildcard: false,
+                challenge_type: "http-01",
+                account_url: None,
+                validate_dnssec: false,
+                dot_server_name: None,
+            },
+            None,
+        )
+        .await;
         assert!(
             result.is_ok(),
             "empty identities should always return Ok: {result:?}"

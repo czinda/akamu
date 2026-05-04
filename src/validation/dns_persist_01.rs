@@ -41,7 +41,15 @@ pub async fn validate(
     dot_server_name: Option<&str>,
 ) -> Result<(), AcmeError> {
     let addr = resolver_addr.unwrap_or_else(crate::dns::system_resolver_addr);
-    validate_with_resolver(domain, account_uri, issuer_domains, addr, validate_dnssec, dot_server_name).await
+    validate_with_resolver(
+        domain,
+        account_uri,
+        issuer_domains,
+        addr,
+        validate_dnssec,
+        dot_server_name,
+    )
+    .await
 }
 
 async fn validate_with_resolver(
@@ -69,9 +77,14 @@ async fn validate_with_resolver(
 
     let fqdn = Name::from_str(&query_name)
         .map_err(|e| AcmeError::Dns(format!("invalid DNS name '{query_name}': {e}")))?;
-    let lookup =
-        crate::dns::dns_query(resolver_addr, validate_dnssec, dot_server_name, fqdn, RecordType::TXT)
-            .await?;
+    let lookup = crate::dns::dns_query(
+        resolver_addr,
+        validate_dnssec,
+        dot_server_name,
+        fqdn,
+        RecordType::TXT,
+    )
+    .await?;
 
     let records: Vec<String> = lookup
         .as_ref()
@@ -547,9 +560,15 @@ mod tests {
         let port = start_txt_dns_server(txt).await;
         let resolver_addr = local_resolver(port);
 
-        let result =
-            validate_with_resolver("example.test", account_uri, &[issuer], resolver_addr, false, None)
-                .await;
+        let result = validate_with_resolver(
+            "example.test",
+            account_uri,
+            &[issuer],
+            resolver_addr,
+            false,
+            None,
+        )
+        .await;
         assert!(
             result.is_ok(),
             "expected Ok for matching record: {result:?}"
@@ -563,16 +582,15 @@ mod tests {
         let port = start_txt_dns_server(txt).await;
         let resolver_addr = local_resolver(port);
 
-        let result =
-            validate_with_resolver(
-                "example.test",
-                account_uri,
-                &["acme.example.com"],
-                resolver_addr,
-                false,
-                None,
-            )
-            .await;
+        let result = validate_with_resolver(
+            "example.test",
+            account_uri,
+            &["acme.example.com"],
+            resolver_addr,
+            false,
+            None,
+        )
+        .await;
         assert!(
             matches!(result, Err(AcmeError::IncorrectResponse(_))),
             "expected IncorrectResponse: {result:?}"
@@ -588,9 +606,15 @@ mod tests {
         let port = start_txt_dns_server(txt).await;
         let resolver_addr = local_resolver(port);
 
-        let result =
-            validate_with_resolver("*.example.test", account_uri, &[issuer], resolver_addr, false, None)
-                .await;
+        let result = validate_with_resolver(
+            "*.example.test",
+            account_uri,
+            &[issuer],
+            resolver_addr,
+            false,
+            None,
+        )
+        .await;
         assert!(
             result.is_ok(),
             "wildcard validation should succeed: {result:?}"
@@ -606,9 +630,15 @@ mod tests {
         let port = start_txt_dns_server(txt).await;
         let resolver_addr = local_resolver(port);
 
-        let result =
-            validate_with_resolver("*.example.test", account_uri, &[issuer], resolver_addr, false, None)
-                .await;
+        let result = validate_with_resolver(
+            "*.example.test",
+            account_uri,
+            &[issuer],
+            resolver_addr,
+            false,
+            None,
+        )
+        .await;
         assert!(
             matches!(result, Err(AcmeError::IncorrectResponse(_))),
             "expected IncorrectResponse for missing wildcard policy: {result:?}"
