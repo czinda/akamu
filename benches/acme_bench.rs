@@ -781,6 +781,8 @@ async fn start_server(args: &Args) -> BenchServer {
         audit: Arc::new(akamu::audit::AuditState::new()),
         audit_policy: Arc::new(akamu::audit::AuditPolicy::default()),
         admin_sessions: None,
+        admin_auth_limiter: None,
+        admin_gss_cred: None,
         startup_time: std::time::Instant::now(),
     });
 
