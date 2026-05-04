@@ -18,61 +18,55 @@ use hickory_resolver::proto::rr::{Name, RData, RecordType};
 use crate::dns;
 use crate::error::AcmeError;
 
-/// Check CAA records for `domain` before issuing a certificate.
+/// Parameters for a CAA check, bundling the per-request fields.
+pub struct CaaParams<'a> {
+    /// Domain being certified (without `*.` prefix).
+    pub domain: &'a str,
+    /// CA's domain names from `server.caa_identities`.  When empty the check is skipped.
+    pub ca_identities: &'a [String],
+    /// `true` when the certificate covers a wildcard (`*.<domain>`).
+    pub is_wildcard: bool,
+    /// Challenge type used, e.g. `"http-01"` or `"dns-01"` (for `validationmethods` checking).
+    pub challenge_type: &'a str,
+    /// Full ACME account URL for `accounturi` enforcement (RFC 8657 §4).
+    pub account_url: Option<&'a str>,
+    /// Whether to enforce DNSSEC validation on CAA lookups.
+    pub validate_dnssec: bool,
+    /// Optional DoT SNI hostname; when set, CAA queries use DNS-over-TLS.
+    pub dot_server_name: Option<&'a str>,
+}
+
+/// Check CAA records for `params.domain` before issuing a certificate.
 ///
 /// Returns `Ok(())` if issuance is allowed, `Err(AcmeError::Caa(...))` if blocked.
+/// When `params.ca_identities` is empty the check is skipped (open policy).
 ///
-/// * `domain`          — The domain being certified (without `*.` prefix).
-/// * `ca_identities`   — The CA's domain names from `server.caa_identities`.
-///   If empty, the check is skipped (open policy).
-/// * `is_wildcard`     — `true` if the cert covers a wildcard (`*.<domain>`).
-/// * `challenge_type`  — e.g. `"http-01"`, `"dns-01"` — for `validationmethods` checking.
-/// * `account_url`     — The full ACME account URL for `accounturi` enforcement (RFC 8657 §4).
-/// * `resolver_addr`   — Optional DNS resolver override from config.
-/// * `dot_server_name` — Optional DoT SNI hostname; when set, queries use TLS.
-pub async fn check_caa(
-    domain: &str,
-    ca_identities: &[String],
-    is_wildcard: bool,
-    challenge_type: &str,
-    account_url: Option<&str>,
-    resolver_addr: Option<&str>,
-    validate_dnssec: bool,
-    dot_server_name: Option<&str>,
-) -> Result<(), AcmeError> {
+/// `resolver_addr` is an optional DNS resolver override from config (e.g. `"127.0.0.1:53"`).
+pub async fn check_caa(params: CaaParams<'_>, resolver_addr: Option<&str>) -> Result<(), AcmeError> {
     // Step 1: If ca_identities is empty → no-op (open policy).
-    if ca_identities.is_empty() {
+    if params.ca_identities.is_empty() {
         return Ok(());
     }
 
     let addr = build_resolver_addr(resolver_addr)?;
-    check_caa_with_resolver(
+    check_caa_with_resolver(params, addr).await
+}
+
+/// Inner implementation that takes a resolved `SocketAddr` for testability.
+pub(crate) async fn check_caa_with_resolver(
+    params: CaaParams<'_>,
+    resolver_addr: SocketAddr,
+) -> Result<(), AcmeError> {
+    let CaaParams {
         domain,
         ca_identities,
         is_wildcard,
         challenge_type,
         account_url,
-        addr,
         validate_dnssec,
         dot_server_name,
-    )
-    .await
-}
+    } = params;
 
-/// Inner implementation that takes a resolver address for testability.
-///
-/// `account_url` is the full ACME account URL passed through to
-/// `evaluate_caa_record_set` for RFC 8657 §4 `accounturi` enforcement.
-pub(crate) async fn check_caa_with_resolver(
-    domain: &str,
-    ca_identities: &[String],
-    is_wildcard: bool,
-    challenge_type: &str,
-    account_url: Option<&str>,
-    resolver_addr: SocketAddr,
-    validate_dnssec: bool,
-    dot_server_name: Option<&str>,
-) -> Result<(), AcmeError> {
     // Step 2: Build a list of DNS names to check, walking up to (but not including) the TLD.
     let names_to_check = build_name_walk(domain);
 
@@ -374,7 +368,19 @@ mod tests {
     async fn empty_ca_identities_returns_ok() {
         // When ca_identities is empty, check_caa is a no-op regardless of anything else.
         let result =
-            check_caa("example.com", &[], false, "http-01", None, None, false, None).await;
+            check_caa(
+                CaaParams {
+                    domain: "example.com",
+                    ca_identities: &[],
+                    is_wildcard: false,
+                    challenge_type: "http-01",
+                    account_url: None,
+                    validate_dnssec: false,
+                    dot_server_name: None,
+                },
+                None,
+            )
+            .await;
         assert!(
             result.is_ok(),
             "empty identities should always return Ok: {result:?}"
@@ -489,14 +495,16 @@ mod tests {
         let port = start_mock_dns(vec![Box::new(build_nxdomain_response)]).await;
         let resolver = local_resolver(port);
         let result = check_caa_with_resolver(
-            "example.com",
-            &["ca.example.com".to_string()],
-            false,
-            "http-01",
-            None,
+            CaaParams {
+                domain: "example.com",
+                ca_identities: &["ca.example.com".to_string()],
+                is_wildcard: false,
+                challenge_type: "http-01",
+                account_url: None,
+                validate_dnssec: false,
+                dot_server_name: None,
+            },
             resolver,
-            false,
-            None,
         )
         .await;
         assert!(
@@ -514,14 +522,16 @@ mod tests {
         .await;
         let resolver = local_resolver(port);
         let result = check_caa_with_resolver(
-            "example.com",
-            &["ca.example.com".to_string()],
-            false,
-            "http-01",
-            None,
+            CaaParams {
+                domain: "example.com",
+                ca_identities: &["ca.example.com".to_string()],
+                is_wildcard: false,
+                challenge_type: "http-01",
+                account_url: None,
+                validate_dnssec: false,
+                dot_server_name: None,
+            },
             resolver,
-            false,
-            None,
         )
         .await;
         assert!(
@@ -539,14 +549,16 @@ mod tests {
         .await;
         let resolver = local_resolver(port);
         let result = check_caa_with_resolver(
-            "example.com",
-            &["ca.example.com".to_string()],
-            false,
-            "http-01",
-            None,
+            CaaParams {
+                domain: "example.com",
+                ca_identities: &["ca.example.com".to_string()],
+                is_wildcard: false,
+                challenge_type: "http-01",
+                account_url: None,
+                validate_dnssec: false,
+                dot_server_name: None,
+            },
             resolver,
-            false,
-            None,
         )
         .await;
         assert!(
@@ -567,14 +579,16 @@ mod tests {
         .await;
         let resolver = local_resolver(port);
         let result = check_caa_with_resolver(
-            "example.com",
-            &["ca.example.com".to_string()],
-            true, // wildcard
-            "dns-01",
-            None,
+            CaaParams {
+                domain: "example.com",
+                ca_identities: &["ca.example.com".to_string()],
+                is_wildcard: true,
+                challenge_type: "dns-01",
+                account_url: None,
+                validate_dnssec: false,
+                dot_server_name: None,
+            },
             resolver,
-            false,
-            None,
         )
         .await;
         assert!(
@@ -593,14 +607,16 @@ mod tests {
         .await;
         let resolver = local_resolver(port);
         let result = check_caa_with_resolver(
-            "example.com",
-            &["ca.example.com".to_string()],
-            true, // wildcard
-            "dns-01",
-            None,
+            CaaParams {
+                domain: "example.com",
+                ca_identities: &["ca.example.com".to_string()],
+                is_wildcard: true,
+                challenge_type: "dns-01",
+                account_url: None,
+                validate_dnssec: false,
+                dot_server_name: None,
+            },
             resolver,
-            false,
-            None,
         )
         .await;
         assert!(
@@ -618,14 +634,16 @@ mod tests {
         .await;
         let resolver = local_resolver(port);
         let result = check_caa_with_resolver(
-            "example.com",
-            &["ca.example.com".to_string()],
-            true, // wildcard
-            "dns-01",
-            None,
+            CaaParams {
+                domain: "example.com",
+                ca_identities: &["ca.example.com".to_string()],
+                is_wildcard: true,
+                challenge_type: "dns-01",
+                account_url: None,
+                validate_dnssec: false,
+                dot_server_name: None,
+            },
             resolver,
-            false,
-            None,
         )
         .await;
         assert!(
@@ -649,14 +667,16 @@ mod tests {
         .await;
         let resolver = local_resolver(port);
         let result = check_caa_with_resolver(
-            "example.com",
-            &["ca.example.com".to_string()],
-            false,
-            "http-01",
-            None,
+            CaaParams {
+                domain: "example.com",
+                ca_identities: &["ca.example.com".to_string()],
+                is_wildcard: false,
+                challenge_type: "http-01",
+                account_url: None,
+                validate_dnssec: false,
+                dot_server_name: None,
+            },
             resolver,
-            false,
-            None,
         )
         .await;
         assert!(
@@ -675,14 +695,16 @@ mod tests {
         .await;
         let resolver = local_resolver(port);
         let result = check_caa_with_resolver(
-            "example.com",
-            &["ca.example.com".to_string()],
-            false,
-            "http-01", // not in validationmethods
-            None,
+            CaaParams {
+                domain: "example.com",
+                ca_identities: &["ca.example.com".to_string()],
+                is_wildcard: false,
+                challenge_type: "http-01", // not in validationmethods
+                account_url: None,
+                validate_dnssec: false,
+                dot_server_name: None,
+            },
             resolver,
-            false,
-            None,
         )
         .await;
         assert!(
@@ -701,14 +723,16 @@ mod tests {
         .await;
         let resolver = local_resolver(port);
         let result = check_caa_with_resolver(
-            "example.com",
-            &["ca.example.com".to_string()],
-            false,
-            "http-01",
-            None,
+            CaaParams {
+                domain: "example.com",
+                ca_identities: &["ca.example.com".to_string()],
+                is_wildcard: false,
+                challenge_type: "http-01",
+                account_url: None,
+                validate_dnssec: false,
+                dot_server_name: None,
+            },
             resolver,
-            false,
-            None,
         )
         .await;
         // iodef-only → no issue/issuewild restriction
@@ -728,14 +752,16 @@ mod tests {
         .await;
         let resolver = local_resolver(port);
         let result = check_caa_with_resolver(
-            "example.com",
-            &["ca.example.com".to_string()],
-            false,
-            "http-01",
-            None,
+            CaaParams {
+                domain: "example.com",
+                ca_identities: &["ca.example.com".to_string()],
+                is_wildcard: false,
+                challenge_type: "http-01",
+                account_url: None,
+                validate_dnssec: false,
+                dot_server_name: None,
+            },
             resolver,
-            false,
-            None,
         )
         .await;
         assert!(
@@ -758,14 +784,16 @@ mod tests {
         .await;
         let resolver = local_resolver(port);
         let result = check_caa_with_resolver(
-            "example.com",
-            &["ca.example.com".to_string()],
-            false,
-            "http-01",
-            Some("https://acme.example.com/acme/account/42"),
+            CaaParams {
+                domain: "example.com",
+                ca_identities: &["ca.example.com".to_string()],
+                is_wildcard: false,
+                challenge_type: "http-01",
+                account_url: Some("https://acme.example.com/acme/account/42"),
+                validate_dnssec: false,
+                dot_server_name: None,
+            },
             resolver,
-            false,
-            None,
         )
         .await;
         assert!(
@@ -788,14 +816,16 @@ mod tests {
         .await;
         let resolver = local_resolver(port);
         let result = check_caa_with_resolver(
-            "example.com",
-            &["ca.example.com".to_string()],
-            false,
-            "http-01",
-            Some("https://acme.example.com/acme/account/99"), // different account
+            CaaParams {
+                domain: "example.com",
+                ca_identities: &["ca.example.com".to_string()],
+                is_wildcard: false,
+                challenge_type: "http-01",
+                account_url: Some("https://acme.example.com/acme/account/99"), // different account
+                validate_dnssec: false,
+                dot_server_name: None,
+            },
             resolver,
-            false,
-            None,
         )
         .await;
         assert!(

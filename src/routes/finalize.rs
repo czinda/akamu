@@ -118,14 +118,16 @@ pub async fn finalize_order(
                 };
                 let account_url = format!("{}/acme/account/{}", state.config.base_url, account_id);
                 crate::validation::caa::check_caa(
-                    domain,
-                    &state.config.server.caa_identities,
-                    is_wildcard,
-                    &challenge_type,
-                    Some(account_url.as_str()),
+                    crate::validation::caa::CaaParams {
+                        domain,
+                        ca_identities: &state.config.server.caa_identities,
+                        is_wildcard,
+                        challenge_type: &challenge_type,
+                        account_url: Some(account_url.as_str()),
+                        validate_dnssec: state.config.server.validate_dnssec,
+                        dot_server_name: state.config.server.dns_dot_server_name.as_deref(),
+                    },
                     state.config.server.dns_resolver_addr.as_deref(),
-                    state.config.server.validate_dnssec,
-                    state.config.server.dns_dot_server_name.as_deref(),
                 )
                 .await?;
             }
