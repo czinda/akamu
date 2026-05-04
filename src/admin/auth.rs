@@ -372,9 +372,7 @@ where
                     app.record_audit(
                         AuditEvent::success(AuditEventType::AdminLogin)
                             .with_principal(&op.name)
-                            .with_detail(format!(
-                                r#"{{"method":"cert","session_prefix":"{session_prefix}"}}"#,
-                            )),
+                            .with_detail(serde_json::json!({"method":"cert","session_prefix":session_prefix}).to_string()),
                     )
                     .await;
                     return Ok(OperatorContext {
@@ -557,9 +555,10 @@ async fn authenticate_gssapi(
             app.record_audit(
                 AuditEvent::success(AuditEventType::AdminLogin)
                     .with_principal(&op.name)
-                    .with_detail(format!(
-                        r#"{{"method":"gssapi","session_prefix":"{session_prefix}"}}"#,
-                    )),
+                    .with_detail(
+                        serde_json::json!({"method":"gssapi","session_prefix":session_prefix})
+                            .to_string(),
+                    ),
             )
             .await;
             if !out_token.is_empty() {
@@ -678,11 +677,11 @@ macro_rules! require_role {
                 .record_audit(
                     $crate::audit::AuditEvent::failure($crate::audit::AuditEventType::AdminAction)
                         .with_principal($ctx.name.clone())
-                        .with_detail(format!(
-                            r#"{{"error":"insufficient role","required":"{}","actual":"{}"}}"#,
-                            required,
-                            $ctx.role.as_str(),
-                        )),
+                        .with_detail(serde_json::json!({
+                            "error": "insufficient role",
+                            "required": required,
+                            "actual": $ctx.role.as_str(),
+                        }).to_string()),
                 )
                 .await;
             return (
