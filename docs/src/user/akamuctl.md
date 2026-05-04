@@ -162,6 +162,17 @@ akamuctl stats
 Returns server version, uptime, and totals for accounts, certificates, EAB keys,
 and audit events.  All authenticated roles may call this command.
 
+### `whoami`
+
+Show the locally cached session identity without contacting the server:
+
+```bash
+akamuctl whoami
+```
+
+Displays the server URL and token expiry time for both the main server and
+cosigner sessions (if cached).
+
 ## Operator management
 
 Operator management requires the `administrator` role.
@@ -173,6 +184,17 @@ List all operators (active and inactive):
 ```bash
 akamuctl operator list
 ```
+
+### `operator show`
+
+Show the details of a single operator:
+
+```bash
+akamuctl operator show 3
+```
+
+Returns all fields including certificate fingerprint, GSSAPI principal,
+creation time, last-seen timestamp, and active status.
 
 ### `operator add`
 
@@ -198,6 +220,23 @@ Accepted roles: `administrator`, `ca_operations`, `ca_ra`, `auditor`.
 When `--cert-file` is given, `akamuctl` computes the SHA-256 fingerprint of the
 DER-encoded certificate leaf locally and sends only the fingerprint to the server.
 The private key never leaves the operator's machine.
+
+### `operator update`
+
+Update fields of an existing operator.  Only provided flags are changed; omitted
+fields remain unchanged.
+
+```bash
+# Change role
+akamuctl operator update 3 --role ca_operations
+
+# Replace client certificate
+akamuctl operator update 3 --cert-file /etc/akamu/alice-new.pem
+
+# Update multiple fields at once
+akamuctl operator update 3 --name "Alice Smith" --role administrator \
+    --gssapi-principal alice@NEWREALM.COM
+```
 
 ### `operator remove`
 
@@ -231,6 +270,16 @@ akamuctl eab list --unused # only unconsumed keys
 ```
 
 All authenticated roles may list EAB keys.
+
+### `eab show`
+
+Show details of a single EAB key:
+
+```bash
+akamuctl eab show my-device-001
+```
+
+Returns the key identifier, creation time, usage status, and profile grants.
 
 ### `eab add`
 
@@ -290,6 +339,37 @@ akamuctl cert list --after 2026-01-01T00:00:00Z \
 
 Requires the `administrator`, `ca_operations`, or `auditor` role.
 
+### `cert show`
+
+Show a certificate's metadata (no PEM/DER content):
+
+```bash
+akamuctl cert show <cert-uuid>
+```
+
+Returns order ID, account ID, serial number, validity window (`not_before`,
+`not_after`), revocation status, MTC log index, and ARI renewal window
+(`suggested_window_start`, `suggested_window_end`).
+
+Requires the `administrator`, `ca_operations`, or `auditor` role.
+
+### `cert download`
+
+Download a certificate's content as PEM or DER:
+
+```bash
+# Print PEM to stdout (default)
+akamuctl cert download <cert-uuid>
+
+# Save DER to a file
+akamuctl cert download <cert-uuid> --format der -o cert.der
+
+# Save PEM to a file
+akamuctl cert download <cert-uuid> --format pem -o cert.pem
+```
+
+Requires the `administrator` or `ca_operations` role.
+
 ### `revoke`
 
 Revoke a certificate by its internal ID:
@@ -316,10 +396,49 @@ akamuctl crl-force
 
 Requires the `administrator` or `ca_operations` role.
 
-## Account profile grants
+## Account management
 
-Profile grants restrict which certificate profiles an ACME account may request.
-When an account has no grants configured (the default), it may request any profile.
+### `account list`
+
+List ACME accounts with optional status filtering:
+
+```bash
+akamuctl account list
+akamuctl account list --status valid --limit 50
+akamuctl account list --status deactivated
+```
+
+| Flag | Description |
+|------|-------------|
+| `--status VALUE` | `valid` or `deactivated`. |
+| `--limit N` | Maximum results (default 100). |
+| `--offset N` | Pagination offset (default 0). |
+
+All authenticated roles may list accounts.
+
+### `account show`
+
+Show details of a single ACME account:
+
+```bash
+akamuctl account show <account-uuid>
+```
+
+Returns status, contact information, JWK thumbprint, creation and update times,
+and profile grants.
+
+### `account deactivate`
+
+Admin-initiated account deactivation:
+
+```bash
+akamuctl account deactivate <account-uuid>
+```
+
+The account is set to `deactivated` status and can no longer create orders
+or issue certificates.
+
+Requires the `administrator` role.
 
 ### `account grants get`
 
@@ -348,6 +467,71 @@ Remove all profile restrictions (restore unrestricted access):
 ```bash
 akamuctl account grants clear <account-uuid>
 ```
+
+Requires the `administrator` role.
+
+## Profile management
+
+### `profile list`
+
+List all loaded certificate profiles with their parameters:
+
+```bash
+akamuctl profile list
+```
+
+Returns the profile ID, description, validity period (days), hash algorithm,
+extended key usages, and whether MTC issuance is enabled.
+
+All authenticated roles may list profiles.
+
+## Order management
+
+### `order list`
+
+List certificate orders with optional filters:
+
+```bash
+akamuctl order list
+akamuctl order list --account-id <account-uuid>
+akamuctl order list --status pending --limit 50
+```
+
+| Flag | Description |
+|------|-------------|
+| `--account-id UUID` | Filter by account UUID. |
+| `--status VALUE` | Filter by order status (`pending`, `ready`, `processing`, `valid`, `invalid`). |
+| `--limit N` | Maximum results (default 100). |
+| `--offset N` | Pagination offset (default 0). |
+
+All authenticated roles may list orders.
+
+### `order show`
+
+Show a single order's details:
+
+```bash
+akamuctl order show <order-uuid>
+```
+
+Returns identifiers, associated authorization IDs, certificate ID (if issued),
+profile, and timing fields (`created`, `updated`, `expires`, `not_before`,
+`not_after`).
+
+All authenticated roles may view order details.
+
+## Server configuration
+
+### `server-config`
+
+Show the server's redacted runtime configuration:
+
+```bash
+akamuctl server-config
+```
+
+Returns the base URL, whether MTC is enabled, CAA identities, DNSSEC validation
+setting, and a masked database URL.
 
 Requires the `administrator` role.
 
@@ -408,9 +592,28 @@ Requires the `administrator` or `auditor` role.
 
 ## Cosigner administration
 
-`akamuctl` can also query the admin interface of an `akamu-cosigner` daemon.
+`akamuctl` can also administer the `akamu-cosigner` daemon.
 Configure the cosigner connection in `[cosigner]` in the config file, or pass
 `--server-url` and TLS flags directly.
+
+### `cosigner login`
+
+Authenticate with the cosigner admin API and cache the session token:
+
+```bash
+akamuctl cosigner login
+```
+
+Uses the `[cosigner]` TLS settings from the config file (or falls back to
+`[server]` settings if `[cosigner]` is not configured).
+
+### `cosigner logout`
+
+Invalidate the cosigner session token:
+
+```bash
+akamuctl cosigner logout
+```
 
 ### `cosigner status`
 
@@ -432,6 +635,57 @@ akamuctl cosigner stats
 
 Returns uptime, total checkpoints signed, and the timestamp of the most recent
 signing operation.
+
+### `cosigner config`
+
+Show the cosigner's redacted runtime configuration:
+
+```bash
+akamuctl cosigner config
+```
+
+Requires the `administrator` role on the cosigner.
+
+## Configuration utilities
+
+### `config generate`
+
+Print an annotated example `akamuctl.toml` to stdout:
+
+```bash
+akamuctl config generate > ~/.config/akamu/akamuctl.toml
+```
+
+### `config validate`
+
+Validate the current configuration file:
+
+```bash
+akamuctl config validate
+```
+
+Checks that the server URL is well-formed and that all referenced files
+(CA certificate, client certificate, private key) exist on disk.  Reports
+warnings and errors for each issue found.
+
+## Shell completions
+
+### `completions`
+
+Generate shell completion scripts:
+
+```bash
+# Bash
+akamuctl completions bash > /etc/bash_completion.d/akamuctl
+
+# Zsh
+akamuctl completions zsh > ~/.zfunc/_akamuctl
+
+# Fish
+akamuctl completions fish > ~/.config/fish/completions/akamuctl.fish
+```
+
+Supported shells: `bash`, `zsh`, `fish`, `elvish`, `powershell`.
 
 ## Output formats
 
