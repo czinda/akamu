@@ -8,6 +8,6 @@ CREATE TABLE operators (
     gssapi_principal TEXT        UNIQUE,       -- Kerberos principal; NULL = no GSSAPI auth
     created_at       TEXT        NOT NULL,     -- RFC 3339
     last_seen_at     TEXT,                     -- RFC 3339
-    active           SMALLINT    NOT NULL DEFAULT 1,
+    active           BIGINT      NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
     CHECK(cert_fingerprint IS NOT NULL OR gssapi_principal IS NOT NULL)
 );

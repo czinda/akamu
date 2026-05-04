@@ -15,3 +15,5 @@ CREATE TABLE audit_events (
 CREATE INDEX audit_idx_type ON audit_events(event_type);
 CREATE INDEX audit_idx_subj ON audit_events(subject);
 CREATE INDEX audit_idx_time ON audit_events(occurred_at);
+CREATE INDEX audit_idx_principal ON audit_events(principal);
+CREATE INDEX audit_idx_outcome ON audit_events(outcome);
