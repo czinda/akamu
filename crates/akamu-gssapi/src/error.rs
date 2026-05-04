@@ -65,7 +65,7 @@ pub enum GssError {
         source: std::io::Error,
     },
 
-    /// `target_service` passed to [`crate::init_token`] contains an interior NUL byte.
+    /// `target_service` passed to [`crate::init_token`] or [`crate::GssClientContext::new`] contains an interior NUL byte.
     #[error("target service name contains an interior NUL byte")]
     NulInTargetName,
 

@@ -9,16 +9,23 @@
 //!     .expect("GSSAPI credential");
 //! ```
 //!
-//! For each incoming `Authorization: Negotiate <base64>` request, call:
+//! For each incoming `Authorization: Negotiate <base64>` request, call
+//! [`accept_token`] and match on [`AcceptStep`]:
 //!
 //! ```no_run
 //! # let cred = akamu_gssapi::GssServerCred::acquire("HTTP", "/etc/akamu/http.keytab")
 //! #     .expect("GSSAPI credential");
 //! # let token_bytes: Vec<u8> = vec![];
-//! let (out_token, principal) = akamu_gssapi::accept_token(&cred, &token_bytes, None)
-//!     .expect("GSSAPI accept");
-//! // `principal` is e.g. "user@REALM"
-//! // `out_token` is the mutual-auth response (may be empty)
+//! match akamu_gssapi::accept_token(&cred, &token_bytes, None).expect("GSSAPI accept") {
+//!     akamu_gssapi::AcceptStep::Complete { out_token, principal } => {
+//!         // `principal` is e.g. "user@REALM"
+//!         // `out_token` is the optional mutual-auth response (may be empty)
+//!     }
+//!     akamu_gssapi::AcceptStep::Continue { out_token, ctx } => {
+//!         // Send `out_token` as `WWW-Authenticate: Negotiate <base64>` with 401.
+//!         // On the next request, call `ctx.step(...)` with the client's new token.
+//!     }
+//! }
 //! ```
 //!
 //! # Thread safety
@@ -383,6 +390,15 @@ pub struct GssClientContext {
 // only one thread ever calls step() at a time (no Sync impl).
 unsafe impl Send for GssClientContext {}
 
+impl std::fmt::Debug for GssClientContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GssClientContext")
+            .field("raw", &self.raw)
+            .field("target_name", &self.target_name)
+            .finish()
+    }
+}
+
 impl Drop for GssClientContext {
     fn drop(&mut self) {
         let mut minor: ffi::OmUint32 = 0;
@@ -541,17 +557,254 @@ impl GssClientContext {
     }
 }
 
+// ── GssServerContext ──────────────────────────────────────────────────────────
+
+/// Result of one GSSAPI server-side accept step.
+///
+/// Returned by [`accept_token`] and [`GssServerContext::step`].
+#[derive(Debug)]
+pub enum AcceptStep {
+    /// Exchange is complete.  `principal` is the authenticated client identity
+    /// (e.g. `"user@REALM"`).  `out_token` is the optional mutual-authentication
+    /// response; encode it as `WWW-Authenticate: Negotiate <base64>` if non-empty.
+    Complete { out_token: Vec<u8>, principal: String },
+    /// The mechanism needs another round-trip.  Send `out_token` as
+    /// `WWW-Authenticate: Negotiate <base64>` with `401 Unauthorized`, then call
+    /// [`GssServerContext::step`] with the client's next `Authorization: Negotiate`
+    /// token.  `ctx` must be kept alive between the two HTTP requests.
+    Continue { out_token: Vec<u8>, ctx: GssServerContext },
+}
+
+/// In-progress GSSAPI server-side security context for multi-round-trip exchange.
+///
+/// Wraps the partially-initialized `gss_ctx_id_t` produced when
+/// `gss_accept_sec_context` returns `GSS_S_CONTINUE_NEEDED`.  Call
+/// [`GssServerContext::step`] with the client's next token to advance the exchange.
+///
+/// Drop releases the context handle via `gss_delete_sec_context`.
+pub struct GssServerContext {
+    raw: ffi::GssCtxIdT,
+}
+
+// SAFETY: moving a partially-initialized server context to another thread is
+// safe — only one thread ever calls step() at a time (no Sync impl).
+unsafe impl Send for GssServerContext {}
+
+impl std::fmt::Debug for GssServerContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GssServerContext")
+            .field("raw", &self.raw)
+            .finish()
+    }
+}
+
+impl Drop for GssServerContext {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            let mut minor: ffi::OmUint32 = 0;
+            let mut discard = ffi::gss_c_no_buffer();
+            // SAFETY: self.raw is a valid context handle set by gss_accept_sec_context.
+            unsafe { ffi::gss_delete_sec_context(&mut minor, &mut self.raw, &mut discard) };
+            if discard.length > 0 && !discard.value.is_null() {
+                // SAFETY: discard was populated by gss_delete_sec_context.
+                unsafe { ffi::gss_release_buffer(&mut minor, &mut discard) };
+            }
+        }
+    }
+}
+
+impl GssServerContext {
+    /// Advance the server-side SPNEGO exchange by one step.
+    ///
+    /// `input_token` is the SPNEGO/Kerberos token from the client's
+    /// `Authorization: Negotiate` header (base64-decoded).
+    /// `channel_binding` should be the `tls-server-end-point` bytes (RFC 5929 §4)
+    /// or `None`.
+    ///
+    /// Consumes `self`; on [`AcceptStep::Continue`] the new [`GssServerContext`]
+    /// inside the variant must be stored for the next call.
+    ///
+    /// # Errors
+    ///
+    /// - [`GssError::AcceptContext`] — `gss_accept_sec_context` rejected the token.
+    /// - [`GssError::DisplayName`] — the principal name could not be converted.
+    /// - [`GssError::InvalidUtf8`] — the principal name is not valid UTF-8.
+    pub fn step(
+        mut self,
+        cred: &GssServerCred,
+        input_token: &[u8],
+        channel_binding: Option<&[u8]>,
+    ) -> Result<AcceptStep, GssError> {
+        let mut minor: ffi::OmUint32 = 0;
+
+        let input_buf = ffi::GssBufferDesc {
+            length: input_token.len(),
+            // SAFETY: gss_accept_sec_context treats input_token_buffer as read-only
+            // per RFC 2744 §2; *const → *mut cast is safe for C APIs with that contract.
+            #[allow(clippy::as_ptr_cast_mut)]
+            value: input_token.as_ptr() as *mut _,
+        };
+        let mut output_buf = ffi::gss_c_no_buffer();
+        let mut src_name: ffi::GssNameT = ptr::null_mut();
+        let mut ret_flags: ffi::OmUint32 = 0;
+        let mut time_rec: ffi::OmUint32 = 0;
+        let mut delegated_cred: ffi::GssCredIdT = ptr::null_mut();
+
+        // `bindings_storage` must outlive the FFI call below.
+        let bindings_storage;
+        let chan_bindings_ptr: *const ffi::GssChannelBindingsStruct = match channel_binding {
+            None => ptr::null(),
+            Some(data) => {
+                bindings_storage = ffi::GssChannelBindingsStruct {
+                    initiator_addrtype: ffi::GSS_C_AF_UNSET,
+                    initiator_address: ffi::gss_c_no_buffer(),
+                    acceptor_addrtype: ffi::GSS_C_AF_UNSET,
+                    acceptor_address: ffi::gss_c_no_buffer(),
+                    application_data: ffi::GssBufferDesc {
+                        length: data.len(),
+                        // SAFETY: gss_accept_sec_context treats application_data as
+                        // read-only; *const → *mut cast is safe per RFC 2744 §2.
+                        #[allow(clippy::as_ptr_cast_mut)]
+                        value: data.as_ptr() as *mut _,
+                    },
+                };
+                &bindings_storage
+            }
+        };
+
+        // SAFETY: self.raw is GSS_C_NO_CONTEXT (initial call) or a valid partial
+        // context from a prior gss_accept_sec_context; cred.raw is a live acceptor
+        // credential; chan_bindings_ptr is null or points to stack-allocated
+        // bindings_storage which remains live until after this call returns.
+        let major = unsafe {
+            ffi::gss_accept_sec_context(
+                &mut minor,
+                &mut self.raw,
+                cred.raw,
+                &input_buf,
+                chan_bindings_ptr,
+                &mut src_name,
+                ptr::null_mut(), // mech_type — not needed
+                &mut output_buf,
+                &mut ret_flags,
+                &mut time_rec,
+                &mut delegated_cred,
+            )
+        };
+
+        // Release delegated credential immediately — never used.
+        if !delegated_cred.is_null() {
+            // SAFETY: set by gss_accept_sec_context.
+            unsafe { ffi::gss_release_cred(&mut minor, &mut delegated_cred) };
+        }
+
+        // Copy output token before freeing the GSSAPI buffer.
+        let out_token: Vec<u8> = if output_buf.length > 0 && !output_buf.value.is_null() {
+            // SAFETY: output_buf.value is valid for output_buf.length bytes.
+            let slice = unsafe {
+                std::slice::from_raw_parts(output_buf.value as *const u8, output_buf.length)
+            };
+            let v = slice.to_vec();
+            // SAFETY: output_buf was populated by gss_accept_sec_context.
+            unsafe { ffi::gss_release_buffer(&mut minor, &mut output_buf) };
+            v
+        } else {
+            Vec::new()
+        };
+
+        let error_minor = minor;
+
+        match major {
+            ffi::GSS_S_COMPLETE => {
+                // Extract the principal name string.
+                let mut name_buf = ffi::gss_c_no_buffer();
+                // SAFETY: src_name is a valid GssNameT set by gss_accept_sec_context.
+                let major_dn = unsafe {
+                    ffi::gss_display_name(&mut minor, src_name, &mut name_buf, ptr::null_mut())
+                };
+                // Snapshot minor before gss_release_name overwrites it.
+                let dn_minor = minor;
+                // SAFETY: src_name is valid; gss_release_name takes ownership.
+                unsafe { ffi::gss_release_name(&mut minor, &mut src_name) };
+
+                let principal = if major_dn == ffi::GSS_S_COMPLETE && !name_buf.value.is_null() {
+                    // SAFETY: name_buf.value is valid for name_buf.length bytes.
+                    let slice = unsafe {
+                        std::slice::from_raw_parts(
+                            name_buf.value as *const u8,
+                            name_buf.length,
+                        )
+                    };
+                    let s = std::str::from_utf8(slice)
+                        .map(|s| s.to_owned())
+                        .map_err(|_| GssError::InvalidUtf8);
+                    // SAFETY: name_buf was populated by gss_display_name.
+                    unsafe { ffi::gss_release_buffer(&mut minor, &mut name_buf) };
+                    s?
+                } else {
+                    // SAFETY: name_buf may be empty or null; gss_release_buffer handles both.
+                    unsafe { ffi::gss_release_buffer(&mut minor, &mut name_buf) };
+                    return Err(GssError::DisplayName {
+                        major: major_dn,
+                        minor: dn_minor,
+                    });
+                };
+
+                // self goes out of scope here; Drop deletes self.raw.
+                Ok(AcceptStep::Complete { out_token, principal })
+            }
+
+            ffi::GSS_S_CONTINUE_NEEDED => {
+                if !src_name.is_null() {
+                    // SAFETY: src_name is valid (may be set even on CONTINUE_NEEDED).
+                    unsafe { ffi::gss_release_name(&mut minor, &mut src_name) };
+                }
+                // Transfer self.raw to a new GssServerContext for the caller to persist.
+                // Setting self.raw to null prevents Drop from double-freeing.
+                let raw = self.raw;
+                self.raw = ffi::GSS_C_NO_CONTEXT;
+                Ok(AcceptStep::Continue { out_token, ctx: GssServerContext { raw } })
+            }
+
+            _ => {
+                if !src_name.is_null() {
+                    // SAFETY: src_name is valid.
+                    unsafe { ffi::gss_release_name(&mut minor, &mut src_name) };
+                }
+                // self goes out of scope here; Drop deletes self.raw.
+                Err(GssError::AcceptContext { major, minor: error_minor })
+            }
+        }
+    }
+}
+
+// ── InitStep ──────────────────────────────────────────────────────────────────
+
+/// Result of the first GSSAPI client-side init step.
+///
+/// Returned by [`init_token`].
+#[derive(Debug)]
+pub enum InitStep {
+    /// The exchange is complete after the first token.  Encode `token` as
+    /// `Authorization: Negotiate <base64>` and send it.
+    Complete(Vec<u8>),
+    /// The mechanism needs at least one more round-trip.  Send `token` to the
+    /// server; if the server replies with `WWW-Authenticate: Negotiate <base64>`,
+    /// decode the server token and pass it to [`GssClientContext::step`] on `ctx`.
+    Continue { token: Vec<u8>, ctx: GssClientContext },
+}
+
 // ── init_token ────────────────────────────────────────────────────────────────
 
-/// Produce the initial SPNEGO/Kerberos token for `target_service`.
+/// Produce the first SPNEGO/Kerberos token for `target_service`.
 ///
 /// `target_service` must be in host-based format: `"HTTP@hostname"`.
 /// `channel_binding` is the `tls-server-end-point` bytes (RFC 5929 §4) or `None`.
 ///
-/// Returns the raw token bytes to encode as `Authorization: Negotiate <base64>`.
-///
-/// This is a single-step convenience wrapper around [`GssClientContext`].
-/// Callers that need multi-round-trip exchange should use [`GssClientContext`] directly.
+/// Returns [`InitStep::Complete`] when the token is ready to send and no
+/// further steps are expected.  Returns [`InitStep::Continue`] when the
+/// mechanism (e.g. IAKERB) requires additional round-trips; use the bundled
+/// [`GssClientContext`] to drive the exchange to completion.
 ///
 /// # Errors
 ///
@@ -562,28 +815,29 @@ pub fn init_token(
     cred: &GssClientCred,
     target_service: &str,
     channel_binding: Option<&[u8]>,
-) -> Result<Vec<u8>, GssError> {
+) -> Result<InitStep, GssError> {
     let mut ctx = GssClientContext::new(target_service)?;
-    let (token, _complete) = ctx.step(cred, None, channel_binding)?;
-    Ok(token)
+    let (token, complete) = ctx.step(cred, None, channel_binding)?;
+    if complete {
+        Ok(InitStep::Complete(token))
+    } else {
+        Ok(InitStep::Continue { token, ctx })
+    }
 }
 
 // ── accept_token ──────────────────────────────────────────────────────────────
 
 /// Process one SPNEGO/Kerberos token received in `Authorization: Negotiate`.
 ///
-/// Returns `(output_token, principal_name)` on success.
-/// `output_token` is the optional mutual-authentication response for the client
-/// (may be empty if the client did not request mutual auth).
-/// `principal_name` is the authenticated client identity, e.g. `"user@REALM"`.
+/// `channel_binding` should be the `tls-server-end-point` bytes (RFC 5929 §4)
+/// when TLS is terminated by this server, or `None` when running without TLS or
+/// when the server certificate uses an algorithm with no defined binding hash
+/// (e.g. ML-DSA).
 ///
-/// `channel_binding` should be the `tls-server-end-point` binding bytes (RFC 5929 §4)
-/// when TLS is terminated by this server, or `None` when running without TLS or when
-/// the server certificate uses an algorithm with no defined binding hash (e.g. ML-DSA).
-///
-/// Creates and immediately destroys a per-call security context.  HTTP SPNEGO
-/// with Kerberos is a single-round-trip exchange, so no context persistence is
-/// needed across requests.
+/// Returns [`AcceptStep::Complete`] when the client is authenticated.
+/// Returns [`AcceptStep::Continue`] when the mechanism needs another round-trip;
+/// send the enclosed token in `WWW-Authenticate: Negotiate` with `401` and call
+/// [`GssServerContext::step`] with the client's response.
 ///
 /// # Errors
 ///
@@ -597,167 +851,8 @@ pub fn accept_token(
     cred: &GssServerCred,
     input_token: &[u8],
     channel_binding: Option<&[u8]>,
-) -> Result<(Vec<u8>, String), GssError> {
-    let mut minor: ffi::OmUint32 = 0;
-
-    let input_buf = ffi::GssBufferDesc {
-        length: input_token.len(),
-        // SAFETY: gss_accept_sec_context treats input_token_buffer as read-only
-        // per RFC 2744 §2; *const → *mut cast is safe for C APIs with that contract.
-        #[allow(clippy::as_ptr_cast_mut)]
-        value: input_token.as_ptr() as *mut _,
-    };
-    let mut output_buf = ffi::gss_c_no_buffer();
-    let mut ctx: ffi::GssCtxIdT = ffi::GSS_C_NO_CONTEXT;
-    let mut src_name: ffi::GssNameT = ptr::null_mut();
-    let mut ret_flags: ffi::OmUint32 = 0;
-    let mut time_rec: ffi::OmUint32 = 0;
-    let mut delegated_cred: ffi::GssCredIdT = ptr::null_mut();
-
-    // Build channel bindings struct on the stack when provided.
-    // `bindings_storage` must outlive the FFI call below.
-    let bindings_storage;
-    let chan_bindings_ptr: *const ffi::GssChannelBindingsStruct = match channel_binding {
-        None => ptr::null(),
-        Some(data) => {
-            bindings_storage = ffi::GssChannelBindingsStruct {
-                initiator_addrtype: ffi::GSS_C_AF_UNSET,
-                initiator_address: ffi::gss_c_no_buffer(),
-                acceptor_addrtype: ffi::GSS_C_AF_UNSET,
-                acceptor_address: ffi::gss_c_no_buffer(),
-                application_data: ffi::GssBufferDesc {
-                    length: data.len(),
-                    // SAFETY: gss_accept_sec_context treats application_data as
-                    // read-only; *const → *mut cast is safe per RFC 2744 §2.
-                    #[allow(clippy::as_ptr_cast_mut)]
-                    value: data.as_ptr() as *mut _,
-                },
-            };
-            &bindings_storage
-        }
-    };
-
-    // SAFETY: all arguments are valid locals; cred.raw is a live acceptor credential;
-    // chan_bindings_ptr either null or points to the stack-allocated bindings_storage
-    // which remains live until after this call returns.
-    let major = unsafe {
-        ffi::gss_accept_sec_context(
-            &mut minor,
-            &mut ctx,
-            cred.raw,
-            &input_buf,
-            chan_bindings_ptr,
-            &mut src_name,
-            ptr::null_mut(), // mech_type — not needed
-            &mut output_buf,
-            &mut ret_flags,
-            &mut time_rec,
-            &mut delegated_cred,
-        )
-    };
-
-    // Release the delegated credential immediately — we never use it.
-    if !delegated_cred.is_null() {
-        // SAFETY: delegated_cred is non-null and was set by gss_accept_sec_context.
-        unsafe { ffi::gss_release_cred(&mut minor, &mut delegated_cred) };
-    }
-
-    // Copy output token before freeing the GSSAPI buffer.
-    let out_token: Vec<u8> = if output_buf.length > 0 && !output_buf.value.is_null() {
-        // SAFETY: output_buf.value is a valid pointer to output_buf.length bytes
-        // allocated by gss_accept_sec_context; we copy before releasing.
-        let slice =
-            unsafe { std::slice::from_raw_parts(output_buf.value as *const u8, output_buf.length) };
-        let v = slice.to_vec();
-        // SAFETY: output_buf was populated by gss_accept_sec_context.
-        unsafe { ffi::gss_release_buffer(&mut minor, &mut output_buf) };
-        v
-    } else {
-        Vec::new()
-    };
-
-    // Snapshot the error minor before cleanup calls overwrite it.
-    let error_minor = minor;
-
-    if major != ffi::GSS_S_COMPLETE {
-        // Clean up context on failure.
-        if !ctx.is_null() {
-            let mut discard = ffi::gss_c_no_buffer();
-            // SAFETY: ctx is a valid context handle set by gss_accept_sec_context.
-            unsafe { ffi::gss_delete_sec_context(&mut minor, &mut ctx, &mut discard) };
-            if discard.length > 0 && !discard.value.is_null() {
-                // SAFETY: discard is a non-null, non-empty buffer from gss_delete_sec_context.
-                unsafe { ffi::gss_release_buffer(&mut minor, &mut discard) };
-            }
-        }
-        if !src_name.is_null() {
-            // SAFETY: src_name is a valid GssNameT set by gss_accept_sec_context.
-            unsafe { ffi::gss_release_name(&mut minor, &mut src_name) };
-        }
-        return Err(GssError::AcceptContext {
-            major,
-            minor: error_minor,
-        });
-    }
-
-    // Extract the principal name string.
-    let mut name_buf = ffi::gss_c_no_buffer();
-    // SAFETY: src_name is a valid GssNameT set by gss_accept_sec_context.
-    let major_dn =
-        unsafe { ffi::gss_display_name(&mut minor, src_name, &mut name_buf, ptr::null_mut()) };
-    // Snapshot minor before gss_release_name overwrites it, so DisplayName errors
-    // carry the actual failure status rather than the release-name minor code.
-    let dn_minor = minor;
-    // SAFETY: src_name is valid; gss_release_name takes ownership.
-    unsafe { ffi::gss_release_name(&mut minor, &mut src_name) };
-
-    let principal = if major_dn == ffi::GSS_S_COMPLETE && !name_buf.value.is_null() {
-        // SAFETY: name_buf.value is a valid pointer to name_buf.length bytes
-        // allocated by gss_display_name; we copy before releasing.
-        let slice =
-            unsafe { std::slice::from_raw_parts(name_buf.value as *const u8, name_buf.length) };
-        let s = std::str::from_utf8(slice)
-            .map(|s| s.to_owned())
-            .map_err(|_| GssError::InvalidUtf8);
-        // SAFETY: name_buf was populated by gss_display_name.
-        unsafe { ffi::gss_release_buffer(&mut minor, &mut name_buf) };
-        // Clean up context before returning error.
-        if s.is_err() {
-            let mut discard = ffi::gss_c_no_buffer();
-            // SAFETY: ctx is a valid context handle from gss_accept_sec_context.
-            unsafe { ffi::gss_delete_sec_context(&mut minor, &mut ctx, &mut discard) };
-            if discard.length > 0 && !discard.value.is_null() {
-                // SAFETY: discard is a non-null, non-empty buffer from gss_delete_sec_context.
-                unsafe { ffi::gss_release_buffer(&mut minor, &mut discard) };
-            }
-        }
-        s?
-    } else {
-        // SAFETY: name_buf may be empty or null; gss_release_buffer handles both safely.
-        unsafe { ffi::gss_release_buffer(&mut minor, &mut name_buf) };
-        let mut discard = ffi::gss_c_no_buffer();
-        // SAFETY: ctx is a valid context handle from gss_accept_sec_context.
-        unsafe { ffi::gss_delete_sec_context(&mut minor, &mut ctx, &mut discard) };
-        if discard.length > 0 && !discard.value.is_null() {
-            // SAFETY: discard is a non-null, non-empty buffer from gss_delete_sec_context.
-            unsafe { ffi::gss_release_buffer(&mut minor, &mut discard) };
-        }
-        return Err(GssError::DisplayName {
-            major: major_dn,
-            minor: dn_minor,
-        });
-    };
-
-    // Delete the security context — not needed after principal extraction.
-    let mut discard = ffi::gss_c_no_buffer();
-    // SAFETY: ctx is a valid context handle from gss_accept_sec_context.
-    unsafe { ffi::gss_delete_sec_context(&mut minor, &mut ctx, &mut discard) };
-    if discard.length > 0 && !discard.value.is_null() {
-        // SAFETY: discard is a non-null, non-empty buffer from gss_delete_sec_context.
-        unsafe { ffi::gss_release_buffer(&mut minor, &mut discard) };
-    }
-
-    Ok((out_token, principal))
+) -> Result<AcceptStep, GssError> {
+    GssServerContext { raw: ffi::GSS_C_NO_CONTEXT }.step(cred, input_token, channel_binding)
 }
 
 #[cfg(test)]
