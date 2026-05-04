@@ -58,9 +58,6 @@ url       = "https://cosigner.example.com:9444"
 ca_cert   = "/etc/akamu/cosigner-ca.pem"
 cert_file = "/etc/akamu/operator.pem"
 key_file  = "/etc/akamu/operator.key"
-
-[output]
-format = "table"   # "table" or "json"
 ```
 
 ### `[server]`
@@ -76,12 +73,6 @@ format = "table"   # "table" or "json"
 
 Same fields as `[server]`, applied when running `cosigner` subcommands.
 Falls back to `[server]` values for any field that is absent.
-
-### `[output]`
-
-| Key | Default | Description |
-|-----|---------|-------------|
-| `format` | `"table"` | Default output format.  `"json"` emits pretty-printed JSON. |
 
 ## Global flags
 
@@ -410,9 +401,6 @@ By default, `akamuctl` prints results as aligned tables.  Use `--output json`
 ```bash
 akamuctl -o json operator list | jq '.operators[] | select(.role == "auditor")'
 ```
-
-The `[output].format` key in `~/.config/akamu/akamuctl.toml` sets a persistent
-default.
 
 ## Exit codes
 

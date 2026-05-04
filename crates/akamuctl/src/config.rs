@@ -10,8 +10,6 @@ pub struct Config {
     pub server: ServerConfig,
     #[serde(default)]
     pub cosigner: Option<CosignerConfig>,
-    #[serde(default)]
-    pub output: OutputConfig,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -20,7 +18,6 @@ pub struct ServerConfig {
     pub ca_cert: Option<String>,
     pub cert_file: Option<String>,
     pub key_file: Option<String>,
-    pub keytab: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -29,17 +26,6 @@ pub struct CosignerConfig {
     pub ca_cert: Option<String>,
     pub cert_file: Option<String>,
     pub key_file: Option<String>,
-    pub keytab: Option<String>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct OutputConfig {
-    #[serde(default = "default_format")]
-    pub format: String,
-}
-
-fn default_format() -> String {
-    "table".into()
 }
 
 impl Config {
