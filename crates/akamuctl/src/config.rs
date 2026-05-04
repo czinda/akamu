@@ -1,5 +1,36 @@
 //! akamuctl configuration file and session cache.
 
+/// Annotated example configuration printed by `akamuctl config generate`.
+pub const EXAMPLE_CONFIG: &str = r#"# akamuctl configuration file.
+# Default location: ~/.config/akamu/akamuctl.toml
+#
+# Generate this file:
+#   akamuctl config generate > ~/.config/akamu/akamuctl.toml
+
+# ── Server admin API ──────────────────────────────────────────────────────────
+[server]
+# Base URL of the akamu admin API listener.
+# Corresponds to [admin].listen_addr in the akamu server configuration.
+url = "https://akamu.example.com:9443"
+
+# CA certificate used to verify the admin TLS endpoint.
+# Omit to rely on the system trust store.
+# ca_cert = "/etc/akamu/certs/ca.cert.pem"
+
+# mTLS client certificate and private key.
+# Required when the admin API is configured for certificate authentication.
+# cert_file = "/home/alice/.config/akamu/operator.cert.pem"
+# key_file  = "/home/alice/.config/akamu/operator.key.pem"
+
+# ── Cosigner admin API ────────────────────────────────────────────────────────
+# Required only for 'akamuctl cosigner' commands.
+# [cosigner]
+# url     = "https://cosigner.example.com:9444"
+# ca_cert = "/etc/akamu/certs/ca.cert.pem"
+# cert_file = "/home/alice/.config/akamu/cosigner-operator.cert.pem"
+# key_file  = "/home/alice/.config/akamu/cosigner-operator.key.pem"
+"#;
+
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};

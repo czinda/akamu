@@ -109,6 +109,18 @@ enum Commands {
     /// Cosigner administration.
     #[command(subcommand)]
     Cosigner(CosignerCmd),
+    /// Configuration utilities.
+    #[command(subcommand)]
+    Config(ConfigCmd),
+}
+
+#[derive(Subcommand)]
+enum ConfigCmd {
+    /// Print an annotated example akamuctl.toml to stdout.
+    ///
+    /// Redirect to a file as a starting point:
+    ///   akamuctl config generate > ~/.config/akamu/akamuctl.toml
+    Generate,
 }
 
 #[derive(Subcommand)]
@@ -505,6 +517,11 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
                 }
             }
         }
+        Commands::Config(cfg_cmd) => match cfg_cmd {
+            ConfigCmd::Generate => {
+                print!("{}", config::EXAMPLE_CONFIG);
+            }
+        },
     }
 
     Ok(())
