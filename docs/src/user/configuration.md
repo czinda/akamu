@@ -1127,9 +1127,13 @@ cert_file   = "/etc/akamu/admin-tls.pem"       # auto-generated on first run if 
 key_file    = "/etc/akamu/admin-tls-key.pem"   # auto-generated on first run if absent
 ca_certs    = ["/etc/akamu/ca.pem"]
 
-# Bootstrap operator — generated and registered on first run when operators table is empty.
-bootstrap_operator_cert_file = "/etc/akamu/admin-bootstrap.pem"
-bootstrap_operator_key_file  = "/etc/akamu/admin-bootstrap-key.pem"
+# Bootstrap operator (mTLS) — generated and registered on first run when operators table is empty.
+# bootstrap_operator_cert_file = "/etc/akamu/admin-bootstrap.pem"
+# bootstrap_operator_key_file  = "/etc/akamu/admin-bootstrap-key.pem"
+
+# Bootstrap operator (GSSAPI) — mutually exclusive with cert bootstrap above.
+# When operators table is empty at startup, registers this principal as Administrator.
+# bootstrap_operator_gssapi_principal = "admin@EXAMPLE.COM"
 
 # Optional: also accept GSSAPI-authenticated operators
 [admin.gssapi]
@@ -1209,6 +1213,16 @@ Name recorded in the operators table for the auto-provisioned bootstrap administ
 
 ```toml
 bootstrap_operator_name = "admin"
+```
+
+### `bootstrap_operator_gssapi_principal`
+
+**Optional. Default: unset.**
+
+Kerberos principal for the GSSAPI bootstrap Administrator operator (e.g. `"admin@REALM"`). When set and the operators table is empty at startup, Akāmu inserts an Administrator row with this principal so that the first `akamuctl login --gssapi` succeeds without a prior `akamuctl operator add`. Mutually exclusive with `bootstrap_operator_cert_file` / `bootstrap_operator_key_file`.
+
+```toml
+bootstrap_operator_gssapi_principal = "admin@EXAMPLE.COM"
 ```
 
 ### `ca_certs`

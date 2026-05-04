@@ -74,15 +74,72 @@ pub fn load_or_generate_server_cert(cfg: &AdminConfig, ca: &CaState) -> Result<(
 }
 
 /// Generate and register the initial Administrator operator if the operators
-/// table is empty and the bootstrap cert/key files are configured but absent.
+/// table is empty.
 ///
-/// This is a one-time operation: on every subsequent startup the files already
-/// exist so the function returns immediately without touching the database.
+/// Two independent bootstrap paths:
+///
+/// - **GSSAPI** — if `bootstrap_operator_gssapi_principal` is set and the
+///   operators table is empty, insert an Administrator row with that principal.
+///   This is a one-time operation: on subsequent startups the row already exists.
+///
+/// - **mTLS cert** — if `bootstrap_operator_cert_file` / `bootstrap_operator_key_file`
+///   are set and the files are absent and the operators table is empty, generate
+///   a client certificate, write the PEM files, and insert an Administrator row.
+///   On subsequent startups the files already exist so this becomes a no-op.
 pub async fn bootstrap_operator_if_needed(
     cfg: &AdminConfig,
     ca: &CaState,
     db: &Db,
 ) -> Result<(), String> {
+    // ── GSSAPI bootstrap ──────────────────────────────────────────────────────
+    if let Some(ref principal) = cfg.bootstrap_operator_gssapi_principal {
+        let existing = crate::db::operators::get_by_principal(db, principal)
+            .await
+            .map_err(|e| format!("operators DB lookup: {e}"))?;
+        if existing.is_none() {
+            let empty = crate::db::operators::is_empty(db)
+                .await
+                .map_err(|e| format!("operators DB check: {e}"))?;
+            if !empty {
+                return Err(format!(
+                    "bootstrap GSSAPI principal '{principal}' is not registered \
+                     but operators already exist in the database; \
+                     add the operator manually with akamuctl or remove \
+                     bootstrap_operator_gssapi_principal from the config"
+                ));
+            }
+            tracing::info!(
+                "no operators found — registering bootstrap Administrator operator \
+                 (name='{}', gssapi_principal='{principal}')",
+                cfg.bootstrap_operator_name,
+            );
+            let now = unix_to_generalized_time(unix_now());
+            let inserted = crate::db::operators::insert_if_absent(
+                db,
+                &cfg.bootstrap_operator_name,
+                "administrator",
+                None,
+                Some(principal.as_str()),
+                &now,
+            )
+            .await
+            .map_err(|e| format!("insert bootstrap GSSAPI operator: {e}"))?;
+            if inserted {
+                tracing::info!(
+                    "bootstrap Administrator '{}' registered with GSSAPI principal '{principal}'",
+                    cfg.bootstrap_operator_name,
+                );
+            } else {
+                tracing::warn!(
+                    "bootstrap Administrator '{}' already exists (concurrent startup?); skipping",
+                    cfg.bootstrap_operator_name,
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    // ── mTLS cert bootstrap ───────────────────────────────────────────────────
     let (Some(cert_path), Some(key_path)) = (
         &cfg.bootstrap_operator_cert_file,
         &cfg.bootstrap_operator_key_file,

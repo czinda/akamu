@@ -105,6 +105,12 @@ pub struct AdminConfig {
     /// Default: `"admin"`.
     #[serde(default = "default_admin_bootstrap_operator_name")]
     pub bootstrap_operator_name: String,
+    /// Kerberos principal for the GSSAPI bootstrap Administrator operator
+    /// (e.g. `"admin@REALM"`).  When set and the operators table is empty at
+    /// startup, an Administrator row with this principal is inserted so that
+    /// the first GSSAPI login succeeds without manual `akamuctl operator add`.
+    /// Mutually exclusive with `bootstrap_operator_cert_file` / `bootstrap_operator_key_file`.
+    pub bootstrap_operator_gssapi_principal: Option<String>,
 }
 
 fn default_admin_session_ttl_secs() -> u64 {
@@ -168,6 +174,16 @@ impl AdminConfig {
                 )
             }
             _ => {}
+        }
+        if self.bootstrap_operator_gssapi_principal.is_some()
+            && self.bootstrap_operator_cert_file.is_some()
+        {
+            return Err(
+                "[admin] bootstrap_operator_gssapi_principal and \
+                 bootstrap_operator_cert_file / bootstrap_operator_key_file \
+                 are mutually exclusive; choose one bootstrap method"
+                    .into(),
+            );
         }
         Ok(())
     }
