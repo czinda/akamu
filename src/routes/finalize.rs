@@ -64,7 +64,9 @@ pub async fn finalize_order(
 
     // Parse order identifiers.
     let identifiers: Vec<serde_json::Value> =
-        serde_json::from_str(&order.identifiers).unwrap_or_default();
+        serde_json::from_str(&order.identifiers).map_err(|e| {
+            AcmeError::Internal(format!("corrupt identifiers in order {id}: {e}"))
+        })?;
     let allowed: Vec<(&str, &str)> = identifiers
         .iter()
         .filter_map(|id| {
@@ -163,13 +165,27 @@ pub async fn finalize_order(
     // CA defaults when no profile is requested or the registry is empty).
     // resolve_for_ca() respects ca_ids restrictions so a profile scoped to one CA
     // cannot be applied by a different CA.
-    let cert_params = match &order.profile {
+    let mut cert_params = match &order.profile {
         Some(p) if !state.profiles.is_empty() => state
             .profiles
             .resolve_for_ca(p, &order.ca_id)
             .unwrap_or_else(|| crate::profiles::CertificateParameters::from_ca(order_ca)),
         _ => crate::profiles::CertificateParameters::from_ca(order_ca),
     };
+
+    // ProfileRegistry bakes CRL/OCSP URLs from the default CA at startup.  When
+    // a non-default CA issues via a profile that did not explicitly set those URLs,
+    // the baked-in default CA URLs would appear in the certificate.  Override them
+    // with the order CA's own infrastructure URLs in that case.
+    if order.ca_id != *state.default_ca_id {
+        let def = state.default_ca();
+        if cert_params.crl_url == def.crl_url {
+            cert_params.crl_url = order_ca.crl_url.clone();
+        }
+        if cert_params.ocsp_url == def.ocsp_url {
+            cert_params.ocsp_url = order_ca.ocsp_url.clone();
+        }
+    }
 
     // Per-profile authorization checks (identifier patterns, external hook,
     // account grants).  Only meaningful when the order carries a profile.

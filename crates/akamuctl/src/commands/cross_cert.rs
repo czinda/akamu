@@ -35,11 +35,11 @@ pub async fn download(
     output: Option<PathBuf>,
 ) -> Result<(), CtlError> {
     let resp = client
-        .get(&format!("/admin/cross-certs/{}/pem", urlenc(id)))
+        .get(&format!("/admin/cross-certs/{}", urlenc(id)))
         .await?;
-    let pem = resp
+    let pem = resp["cross_cert_pem"]
         .as_str()
-        .ok_or_else(|| CtlError::Api("unexpected response format".into()))?;
+        .ok_or_else(|| CtlError::Api("cross_cert_pem field missing in response".into()))?;
     if let Some(path) = output {
         std::fs::write(&path, pem)?;
         println!("written to {}", path.display());

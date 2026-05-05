@@ -14,7 +14,7 @@ use crate::db;
 use crate::error::AcmeError;
 use crate::state::AppState;
 
-use super::{parse_jws, unix_now};
+use super::{acme_prefix, parse_jws, unix_now, CaId};
 
 /// GET handler — unauthenticated (allowed only when `allow_certificate_get = true`).
 pub async fn star_cert_get(
@@ -45,10 +45,12 @@ pub async fn star_cert_get(
 /// POST-as-GET handler — authenticated (always allowed for the order owner).
 pub async fn star_cert_post(
     State(state): State<Arc<AppState>>,
+    ca_id: CaId,
     Path(order_id): Path<String>,
     body: Bytes,
 ) -> Result<Response, AcmeError> {
-    let url = format!("{}/acme/cert/star/{}", state.config.base_url, order_id);
+    let pfx = acme_prefix(&state.config.base_url, &ca_id.0, &state.default_ca_id);
+    let url = format!("{pfx}/cert/star/{order_id}");
     let ctx = parse_jws(&state, body, &url).await?;
 
     // POST-as-GET must have an empty payload.
@@ -70,6 +72,9 @@ pub async fn star_cert_post(
         return Err(AcmeError::Unauthorized(
             "order belongs to a different account".into(),
         ));
+    }
+    if order.ca_id != ca_id.0 {
+        return Err(AcmeError::NotFound);
     }
 
     serve_star_cert(&state, &order).await

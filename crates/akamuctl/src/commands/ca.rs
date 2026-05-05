@@ -22,19 +22,12 @@ pub async fn show(client: &AdminClient, fmt: &Format, id: &str) -> Result<(), Ct
 }
 
 /// Download the CA certificate PEM.
-pub async fn cert(
-    client: &AdminClient,
-    id: &str,
-    output: Option<PathBuf>,
-) -> Result<(), CtlError> {
-    let resp = client
-        .get(&format!("/admin/cas/{}/cert", urlenc(id)))
+pub async fn cert(client: &AdminClient, id: &str, output: Option<PathBuf>) -> Result<(), CtlError> {
+    let pem = client
+        .get_text(&format!("/admin/cas/{}/cert", urlenc(id)))
         .await?;
-    let pem = resp
-        .as_str()
-        .ok_or_else(|| CtlError::Api("unexpected response format".into()))?;
     if let Some(path) = output {
-        std::fs::write(&path, pem)?;
+        std::fs::write(&path, &pem)?;
         println!("written to {}", path.display());
     } else {
         print!("{pem}");
@@ -45,7 +38,7 @@ pub async fn cert(
 /// Invalidate the CRL cache for a specific CA (forces next request to regenerate).
 pub async fn crl_force(client: &AdminClient, id: &str) -> Result<(), CtlError> {
     client
-        .post(&format!("/admin/cas/{}/crl/force", urlenc(id)), None)
+        .post(&format!("/admin/ca/{}/crl/force", urlenc(id)), None)
         .await?;
     println!("CRL cache for CA '{id}' invalidated.");
     Ok(())
@@ -70,8 +63,7 @@ pub async fn cross_sign(
             body["subject_ca_id"] = serde_json::Value::String(ca_id);
         }
         (None, Some(path)) => {
-            let pem = std::fs::read_to_string(&path)
-                .map_err(|e| CtlError::Io(e))?;
+            let pem = std::fs::read_to_string(&path).map_err(CtlError::Io)?;
             body["subject_cert_pem"] = serde_json::Value::String(pem);
         }
         (Some(_), Some(_)) => {
@@ -88,7 +80,7 @@ pub async fn cross_sign(
 
     let resp = client
         .post(
-            &format!("/admin/cas/{}/cross-sign", urlenc(issuer_id)),
+            &format!("/admin/ca/{}/cross-sign", urlenc(issuer_id)),
             Some(&body),
         )
         .await?;

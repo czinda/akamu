@@ -37,7 +37,10 @@ pub fn discover_accounts(certbot_dir: &Path) -> Vec<CertbotAccount> {
     let ca_dirs = match fs::read_dir(&accounts_dir) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("Warning: cannot read certbot accounts dir {}: {e}", accounts_dir.display());
+            eprintln!(
+                "Warning: cannot read certbot accounts dir {}: {e}",
+                accounts_dir.display()
+            );
             return accounts;
         }
     };
@@ -56,7 +59,10 @@ pub fn discover_accounts(certbot_dir: &Path) -> Vec<CertbotAccount> {
         let acct_dirs = match fs::read_dir(&ca_path) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("Warning: cannot read certbot CA dir {}: {e}", ca_path.display());
+                eprintln!(
+                    "Warning: cannot read certbot CA dir {}: {e}",
+                    ca_path.display()
+                );
                 continue;
             }
         };
@@ -143,7 +149,10 @@ pub fn discover_renewals(certbot_dir: &Path) -> Vec<CertbotRenewal> {
     let entries = match fs::read_dir(&renewal_dir) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("Warning: cannot read certbot renewal dir {}: {e}", renewal_dir.display());
+            eprintln!(
+                "Warning: cannot read certbot renewal dir {}: {e}",
+                renewal_dir.display()
+            );
             return renewals;
         }
     };
@@ -163,7 +172,10 @@ pub fn discover_renewals(certbot_dir: &Path) -> Vec<CertbotRenewal> {
         let content = match fs::read_to_string(&path) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("Warning: cannot read renewal config {}: {e}", path.display());
+                eprintln!(
+                    "Warning: cannot read renewal config {}: {e}",
+                    path.display()
+                );
                 continue;
             }
         };
@@ -421,6 +433,7 @@ account = abc123
 
         let config = RenewalConfig {
             server: "https://acme.example.com/directory".into(),
+            ca: None,
             domains: vec![Identifier::dns("example.com")],
             account_key: PathBuf::from("/etc/akamu/acct.pem"),
             account_key_type: "ec:P-256".into(),

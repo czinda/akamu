@@ -7,8 +7,6 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use serde::Serialize;
-use serde_json::json;
-
 use crate::db;
 use crate::error::AcmeError;
 use crate::state::AppState;
@@ -78,7 +76,11 @@ pub async fn respond_challenge(
 
     // Extract identifier.
     let identifier: serde_json::Value =
-        serde_json::from_str(&authz.identifier).unwrap_or(json!({}));
+        serde_json::from_str(&authz.identifier).map_err(|e| {
+            AcmeError::Internal(format!(
+                "corrupt identifier in authorization {authz_id}: {e}"
+            ))
+        })?;
     let id_type = identifier["type"].as_str().unwrap_or("").to_string();
     let id_value = identifier["value"].as_str().unwrap_or("").to_string();
 

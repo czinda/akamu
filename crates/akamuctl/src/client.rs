@@ -287,6 +287,15 @@ impl AdminClient {
         parse_json(&resp.body)
     }
 
+    /// Make an authenticated GET request; returns the raw response body as text.
+    ///
+    /// Use this for endpoints that return non-JSON content (e.g. PEM files).
+    pub async fn get_text(&self, path: &str) -> Result<String, CtlError> {
+        let resp = self.authed(Method::GET, path, None).await?;
+        check_status(&resp)?;
+        Ok(resp.body)
+    }
+
     /// Make an authenticated POST request with optional JSON body.
     pub async fn post(&self, path: &str, body: Option<&Value>) -> Result<Value, CtlError> {
         let body_str = body.map(|v| v.to_string());

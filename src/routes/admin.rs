@@ -1806,9 +1806,17 @@ pub async fn get_ca_cert(
         return (StatusCode::NOT_FOUND, "CA not found").into_response();
     };
 
-    let cert_pem =
-        String::from_utf8(der_to_pem("CERTIFICATE", &ca.cert_der))
-            .unwrap_or_default();
+    let cert_pem = match String::from_utf8(der_to_pem("CERTIFICATE", &ca.cert_der)) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(ca_id = %id, error = %e, "CA cert DER→PEM produced non-UTF-8 bytes");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": 500, "detail": "failed to encode CA certificate as PEM"})),
+            )
+                .into_response();
+        }
+    };
 
     (
         StatusCode::OK,
@@ -1966,7 +1974,11 @@ pub async fn post_ca_cross_sign(
         Ok(c) => c,
         Err(e) => {
             tracing::error!(error = %e, "cross-sign issuance failed");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": 500, "detail": "cross-certificate issuance failed"})),
+            )
+                .into_response();
         }
     };
 
@@ -2073,7 +2085,11 @@ pub async fn get_cross_certs(
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "get_cross_certs DB query failed");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": 500, "detail": "failed to query cross-certificates"})),
+            )
+                .into_response();
         }
     };
 
@@ -2118,7 +2134,11 @@ pub async fn get_cross_cert(
         }
         Err(e) => {
             tracing::error!(error = %e, "get_cross_cert DB query failed");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": 500, "detail": "failed to query cross-certificate"})),
+            )
+                .into_response();
         }
     };
 
