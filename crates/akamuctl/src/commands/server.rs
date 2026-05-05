@@ -64,13 +64,14 @@ pub async fn profile_remove(client: &AdminClient, _fmt: &Format, id: &str) -> Re
     client.delete(&format!("/admin/profiles/{id}")).await
 }
 
-/// List ACME orders with optional account or status filter.
+/// List ACME orders with optional account, status, or CA filter.
 #[allow(clippy::too_many_arguments)]
 pub async fn order_list(
     client: &AdminClient,
     fmt: &Format,
     account_id: Option<String>,
     status: Option<String>,
+    ca_id: Option<String>,
     limit: u32,
     offset: u32,
 ) -> Result<(), CtlError> {
@@ -80,6 +81,9 @@ pub async fn order_list(
     }
     if let Some(st) = &status {
         path.push_str(&format!("&status={}", urlenc(st)));
+    }
+    if let Some(ca) = &ca_id {
+        path.push_str(&format!("&ca_id={}", urlenc(ca)));
     }
     let resp = client.get(&path).await?;
     print(fmt, &resp);

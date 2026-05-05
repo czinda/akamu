@@ -17,6 +17,7 @@ pub async fn list(
     after: Option<String>,
     before: Option<String>,
     status: Option<String>,
+    ca_id: Option<String>,
     limit: u32,
     offset: u32,
 ) -> Result<(), CtlError> {
@@ -35,6 +36,9 @@ pub async fn list(
     }
     if let Some(st) = &status {
         path.push_str(&format!("&status={}", urlenc(st)));
+    }
+    if let Some(ca) = &ca_id {
+        path.push_str(&format!("&ca_id={}", urlenc(ca)));
     }
     let resp = client.get(&path).await?;
     print(fmt, &resp);

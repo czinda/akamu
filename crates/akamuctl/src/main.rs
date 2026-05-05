@@ -129,6 +129,12 @@ enum Commands {
     /// Configuration utilities.
     #[command(subcommand)]
     Config(ConfigCmd),
+    /// Manage CAs (list, show, cert, crl-force, cross-sign).
+    #[command(subcommand)]
+    Ca(CaCmd),
+    /// Manage cross-certificates.
+    #[command(subcommand)]
+    CrossCert(CrossCertCmd),
     /// Generate shell completions.
     Completions {
         /// Shell to generate completions for.
@@ -239,6 +245,9 @@ enum CertCmd {
         before: Option<String>,
         #[arg(long)]
         status: Option<String>,
+        /// Filter by CA identifier.
+        #[arg(long, value_name = "CA_ID")]
+        ca: Option<String>,
         #[arg(long, default_value = "20")]
         limit: u32,
         #[arg(long, default_value = "0")]
@@ -326,6 +335,9 @@ enum OrderCmd {
         /// Filter by status.
         #[arg(long)]
         status: Option<String>,
+        /// Filter by CA identifier.
+        #[arg(long, value_name = "CA_ID")]
+        ca: Option<String>,
         #[arg(long, default_value = "100")]
         limit: u32,
         #[arg(long, default_value = "0")]
@@ -364,6 +376,69 @@ enum CosignerCmd {
     Stats,
     /// Show redacted cosigner configuration.
     Config,
+}
+
+#[derive(Subcommand)]
+enum CaCmd {
+    /// List all configured CAs.
+    List,
+    /// Show details for a specific CA.
+    Show {
+        /// CA identifier.
+        id: String,
+    },
+    /// Download the CA certificate PEM.
+    Cert {
+        /// CA identifier.
+        id: String,
+        /// Write to file instead of stdout.
+        #[arg(long, short = 'o', value_name = "FILE")]
+        output: Option<PathBuf>,
+    },
+    /// Invalidate the CRL cache for a specific CA.
+    CrlForce {
+        /// CA identifier.
+        id: String,
+    },
+    /// Issue a cross-certificate from one CA signing another CA's public key.
+    CrossSign {
+        /// CA identifier of the signing (issuer) CA.
+        issuer_id: String,
+        /// CA identifier of the subject CA on this server.
+        #[arg(long, group = "subject")]
+        subject_ca_id: Option<String>,
+        /// PEM file of an external CA certificate to cross-sign.
+        #[arg(long, group = "subject", value_name = "FILE")]
+        subject_cert: Option<PathBuf>,
+        /// Validity of the cross-certificate in years.
+        #[arg(long, default_value = "5")]
+        validity_years: u32,
+    },
+}
+
+#[derive(Subcommand)]
+enum CrossCertCmd {
+    /// List cross-certificates.
+    List {
+        /// Filter by issuer CA identifier.
+        #[arg(long)]
+        issuer_ca: Option<String>,
+        /// Filter by subject CA identifier.
+        #[arg(long)]
+        subject_ca: Option<String>,
+        #[arg(long, default_value = "100")]
+        limit: u32,
+        #[arg(long, default_value = "0")]
+        offset: u32,
+    },
+    /// Download a cross-certificate PEM by UUID.
+    Download {
+        /// Cross-certificate UUID.
+        id: String,
+        /// Write to file instead of stdout.
+        #[arg(long, short = 'o', value_name = "FILE")]
+        output: Option<PathBuf>,
+    },
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -541,6 +616,7 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
                 after,
                 before,
                 status,
+                ca,
                 limit,
                 offset,
             } => {
@@ -552,6 +628,7 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
                     after,
                     before,
                     status,
+                    ca,
                     limit,
                     offset,
                 )
@@ -608,6 +685,7 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
             OrderCmd::List {
                 account_id,
                 status,
+                ca,
                 limit,
                 offset,
             } => {
@@ -616,6 +694,7 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
                     &fmt,
                     account_id,
                     status,
+                    ca,
                     limit,
                     offset,
                 )
@@ -663,6 +742,57 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
                 }
             }
         }
+        Commands::Ca(ca_cmd) => match ca_cmd {
+            CaCmd::List => {
+                commands::ca::list(&server_client, &fmt).await?;
+            }
+            CaCmd::Show { id } => {
+                commands::ca::show(&server_client, &fmt, &id).await?;
+            }
+            CaCmd::Cert { id, output } => {
+                commands::ca::cert(&server_client, &id, output).await?;
+            }
+            CaCmd::CrlForce { id } => {
+                commands::ca::crl_force(&server_client, &id).await?;
+            }
+            CaCmd::CrossSign {
+                issuer_id,
+                subject_ca_id,
+                subject_cert,
+                validity_years,
+            } => {
+                commands::ca::cross_sign(
+                    &server_client,
+                    &fmt,
+                    &issuer_id,
+                    subject_ca_id,
+                    subject_cert,
+                    validity_years,
+                )
+                .await?;
+            }
+        },
+        Commands::CrossCert(cc_cmd) => match cc_cmd {
+            CrossCertCmd::List {
+                issuer_ca,
+                subject_ca,
+                limit,
+                offset,
+            } => {
+                commands::cross_cert::list(
+                    &server_client,
+                    &fmt,
+                    issuer_ca,
+                    subject_ca,
+                    limit,
+                    offset,
+                )
+                .await?;
+            }
+            CrossCertCmd::Download { id, output } => {
+                commands::cross_cert::download(&server_client, &id, output).await?;
+            }
+        },
         Commands::Config(cfg_cmd) => match cfg_cmd {
             ConfigCmd::Generate => {
                 commands::config_cmd::generate();
