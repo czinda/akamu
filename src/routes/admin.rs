@@ -40,6 +40,10 @@
 //! | `POST /admin/crl/force` | ✓ | ✓ | | |
 //! | `POST /admin/revoke` | ✓ | ✓ | ✓ | |
 //! | `GET /admin/stats` | ✓ | ✓ | ✓ | ✓ |
+//! | `GET /admin/cas` | ✓ | ✓ | | |
+//! | `GET /admin/cas/{id}` | ✓ | ✓ | | |
+//! | `GET /admin/cas/{id}/cert` | ✓ | ✓ | | |
+//! | `POST /admin/ca/{id}/crl/force` | ✓ | ✓ | | |
 
 use std::sync::Arc;
 
@@ -57,6 +61,7 @@ use crate::admin::auth::OperatorContext;
 use crate::audit::{AuditEvent, AuditEventType};
 use crate::db;
 use crate::state::AppState;
+use synta_certificate::der_to_pem;
 
 use super::unix_now;
 
@@ -448,9 +453,10 @@ pub async fn get_certs(
     let account_id = params.get("account_id").map(String::as_str);
     let status = params.get("status").map(String::as_str);
     let subject_dn = params.get("subject").map(String::as_str);
+    let ca_id = params.get("ca_id").map(String::as_str);
 
     let result = db::certs::search(
-        &state.db, serial, account_id, status, subject_dn, limit, offset,
+        &state.db, serial, account_id, status, subject_dn, ca_id, limit, offset,
     )
     .await;
 
@@ -868,10 +874,15 @@ pub async fn post_revoke(
     .await
     {
         Ok(true) => {
-            // Invalidate all CRL caches (we don't know which CA the cert belongs to
-            // without an extra DB lookup; Phase 9 will refine this to per-CA).
-            for cache in state.crl_caches.values() {
-                *cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            // Look up the cert's CA and invalidate only that CA's CRL cache.
+            if let Ok(Some(cert)) = db::certs::get_by_id(&state.db, &payload.cert_id).await {
+                state.invalidate_crl_cache(&cert.ca_id);
+            } else {
+                // Cert row missing (shouldn't happen after a successful revoke) —
+                // fall back to invalidating all caches.
+                for cache in state.crl_caches.values() {
+                    *cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                }
             }
             state
                 .record_audit(
@@ -1162,8 +1173,9 @@ pub async fn get_accounts(
         .unwrap_or(0)
         .max(0);
     let status = params.get("status").map(String::as_str);
+    let ca_id = params.get("ca_id").map(String::as_str);
 
-    match db::accounts::list(&state.db, status, limit, offset).await {
+    match db::accounts::list(&state.db, status, ca_id, limit, offset).await {
         Ok(rows) => {
             let accounts: Vec<_> = rows
                 .into_iter()
@@ -1491,8 +1503,9 @@ pub async fn get_orders(
         .max(0);
     let account_id = params.get("account_id").map(String::as_str);
     let status = params.get("status").map(String::as_str);
+    let ca_id = params.get("ca_id").map(String::as_str);
 
-    match db::orders::list(&state.db, account_id, status, limit, offset).await {
+    match db::orders::list(&state.db, account_id, status, ca_id, limit, offset).await {
         Ok(rows) => {
             let orders: Vec<_> = rows
                 .into_iter()
@@ -1670,6 +1683,18 @@ pub async fn get_config(operator: OperatorContext, State(state): State<Arc<AppSt
     require_role!(operator, state, Administrator);
 
     let cfg = &state.config;
+    let cas: Vec<_> = state
+        .cas
+        .values()
+        .map(|ca| {
+            json!({
+                "id": ca.id,
+                "is_default": ca.id == state.default_ca_id.as_str(),
+                "crl_url": ca.crl_url,
+                "ocsp_url": ca.ocsp_url,
+            })
+        })
+        .collect();
     (
         StatusCode::OK,
         Json(json!({
@@ -1678,9 +1703,143 @@ pub async fn get_config(operator: OperatorContext, State(state): State<Arc<AppSt
             "mtc_enabled": state.mtc.is_enabled(),
             "caa_identities": cfg.server.caa_identities,
             "validate_dnssec": cfg.server.validate_dnssec,
+            "cas": cas,
         })),
     )
         .into_response()
+}
+
+// ── CA management ─────────────────────────────────────────────────────────────
+
+/// `GET /admin/cas`
+///
+/// List all configured CAs.
+/// Requires: `administrator`.
+pub async fn get_cas(operator: OperatorContext, State(state): State<Arc<AppState>>) -> Response {
+    require_role!(operator, state, Administrator | CaOperations);
+
+    let cas: Vec<_> = state
+        .cas
+        .values()
+        .map(|ca| {
+            let cfg = state
+                .config
+                .cas
+                .iter()
+                .find(|c| c.id == ca.id);
+            json!({
+                "id": ca.id,
+                "is_default": ca.id == state.default_ca_id.as_str(),
+                "key_type": cfg.map(|c| c.key_type.as_str()).unwrap_or("unknown"),
+                "hash_alg": ca.hash_alg,
+                "crl_url": ca.crl_url,
+                "ocsp_url": ca.ocsp_url,
+            })
+        })
+        .collect();
+
+    (StatusCode::OK, Json(json!({ "cas": cas }))).into_response()
+}
+
+/// `GET /admin/cas/{id}`
+///
+/// Show details for a single CA, including the CA certificate PEM.
+/// Requires: `administrator` or `ca_operations`.
+pub async fn get_ca(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    require_role!(operator, state, Administrator | CaOperations);
+
+    let Some(ca) = state.get_ca(&id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"status": 404, "detail": "CA not found"})),
+        )
+            .into_response();
+    };
+
+    let cfg = state.config.cas.iter().find(|c| c.id == ca.id);
+    let cert_pem =
+        String::from_utf8(der_to_pem("CERTIFICATE", &ca.cert_der))
+            .unwrap_or_default();
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "id": ca.id,
+            "is_default": ca.id == state.default_ca_id.as_str(),
+            "key_type": cfg.map(|c| c.key_type.as_str()).unwrap_or("unknown"),
+            "hash_alg": ca.hash_alg,
+            "validity_days": ca.validity_days,
+            "crl_url": ca.crl_url,
+            "ocsp_url": ca.ocsp_url,
+            "caa_identities": ca.caa_identities,
+            "cert_pem": cert_pem,
+        })),
+    )
+        .into_response()
+}
+
+/// `GET /admin/cas/{id}/cert`
+///
+/// Download the CA certificate as PEM text.
+/// Requires: `administrator` or `ca_operations`.
+pub async fn get_ca_cert(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    require_role!(operator, state, Administrator | CaOperations);
+
+    let Some(ca) = state.get_ca(&id) else {
+        return (StatusCode::NOT_FOUND, "CA not found").into_response();
+    };
+
+    let cert_pem =
+        String::from_utf8(der_to_pem("CERTIFICATE", &ca.cert_der))
+            .unwrap_or_default();
+
+    (
+        StatusCode::OK,
+        [("content-type", "application/x-pem-file")],
+        cert_pem,
+    )
+        .into_response()
+}
+
+/// `POST /admin/ca/{id}/crl/force`
+///
+/// Invalidate the CRL cache for a single CA, causing the next CRL request to
+/// regenerate it.  Use `/admin/crl/force` to invalidate all CA caches at once.
+/// Requires: `administrator` or `ca_operations`.
+pub async fn post_ca_crl_force(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    require_role!(operator, state, Administrator | CaOperations);
+
+    if state.get_ca(&id).is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"status": 404, "detail": "CA not found"})),
+        )
+            .into_response();
+    }
+
+    state.invalidate_crl_cache(&id);
+
+    state
+        .record_audit(
+            AuditEvent::success(AuditEventType::CrlGenerate)
+                .with_principal(&operator.name)
+                .with_detail(format!("{{\"action\":\"crl.force\",\"ca_id\":\"{id}\"}}")),
+        )
+        .await;
+
+    StatusCode::NO_CONTENT.into_response()
 }
 
 // ── Statistics ────────────────────────────────────────────────────────────────

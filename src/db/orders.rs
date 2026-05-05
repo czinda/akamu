@@ -9,8 +9,8 @@ pub async fn insert(
         "INSERT INTO orders (id, account_id, status, expires, identifiers,
          not_before, not_after, error, certificate_id, replaces, created, updated,
          star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs,
-         star_allow_cert_get, star_canceled_at, star_csr_der, profile)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         star_allow_cert_get, star_canceled_at, star_csr_der, profile, ca_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&row.id)
     .bind(&row.account_id)
@@ -32,6 +32,7 @@ pub async fn insert(
     .bind(row.star_canceled_at)
     .bind(&row.star_csr_der)
     .bind(&row.profile)
+    .bind(&row.ca_id)
     .execute(executor)
     .await?;
     Ok(())
@@ -60,7 +61,7 @@ pub async fn list_active_star(
         "SELECT id, account_id, status, expires, identifiers,
          not_before, not_after, error, certificate_id, replaces, created, updated,
          star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs,
-         star_allow_cert_get, star_canceled_at, star_csr_der, profile
+         star_allow_cert_get, star_canceled_at, star_csr_der, profile, ca_id
          FROM orders
          WHERE star_end_date IS NOT NULL AND star_canceled_at IS NULL AND status = 'valid'",
     )
@@ -91,7 +92,7 @@ pub async fn get_by_id(
         "SELECT id, account_id, status, expires, identifiers,
          not_before, not_after, error, certificate_id, replaces, created, updated,
          star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs,
-         star_allow_cert_get, star_canceled_at, star_csr_der, profile
+         star_allow_cert_get, star_canceled_at, star_csr_der, profile, ca_id
          FROM orders WHERE id = ?",
     )
     .bind(id)
@@ -180,6 +181,7 @@ pub async fn get_with_authz_ids(
         star_canceled_at: Option<i64>,
         star_csr_der: Option<Vec<u8>>,
         profile: Option<String>,
+        ca_id: String,
         // Authz column (NULL when no authorizations exist for this order)
         authz_id: Option<String>,
     }
@@ -191,7 +193,7 @@ pub async fn get_with_authz_ids(
              o.created, o.updated,
              o.star_start_date, o.star_end_date, o.star_lifetime_secs,
              o.star_lifetime_adjust_secs, o.star_allow_cert_get, o.star_canceled_at,
-             o.star_csr_der, o.profile,
+             o.star_csr_der, o.profile, o.ca_id,
              a.id AS authz_id
          FROM orders o
          LEFT JOIN authorizations a ON a.order_id = o.id
@@ -228,6 +230,7 @@ pub async fn get_with_authz_ids(
         star_canceled_at: first.star_canceled_at,
         star_csr_der: first.star_csr_der.clone(),
         profile: first.profile.clone(),
+        ca_id: first.ca_id.clone(),
     };
     let authz_ids: Vec<String> = rows.into_iter().filter_map(|r| r.authz_id).collect();
     Ok(Some((order, authz_ids)))
@@ -238,6 +241,7 @@ pub async fn list(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     account_id: Option<&str>,
     status: Option<&str>,
+    ca_id: Option<&str>,
     limit: i64,
     offset: i64,
 ) -> Result<Vec<OrderRow>, AcmeError> {
@@ -245,7 +249,7 @@ pub async fn list(
         "SELECT id, account_id, status, expires, identifiers, \
          not_before, not_after, error, certificate_id, replaces, created, updated, \
          star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs, \
-         star_allow_cert_get, star_canceled_at, star_csr_der, profile \
+         star_allow_cert_get, star_canceled_at, star_csr_der, profile, ca_id \
          FROM orders WHERE 1=1",
     );
     if let Some(a) = account_id {
@@ -255,6 +259,10 @@ pub async fn list(
     if let Some(st) = status {
         qb.push(" AND status = ");
         qb.push_bind(st);
+    }
+    if let Some(ca) = ca_id {
+        qb.push(" AND ca_id = ");
+        qb.push_bind(ca);
     }
     qb.push(" ORDER BY created DESC LIMIT ");
     qb.push_bind(limit);
@@ -301,6 +309,7 @@ mod tests {
                 created: 1_700_000_000,
                 updated: 1_700_000_000,
                 profile_grants: None,
+                ca_id: String::new(),
             },
         )
         .await
@@ -329,6 +338,7 @@ mod tests {
             star_canceled_at: None,
             star_csr_der: None,
             profile: None,
+            ca_id: "default".to_string(),
         }
     }
 

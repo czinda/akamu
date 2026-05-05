@@ -302,6 +302,16 @@ pub fn build_admin_router(state: Arc<AppState>) -> Router {
         .route("/admin/crl/force", post(admin::post_crl_force))
         .route("/admin/revoke", post(admin::post_revoke))
         .route("/admin/stats", axum::routing::get(admin::get_stats))
+        .route("/admin/cas", axum::routing::get(admin::get_cas))
+        .route("/admin/cas/{id}", axum::routing::get(admin::get_ca))
+        .route(
+            "/admin/cas/{id}/cert",
+            axum::routing::get(admin::get_ca_cert),
+        )
+        .route(
+            "/admin/ca/{id}/crl/force",
+            post(admin::post_ca_crl_force),
+        )
         .layer(axum::extract::DefaultBodyLimit::max(if max_body > 0 {
             max_body
         } else {

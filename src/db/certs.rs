@@ -1,4 +1,4 @@
-use crate::db::schema::{CertForStandalone, CertificateRow};
+use crate::db::schema::{CertForStandalone, CertificateRow, CrlEntry};
 use crate::error::AcmeError;
 
 pub async fn insert(
@@ -9,8 +9,8 @@ pub async fn insert(
         "INSERT INTO certificates
          (id, order_id, account_id, serial_number, status, der, pem,
           not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-          suggested_window_start, suggested_window_end, replaced_by, subject_dn)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
+          suggested_window_start, suggested_window_end, replaced_by, subject_dn, ca_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
     )
     .bind(&row.id)
     .bind(&row.order_id)
@@ -28,6 +28,7 @@ pub async fn insert(
     .bind(row.suggested_window_start)
     .bind(row.suggested_window_end)
     .bind(&row.subject_dn)
+    .bind(&row.ca_id)
     .execute(executor)
     .await?;
     Ok(())
@@ -40,7 +41,7 @@ pub async fn get_by_id(
     let row = sqlx::query_as::<_, CertificateRow>(
         "SELECT id, order_id, account_id, serial_number, status, der, pem,
          not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-         suggested_window_start, suggested_window_end, replaced_by, subject_dn
+         suggested_window_start, suggested_window_end, replaced_by, subject_dn, ca_id
          FROM certificates WHERE id = ?",
     )
     .bind(id)
@@ -56,7 +57,7 @@ pub async fn get_by_serial(
     let row = sqlx::query_as::<_, CertificateRow>(
         "SELECT id, order_id, account_id, serial_number, status, der, pem,
          not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-         suggested_window_start, suggested_window_end, replaced_by, subject_dn
+         suggested_window_start, suggested_window_end, replaced_by, subject_dn, ca_id
          FROM certificates WHERE serial_number = ?",
     )
     .bind(serial)
@@ -70,8 +71,9 @@ pub async fn get_by_serial(
 /// The cert_id format (RFC 9773 §4.1) is:
 ///   `base64url(AKI keyIdentifier) "." base64url(serial number bytes)`
 ///
-/// Only the serial component is used for the DB lookup; the AKI component is
-/// ignored (our CA issues one cert per serial and the AKI is always the same).
+/// Only the serial component is used for the DB lookup.  The AKI is validated
+/// against the resolved CA in `renewal_info.rs` after the row is fetched, so
+/// a cert_id referencing the wrong CA returns 404 rather than the wrong cert.
 pub async fn get_by_cert_id(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     cert_id: &str,
@@ -173,16 +175,20 @@ pub async fn set_renewal_window(
     Ok(())
 }
 
-/// List all revoked certificates (for CRL generation).
+/// List revoked certificates for a specific CA (for CRL generation).
+///
+/// Only certificates issued by `ca_id` are included so each CA's CRL contains
+/// only its own revocations.  Returns a narrow projection (`CrlEntry`) to avoid
+/// loading DER/PEM blobs — the CRL builder only needs serial, timestamp, and reason.
 pub async fn list_revoked(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
-) -> Result<Vec<CertificateRow>, AcmeError> {
-    let rows = sqlx::query_as::<_, CertificateRow>(
-        "SELECT id, order_id, account_id, serial_number, status, der, pem,
-         not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-         suggested_window_start, suggested_window_end, replaced_by, subject_dn
-         FROM certificates WHERE status = 'revoked'",
+    ca_id: &str,
+) -> Result<Vec<CrlEntry>, AcmeError> {
+    let rows = sqlx::query_as::<_, CrlEntry>(
+        "SELECT serial_number, revoked_at, revocation_reason
+         FROM certificates WHERE status = 'revoked' AND ca_id = ?",
     )
+    .bind(ca_id)
     .fetch_all(executor)
     .await?;
     Ok(rows)
@@ -197,7 +203,7 @@ pub async fn list_valid_for_account(
     let rows = sqlx::query_as::<_, CertificateRow>(
         "SELECT id, order_id, account_id, serial_number, status, der, pem,
          not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-         suggested_window_start, suggested_window_end, replaced_by, subject_dn
+         suggested_window_start, suggested_window_end, replaced_by, subject_dn, ca_id
          FROM certificates
          WHERE account_id = ? AND status = 'valid' AND not_after > ?",
     )
@@ -219,7 +225,7 @@ pub async fn get_latest_for_order(
     let row = sqlx::query_as::<_, CertificateRow>(
         "SELECT id, order_id, account_id, serial_number, status, der, pem,
          not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-         suggested_window_start, suggested_window_end, replaced_by, subject_dn
+         suggested_window_start, suggested_window_end, replaced_by, subject_dn, ca_id
          FROM certificates
          WHERE order_id = ?
          ORDER BY created DESC
@@ -282,7 +288,7 @@ pub async fn get_representative_for_landmark(
     let row = sqlx::query_as::<_, CertificateRow>(
         "SELECT id, order_id, account_id, serial_number, status, der, pem,
          not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-         suggested_window_start, suggested_window_end, replaced_by, subject_dn
+         suggested_window_start, suggested_window_end, replaced_by, subject_dn, ca_id
          FROM certificates
          WHERE mtc_log_index IS NOT NULL AND mtc_log_index < ?
          ORDER BY mtc_log_index ASC
@@ -310,23 +316,39 @@ pub async fn get_mtc_standalone_der(
 // ── Admin search ──────────────────────────────────────────────────────────────
 
 /// Filtered, paginated search used by `GET /admin/certs`.
+/// Filter parameters for [`search`].
+pub struct CertSearchParams<'a> {
+    pub serial: Option<&'a str>,
+    pub account_id: Option<&'a str>,
+    pub status: Option<&'a str>,
+    pub subject_dn: Option<&'a str>,
+    pub ca_id: Option<&'a str>,
+    pub limit: i64,
+    pub offset: i64,
+}
+
+/// Search certificates with optional filters.
 ///
 /// Uses `QueryBuilder` so optional filters only emit bind parameters when
 /// present, avoiding the `(? IS NULL OR ...)` pattern that misfires on
 /// Postgres with untyped NULL placeholders.
 pub async fn search(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
-    serial: Option<&str>,
-    account_id: Option<&str>,
-    status: Option<&str>,
-    subject_dn: Option<&str>,
-    limit: i64,
-    offset: i64,
+    params: CertSearchParams<'_>,
 ) -> Result<Vec<CertificateRow>, crate::error::AcmeError> {
+    let CertSearchParams {
+        serial,
+        account_id,
+        status,
+        subject_dn,
+        ca_id,
+        limit,
+        offset,
+    } = params;
     let mut qb = sqlx::QueryBuilder::<sqlx::Any>::new(
         "SELECT id, order_id, account_id, serial_number, status, der, pem, \
                 not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created, \
-                suggested_window_start, suggested_window_end, replaced_by, subject_dn \
+                suggested_window_start, suggested_window_end, replaced_by, subject_dn, ca_id \
          FROM certificates WHERE 1=1",
     );
     if let Some(s) = serial {
@@ -344,6 +366,10 @@ pub async fn search(
     if let Some(dn) = subject_dn {
         qb.push(" AND subject_dn LIKE ");
         qb.push_bind(format!("%{dn}%"));
+    }
+    if let Some(ca) = ca_id {
+        qb.push(" AND ca_id = ");
+        qb.push_bind(ca);
     }
     qb.push(" ORDER BY created DESC LIMIT ");
     qb.push_bind(limit);
@@ -380,6 +406,7 @@ mod tests {
             created: 1_700_000_000,
             updated: 1_700_000_000,
             profile_grants: None,
+            ca_id: String::new(),
         };
         crate::db::accounts::insert(db, acct).await.unwrap();
 
@@ -404,6 +431,7 @@ mod tests {
             star_canceled_at: None,
             star_csr_der: None,
             profile: None,
+            ca_id: "default".to_string(),
         };
         crate::db::orders::insert(db, order).await.unwrap();
     }
@@ -427,6 +455,7 @@ mod tests {
             suggested_window_end: None,
             replaced_by: None,
             subject_dn: None,
+            ca_id: "default".to_string(),
         }
     }
 
@@ -580,10 +609,9 @@ mod tests {
 
         revoke(&db, "cert-9", Some(4), 1_700_500_000).await.unwrap();
 
-        let revoked = list_revoked(&db).await.unwrap();
+        let revoked = list_revoked(&db, "default").await.unwrap();
         assert_eq!(revoked.len(), 1);
-        assert_eq!(revoked[0].id, "cert-9");
-        assert_eq!(revoked[0].status, "revoked");
+        assert_eq!(revoked[0].serial_number, "serial-cert-9");
     }
 
     #[tokio::test]
@@ -591,8 +619,48 @@ mod tests {
         let db = open_db().await;
         insert_cert(&db, "cert-10", "acct-10", "valid", 1_800_000_000).await;
 
-        let revoked = list_revoked(&db).await.unwrap();
+        let revoked = list_revoked(&db, "default").await.unwrap();
         assert!(revoked.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_revoked_filters_by_ca_id() {
+        let db = open_db().await;
+
+        // Insert parent rows for two separate CA environments.
+        // insert_parent_rows creates account + order; sample_cert sets order_id = "order-{id}",
+        // so the parent order ID must match.
+        insert_parent_rows(&db, "acct-ca-a", "order-cert-ca-a").await;
+        let mut cert_a = sample_cert("cert-ca-a", "acct-ca-a", "valid", 1_800_000_000);
+        cert_a.ca_id = "ca-a".to_string();
+        insert(&db, cert_a).await.unwrap();
+
+        insert_parent_rows(&db, "acct-ca-b", "order-cert-ca-b").await;
+        let mut cert_b = sample_cert("cert-ca-b", "acct-ca-b", "valid", 1_800_000_000);
+        cert_b.ca_id = "ca-b".to_string();
+        insert(&db, cert_b).await.unwrap();
+
+        // Revoke both.
+        revoke(&db, "cert-ca-a", Some(1), 1_700_500_000)
+            .await
+            .unwrap();
+        revoke(&db, "cert-ca-b", Some(2), 1_700_500_001)
+            .await
+            .unwrap();
+
+        // list_revoked("ca-a") must return only cert-ca-a.
+        let revoked_a = list_revoked(&db, "ca-a").await.unwrap();
+        assert_eq!(revoked_a.len(), 1, "ca-a CRL must contain exactly one entry");
+        assert_eq!(revoked_a[0].serial_number, "serial-cert-ca-a");
+
+        // list_revoked("ca-b") must return only cert-ca-b.
+        let revoked_b = list_revoked(&db, "ca-b").await.unwrap();
+        assert_eq!(revoked_b.len(), 1, "ca-b CRL must contain exactly one entry");
+        assert_eq!(revoked_b[0].serial_number, "serial-cert-ca-b");
+
+        // list_revoked("default") must return nothing (no certs with ca_id = 'default').
+        let revoked_default = list_revoked(&db, "default").await.unwrap();
+        assert!(revoked_default.is_empty());
     }
 
     #[tokio::test]
@@ -631,6 +699,7 @@ mod tests {
                 suggested_window_end: None,
                 replaced_by: None,
                 subject_dn: None,
+                ca_id: "default".to_string(),
             },
         )
         .await
@@ -683,6 +752,7 @@ mod tests {
             suggested_window_end: None,
             replaced_by: None,
             subject_dn: None,
+            ca_id: "default".to_string(),
         };
         assert!(insert(&raw, row).await.is_err());
         assert!(get_by_id(&raw, "any").await.is_err());
@@ -692,7 +762,7 @@ mod tests {
         assert!(set_renewal_window(&raw, "any", now, now + 86400)
             .await
             .is_err());
-        assert!(list_revoked(&raw).await.is_err());
+        assert!(list_revoked(&raw, "default").await.is_err());
         assert!(list_valid_for_account(&raw, "any", now).await.is_err());
     }
 

@@ -7,8 +7,8 @@ pub async fn insert(
 ) -> Result<(), AcmeError> {
     sqlx::query(
         "INSERT INTO accounts \
-         (id, status, contact, public_key, jwk_thumbprint, created, updated, profile_grants)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         (id, status, contact, public_key, jwk_thumbprint, created, updated, profile_grants, ca_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&row.id)
     .bind(&row.status)
@@ -18,6 +18,7 @@ pub async fn insert(
     .bind(row.created)
     .bind(row.updated)
     .bind(&row.profile_grants)
+    .bind(&row.ca_id)
     .execute(executor)
     .await?;
     Ok(())
@@ -28,7 +29,7 @@ pub async fn get_by_id(
     id: &str,
 ) -> Result<Option<AccountRow>, AcmeError> {
     let row = sqlx::query_as::<_, AccountRow>(
-        "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated, profile_grants
+        "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated, profile_grants, ca_id
          FROM accounts WHERE id = ?",
     )
     .bind(id)
@@ -42,7 +43,7 @@ pub async fn get_by_thumbprint(
     thumbprint: &str,
 ) -> Result<Option<AccountRow>, AcmeError> {
     let row = sqlx::query_as::<_, AccountRow>(
-        "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated, profile_grants
+        "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated, profile_grants, ca_id
          FROM accounts WHERE jwk_thumbprint = ?",
     )
     .bind(thumbprint)
@@ -152,16 +153,26 @@ pub async fn get_profile_grants(
 pub async fn list(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     status: Option<&str>,
+    ca_id: Option<&str>,
     limit: i64,
     offset: i64,
 ) -> Result<Vec<AccountRow>, AcmeError> {
     let mut qb = sqlx::QueryBuilder::<sqlx::Any>::new(
-        "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated, profile_grants \
+        "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated, profile_grants, ca_id \
          FROM accounts WHERE 1=1",
     );
     if let Some(st) = status {
         qb.push(" AND status = ");
         qb.push_bind(st);
+    }
+    if let Some(ca) = ca_id {
+        // Covers CA-scoped accounts (ca_id = ?) and server-scoped accounts that
+        // have placed at least one order with this CA (subquery on orders).
+        qb.push(" AND (ca_id = ");
+        qb.push_bind(ca);
+        qb.push(" OR id IN (SELECT DISTINCT account_id FROM orders WHERE ca_id = ");
+        qb.push_bind(ca);
+        qb.push("))");
     }
     qb.push(" ORDER BY created DESC LIMIT ");
     qb.push_bind(limit);
@@ -195,6 +206,7 @@ mod tests {
             created: 1_700_000_000,
             updated: 1_700_000_000,
             profile_grants: None,
+            ca_id: String::new(),
         }
     }
 
