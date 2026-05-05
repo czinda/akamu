@@ -1851,7 +1851,7 @@ pub async fn post_ca_crl_force(
 ///
 /// Exactly one of `subject_ca_id` or `subject_cert_pem` must be supplied.
 #[derive(Deserialize)]
-pub(super) struct CrossSignPayload {
+pub struct CrossSignPayload {
     /// Same-server CA whose certificate will become the cross-cert subject.
     subject_ca_id: Option<String>,
     /// PEM-encoded certificate of an external CA to cross-sign.
@@ -1905,17 +1905,28 @@ pub async fn post_ca_cross_sign(
             }
         }
         (None, Some(pem)) => {
-            let ders = synta_certificate::pem_to_der(pem.as_bytes());
-            match ders.into_iter().next() {
-                Some(d) => d,
+            // Require a "CERTIFICATE" label so operators don't accidentally submit a CSR or key.
+            let blocks = synta_certificate::pem_blocks(pem.as_bytes());
+            let der = match blocks.into_iter().find(|(label, _)| label == "CERTIFICATE") {
+                Some((_, d)) => d,
                 None => {
                     return (
                         StatusCode::BAD_REQUEST,
-                        Json(json!({"status": 400, "detail": "subject_cert_pem contains no valid PEM block"})),
+                        Json(json!({"status": 400, "detail": "subject_cert_pem must contain a CERTIFICATE PEM block"})),
                     )
                         .into_response();
                 }
+            };
+            // Verify the external cert is a valid CA certificate (BasicConstraints.cA=TRUE).
+            let now = crate::util::unix_now();
+            if let Err(e) = crate::ca::issue::check_is_ca_cert(&der, now) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"status": 400, "detail": e.to_string()})),
+                )
+                    .into_response();
             }
+            der
         }
         _ => {
             return (
@@ -1925,6 +1936,14 @@ pub async fn post_ca_cross_sign(
                 .into_response();
         }
     };
+
+    if payload.validity_years == 0 || payload.validity_years > 50 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"status": 400, "detail": "validity_years must be between 1 and 50"})),
+        )
+            .into_response();
+    }
 
     let issued = match crate::ca::issue::issue_ca_cert(
         &issuer_ca,
@@ -1968,6 +1987,7 @@ pub async fn post_ca_cross_sign(
                     serde_json::json!({
                         "issuer_ca_id": issuer_id,
                         "subject_ca_id": payload.subject_ca_id,
+                        "subject_dn": issued.subject_dn,
                         "serial": issued.serial_hex,
                         "validity_years": payload.validity_years,
                     })

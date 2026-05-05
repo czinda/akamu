@@ -14,8 +14,8 @@ use synta_certificate::{
 use synta_x509_verification::{
     ops::VerificationCertificate,
     policy::{
-        PolicyDefinition, WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS_WITH_PQ,
-        WEBPKI_PERMITTED_SPKI_ALGORITHMS_WITH_PQ,
+        ExtensionPolicy, PolicyDefinition, ValidationProfile,
+        WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS_WITH_PQ, WEBPKI_PERMITTED_SPKI_ALGORITHMS_WITH_PQ,
     },
     OwnedStore, RevocationChecks,
 };
@@ -797,6 +797,70 @@ pub struct IssuedCaCert {
     pub subject_dn: String,
 }
 
+/// Verify that `cert_der` is a valid CA certificate (BasicConstraints.cA=TRUE).
+///
+/// Uses `ValidationProfile::Rfc5280` so the CABF WebPKI restriction that rejects
+/// `cA=TRUE` on end-entity certs is bypassed, and applies `ee_extension_policy =
+/// new_default_webpki_ca()` which explicitly requires `BasicConstraints.cA=TRUE`.
+/// The cert is used as its own trust anchor (self-signed root CA scenario).
+pub(crate) fn check_is_ca_cert(cert_der: &[u8], now: i64) -> Result<(), AcmeError> {
+    use synta_certificate::OpensslSignatureVerifier;
+
+    let store = OwnedStore::try_new(std::iter::once(cert_der))
+        .map_err(|e| AcmeError::Internal(format!("check CA cert: parse trust anchor: {e}")))?;
+
+    let mut dec = Decoder::new(cert_der, Encoding::Der);
+    let cert: Certificate = dec
+        .decode()
+        .map_err(|e| AcmeError::Internal(format!("check CA cert: decode: {e}")))?;
+    let leaf = VerificationCertificate::new(cert, cert_der);
+
+    let mut policy = PolicyDefinition::new_server_pq(OpensslSignatureVerifier, vec![], now);
+    // Use RFC 5280 profile: WebPKI profile hardcodes a rejection of cA=TRUE on leaves.
+    policy.profile = ValidationProfile::Rfc5280;
+    policy.extended_key_usage = None;
+    // Apply CA extension policy to the "leaf" so cA=TRUE is required.
+    policy.ee_extension_policy = ExtensionPolicy::new_default_webpki_ca();
+
+    store
+        .verify(&leaf, &[], &policy, RevocationChecks::default())
+        .map(|_| ())
+        .map_err(|e| {
+            AcmeError::BadRequest(format!(
+                "subject certificate is not a valid CA certificate: {e}"
+            ))
+        })
+}
+
+/// Lint a just-issued CA certificate by re-verifying it against the signing CA.
+///
+/// Analogous to `lint_issued_cert` but for CA certificates: uses
+/// `ValidationProfile::Rfc5280` and `ee_extension_policy = new_default_webpki_ca()`
+/// so that `BasicConstraints.cA=TRUE` and the CA key-usage set are required on
+/// the issued cert while CABF EE restrictions are not applied.
+fn lint_issued_ca_cert(cert_der: &[u8], ca_cert_der: &[u8], now: i64) -> Result<(), AcmeError> {
+    use synta_certificate::OpensslSignatureVerifier;
+
+    let store = OwnedStore::try_new(std::iter::once(ca_cert_der))
+        .map_err(|e| AcmeError::Internal(format!("ca lint: parse CA cert: {e}")))?;
+
+    let mut dec = Decoder::new(cert_der, Encoding::Der);
+    let cert: Certificate = dec
+        .decode()
+        .map_err(|e| AcmeError::Internal(format!("ca lint: parse cert: {e}")))?;
+    let leaf = VerificationCertificate::new(cert, cert_der);
+
+    let mut policy = PolicyDefinition::new_server_pq(OpensslSignatureVerifier, vec![], now);
+    policy.profile = ValidationProfile::Rfc5280;
+    policy.extended_key_usage = None;
+    policy.ee_extension_policy = ExtensionPolicy::new_default_webpki_ca();
+
+    store
+        .verify(&leaf, &[], &policy, RevocationChecks::default())
+        .map(|_| ())
+        .map_err(|e| AcmeError::Internal(format!("cross-cert pre-issuance lint failed: {e}")))
+}
+
 /// Issue a CA certificate signed by `issuer_ca` for the subject public key
 /// extracted from `subject_cert_der`.
 ///
@@ -898,6 +962,8 @@ pub fn issue_ca_cert(
         .add_extension_oid(oids::AUTHORITY_KEY_IDENTIFIER, false, &aki_der)
         .sign(&signer)
         .map_err(|e| AcmeError::Builder(format!("sign cross-cert: {e}")))?;
+
+    lint_issued_ca_cert(&cert_der, &issuer_ca.cert_der, not_before_unix)?;
 
     let pem_bytes = der_to_pem("CERTIFICATE", &cert_der);
     let cert_pem = String::from_utf8(pem_bytes)
