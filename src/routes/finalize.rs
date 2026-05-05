@@ -20,7 +20,7 @@ use crate::error::AcmeError;
 use crate::state::AppState;
 
 use super::order::order_json;
-use super::{json_response, parse_jws, require_payload, unix_now};
+use super::{acme_prefix, json_response, parse_jws, require_payload, unix_now, CaId};
 
 #[derive(Deserialize)]
 struct FinalizePayload {
@@ -29,10 +29,12 @@ struct FinalizePayload {
 
 pub async fn finalize_order(
     State(state): State<Arc<AppState>>,
+    ca_id: CaId,
     Path(id): Path<String>,
     body: Bytes,
 ) -> Result<Response, AcmeError> {
-    let url = format!("{}/acme/order/{}/finalize", state.config.base_url, id);
+    let pfx = acme_prefix(&state.config.base_url, &ca_id.0, &state.default_ca_id);
+    let url = format!("{pfx}/order/{id}/finalize");
     let ctx = parse_jws(&state, body, &url).await?;
 
     let account_id = ctx
@@ -43,6 +45,9 @@ pub async fn finalize_order(
         .await?
         .ok_or(AcmeError::NotFound)?;
 
+    if order.ca_id != ca_id.0 {
+        return Err(AcmeError::NotFound);
+    }
     if order.account_id != account_id {
         return Err(AcmeError::Unauthorized(
             "order belongs to different account".into(),
@@ -73,20 +78,35 @@ pub async fn finalize_order(
     let validated_csr = ca::csr::validate_csr(&csr_der, &allowed)?;
 
     // draft-aaron-acme-profiles-01: if the order carries a profile name that the
-    // registry does not recognise, reject at finalize time.
+    // registry does not recognise (or is restricted to a different CA), reject at
+    // finalize time.
     if let Some(ref p) = order.profile {
-        if !state.profiles.is_empty() && state.profiles.resolve(p).is_none() {
+        if !state.profiles.is_empty() && state.profiles.resolve_for_ca(p, &order.ca_id).is_none() {
             return Err(AcmeError::InvalidProfile(format!(
-                "profile '{p}' is not served by any configured provider"
+                "profile '{p}' is not available for CA '{}'",
+                order.ca_id
             )));
         }
     }
 
+    // Resolve the CA for this order.  Must happen before the CAA check because
+    // per-CA caa_identities may differ from the server-level default.
+    let order_ca = state
+        .get_ca(&order.ca_id)
+        .ok_or_else(|| AcmeError::Internal(format!("order references unknown CA '{}'", order.ca_id)))?;
+
     // CAA check (RFC 8659 + RFC 8657): only when caa_identities is configured.
+    // Per-CA identities take precedence; fall back to server-level when the CA
+    // does not override them (matching the behaviour in directory.rs).
     // The authz lookup is deferred inside this block so that deployments without
     // CAA pay zero extra DB round-trips during finalization.  The account URL is
     // constructed here and passed to check_caa for RFC 8657 §4 accounturi enforcement.
-    if !state.config.server.caa_identities.is_empty() {
+    let effective_caa: &[String] = if !order_ca.caa_identities.is_empty() {
+        &order_ca.caa_identities
+    } else {
+        &state.config.server.caa_identities
+    };
+    if !effective_caa.is_empty() {
         // Build identifier → authz_id map to look up the validated challenge type
         // for each authorization (RFC 8657 validationmethods check).
         let authz_rows = db::authz::list_by_order(&state.db, &id).await?;
@@ -117,11 +137,14 @@ pub async fn finalize_order(
                 } else {
                     String::new()
                 };
-                let account_url = format!("{}/acme/account/{}", state.config.base_url, account_id);
+                // Account URL is intentionally server-scoped (not per-CA): RFC 8657
+                // accounturi refers to the ACME account resource, which is shared
+                // across all CAs in server-scoped mode.
+                let account_url = format!("{}/acme/account/{account_id}", state.config.base_url);
                 crate::validation::caa::check_caa(
                     crate::validation::caa::CaaParams {
                         domain,
-                        ca_identities: &state.config.server.caa_identities,
+                        ca_identities: effective_caa,
                         is_wildcard,
                         challenge_type: &challenge_type,
                         account_url: Some(account_url.as_str()),
@@ -138,12 +161,14 @@ pub async fn finalize_order(
 
     // Resolve certificate parameters from the profile registry (or fall back to
     // CA defaults when no profile is requested or the registry is empty).
+    // resolve_for_ca() respects ca_ids restrictions so a profile scoped to one CA
+    // cannot be applied by a different CA.
     let cert_params = match &order.profile {
         Some(p) if !state.profiles.is_empty() => state
             .profiles
-            .resolve(p)
-            .unwrap_or_else(|| crate::profiles::CertificateParameters::from_ca(&state.ca)),
-        _ => crate::profiles::CertificateParameters::from_ca(&state.ca),
+            .resolve_for_ca(p, &order.ca_id)
+            .unwrap_or_else(|| crate::profiles::CertificateParameters::from_ca(order_ca)),
+        _ => crate::profiles::CertificateParameters::from_ca(order_ca),
     };
 
     // Per-profile authorization checks (identifier patterns, external hook,
@@ -163,7 +188,7 @@ pub async fn finalize_order(
     // Issue the certificate using the resolved parameters.  akamu's own CA
     // signs in all cases; the profile only governs extension content and validity.
     let issued = ca::issue::issue_with_params(
-        &state.ca,
+        order_ca,
         &validated_csr,
         &cert_params,
         order.not_before,
@@ -197,7 +222,7 @@ pub async fn finalize_order(
                 leaf_index: idx,
                 proof,
                 tree_size,
-                signing_key: &state.ca.key,
+                signing_key: &order_ca.key,
                 hash_alg_str: &cert_params.hash_alg,
                 log_algorithm: state.mtc.algorithm,
                 cosignature_ders: &[],
@@ -264,6 +289,7 @@ pub async fn finalize_order(
                 suggested_window_end: None,
                 replaced_by: None,
                 subject_dn,
+                ca_id: order.ca_id.clone(),
             },
         )
         .await?;
@@ -364,15 +390,17 @@ pub async fn finalize_order(
     updated_order.certificate_id = Some(issued.id.clone());
     updated_order.updated = now;
 
+    let order_pfx = acme_prefix(&state.config.base_url, &updated_order.ca_id, &state.default_ca_id);
     let authz_urls: Vec<_> = authz_ids
         .iter()
-        .map(|aid| format!("{}/acme/authz/{}", state.config.base_url, aid))
+        .map(|aid| format!("{order_pfx}/authz/{aid}"))
         .collect();
 
     json_response(
         &state,
+        &updated_order.ca_id,
         StatusCode::OK,
-        order_json(&updated_order, &authz_urls, &state.config.base_url),
+        order_json(&updated_order, &authz_urls, &order_pfx),
         &ctx.next_nonce,
     )
 }

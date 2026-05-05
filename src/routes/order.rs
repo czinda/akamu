@@ -14,7 +14,7 @@ use crate::db::schema::{AuthorizationRow, OrderRow};
 use crate::error::AcmeError;
 use crate::state::AppState;
 
-use super::{fmt_time, json_response, parse_jws, require_payload, unix_now};
+use super::{acme_prefix, fmt_time, json_response, parse_jws, require_payload, unix_now, CaId};
 
 #[derive(Deserialize)]
 struct NewOrderIdentifier {
@@ -126,9 +126,11 @@ fn days_since_epoch(year: i64, month: i64, day: i64) -> Option<i64> {
 
 pub async fn new_order(
     State(state): State<Arc<AppState>>,
+    ca_id: CaId,
     body: Bytes,
 ) -> Result<Response, AcmeError> {
-    let url = format!("{}/acme/new-order", state.config.base_url);
+    let pfx = acme_prefix(&state.config.base_url, &ca_id.0, &state.default_ca_id);
+    let url = format!("{pfx}/new-order");
     let ctx = parse_jws(&state, body, &url).await?;
 
     let account_id = ctx
@@ -193,12 +195,13 @@ pub async fn new_order(
     };
 
     // draft-aaron-acme-profiles-01: validate profile if specified.
+    // resolve_for_ca() enforces ca_ids so a profile scoped to one CA is
+    // rejected when the order targets a different CA.
     let order_profile: Option<String> = if let Some(ref p) = payload.profile {
-        if !state.config.server.profiles.is_empty()
-            && !state.config.server.profiles.contains_key(p.as_str())
-        {
+        if !state.profiles.is_empty() && state.profiles.resolve_for_ca(p, &ca_id.0).is_none() {
             return Err(AcmeError::InvalidProfile(format!(
-                "profile '{p}' is not advertised by this server"
+                "profile '{p}' is not available for CA '{}'",
+                ca_id.0
             )));
         }
         Some(p.clone())
@@ -363,7 +366,7 @@ pub async fn new_order(
             .iter()
             .map(|&t| (uuid::Uuid::new_v4().to_string(), t.to_string()))
             .collect();
-        authz_urls.push(format!("{}/acme/authz/{}", state.config.base_url, authz_id));
+        authz_urls.push(format!("{pfx}/authz/{authz_id}"));
         authz_plans.push(AuthzPlan {
             authz_id,
             identifier_json,
@@ -416,6 +419,7 @@ pub async fn new_order(
                 star_canceled_at: None,
                 star_csr_der: None,
                 profile: order_profile.clone(),
+                ca_id: ca_id.0.clone(),
             },
         )
         .await?;
@@ -450,7 +454,6 @@ pub async fn new_order(
         tx.commit().await.map_err(AcmeError::from)?;
     }
 
-    let base = &state.config.base_url;
     // Build a temporary OrderRow so we can reuse order_json() and get replaces for free.
     let new_order_row = OrderRow {
         id: order_id.clone(),
@@ -473,6 +476,7 @@ pub async fn new_order(
         star_canceled_at: None,
         star_csr_der: None,
         profile: order_profile,
+        ca_id: ca_id.0.clone(),
     };
     state
         .record_audit(
@@ -487,13 +491,14 @@ pub async fn new_order(
 
     let mut resp = json_response(
         &state,
+        &ca_id.0,
         StatusCode::CREATED,
-        order_json(&new_order_row, &authz_urls, base),
+        order_json(&new_order_row, &authz_urls, &pfx),
         &ctx.next_nonce,
     )?;
     resp.headers_mut().insert(
         axum::http::header::LOCATION,
-        format!("{base}/acme/order/{order_id}").parse().unwrap(),
+        format!("{pfx}/order/{order_id}").parse().unwrap(),
     );
     Ok(resp)
 }
@@ -507,10 +512,12 @@ struct OrderUpdatePayload {
 
 pub async fn get_order(
     State(state): State<Arc<AppState>>,
+    ca_id: CaId,
     Path(id): Path<String>,
     body: Bytes,
 ) -> Result<Response, AcmeError> {
-    let url = format!("{}/acme/order/{}", state.config.base_url, id);
+    let pfx = acme_prefix(&state.config.base_url, &ca_id.0, &state.default_ca_id);
+    let url = format!("{pfx}/order/{id}");
     let ctx = parse_jws(&state, body, &url).await?;
 
     let account_id = ctx
@@ -521,6 +528,9 @@ pub async fn get_order(
     let (mut order, authz_ids) = db::orders::get_with_authz_ids(&state.db, &id)
         .await?
         .ok_or(AcmeError::NotFound)?;
+    if order.ca_id != ca_id.0 {
+        return Err(AcmeError::NotFound);
+    }
     if order.account_id != account_id {
         return Err(AcmeError::Unauthorized(
             "order belongs to different account".into(),
@@ -553,13 +563,14 @@ pub async fn get_order(
 
     let authz_urls: Vec<_> = authz_ids
         .iter()
-        .map(|aid| format!("{}/acme/authz/{}", state.config.base_url, aid))
+        .map(|aid| format!("{pfx}/authz/{aid}"))
         .collect();
 
     json_response(
         &state,
+        &ca_id.0,
         StatusCode::OK,
-        order_json(&order, &authz_urls, &state.config.base_url),
+        order_json(&order, &authz_urls, &pfx),
         &ctx.next_nonce,
     )
 }
@@ -619,7 +630,7 @@ pub(crate) struct OrderJson<'a> {
 pub(crate) fn order_json<'a>(
     order: &'a OrderRow,
     authz_urls: &'a [String],
-    base_url: &str,
+    acme_pfx: &str,
 ) -> OrderJson<'a> {
     // Embed identifiers as raw JSON — no parse, no Vec<Value>/HashMap allocs.
     // The stored string is always valid JSON (written by serde_json::to_string).
@@ -650,7 +661,7 @@ pub(crate) fn order_json<'a>(
 
     // star-certificate URL: present when order is valid and is a STAR order.
     let star_certificate = if order.star_end_date.is_some() && order.status == "valid" {
-        Some(format!("{base_url}/acme/cert/star/{}", order.id))
+        Some(format!("{acme_pfx}/cert/star/{}", order.id))
     } else {
         None
     };
@@ -662,12 +673,12 @@ pub(crate) fn order_json<'a>(
         not_after: order.not_after.map(fmt_time),
         identifiers,
         authorizations: authz_urls,
-        finalize: format!("{base_url}/acme/order/{}/finalize", order.id),
+        finalize: format!("{acme_pfx}/order/{}/finalize", order.id),
         certificate: if order.status == "valid" && order.star_end_date.is_none() {
             order
                 .certificate_id
                 .as_ref()
-                .map(|c| format!("{base_url}/acme/cert/{c}"))
+                .map(|c| format!("{acme_pfx}/cert/{c}"))
         } else {
             None
         },
@@ -726,6 +737,7 @@ mod tests {
             star_canceled_at: None,
             star_csr_der: None,
             profile: None,
+            ca_id: "default".to_string(),
         }
     }
 
@@ -740,7 +752,7 @@ mod tests {
         let json = to_val(order_json(
             &order,
             &["https://acme.test/acme/authz/a".to_string()],
-            "https://acme.test",
+            "https://acme.test/acme",
         ));
         assert_eq!(json["status"], "pending");
         assert!(json["expires"].as_str().is_some());
@@ -751,7 +763,7 @@ mod tests {
     #[test]
     fn order_json_valid_order_includes_certificate() {
         let order = make_order("valid", None, Some("cert-abc"), None);
-        let json = to_val(order_json(&order, &[], "https://acme.test"));
+        let json = to_val(order_json(&order, &[], "https://acme.test/acme"));
         assert_eq!(json["status"], "valid");
         assert!(json["certificate"].as_str().unwrap().contains("cert-abc"));
     }
@@ -764,7 +776,7 @@ mod tests {
             None,
             Some("{\"type\":\"urn:ietf:params:acme:error:connection\",\"detail\":\"failed\"}"),
         );
-        let json = to_val(order_json(&order, &[], "https://acme.test"));
+        let json = to_val(order_json(&order, &[], "https://acme.test/acme"));
         assert_eq!(json["status"], "invalid");
         assert_eq!(
             json["error"]["type"],
@@ -775,7 +787,7 @@ mod tests {
     #[test]
     fn order_json_no_expires_when_none() {
         let order = make_order("ready", None, None, None);
-        let json = to_val(order_json(&order, &[], "https://acme.test"));
+        let json = to_val(order_json(&order, &[], "https://acme.test/acme"));
         assert!(json.get("expires").is_none() || json["expires"].is_null());
     }
 
@@ -783,7 +795,7 @@ mod tests {
     fn order_json_valid_status_without_cert_no_certificate_field() {
         // valid status but no certificate_id → no "certificate" field
         let order = make_order("valid", None, None, None);
-        let json = to_val(order_json(&order, &[], "https://acme.test"));
+        let json = to_val(order_json(&order, &[], "https://acme.test/acme"));
         // either missing or null
         assert!(json.get("certificate").is_none_or(|v| v.is_null()));
     }
@@ -792,14 +804,14 @@ mod tests {
     fn order_json_with_replaces_includes_field() {
         let mut order = make_order("pending", None, None, None);
         order.replaces = Some("akiABC.serialXYZ".to_string());
-        let json = to_val(order_json(&order, &[], "https://acme.test"));
+        let json = to_val(order_json(&order, &[], "https://acme.test/acme"));
         assert_eq!(json["replaces"], "akiABC.serialXYZ");
     }
 
     #[test]
     fn order_json_without_replaces_omits_field() {
         let order = make_order("pending", None, None, None);
-        let json = to_val(order_json(&order, &[], "https://acme.test"));
+        let json = to_val(order_json(&order, &[], "https://acme.test/acme"));
         assert!(json.get("replaces").is_none_or(|v| v.is_null()));
     }
 
@@ -819,7 +831,7 @@ mod tests {
         order.star_end_date = Some(1_800_000_000);
         order.star_lifetime_secs = Some(86400);
         order.star_allow_cert_get = 1;
-        let json = to_val(order_json(&order, &[], "https://acme.test"));
+        let json = to_val(order_json(&order, &[], "https://acme.test/acme"));
         assert_eq!(json["status"], "valid");
         // star-certificate should be present, not regular certificate
         assert!(json["star-certificate"]
@@ -837,7 +849,7 @@ mod tests {
     #[test]
     fn order_json_non_star_valid_does_not_have_star_certificate() {
         let order = make_order("valid", None, Some("cert-abc"), None);
-        let json = to_val(order_json(&order, &[], "https://acme.test"));
+        let json = to_val(order_json(&order, &[], "https://acme.test/acme"));
         assert!(json.get("star-certificate").is_none_or(|v| v.is_null()));
         assert!(json["certificate"].as_str().unwrap().contains("cert-abc"));
     }
@@ -866,14 +878,14 @@ mod tests {
     fn order_json_with_profile_includes_field() {
         let mut order = make_order("pending", None, None, None);
         order.profile = Some("tls-server-auth".to_string());
-        let json = to_val(order_json(&order, &[], "https://acme.test"));
+        let json = to_val(order_json(&order, &[], "https://acme.test/acme"));
         assert_eq!(json["profile"], "tls-server-auth");
     }
 
     #[test]
     fn order_json_without_profile_omits_field() {
         let order = make_order("pending", None, None, None);
-        let json = to_val(order_json(&order, &[], "https://acme.test"));
+        let json = to_val(order_json(&order, &[], "https://acme.test/acme"));
         assert!(json.get("profile").is_none_or(|v| v.is_null()));
     }
 }

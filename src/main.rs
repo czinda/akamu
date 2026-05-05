@@ -9,7 +9,8 @@ use tracing_subscriber::EnvFilter;
 
 use akamu::audit::AuditState;
 use akamu::config::{Config, MtcSigningKeyConfig};
-use akamu::state::{AppState, CaState, MtcState, NonceBucket, TlsState};
+use akamu::state::{AppState, CaState, CrlCache, MtcState, NonceBucket, TlsState};
+use indexmap::IndexMap;
 use akamu::{ca, db, mtc, routes, star};
 
 use hyper_rustls::HttpsConnectorBuilder;
@@ -74,28 +75,36 @@ async fn run() -> Result<(), String> {
 
     // CA/B Forum BR §7.1.3.2.1: SHA-1 prohibited in certificate/CRL signatures since 2026-09-15.
     {
-        let alg = config.ca.hash_alg.to_lowercase();
+        let alg = config.default_ca().hash_alg.to_lowercase();
         if alg == "sha1" || alg == "sha-1" {
             return Err(format!(
                 "ca.hash_alg='{}' is prohibited by CA/B Forum BR §7.1.3.2.1 \
                  (SHA-1 sunset 2026-09-15); use 'sha256', 'sha384', or 'sha512'",
-                config.ca.hash_alg
+                config.default_ca().hash_alg
             ));
         }
     }
 
     // CA/B Forum BR §6.3.2 validity caps: 200 days since 2026-03-15, 100 from 2027-03-15.
-    if config.ca.validity_days > 200 {
+    if config.default_ca().validity_days > 200 {
         tracing::warn!(
             "ca.validity_days={} exceeds the 200-day CA/B Forum BR limit (§6.3.2, since 2026-03-15); \
              certificates issued by this CA cannot be used in public WebPKI chains",
-            config.ca.validity_days
+            config.default_ca().validity_days
         );
-    } else if config.ca.validity_days > 100 {
+    } else if config.default_ca().validity_days > 100 {
         tracing::warn!(
             "ca.validity_days={} will exceed the upcoming 100-day CA/B Forum BR limit \
              (§6.3.2, from 2027-03-15)",
-            config.ca.validity_days
+            config.default_ca().validity_days
+        );
+    }
+
+    if config.server.account_scope == "ca" {
+        return Err(
+            "server.account_scope = \"ca\" is not yet supported; \
+             remove the setting or set it to \"server\" to start the server."
+                .to_string(),
         );
     }
 
@@ -139,28 +148,69 @@ async fn run() -> Result<(), String> {
         );
     }
 
-    // ── CA key and certificate ────────────────────────────────────────────────
-    tracing::info!("loading CA from '{}'", config.ca.key_file);
-    let (ca_key, ca_cert_der) =
-        ca::init::load_or_generate(&config.ca).map_err(|e| format!("CA init: {e}"))?;
+    // ── CA keys and certificates (one per [[ca]] entry) ───────────────────────
+    let mut cas_map: IndexMap<String, Arc<CaState>> = IndexMap::new();
+    let mut crl_caches_map: std::collections::HashMap<String, CrlCache> =
+        std::collections::HashMap::new();
 
-    let ca_spki_der = ca_key
-        .public_key()
-        .map_err(|e| format!("CA public key: {e}"))?
-        .spki_der()
-        .to_vec();
-    let ca_aki_bytes = ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
+    for ca_cfg in &config.cas {
+        tracing::info!("loading CA '{}' from '{}'", ca_cfg.id, ca_cfg.key_file);
+        let (ca_key, ca_cert_der) =
+            ca::init::load_or_generate(ca_cfg).map_err(|e| format!("CA '{}' init: {e}", ca_cfg.id))?;
 
-    let ca = Arc::new(CaState {
-        key: ca_key,
-        cert_der: ca_cert_der,
-        hash_alg: config.ca.hash_alg.clone(),
-        validity_days: config.ca.validity_days,
-        crl_url: config.ca.crl_url.clone(),
-        ocsp_url: config.ca.ocsp_url.clone(),
-        aki_bytes: ca_aki_bytes,
-        enforce_validity_cap: config.ca.enforce_validity_cap,
-    });
+        let ca_spki_der = ca_key
+            .public_key()
+            .map_err(|e| format!("CA '{}' public key: {e}", ca_cfg.id))?
+            .spki_der()
+            .to_vec();
+        let ca_aki_bytes = ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
+
+        // Derive CRL/OCSP URLs if not set explicitly in config.
+        let crl_url = ca_cfg.crl_url.clone().or_else(|| {
+            if ca_cfg.is_default {
+                Some(format!("{}/ca/crl", config.base_url))
+            } else {
+                Some(format!("{}/ca/{}/crl", config.base_url, ca_cfg.id))
+            }
+        });
+        let ocsp_url = ca_cfg.ocsp_url.clone().or_else(|| {
+            if ca_cfg.is_default {
+                Some(format!("{}/ca/ocsp", config.base_url))
+            } else {
+                Some(format!("{}/ca/{}/ocsp", config.base_url, ca_cfg.id))
+            }
+        });
+
+        let ca_state = Arc::new(CaState {
+            id: ca_cfg.id.clone(),
+            key: ca_key,
+            cert_der: ca_cert_der,
+            hash_alg: ca_cfg.hash_alg.clone(),
+            validity_days: ca_cfg.validity_days,
+            crl_url,
+            ocsp_url,
+            aki_bytes: ca_aki_bytes,
+            enforce_validity_cap: ca_cfg.enforce_validity_cap,
+            crl_next_update_secs: ca_cfg.crl_next_update_secs,
+            caa_identities: ca_cfg.caa_identities.clone(),
+        });
+        crl_caches_map.insert(ca_cfg.id.clone(), Default::default());
+        cas_map.insert(ca_cfg.id.clone(), ca_state);
+    }
+
+    let default_ca_id = config
+        .cas
+        .iter()
+        .find(|c| c.is_default)
+        .map(|c| c.id.clone())
+        .unwrap_or_else(|| config.cas[0].id.clone());
+
+    // Convenience alias for the default CA (used by code not yet updated to
+    // look up the CA from the request context).
+    let ca = cas_map
+        .get(&default_ca_id)
+        .expect("default CA present in map")
+        .clone();
 
     // ── Certificate profile registry ──────────────────────────────────────────
     let profile_registry = if config.profiles.providers.is_empty() {
@@ -329,25 +379,41 @@ async fn run() -> Result<(), String> {
         }
     };
 
+    // ── Per-CA Link headers ───────────────────────────────────────────────────
+    let link_headers_map: std::collections::HashMap<String, Arc<axum::http::HeaderValue>> = config
+        .cas
+        .iter()
+        .map(|ca_cfg| {
+            let url = if ca_cfg.is_default {
+                format!("<{}/acme/directory>;rel=\"index\"", config.base_url)
+            } else {
+                format!(
+                    "<{}/acme/{}/directory>;rel=\"index\"",
+                    config.base_url, ca_cfg.id
+                )
+            };
+            let hv = Arc::new(
+                axum::http::HeaderValue::from_str(&url)
+                    .expect("base_url + CA ID produce a valid Link header value"),
+            );
+            (ca_cfg.id.clone(), hv)
+        })
+        .collect();
+
     // ── Application state ─────────────────────────────────────────────────────
     let nonces = Arc::new(NonceBucket::new());
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db.clone(),
         db_kind,
-        ca,
+        cas: Arc::new(cas_map),
+        default_ca_id: Arc::new(default_ca_id),
         mtc,
         profiles: profile_registry.clone(),
         tls: tls_state,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         nonces: Arc::clone(&nonces),
-        link_header: Arc::new(
-            axum::http::HeaderValue::from_str(&format!(
-                "<{}/acme/directory>;rel=\"index\"",
-                config.base_url
-            ))
-            .expect("base_url produces a valid Link header value"),
-        ),
+        link_headers: Arc::new(link_headers_map),
         validation_client: {
             let https = HttpsConnectorBuilder::new()
                 .with_native_roots()
@@ -357,7 +423,7 @@ async fn run() -> Result<(), String> {
                 .build();
             Client::builder(TokioExecutor::new()).build(https)
         },
-        crl_cache: Default::default(),
+        crl_caches: Arc::new(crl_caches_map),
         gss_cred,
         admin_gss_cred,
         eab_master_secret,
@@ -386,7 +452,7 @@ async fn run() -> Result<(), String> {
     }
 
     // ── Startup audit records ─────────────────────────────────────────────────
-    let key_file_exists = std::path::Path::new(&config.ca.key_file).exists();
+    let key_file_exists = std::path::Path::new(&config.default_ca().key_file).exists();
     let key_event_type = if key_file_exists {
         akamu::audit::AuditEventType::KeyLoad
     } else {

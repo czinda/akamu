@@ -14,7 +14,7 @@ use crate::db;
 use crate::error::AcmeError;
 use crate::state::AppState;
 
-use super::{acme_headers, parse_jws, require_payload, unix_now};
+use super::{acme_headers, acme_prefix, parse_jws, require_payload, unix_now, CaId};
 
 #[derive(Deserialize)]
 struct RevokePayload {
@@ -24,9 +24,11 @@ struct RevokePayload {
 
 pub async fn revoke_cert(
     State(state): State<Arc<AppState>>,
+    ca_id: CaId,
     body: Bytes,
 ) -> Result<Response, AcmeError> {
-    let url = format!("{}/acme/revoke-cert", state.config.base_url);
+    let pfx = acme_prefix(&state.config.base_url, &ca_id.0, &state.default_ca_id);
+    let url = format!("{pfx}/revoke-cert");
     let ctx = parse_jws(&state, body, &url).await?;
 
     let payload: RevokePayload = require_payload(&ctx.payload, "revoke-cert")?;
@@ -49,6 +51,9 @@ pub async fn revoke_cert(
         .await?
         .ok_or(AcmeError::NotFound)?;
 
+    if cert.ca_id != ca_id.0 {
+        return Err(AcmeError::NotFound);
+    }
     if cert.status == "revoked" {
         return Err(AcmeError::AlreadyRevoked);
     }
@@ -93,17 +98,11 @@ pub async fn revoke_cert(
         )
         .await;
 
-    // Invalidate the CRL cache so the next GET /ca/crl rebuilds with the new entry.
-    match state.crl_cache.lock() {
-        Ok(mut guard) => *guard = None,
-        Err(poisoned) => {
-            tracing::error!("CRL cache mutex poisoned — forcing invalidation to prevent stale CRL");
-            *poisoned.into_inner() = None;
-        }
-    }
+    // Invalidate the CRL cache for the revoked certificate's CA.
+    state.invalidate_crl_cache(&cert.ca_id);
 
     // Return 200 with empty body (RFC 8555 §7.6).
-    let headers = acme_headers(&state, &ctx.next_nonce);
+    let headers = acme_headers(&state, &ca_id.0, &ctx.next_nonce);
     let mut resp = StatusCode::OK.into_response();
     resp.headers_mut().extend(headers);
     Ok(resp)

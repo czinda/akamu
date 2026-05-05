@@ -1,9 +1,11 @@
 //! Axum route assembly and shared request-handling utilities.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::Request;
+use axum::extract::{FromRef, FromRequestParts, Path, Request};
+use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -17,6 +19,40 @@ use crate::db;
 use crate::error::AcmeError;
 use crate::jose::jws::{JwsFlattened, JwsKeyRef, JwsProtectedHeader};
 use crate::state::{AppState, CachedAccount};
+
+// ── CaId extractor ────────────────────────────────────────────────────────────
+
+/// Carries the CA identifier for the current request.
+///
+/// Extracted from the `:ca_id` URL path parameter when present.
+/// Falls back to the server's `default_ca_id` on legacy routes that have no
+/// `:ca_id` segment.  Returns 404 when `:ca_id` is present but unknown.
+#[derive(Debug, Clone)]
+pub struct CaId(pub String);
+
+impl<S> FromRequestParts<S> for CaId
+where
+    S: Send + Sync,
+    Arc<AppState>: FromRef<S>,
+{
+    type Rejection = AcmeError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let app = Arc::<AppState>::from_ref(state);
+        if let Ok(Path(params)) =
+            Path::<HashMap<String, String>>::from_request_parts(parts, state).await
+        {
+            if let Some(id) = params.get("ca_id") {
+                return if app.cas.contains_key(id.as_str()) {
+                    Ok(CaId(id.clone()))
+                } else {
+                    Err(AcmeError::NotFound)
+                };
+            }
+        }
+        Ok(CaId((*app.default_ca_id).clone()))
+    }
+}
 
 pub mod account;
 pub mod admin;
@@ -130,18 +166,63 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             halt_check,
         ));
 
+    // Per-CA ACME routes: same handlers as above but with {ca_id} prefix.
+    // Axum resolves static segments before dynamic ones, so `/acme/directory`
+    // (legacy) is unambiguous vs `/acme/{ca_id}/directory`.  Config validation
+    // ensures no CA ID matches a reserved ACME path segment.
+    let per_ca_acme_router = Router::new()
+        .route("/acme/{ca_id}/directory", get(directory::get_directory))
+        .route("/acme/{ca_id}/new-nonce", head(nonce::new_nonce_head))
+        .route("/acme/{ca_id}/new-nonce", get(nonce::new_nonce_get))
+        .route("/acme/{ca_id}/new-account", post(account::new_account))
+        .route("/acme/{ca_id}/account/{id}", post(account::update_account))
+        .route("/acme/{ca_id}/new-order", post(order::new_order))
+        .route("/acme/{ca_id}/order/{id}", post(order::get_order))
+        .route(
+            "/acme/{ca_id}/order/{id}/finalize",
+            post(finalize::finalize_order),
+        )
+        .route("/acme/{ca_id}/new-authz", post(authz::new_authz))
+        .route("/acme/{ca_id}/authz/{id}", post(authz::get_authz))
+        .route(
+            "/acme/{ca_id}/chall/{authz_id}/{type}",
+            post(challenge::respond_challenge),
+        )
+        .route(
+            "/acme/{ca_id}/cert/{id}",
+            get(certificate::download_cert).post(certificate::download_cert_post),
+        )
+        .route(
+            "/acme/{ca_id}/cert/star/{order_id}",
+            get(star_cert::star_cert_get).post(star_cert::star_cert_post),
+        )
+        .route("/acme/{ca_id}/revoke-cert", post(revoke::revoke_cert))
+        .route("/acme/{ca_id}/key-change", post(key_change::key_change))
+        .route(
+            "/acme/{ca_id}/renewal-info/{cert_id}",
+            get(renewal_info::get_renewal_info),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
+            halt_check,
+        ));
+
     // Non-ACME routes: CRL/OCSP (public, read-only).  Admin routes are served
     // on the dedicated admin listener via `build_admin_router`; they are not
     // registered here so the main ACME listener never handles /admin/* paths.
     let other_router = Router::new()
-        // CRL (RFC 5280) — public, no auth required
+        // Legacy CRL/OCSP — alias to default CA
         .route("/ca/crl", get(crl::get_crl))
-        // OCSP (RFC 6960) — public, no auth required
         .route("/ca/ocsp", post(ocsp::post_ocsp))
-        .route("/ca/ocsp/{request}", get(ocsp::get_ocsp));
+        .route("/ca/ocsp/{request}", get(ocsp::get_ocsp))
+        // Per-CA CRL/OCSP
+        .route("/ca/{ca_id}/crl", get(crl::get_crl))
+        .route("/ca/{ca_id}/ocsp", post(ocsp::post_ocsp))
+        .route("/ca/{ca_id}/ocsp/{request}", get(ocsp::get_ocsp));
 
     Router::new()
         .merge(acme_router)
+        .merge(per_ca_acme_router)
         .merge(other_router)
         .layer(axum::extract::DefaultBodyLimit::max(if max_body > 0 {
             max_body
@@ -366,6 +447,21 @@ pub(crate) async fn parse_jws(
 
 // ── Response helpers ──────────────────────────────────────────────────────────
 
+/// Return the ACME URL prefix for a given CA.
+///
+/// - Default CA: `{base_url}/acme` (legacy form; backward compatible)
+/// - Non-default CA: `{base_url}/acme/{ca_id}` (per-CA form)
+///
+/// Use this to construct per-operation ACME URLs that are embedded in
+/// directory responses, JWS `url` header checks, and `Location` headers.
+pub(crate) fn acme_prefix(base_url: &str, ca_id: &str, default_ca_id: &str) -> String {
+    if ca_id == default_ca_id {
+        format!("{base_url}/acme")
+    } else {
+        format!("{base_url}/acme/{ca_id}")
+    }
+}
+
 /// Generate a fresh anti-replay nonce, store it in the in-memory bucket, and return it.
 pub(crate) fn new_nonce(state: &AppState) -> Result<String, AcmeError> {
     let mut bytes = [0u8; 16];
@@ -379,14 +475,21 @@ pub(crate) fn new_nonce(state: &AppState) -> Result<String, AcmeError> {
 ///
 /// The nonce was already consumed and the new one inserted atomically in
 /// `parse_jws` via `state.nonces.consume_and_insert`, so no DB call is needed here.
-pub(crate) fn acme_headers(state: &AppState, nonce: &str) -> HeaderMap {
+///
+/// `ca_id` selects the Link header for the correct CA directory.  Pass
+/// `state.default_ca_id.as_str()` on legacy routes that have no CA context.
+pub(crate) fn acme_headers(state: &AppState, ca_id: &str, nonce: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(
         HeaderName::from_static("replay-nonce"),
         HeaderValue::from_str(nonce).unwrap(),
     );
-    // Use the precomputed Link header value — avoids format!() + from_str() per response.
-    headers.insert(axum::http::header::LINK, (*state.link_header).clone());
+    let link = state
+        .link_headers
+        .get(ca_id)
+        .or_else(|| state.link_headers.get(state.default_ca_id.as_str()))
+        .expect("default CA link header must always be present");
+    headers.insert(axum::http::header::LINK, (**link).clone());
     headers
 }
 
@@ -395,15 +498,19 @@ pub(crate) fn acme_headers(state: &AppState, nonce: &str) -> HeaderMap {
 /// `body` can be any type implementing `Serialize` — both `serde_json::Value`
 /// and typed response structs (e.g. `OrderJson`) are accepted.
 ///
+/// `ca_id` selects the per-CA Link header.  Use `state.default_ca_id.as_str()`
+/// on legacy handlers that don't yet carry a `CaId` extractor.
+///
 /// `nonce` must be a fresh nonce already inserted into the DB (use `ctx.next_nonce`
 /// from `parse_jws`, or call `new_nonce` for endpoints that do not use `parse_jws`).
 pub(crate) fn json_response<T: serde::Serialize>(
     state: &AppState,
+    ca_id: &str,
     status: StatusCode,
     body: T,
     nonce: &str,
 ) -> Result<Response, AcmeError> {
-    let headers = acme_headers(state, nonce);
+    let headers = acme_headers(state, ca_id, nonce);
     let mut resp = (status, Json(body)).into_response();
     resp.headers_mut().extend(headers);
     resp.headers_mut().insert(

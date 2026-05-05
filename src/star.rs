@@ -86,7 +86,7 @@ async fn run_once(state: &Arc<AppState>) {
         let latest_cert = match sqlx::query_as::<_, CertificateRow>(
             "SELECT id, order_id, account_id, serial_number, status, der, pem,
              not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-             suggested_window_start, suggested_window_end, replaced_by, subject_dn
+             suggested_window_start, suggested_window_end, replaced_by, subject_dn, ca_id
              FROM certificates
              WHERE order_id = ?
              ORDER BY created DESC
@@ -164,7 +164,13 @@ async fn run_once(state: &Arc<AppState>) {
         let not_after_raw = not_before_ts + lifetime_secs;
         let not_after = Some(not_after_raw.min(end_date));
 
-        let ca = &state.ca;
+        let Some(ca) = state.get_ca(&order.ca_id) else {
+            tracing::error!(
+                "STAR order {}: unknown ca_id '{}', skipping",
+                order.id, order.ca_id
+            );
+            continue;
+        };
         let issued = match ca::issue::issue_certificate(ca::issue::IssueCertParams {
             ca_key: &ca.key,
             ca_cert_der: &ca.cert_der,
@@ -186,41 +192,51 @@ async fn run_once(state: &Arc<AppState>) {
         // Persist the new cert and update the order's certificate_id.
         let cert_id = issued.id.clone();
         let serial = issued.serial_hex.clone();
-        let cert_der_bytes = issued.cert_der.clone();
-        let cert_pem = issued.cert_pem.clone();
         let new_not_before = issued.not_before;
         let new_not_after = issued.not_after;
 
-        let persist_result = async {
-            let mut tx = state.db.begin().await?;
-            sqlx::query(
-                "INSERT INTO certificates
-                 (id, order_id, account_id, serial_number, status, der, pem,
-                  not_before, not_after, revoked_at, revocation_reason,
-                  mtc_log_index, created, suggested_window_start, suggested_window_end,
-                  replaced_by)
-                 VALUES (?, ?, ?, ?, 'valid', ?, ?, ?, ?,
-                         NULL, NULL, NULL, ?, NULL, NULL, NULL)",
+        let subject_dn = {
+            let mut dec = synta::Decoder::new(&issued.cert_der, synta::Encoding::Der);
+            dec.decode::<synta_certificate::Certificate>()
+                .ok()
+                .map(|cert| synta_certificate::format_dn(cert.tbs_certificate.subject.as_bytes()))
+        };
+
+        let persist_result: Result<(), crate::error::AcmeError> = async {
+            let mut tx = db::begin_write(&state.db, state.db_kind).await?;
+            db::certs::insert(
+                &mut *tx,
+                CertificateRow {
+                    id: cert_id.clone(),
+                    order_id: order.id.clone(),
+                    account_id: order.account_id.clone(),
+                    serial_number: serial.clone(),
+                    status: "valid".to_string(),
+                    der: issued.cert_der.clone(),
+                    pem: issued.cert_pem.clone(),
+                    not_before: new_not_before,
+                    not_after: new_not_after,
+                    revoked_at: None,
+                    revocation_reason: None,
+                    mtc_log_index: None,
+                    created: now,
+                    suggested_window_start: None,
+                    suggested_window_end: None,
+                    replaced_by: None,
+                    subject_dn,
+                    ca_id: order.ca_id.clone(),
+                },
             )
-            .bind(&cert_id)
-            .bind(&order.id)
-            .bind(&order.account_id)
-            .bind(&serial)
-            .bind(&cert_der_bytes)
-            .bind(&cert_pem)
-            .bind(new_not_before)
-            .bind(new_not_after)
-            .bind(now)
-            .execute(&mut *tx)
             .await?;
             sqlx::query("UPDATE orders SET certificate_id = ?, updated = ? WHERE id = ?")
                 .bind(&cert_id)
                 .bind(now)
                 .bind(&order.id)
                 .execute(&mut *tx)
-                .await?;
-            tx.commit().await?;
-            Ok::<_, sqlx::Error>(())
+                .await
+                .map_err(crate::error::AcmeError::from)?;
+            tx.commit().await.map_err(crate::error::AcmeError::from)?;
+            Ok(())
         }
         .await;
 
@@ -233,7 +249,7 @@ async fn run_once(state: &Arc<AppState>) {
             tracing::info!(
                 "STAR order {}: reissued certificate {} (valid until {})",
                 order.id,
-                issued.serial_hex,
+                serial,
                 new_not_after
             );
         }

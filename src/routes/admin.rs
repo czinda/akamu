@@ -815,8 +815,10 @@ pub async fn post_crl_force(
 ) -> Response {
     require_role!(operator, state, Administrator | CaOperations);
 
-    // Drop the cached CRL; the next GET /ca/crl will regenerate it.
-    *state.crl_cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    // Drop all CRL caches; the next GET /ca/crl (per CA) will regenerate each.
+    for cache in state.crl_caches.values() {
+        *cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
 
     state
         .record_audit(
@@ -866,8 +868,11 @@ pub async fn post_revoke(
     .await
     {
         Ok(true) => {
-            // Invalidate CRL cache.
-            *state.crl_cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            // Invalidate all CRL caches (we don't know which CA the cert belongs to
+            // without an extra DB lookup; Phase 9 will refine this to per-CA).
+            for cache in state.crl_caches.values() {
+                *cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            }
             state
                 .record_audit(
                     AuditEvent::success(AuditEventType::CertRevoke)
@@ -967,6 +972,8 @@ struct ProfilePayload {
     auth_hook_timeout_secs: u64,
     #[serde(default)]
     require_account_grant: bool,
+    #[serde(default)]
+    ca_ids: Option<Vec<String>>,
 }
 
 fn default_profile_validity_days() -> u32 {
@@ -999,6 +1006,7 @@ impl ProfilePayload {
             auth_hook: self.auth_hook,
             auth_hook_timeout_secs: self.auth_hook_timeout_secs,
             require_account_grant: self.require_account_grant,
+            ca_ids: self.ca_ids.unwrap_or_default(),
         }
     }
 }

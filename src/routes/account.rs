@@ -16,7 +16,7 @@ use crate::error::AcmeError;
 use crate::jose::jws::JwsKeyRef;
 use crate::state::AppState;
 
-use super::{acme_headers, json_response, parse_jws, require_payload, unix_now};
+use super::{acme_headers, acme_prefix, json_response, parse_jws, require_payload, unix_now, CaId};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,9 +31,11 @@ struct NewAccountPayload {
 
 pub async fn new_account(
     State(state): State<Arc<AppState>>,
+    ca_id: CaId,
     body: Bytes,
 ) -> Result<Response, AcmeError> {
-    let url = format!("{}/acme/new-account", state.config.base_url);
+    let pfx = acme_prefix(&state.config.base_url, &ca_id.0, &state.default_ca_id);
+    let url = format!("{pfx}/new-account");
     let ctx = parse_jws(&state, body, &url).await?;
 
     // new-account must use jwk (not kid).
@@ -52,12 +54,13 @@ pub async fn new_account(
     // Check if an account with this key already exists.
     // EAB checks only apply to new account creation, not returning clients.
     if let Some(existing) = db::accounts::get_by_thumbprint(&state.db, &thumbprint).await? {
-        let account_url = format!("{}/acme/account/{}", state.config.base_url, existing.id);
+        let account_url = format!("{pfx}/account/{}", existing.id);
         let contacts = parse_contacts(&existing.contact);
         let mut resp = json_response(
             &state,
+            &ca_id.0,
             StatusCode::OK,
-            account_json(&existing, &contacts, &state.config.base_url),
+            account_json(&existing, &contacts, &pfx),
             &ctx.next_nonce,
         )?;
         resp.headers_mut().insert(
@@ -73,7 +76,7 @@ pub async fn new_account(
         // (RFC 8555 §6.5.1 SHOULD include nonce in error responses).
         let mut resp = AcmeError::AccountDoesNotExist.into_response();
         resp.headers_mut()
-            .extend(acme_headers(&state, &ctx.next_nonce));
+            .extend(acme_headers(&state, &ca_id.0, &ctx.next_nonce));
         return Ok(resp);
     }
 
@@ -86,7 +89,7 @@ pub async fn new_account(
                 AcmeError::UserActionRequired("you must agree to the terms of service".into())
                     .into_response();
             resp.headers_mut()
-                .extend(acme_headers(&state, &ctx.next_nonce));
+                .extend(acme_headers(&state, &ca_id.0, &ctx.next_nonce));
             resp.headers_mut().append(
                 axum::http::header::LINK,
                 HeaderValue::from_str(&format!("<{tos_url}>; rel=\"terms-of-service\""))
@@ -189,6 +192,7 @@ pub async fn new_account(
                 created: now,
                 updated: now,
                 profile_grants: eab_profile_grants,
+                ca_id: String::new(),
             },
         )
         .await?;
@@ -213,13 +217,15 @@ pub async fn new_account(
         created: now,
         updated: now,
         profile_grants: None,
+        ca_id: String::new(),
     };
     let contacts = payload.contact.unwrap_or_default();
-    let account_url = format!("{}/acme/account/{}", state.config.base_url, id);
+    let account_url = format!("{pfx}/account/{id}");
     let mut resp = json_response(
         &state,
+        &ca_id.0,
         StatusCode::CREATED,
-        account_json(&row, &contacts, &state.config.base_url),
+        account_json(&row, &contacts, &pfx),
         &ctx.next_nonce,
     )?;
     resp.headers_mut().insert(
@@ -231,10 +237,12 @@ pub async fn new_account(
 
 pub async fn update_account(
     State(state): State<Arc<AppState>>,
+    ca_id: CaId,
     Path(id): Path<String>,
     body: Bytes,
 ) -> Result<Response, AcmeError> {
-    let url = format!("{}/acme/account/{}", state.config.base_url, id);
+    let pfx = acme_prefix(&state.config.base_url, &ca_id.0, &state.default_ca_id);
+    let url = format!("{pfx}/account/{id}");
     let ctx = parse_jws(&state, body, &url).await?;
 
     // Must use kid pointing to this account.
@@ -256,8 +264,9 @@ pub async fn update_account(
         let contacts = parse_contacts(&account.contact);
         return json_response(
             &state,
+            &ca_id.0,
             StatusCode::OK,
-            account_json(&account, &contacts, &state.config.base_url),
+            account_json(&account, &contacts, &pfx),
             &ctx.next_nonce,
         );
     }
@@ -274,7 +283,7 @@ pub async fn update_account(
     // Handle deactivation.
     if payload.status.as_deref() == Some("deactivated") {
         db::accounts::update_status(&state.db, &id, "deactivated", unix_now()).await?;
-        state.spki_cache.write().unwrap().remove(&id);
+        state.spki_cache.write().unwrap_or_else(|e| e.into_inner()).remove(&id);
         state
             .record_audit(
                 crate::audit::AuditEvent::success(crate::audit::AuditEventType::AccountDeactivate)
@@ -286,8 +295,9 @@ pub async fn update_account(
         let contacts = parse_contacts(&deactivated.contact);
         return json_response(
             &state,
+            &ca_id.0,
             StatusCode::OK,
-            account_json(&deactivated, &contacts, &state.config.base_url),
+            account_json(&deactivated, &contacts, &pfx),
             &ctx.next_nonce,
         );
     }
@@ -305,19 +315,20 @@ pub async fn update_account(
     let contacts = parse_contacts(&updated.contact);
     json_response(
         &state,
+        &ca_id.0,
         StatusCode::OK,
-        account_json(&updated, &contacts, &state.config.base_url),
+        account_json(&updated, &contacts, &pfx),
         &ctx.next_nonce,
     )
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn account_json(row: &AccountRow, contacts: &[String], base_url: &str) -> serde_json::Value {
+fn account_json(row: &AccountRow, contacts: &[String], pfx: &str) -> serde_json::Value {
     json!({
         "status": row.status,
         "contact": contacts,
-        "orders": format!("{base_url}/acme/orders/{}", row.id),
+        "orders": format!("{pfx}/orders/{}", row.id),
     })
 }
 
@@ -440,6 +451,7 @@ mod tests {
             created: 0,
             updated: 0,
             profile_grants: None,
+            ca_id: String::new(),
         };
         let contacts = vec!["mailto:a@b.com".to_string()];
         let json = account_json(&row, &contacts, "https://acme.test");

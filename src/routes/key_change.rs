@@ -14,13 +14,15 @@ use crate::error::AcmeError;
 use crate::jose::jws::{JwsFlattened, JwsKeyRef};
 use crate::state::AppState;
 
-use super::{json_response, parse_jws, unix_now};
+use super::{acme_prefix, json_response, parse_jws, unix_now, CaId};
 
 pub async fn key_change(
     State(state): State<Arc<AppState>>,
+    ca_id: CaId,
     body: Bytes,
 ) -> Result<Response, AcmeError> {
-    let url = format!("{}/acme/key-change", state.config.base_url);
+    let pfx = acme_prefix(&state.config.base_url, &ca_id.0, &state.default_ca_id);
+    let url = format!("{pfx}/key-change");
     let ctx = parse_jws(&state, body, &url).await?;
 
     let account_id = ctx
@@ -67,7 +69,7 @@ pub async fn key_change(
         .map_err(|e| AcmeError::BadRequest(format!("inner payload JSON: {e}")))?;
 
     // Verify account URL matches.
-    let expected_account_url = format!("{}/acme/account/{}", state.config.base_url, account_id);
+    let expected_account_url = format!("{pfx}/account/{account_id}");
     if inner_payload.account != expected_account_url {
         return Err(AcmeError::BadRequest(
             "inner payload account URL does not match".into(),
@@ -104,7 +106,7 @@ pub async fn key_change(
         now,
     )
     .await?;
-    state.spki_cache.write().unwrap().remove(&account_id);
+    state.spki_cache.write().unwrap_or_else(|e| e.into_inner()).remove(&account_id);
 
     state
         .record_audit(
@@ -127,11 +129,12 @@ pub async fn key_change(
 
     json_response(
         &state,
+        &ca_id.0,
         StatusCode::OK,
         json!({
             "status": account.status,
             "contact": contacts,
-            "orders": format!("{}/acme/orders/{}", state.config.base_url, account_id),
+            "orders": format!("{pfx}/orders/{account_id}"),
         }),
         &ctx.next_nonce,
     )
