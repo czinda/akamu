@@ -8,7 +8,8 @@ use synta_certificate::{
     encode_key_usage, encode_subject_key_identifier, oids, AuthorityInformationAccessBuilder,
     CRLDistributionPointsBuilder, Certificate, CertificateBuilder, CertificatePoliciesBuilder,
     ExtendedKeyUsageBuilder, KeyIdMethod, NameBuilder, OpensslSignatureVerifier, PrivateKey,
-    SubjectAlternativeNameBuilder, KEY_USAGE_DIGITAL_SIGNATURE,
+    SubjectAlternativeNameBuilder, KEY_USAGE_C_RLSIGN, KEY_USAGE_DIGITAL_SIGNATURE,
+    KEY_USAGE_KEY_CERT_SIGN,
 };
 use synta_x509_verification::{
     ops::VerificationCertificate,
@@ -778,6 +779,141 @@ fn lint_issued_cert(cert_der: &[u8], ca_cert_der: &[u8], now: i64) -> Result<(),
         .map_err(|e| AcmeError::Internal(format!("pre-issuance lint failed: {e}")))
 }
 
+/// Output of `issue_ca_cert`.
+pub struct IssuedCaCert {
+    /// Hex serial number (same format as `certificates.serial_number`).
+    pub serial_hex: String,
+    /// DER-encoded cross-certificate.
+    pub cert_der: Vec<u8>,
+    /// PEM-encoded cross-certificate (single block, no CA chain appended).
+    pub cert_pem: String,
+    /// notBefore as Unix timestamp.
+    pub not_before: i64,
+    /// notAfter as Unix timestamp.
+    pub not_after: i64,
+    /// DER-encoded SubjectPublicKeyInfo of the subject CA.
+    pub subject_spki_der: Vec<u8>,
+    /// RFC 4514 subject distinguished name string (for the DB row).
+    pub subject_dn: String,
+}
+
+/// Issue a CA certificate signed by `issuer_ca` for the subject public key
+/// extracted from `subject_cert_der`.
+///
+/// The issued certificate carries:
+/// - BasicConstraints: cA=TRUE, no pathLenConstraint
+/// - KeyUsage: keyCertSign + cRLSign (critical)
+/// - SubjectKeyIdentifier from the subject CA's SPKI
+/// - AuthorityKeyIdentifier from the issuer CA's SPKI
+///
+/// Validity: `validity_years` years from now (no 5-minute backdate clamp —
+/// cross-certs are operator-initiated, not time-sensitive).
+pub fn issue_ca_cert(
+    issuer_ca: &CaState,
+    subject_cert_der: &[u8],
+    validity_years: u32,
+) -> Result<IssuedCaCert, AcmeError> {
+    // Parse the subject CA cert to extract Subject DN and SPKI.
+    let mut dec = Decoder::new(subject_cert_der, Encoding::Der);
+    let subject_cert: Certificate = dec
+        .decode()
+        .map_err(|e| AcmeError::Internal(format!("parse subject CA cert: {e}")))?;
+    let subject_name_der = subject_cert.tbs_certificate.subject.0.to_vec();
+
+    // Extract the raw DER bytes of the SubjectPublicKeyInfo.
+    let subject_cert_ranges = synta_certificate::cert_byte_ranges(subject_cert_der)
+        .ok_or_else(|| AcmeError::Internal("malformed subject CA certificate".into()))?;
+    let subject_spki_der = subject_cert_der[subject_cert_ranges.subject_public_key_info].to_vec();
+
+    // Derive a human-readable subject DN for the DB row.
+    let subject_dn = synta_certificate::format_dn(subject_cert.tbs_certificate.subject.as_bytes());
+
+    // Extract issuer CA SPKI for AKI computation.
+    let issuer_spki_der = issuer_ca
+        .key
+        .public_key()
+        .map_err(|e| AcmeError::Crypto(format!("issuer CA public key: {e}")))?
+        .spki_der()
+        .to_vec();
+
+    // Issuer Name from issuer CA cert.
+    let issuer_name_der = extract_ca_subject_der(&issuer_ca.cert_der)?;
+
+    // Generate a random 16-byte positive serial.
+    let mut serial_bytes = [0u8; 16];
+    getrandom::getrandom(&mut serial_bytes)
+        .map_err(|e| AcmeError::Internal(format!("random serial: {e}")))?;
+    serial_bytes[0] = (serial_bytes[0] & 0x7f) | 0x01;
+    let serial = synta::Integer::from_bytes(&serial_bytes);
+    let serial_hex = hex_encode(&serial_bytes);
+
+    // Validity window: now to now + validity_years * 365.25 days.
+    let now = unix_now();
+    let not_before_unix = now;
+    let not_after_unix = now + (validity_years as i64) * 365 * 86400 + (validity_years as i64) * 21600;
+
+    let not_before_str = unix_to_generalized_time(not_before_unix);
+    let not_after_str = unix_to_generalized_time(not_after_unix);
+    let not_before_t = synta_certificate::parse_time(&not_before_str)
+        .map_err(|e| AcmeError::Builder(format!("cross-cert notBefore: {e}")))?;
+    let not_after_t = synta_certificate::parse_time(&not_after_str)
+        .map_err(|e| AcmeError::Builder(format!("cross-cert notAfter: {e}")))?;
+
+    // Build extensions.
+    let hasher = default_key_id_hasher();
+
+    let bc_der = encode_basic_constraints(true, None)
+        .ok_or_else(|| AcmeError::Builder("BasicConstraints encode".into()))?;
+
+    let ku_der =
+        encode_key_usage((1u16 << KEY_USAGE_KEY_CERT_SIGN) | (1u16 << KEY_USAGE_C_RLSIGN))
+            .ok_or_else(|| AcmeError::Builder("KeyUsage encode".into()))?;
+
+    let ski_der = encode_subject_key_identifier(
+        &subject_spki_der,
+        KeyIdMethod::Rfc7093Method1Sha256,
+        &hasher,
+    )
+    .ok_or_else(|| AcmeError::Builder("SKI encode".into()))?;
+
+    let aki_der = encode_authority_key_identifier(
+        &issuer_spki_der,
+        KeyIdMethod::Rfc7093Method1Sha256,
+        &hasher,
+    )
+    .ok_or_else(|| AcmeError::Builder("AKI encode".into()))?;
+
+    let signer = issuer_ca.key.as_signer(&issuer_ca.hash_alg);
+
+    let cert_der = CertificateBuilder::new()
+        .issuer_name(&issuer_name_der)
+        .subject_name(&subject_name_der)
+        .public_key_der(&subject_spki_der)
+        .serial_number(serial)
+        .not_valid_before(not_before_t)
+        .not_valid_after(not_after_t)
+        .add_extension_oid(oids::BASIC_CONSTRAINTS, true, &bc_der)
+        .add_extension_oid(oids::KEY_USAGE, true, &ku_der)
+        .add_extension_oid(oids::SUBJECT_KEY_IDENTIFIER, false, &ski_der)
+        .add_extension_oid(oids::AUTHORITY_KEY_IDENTIFIER, false, &aki_der)
+        .sign(&signer)
+        .map_err(|e| AcmeError::Builder(format!("sign cross-cert: {e}")))?;
+
+    let pem_bytes = der_to_pem("CERTIFICATE", &cert_der);
+    let cert_pem = String::from_utf8(pem_bytes)
+        .map_err(|_| AcmeError::Internal("cross-cert PEM contains invalid UTF-8".into()))?;
+
+    Ok(IssuedCaCert {
+        serial_hex,
+        cert_der,
+        cert_pem,
+        not_before: not_before_unix,
+        not_after: not_after_unix,
+        subject_spki_der,
+        subject_dn,
+    })
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1271,6 +1407,7 @@ mod tests {
         let (_ee_key, validated_csr) = make_test_csr("cap-test.example.com");
 
         let ca = crate::state::CaState {
+            id: "test".into(),
             key: ca_key,
             cert_der: ca_cert_der,
             hash_alg: "sha256".into(),
@@ -1279,6 +1416,8 @@ mod tests {
             ocsp_url: None,
             aki_bytes: vec![],
             enforce_validity_cap: true,
+            crl_next_update_secs: 86400,
+            caa_identities: vec![],
         };
 
         let params = crate::profiles::CertificateParameters {
@@ -1296,6 +1435,7 @@ mod tests {
             auth_hook: None,
             auth_hook_timeout_secs: 30,
             require_account_grant: false,
+            ca_ids: vec![],
         };
 
         let result = issue_with_params(&ca, &validated_csr, &params, None, None);
@@ -1321,6 +1461,7 @@ mod tests {
         let (_ee_key, validated_csr) = make_test_csr("cap-ok.example.com");
 
         let ca = crate::state::CaState {
+            id: "test".into(),
             key: ca_key,
             cert_der: ca_cert_der,
             hash_alg: "sha256".into(),
@@ -1329,6 +1470,8 @@ mod tests {
             ocsp_url: None,
             aki_bytes: vec![],
             enforce_validity_cap: true,
+            crl_next_update_secs: 86400,
+            caa_identities: vec![],
         };
 
         let params = crate::profiles::CertificateParameters {
@@ -1346,6 +1489,7 @@ mod tests {
             auth_hook: None,
             auth_hook_timeout_secs: 30,
             require_account_grant: false,
+            ca_ids: vec![],
         };
 
         let result = issue_with_params(&ca, &validated_csr, &params, None, None);

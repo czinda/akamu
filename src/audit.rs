@@ -44,6 +44,7 @@ pub enum AuditEventType {
     CertIssue,
     CertRevoke,
     CrlGenerate,
+    CrossSignIssue,
     // Key management
     KeyGenerate,
     KeyLoad,
@@ -78,6 +79,7 @@ impl AuditEventType {
             AuditEventType::CertIssue => "cert.issue",
             AuditEventType::CertRevoke => "cert.revoke",
             AuditEventType::CrlGenerate => "crl.generate",
+            AuditEventType::CrossSignIssue => "cross-sign.issue",
             AuditEventType::KeyGenerate => "key.generate",
             AuditEventType::KeyLoad => "key.load",
             AuditEventType::AuthJwsOk => "auth.jws.ok",

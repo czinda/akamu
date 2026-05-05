@@ -44,6 +44,9 @@
 //! | `GET /admin/cas/{id}` | ✓ | ✓ | | |
 //! | `GET /admin/cas/{id}/cert` | ✓ | ✓ | | |
 //! | `POST /admin/ca/{id}/crl/force` | ✓ | ✓ | | |
+//! | `POST /admin/ca/{id}/cross-sign` | ✓ | ✓ | | |
+//! | `GET /admin/cross-certs` | ✓ | ✓ | | ✓ |
+//! | `GET /admin/cross-certs/{id}` | ✓ | ✓ | | ✓ |
 
 use std::sync::Arc;
 
@@ -1840,6 +1843,253 @@ pub async fn post_ca_crl_force(
         .await;
 
     StatusCode::NO_CONTENT.into_response()
+}
+
+// ── Cross-signing ─────────────────────────────────────────────────────────────
+
+/// Request body for `POST /admin/ca/{id}/cross-sign`.
+///
+/// Exactly one of `subject_ca_id` or `subject_cert_pem` must be supplied.
+#[derive(Deserialize)]
+pub(super) struct CrossSignPayload {
+    /// Same-server CA whose certificate will become the cross-cert subject.
+    subject_ca_id: Option<String>,
+    /// PEM-encoded certificate of an external CA to cross-sign.
+    subject_cert_pem: Option<String>,
+    /// Validity of the cross-certificate in years (default: 5).
+    #[serde(default = "default_cross_sign_validity")]
+    validity_years: u32,
+}
+
+fn default_cross_sign_validity() -> u32 {
+    5
+}
+
+/// `POST /admin/ca/{id}/cross-sign`
+///
+/// Issue a cross-certificate: the CA identified by `{id}` signs a CA
+/// certificate for the subject specified in the request body.
+/// Requires: administrator or ca_operations.
+pub async fn post_ca_cross_sign(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+    Path(issuer_id): Path<String>,
+    Json(payload): Json<CrossSignPayload>,
+) -> Response {
+    require_role!(operator, state, Administrator | CaOperations);
+
+    // Resolve the issuer CA.
+    let issuer_ca = match state.get_ca(&issuer_id) {
+        Some(ca) => ca.clone(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"status": 404, "detail": "issuer CA not found"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Resolve the subject cert DER from either field.
+    let subject_cert_der = match (&payload.subject_ca_id, &payload.subject_cert_pem) {
+        (Some(subj_id), None) => {
+            match state.get_ca(subj_id) {
+                Some(ca) => ca.cert_der.clone(),
+                None => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(json!({"status": 404, "detail": "subject CA not found"})),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        (None, Some(pem)) => {
+            let ders = synta_certificate::pem_to_der(pem.as_bytes());
+            match ders.into_iter().next() {
+                Some(d) => d,
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"status": 400, "detail": "subject_cert_pem contains no valid PEM block"})),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"status": 400, "detail": "exactly one of subject_ca_id or subject_cert_pem must be provided"})),
+            )
+                .into_response();
+        }
+    };
+
+    let issued = match crate::ca::issue::issue_ca_cert(
+        &issuer_ca,
+        &subject_cert_der,
+        payload.validity_years,
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(error = %e, "cross-sign issuance failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = unix_now();
+    let row = crate::db::schema::CrossCertRow {
+        id: id.clone(),
+        issuer_ca_id: issuer_id.clone(),
+        subject_ca_id: payload.subject_ca_id.clone(),
+        subject_dn: issued.subject_dn.clone(),
+        subject_spki: issued.subject_spki_der,
+        cross_cert_der: issued.cert_der,
+        cross_cert_pem: issued.cert_pem.clone(),
+        not_before: issued.not_before,
+        not_after: issued.not_after,
+        serial_number: issued.serial_hex.clone(),
+        created: now,
+    };
+
+    if let Err(e) = db::cross_certs::insert(&state.db, &row).await {
+        tracing::error!(error = %e, "failed to store cross-cert");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    state
+        .record_audit(
+            AuditEvent::success(AuditEventType::CrossSignIssue)
+                .with_principal(&operator.name)
+                .with_subject(&id)
+                .with_detail(
+                    serde_json::json!({
+                        "issuer_ca_id": issuer_id,
+                        "subject_ca_id": payload.subject_ca_id,
+                        "serial": issued.serial_hex,
+                        "validity_years": payload.validity_years,
+                    })
+                    .to_string(),
+                ),
+        )
+        .await;
+
+    (
+        StatusCode::CREATED,
+        Json(json!({
+            "id": id,
+            "issuer_ca_id": issuer_id,
+            "subject_ca_id": payload.subject_ca_id,
+            "subject_dn": issued.subject_dn,
+            "serial_number": issued.serial_hex,
+            "not_before": issued.not_before,
+            "not_after": issued.not_after,
+            "cross_cert_pem": row.cross_cert_pem,
+            "created": now,
+        })),
+    )
+        .into_response()
+}
+
+/// `GET /admin/cross-certs`
+///
+/// List cross-certificates.  Optional query parameters:
+/// - `issuer_ca_id` — filter by issuing CA
+/// - `subject_ca_id` — filter by subject CA
+/// - `limit` (default 100), `offset` (default 0)
+///
+/// Requires: administrator, ca_operations, or auditor.
+pub async fn get_cross_certs(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    require_role!(operator, state, Administrator | CaOperations | Auditor);
+
+    let issuer_ca_id = params.get("issuer_ca_id").map(String::as_str);
+    let subject_ca_id = params.get("subject_ca_id").map(String::as_str);
+    let limit: i64 = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100)
+        .min(1000);
+    let offset: i64 = params
+        .get("offset")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
+    let rows = match db::cross_certs::list(&state.db, issuer_ca_id, subject_ca_id, limit, offset)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(error = %e, "get_cross_certs DB query failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let items: Vec<_> = rows
+        .into_iter()
+        .map(|r| {
+            json!({
+                "id": r.id,
+                "issuer_ca_id": r.issuer_ca_id,
+                "subject_ca_id": r.subject_ca_id,
+                "subject_dn": r.subject_dn,
+                "serial_number": r.serial_number,
+                "not_before": r.not_before,
+                "not_after": r.not_after,
+                "created": r.created,
+            })
+        })
+        .collect();
+
+    (StatusCode::OK, Json(json!({ "cross_certs": items }))).into_response()
+}
+
+/// `GET /admin/cross-certs/{id}`
+///
+/// Retrieve a single cross-certificate by ID, including its PEM.
+/// Requires: administrator, ca_operations, or auditor.
+pub async fn get_cross_cert(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    require_role!(operator, state, Administrator | CaOperations | Auditor);
+
+    let row = match db::cross_certs::get_by_id(&state.db, &id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"status": 404, "detail": "cross-cert not found"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "get_cross_cert DB query failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "id": row.id,
+            "issuer_ca_id": row.issuer_ca_id,
+            "subject_ca_id": row.subject_ca_id,
+            "subject_dn": row.subject_dn,
+            "serial_number": row.serial_number,
+            "not_before": row.not_before,
+            "not_after": row.not_after,
+            "cross_cert_pem": row.cross_cert_pem,
+            "created": row.created,
+        })),
+    )
+        .into_response()
 }
 
 // ── Statistics ────────────────────────────────────────────────────────────────

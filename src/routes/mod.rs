@@ -207,18 +207,20 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             halt_check,
         ));
 
-    // Non-ACME routes: CRL/OCSP (public, read-only).  Admin routes are served
-    // on the dedicated admin listener via `build_admin_router`; they are not
-    // registered here so the main ACME listener never handles /admin/* paths.
+    // Non-ACME routes: CRL/OCSP/cross-certs (public, read-only).  Admin routes
+    // are served on the dedicated admin listener via `build_admin_router`; they
+    // are not registered here so the main ACME listener never handles /admin/*.
     let other_router = Router::new()
-        // Legacy CRL/OCSP — alias to default CA
+        // Legacy CRL/OCSP/cross-certs — alias to default CA
         .route("/ca/crl", get(crl::get_crl))
         .route("/ca/ocsp", post(ocsp::post_ocsp))
         .route("/ca/ocsp/{request}", get(ocsp::get_ocsp))
-        // Per-CA CRL/OCSP
+        .route("/ca/cross-certs", get(crl::get_cross_certs))
+        // Per-CA CRL/OCSP/cross-certs
         .route("/ca/{ca_id}/crl", get(crl::get_crl))
         .route("/ca/{ca_id}/ocsp", post(ocsp::post_ocsp))
-        .route("/ca/{ca_id}/ocsp/{request}", get(ocsp::get_ocsp));
+        .route("/ca/{ca_id}/ocsp/{request}", get(ocsp::get_ocsp))
+        .route("/ca/{ca_id}/cross-certs", get(crl::get_cross_certs));
 
     Router::new()
         .merge(acme_router)
@@ -311,6 +313,15 @@ pub fn build_admin_router(state: Arc<AppState>) -> Router {
         .route(
             "/admin/ca/{id}/crl/force",
             post(admin::post_ca_crl_force),
+        )
+        .route(
+            "/admin/ca/{id}/cross-sign",
+            post(admin::post_ca_cross_sign),
+        )
+        .route("/admin/cross-certs", axum::routing::get(admin::get_cross_certs))
+        .route(
+            "/admin/cross-certs/{id}",
+            axum::routing::get(admin::get_cross_cert),
         )
         .layer(axum::extract::DefaultBodyLimit::max(if max_body > 0 {
             max_body
