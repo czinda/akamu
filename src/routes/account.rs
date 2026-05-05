@@ -63,10 +63,9 @@ pub async fn new_account(
             account_json(&existing, &contacts, &pfx),
             &ctx.next_nonce,
         )?;
-        resp.headers_mut().insert(
-            axum::http::header::LOCATION,
-            HeaderValue::from_str(&account_url).unwrap(),
-        );
+        let loc = HeaderValue::from_str(&account_url)
+            .map_err(|e| AcmeError::Internal(format!("invalid Location header: {e}")))?;
+        resp.headers_mut().insert(axum::http::header::LOCATION, loc);
         return Ok(resp);
     }
 
@@ -228,10 +227,9 @@ pub async fn new_account(
         account_json(&row, &contacts, &pfx),
         &ctx.next_nonce,
     )?;
-    resp.headers_mut().insert(
-        axum::http::header::LOCATION,
-        HeaderValue::from_str(&account_url).unwrap(),
-    );
+    let loc = HeaderValue::from_str(&account_url)
+        .map_err(|e| AcmeError::Internal(format!("invalid Location header: {e}")))?;
+    resp.headers_mut().insert(axum::http::header::LOCATION, loc);
     Ok(resp)
 }
 
@@ -283,7 +281,13 @@ pub async fn update_account(
     // Handle deactivation.
     if payload.status.as_deref() == Some("deactivated") {
         db::accounts::update_status(&state.db, &id, "deactivated", unix_now()).await?;
-        state.spki_cache.write().unwrap_or_else(|e| e.into_inner()).remove(&id);
+        match state.spki_cache.write() {
+            Ok(mut cache) => { cache.remove(&id); }
+            Err(e) => {
+                tracing::error!("spki_cache RwLock poisoned; evicting deactivated account under poison guard");
+                e.into_inner().remove(&id);
+            }
+        }
         state
             .record_audit(
                 crate::audit::AuditEvent::success(crate::audit::AuditEventType::AccountDeactivate)

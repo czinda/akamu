@@ -145,6 +145,29 @@ pub async fn set_certificate(
     Ok(())
 }
 
+/// Update the `certificate_id` on a STAR order, guarded against canceled orders.
+///
+/// Returns `true` if the order was found and updated, `false` if it was already
+/// canceled (`star_canceled_at IS NOT NULL`) or does not exist.
+pub async fn update_star_certificate(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    id: &str,
+    certificate_id: &str,
+    now: i64,
+) -> Result<bool, AcmeError> {
+    let n = sqlx::query(
+        "UPDATE orders SET certificate_id = ?, updated = ? \
+         WHERE id = ? AND star_canceled_at IS NULL",
+    )
+    .bind(certificate_id)
+    .bind(now)
+    .bind(id)
+    .execute(executor)
+    .await?
+    .rows_affected();
+    Ok(n > 0)
+}
+
 /// Fetch an order and its authorization IDs in a single JOIN round-trip.
 ///
 /// Returns `None` if no order with `order_id` exists.

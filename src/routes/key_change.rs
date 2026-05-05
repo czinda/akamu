@@ -106,7 +106,17 @@ pub async fn key_change(
         now,
     )
     .await?;
-    state.spki_cache.write().unwrap_or_else(|e| e.into_inner()).remove(&account_id);
+    match state.spki_cache.write() {
+        Ok(mut cache) => {
+            cache.remove(&account_id);
+        }
+        Err(e) => {
+            tracing::error!(
+                "spki_cache RwLock poisoned; evicting key-changed account under poison guard"
+            );
+            e.into_inner().remove(&account_id);
+        }
+    }
 
     state
         .record_audit(

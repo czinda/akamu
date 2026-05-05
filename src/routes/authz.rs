@@ -15,7 +15,7 @@ use crate::db::schema::{AuthorizationRow, ChallengeRow};
 use crate::error::AcmeError;
 use crate::state::AppState;
 
-use super::{fmt_time, json_response, parse_jws, require_payload, unix_now};
+use super::{acme_prefix, fmt_time, json_response, parse_jws, require_payload, unix_now, CaId};
 
 fn is_false(b: &bool) -> bool {
     !b
@@ -88,9 +88,11 @@ struct NewAuthzPayload {
 /// POST /acme/new-authz — RFC 8555 §7.4.1 pre-authorization.
 pub async fn new_authz(
     State(state): State<Arc<AppState>>,
+    ca_id: CaId,
     body: Bytes,
 ) -> Result<Response, AcmeError> {
-    let url = format!("{}/acme/new-authz", state.config.base_url);
+    let pfx = acme_prefix(&state.config.base_url, &ca_id.0, &state.default_ca_id);
+    let url = format!("{pfx}/new-authz");
     let ctx = parse_jws(&state, body, &url).await?;
 
     let account_id = ctx
@@ -139,11 +141,10 @@ pub async fn new_authz(
         let (authz, challenges) = db::authz::get_with_challenges(&state.db, &existing_authz.id)
             .await?
             .ok_or(AcmeError::NotFound)?;
-        let base = &state.config.base_url;
-        let location = format!("{base}/acme/authz/{}", authz.id);
+        let location = format!("{pfx}/authz/{}", authz.id);
         let thumbprint = ctx.jwk_thumbprint.as_deref().unwrap_or("");
-        let body = build_authz_json(&authz, &challenges, base, &state, thumbprint);
-        let mut resp = json_response(&state, StatusCode::CREATED, body, &ctx.next_nonce)?;
+        let body = build_authz_json(&authz, &challenges, &pfx, &state, thumbprint);
+        let mut resp = json_response(&state, &ca_id.0, StatusCode::CREATED, body, &ctx.next_nonce)?;
         resp.headers_mut()
             .insert(axum::http::header::LOCATION, location.parse().unwrap());
         return Ok(resp);
@@ -219,11 +220,10 @@ pub async fn new_authz(
         .await?
         .ok_or(AcmeError::NotFound)?;
 
-    let base = &state.config.base_url;
-    let location = format!("{base}/acme/authz/{authz_id}");
+    let location = format!("{pfx}/authz/{authz_id}");
     let thumbprint = ctx.jwk_thumbprint.as_deref().unwrap_or("");
-    let body = build_authz_json(&authz, &chall_rows, base, &state, thumbprint);
-    let mut resp = json_response(&state, StatusCode::CREATED, body, &ctx.next_nonce)?;
+    let body = build_authz_json(&authz, &chall_rows, &pfx, &state, thumbprint);
+    let mut resp = json_response(&state, &ca_id.0, StatusCode::CREATED, body, &ctx.next_nonce)?;
     resp.headers_mut()
         .insert(axum::http::header::LOCATION, location.parse().unwrap());
     Ok(resp)
@@ -236,7 +236,7 @@ pub async fn new_authz(
 fn build_authz_json<'a>(
     authz: &'a AuthorizationRow,
     challenges: &'a [ChallengeRow],
-    base: &str,
+    acme_pfx: &str,
     state: &AppState,
     jwk_thumbprint: &str,
 ) -> AuthzJson<'a> {
@@ -259,7 +259,7 @@ fn build_authz_json<'a>(
             };
             ChallengeJson {
                 r#type: &c.r#type,
-                url: format!("{base}/acme/chall/{}/{}", authz.id, c.r#type),
+                url: format!("{acme_pfx}/chall/{}/{}", authz.id, c.r#type),
                 status: &c.status,
                 token,
                 issuer_domain_names,
@@ -295,10 +295,12 @@ fn gen_token() -> String {
 
 pub async fn get_authz(
     State(state): State<Arc<AppState>>,
+    ca_id: CaId,
     Path(id): Path<String>,
     body: Bytes,
 ) -> Result<Response, AcmeError> {
-    let url = format!("{}/acme/authz/{}", state.config.base_url, id);
+    let pfx = acme_prefix(&state.config.base_url, &ca_id.0, &state.default_ca_id);
+    let url = format!("{pfx}/authz/{id}");
     let ctx = parse_jws(&state, body, &url).await?;
 
     let account_id = ctx
@@ -313,10 +315,15 @@ pub async fn get_authz(
             "authorization belongs to different account".into(),
         ));
     }
-    let base = &state.config.base_url;
+    let order = db::orders::get_by_id(&state.db, &authz.order_id)
+        .await?
+        .ok_or(AcmeError::NotFound)?;
+    if order.ca_id != ca_id.0 {
+        return Err(AcmeError::NotFound);
+    }
     let thumbprint = ctx.jwk_thumbprint.as_deref().unwrap_or("");
-    let body = build_authz_json(&authz, &challenges, base, &state, thumbprint);
-    json_response(&state, StatusCode::OK, body, &ctx.next_nonce)
+    let body = build_authz_json(&authz, &challenges, &pfx, &state, thumbprint);
+    json_response(&state, &ca_id.0, StatusCode::OK, body, &ctx.next_nonce)
 }
 
 #[cfg(test)]

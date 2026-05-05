@@ -984,7 +984,7 @@ struct ProfilePayload {
     #[serde(default)]
     require_account_grant: bool,
     #[serde(default)]
-    ca_ids: Option<Vec<String>>,
+    ca_ids: Vec<String>,
 }
 
 fn default_profile_validity_days() -> u32 {
@@ -1017,7 +1017,7 @@ impl ProfilePayload {
             auth_hook: self.auth_hook,
             auth_hook_timeout_secs: self.auth_hook_timeout_secs,
             require_account_grant: self.require_account_grant,
-            ca_ids: self.ca_ids.unwrap_or_default(),
+            ca_ids: self.ca_ids,
         }
     }
 }
@@ -1835,7 +1835,7 @@ pub async fn post_ca_crl_force(
         .record_audit(
             AuditEvent::success(AuditEventType::CrlGenerate)
                 .with_principal(&operator.name)
-                .with_detail(format!("{{\"action\":\"crl.force\",\"ca_id\":\"{id}\"}}")),
+                .with_detail(serde_json::json!({"action": "crl.force", "ca_id": id}).to_string()),
         )
         .await;
 

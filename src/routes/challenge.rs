@@ -14,17 +14,16 @@ use crate::error::AcmeError;
 use crate::state::AppState;
 use crate::validation;
 
-use super::{fmt_time, json_response, parse_jws, unix_now};
+use super::{acme_prefix, fmt_time, json_response, parse_jws, unix_now, CaId};
 
 pub async fn respond_challenge(
     State(state): State<Arc<AppState>>,
+    ca_id: CaId,
     Path((authz_id, chall_type)): Path<(String, String)>,
     body: Bytes,
 ) -> Result<Response, AcmeError> {
-    let url = format!(
-        "{}/acme/chall/{}/{}",
-        state.config.base_url, authz_id, chall_type
-    );
+    let pfx = acme_prefix(&state.config.base_url, &ca_id.0, &state.default_ca_id);
+    let url = format!("{pfx}/chall/{authz_id}/{chall_type}");
     let ctx = parse_jws(&state, body, &url).await?;
 
     let account_id = ctx
@@ -56,6 +55,12 @@ pub async fn respond_challenge(
             "authorization belongs to different account".into(),
         ));
     }
+    let order = db::orders::get_by_id(&state.db, &authz.order_id)
+        .await?
+        .ok_or(AcmeError::NotFound)?;
+    if order.ca_id != ca_id.0 {
+        return Err(AcmeError::NotFound);
+    }
     if authz.status != "pending" {
         return Err(AcmeError::BadRequest(format!(
             "authorization status is '{}', expected 'pending'",
@@ -65,7 +70,7 @@ pub async fn respond_challenge(
 
     if challenge.status != "pending" {
         // Already processing or completed; return current state.
-        return challenge_response(&state, &challenge, &ctx.next_nonce);
+        return challenge_response(&state, &challenge, &pfx, &ca_id.0, &ctx.next_nonce);
     }
     // challenge.status was "pending" — the DB has now flipped it to "processing".
 
@@ -162,7 +167,7 @@ pub async fn respond_challenge(
     // Return immediately with processing state.
     let mut updated = challenge.clone();
     updated.status = "processing".into();
-    challenge_response(&state, &updated, &ctx.next_nonce)
+    challenge_response(&state, &updated, &pfx, &ca_id.0, &ctx.next_nonce)
 }
 
 /// Typed challenge response body — borrows `&str` fields from `ChallengeRow`
@@ -188,9 +193,10 @@ struct ChallengeJson<'a> {
 fn challenge_response(
     state: &AppState,
     challenge: &crate::db::schema::ChallengeRow,
+    acme_pfx: &str,
+    ca_id: &str,
     nonce: &str,
 ) -> Result<Response, AcmeError> {
-    let base = &state.config.base_url;
     // dns-persist-01 has no per-challenge token; instead expose the issuer domains.
     let (token, issuer_domain_names) = if challenge.r#type == "dns-persist-01" {
         (None, Some(state.config.dns_persist_issuer_domains()))
@@ -199,10 +205,7 @@ fn challenge_response(
     };
     let body = ChallengeJson {
         r#type: &challenge.r#type,
-        url: format!(
-            "{base}/acme/chall/{}/{}",
-            challenge.authz_id, challenge.r#type
-        ),
+        url: format!("{acme_pfx}/chall/{}/{}", challenge.authz_id, challenge.r#type),
         status: &challenge.status,
         token,
         issuer_domain_names,
@@ -212,5 +215,5 @@ fn challenge_response(
             .as_deref()
             .and_then(|s| serde_json::value::RawValue::from_string(s.to_string()).ok()),
     };
-    json_response(state, StatusCode::OK, body, nonce)
+    json_response(state, ca_id, StatusCode::OK, body, nonce)
 }

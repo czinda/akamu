@@ -83,19 +83,7 @@ async fn run_once(state: &Arc<AppState>) {
         };
 
         // Find the most recent certificate for this order.
-        let latest_cert = match sqlx::query_as::<_, CertificateRow>(
-            "SELECT id, order_id, account_id, serial_number, status, der, pem,
-             not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
-             suggested_window_start, suggested_window_end, replaced_by, subject_dn, ca_id
-             FROM certificates
-             WHERE order_id = ?
-             ORDER BY created DESC
-             LIMIT 1",
-        )
-        .bind(&order.id)
-        .fetch_optional(&state.db)
-        .await
-        {
+        let latest_cert = match db::certs::get_latest_for_order(&state.db, &order.id).await {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!("STAR order {}: failed to fetch latest cert: {e}", order.id);
@@ -228,13 +216,15 @@ async fn run_once(state: &Arc<AppState>) {
                 },
             )
             .await?;
-            sqlx::query("UPDATE orders SET certificate_id = ?, updated = ? WHERE id = ?")
-                .bind(&cert_id)
-                .bind(now)
-                .bind(&order.id)
-                .execute(&mut *tx)
-                .await
-                .map_err(crate::error::AcmeError::from)?;
+            let updated = db::orders::update_star_certificate(&mut *tx, &order.id, &cert_id, now)
+                .await?;
+            if !updated {
+                tracing::info!(
+                    "STAR order {}: order was canceled during reissuance, discarding new cert",
+                    order.id
+                );
+                return Ok(());
+            }
             tx.commit().await.map_err(crate::error::AcmeError::from)?;
             Ok(())
         }
