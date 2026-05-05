@@ -57,6 +57,19 @@ enum Commands {
         #[command(subcommand)]
         source: ImportSource,
     },
+    /// CA discovery (list available CAs, show CA details)
+    Ca {
+        #[command(subcommand)]
+        cmd: CaCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum CaCommands {
+    /// List CAs available on an akamu server
+    List(CaListArgs),
+    /// Show details for a specific CA
+    Show(CaShowArgs),
 }
 
 #[derive(Subcommand)]
@@ -124,9 +137,13 @@ impl EabFlags {
 
 #[derive(clap::Args)]
 struct RegisterArgs {
-    /// ACME directory URL
+    /// ACME directory URL (or base URL when --ca is also provided)
     #[arg(long, default_value = "https://acme-v02.api.letsencrypt.org/directory")]
     server: String,
+
+    /// CA identifier for akamu multi-CA servers; derives directory URL as {server}/acme/{ca}/directory
+    #[arg(long, value_name = "CA_ID")]
+    ca: Option<String>,
 
     /// PEM file for the account key (generated and saved if absent)
     #[arg(long)]
@@ -152,9 +169,13 @@ struct RegisterArgs {
 
 #[derive(clap::Args)]
 struct DeregisterArgs {
-    /// ACME directory URL
+    /// ACME directory URL (or base URL when --ca is also provided)
     #[arg(long, default_value = "https://acme-v02.api.letsencrypt.org/directory")]
     server: String,
+
+    /// CA identifier for akamu multi-CA servers
+    #[arg(long, value_name = "CA_ID")]
+    ca: Option<String>,
 
     /// PEM file for the account key
     #[arg(long)]
@@ -165,9 +186,13 @@ struct DeregisterArgs {
 
 #[derive(clap::Args)]
 struct ShowArgs {
-    /// ACME directory URL
+    /// ACME directory URL (or base URL when --ca is also provided)
     #[arg(long, default_value = "https://acme-v02.api.letsencrypt.org/directory")]
     server: String,
+
+    /// CA identifier for akamu multi-CA servers
+    #[arg(long, value_name = "CA_ID")]
+    ca: Option<String>,
 
     /// PEM file for the account key
     #[arg(long)]
@@ -178,9 +203,13 @@ struct ShowArgs {
 
 #[derive(clap::Args)]
 struct UpdateArgs {
-    /// ACME directory URL
+    /// ACME directory URL (or base URL when --ca is also provided)
     #[arg(long, default_value = "https://acme-v02.api.letsencrypt.org/directory")]
     server: String,
+
+    /// CA identifier for akamu multi-CA servers
+    #[arg(long, value_name = "CA_ID")]
+    ca: Option<String>,
 
     /// PEM file for the account key
     #[arg(long)]
@@ -195,9 +224,13 @@ struct UpdateArgs {
 
 #[derive(clap::Args)]
 struct KeyChangeArgs {
-    /// ACME directory URL
+    /// ACME directory URL (or base URL when --ca is also provided)
     #[arg(long, default_value = "https://acme-v02.api.letsencrypt.org/directory")]
     server: String,
+
+    /// CA identifier for akamu multi-CA servers
+    #[arg(long, value_name = "CA_ID")]
+    ca: Option<String>,
 
     /// Current account key PEM file
     #[arg(long)]
@@ -216,9 +249,13 @@ struct KeyChangeArgs {
 
 #[derive(clap::Args)]
 struct IssueArgs {
-    /// ACME directory URL
+    /// ACME directory URL (or base URL when --ca is also provided)
     #[arg(long, default_value = "https://acme-v02.api.letsencrypt.org/directory")]
     server: String,
+
+    /// CA identifier for akamu multi-CA servers; derives directory URL as {server}/acme/{ca}/directory
+    #[arg(long, value_name = "CA_ID")]
+    ca: Option<String>,
 
     /// Domain name; may be repeated (first domain → CN)
     #[arg(long = "domain", short = 'd')]
@@ -278,9 +315,13 @@ struct IssueArgs {
 
 #[derive(clap::Args)]
 struct RenewArgs {
-    /// ACME directory URL
+    /// ACME directory URL (or base URL when --ca is also provided)
     #[arg(long, default_value = "https://acme-v02.api.letsencrypt.org/directory")]
     server: String,
+
+    /// CA identifier for akamu multi-CA servers; derives directory URL as {server}/acme/{ca}/directory
+    #[arg(long, value_name = "CA_ID")]
+    ca: Option<String>,
 
     /// Domain name; may be repeated (first domain → CN)
     #[arg(long = "domain", short = 'd')]
@@ -370,6 +411,31 @@ struct RevokeArgs {
     cert_key: Option<PathBuf>,
 }
 
+// ── ca list / ca show ─────────────────────────────────────────────────────────
+
+#[derive(clap::Args)]
+struct CaListArgs {
+    /// ACME server URL (base URL or full directory URL)
+    #[arg(long, default_value = "https://acme-v02.api.letsencrypt.org/directory")]
+    server: String,
+
+    /// Admin API base URL (e.g. https://admin.acme.example.com:9443).
+    /// When provided, attempts GET /admin/cas for a full CA list.
+    #[arg(long)]
+    admin_url: Option<String>,
+}
+
+#[derive(clap::Args)]
+struct CaShowArgs {
+    /// ACME server URL (base URL or full directory URL)
+    #[arg(long, default_value = "https://acme-v02.api.letsencrypt.org/directory")]
+    server: String,
+
+    /// CA identifier to look up
+    #[arg(long, value_name = "CA_ID")]
+    ca: String,
+}
+
 // ── entry point ───────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -403,21 +469,26 @@ async fn run(cli: Cli) -> Result<(), String> {
         Commands::Import { source } => match source {
             ImportSource::Certbot(args) => import::cmd_import_certbot(args).await,
         },
+        Commands::Ca { cmd } => match cmd {
+            CaCommands::List(args) => cmd_ca_list(args).await,
+            CaCommands::Show(args) => cmd_ca_show(args).await,
+        },
     }
 }
 
 // ── account register ──────────────────────────────────────────────────────────
 
 async fn cmd_register(args: RegisterArgs) -> Result<(), String> {
+    let dir_url = resolve_directory_url(&args.server, args.ca.as_deref());
     let key = load_or_generate_key(&args.account_key, &args.key_type)?;
     let key = Arc::new(key);
 
-    let client = AcmeClient::new(&args.server)
+    let client = AcmeClient::new(&dir_url)
         .await
         .map_err(|e| e.to_string())?;
 
     let gssapi_eab = if let Some(ref keytab) = args.eab.gssapi_keytab {
-        let eab_url = derive_eab_url(&args.server)?;
+        let eab_url = derive_eab_url(&dir_url)?;
         let result = fetch_eab_via_gssapi(
             &eab_url,
             keytab.to_str().ok_or("keytab path is not valid UTF-8")?,
@@ -463,7 +534,7 @@ async fn cmd_register(args: RegisterArgs) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?;
 
-    save_account_url(&args.account_key, &account.url)?;
+    save_account_url_for_ca(&args.account_key, args.ca.as_deref(), &account.url)?;
     println!("Registered: {}", account.url);
     Ok(())
 }
@@ -471,11 +542,12 @@ async fn cmd_register(args: RegisterArgs) -> Result<(), String> {
 // ── account deregister ────────────────────────────────────────────────────────
 
 async fn cmd_deregister(args: DeregisterArgs) -> Result<(), String> {
+    let dir_url = resolve_directory_url(&args.server, args.ca.as_deref());
     let key = load_key(&args.account_key)?;
     let key = Arc::new(key);
-    let account_url = load_account_url(&args.account_key)?;
+    let account_url = load_account_url_for_ca(&args.account_key, args.ca.as_deref())?;
 
-    let client = AcmeClient::new(&args.server)
+    let client = AcmeClient::new(&dir_url)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -488,7 +560,7 @@ async fn cmd_deregister(args: DeregisterArgs) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     // Remove the stored account URL.
-    let url_path = account_url_path(&args.account_key);
+    let url_path = account_url_path_for_ca(&args.account_key, args.ca.as_deref());
     let _ = fs::remove_file(&url_path);
     println!("Deactivated: {account_url}");
     Ok(())
@@ -497,11 +569,12 @@ async fn cmd_deregister(args: DeregisterArgs) -> Result<(), String> {
 // ── account show ──────────────────────────────────────────────────────────────
 
 async fn cmd_show(args: ShowArgs) -> Result<(), String> {
+    let dir_url = resolve_directory_url(&args.server, args.ca.as_deref());
     let key = load_key(&args.account_key)?;
     let key = Arc::new(key);
-    let account_url = load_account_url(&args.account_key)?;
+    let account_url = load_account_url_for_ca(&args.account_key, args.ca.as_deref())?;
 
-    let client = AcmeClient::new(&args.server)
+    let client = AcmeClient::new(&dir_url)
         .await
         .map_err(|e| e.to_string())?;
     let account = akamu_client::Account::new(account_url, "valid".into(), vec![], key);
@@ -525,11 +598,12 @@ async fn cmd_show(args: ShowArgs) -> Result<(), String> {
 // ── account update ────────────────────────────────────────────────────────────
 
 async fn cmd_update(args: UpdateArgs) -> Result<(), String> {
+    let dir_url = resolve_directory_url(&args.server, args.ca.as_deref());
     let key = load_key(&args.account_key)?;
     let key = Arc::new(key);
-    let account_url = load_account_url(&args.account_key)?;
+    let account_url = load_account_url_for_ca(&args.account_key, args.ca.as_deref())?;
 
-    let client = AcmeClient::new(&args.server)
+    let client = AcmeClient::new(&dir_url)
         .await
         .map_err(|e| e.to_string())?;
     let account = akamu_client::Account::new(account_url, "valid".into(), vec![], key);
@@ -549,14 +623,15 @@ async fn cmd_update(args: UpdateArgs) -> Result<(), String> {
 // ── account key-change ────────────────────────────────────────────────────────
 
 async fn cmd_key_change(args: KeyChangeArgs) -> Result<(), String> {
+    let dir_url = resolve_directory_url(&args.server, args.ca.as_deref());
     let old_key = load_key(&args.account_key)?;
     let old_key = Arc::new(old_key);
-    let account_url = load_account_url(&args.account_key)?;
+    let account_url = load_account_url_for_ca(&args.account_key, args.ca.as_deref())?;
 
     let new_key = load_or_generate_key(&args.new_key, &args.new_key_type)?;
     let new_key = Arc::new(new_key);
 
-    let client = AcmeClient::new(&args.server)
+    let client = AcmeClient::new(&dir_url)
         .await
         .map_err(|e| e.to_string())?;
     let account = akamu_client::Account::new(account_url.clone(), "valid".into(), vec![], old_key);
@@ -603,20 +678,22 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
         return Err("at least one --domain is required".into());
     }
 
+    let dir_url = resolve_directory_url(&args.server, args.ca.as_deref());
+
     // Load or generate the account key.
     let key = load_or_generate_key(&args.account_key, &args.key_type)?;
     let key = Arc::new(key);
 
-    let client = AcmeClient::new(&args.server)
+    let client = AcmeClient::new(&dir_url)
         .await
         .map_err(|e| e.to_string())?;
 
     // Load existing account or register a new one.
-    let account = if let Ok(url) = load_account_url(&args.account_key) {
+    let account = if let Ok(url) = load_account_url_for_ca(&args.account_key, args.ca.as_deref()) {
         akamu_client::Account::new(url, "valid".to_string(), vec![], Arc::clone(&key))
     } else {
         let gssapi_eab = if let Some(ref keytab) = args.eab.gssapi_keytab {
-            let eab_url = derive_eab_url(&args.server)?;
+            let eab_url = derive_eab_url(&dir_url)?;
             let result = fetch_eab_via_gssapi(
                 &eab_url,
                 keytab.to_str().ok_or("keytab path is not valid UTF-8")?,
@@ -657,7 +734,7 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
             .new_account(Arc::clone(&key), &opts)
             .await
             .map_err(|e| format!("register: {e}"))?;
-        save_account_url(&args.account_key, &acct.url)?;
+        save_account_url_for_ca(&args.account_key, args.ca.as_deref(), &acct.url)?;
         println!("Registered new account: {}", acct.url);
         acct
     };
@@ -1019,6 +1096,7 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
     // Write .renewal.toml sidecar so `akamu-cli renew --renewal-config` can reload all settings.
     let renewal_config = RenewalConfig {
         server: args.server.clone(),
+        ca: args.ca.clone(),
         domains: ids,
         account_key: args.account_key.clone(),
         account_key_type: args.key_type.clone(),
@@ -1085,11 +1163,13 @@ async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
         let cfg: RenewalConfig = toml::from_str(&toml_str)
             .map_err(|e| format!("parse {}: {e}", config_path.display()))?;
 
+        let cfg_dir_url = resolve_directory_url(&cfg.server, cfg.ca.as_deref());
+
         // Check ARI if --cert or cert_path from config exists and --force is not set.
         if !args.force {
             let cert_path = args.cert.as_deref().unwrap_or(&cfg.cert_path);
             if cert_path.exists() {
-                let client = AcmeClient::new(&cfg.server)
+                let client = AcmeClient::new(&cfg_dir_url)
                     .await
                     .map_err(|e| e.to_string())?;
                 let cert_pem = fs::read(cert_path)
@@ -1135,6 +1215,7 @@ async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
         };
         let issue_args = IssueArgs {
             server: cfg.server,
+            ca: cfg.ca,
             domains: cfg.domains.into_iter().map(|id| id.value).collect(),
             key_type: cfg.account_key_type,
             account_key: cfg.account_key,
@@ -1152,9 +1233,10 @@ async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
         return cmd_issue(issue_args).await;
     }
 
+    let dir_url = resolve_directory_url(&args.server, args.ca.as_deref());
     if !args.force {
         if let Some(cert_path) = &args.cert {
-            let client = AcmeClient::new(&args.server)
+            let client = AcmeClient::new(&dir_url)
                 .await
                 .map_err(|e| e.to_string())?;
             let cert_pem =
@@ -1197,6 +1279,7 @@ async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
     // Delegate to the issue flow by constructing IssueArgs.
     let issue_args = IssueArgs {
         server: args.server,
+        ca: args.ca,
         domains: args.domains,
         key_type: args.key_type,
         account_key: args.account_key,
@@ -1261,7 +1344,108 @@ async fn cmd_revoke(args: RevokeArgs) -> Result<(), String> {
     Ok(())
 }
 
+// ── ca list / ca show handlers ────────────────────────────────────────────────
+
+async fn cmd_ca_list(args: CaListArgs) -> Result<(), String> {
+    let base = strip_acme_path(&args.server);
+
+    if args.admin_url.is_some() {
+        eprintln!(
+            "Note: admin CA listing requires akamuctl. \
+             Showing the default CA reachable from the ACME directory."
+        );
+    }
+
+    // Discover the default CA by fetching its directory.
+    let dir_url = format!("{}/acme/directory", base);
+    AcmeClient::new(&dir_url)
+        .await
+        .map_err(|e| format!("could not fetch directory at {dir_url}: {e}"))?;
+
+    println!("{:<20} {:<8} {}", "ID", "DEFAULT", "DIRECTORY");
+    println!("{:<20} {:<8} {}", "default", "yes", dir_url);
+    println!();
+    println!("Use 'akamuctl ca list' for a full CA list when multiple CAs are configured.");
+    Ok(())
+}
+
+async fn cmd_ca_show(args: CaShowArgs) -> Result<(), String> {
+    let base = strip_acme_path(&args.server);
+    let dir_url = format!("{}/acme/{}/directory", base, args.ca);
+
+    AcmeClient::new(&dir_url)
+        .await
+        .map_err(|e| format!("could not connect to CA '{}' at {dir_url}: {e}", args.ca))?;
+
+    println!("CA:        {}", args.ca);
+    println!("Directory: {}", dir_url);
+    Ok(())
+}
+
+/// Strip the `/acme/...` suffix from a server URL to get the base URL.
+///
+/// `https://acme.example.com/acme/rsa/directory` → `https://acme.example.com`
+/// `https://acme.example.com/acme/directory`      → `https://acme.example.com`
+/// `https://acme.example.com`                     → `https://acme.example.com`
+fn strip_acme_path(url: &str) -> String {
+    // Find /acme/ prefix and strip everything from there.
+    if let Some(idx) = url.find("/acme/") {
+        url[..idx].to_string()
+    } else if let Some(stripped) = url.strip_suffix("/acme") {
+        stripped.to_string()
+    } else {
+        url.trim_end_matches('/').to_string()
+    }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Derive the ACME directory URL for a specific CA.
+///
+/// When `ca` is provided and `server` does not already end in `/directory`,
+/// returns `{server}/acme/{ca}/directory`.  Otherwise returns `server` as-is.
+fn resolve_directory_url(server: &str, ca: Option<&str>) -> String {
+    if server.ends_with("/directory") {
+        return server.to_owned();
+    }
+    match ca {
+        Some(ca_id) => {
+            let base = server.trim_end_matches('/');
+            format!("{base}/acme/{ca_id}/directory")
+        }
+        None => server.to_owned(),
+    }
+}
+
+/// Return the account URL sidecar path for a given account key and CA.
+///
+/// When `ca` is `Some(id)` and `id != "default"`, produces
+/// `<key>.<ca_id>.account-url` to isolate per-CA account registrations.
+/// Otherwise produces the legacy `<key>.account-url`.
+fn account_url_path_for_ca(key_path: &Path, ca: Option<&str>) -> PathBuf {
+    let mut p = key_path.to_path_buf();
+    let mut name = p.file_name().unwrap_or_default().to_os_string();
+    match ca {
+        Some(id) if id != "default" => {
+            name.push(format!(".{id}.account-url"));
+        }
+        _ => {
+            name.push(".account-url");
+        }
+    }
+    p.set_file_name(name);
+    p
+}
+
+fn save_account_url_for_ca(key_path: &Path, ca: Option<&str>, url: &str) -> Result<(), String> {
+    let p = account_url_path_for_ca(key_path, ca);
+    fs::write(&p, url).map_err(|e| format!("write {}: {e}", p.display()))
+}
+
+fn load_account_url_for_ca(key_path: &Path, ca: Option<&str>) -> Result<String, String> {
+    let p = account_url_path_for_ca(key_path, ca);
+    fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))
+}
 
 fn load_or_generate_key(path: &Path, key_type: &str) -> Result<AccountKey, String> {
     if path.exists() {
@@ -1280,22 +1464,8 @@ fn load_key(path: &Path) -> Result<AccountKey, String> {
     AccountKey::from_pem(&pem).map_err(|e| e.to_string())
 }
 
-fn account_url_path(key_path: &Path) -> PathBuf {
-    let mut p = key_path.to_path_buf();
-    let mut name = p.file_name().unwrap_or_default().to_os_string();
-    name.push(".account-url");
-    p.set_file_name(name);
-    p
-}
-
-fn save_account_url(key_path: &Path, url: &str) -> Result<(), String> {
-    let p = account_url_path(key_path);
-    fs::write(&p, url).map_err(|e| format!("write {}: {e}", p.display()))
-}
-
 fn load_account_url(key_path: &Path) -> Result<String, String> {
-    let p = account_url_path(key_path);
-    fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))
+    load_account_url_for_ca(key_path, None)
 }
 
 fn build_eab_options(flags: &EabFlags) -> Result<Option<(String, Vec<u8>, String)>, String> {

@@ -258,6 +258,7 @@ pub fn build_renewal_config(
 
     let config = RenewalConfig {
         server: renewal.server.clone(),
+        ca: None,
         domains: vec![Identifier::dns(domain)],
         account_key: account_key_path.to_path_buf(),
         account_key_type: "ec:P-256".into(),

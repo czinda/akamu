@@ -184,8 +184,14 @@ pub struct EabOptions<'a> {
 /// = "...")]` so that existing configs with fewer fields remain forward-compatible.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenewalConfig {
-    /// ACME directory URL.
+    /// ACME directory URL (base URL or full per-CA directory URL).
     pub server: String,
+    /// CA identifier for akamu multi-CA servers.
+    ///
+    /// When set, the directory URL is derived as `{server}/acme/{ca}/directory`.
+    /// Ignored when `server` already ends in `/directory`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca: Option<String>,
     /// Identifiers (domains or IPs) to certify.
     pub domains: Vec<Identifier>,
     /// Path to the account private key PEM.
