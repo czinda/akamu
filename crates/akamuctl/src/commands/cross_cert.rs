@@ -28,6 +28,15 @@ pub async fn list(
     Ok(())
 }
 
+/// Show cross-certificate metadata by UUID.
+pub async fn show(client: &AdminClient, fmt: &Format, id: &str) -> Result<(), CtlError> {
+    let resp = client
+        .get(&format!("/admin/cross-certs/{}", urlenc(id)))
+        .await?;
+    print(fmt, &resp);
+    Ok(())
+}
+
 /// Download a single cross-certificate PEM by its UUID.
 pub async fn download(
     client: &AdminClient,
