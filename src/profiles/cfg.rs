@@ -339,6 +339,7 @@ fn translate(
         auth_hook: None,
         auth_hook_timeout_secs: 30,
         require_account_grant: false,
+        ca_ids: vec![],
     })
 }
 

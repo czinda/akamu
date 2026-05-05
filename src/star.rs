@@ -118,8 +118,16 @@ async fn run_once(state: &Arc<AppState>) {
         );
 
         // Parse the stored CSR DER to get the identifiers.
-        let identifiers: Vec<serde_json::Value> =
-            serde_json::from_str(&order.identifiers).unwrap_or_default();
+        let identifiers: Vec<serde_json::Value> = match serde_json::from_str(&order.identifiers) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!(
+                    order_id = %order.id, error = %e,
+                    "STAR order has malformed identifiers JSON; skipping reissuance"
+                );
+                continue;
+            }
+        };
         let allowed: Vec<(&str, &str)> = identifiers
             .iter()
             .filter_map(|id| {
@@ -155,7 +163,8 @@ async fn run_once(state: &Arc<AppState>) {
         let Some(ca) = state.get_ca(&order.ca_id) else {
             tracing::error!(
                 "STAR order {}: unknown ca_id '{}', skipping",
-                order.id, order.ca_id
+                order.id,
+                order.ca_id
             );
             continue;
         };
@@ -216,8 +225,8 @@ async fn run_once(state: &Arc<AppState>) {
                 },
             )
             .await?;
-            let updated = db::orders::update_star_certificate(&mut *tx, &order.id, &cert_id, now)
-                .await?;
+            let updated =
+                db::orders::update_star_certificate(&mut *tx, &order.id, &cert_id, now).await?;
             if !updated {
                 tracing::info!(
                     "STAR order {}: order was canceled during reissuance, discarding new cert",

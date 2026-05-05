@@ -394,6 +394,12 @@ struct RevokeArgs {
     #[arg(long, default_value = "https://acme-v02.api.letsencrypt.org/directory")]
     server: String,
 
+    /// CA identifier for multi-CA servers.
+    /// When provided, the directory URL is derived as {server}/acme/{ca}/directory.
+    /// Ignored when --server already contains a full directory URL.
+    #[arg(long, value_name = "CA_ID")]
+    ca: Option<String>,
+
     /// PEM file for the account key
     #[arg(long)]
     account_key: PathBuf,
@@ -483,9 +489,7 @@ async fn cmd_register(args: RegisterArgs) -> Result<(), String> {
     let key = load_or_generate_key(&args.account_key, &args.key_type)?;
     let key = Arc::new(key);
 
-    let client = AcmeClient::new(&dir_url)
-        .await
-        .map_err(|e| e.to_string())?;
+    let client = AcmeClient::new(&dir_url).await.map_err(|e| e.to_string())?;
 
     let gssapi_eab = if let Some(ref keytab) = args.eab.gssapi_keytab {
         let eab_url = derive_eab_url(&dir_url)?;
@@ -547,9 +551,7 @@ async fn cmd_deregister(args: DeregisterArgs) -> Result<(), String> {
     let key = Arc::new(key);
     let account_url = load_account_url_for_ca(&args.account_key, args.ca.as_deref())?;
 
-    let client = AcmeClient::new(&dir_url)
-        .await
-        .map_err(|e| e.to_string())?;
+    let client = AcmeClient::new(&dir_url).await.map_err(|e| e.to_string())?;
 
     // Reconstruct a minimal Account with the stored URL.
     let account = akamu_client::Account::new(account_url.clone(), "valid".to_string(), vec![], key);
@@ -574,9 +576,7 @@ async fn cmd_show(args: ShowArgs) -> Result<(), String> {
     let key = Arc::new(key);
     let account_url = load_account_url_for_ca(&args.account_key, args.ca.as_deref())?;
 
-    let client = AcmeClient::new(&dir_url)
-        .await
-        .map_err(|e| e.to_string())?;
+    let client = AcmeClient::new(&dir_url).await.map_err(|e| e.to_string())?;
     let account = akamu_client::Account::new(account_url, "valid".into(), vec![], key);
     let account = client
         .get_account(&account)
@@ -603,9 +603,7 @@ async fn cmd_update(args: UpdateArgs) -> Result<(), String> {
     let key = Arc::new(key);
     let account_url = load_account_url_for_ca(&args.account_key, args.ca.as_deref())?;
 
-    let client = AcmeClient::new(&dir_url)
-        .await
-        .map_err(|e| e.to_string())?;
+    let client = AcmeClient::new(&dir_url).await.map_err(|e| e.to_string())?;
     let account = akamu_client::Account::new(account_url, "valid".into(), vec![], key);
     let contact_refs: Vec<&str> = args.contacts.iter().map(String::as_str).collect();
     let updated = client
@@ -631,9 +629,7 @@ async fn cmd_key_change(args: KeyChangeArgs) -> Result<(), String> {
     let new_key = load_or_generate_key(&args.new_key, &args.new_key_type)?;
     let new_key = Arc::new(new_key);
 
-    let client = AcmeClient::new(&dir_url)
-        .await
-        .map_err(|e| e.to_string())?;
+    let client = AcmeClient::new(&dir_url).await.map_err(|e| e.to_string())?;
     let account = akamu_client::Account::new(account_url.clone(), "valid".into(), vec![], old_key);
     let _updated = client
         .key_change(&account, Arc::clone(&new_key))
@@ -684,9 +680,7 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
     let key = load_or_generate_key(&args.account_key, &args.key_type)?;
     let key = Arc::new(key);
 
-    let client = AcmeClient::new(&dir_url)
-        .await
-        .map_err(|e| e.to_string())?;
+    let client = AcmeClient::new(&dir_url).await.map_err(|e| e.to_string())?;
 
     // Load existing account or register a new one.
     let account = if let Ok(url) = load_account_url_for_ca(&args.account_key, args.ca.as_deref()) {
@@ -1236,9 +1230,7 @@ async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
     let dir_url = resolve_directory_url(&args.server, args.ca.as_deref());
     if !args.force {
         if let Some(cert_path) = &args.cert {
-            let client = AcmeClient::new(&dir_url)
-                .await
-                .map_err(|e| e.to_string())?;
+            let client = AcmeClient::new(&dir_url).await.map_err(|e| e.to_string())?;
             let cert_pem =
                 fs::read(cert_path).map_err(|e| format!("read {}: {e}", cert_path.display()))?;
             match client.get_renewal_info(&cert_pem).await {
@@ -1316,9 +1308,8 @@ async fn cmd_revoke(args: RevokeArgs) -> Result<(), String> {
         .next()
         .ok_or_else(|| format!("no certificate found in {}", args.cert.display()))?;
 
-    let client = AcmeClient::new(&args.server)
-        .await
-        .map_err(|e| e.to_string())?;
+    let dir_url = resolve_directory_url(&args.server, args.ca.as_deref());
+    let client = AcmeClient::new(&dir_url).await.map_err(|e| e.to_string())?;
 
     if let Some(cert_key_path) = &args.cert_key {
         // Self-revocation: sign with the certificate's own private key.
@@ -1332,7 +1323,7 @@ async fn cmd_revoke(args: RevokeArgs) -> Result<(), String> {
         // Account-key revocation.
         let key = load_key(&args.account_key)?;
         let key = Arc::new(key);
-        let account_url = load_account_url(&args.account_key)?;
+        let account_url = load_account_url_for_ca(&args.account_key, args.ca.as_deref())?;
         let account = akamu_client::Account::new(account_url, "valid".into(), vec![], key);
         client
             .revoke_certificate(&account, &cert_der, args.reason)
@@ -1427,7 +1418,19 @@ fn account_url_path_for_ca(key_path: &Path, ca: Option<&str>) -> PathBuf {
     let mut name = p.file_name().unwrap_or_default().to_os_string();
     match ca {
         Some(id) if id != "default" => {
-            name.push(format!(".{id}.account-url"));
+            // Sanitize: strip any path separators or characters unsafe in filenames
+            // so a server-supplied CA ID cannot escape the intended directory.
+            let safe_id: String = id
+                .chars()
+                .map(|c| {
+                    if c.is_alphanumeric() || c == '-' || c == '_' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            name.push(format!(".{safe_id}.account-url"));
         }
         _ => {
             name.push(".account-url");

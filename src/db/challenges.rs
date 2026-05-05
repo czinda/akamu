@@ -169,6 +169,7 @@ mod tests {
                 created: 1_700_000_000,
                 updated: 1_700_000_000,
                 profile_grants: None,
+                ca_id: String::new(),
             },
         )
         .await
@@ -197,6 +198,7 @@ mod tests {
                 star_canceled_at: None,
                 star_csr_der: None,
                 profile: None,
+                ca_id: "default".to_string(),
             },
         )
         .await
@@ -215,6 +217,7 @@ mod tests {
                 subdomain_auth_allowed: 0,
                 created: 1_700_000_000,
                 updated: 1_700_000_000,
+                ca_id: "default".to_string(),
             },
         )
         .await

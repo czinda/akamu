@@ -416,7 +416,10 @@ mod tests {
                 max_connections: None,
                 require_tls: false,
             },
-            ca: CaConfig {
+            cas: vec![CaConfig {
+                id: "default".to_owned(),
+                is_default: true,
+                caa_identities: vec![],
                 key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
                 cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
                 key_type: "ec:P-256".into(),
@@ -431,7 +434,7 @@ mod tests {
                 enforce_validity_cap: false,
                 require_encrypted_key: false,
                 key_password_file: None,
-            },
+            }],
             mtc: MtcConfig {
                 log_path: "/dev/null".into(),
                 enabled: false,
@@ -448,11 +451,12 @@ mod tests {
             admin: None,
         });
 
-        let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
+        let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
         db::install_drivers();
         let db_conn = db::open("sqlite::memory:", 1, false).await.unwrap();
 
         let ca = Arc::new(CaState {
+            id: "default".into(),
             key: ca_key,
             cert_der: ca_cert_der,
             hash_alg: "sha256".into(),
@@ -461,13 +465,25 @@ mod tests {
             ocsp_url: None,
             aki_bytes: Vec::new(),
             enforce_validity_cap: false,
+            crl_next_update_secs: 604800,
+            caa_identities: vec![],
         });
         Arc::new(AppState {
             config: Arc::clone(&config),
             db: db_conn,
             db_kind: crate::db::DbKind::Sqlite,
             profiles: crate::profiles::ProfileRegistry::empty(&ca),
-            ca,
+            cas: {
+
+                let mut map = indexmap::IndexMap::new();
+
+                map.insert("default".to_string(), ca.clone());
+
+                Arc::new(map)
+
+            },
+
+            default_ca_id: Arc::new("default".to_string()),
             mtc: Arc::new(MtcState {
                 log: None,
                 algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
@@ -479,9 +495,13 @@ mod tests {
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
             nonces: Arc::new(NonceBucket::new()),
-            link_header: Arc::new(axum::http::HeaderValue::from_static(
-                "<https://acme.test/acme/directory>;rel=\"index\"",
-            )),
+            link_headers: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("default".to_string(), Arc::new(axum::http::HeaderValue::from_static(
+                    "<https://acme.test/acme/directory>;rel=\"index\"",
+                )));
+                Arc::new(m)
+            },
             validation_client: {
                 let https = hyper_rustls::HttpsConnectorBuilder::new()
                     .with_native_roots()
@@ -492,7 +512,11 @@ mod tests {
                 hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
                     .build(https)
             },
-            crl_cache: Default::default(),
+            crl_caches: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("default".to_string(), Default::default());
+                Arc::new(m)
+            },
             gss_cred: None,
             admin_gss_cred: None,
             eab_master_secret: None,
@@ -650,6 +674,7 @@ mod tests {
                 created: now,
                 updated: now,
                 profile_grants: None,
+                ca_id: String::new(),
             },
         )
         .await
@@ -678,6 +703,7 @@ mod tests {
                 star_canceled_at: None,
                 star_csr_der: None,
                 profile: None,
+                ca_id: "default".to_string(),
             },
         )
         .await
@@ -696,6 +722,7 @@ mod tests {
                 subdomain_auth_allowed: 0,
                 created: now,
                 updated: now,
+                ca_id: "default".to_string(),
             },
         )
         .await
@@ -765,6 +792,7 @@ mod tests {
                 created: now,
                 updated: now,
                 profile_grants: None,
+                ca_id: String::new(),
             },
         )
         .await
@@ -793,6 +821,7 @@ mod tests {
                 star_canceled_at: None,
                 star_csr_der: None,
                 profile: None,
+                ca_id: "default".to_string(),
             },
         )
         .await
@@ -811,6 +840,7 @@ mod tests {
                 subdomain_auth_allowed: 0,
                 created: now,
                 updated: now,
+                ca_id: "default".to_string(),
             },
         )
         .await
@@ -898,7 +928,10 @@ mod tests {
                 max_connections: None,
                 require_tls: false,
             },
-            ca: CaConfig {
+            cas: vec![CaConfig {
+                id: "default".to_owned(),
+                is_default: true,
+                caa_identities: vec![],
                 key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
                 cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
                 key_type: "ec:P-256".into(),
@@ -913,7 +946,7 @@ mod tests {
                 enforce_validity_cap: false,
                 require_encrypted_key: false,
                 key_password_file: None,
-            },
+            }],
             mtc: MtcConfig {
                 log_path: "/dev/null".into(),
                 enabled: false,
@@ -933,10 +966,11 @@ mod tests {
             profiles: Default::default(),
             admin: None,
         });
-        let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
+        let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
         db::install_drivers();
         let db_conn = db::open("sqlite::memory:", 1, false).await.unwrap();
         let ca = Arc::new(CaState {
+            id: "default".into(),
             key: ca_key,
             cert_der: ca_cert_der,
             hash_alg: "sha256".into(),
@@ -945,13 +979,25 @@ mod tests {
             ocsp_url: None,
             aki_bytes: Vec::new(),
             enforce_validity_cap: false,
+            crl_next_update_secs: 604800,
+            caa_identities: vec![],
         });
         let state = Arc::new(AppState {
             config: Arc::clone(&config),
             db: db_conn,
             db_kind: crate::db::DbKind::Sqlite,
             profiles: crate::profiles::ProfileRegistry::empty(&ca),
-            ca,
+            cas: {
+
+                let mut map = indexmap::IndexMap::new();
+
+                map.insert("default".to_string(), ca.clone());
+
+                Arc::new(map)
+
+            },
+
+            default_ca_id: Arc::new("default".to_string()),
             mtc: Arc::new(MtcState {
                 log: None,
                 algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
@@ -963,9 +1009,13 @@ mod tests {
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
             nonces: Arc::new(NonceBucket::new()),
-            link_header: Arc::new(axum::http::HeaderValue::from_static(
-                "<https://acme.test/acme/directory>;rel=\"index\"",
-            )),
+            link_headers: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("default".to_string(), Arc::new(axum::http::HeaderValue::from_static(
+                    "<https://acme.test/acme/directory>;rel=\"index\"",
+                )));
+                Arc::new(m)
+            },
             validation_client: {
                 let https = hyper_rustls::HttpsConnectorBuilder::new()
                     .with_native_roots()
@@ -976,7 +1026,11 @@ mod tests {
                 hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
                     .build(https)
             },
-            crl_cache: Default::default(),
+            crl_caches: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("default".to_string(), Default::default());
+                Arc::new(m)
+            },
             gss_cred: None,
             admin_gss_cred: None,
             eab_master_secret: None,
@@ -1006,6 +1060,7 @@ mod tests {
                 created: now,
                 updated: now,
                 profile_grants: None,
+                ca_id: String::new(),
             },
         )
         .await
@@ -1034,6 +1089,7 @@ mod tests {
                 star_canceled_at: None,
                 star_csr_der: None,
                 profile: None,
+                ca_id: "default".to_string(),
             },
         )
         .await
@@ -1052,6 +1108,7 @@ mod tests {
                 subdomain_auth_allowed: 0,
                 created: now,
                 updated: now,
+                ca_id: "default".to_string(),
             },
         )
         .await
@@ -1204,7 +1261,10 @@ mod tests {
                 max_connections: None,
                 require_tls: false,
             },
-            ca: CaConfig {
+            cas: vec![CaConfig {
+                id: "default".to_owned(),
+                is_default: true,
+                caa_identities: vec![],
                 key_file: dir.path().join("ca-p.key").to_string_lossy().into_owned(),
                 cert_file: dir.path().join("ca-p.crt").to_string_lossy().into_owned(),
                 key_type: "ec:P-256".into(),
@@ -1219,7 +1279,7 @@ mod tests {
                 enforce_validity_cap: false,
                 require_encrypted_key: false,
                 key_password_file: None,
-            },
+            }],
             mtc: MtcConfig {
                 log_path: "/dev/null".into(),
                 enabled: false,
@@ -1235,8 +1295,9 @@ mod tests {
             profiles: Default::default(),
             admin: None,
         });
-        let (ca_key, ca_cert_der) = crate::ca::init::load_or_generate(&config.ca).unwrap();
+        let (ca_key, ca_cert_der) = crate::ca::init::load_or_generate(config.default_ca()).unwrap();
         let ca = Arc::new(CaState {
+            id: "default".into(),
             key: ca_key,
             cert_der: ca_cert_der,
             hash_alg: "sha256".into(),
@@ -1245,13 +1306,25 @@ mod tests {
             ocsp_url: None,
             aki_bytes: Vec::new(),
             enforce_validity_cap: false,
+            crl_next_update_secs: 604800,
+            caa_identities: vec![],
         });
         Arc::new(AppState {
             config,
             db,
             db_kind: crate::db::DbKind::Sqlite,
             profiles: crate::profiles::ProfileRegistry::empty(&ca),
-            ca,
+            cas: {
+
+                let mut map = indexmap::IndexMap::new();
+
+                map.insert("default".to_string(), ca.clone());
+
+                Arc::new(map)
+
+            },
+
+            default_ca_id: Arc::new("default".to_string()),
             mtc: Arc::new(MtcState {
                 log: None,
                 algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
@@ -1263,9 +1336,13 @@ mod tests {
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
             nonces: Arc::new(NonceBucket::new()),
-            link_header: Arc::new(axum::http::HeaderValue::from_static(
-                "<https://acme.test/acme/directory>;rel=\"index\"",
-            )),
+            link_headers: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("default".to_string(), Arc::new(axum::http::HeaderValue::from_static(
+                    "<https://acme.test/acme/directory>;rel=\"index\"",
+                )));
+                Arc::new(m)
+            },
             validation_client: {
                 let https = hyper_rustls::HttpsConnectorBuilder::new()
                     .with_native_roots()
@@ -1276,7 +1353,11 @@ mod tests {
                 hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
                     .build(https)
             },
-            crl_cache: Default::default(),
+            crl_caches: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("default".to_string(), Default::default());
+                Arc::new(m)
+            },
             gss_cred: None,
             admin_gss_cred: None,
             eab_master_secret: None,
@@ -1310,6 +1391,7 @@ mod tests {
                 created: now,
                 updated: now,
                 profile_grants: None,
+                ca_id: String::new(),
             },
         )
         .await
@@ -1337,6 +1419,7 @@ mod tests {
                 star_canceled_at: None,
                 star_csr_der: None,
                 profile: None,
+                ca_id: "default".to_string(),
             },
         )
         .await
@@ -1354,6 +1437,7 @@ mod tests {
                 subdomain_auth_allowed: 0,
                 created: now,
                 updated: now,
+                ca_id: "default".to_string(),
             },
         )
         .await

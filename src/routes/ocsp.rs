@@ -27,8 +27,8 @@ use synta_certificate::{
 use crate::ca::init::unix_to_generalized_time;
 use crate::db;
 use crate::error::AcmeError;
-use crate::routes::unix_now;
-use crate::state::AppState;
+use crate::routes::{unix_now, CaId};
+use crate::state::{AppState, CaState};
 use crate::util::extract_ca_subject_der;
 
 /// GET /ca/ocsp/{request}
@@ -36,12 +36,16 @@ use crate::util::extract_ca_subject_der;
 /// `{request}` is a base64url-encoded DER OCSPRequest (RFC 6960 §A.1).
 pub async fn get_ocsp(
     State(state): State<Arc<AppState>>,
+    ca_id: CaId,
     Path(request): Path<String>,
 ) -> Result<Response, AcmeError> {
+    let ca = state
+        .get_ca(&ca_id.0)
+        .ok_or_else(|| AcmeError::Internal(format!("no CA for id '{}'", ca_id.0)))?;
     let der = URL_SAFE_NO_PAD
         .decode(request.as_bytes())
         .map_err(|_| AcmeError::BadRequest("OCSP GET: invalid base64url in path".into()))?;
-    let ocsp_der = handle_ocsp_request(&der, &state).await?;
+    let ocsp_der = handle_ocsp_request(&der, &state, ca).await?;
     Ok(ocsp_response(ocsp_der))
 }
 
@@ -68,15 +72,19 @@ const OCSP_UNKNOWN: u8 = 2;
 /// Body is a DER-encoded OCSPRequest; `Content-Type: application/ocsp-request`.
 pub async fn post_ocsp(
     State(state): State<Arc<AppState>>,
+    ca_id: CaId,
     body: Bytes,
 ) -> Result<Response, AcmeError> {
+    let ca = state
+        .get_ca(&ca_id.0)
+        .ok_or_else(|| AcmeError::Internal(format!("no CA for id '{}'", ca_id.0)))?;
     if body.len() > MAX_OCSP_POST_BYTES {
         return Err(AcmeError::BadRequest(format!(
             "OCSP POST body too large ({} bytes; max {MAX_OCSP_POST_BYTES})",
             body.len()
         )));
     }
-    let ocsp_der = handle_ocsp_request(&body, &state).await?;
+    let ocsp_der = handle_ocsp_request(&body, &state, ca).await?;
     Ok(ocsp_response(ocsp_der))
 }
 
@@ -94,7 +102,7 @@ struct CertEntry {
     issuer_key_hash: Vec<u8>,
 }
 
-async fn handle_ocsp_request(der: &[u8], state: &AppState) -> Result<Vec<u8>, AcmeError> {
+async fn handle_ocsp_request(der: &[u8], state: &AppState, ca: &CaState) -> Result<Vec<u8>, AcmeError> {
     use synta_certificate::ocsp_2024_88_types::OCSPRequest;
 
     // ── Step 1: parse request and extract all data into owned types ───────────
@@ -141,7 +149,7 @@ async fn handle_ocsp_request(der: &[u8], state: &AppState) -> Result<Vec<u8>, Ac
     let now = unix_now();
     let this_update = unix_to_generalized_time(now);
     let next_update = unix_to_generalized_time(now + 86400);
-    let subject_der = extract_ca_subject_der(&state.ca.cert_der)?;
+    let subject_der = extract_ca_subject_der(&ca.cert_der)?;
 
     // ── Step 1b: validate issuer hashes against this CA ──────────────────────
     // RFC 6960 §4.1.1: the client computes issuerNameHash and issuerKeyHash
@@ -151,7 +159,7 @@ async fn handle_ocsp_request(der: &[u8], state: &AppState) -> Result<Vec<u8>, Ac
     // request whose hashes don't match our CA's actual values for that algorithm.
     for entry in &entries {
         let (expected_name_hash, expected_key_hash) =
-            compute_issuer_hashes(&state.ca.cert_der, &entry.hash_alg_oid)?;
+            compute_issuer_hashes(&ca.cert_der, &entry.hash_alg_oid)?;
 
         if entry.issuer_name_hash != expected_name_hash
             || entry.issuer_key_hash != expected_key_hash
@@ -197,7 +205,7 @@ async fn handle_ocsp_request(der: &[u8], state: &AppState) -> Result<Vec<u8>, Ac
         .build_tbs()
         .map_err(|e| AcmeError::Builder(format!("OCSP TBS: {e}")))?;
 
-    let signer = state.ca.key.as_signer(&state.ca.hash_alg);
+    let signer = ca.key.as_signer(&ca.hash_alg);
     let sig_alg_der = signer
         .signature_algorithm_der()
         .map_err(|e| AcmeError::Crypto(format!("OCSP sig alg: {e}")))?;

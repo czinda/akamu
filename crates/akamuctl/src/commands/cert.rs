@@ -64,12 +64,9 @@ pub async fn download(
         urlenc(id),
         urlenc(format)
     );
-    let resp = client.get(&path).await?;
-    let content = resp
-        .as_str()
-        .ok_or_else(|| CtlError::Api("unexpected response format".into()))?;
+    let content = client.get_text(&path).await?;
     if let Some(out_path) = output {
-        std::fs::write(out_path, content)?;
+        std::fs::write(out_path, &content)?;
         println!("written to {}", out_path.display());
     } else {
         print!("{content}");

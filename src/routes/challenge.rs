@@ -28,25 +28,12 @@ pub async fn respond_challenge(
         .account_id
         .ok_or(AcmeError::Unauthorized("kid required".into()))?;
 
-    // Load the authorization and its challenges atomically (single JOIN round-trip),
-    // and mark the target challenge as "processing" if it is still "pending" —
-    // all within one transaction.
-    let now = unix_now();
-    let (authz, challenge) = {
-        let mut tx = db::begin_write(&state.db, state.db_kind).await?;
-        let (authz, challenges) = db::authz::get_with_challenges(&mut *tx, &authz_id)
-            .await?
-            .ok_or(AcmeError::NotFound)?;
-        let challenge = challenges
-            .into_iter()
-            .find(|c| c.r#type == chall_type)
-            .ok_or(AcmeError::NotFound)?;
-        if challenge.status == "pending" {
-            db::challenges::set_processing(&mut *tx, &challenge.id, now).await?;
-        }
-        tx.commit().await.map_err(AcmeError::from)?;
-        (authz, challenge)
-    };
+    // First read the authorization and validate ownership + CA context before
+    // any write. This prevents a TOCTOU where the challenge could be flipped to
+    // "processing" for an authz belonging to a different account or CA.
+    let (authz, _) = db::authz::get_with_challenges(&state.db, &authz_id)
+        .await?
+        .ok_or(AcmeError::NotFound)?;
 
     if authz.account_id != account_id {
         return Err(AcmeError::Unauthorized(
@@ -60,6 +47,9 @@ pub async fn respond_challenge(
         if order.ca_id != ca_id.0 {
             return Err(AcmeError::NotFound);
         }
+    } else if !authz.ca_id.is_empty() && authz.ca_id != "default" && authz.ca_id != ca_id.0 {
+        // Standalone pre-authz: enforce the CA namespace it was created under.
+        return Err(AcmeError::NotFound);
     }
     if authz.status != "pending" {
         return Err(AcmeError::BadRequest(format!(
@@ -67,6 +57,25 @@ pub async fn respond_challenge(
             authz.status
         )));
     }
+
+    // Now atomically find the target challenge and flip it to "processing" if
+    // still "pending". All checks above have passed.
+    let now = unix_now();
+    let challenge = {
+        let mut tx = db::begin_write(&state.db, state.db_kind).await?;
+        let (_authz, challenges) = db::authz::get_with_challenges(&mut *tx, &authz_id)
+            .await?
+            .ok_or(AcmeError::NotFound)?;
+        let challenge = challenges
+            .into_iter()
+            .find(|c| c.r#type == chall_type)
+            .ok_or(AcmeError::NotFound)?;
+        if challenge.status == "pending" {
+            db::challenges::set_processing(&mut *tx, &challenge.id, now).await?;
+        }
+        tx.commit().await.map_err(AcmeError::from)?;
+        challenge
+    };
 
     if challenge.status != "pending" {
         // Already processing or completed; return current state.

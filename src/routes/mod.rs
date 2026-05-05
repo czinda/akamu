@@ -501,10 +501,14 @@ pub(crate) fn new_nonce(state: &AppState) -> Result<String, AcmeError> {
 /// `state.default_ca_id.as_str()` on legacy routes that have no CA context.
 pub(crate) fn acme_headers(state: &AppState, ca_id: &str, nonce: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
-    headers.insert(
-        HeaderName::from_static("replay-nonce"),
-        HeaderValue::from_str(nonce).unwrap(),
-    );
+    match HeaderValue::from_str(nonce) {
+        Ok(v) => {
+            headers.insert(HeaderName::from_static("replay-nonce"), v);
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "nonce produced invalid header value; Replay-Nonce header omitted");
+        }
+    }
     if let Some(link) = state
         .link_headers
         .get(ca_id)

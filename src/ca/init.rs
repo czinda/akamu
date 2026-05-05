@@ -385,6 +385,9 @@ mod tests {
 
     fn make_config_with_paths(dir: &std::path::Path, key_type: &str) -> CaConfig {
         CaConfig {
+            id: "default".to_owned(),
+            is_default: true,
+            caa_identities: vec![],
             key_file: dir.join("ca.key").to_string_lossy().into_owned(),
             cert_file: dir.join("ca.crt").to_string_lossy().into_owned(),
             key_type: key_type.to_string(),

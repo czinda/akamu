@@ -187,6 +187,7 @@ impl AcmeError {
                 "urn:ietf:params:acme:error:autoRenewalRevocationNotSupported"
             }
             AcmeError::InvalidProfile(_) => "urn:ietf:params:acme:error:invalidProfile",
+            AcmeError::NotFound => "urn:ietf:params:acme:error:malformed",
             _ => "urn:ietf:params:acme:error:serverInternal",
         }
     }
@@ -362,10 +363,10 @@ mod tests {
             AcmeError::InvalidProfile("unknown".into()).acme_type(),
             "urn:ietf:params:acme:error:invalidProfile"
         );
-        // Internal/generic errors fall through to serverInternal
+        // NotFound maps to malformed (unknown resource identifier)
         assert_eq!(
             AcmeError::NotFound.acme_type(),
-            "urn:ietf:params:acme:error:serverInternal"
+            "urn:ietf:params:acme:error:malformed"
         );
         assert_eq!(
             AcmeError::Internal("x".into()).acme_type(),

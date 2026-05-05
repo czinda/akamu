@@ -141,6 +141,10 @@ pub struct CertificateParameters {
     /// When `true`, the requesting account must have this profile listed in its
     /// `profile_grants` attribute (managed via the admin API or EAB metadata).
     pub require_account_grant: bool,
+    /// CA IDs that this profile is restricted to.  Empty = available for all CAs.
+    /// Populated from `BuiltinProfileConfig.ca_ids`; Dogtag/IPA profiles always
+    /// use `vec![]` (no per-CA restriction).
+    pub ca_ids: Vec<String>,
 }
 
 impl CertificateParameters {
@@ -166,6 +170,7 @@ impl CertificateParameters {
             auth_hook: None,
             auth_hook_timeout_secs: 30,
             require_account_grant: false,
+            ca_ids: vec![],
         }
     }
 }
@@ -315,6 +320,35 @@ impl ProfileRegistry {
             .collect()
     }
 
+    /// Return `profile_id → description` pairs available for a specific CA.
+    ///
+    /// A profile is available for `ca_id` when its `ca_ids` list is empty
+    /// (unrestricted) or explicitly contains `ca_id`.
+    pub fn profiles_for_ca(&self, ca_id: &str) -> HashMap<String, String> {
+        self.cache
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .profiles
+            .iter()
+            .filter(|(_, (_, p))| p.ca_ids.is_empty() || p.ca_ids.iter().any(|id| id == ca_id))
+            .map(|(id, (desc, _))| (id.clone(), desc.clone()))
+            .collect()
+    }
+
+    /// Resolve a profile for a specific CA, respecting `ca_ids` restriction.
+    ///
+    /// Returns `None` when the profile does not exist or its `ca_ids` list
+    /// does not include `ca_id`.
+    pub fn resolve_for_ca(&self, profile_name: &str, ca_id: &str) -> Option<CertificateParameters> {
+        self.cache
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .profiles
+            .get(profile_name)
+            .filter(|(_, p)| p.ca_ids.is_empty() || p.ca_ids.iter().any(|id| id == ca_id))
+            .map(|(_, p)| p.clone())
+    }
+
     /// Return `true` when no profiles are currently cached.
     pub fn is_empty(&self) -> bool {
         self.cache
@@ -426,6 +460,123 @@ async fn load_all_providers(
     }
 
     Ok(merged)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::CaState;
+
+    fn make_ca() -> CaState {
+        CaState {
+            id: "default".into(),
+            key: synta_certificate::BackendPrivateKey::generate_ec("P-256").unwrap(),
+            cert_der: vec![],
+            hash_alg: "sha256".into(),
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            aki_bytes: vec![],
+            enforce_validity_cap: false,
+            crl_next_update_secs: 86400,
+            caa_identities: vec![],
+        }
+    }
+
+    fn empty_params(ca_ids: Vec<String>) -> CertificateParameters {
+        use synta_certificate::KEY_USAGE_DIGITAL_SIGNATURE;
+        CertificateParameters {
+            validity_days: 90,
+            hash_alg: "sha256".into(),
+            key_usage_bits: 1u16 << KEY_USAGE_DIGITAL_SIGNATURE,
+            extended_key_usages: vec!["server_auth".into()],
+            crl_url: None,
+            ocsp_url: None,
+            allowed_key_types: vec![],
+            certificate_policies: vec![],
+            issue_as_mtc: false,
+            allowed_identifier_patterns: vec![],
+            identifier_match_all: true,
+            auth_hook: None,
+            auth_hook_timeout_secs: 30,
+            require_account_grant: false,
+            ca_ids,
+        }
+    }
+
+    fn make_registry(profiles: HashMap<String, (String, CertificateParameters)>) -> Arc<ProfileRegistry> {
+        let ca = make_ca();
+        let reg = Arc::new(ProfileRegistry {
+            cache: RwLock::new(ProfileCache {
+                profiles,
+                loaded_at: Instant::now(),
+            }),
+            providers_cfg: ProfilesConfig::default(),
+            ca_defaults: CaDefaults::from_ca(&ca),
+            dns_resolver: None,
+        });
+        reg
+    }
+
+    #[test]
+    fn profiles_for_ca_unrestricted_appears_for_any_ca() {
+        let mut profiles = HashMap::new();
+        profiles.insert("global".into(), ("Global".into(), empty_params(vec![])));
+        let reg = make_registry(profiles);
+
+        let for_rsa = reg.profiles_for_ca("rsa");
+        assert!(for_rsa.contains_key("global"));
+
+        let for_ec = reg.profiles_for_ca("ec");
+        assert!(for_ec.contains_key("global"));
+    }
+
+    #[test]
+    fn profiles_for_ca_restricted_only_appears_for_matching_ca() {
+        let mut profiles = HashMap::new();
+        profiles.insert(
+            "rsa-only".into(),
+            ("RSA only".into(), empty_params(vec!["rsa".into()])),
+        );
+        let reg = make_registry(profiles);
+
+        let for_rsa = reg.profiles_for_ca("rsa");
+        assert!(for_rsa.contains_key("rsa-only"));
+
+        let for_ec = reg.profiles_for_ca("ec");
+        assert!(!for_ec.contains_key("rsa-only"));
+    }
+
+    #[test]
+    fn resolve_for_ca_restricted_returns_none_for_wrong_ca() {
+        let mut profiles = HashMap::new();
+        profiles.insert(
+            "ec-only".into(),
+            ("EC only".into(), empty_params(vec!["ec".into()])),
+        );
+        let reg = make_registry(profiles);
+
+        assert!(reg.resolve_for_ca("ec-only", "ec").is_some());
+        assert!(reg.resolve_for_ca("ec-only", "rsa").is_none());
+        assert!(reg.resolve_for_ca("ec-only", "default").is_none());
+    }
+
+    #[test]
+    fn resolve_for_ca_unrestricted_resolves_for_any_ca() {
+        let mut profiles = HashMap::new();
+        profiles.insert("any".into(), ("Any CA".into(), empty_params(vec![])));
+        let reg = make_registry(profiles);
+
+        assert!(reg.resolve_for_ca("any", "rsa").is_some());
+        assert!(reg.resolve_for_ca("any", "ec").is_some());
+        assert!(reg.resolve_for_ca("any", "default").is_some());
+    }
+
+    #[test]
+    fn resolve_for_ca_missing_profile_returns_none() {
+        let reg = make_registry(HashMap::new());
+        assert!(reg.resolve_for_ca("nonexistent", "default").is_none());
+    }
 }
 
 /// Return `true` when at least one provider uses SRV-based LDAP discovery.

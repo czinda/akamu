@@ -101,6 +101,7 @@ pub async fn create_session(
     operator_id: i64,
     name: String,
     role: OperatorRole,
+    ca_id: String,
     auth_method: AdminAuthMethod,
 ) -> Result<String, crate::error::AcmeError> {
     let token = generate_token().map_err(crate::error::AcmeError::Internal)?;
@@ -108,6 +109,7 @@ pub async fn create_session(
         operator_id,
         name: zeroize::Zeroizing::new(name),
         role,
+        ca_id,
         created_at: Instant::now(),
         last_active_at: Instant::now(),
         auth_method,
@@ -145,7 +147,7 @@ pub async fn create_session(
 /// Result of a session token lookup.
 enum SessionLookup {
     /// Session is valid and active; contains operator details.
-    Active(i64, String, OperatorRole, AdminAuthMethod),
+    Active(i64, String, OperatorRole, String, AdminAuthMethod),
     /// Session exists but is locked due to inactivity (FTA_SSL_EXT.1).
     Locked,
     /// Token is absent, expired, or invalid.
@@ -185,6 +187,7 @@ async fn lookup_session(state: &AppState, token: &str) -> SessionLookup {
         session.operator_id,
         String::clone(&session.name),
         session.role,
+        session.ca_id.clone(),
         session.auth_method,
     )
 }
@@ -208,6 +211,8 @@ pub struct OperatorContext {
     pub operator_id: i64,
     pub name: String,
     pub role: OperatorRole,
+    /// CA scope for `ca_ra` operators.  Empty string means server-wide.
+    pub ca_id: String,
     pub auth_method: AdminAuthMethod,
     /// The session token for this request (used by DELETE /admin/session).
     pub session_token: Option<String>,
@@ -309,11 +314,12 @@ where
         // ── Path 1: Bearer session token ──────────────────────────────────────
         if let Some(token) = auth_header.strip_prefix("Bearer ") {
             match lookup_session(&app, token).await {
-                SessionLookup::Active(id, name, role, method) => {
+                SessionLookup::Active(id, name, role, ca_id, method) => {
                     return Ok(OperatorContext {
                         operator_id: id,
                         name,
                         role,
+                        ca_id,
                         auth_method: method,
                         session_token: Some(token.to_string()),
                     });
@@ -356,13 +362,19 @@ where
                         tracing::warn!(error = %e, operator_id = op.id, "failed to reset auth failure counter");
                     }
                     // Issue a session token for subsequent requests.
-                    let token =
-                        create_session(&app, op.id, op.name.clone(), role, AdminAuthMethod::Cert)
-                            .await
-                            .map_err(|e| {
-                                tracing::error!(error = %e, "session creation failed");
-                                StatusCode::INTERNAL_SERVER_ERROR.into_response()
-                            })?;
+                    let token = create_session(
+                        &app,
+                        op.id,
+                        op.name.clone(),
+                        role,
+                        op.ca_id.clone(),
+                        AdminAuthMethod::Cert,
+                    )
+                    .await
+                    .map_err(|e| {
+                        tracing::error!(error = %e, "session creation failed");
+                        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                    })?;
                     let ts_str = crate::util::rfc3339_now();
                     if let Err(e) = db::operators::update_last_seen(&app.db, op.id, &ts_str).await {
                         tracing::warn!(error = %e, operator_id = op.id, "failed to update last_seen_at");
@@ -379,6 +391,7 @@ where
                         operator_id: op.id,
                         name: op.name,
                         role,
+                        ca_id: op.ca_id,
                         auth_method: AdminAuthMethod::Cert,
                         session_token: Some(token),
                     });
@@ -541,12 +554,19 @@ async fn authenticate_gssapi(
             if let Err(e) = db::operators::reset_failed(&app.db, op.id).await {
                 tracing::warn!(error = %e, operator_id = op.id, "failed to reset auth failure counter");
             }
-            let token = create_session(app, op.id, op.name.clone(), role, AdminAuthMethod::Gssapi)
-                .await
-                .map_err(|e| {
-                    tracing::error!(error = %e, "session creation failed");
-                    StatusCode::INTERNAL_SERVER_ERROR.into_response()
-                })?;
+            let token = create_session(
+                app,
+                op.id,
+                op.name.clone(),
+                role,
+                op.ca_id.clone(),
+                AdminAuthMethod::Gssapi,
+            )
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "session creation failed");
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            })?;
             let ts_str = crate::util::rfc3339_now();
             if let Err(e) = db::operators::update_last_seen(&app.db, op.id, &ts_str).await {
                 tracing::warn!(error = %e, operator_id = op.id, "failed to update last_seen_at");
@@ -569,6 +589,7 @@ async fn authenticate_gssapi(
                 operator_id: op.id,
                 name: op.name,
                 role,
+                ca_id: op.ca_id,
                 auth_method: AdminAuthMethod::Gssapi,
                 session_token: Some(token),
             })

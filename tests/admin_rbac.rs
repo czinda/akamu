@@ -34,7 +34,13 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
             max_connections: None,
             require_tls: false,
         },
-        ca: CaConfig {
+        cas: vec![CaConfig {
+
+            id: "default".to_owned(),
+
+            is_default: true,
+
+            caa_identities: vec![],
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
             cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
             key_type: "ec:P-256".into(),
@@ -49,7 +55,7 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
             enforce_validity_cap: false,
             require_encrypted_key: false,
             key_password_file: None,
-        },
+        }],
         mtc: MtcConfig {
             log_path: "/dev/null".into(),
             enabled: false,
@@ -87,13 +93,15 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         }),
     });
 
-    let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
+    let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
     let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();
     let ca_aki_bytes = ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
     db::install_drivers();
     let db_conn = db::open("sqlite::memory:", 1, false).await.unwrap();
 
     let ca = Arc::new(CaState {
+        id: "default".into(),
+        crl_next_update_secs: 86400,
         key: ca_key,
         cert_der: ca_cert_der,
         hash_alg: "sha256".into(),
@@ -102,6 +110,7 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         ocsp_url: None,
         aki_bytes: ca_aki_bytes,
         enforce_validity_cap: false,
+        caa_identities: vec![],
     });
 
     let sessions: Arc<tokio::sync::Mutex<HashMap<String, AdminSession>>> =
@@ -112,7 +121,12 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         db: db_conn,
         db_kind: db::DbKind::Sqlite,
         profiles: akamu::profiles::ProfileRegistry::empty(&ca),
-        ca,
+        cas: {
+            let mut _ca_map = indexmap::IndexMap::new();
+            _ca_map.insert("default".to_string(), ca.clone());
+            Arc::new(_ca_map)
+        },
+        default_ca_id: Arc::new("default".to_string()),
         mtc: Arc::new(MtcState {
             log: None,
             algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
@@ -124,9 +138,17 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),
-        link_header: Arc::new(axum::http::HeaderValue::from_static(
+        link_headers: Arc::new({
+
+            let mut _lh_map = std::collections::HashMap::new();
+
+            _lh_map.insert("default".to_string(), Arc::new(axum::http::HeaderValue::from_static(
             "<https://acme.test/acme/directory>;rel=\"index\"",
-        )),
+        )));
+
+            _lh_map
+
+        }),
         validation_client: {
             let https = hyper_rustls::HttpsConnectorBuilder::new()
                 .with_native_roots()
@@ -137,7 +159,15 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
                 .build(https)
         },
-        crl_cache: Default::default(),
+        crl_caches: Arc::new({
+
+            let mut _crl_map = std::collections::HashMap::new();
+
+            _crl_map.insert("default".to_string(), Default::default());
+
+            _crl_map
+
+        }),
         audit: Arc::new(akamu::audit::AuditState::new()),
         audit_policy: Arc::new(akamu::audit::AuditPolicy::default()),
         admin_sessions: Some(Arc::clone(&sessions)),
@@ -166,6 +196,7 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
                     created_at: Instant::now(),
                     last_active_at: Instant::now(),
                     auth_method: AdminAuthMethod::Cert,
+                    ca_id: String::new(),
                 },
             );
         }
@@ -342,6 +373,7 @@ async fn admin_rbac_table() {
                         created_at: Instant::now(),
                         last_active_at: Instant::now(),
                         auth_method: akamu::state::AdminAuthMethod::Cert,
+                        ca_id: String::new(),
                     },
                 );
             }

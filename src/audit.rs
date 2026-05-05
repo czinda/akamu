@@ -370,9 +370,14 @@ pub async fn record(
         }
     }
 
-    tx.commit()
-        .await
-        .map_err(|e| AcmeError::Database(format!("commit audit transaction: {e}")))?;
+    if let Err(e) = tx.commit().await {
+        // Transaction failed — decrement the counter that was incremented optimistically
+        // above so it does not permanently drift ahead of the actual DB row count.
+        if state.row_count.load(Ordering::Acquire) > 0 {
+            state.row_count.fetch_sub(1, Ordering::AcqRel);
+        }
+        return Err(AcmeError::Database(format!("commit audit transaction: {e}")));
+    }
 
     // FAU_ARP.1: rolling-window alarm for repeated SecurityViolation events.
     if is_violation {

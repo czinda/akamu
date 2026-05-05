@@ -1,4 +1,4 @@
-//! GET /acme/directory — RFC 8555 §7.1.1
+//! GET /acme/directory and GET /acme/{ca_id}/directory — RFC 8555 §7.1.1
 
 use std::sync::Arc;
 
@@ -9,8 +9,15 @@ use serde_json::json;
 
 use crate::state::AppState;
 
-pub async fn get_directory(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+use super::{acme_prefix, CaId};
+
+pub async fn get_directory(State(state): State<Arc<AppState>>, ca_id: CaId) -> impl IntoResponse {
     let base = &state.config.base_url;
+    let pfx = acme_prefix(base, &ca_id.0, &state.default_ca_id);
+    let ca = state
+        .get_ca(&ca_id.0)
+        .expect("CaId extractor guarantees CA exists");
+
     let mut meta = json!({});
     if let Some(tos) = &state.config.server.terms_of_service_url {
         meta["termsOfService"] = json!(tos);
@@ -18,8 +25,14 @@ pub async fn get_directory(State(state): State<Arc<AppState>>) -> impl IntoRespo
     if let Some(website) = &state.config.server.website_url {
         meta["website"] = json!(website);
     }
-    if !state.config.server.caa_identities.is_empty() {
-        meta["caaIdentities"] = json!(state.config.server.caa_identities);
+    // CAA identities: CA-level first, fall back to server-level.
+    let caa = if !ca.caa_identities.is_empty() {
+        &ca.caa_identities
+    } else {
+        &state.config.server.caa_identities
+    };
+    if !caa.is_empty() {
+        meta["caaIdentities"] = json!(caa);
     }
     if state.config.server.external_account_required {
         meta["externalAccountRequired"] = json!(true);
@@ -37,19 +50,19 @@ pub async fn get_directory(State(state): State<Arc<AppState>>) -> impl IntoRespo
         }
         meta["auto-renewal"] = auto_renewal;
     }
-    let loaded_profiles = state.profiles.all_profiles();
+    let loaded_profiles = state.profiles.profiles_for_ca(&ca_id.0);
     if !loaded_profiles.is_empty() {
         meta["profiles"] = json!(loaded_profiles);
     }
 
     let dir = json!({
-        "newNonce":    format!("{base}/acme/new-nonce"),
-        "newAccount":  format!("{base}/acme/new-account"),
-        "newOrder":    format!("{base}/acme/new-order"),
-        "newAuthz":    format!("{base}/acme/new-authz"),
-        "revokeCert":  format!("{base}/acme/revoke-cert"),
-        "keyChange":   format!("{base}/acme/key-change"),
-        "renewalInfo": format!("{base}/acme/renewal-info"),
+        "newNonce":    format!("{pfx}/new-nonce"),
+        "newAccount":  format!("{pfx}/new-account"),
+        "newOrder":    format!("{pfx}/new-order"),
+        "newAuthz":    format!("{pfx}/new-authz"),
+        "revokeCert":  format!("{pfx}/revoke-cert"),
+        "keyChange":   format!("{pfx}/key-change"),
+        "renewalInfo": format!("{pfx}/renewal-info"),
         "meta": meta,
     });
     Json(dir)

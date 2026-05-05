@@ -27,6 +27,9 @@ pub struct OperatorRow {
     pub failed_attempts: i64,
     /// RFC 3339 timestamp until which the account is locked, or `None` when not locked.
     pub locked_until: Option<String>,
+    /// CA scope for `ca_ra` operators.  Empty string means server-wide (no restriction).
+    /// Ignored for all roles other than `ca_ra`.
+    pub ca_id: String,
 }
 
 /// Insert a new operator.
@@ -42,12 +45,13 @@ pub async fn insert(
     role: &str,
     cert_fingerprint: Option<&str>,
     gssapi_principal: Option<&str>,
+    ca_id: &str,
     now: &str,
 ) -> Result<(), AcmeError> {
     sqlx::query(
         "INSERT INTO operators \
-         (name, role, cert_fingerprint, gssapi_principal, created_at, active) \
-         VALUES (?, ?, ?, ?, ?, ?)",
+         (name, role, cert_fingerprint, gssapi_principal, created_at, active, ca_id) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(name)
     .bind(role)
@@ -55,6 +59,7 @@ pub async fn insert(
     .bind(gssapi_principal)
     .bind(now)
     .bind(1i64)
+    .bind(ca_id)
     .execute(executor)
     .await?;
     Ok(())
@@ -67,7 +72,7 @@ pub async fn get_by_fingerprint(
 ) -> Result<Option<OperatorRow>, AcmeError> {
     let row = sqlx::query_as::<_, OperatorRow>(
         "SELECT id, name, role, cert_fingerprint, gssapi_principal, \
-         created_at, last_seen_at, active, failed_attempts, locked_until \
+         created_at, last_seen_at, active, failed_attempts, locked_until, ca_id \
          FROM operators WHERE cert_fingerprint = ? AND active = ?",
     )
     .bind(fingerprint)
@@ -84,7 +89,7 @@ pub async fn get_by_principal(
 ) -> Result<Option<OperatorRow>, AcmeError> {
     let row = sqlx::query_as::<_, OperatorRow>(
         "SELECT id, name, role, cert_fingerprint, gssapi_principal, \
-         created_at, last_seen_at, active, failed_attempts, locked_until \
+         created_at, last_seen_at, active, failed_attempts, locked_until, ca_id \
          FROM operators WHERE gssapi_principal = ? AND active = ?",
     )
     .bind(principal)
@@ -107,12 +112,13 @@ pub async fn insert_if_absent(
     role: &str,
     cert_fingerprint: Option<&str>,
     gssapi_principal: Option<&str>,
+    ca_id: &str,
     now: &str,
 ) -> Result<bool, AcmeError> {
     let result = sqlx::query(
         "INSERT INTO operators \
-         (name, role, cert_fingerprint, gssapi_principal, created_at, active) \
-         SELECT ?, ?, ?, ?, ?, ? \
+         (name, role, cert_fingerprint, gssapi_principal, created_at, active, ca_id) \
+         SELECT ?, ?, ?, ?, ?, ?, ? \
          WHERE NOT EXISTS (SELECT 1 FROM operators WHERE name = ?)",
     )
     .bind(name)
@@ -121,6 +127,7 @@ pub async fn insert_if_absent(
     .bind(gssapi_principal)
     .bind(now)
     .bind(1i64)
+    .bind(ca_id)
     .bind(name)
     .execute(executor)
     .await?;
@@ -148,7 +155,7 @@ pub async fn list(
 ) -> Result<Vec<OperatorRow>, AcmeError> {
     let rows = sqlx::query_as::<_, OperatorRow>(
         "SELECT id, name, role, cert_fingerprint, gssapi_principal, \
-         created_at, last_seen_at, active, failed_attempts, locked_until \
+         created_at, last_seen_at, active, failed_attempts, locked_until, ca_id \
          FROM operators ORDER BY id ASC LIMIT ? OFFSET ?",
     )
     .bind(limit)
@@ -183,7 +190,7 @@ pub async fn get_by_id(
 ) -> Result<Option<OperatorRow>, AcmeError> {
     let row = sqlx::query_as::<_, OperatorRow>(
         "SELECT id, name, role, cert_fingerprint, gssapi_principal, \
-         created_at, last_seen_at, active, failed_attempts, locked_until \
+         created_at, last_seen_at, active, failed_attempts, locked_until, ca_id \
          FROM operators WHERE id = ?",
     )
     .bind(id)
@@ -322,6 +329,7 @@ mod tests {
             "administrator",
             Some("aabbcc"),
             None,
+            "",
             "2026-01-01T00:00:00Z",
         )
         .await
@@ -341,6 +349,7 @@ mod tests {
             "auditor",
             None,
             Some("bob@REALM"),
+            "",
             "2026-01-01T00:00:00Z",
         )
         .await
@@ -365,6 +374,7 @@ mod tests {
             "administrator",
             Some("fp-a"),
             None,
+            "",
             "2026-01-01T00:00:00Z",
         )
         .await
@@ -375,6 +385,7 @@ mod tests {
             "auditor",
             None,
             Some("bob@REALM"),
+            "",
             "2026-01-01T00:00:00Z",
         )
         .await
@@ -392,6 +403,7 @@ mod tests {
             "administrator",
             Some("fp-b"),
             None,
+            "",
             "2026-01-01T00:00:00Z",
         )
         .await
@@ -413,6 +425,7 @@ mod tests {
             "ca_ra",
             Some("fp-c"),
             None,
+            "",
             "2026-01-01T00:00:00Z",
         )
         .await

@@ -8,8 +8,8 @@ pub async fn insert(
     sqlx::query(
         "INSERT INTO authorizations
          (id, order_id, account_id, status, identifier, expires, wildcard,
-          subdomain_auth_allowed, created, updated)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          subdomain_auth_allowed, created, updated, ca_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&row.id)
     .bind(&row.order_id)
@@ -21,6 +21,7 @@ pub async fn insert(
     .bind(row.subdomain_auth_allowed)
     .bind(row.created)
     .bind(row.updated)
+    .bind(&row.ca_id)
     .execute(executor)
     .await?;
     Ok(())
@@ -32,7 +33,7 @@ pub async fn get_by_id(
 ) -> Result<Option<AuthorizationRow>, AcmeError> {
     let row = sqlx::query_as::<_, AuthorizationRow>(
         "SELECT id, order_id, account_id, status, identifier, expires, wildcard,
-                subdomain_auth_allowed, created, updated
+                subdomain_auth_allowed, created, updated, ca_id
          FROM authorizations WHERE id = ?",
     )
     .bind(id)
@@ -47,7 +48,7 @@ pub async fn list_by_order(
 ) -> Result<Vec<AuthorizationRow>, AcmeError> {
     let rows = sqlx::query_as::<_, AuthorizationRow>(
         "SELECT id, order_id, account_id, status, identifier, expires, wildcard,
-                subdomain_auth_allowed, created, updated
+                subdomain_auth_allowed, created, updated, ca_id
          FROM authorizations WHERE order_id = ?",
     )
     .bind(order_id)
@@ -80,6 +81,7 @@ pub async fn get_with_challenges(
         subdomain_auth_allowed: i64,
         authz_created: i64,
         authz_updated: i64,
+        authz_ca_id: String,
         // Challenge columns (all nullable: LEFT JOIN returns NULL when no challenges)
         chall_id: Option<String>,
         chall_type: Option<String>,
@@ -103,6 +105,7 @@ pub async fn get_with_challenges(
              a.subdomain_auth_allowed,
              a.created     AS authz_created,
              a.updated     AS authz_updated,
+             a.ca_id       AS authz_ca_id,
              c.id          AS chall_id,
              c.type        AS chall_type,
              c.status      AS chall_status,
@@ -136,6 +139,7 @@ pub async fn get_with_challenges(
         subdomain_auth_allowed: first.subdomain_auth_allowed,
         created: first.authz_created,
         updated: first.authz_updated,
+        ca_id: first.authz_ca_id.clone(),
     };
 
     let challenges: Vec<ChallengeRow> = rows
@@ -166,20 +170,23 @@ pub async fn find_valid_by_account_and_identifier(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     account_id: &str,
     identifier_json: &str,
+    ca_id: &str,
     now: i64,
 ) -> Result<Option<AuthorizationRow>, AcmeError> {
     let row = sqlx::query_as::<_, AuthorizationRow>(
         "SELECT id, order_id, account_id, status, identifier, expires, wildcard,
-                subdomain_auth_allowed, created, updated
+                subdomain_auth_allowed, created, updated, ca_id
          FROM authorizations
          WHERE account_id = ?
            AND identifier = ?
+           AND (ca_id = ? OR ca_id = 'default' OR ca_id = '')
            AND status IN ('pending', 'valid')
            AND (expires IS NULL OR expires > ?)
          LIMIT 1",
     )
     .bind(account_id)
     .bind(identifier_json)
+    .bind(ca_id)
     .bind(now)
     .fetch_optional(executor)
     .await?;
@@ -225,6 +232,7 @@ mod tests {
                 created: 1_700_000_000,
                 updated: 1_700_000_000,
                 profile_grants: None,
+                ca_id: String::new(),
             },
         )
         .await
@@ -253,6 +261,7 @@ mod tests {
                 star_canceled_at: None,
                 star_csr_der: None,
                 profile: None,
+                ca_id: "default".to_string(),
             },
         )
         .await
@@ -271,6 +280,7 @@ mod tests {
             subdomain_auth_allowed: 0,
             created: 1_700_000_000,
             updated: 1_700_000_000,
+            ca_id: "default".to_string(),
         }
     }
 
@@ -315,6 +325,7 @@ mod tests {
                 subdomain_auth_allowed: 0,
                 created: 1_700_000_000,
                 updated: 1_700_000_000,
+                ca_id: "default".to_string(),
             },
         )
         .await

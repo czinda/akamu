@@ -13,9 +13,13 @@ migration 0007 onward:
 | 0007   | 0006               | profile_grants          |
 | 0008   | 0007               | audit_events            |
 | 0009   | 0008               | operators               |
+| 0010   | 0009               | cert_subject_dn         |
+| 0011   | 0010               | operator_lockout        |
+| 0012   | 0011               | multi_ca                |
+| 0013   | 0012               | cross_certs             |
 
 **Rule for future migrations:**
-- SQLite: use the next number in `migrations/sqlite/` (currently `0010_…`)
-- Postgres and MariaDB: use the next number in their directories (currently `0009_…`)
+- SQLite: use the next number in `migrations/sqlite/` (currently `0014_…`)
+- Postgres and MariaDB: use the next number in their directories (currently `0013_…`)
 
 The divergence is intentional and permanent.  Do not attempt to renumber.

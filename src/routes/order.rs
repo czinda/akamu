@@ -329,7 +329,7 @@ pub async fn new_order(
 
         let identifier_json =
             serde_json::to_string(&json!({"type": authz_type, "value": authz_value})).unwrap();
-        let token = gen_token();
+        let token = gen_token()?;
         // dns-persist-01 is offered only when the operator has explicitly configured
         // an issuer domain — without it the challenge cannot be validated.
         let dns_persist_enabled = !state.config.server.dns_persist_issuer_domains.is_empty();
@@ -438,6 +438,7 @@ pub async fn new_order(
                     subdomain_auth_allowed: i64::from(plan.subdomain_auth_allowed),
                     created: now,
                     updated: now,
+                    ca_id: ca_id.0.clone(),
                 },
             )
             .await?;
@@ -698,12 +699,13 @@ fn is_onion_domain(value: &str) -> bool {
     value.to_ascii_lowercase().ends_with(".onion")
 }
 
-fn gen_token() -> String {
+fn gen_token() -> Result<String, AcmeError> {
     let mut bytes = [0u8; 32];
-    getrandom::getrandom(&mut bytes).expect("CSPRNG failure — cannot generate challenge token");
+    getrandom::getrandom(&mut bytes)
+        .map_err(|e| AcmeError::Internal(format!("CSPRNG failure: {e}")))?;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
-    URL_SAFE_NO_PAD.encode(bytes)
+    Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 
 #[cfg(test)]
@@ -817,7 +819,7 @@ mod tests {
 
     #[test]
     fn gen_token_returns_non_empty_string() {
-        let t = gen_token();
+        let t = gen_token().expect("CSPRNG available in test");
         assert!(!t.is_empty());
         // Should be base64url without padding — only alphanumeric, '-', '_'
         assert!(t

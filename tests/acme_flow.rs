@@ -198,7 +198,13 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             max_connections: None,
             require_tls: false,
         },
-        ca: CaConfig {
+        cas: vec![CaConfig {
+
+            id: "default".to_owned(),
+
+            is_default: true,
+
+            caa_identities: vec![],
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
             cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
             key_type: "ec:P-256".into(),
@@ -213,7 +219,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             enforce_validity_cap: false,
             require_encrypted_key: false,
             key_password_file: None,
-        },
+        }],
         mtc: MtcConfig {
             log_path: "/dev/null".into(),
             enabled: false,
@@ -230,13 +236,15 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         admin: None,
     });
 
-    let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
+    let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
     let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();
     let ca_aki_bytes = ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
     db::install_drivers();
     let db_conn = db::open("sqlite::memory:", 1, false).await.unwrap();
 
     let ca = Arc::new(CaState {
+        id: "default".into(),
+        crl_next_update_secs: 86400,
         key: ca_key,
         cert_der: ca_cert_der,
         hash_alg: "sha256".into(),
@@ -245,13 +253,19 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         ocsp_url: None,
         aki_bytes: ca_aki_bytes,
         enforce_validity_cap: false,
+        caa_identities: vec![],
     });
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db_conn.clone(),
         db_kind: db::DbKind::Sqlite,
         profiles: akamu::profiles::ProfileRegistry::empty(&ca),
-        ca,
+        cas: {
+            let mut _ca_map = indexmap::IndexMap::new();
+            _ca_map.insert("default".to_string(), ca.clone());
+            Arc::new(_ca_map)
+        },
+        default_ca_id: Arc::new("default".to_string()),
         mtc: Arc::new(MtcState {
             log: None,
             algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
@@ -263,9 +277,17 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),
-        link_header: Arc::new(axum::http::HeaderValue::from_static(
+        link_headers: Arc::new({
+
+            let mut _lh_map = std::collections::HashMap::new();
+
+            _lh_map.insert("default".to_string(), Arc::new(axum::http::HeaderValue::from_static(
             "<https://acme.test/acme/directory>;rel=\"index\"",
-        )),
+        )));
+
+            _lh_map
+
+        }),
         validation_client: {
             let https = hyper_rustls::HttpsConnectorBuilder::new()
                 .with_native_roots()
@@ -276,7 +298,15 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
                 .build(https)
         },
-        crl_cache: Default::default(),
+        crl_caches: Arc::new({
+
+            let mut _crl_map = std::collections::HashMap::new();
+
+            _crl_map.insert("default".to_string(), Default::default());
+
+            _crl_map
+
+        }),
         audit: std::sync::Arc::new(akamu::audit::AuditState::new()),
         audit_policy: std::sync::Arc::new(akamu::audit::AuditPolicy::default()),
         admin_sessions: None,
@@ -400,7 +430,7 @@ async fn mark_order_ready(db: &akamu::db::Db, order_id: &str) {
 
 /// Build a minimal RFC 9773 cert_id for a certificate identified by its
 /// hex-encoded serial number (as stored in the `certificates.serial_number`
-/// column).  Pass `aki_bytes = state.ca.aki_bytes` for renewal-info requests;
+/// column).  Pass `aki_bytes = state.default_ca().aki_bytes` for renewal-info requests;
 /// an arbitrary slice is fine for `replaces` lookups (serial-only in the DB).
 fn cert_id_from_serial_hex(serial_hex: &str, aki_bytes: &[u8]) -> String {
     let serial_bytes: Vec<u8> = (0..serial_hex.len())
@@ -809,7 +839,7 @@ async fn test_renewal_info() {
     .await
     .unwrap()
     .0;
-    let cert_id = cert_id_from_serial_hex(&serial_hex, &state.ca.aki_bytes);
+    let cert_id = cert_id_from_serial_hex(&serial_hex, &state.default_ca().aki_bytes);
 
     // GET /acme/renewal-info/{cert_id}
     let (status, ari_body, _) = get(&router, &format!("/acme/renewal-info/{cert_id}")).await;
@@ -886,7 +916,7 @@ async fn test_renewal_info_explicit_window() {
     .fetch_one(&db)
     .await
     .unwrap();
-    let cert_id = cert_id_from_serial_hex(&serial_hex, &state.ca.aki_bytes);
+    let cert_id = cert_id_from_serial_hex(&serial_hex, &state.default_ca().aki_bytes);
 
     // Set an explicit renewal window on this certificate.
     let window_start: i64 = 1_800_000_000; // 2027-01-15
@@ -919,7 +949,7 @@ async fn test_renewal_info_not_found() {
     let router = routes::build_router(Arc::clone(&state));
 
     // Well-formed cert_id with correct AKI but no matching serial → 404.
-    let unknown = cert_id_from_serial_hex("deadbeefdeadbeef", &state.ca.aki_bytes);
+    let unknown = cert_id_from_serial_hex("deadbeefdeadbeef", &state.default_ca().aki_bytes);
     let (status, body, _) = get(&router, &format!("/acme/renewal-info/{unknown}")).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "expected 404: {body}");
 
@@ -2205,7 +2235,13 @@ async fn test_directory_with_optional_fields() {
             max_connections: None,
             require_tls: false,
         },
-        ca: CaConfig {
+        cas: vec![CaConfig {
+
+            id: "default".to_owned(),
+
+            is_default: true,
+
+            caa_identities: vec![],
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
             cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
             key_type: "ec:P-256".into(),
@@ -2220,7 +2256,7 @@ async fn test_directory_with_optional_fields() {
             enforce_validity_cap: false,
             require_encrypted_key: false,
             key_password_file: None,
-        },
+        }],
         mtc: akamu::config::MtcConfig {
             log_path: "/dev/null".into(),
             enabled: false,
@@ -2242,10 +2278,12 @@ async fn test_directory_with_optional_fields() {
         profiles: Default::default(),
         admin: None,
     });
-    let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
+    let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
     db::install_drivers();
     let db_conn = db::open("sqlite::memory:", 1, false).await.unwrap();
     let ca = Arc::new(akamu::state::CaState {
+        id: "default".into(),
+        crl_next_update_secs: 86400,
         key: ca_key,
         cert_der: ca_cert_der,
         hash_alg: "sha256".into(),
@@ -2254,13 +2292,19 @@ async fn test_directory_with_optional_fields() {
         ocsp_url: None,
         aki_bytes: Vec::new(),
         enforce_validity_cap: false,
+        caa_identities: vec![],
     });
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db_conn.clone(),
         db_kind: db::DbKind::Sqlite,
         profiles: akamu::profiles::ProfileRegistry::empty(&ca),
-        ca,
+        cas: {
+            let mut _ca_map = indexmap::IndexMap::new();
+            _ca_map.insert("default".to_string(), ca.clone());
+            Arc::new(_ca_map)
+        },
+        default_ca_id: Arc::new("default".to_string()),
         mtc: Arc::new(akamu::state::MtcState {
             log: None,
             algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
@@ -2272,9 +2316,17 @@ async fn test_directory_with_optional_fields() {
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),
-        link_header: Arc::new(axum::http::HeaderValue::from_static(
+        link_headers: Arc::new({
+
+            let mut _lh_map = std::collections::HashMap::new();
+
+            _lh_map.insert("default".to_string(), Arc::new(axum::http::HeaderValue::from_static(
             "<https://acme.test/acme/directory>;rel=\"index\"",
-        )),
+        )));
+
+            _lh_map
+
+        }),
         validation_client: {
             let https = hyper_rustls::HttpsConnectorBuilder::new()
                 .with_native_roots()
@@ -2285,7 +2337,15 @@ async fn test_directory_with_optional_fields() {
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
                 .build(https)
         },
-        crl_cache: Default::default(),
+        crl_caches: Arc::new({
+
+            let mut _crl_map = std::collections::HashMap::new();
+
+            _crl_map.insert("default".to_string(), Default::default());
+
+            _crl_map
+
+        }),
         audit: std::sync::Arc::new(akamu::audit::AuditState::new()),
         audit_policy: std::sync::Arc::new(akamu::audit::AuditPolicy::default()),
         admin_sessions: None,
@@ -2588,7 +2648,13 @@ async fn test_finalize_with_mtc_enabled() {
             max_connections: None,
             require_tls: false,
         },
-        ca: CaConfig {
+        cas: vec![CaConfig {
+
+            id: "default".to_owned(),
+
+            is_default: true,
+
+            caa_identities: vec![],
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
             cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
             key_type: "ec:P-256".into(),
@@ -2603,7 +2669,7 @@ async fn test_finalize_with_mtc_enabled() {
             enforce_validity_cap: false,
             require_encrypted_key: false,
             key_password_file: None,
-        },
+        }],
         mtc: MtcConfig {
             log_path: log_path.clone(),
             enabled: true,
@@ -2620,7 +2686,7 @@ async fn test_finalize_with_mtc_enabled() {
         admin: None,
     });
 
-    let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
+    let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
     db::install_drivers();
     let db_conn = db::open("sqlite::memory:", 1, false).await.unwrap();
     let algorithm = HashAlgorithm::Sha256;
@@ -2628,6 +2694,8 @@ async fn test_finalize_with_mtc_enabled() {
     let shared_log = Arc::new(Mutex::new(mtc_log));
 
     let ca = Arc::new(CaState {
+        id: "default".into(),
+        crl_next_update_secs: 86400,
         key: ca_key,
         cert_der: ca_cert_der,
         hash_alg: "sha256".into(),
@@ -2636,13 +2704,19 @@ async fn test_finalize_with_mtc_enabled() {
         ocsp_url: None,
         aki_bytes: Vec::new(),
         enforce_validity_cap: false,
+        caa_identities: vec![],
     });
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db_conn.clone(),
         db_kind: db::DbKind::Sqlite,
         profiles: akamu::profiles::ProfileRegistry::empty(&ca),
-        ca,
+        cas: {
+            let mut _ca_map = indexmap::IndexMap::new();
+            _ca_map.insert("default".to_string(), ca.clone());
+            Arc::new(_ca_map)
+        },
+        default_ca_id: Arc::new("default".to_string()),
         mtc: Arc::new(MtcState {
             log: Some(shared_log.clone()),
             algorithm,
@@ -2654,9 +2728,17 @@ async fn test_finalize_with_mtc_enabled() {
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),
-        link_header: Arc::new(axum::http::HeaderValue::from_static(
+        link_headers: Arc::new({
+
+            let mut _lh_map = std::collections::HashMap::new();
+
+            _lh_map.insert("default".to_string(), Arc::new(axum::http::HeaderValue::from_static(
             "<https://acme.test/acme/directory>;rel=\"index\"",
-        )),
+        )));
+
+            _lh_map
+
+        }),
         validation_client: {
             let https = hyper_rustls::HttpsConnectorBuilder::new()
                 .with_native_roots()
@@ -2667,7 +2749,15 @@ async fn test_finalize_with_mtc_enabled() {
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
                 .build(https)
         },
-        crl_cache: Default::default(),
+        crl_caches: Arc::new({
+
+            let mut _crl_map = std::collections::HashMap::new();
+
+            _crl_map.insert("default".to_string(), Default::default());
+
+            _crl_map
+
+        }),
         audit: std::sync::Arc::new(akamu::audit::AuditState::new()),
         audit_policy: std::sync::Arc::new(akamu::audit::AuditPolicy::default()),
         admin_sessions: None,
@@ -2853,7 +2943,13 @@ async fn test_finalize_with_aia_and_cdp() {
             max_connections: None,
             require_tls: false,
         },
-        ca: CaConfig {
+        cas: vec![CaConfig {
+
+            id: "default".to_owned(),
+
+            is_default: true,
+
+            caa_identities: vec![],
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
             cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
             key_type: "ec:P-256".into(),
@@ -2868,7 +2964,7 @@ async fn test_finalize_with_aia_and_cdp() {
             enforce_validity_cap: false,
             require_encrypted_key: false,
             key_password_file: None,
-        },
+        }],
         mtc: MtcConfig {
             log_path: "/dev/null".into(),
             enabled: false,
@@ -2884,10 +2980,12 @@ async fn test_finalize_with_aia_and_cdp() {
         profiles: Default::default(),
         admin: None,
     });
-    let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
+    let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
     db::install_drivers();
     let db_conn = db::open("sqlite::memory:", 1, false).await.unwrap();
     let ca = Arc::new(CaState {
+        id: "default".into(),
+        crl_next_update_secs: 86400,
         key: ca_key,
         cert_der: ca_cert_der,
         hash_alg: "sha256".into(),
@@ -2896,13 +2994,19 @@ async fn test_finalize_with_aia_and_cdp() {
         ocsp_url: Some("http://ocsp.test/".into()),
         aki_bytes: Vec::new(),
         enforce_validity_cap: false,
+        caa_identities: vec![],
     });
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db_conn.clone(),
         db_kind: db::DbKind::Sqlite,
         profiles: akamu::profiles::ProfileRegistry::empty(&ca),
-        ca,
+        cas: {
+            let mut _ca_map = indexmap::IndexMap::new();
+            _ca_map.insert("default".to_string(), ca.clone());
+            Arc::new(_ca_map)
+        },
+        default_ca_id: Arc::new("default".to_string()),
         mtc: Arc::new(MtcState {
             log: None,
             algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
@@ -2914,9 +3018,17 @@ async fn test_finalize_with_aia_and_cdp() {
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),
-        link_header: Arc::new(axum::http::HeaderValue::from_static(
+        link_headers: Arc::new({
+
+            let mut _lh_map = std::collections::HashMap::new();
+
+            _lh_map.insert("default".to_string(), Arc::new(axum::http::HeaderValue::from_static(
             "<https://acme.test/acme/directory>;rel=\"index\"",
-        )),
+        )));
+
+            _lh_map
+
+        }),
         validation_client: {
             let https = hyper_rustls::HttpsConnectorBuilder::new()
                 .with_native_roots()
@@ -2927,7 +3039,15 @@ async fn test_finalize_with_aia_and_cdp() {
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
                 .build(https)
         },
-        crl_cache: Default::default(),
+        crl_caches: Arc::new({
+
+            let mut _crl_map = std::collections::HashMap::new();
+
+            _crl_map.insert("default".to_string(), Default::default());
+
+            _crl_map
+
+        }),
         audit: std::sync::Arc::new(akamu::audit::AuditState::new()),
         audit_policy: std::sync::Arc::new(akamu::audit::AuditPolicy::default()),
         admin_sessions: None,
@@ -3074,7 +3194,7 @@ async fn test_crl_endpoint_contains_revoked_serial() {
         .await
         .unwrap();
     // Clear the CRL cache so the next request rebuilds with the new entry.
-    *state.crl_cache.lock().unwrap() = None;
+    state.invalidate_crl_cache(state.default_ca_id.as_str());
 
     // Fetch CRL again — the revoked serial must appear.
     let req = Request::builder()
@@ -3250,7 +3370,7 @@ async fn test_ocsp_endpoint_post_and_get() {
         .map(|i| u8::from_str_radix(&serial_hex[i..i + 2], 16).unwrap())
         .collect();
 
-    let ocsp_req_der = build_ocsp_request_der(&state.ca.cert_der, &serial_bytes);
+    let ocsp_req_der = build_ocsp_request_der(&state.default_ca().cert_der, &serial_bytes);
 
     // ── POST /ca/ocsp ─────────────────────────────────────────────────────────
     let req = Request::builder()

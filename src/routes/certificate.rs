@@ -15,7 +15,7 @@ use crate::db;
 use crate::error::AcmeError;
 use crate::state::AppState;
 
-use super::parse_jws;
+use super::{acme_prefix, parse_jws, CaId};
 
 /// Serve the certificate chain as PEM (unauthenticated GET).
 pub async fn download_cert(
@@ -36,10 +36,12 @@ pub async fn download_cert(
 /// account to match the order for consistency with the rest of the API).
 pub async fn download_cert_post(
     State(state): State<Arc<AppState>>,
+    ca_id: CaId,
     Path(id): Path<String>,
     body: Bytes,
 ) -> Result<Response, AcmeError> {
-    let url = format!("{}/acme/cert/{}", state.config.base_url, id);
+    let pfx = acme_prefix(&state.config.base_url, &ca_id.0, &state.default_ca_id);
+    let url = format!("{pfx}/cert/{id}");
     let ctx = parse_jws(&state, body, &url).await?;
 
     // POST-as-GET must have an empty payload.

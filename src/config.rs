@@ -9,7 +9,8 @@ pub struct Config {
     /// Public base URL of this ACME server, e.g. `https://acme.example.com`
     pub base_url: String,
     pub database: DatabaseConfig,
-    pub ca: CaConfig,
+    #[serde(rename = "ca", deserialize_with = "deserialize_ca_array")]
+    pub cas: Vec<CaConfig>,
     pub mtc: MtcConfig,
     #[serde(default)]
     pub server: ServerConfig,
@@ -377,6 +378,13 @@ pub struct BuiltinProfileConfig {
     /// from the EAB key at account-creation time.
     #[serde(default)]
     pub require_account_grant: bool,
+    /// Restrict this profile to specific CA IDs.  When empty (the default) the
+    /// profile is available to all CAs.  Use CA IDs from the `[[ca]]` entries.
+    ///
+    /// Example: `ca_ids = ["rsa", "ec"]` makes the profile available only
+    /// through the RSA and EC CAs.
+    #[serde(default)]
+    pub ca_ids: Vec<String>,
 }
 
 /// A certificate policy OID with an optional CPS URI qualifier.
@@ -540,6 +548,26 @@ pub struct DatabaseConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct CaConfig {
+    /// Unique identifier for this CA (used as the URL prefix `/acme/{id}/...`).
+    ///
+    /// Required when using the `[[ca]]` array-of-tables format.  When using the
+    /// legacy `[ca]` single-table format this field is absent from the config
+    /// and the deserializer sets it to `"default"` automatically.
+    ///
+    /// Must match `^[a-zA-Z0-9][a-zA-Z0-9_-]*$` and must not be a reserved ACME
+    /// path segment (`"directory"`, `"new-nonce"`, `"new-account"`, …).
+    #[serde(default)]
+    pub id: String,
+    /// Marks this CA as the one that serves the backward-compatible
+    /// `/acme/directory` and `/ca/crl` endpoints.  Exactly one CA must be
+    /// default; when there is only one `[[ca]]` entry it is implicitly default.
+    #[serde(default)]
+    pub is_default: bool,
+    /// CAA domain identities specific to this CA.  Advertised in the ACME
+    /// directory `meta.caaIdentities` field.  Falls back to
+    /// `[server].caa_identities` when empty.
+    #[serde(default)]
+    pub caa_identities: Vec<String>,
     /// Path to the CA private key PEM file, or a PKCS#11 URI
     /// (`pkcs11:token=…;object=…;type=private`) for HSM-backed keys.
     ///
@@ -695,8 +723,18 @@ fn default_checkpoint_retention_count() -> u32 {
     1000
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize)]
 pub struct ServerConfig {
+    /// Account scoping for multi-CA deployments.
+    ///
+    /// `"server"` (default) — one account registration is valid for all CAs;
+    /// all CA directories advertise the shared `/acme/new-account` endpoint.
+    ///
+    /// `"ca"` — accounts are isolated per CA; each CA directory advertises its
+    /// own `/acme/{ca_id}/new-account` endpoint and JWS validation enforces
+    /// that the account's CA matches the request's CA.
+    #[serde(default = "default_account_scope")]
+    pub account_scope: String,
     /// Terms of service URL included in the directory response
     pub terms_of_service_url: Option<String>,
     /// Website URL included in the directory response
@@ -990,11 +1028,219 @@ fn default_srv_scheme() -> String {
     "ldap".to_owned()
 }
 
+fn default_account_scope() -> String {
+    "server".to_owned()
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            // Explicitly "server" so that code checking account_scope works
+            // correctly whether [server] is absent (Rust Default path) or
+            // account_scope is absent within a present [server] section (serde
+            // default_account_scope() path).  All other fields keep their Rust
+            // defaults (false/0/""/vec![]/None) so that integration-test
+            // fixtures using `..ServerConfig::default()` are not disrupted.
+            account_scope: default_account_scope(),
+            terms_of_service_url: None,
+            website_url: None,
+            caa_identities: vec![],
+            external_account_required: false,
+            order_expiry_secs: 0,
+            authz_expiry_secs: 0,
+            max_body_bytes: 0,
+            http_validation_port: 0,
+            http_validation_allow_private_ips: false,
+            dns_persist_issuer_domains: vec![],
+            dns_resolver_addr: None,
+            dns_persist01_resolver_addr: None,
+            dns_dot_server_name: None,
+            ari_retry_after_secs: 0,
+            ari_explanation_url: None,
+            allow_subdomain_auth: false,
+            star_min_lifetime_secs: None,
+            star_max_duration_secs: None,
+            star_allow_certificate_get: false,
+            profiles: std::collections::HashMap::new(),
+            eab_keys: std::collections::HashMap::new(),
+            tor_connectivity_enabled: false,
+            validate_dnssec: false,
+            trusted_proxies: vec![],
+            gssapi: None,
+            eab_master_secret: None,
+        }
+    }
+}
+
+fn is_valid_ca_id(id: &str) -> bool {
+    // max 64 chars: matches MariaDB VARCHAR(64) column for ca_id
+    if id.is_empty() || id.len() > 64 {
+        return false;
+    }
+    let mut chars = id.chars();
+    match chars.next() {
+        None => return false,
+        Some(c) => {
+            if !c.is_ascii_alphanumeric() {
+                return false;
+            }
+        }
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Deserialize either a `[ca]` single-table (backward compat) or a
+/// `[[ca]]` array-of-tables into `Vec<CaConfig>`.
+///
+/// When the TOML source uses the old `[ca]` form the resulting single entry
+/// gets `id = "default"` and `is_default = true` injected automatically so
+/// the rest of the codebase can treat multi-CA and single-CA configs uniformly.
+fn deserialize_ca_array<'de, D>(deserializer: D) -> Result<Vec<CaConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{MapAccess, SeqAccess, Visitor};
+    use std::fmt;
+
+    struct CaArrayVisitor;
+
+    impl<'de> Visitor<'de> for CaArrayVisitor {
+        type Value = Vec<CaConfig>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a [ca] table or [[ca]] array of tables")
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<CaConfig>, A::Error> {
+            let mut cas = Vec::new();
+            while let Some(ca) = seq.next_element::<CaConfig>()? {
+                cas.push(ca);
+            }
+            Ok(cas)
+        }
+
+        fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<Vec<CaConfig>, M::Error> {
+            let mut ca = CaConfig::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+            if ca.id.is_empty() {
+                ca.id = "default".to_owned();
+            }
+            ca.is_default = true;
+            Ok(vec![ca])
+        }
+    }
+
+    deserializer.deserialize_any(CaArrayVisitor)
+}
+
+/// ACME path segments that are not valid CA identifiers.
+///
+/// CA IDs must not collide with these because both the legacy `/acme/{segment}`
+/// and the per-CA `/acme/{ca_id}/{segment}` routes share the same URL tree.
+/// This list is used in [`Config::validate`] and exported so the router can
+/// enforce the same constraint without duplicating it.
+pub const RESERVED_CA_IDS: &[&str] = &[
+    "directory",
+    "new-nonce",
+    "new-account",
+    "new-order",
+    "new-authz",
+    "revoke-cert",
+    "key-change",
+    "renewal-info",
+    "cert",
+    "order",
+    "authz",
+    "chall",
+    "eab",
+    "mtc",
+    "account",
+];
+
 impl Config {
     pub fn from_file(path: &str) -> Result<Self, String> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read config file '{}': {}", path, e))?;
-        toml::from_str(&content).map_err(|e| format!("config parse error: {}", e))
+        let config: Self =
+            toml::from_str(&content).map_err(|e| format!("config parse error: {}", e))?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Validate semantic constraints on the config that cannot be expressed with
+    /// serde alone.  Called automatically by [`from_file`].  Unit tests that
+    /// construct configs via `toml::from_str` directly may call this manually.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.cas.is_empty() {
+            return Err("at least one [ca] or [[ca]] entry is required".into());
+        }
+
+        for ca in &self.cas {
+            if ca.id.is_empty() {
+                return Err("each [[ca]] entry must have a non-empty `id` field".into());
+            }
+            if !is_valid_ca_id(&ca.id) {
+                return Err(format!(
+                    "CA id {:?} must match ^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                    ca.id
+                ));
+            }
+            let id_lower = ca.id.to_ascii_lowercase();
+            if RESERVED_CA_IDS.contains(&id_lower.as_str()) {
+                return Err(format!(
+                    "CA id {:?} is a reserved ACME path segment and cannot be used",
+                    ca.id
+                ));
+            }
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        for ca in &self.cas {
+            if !seen.insert(ca.id.as_str()) {
+                return Err(format!("duplicate CA id {:?}", ca.id));
+            }
+        }
+
+        if self.cas.len() > 1 {
+            let default_count = self.cas.iter().filter(|c| c.is_default).count();
+            if default_count == 0 {
+                return Err(
+                    "with multiple [[ca]] entries, exactly one must have `is_default = true`"
+                        .into(),
+                );
+            }
+            if default_count > 1 {
+                return Err("at most one [[ca]] entry may have `is_default = true`".into());
+            }
+        }
+
+        match self.server.account_scope.as_str() {
+            "server" | "ca" => {}
+            other => {
+                return Err(format!(
+                    "[server].account_scope must be \"server\" or \"ca\", got {:?}",
+                    other
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Returns the default CA config: the one with `is_default = true`, or the
+    /// only CA when there is exactly one `[[ca]]` entry.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `cas` is empty or no CA is marked default in a multi-CA
+    /// config.  [`validate`] prevents both situations when loading from a file.
+    pub fn default_ca(&self) -> &CaConfig {
+        if self.cas.len() == 1 {
+            return &self.cas[0];
+        }
+        self.cas
+            .iter()
+            .find(|c| c.is_default)
+            .expect("validate() ensures exactly one default CA when multiple CAs are configured")
     }
 
     /// Returns the list of issuer domains used for dns-persist-01 TXT record
@@ -1087,24 +1333,33 @@ enabled = false
         assert_eq!(cfg.base_url, "https://acme.example.com");
         assert_eq!(cfg.database.url, "sqlite:///tmp/test.db");
         assert!(cfg.database.max_connections.is_none());
-        assert_eq!(cfg.ca.key_file, "/tmp/ca.key");
-        assert_eq!(cfg.ca.cert_file, "/tmp/ca.crt");
+        let ca = cfg.default_ca();
+        assert_eq!(ca.key_file, "/tmp/ca.key");
+        assert_eq!(ca.cert_file, "/tmp/ca.crt");
         assert_eq!(cfg.mtc.log_path, "/tmp/mtc.log");
         assert!(!cfg.mtc.enabled);
     }
 
     #[test]
+    fn legacy_ca_table_gets_default_id_and_is_default() {
+        let cfg: Config = toml::from_str(minimal_toml()).unwrap();
+        assert_eq!(cfg.cas.len(), 1);
+        assert_eq!(cfg.cas[0].id, "default");
+        assert!(cfg.cas[0].is_default);
+    }
+
+    #[test]
     fn config_ca_defaults_applied() {
         let cfg: Config = toml::from_str(minimal_toml()).unwrap();
-        // CaConfig defaults
-        assert_eq!(cfg.ca.key_type, "ec:P-256");
-        assert_eq!(cfg.ca.hash_alg, "sha256");
-        assert_eq!(cfg.ca.validity_days, 90);
-        assert_eq!(cfg.ca.common_name, "ACME Server CA");
-        assert_eq!(cfg.ca.organization, "ACME Server");
-        assert_eq!(cfg.ca.ca_validity_years, 10);
-        assert!(cfg.ca.crl_url.is_none());
-        assert!(cfg.ca.ocsp_url.is_none());
+        let ca = cfg.default_ca();
+        assert_eq!(ca.key_type, "ec:P-256");
+        assert_eq!(ca.hash_alg, "sha256");
+        assert_eq!(ca.validity_days, 90);
+        assert_eq!(ca.common_name, "ACME Server CA");
+        assert_eq!(ca.organization, "ACME Server");
+        assert_eq!(ca.ca_validity_years, 10);
+        assert!(ca.crl_url.is_none());
+        assert!(ca.ocsp_url.is_none());
     }
 
     #[test]
@@ -1206,15 +1461,13 @@ authz_expiry_secs = 7200
 max_body_bytes = 131072
 "#;
         let cfg: Config = toml::from_str(toml).unwrap();
-        assert_eq!(cfg.ca.key_type, "rsa:4096");
-        assert_eq!(cfg.ca.hash_alg, "sha512");
-        assert_eq!(cfg.ca.validity_days, 365);
-        assert_eq!(
-            cfg.ca.crl_url.as_deref(),
-            Some("http://crl.example.org/ca.crl")
-        );
-        assert_eq!(cfg.ca.ocsp_url.as_deref(), Some("http://ocsp.example.org"));
-        assert_eq!(cfg.ca.ca_validity_years, 5);
+        let ca = cfg.default_ca();
+        assert_eq!(ca.key_type, "rsa:4096");
+        assert_eq!(ca.hash_alg, "sha512");
+        assert_eq!(ca.validity_days, 365);
+        assert_eq!(ca.crl_url.as_deref(), Some("http://crl.example.org/ca.crl"));
+        assert_eq!(ca.ocsp_url.as_deref(), Some("http://ocsp.example.org"));
+        assert_eq!(ca.ca_validity_years, 5);
         assert!(cfg.mtc.enabled);
         assert_eq!(
             cfg.server.terms_of_service_url.as_deref(),
@@ -1475,5 +1728,297 @@ audit_alarm_action    = "halt"
         assert_eq!(policy.overflow, crate::audit::OverflowPolicy::Halt);
         assert_eq!(policy.alarm_threshold, 5);
         assert_eq!(policy.alarm_action, crate::audit::AlarmAction::Halt);
+    }
+
+    // ── Multi-CA config tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn multi_ca_array_parses() {
+        let toml = r#"
+listen_addr = "127.0.0.1:8080"
+base_url = "https://acme.example.com"
+
+[database]
+url = "sqlite::memory:"
+
+[[ca]]
+id = "rsa"
+is_default = true
+key_file = "/etc/akamu/rsa.key"
+cert_file = "/etc/akamu/rsa.crt"
+
+[[ca]]
+id = "ec"
+key_file = "/etc/akamu/ec.key"
+cert_file = "/etc/akamu/ec.crt"
+
+[mtc]
+log_path = "/dev/null"
+enabled = false
+"#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        // Validate must also pass (tests the full parse→validate pipeline).
+        cfg.validate().unwrap();
+        assert_eq!(cfg.cas.len(), 2);
+        assert_eq!(cfg.cas[0].id, "rsa");
+        assert!(cfg.cas[0].is_default);
+        assert_eq!(cfg.cas[1].id, "ec");
+        assert!(!cfg.cas[1].is_default);
+        assert_eq!(cfg.default_ca().id, "rsa");
+    }
+
+    #[test]
+    fn default_ca_returns_non_first_default() {
+        // Verify that default_ca() uses Iterator::find on is_default, not cas[0].
+        let toml = r#"
+listen_addr = "127.0.0.1:8080"
+base_url = "https://acme.example.com"
+[database]
+url = "sqlite::memory:"
+[[ca]]
+id = "ec"
+key_file = "/etc/akamu/ec.key"
+cert_file = "/etc/akamu/ec.crt"
+[[ca]]
+id = "rsa"
+is_default = true
+key_file = "/etc/akamu/rsa.key"
+cert_file = "/etc/akamu/rsa.crt"
+[mtc]
+log_path = "/dev/null"
+enabled = false
+"#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.default_ca().id, "rsa");
+    }
+
+    #[test]
+    fn multi_ca_validate_rejects_reserved_id_case_insensitive() {
+        // "Directory" (mixed case) must be rejected like "directory".
+        let toml = r#"
+listen_addr = "127.0.0.1:8080"
+base_url = "https://acme.example.com"
+[database]
+url = "sqlite::memory:"
+[[ca]]
+id = "Directory"
+is_default = true
+key_file = "/etc/akamu/ca.key"
+cert_file = "/etc/akamu/ca.crt"
+[mtc]
+log_path = "/dev/null"
+enabled = false
+"#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("reserved"), "err: {err}");
+    }
+
+    #[test]
+    fn multi_ca_validate_requires_default() {
+        let toml = r#"
+listen_addr = "127.0.0.1:8080"
+base_url = "https://acme.example.com"
+[database]
+url = "sqlite::memory:"
+[[ca]]
+id = "rsa"
+key_file = "/etc/akamu/rsa.key"
+cert_file = "/etc/akamu/rsa.crt"
+[[ca]]
+id = "ec"
+key_file = "/etc/akamu/ec.key"
+cert_file = "/etc/akamu/ec.crt"
+[mtc]
+log_path = "/dev/null"
+enabled = false
+"#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("is_default"), "err: {err}");
+    }
+
+    #[test]
+    fn multi_ca_validate_rejects_duplicate_id() {
+        let toml = r#"
+listen_addr = "127.0.0.1:8080"
+base_url = "https://acme.example.com"
+[database]
+url = "sqlite::memory:"
+[[ca]]
+id = "rsa"
+is_default = true
+key_file = "/etc/akamu/rsa.key"
+cert_file = "/etc/akamu/rsa.crt"
+[[ca]]
+id = "rsa"
+key_file = "/etc/akamu/rsa2.key"
+cert_file = "/etc/akamu/rsa2.crt"
+[mtc]
+log_path = "/dev/null"
+enabled = false
+"#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("duplicate"), "err: {err}");
+    }
+
+    #[test]
+    fn multi_ca_validate_rejects_reserved_id() {
+        let toml = r#"
+listen_addr = "127.0.0.1:8080"
+base_url = "https://acme.example.com"
+[database]
+url = "sqlite::memory:"
+[[ca]]
+id = "directory"
+is_default = true
+key_file = "/etc/akamu/ca.key"
+cert_file = "/etc/akamu/ca.crt"
+[mtc]
+log_path = "/dev/null"
+enabled = false
+"#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("reserved"), "err: {err}");
+    }
+
+    #[test]
+    fn multi_ca_validate_rejects_invalid_id_chars() {
+        let toml = r#"
+listen_addr = "127.0.0.1:8080"
+base_url = "https://acme.example.com"
+[database]
+url = "sqlite::memory:"
+[[ca]]
+id = "bad id!"
+is_default = true
+key_file = "/etc/akamu/ca.key"
+cert_file = "/etc/akamu/ca.crt"
+[mtc]
+log_path = "/dev/null"
+enabled = false
+"#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("must match"), "err: {err}");
+    }
+
+    #[test]
+    fn multi_ca_validate_rejects_two_defaults() {
+        let toml = r#"
+listen_addr = "127.0.0.1:8080"
+base_url = "https://acme.example.com"
+[database]
+url = "sqlite::memory:"
+[[ca]]
+id = "rsa"
+is_default = true
+key_file = "/etc/akamu/rsa.key"
+cert_file = "/etc/akamu/rsa.crt"
+[[ca]]
+id = "ec"
+is_default = true
+key_file = "/etc/akamu/ec.key"
+cert_file = "/etc/akamu/ec.crt"
+[mtc]
+log_path = "/dev/null"
+enabled = false
+"#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("at most one"), "err: {err}");
+    }
+
+    #[test]
+    fn account_scope_default_is_server() {
+        // When [server] is absent entirely, ServerConfig::Default gives "server".
+        let cfg: Config = toml::from_str(minimal_toml()).unwrap();
+        assert_eq!(cfg.server.account_scope, "server");
+
+        // When [server] is present but account_scope is absent, serde's
+        // default_account_scope() function also gives "server".
+        let toml_with_server = format!("{}\n[server]\n", minimal_toml());
+        let cfg2: Config = toml::from_str(&toml_with_server).unwrap();
+        assert_eq!(cfg2.server.account_scope, "server");
+    }
+
+    #[test]
+    fn account_scope_ca_parses() {
+        let toml = format!("{}\n[server]\naccount_scope = \"ca\"\n", minimal_toml());
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        assert_eq!(cfg.server.account_scope, "ca");
+    }
+
+    #[test]
+    fn account_scope_invalid_fails_validate() {
+        let toml = format!(
+            "{}\n[server]\naccount_scope = \"invalid\"\n",
+            minimal_toml()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("account_scope"), "err: {err}");
+    }
+
+    #[test]
+    fn builtin_profile_ca_ids_parses() {
+        let toml = r#"
+listen_addr = "127.0.0.1:8080"
+base_url = "https://acme.example.com"
+[database]
+url = "sqlite::memory:"
+[ca]
+key_file = "/tmp/ca.key"
+cert_file = "/tmp/ca.crt"
+[mtc]
+log_path = "/dev/null"
+enabled = false
+[profiles.providers.local]
+type = "builtin"
+[profiles.providers.local.profiles.tlsserver]
+description = "TLS server"
+ca_ids = ["rsa", "ec"]
+"#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        let builtin = match cfg
+            .profiles
+            .providers
+            .get("local")
+            .expect("local provider")
+        {
+            ProviderConfig::Builtin(b) => b,
+            _ => panic!("expected builtin"),
+        };
+        let profile = builtin.profiles.get("tlsserver").expect("tlsserver");
+        assert_eq!(profile.ca_ids, vec!["rsa", "ec"]);
+    }
+
+    #[test]
+    fn multi_ca_caa_identities_per_ca() {
+        let toml = r#"
+listen_addr = "127.0.0.1:8080"
+base_url = "https://acme.example.com"
+[database]
+url = "sqlite::memory:"
+[[ca]]
+id = "rsa"
+is_default = true
+key_file = "/etc/akamu/rsa.key"
+cert_file = "/etc/akamu/rsa.crt"
+caa_identities = ["rsa.example.com"]
+[[ca]]
+id = "ec"
+key_file = "/etc/akamu/ec.key"
+cert_file = "/etc/akamu/ec.crt"
+[mtc]
+log_path = "/dev/null"
+enabled = false
+"#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.cas[0].caa_identities, vec!["rsa.example.com"]);
+        assert!(cfg.cas[1].caa_identities.is_empty());
     }
 }

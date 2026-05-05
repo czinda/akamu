@@ -135,7 +135,11 @@ pub async fn finalize_order(
                 {
                     db::challenges::get_validated_type(&state.db, authz_id)
                         .await?
-                        .unwrap_or_default()
+                        .ok_or_else(|| {
+                            AcmeError::Internal(format!(
+                                "no validated challenge type found for authz {authz_id}"
+                            ))
+                        })?
                 } else {
                     String::new()
                 };
@@ -326,6 +330,12 @@ pub async fn finalize_order(
             false
         };
 
+        // For STAR orders, persist the CSR DER atomically with the cert insert
+        // so the background reissuance task can never see a valid order without a CSR.
+        if order.star_end_date.is_some() {
+            db::orders::set_star_csr(&mut *tx, &id, csr_der.clone()).await?;
+        }
+
         // Fetch authz IDs within the same transaction to avoid a separate round-trip.
         let authz_ids = db::orders::list_authz_ids(&mut *tx, &id).await?;
 
@@ -368,8 +378,9 @@ pub async fn finalize_order(
             let log = Arc::clone(log);
             let db = state.db.clone();
             let cert_id = issued.id.clone();
+            let cert_id_for_log = issued.id.clone();
             let algorithm = state.mtc.algorithm;
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 match crate::mtc::log::append_cert_to_log(&log, cert_der, algorithm).await {
                     Ok(index) => {
                         if let Err(e) =
@@ -385,22 +396,12 @@ pub async fn finalize_order(
                     }
                 }
             });
+            tokio::spawn(async move {
+                if let Err(e) = handle.await {
+                    tracing::error!("cert {cert_id_for_log}: MTC log task panicked: {e:?}");
+                }
+            });
         }
-    }
-
-    // For STAR orders, persist the CSR DER so the background task can reissue.
-    if order.star_end_date.is_some() {
-        db::orders::set_star_csr(&state.db, &id, csr_der.clone())
-            .await
-            .map_err(|e| {
-                tracing::error!(
-                    order_id = %id,
-                    account_id = %order.account_id,
-                    error = %e,
-                    "STAR CSR not stored — background renewal will fail"
-                );
-                AcmeError::Internal("failed to persist STAR CSR; please retry finalization".into())
-            })?;
     }
 
     // Build the response from the known post-finalize state without a DB re-fetch.

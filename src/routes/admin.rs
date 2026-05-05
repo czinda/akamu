@@ -63,7 +63,7 @@ use serde_json::json;
 use crate::admin::auth::OperatorContext;
 use crate::audit::{AuditEvent, AuditEventType};
 use crate::db;
-use crate::state::AppState;
+use crate::state::{AppState, OperatorRole};
 use synta_certificate::der_to_pem;
 
 use super::unix_now;
@@ -89,6 +89,9 @@ struct NewOperatorPayload {
     role: String,
     cert_fingerprint: Option<String>,
     gssapi_principal: Option<String>,
+    /// CA scope for `ca_ra` operators. Empty/absent means server-wide.
+    #[serde(default)]
+    ca_id: String,
 }
 
 #[derive(Deserialize)]
@@ -152,6 +155,7 @@ pub async fn get_operators(
                         "id": r.id,
                         "name": r.name,
                         "role": r.role,
+                        "ca_id": r.ca_id,
                         "cert_fingerprint": r.cert_fingerprint,
                         "gssapi_principal": r.gssapi_principal,
                         "created_at": r.created_at,
@@ -212,6 +216,23 @@ pub async fn post_operators(
         )
             .into_response();
     }
+    // Validate ca_id: only meaningful for ca_ra; must reference an existing CA.
+    if !payload.ca_id.is_empty() {
+        if payload.role != "ca_ra" {
+            return (
+                StatusCode::BAD_REQUEST,
+                "ca_id is only valid for the ca_ra role",
+            )
+                .into_response();
+        }
+        if !state.cas.contains_key(payload.ca_id.as_str()) {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("unknown ca_id '{}'", payload.ca_id),
+            )
+                .into_response();
+        }
+    }
 
     let now = crate::util::rfc3339_now();
     let result = db::operators::insert(
@@ -220,6 +241,7 @@ pub async fn post_operators(
         &payload.role,
         payload.cert_fingerprint.as_deref(),
         payload.gssapi_principal.as_deref(),
+        &payload.ca_id,
         &now,
     )
     .await;
@@ -868,6 +890,28 @@ pub async fn post_revoke(
             })),
         )
             .into_response();
+    }
+
+    // CA-scoped ca_ra operators may only revoke certificates from their own CA.
+    if operator.role == OperatorRole::CaRa && !operator.ca_id.is_empty() {
+        match db::certs::get_by_id(&state.db, &payload.cert_id).await {
+            Ok(Some(cert)) if cert.ca_id != operator.ca_id => {
+                return (StatusCode::FORBIDDEN, "certificate does not belong to your CA scope")
+                    .into_response();
+            }
+            Ok(None) => {
+                return (StatusCode::NOT_FOUND, "certificate not found").into_response();
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "post_revoke: CA scope check db error");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"status": 500, "detail": "database error"})),
+                )
+                    .into_response();
+            }
+            Ok(Some(_)) => {} // cert.ca_id == operator.ca_id — permitted
+        }
     }
 
     let now = unix_now();

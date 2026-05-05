@@ -19,6 +19,7 @@ use super::{acme_prefix, parse_jws, unix_now, CaId};
 /// GET handler — unauthenticated (allowed only when `allow_certificate_get = true`).
 pub async fn star_cert_get(
     State(state): State<Arc<AppState>>,
+    ca_id: CaId,
     Path(order_id): Path<String>,
 ) -> Result<Response, AcmeError> {
     // Server-level capability gate (RFC 8739 §3.1.3): reject if operator has
@@ -38,6 +39,9 @@ pub async fn star_cert_get(
         return Err(AcmeError::Unauthorized(
             "unauthenticated GET not allowed for this STAR order".into(),
         ));
+    }
+    if order.ca_id != ca_id.0 {
+        return Err(AcmeError::NotFound);
     }
     serve_star_cert(&state, &order).await
 }

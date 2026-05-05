@@ -17,6 +17,9 @@ pub struct AccountRow {
     /// JSON array of permitted profile IDs, e.g. `'["tls-server","mtc-tls"]'`.
     /// `NULL` / `None` means no restriction — the account may use any profile.
     pub profile_grants: Option<String>,
+    /// CA this account is scoped to.  Empty string means server-wide (no CA restriction).
+    /// Non-empty only when `server.account_scope = "ca"`.
+    pub ca_id: String,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -43,6 +46,9 @@ pub struct OrderRow {
     pub star_csr_der: Option<Vec<u8>>, // stored CSR DER for reissuance
     // draft-aaron-acme-profiles-01
     pub profile: Option<String>,
+    /// CA that will issue / issued the certificate for this order.
+    /// Defaults to `'default'` for rows created before the multi-CA migration.
+    pub ca_id: String,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -57,6 +63,9 @@ pub struct AuthorizationRow {
     pub subdomain_auth_allowed: i64, // 0=false, 1=true (RFC 9444)
     pub created: i64,
     pub updated: i64,
+    /// CA that owns this authorization.  Empty string means "any CA" for
+    /// pre-existing rows created before migration 0014/0013.
+    pub ca_id: String,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -127,4 +136,37 @@ pub struct CertificateRow {
     pub suggested_window_end: Option<i64>,
     pub replaced_by: Option<String>, // RFC 9773: order_id that replaced this cert
     pub subject_dn: Option<String>,  // RFC 4514 subject DN string (FAU_SCR_EXT.1)
+    /// CA that issued this certificate.
+    /// Defaults to `'default'` for rows created before the multi-CA migration.
+    pub ca_id: String,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct CrossCertRow {
+    pub id: String,
+    /// CA that signed this cross-certificate.
+    pub issuer_ca_id: String,
+    /// akamu CA ID of the subject CA, or `None` if the subject is an external CA.
+    pub subject_ca_id: Option<String>,
+    /// RFC 4514 subject DN string.
+    pub subject_dn: String,
+    /// DER-encoded SubjectPublicKeyInfo of the subject CA key.
+    pub subject_spki: Vec<u8>,
+    /// DER-encoded cross-certificate.
+    pub cross_cert_der: Vec<u8>,
+    /// PEM-encoded cross-certificate for download.
+    pub cross_cert_pem: String,
+    pub not_before: i64,
+    pub not_after: i64,
+    /// Hex-encoded serial number (same format as `certificates.serial_number`).
+    pub serial_number: String,
+    pub created: i64,
+}
+
+/// Minimal projection used by CRL generation — avoids loading DER/PEM blobs.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct CrlEntry {
+    pub serial_number: String,
+    pub revoked_at: Option<i64>,
+    pub revocation_reason: Option<i64>,
 }

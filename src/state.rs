@@ -5,6 +5,8 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
+use indexmap::IndexMap;
+
 type AdminAuthLimiter = Arc<tokio::sync::Mutex<HashMap<IpAddr, VecDeque<Instant>>>>;
 
 use axum::http::HeaderValue;
@@ -113,7 +115,10 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub db: crate::db::Db,
     pub db_kind: DbKind,
-    pub ca: Arc<CaState>,
+    /// All CAs keyed by their `id`, in insertion order (first entry = config order).
+    pub cas: Arc<IndexMap<String, Arc<CaState>>>,
+    /// The CA designated as the default for legacy `/acme/…` routes.
+    pub default_ca_id: Arc<String>,
     pub mtc: Arc<MtcState>,
     /// Certificate profile registry.  Profiles are cached in memory and
     /// refreshed periodically by a background task started via
@@ -141,23 +146,23 @@ pub struct AppState {
     /// 24 of the total 49 round-trips. Moving to in-memory cuts the per-issuance
     /// round-trip count nearly in half and roughly doubles throughput.
     pub nonces: Arc<NonceBucket>,
-    /// Precomputed `Link: <base_url>/acme/directory>;rel="index"` header value.
+    /// Per-CA precomputed `Link: …;rel="index"` header values.
     ///
-    /// Computed once at startup; reused on every ACME response to avoid
-    /// `format!()` + `HeaderValue::from_str()` allocations on the hot path.
-    pub link_header: Arc<HeaderValue>,
+    /// Keyed by CA ID.  Computed once at startup; reused on every ACME response
+    /// to avoid `format!()` + `HeaderValue::from_str()` allocations on the hot path.
+    pub link_headers: Arc<HashMap<String, Arc<HeaderValue>>>,
     /// Shared HTTP client for outbound http-01 challenge validation requests.
     ///
     /// `Client` is internally reference-counted and `Clone`; sharing one instance
     /// allows hyper to pool and reuse TCP connections to challenge responders,
     /// avoiding a TCP handshake per validation at ~200 validations/sec.
     pub validation_client: ValidationClient,
-    /// Cached signed CRL DER and the `Instant` after which the entry is stale.
+    /// Per-CA CRL caches, keyed by CA ID.
     ///
-    /// `None` until the first `GET /ca/crl` request (or after a revocation
-    /// that invalidates the cache).  The `Arc<Mutex<…>>` allows the handler
-    /// and the revoke route to share the cache without `&mut AppState`.
-    pub crl_cache: CrlCache,
+    /// Each entry is `None` until the first `GET /ca/{id}/crl` request (or after a
+    /// revocation that invalidates it).  The inner `Arc<Mutex<…>>` allows the CRL
+    /// handler and the revoke route to share each cache without `&mut AppState`.
+    pub crl_caches: Arc<HashMap<String, CrlCache>>,
     /// Server-side GSSAPI credential for standalone SPNEGO authentication.
     ///
     /// `None` when `[server.gssapi]` is absent from the config.  When present,
@@ -196,6 +201,37 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Return the default CA state.  Panics only if the server was constructed
+    /// incorrectly (i.e. `default_ca_id` is not present in `cas`).
+    pub fn default_ca(&self) -> &Arc<CaState> {
+        self.cas
+            .get(self.default_ca_id.as_str())
+            .expect("default CA always present in cas")
+    }
+
+    /// Look up a CA by ID.  Returns `None` for unknown CA IDs.
+    pub fn get_ca(&self, ca_id: &str) -> Option<&Arc<CaState>> {
+        self.cas.get(ca_id)
+    }
+
+    /// Look up the CRL cache for a specific CA.  Returns `None` for unknown CA IDs.
+    pub fn get_crl_cache(&self, ca_id: &str) -> Option<&CrlCache> {
+        self.crl_caches.get(ca_id)
+    }
+
+    /// Invalidate the CRL cache for a specific CA (e.g. after revocation).
+    pub fn invalidate_crl_cache(&self, ca_id: &str) {
+        if let Some(cache) = self.crl_caches.get(ca_id) {
+            match cache.lock() {
+                Ok(mut g) => *g = None,
+                Err(e) => {
+                    tracing::error!(ca_id, "CRL cache mutex poisoned — forcing invalidation");
+                    *e.into_inner() = None;
+                }
+            }
+        }
+    }
+
     /// Record an audit event, logging (but not propagating) any DB error.
     ///
     /// Convenience wrapper over [`crate::audit::record_or_log`] that bundles
@@ -224,6 +260,8 @@ pub struct TlsState {
 /// thread-safe for concurrent signing, protect `key` with a
 /// `tokio::sync::Mutex<BackendPrivateKey>`.
 pub struct CaState {
+    /// Unique identifier for this CA (matches `CaConfig.id`).
+    pub id: String,
     /// CA private key (used for signing certificates and CRLs).
     pub key: BackendPrivateKey,
     /// DER-encoded CA certificate.
@@ -244,6 +282,10 @@ pub struct CaState {
     /// When `true`, `issue_with_params` rejects issuance when the computed
     /// validity exceeds 200 days (CA/B Forum BR §6.3.2).
     pub enforce_validity_cap: bool,
+    /// How long (in seconds) a signed CRL is valid.  Determines the cache TTL.
+    pub crl_next_update_secs: u64,
+    /// Per-CA CAA identities (falls back to `server.caa_identities` when empty).
+    pub caa_identities: Vec<String>,
 }
 
 /// Cached account key material stored in `AppState::spki_cache`.
@@ -347,6 +389,8 @@ pub struct AdminSession {
     pub operator_id: i64,
     pub name: zeroize::Zeroizing<String>,
     pub role: OperatorRole,
+    /// CA scope for `ca_ra` operators.  Empty means server-wide.
+    pub ca_id: String,
     /// When this session token was issued.
     pub created_at: Instant,
     /// Updated on every authenticated request; TTL is measured from this.

@@ -340,10 +340,13 @@ fn account_json(row: &AccountRow, contacts: &[String], pfx: &str) -> serde_json:
 }
 
 fn parse_contacts(contact_json: &Option<String>) -> Vec<String> {
-    contact_json
-        .as_deref()
-        .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
-        .unwrap_or_default()
+    match contact_json.as_deref() {
+        None => vec![],
+        Some(s) => serde_json::from_str::<Vec<String>>(s).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "corrupt contact JSON in account row; returning empty list");
+            vec![]
+        }),
+    }
 }
 
 fn validate_contacts(contacts: &[String]) -> Result<(), AcmeError> {

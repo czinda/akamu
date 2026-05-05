@@ -90,6 +90,9 @@ zeroize = { version = "1", features = ["zeroize_derive"] }
 
 # Regular expressions (profile identifier authorization)
 regex = { version = "1", default-features = false, features = ["std", "unicode-bool"] }
+
+# Ordered hash map (stable-insertion-order HashMap) for multi-CA registry
+indexmap = "2"
 # POSIX file locking (flock) for MTC log exclusion
 libc = "0.2"
 

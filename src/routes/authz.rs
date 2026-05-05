@@ -133,6 +133,7 @@ pub async fn new_authz(
         &state.db,
         &account_id,
         &identifier_json,
+        &ca_id.0,
         now,
     )
     .await?
@@ -143,7 +144,7 @@ pub async fn new_authz(
             .ok_or(AcmeError::NotFound)?;
         let location = format!("{pfx}/authz/{}", authz.id);
         let thumbprint = ctx.jwk_thumbprint.as_deref().unwrap_or("");
-        let body = build_authz_json(&authz, &challenges, &pfx, &state, thumbprint);
+        let body = build_authz_json(&authz, &challenges, &pfx, &state, thumbprint)?;
         let mut resp = json_response(&state, &ca_id.0, StatusCode::CREATED, body, &ctx.next_nonce)?;
         resp.headers_mut()
             .insert(axum::http::header::LOCATION, location.parse().unwrap());
@@ -168,7 +169,7 @@ pub async fn new_authz(
         )));
     }
 
-    let token = gen_token();
+    let token = gen_token()?;
     let dns_persist_enabled = !state.config.server.dns_persist_issuer_domains.is_empty();
     let dns_types: &[&str] = if dns_persist_enabled {
         &["http-01", "dns-01", "tls-alpn-01", "dns-persist-01"]
@@ -197,8 +198,8 @@ pub async fn new_authz(
         sqlx::query(
             "INSERT INTO authorizations
              (id, order_id, account_id, status, identifier, expires,
-              wildcard, subdomain_auth_allowed, created, updated)
-             VALUES (?, NULL, ?, 'pending', ?, ?, 0, ?, ?, ?)",
+              wildcard, subdomain_auth_allowed, created, updated, ca_id)
+             VALUES (?, NULL, ?, 'pending', ?, ?, 0, ?, ?, ?, ?)",
         )
         .bind(&authz_id)
         .bind(&account_id)
@@ -207,6 +208,7 @@ pub async fn new_authz(
         .bind(subdomain_auth_allowed as i64)
         .bind(now)
         .bind(now)
+        .bind(&ca_id.0)
         .execute(&mut *tx)
         .await
         .map_err(AcmeError::from)?;
@@ -222,7 +224,7 @@ pub async fn new_authz(
 
     let location = format!("{pfx}/authz/{authz_id}");
     let thumbprint = ctx.jwk_thumbprint.as_deref().unwrap_or("");
-    let body = build_authz_json(&authz, &chall_rows, &pfx, &state, thumbprint);
+    let body = build_authz_json(&authz, &chall_rows, &pfx, &state, thumbprint)?;
     let mut resp = json_response(&state, &ca_id.0, StatusCode::CREATED, body, &ctx.next_nonce)?;
     resp.headers_mut()
         .insert(axum::http::header::LOCATION, location.parse().unwrap());
@@ -239,7 +241,7 @@ fn build_authz_json<'a>(
     acme_pfx: &str,
     state: &AppState,
     jwk_thumbprint: &str,
-) -> AuthzJson<'a> {
+) -> Result<AuthzJson<'a>, AcmeError> {
     let issuer_domains = state.config.dns_persist_issuer_domains();
     let challs: Vec<ChallengeJson<'_>> = challenges
         .iter()
@@ -273,24 +275,30 @@ fn build_authz_json<'a>(
         })
         .collect();
     let identifier = serde_json::value::RawValue::from_string(authz.identifier.clone())
-        .unwrap_or_else(|_| serde_json::value::RawValue::from_string("{}".to_string()).unwrap());
-    AuthzJson {
+        .map_err(|e| {
+            AcmeError::Internal(format!(
+                "corrupt identifier JSON in authorization {}: {e}",
+                authz.id
+            ))
+        })?;
+    Ok(AuthzJson {
         status: &authz.status,
         identifier,
         challenges: challs,
         wildcard: authz.wildcard != 0,
         subdomain_auth_allowed: authz.subdomain_auth_allowed != 0,
         expires: authz.expires.map(fmt_time),
-    }
+    })
 }
 
 /// Generate a random base64url-encoded token (32 bytes, no padding).
-fn gen_token() -> String {
+fn gen_token() -> Result<String, AcmeError> {
     let mut bytes = [0u8; 32];
-    getrandom::getrandom(&mut bytes).expect("CSPRNG failure — cannot issue challenge token");
+    getrandom::getrandom(&mut bytes)
+        .map_err(|e| AcmeError::Internal(format!("CSPRNG failure: {e}")))?;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
-    URL_SAFE_NO_PAD.encode(bytes)
+    Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 
 pub async fn get_authz(
@@ -322,9 +330,12 @@ pub async fn get_authz(
         if order.ca_id != ca_id.0 {
             return Err(AcmeError::NotFound);
         }
+    } else if !authz.ca_id.is_empty() && authz.ca_id != "default" && authz.ca_id != ca_id.0 {
+        // Standalone pre-authz: enforce the CA namespace it was created under.
+        return Err(AcmeError::NotFound);
     }
     let thumbprint = ctx.jwk_thumbprint.as_deref().unwrap_or("");
-    let body = build_authz_json(&authz, &challenges, &pfx, &state, thumbprint);
+    let body = build_authz_json(&authz, &challenges, &pfx, &state, thumbprint)?;
     json_response(&state, &ca_id.0, StatusCode::OK, body, &ctx.next_nonce)
 }
 
@@ -345,6 +356,7 @@ mod tests {
             subdomain_auth_allowed: 0,
             created: 1_700_000_000,
             updated: 1_700_000_000,
+            ca_id: "default".to_string(),
         }
     }
 
@@ -413,7 +425,7 @@ mod tests {
     /// gen_token produces a non-empty base64url string.
     #[test]
     fn gen_token_is_non_empty_base64url() {
-        let t = gen_token();
+        let t = gen_token().expect("CSPRNG available in test");
         assert!(!t.is_empty());
         assert!(t
             .chars()

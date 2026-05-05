@@ -108,6 +108,7 @@ mod tests {
                 created: 1_700_000_000,
                 updated: 1_700_000_000,
                 profile_grants: None,
+                ca_id: String::new(),
             },
         )
         .await
@@ -143,6 +144,7 @@ mod tests {
                 created: 1_700_000_000,
                 updated: 1_700_000_000,
                 profile_grants: None,
+                ca_id: String::new(),
             },
         )
         .await

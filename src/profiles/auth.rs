@@ -263,6 +263,7 @@ mod tests {
             created: 0,
             updated: 0,
             profile_grants: Some("[\"tls-server\",\"mtc\"]".to_string()),
+            ca_id: String::new(),
         };
         crate::db::accounts::insert(&db, row.clone()).await.unwrap();
         assert!(check_account_grant(&db, "acct-grant-1", "tls-server")

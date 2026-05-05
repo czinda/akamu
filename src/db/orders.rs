@@ -481,6 +481,7 @@ mod tests {
                 subdomain_auth_allowed: 0,
                 created: 1_700_000_000,
                 updated: 1_700_000_000,
+                ca_id: "default".to_string(),
             },
         )
         .await

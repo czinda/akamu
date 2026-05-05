@@ -652,6 +652,7 @@ async fn admin_cas_list_returns_both_cas() {
             created_at: Instant::now(),
             last_active_at: Instant::now(),
             auth_method: AdminAuthMethod::Cert,
+            ca_id: String::new(),
         },
     )]
     .into_iter()

@@ -115,6 +115,9 @@ mod tests {
     fn make_ca() -> (synta_certificate::BackendPrivateKey, Vec<u8>) {
         let dir = tempfile::TempDir::new().unwrap();
         let config = crate::config::CaConfig {
+            id: "default".to_owned(),
+            is_default: true,
+            caa_identities: vec![],
             key_file: dir.path().join("ca.key").to_str().unwrap().into(),
             cert_file: dir.path().join("ca.crt").to_str().unwrap().into(),
             key_type: "ec:P-256".into(),

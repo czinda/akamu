@@ -346,7 +346,13 @@ async fn build_akamu_state(
             max_connections: None,
             require_tls: false,
         },
-        ca: CaConfig {
+        cas: vec![CaConfig {
+
+            id: "default".to_owned(),
+
+            is_default: true,
+
+            caa_identities: vec![],
             key_file: dir.join("ca.key").to_string_lossy().into_owned(),
             cert_file: dir.join("ca.crt").to_string_lossy().into_owned(),
             key_type: "ec:P-256".into(),
@@ -361,7 +367,7 @@ async fn build_akamu_state(
             enforce_validity_cap: false,
             require_encrypted_key: false,
             key_password_file: None,
-        },
+        }],
         mtc: MtcConfig {
             log_path: mtc_log_path.clone(),
             enabled: true,
@@ -390,7 +396,7 @@ async fn build_akamu_state(
         admin: None,
     });
 
-    let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
+    let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
     let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();
     let ca_aki_bytes = ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
 
@@ -418,6 +424,7 @@ async fn build_akamu_state(
         ocsp_url: None,
         aki_bytes: ca_aki_bytes,
         enforce_validity_cap: false,
+        caa_identities: vec![],
     });
 
     Arc::new(AppState {

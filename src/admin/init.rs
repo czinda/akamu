@@ -125,6 +125,7 @@ pub async fn bootstrap_operator_if_needed(
                 "administrator",
                 None,
                 Some(principal.as_str()),
+                "", // administrator is always server-wide
                 &now,
             )
             .await
@@ -232,6 +233,7 @@ pub async fn bootstrap_operator_if_needed(
         "administrator",
         Some(&fingerprint),
         None,
+        "", // administrator is always server-wide
         &now,
     )
     .await

@@ -64,7 +64,13 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
             max_connections: None,
             require_tls: false,
         },
-        ca: CaConfig {
+        cas: vec![CaConfig {
+
+            id: "default".to_owned(),
+
+            is_default: true,
+
+            caa_identities: vec![],
             key_file: dir.join("ca.key").to_string_lossy().into_owned(),
             cert_file: dir.join("ca.crt").to_string_lossy().into_owned(),
             key_type: "ec:P-256".into(),
@@ -79,7 +85,7 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
             enforce_validity_cap: false,
             require_encrypted_key: false,
             key_password_file: None,
-        },
+        }],
         mtc: MtcConfig {
             log_path: mtc_log_path.clone(),
             enabled: true,
@@ -100,7 +106,7 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
         admin: None,
     });
 
-    let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
+    let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
     let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();
     let ca_aki_bytes = ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
 
@@ -115,6 +121,8 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
     let shared_log = Arc::new(tokio::sync::Mutex::new(raw_log));
 
     let ca = Arc::new(CaState {
+        id: "default".into(),
+        crl_next_update_secs: 86400,
         key: ca_key,
         cert_der: ca_cert_der,
         hash_alg: "sha256".into(),
@@ -123,6 +131,7 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
         ocsp_url: None,
         aki_bytes: ca_aki_bytes,
         enforce_validity_cap: false,
+        caa_identities: vec![],
     });
 
     Arc::new(AppState {
@@ -130,7 +139,12 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
         db: db_conn.clone(),
         db_kind: db::DbKind::Sqlite,
         profiles: akamu::profiles::ProfileRegistry::empty(&ca),
-        ca,
+        cas: {
+            let mut _ca_map = indexmap::IndexMap::new();
+            _ca_map.insert("default".to_string(), ca.clone());
+            Arc::new(_ca_map)
+        },
+        default_ca_id: Arc::new("default".to_string()),
         mtc: Arc::new(MtcState {
             log: Some(shared_log),
             algorithm: HashAlgorithm::Sha256,
@@ -142,12 +156,19 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
         tls: None,
         spki_cache: Arc::new(RwLock::new(HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),
-        link_header: Arc::new(
-            axum::http::HeaderValue::from_str(&format!(
-                "<{base_url}/acme/directory>;rel=\"index\""
-            ))
-            .unwrap(),
-        ),
+        link_headers: Arc::new({
+            let mut _lh_map = std::collections::HashMap::new();
+            _lh_map.insert(
+                "default".to_string(),
+                Arc::new(
+                    axum::http::HeaderValue::from_str(&format!(
+                        "<{base_url}/acme/directory>;rel=\"index\""
+                    ))
+                    .unwrap(),
+                ),
+            );
+            _lh_map
+        }),
         validation_client: {
             use hyper_rustls::HttpsConnectorBuilder;
             use hyper_util::client::legacy::Client;
@@ -160,7 +181,15 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
                 .build();
             Client::builder(TokioExecutor::new()).build(https)
         },
-        crl_cache: Default::default(),
+        crl_caches: Arc::new({
+
+            let mut _crl_map = std::collections::HashMap::new();
+
+            _crl_map.insert("default".to_string(), Default::default());
+
+            _crl_map
+
+        }),
         audit: std::sync::Arc::new(akamu::audit::AuditState::new()),
         audit_policy: std::sync::Arc::new(akamu::audit::AuditPolicy::default()),
         admin_sessions: None,
