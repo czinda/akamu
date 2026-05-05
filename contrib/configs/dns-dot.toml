@@ -1,0 +1,26 @@
+# dns-dot.toml — DNS-over-TLS (DoT) for challenge validation queries.
+#
+# Use when challenge validation DNS queries must be encrypted end-to-end,
+# for example in compliance with CA/B Forum BR §3.2.2.4 DNSSEC requirements
+# or when an unencrypted DNS path is untrusted.  DoT sends queries on port 853
+# with TLS (RFC 7858) instead of plain UDP/TCP port 53.
+
+listen_addr = "0.0.0.0:8080"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "sqlite:///var/lib/akamu/acme.db"
+
+[ca]
+key_file  = "/etc/akamu/certs/ca.key.pem"
+cert_file = "/etc/akamu/certs/ca.cert.pem"
+
+[server]
+# Address of the DoT resolver.  Must be an IP:port pointing to a DoT server.
+dns_resolver_addr = "1.1.1.1:853"
+
+# TLS SNI hostname sent during the DoT handshake; must match the resolver cert.
+dns_dot_server_name = "cloudflare-dns.com"
+
+# DNSSEC validation is mandatory for CA/B Forum BR §3.2.2.4 since 2026-03-15.
+validate_dnssec = true

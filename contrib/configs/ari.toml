@@ -1,0 +1,26 @@
+# ari.toml — Renewal Information (ARI) endpoint configuration (RFC 9773).
+#
+# Use to provide renewal timing hints to ACME clients that support ARI.
+# Clients poll GET /acme/renewal-info/{certID} to learn the suggested renewal
+# window; Akāmu responds with a suggested time range and a retry interval.
+# Most clients (e.g. Certbot ≥ 2.8, acme.sh ≥ 3.0) support ARI natively.
+
+listen_addr = "0.0.0.0:8080"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "sqlite:///var/lib/akamu/acme.db"
+
+[ca]
+key_file  = "/etc/akamu/certs/ca.key.pem"
+cert_file = "/etc/akamu/certs/ca.cert.pem"
+
+[server]
+# How often (seconds) clients should re-poll the renewal-info endpoint.
+# Default: 21600 (6 hours).  Shorter values give clients fresher guidance
+# but increase server load.
+ari_retry_after_secs = 3600   # 1 hour
+
+# Optional URL included in ARI responses as explanationURL (RFC 9773 §4.1).
+# Link to a page explaining your renewal policy, scheduled maintenance, etc.
+ari_explanation_url = "https://acme.example.com/renewal-info"

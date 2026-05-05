@@ -1,0 +1,22 @@
+# subdomain-auth.toml — RFC 9444 subdomain authorization.
+#
+# Use when ACME clients need to issue certificates for subdomains without
+# re-validating each one individually.  With subdomain authorization enabled,
+# a validated authorization for example.com can be reused to issue certificates
+# for sub.example.com, deep.sub.example.com, etc., within the same account.
+# Akāmu advertises this capability in the directory meta object.
+
+listen_addr = "0.0.0.0:8080"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "sqlite:///var/lib/akamu/acme.db"
+
+[ca]
+key_file  = "/etc/akamu/certs/ca.key.pem"
+cert_file = "/etc/akamu/certs/ca.cert.pem"
+
+[server]
+# Advertise RFC 9444 subdomain authorization support in /acme/directory.
+# Clients that support RFC 9444 will reuse ancestor authorizations automatically.
+allow_subdomain_auth = true

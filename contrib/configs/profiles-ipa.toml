@@ -1,0 +1,38 @@
+# profiles-ipa.toml — Certificate profiles loaded from FreeIPA / IPAThinCA via LDAP.
+#
+# Use in FreeIPA-managed environments where certificate profiles are already
+# defined in the IPA CA.  Akāmu fetches profiles over GSSAPI-authenticated
+# LDAP and re-reads them periodically.  The IPA keytab must allow ldap/ binds.
+
+listen_addr = "0.0.0.0:8080"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "sqlite:///var/lib/akamu/acme.db"
+
+[ca]
+key_file  = "/etc/akamu/certs/ca.key.pem"
+cert_file = "/etc/akamu/certs/ca.cert.pem"
+
+[profiles]
+refresh_interval_secs = 3600
+
+[profiles.providers.ipa]
+type = "ipa"
+# Profiles to expose via ACME; empty list loads all available IPA CA profiles.
+profiles = ["caIPAserviceCert", "IECUserRoles"]
+
+[profiles.providers.ipa.ldap]
+# IPA CA LDAP endpoint (port 7389 is the IPA-internal LDAP, not the standard 389).
+uri     = "ldap://ipa.example.com:7389"
+base_dn = "o=ipaca"
+# Authenticate with Kerberos; the keytab must hold a service or host principal
+# that has read access to the IPA CA profile subtree.
+gssapi      = true
+keytab_file = "/etc/akamu/akamu.keytab"
+principal   = "akamu/akamu.example.com@EXAMPLE.COM"
+# Uncomment to discover the LDAP server via _ldap._tcp SRV records instead.
+# srv_domain = "example.com"
+# Uncomment to upgrade the plain LDAP connection to TLS (StartTLS).
+# starttls         = true
+# tls_ca_cert_file = "/etc/ipa/ca.crt"

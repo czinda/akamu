@@ -1,0 +1,52 @@
+# admin-audit.toml — Admin API with strict audit logging and security alarms.
+#
+# Use for high-security deployments that must satisfy audit requirements
+# (FAU_STG.4, FAU_ARP.1, FIA_AFL.1).  The server halts rather than silently
+# dropping audit events, and raises a syslog alarm on repeated security violations.
+
+listen_addr = "0.0.0.0:8080"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "sqlite:///var/lib/akamu/acme.db"
+
+[ca]
+key_file  = "/etc/akamu/certs/ca.key.pem"
+cert_file = "/etc/akamu/certs/ca.cert.pem"
+
+[admin]
+listen_addr = "127.0.0.1:9443"
+cert_file   = "/etc/akamu/admin-tls.pem"
+key_file    = "/etc/akamu/admin-tls-key.pem"
+ca_certs    = ["/etc/akamu/operator-ca.pem"]
+
+# ── Session controls (FTA_SSL_EXT.1, FIA_AFL.1) ───────────────────────────────
+
+# Sessions expire after 1 hour of total lifetime.
+session_ttl_secs = 3600
+
+# After 10 minutes of inactivity the session enters locked state; the operator
+# must re-authenticate.  Must be less than session_ttl_secs.
+session_lock_secs = 600
+
+# Lock out an operator after 3 failed authentication attempts (FIA_AFL.1).
+max_failed_auth = 3
+
+# Keep the operator locked out for 1 hour after exceeding max_failed_auth.
+lockout_duration_secs = 3600
+
+# ── Audit storage (FAU_STG.4) ─────────────────────────────────────────────────
+
+# Retain at most 5 million audit rows.
+audit_max_rows = 5000000
+
+# Halt the server rather than silently dropping the oldest events when full.
+audit_overflow = "halt"
+
+# ── Security alarm (FAU_ARP.1) ────────────────────────────────────────────────
+
+# Raise an alarm when 5 or more SecurityViolation events occur within 5 minutes.
+audit_alarm_threshold = 5
+
+# Write an ALERT-level syslog message when the threshold is crossed.
+audit_alarm_action = "syslog"

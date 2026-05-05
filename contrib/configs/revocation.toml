@@ -1,0 +1,28 @@
+# revocation.toml — Built-in CRL and OCSP revocation endpoints enabled.
+#
+# Use when certificate relying parties need to check revocation status.
+# Akāmu serves a CRL at /ca/crl and an OCSP responder at /ca/ocsp.
+# Both URLs are embedded in issued certificates via the CDP and AIA extensions.
+
+listen_addr = "0.0.0.0:8080"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "sqlite:///var/lib/akamu/acme.db"
+
+[ca]
+key_file  = "/etc/akamu/certs/ca.key.pem"
+cert_file = "/etc/akamu/certs/ca.cert.pem"
+
+# Embed the CRL distribution point in every issued certificate.
+# Clients download the CRL from this URL to check for revocations.
+crl_url = "http://acme.example.com/ca/crl"
+
+# Embed the OCSP responder URL in every issued certificate.
+# Clients send OCSP requests here for real-time revocation status.
+ocsp_url = "http://acme.example.com/ca/ocsp"
+
+# How long the served CRL remains valid (nextUpdate field).
+# Shorter windows give clients fresher data but increase CRL traffic.
+# Default: 86400 (1 day).
+crl_next_update_secs = 43200   # 12 hours

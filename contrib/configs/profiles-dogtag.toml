@@ -1,0 +1,25 @@
+# profiles-dogtag.toml — Certificate profiles loaded from Dogtag PKI .cfg files.
+#
+# Use when Dogtag PKI is your backend CA and its profile .cfg files are
+# accessible on the filesystem where Akāmu runs.  Akāmu reads the directory
+# and exposes matching profiles to ACME clients.
+
+listen_addr = "0.0.0.0:8080"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "sqlite:///var/lib/akamu/acme.db"
+
+[ca]
+key_file  = "/etc/akamu/certs/ca.key.pem"
+cert_file = "/etc/akamu/certs/ca.cert.pem"
+
+[profiles]
+refresh_interval_secs = 3600
+
+[profiles.providers.dogtag]
+type = "dogtag"
+# Directory containing Dogtag CA profile .cfg files.
+profile_dir = "/etc/pki/pki-tomcat/ca/profiles/ca"
+# Restrict to a named subset; empty list loads every .cfg file in the directory.
+profiles = []

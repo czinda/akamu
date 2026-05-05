@@ -1,0 +1,25 @@
+# eab-hkdf.toml — External Account Binding with HKDF-derived dynamic keys.
+#
+# Use when operators must provision EAB credentials at runtime without editing
+# config.  An admin calls GET /admin/eab to create a new kid; Akāmu derives
+# its HMAC key from eab_master_secret via HKDF-SHA256 so the key is never
+# stored in the database.  Rotating the master secret invalidates all keys.
+# For a fixed small set of clients, see eab-static.toml instead.
+
+listen_addr = "0.0.0.0:8080"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "sqlite:///var/lib/akamu/acme.db"
+
+[ca]
+key_file  = "/etc/akamu/certs/ca.key.pem"
+cert_file = "/etc/akamu/certs/ca.cert.pem"
+
+[server]
+external_account_required = true
+
+# Base64url-encoded master secret used by HKDF to derive per-kid HMAC keys.
+# Must be at least 32 bytes of cryptographically random data.
+# Generate: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
+eab_master_secret = "REPLACE_WITH_RANDOM_BASE64URL_SECRET_AT_LEAST_32_BYTES"

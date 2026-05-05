@@ -1,0 +1,29 @@
+# star.toml — Short-Term Automatic Renewal (STAR) certificates (RFC 8739).
+#
+# Use for CDN or proxy deployments where a delegated entity (e.g. a CDN PoP)
+# needs a rolling stream of short-lived certificates without running an ACME
+# client on every renewal.  The CDN polls /acme/order/{id}/certificate
+# periodically; the server issues a fresh cert each time within the order window.
+
+listen_addr = "0.0.0.0:8080"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "sqlite:///var/lib/akamu/acme.db"
+
+[ca]
+key_file  = "/etc/akamu/certs/ca.key.pem"
+cert_file = "/etc/akamu/certs/ca.cert.pem"
+
+[server]
+# Minimum lifetime for a single STAR certificate (seconds).
+# Default: no minimum enforced.
+star_min_lifetime_secs = 86400     # 1 day minimum per-cert lifetime
+
+# Maximum total duration of a STAR order (seconds).
+# After this window the order expires and the client must create a new one.
+star_max_duration_secs = 2592000   # 30 days maximum order window
+
+# Allow unauthenticated GET of rolling STAR certificates.
+# Required by RFC 8739 §3.3 when CDN PoPs fetch certs without ACME credentials.
+star_allow_certificate_get = true

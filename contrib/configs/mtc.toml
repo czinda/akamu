@@ -1,0 +1,38 @@
+# mtc.toml — Merkle Tree Certificate (MTC) transparency log enabled.
+#
+# Use when you want an append-only cryptographic log of all issued certificates
+# following the Merkle Tree Certificates draft.  Akāmu appends each issued
+# certificate to the log and periodically produces signed checkpoints.
+# The MTC signing key must be distinct from the X.509 CA key (MTC §5.5).
+
+listen_addr = "0.0.0.0:8080"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "sqlite:///var/lib/akamu/acme.db"
+
+[ca]
+key_file  = "/etc/akamu/certs/ca.key.pem"
+cert_file = "/etc/akamu/certs/ca.cert.pem"
+
+[mtc]
+# Path to the disk-backed MTC log file.
+log_path = "/var/lib/akamu/mtc.log"
+# Append all issued certificates to the log.
+enabled  = true
+
+# How often Akāmu produces a new signed checkpoint (seconds). Default: 3600.
+checkpoint_interval_secs = 3600   # 1 hour
+
+# How often a new landmark tree size is frozen (seconds). Default: 86400.
+landmark_interval_secs = 86400    # 1 day
+
+# Maximum landmarks to keep before pruning the oldest. Default: 100.
+max_active_landmarks = 100
+
+[mtc.signing_key]
+# Auto-generated on first run if key_file does not exist.
+# Must be a different key than the X.509 CA key.
+key_file = "/etc/akamu/mtc-signing.key"
+key_type = "ec:P-256"
+hash_alg = "sha256"

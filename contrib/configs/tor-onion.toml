@@ -1,0 +1,22 @@
+# tor-onion.toml — Certificate issuance for .onion hidden service identifiers (RFC 9799).
+#
+# Use when ACME clients need TLS certificates for Tor hidden services (.onion domains).
+# Akāmu supports the onion-csr-01 challenge type defined in RFC 9799.
+# The server must be able to reach the Tor network outbound; configure a Tor
+# SOCKS proxy (typically at 127.0.0.1:9050) in the host environment before
+# enabling this option.
+
+listen_addr = "0.0.0.0:8080"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "sqlite:///var/lib/akamu/acme.db"
+
+[ca]
+key_file  = "/etc/akamu/certs/ca.key.pem"
+cert_file = "/etc/akamu/certs/ca.cert.pem"
+
+[server]
+# Enable Tor connectivity so Akāmu can validate .onion identifiers.
+# Requires the Tor daemon to be running and reachable from the server host.
+tor_connectivity_enabled = true

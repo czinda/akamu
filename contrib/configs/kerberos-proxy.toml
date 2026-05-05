@@ -1,0 +1,25 @@
+# kerberos-proxy.toml — Kerberos authentication delegated to a reverse proxy.
+#
+# Use when an upstream proxy (nginx with mod_auth_gssapi, Apache with
+# mod_auth_kerb, or similar) handles SPNEGO negotiation and forwards the
+# authenticated username via the X-Remote-User header.  Akāmu maps that
+# header value to an ACME account without touching Kerberos itself.
+#
+# Example nginx snippet:
+#   auth_gssapi_keytab /etc/nginx/http.keytab;
+#   proxy_set_header X-Remote-User $remote_user;
+
+listen_addr = "127.0.0.1:8080"   # listen only on loopback; proxy sits in front
+base_url    = "https://acme.example.com"
+
+[database]
+url = "sqlite:///var/lib/akamu/acme.db"
+
+[ca]
+key_file  = "/etc/akamu/certs/ca.key.pem"
+cert_file = "/etc/akamu/certs/ca.cert.pem"
+
+[server]
+# CIDR blocks from which X-Remote-User is trusted.  Requests from other source
+# IPs never have the header honoured, preventing header-injection attacks.
+trusted_proxies = ["127.0.0.1/32", "::1/128"]

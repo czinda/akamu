@@ -1,0 +1,30 @@
+# tls-mutual.toml — Mutual TLS: ACME clients must present a client certificate.
+#
+# Use to restrict ACME access to a known set of machines whose certificates
+# are signed by an internal CA (e.g. a corporate PKI or another Akāmu instance).
+# Clients without a valid cert receive a TLS handshake rejection.
+
+listen_addr = "0.0.0.0:443"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "sqlite:///var/lib/akamu/acme.db"
+
+[ca]
+key_file  = "/etc/akamu/certs/ca.key.pem"
+cert_file = "/etc/akamu/certs/ca.cert.pem"
+
+[tls]
+enabled   = true
+cert_file = "/etc/akamu/server.pem"
+key_file  = "/etc/akamu/server.key"
+
+[tls.client_auth]
+# Reject connections from clients that do not present a certificate.
+required = true
+# PEM files with the CA(s) that signed the allowed client certificates.
+ca_files = ["/etc/akamu/client-ca.pem"]
+# Use RFC 5280 path validation instead of WebPKI for internal CA chains.
+profile  = "rfc5280"
+# Uncomment to also accept ML-DSA / hybrid composite keys in client certs.
+# allow_post_quantum = true

@@ -1,0 +1,43 @@
+# profiles-builtin.toml — Inline certificate profiles defined in config.
+#
+# Use when you need distinct certificate templates (different EKUs, key usages,
+# or validity periods) without an external PKI system.  Profiles are referenced
+# by ACME clients in newOrder requests via the "profile" field.
+
+listen_addr = "0.0.0.0:8080"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "sqlite:///var/lib/akamu/acme.db"
+
+[ca]
+key_file  = "/etc/akamu/certs/ca.key.pem"
+cert_file = "/etc/akamu/certs/ca.cert.pem"
+
+[profiles]
+# Re-read profile definitions from config every hour.
+refresh_interval_secs = 3600
+
+[profiles.providers.local]
+type = "builtin"
+
+# ── TLS server certificate profile ────────────────────────────────────────────
+[profiles.providers.local.profiles.tlsserver]
+description   = "TLS server certificate — 90-day validity, server_auth EKU"
+validity_days = 90
+key_usage     = ["digital_signature", "key_encipherment"]
+eku           = ["server_auth"]
+# Restrict to P-256 and P-384 CSR keys; remove to allow any key type.
+allowed_key_types = ["ec:P-256", "ec:P-384"]
+# Only issue for names under example.com; remove to allow any identifier.
+# allowed_identifiers = ["dns:.*\\.example\\.com"]
+
+# ── Client authentication certificate profile ─────────────────────────────────
+[profiles.providers.local.profiles.clientauth]
+description   = "Client authentication certificate — requires explicit account grant"
+validity_days = 365
+key_usage     = ["digital_signature"]
+eku           = ["client_auth"]
+# An operator must explicitly grant each account access to this profile via
+# the Admin API before the account can order certificates under it.
+require_account_grant = true

@@ -1,0 +1,38 @@
+# mtc-cosigner.toml — MTC transparency log with external checkpoint cosigners.
+#
+# Use when multiple independent parties must co-sign each MTC checkpoint for
+# distributed trust.  Akāmu POSTs the DER-encoded Checkpoint to each cosigner
+# URL and incorporates the returned DER SubtreeSignature into the checkpoint.
+# Each cosigner runs the akamu-cosigner daemon (see contrib/packages/).
+
+listen_addr = "0.0.0.0:8080"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "sqlite:///var/lib/akamu/acme.db"
+
+[ca]
+key_file  = "/etc/akamu/certs/ca.key.pem"
+cert_file = "/etc/akamu/certs/ca.cert.pem"
+
+[mtc]
+log_path = "/var/lib/akamu/mtc.log"
+enabled  = true
+checkpoint_interval_secs = 3600
+
+[mtc.signing_key]
+key_file = "/etc/akamu/mtc-signing.key"
+key_type = "ec:P-256"
+hash_alg = "sha256"
+
+# ── External cosigners ────────────────────────────────────────────────────────
+# Repeat [[mtc.cosigners]] for each independent cosigner endpoint.
+
+[[mtc.cosigners]]
+url = "https://cosigner-a.example.com/sign"
+# Optional: PEM certificate of cosigner A; used to verify the returned signature.
+cosigner_id_cert_pem = "/etc/akamu/cosigner-a.pem"
+
+[[mtc.cosigners]]
+url = "https://cosigner-b.example.org/sign"
+cosigner_id_cert_pem = "/etc/akamu/cosigner-b.pem"

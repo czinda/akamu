@@ -1,0 +1,30 @@
+# development.toml — Developer-friendly configuration for local testing.
+#
+# Use this when running Akāmu in a local or isolated lab environment where
+# real DNS, real TLS, and real Kerberos are not available.  Several
+# production-safety guards are intentionally relaxed here.
+
+listen_addr = "127.0.0.1:8080"
+base_url    = "http://localhost:8080"
+
+[database]
+# In-memory SQLite — state is lost on restart; useful for unit/integration tests.
+url = "sqlite://:memory:"
+
+[ca]
+key_file  = "/tmp/akamu-dev/ca.key.pem"
+cert_file = "/tmp/akamu-dev/ca.cert.pem"
+# Shorter validity so test certificates expire quickly.
+validity_days = 30
+
+[server]
+# Allow http-01 validation against loopback / RFC-1918 addresses (SSRF risk in prod).
+http_validation_allow_private_ips = true
+
+# Override to a non-privileged port so Akāmu can validate its own test challenges.
+http_validation_port = 5002
+
+# DNSSEC validation requires a DNSSEC-aware resolver.  Disable when using a
+# local stub resolver that does not validate (e.g. systemd-resolved in some configs).
+# Required by CA/B Forum BR since 2026-03-15; set to true in production.
+validate_dnssec = false

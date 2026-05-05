@@ -1,0 +1,23 @@
+# tls-native.toml — Akāmu terminates TLS directly (no reverse proxy).
+#
+# Use when there is no nginx/haproxy in front of Akāmu.  Provide a real
+# certificate signed by a publicly trusted CA (e.g. obtained via another
+# ACME client such as Certbot) so that ACME clients trust the server.
+
+listen_addr = "0.0.0.0:443"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "sqlite:///var/lib/akamu/acme.db"
+
+[ca]
+key_file  = "/etc/akamu/certs/ca.key.pem"
+cert_file = "/etc/akamu/certs/ca.cert.pem"
+
+[tls]
+enabled   = true
+# PEM file with the server leaf certificate followed by any intermediate certs.
+cert_file = "/etc/akamu/server.pem"
+key_file  = "/etc/akamu/server.key"
+# Drop TLSv1.2 for strict deployments; keep it for broader client compatibility.
+protocols = ["TLSv1.2", "TLSv1.3"]

@@ -1,0 +1,27 @@
+# eab-static.toml — External Account Binding with pre-provisioned static keys.
+#
+# Use when a fixed set of known ACME clients must register.  The operator
+# creates kid/key pairs out-of-band and distributes them to clients.
+# Keys are inserted once at startup (INSERT OR IGNORE) and survive restarts.
+# For dynamic key provisioning without manual distribution see eab-hkdf.toml.
+
+listen_addr = "0.0.0.0:8080"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "sqlite:///var/lib/akamu/acme.db"
+
+[ca]
+key_file  = "/etc/akamu/certs/ca.key.pem"
+cert_file = "/etc/akamu/certs/ca.cert.pem"
+
+[server]
+# All new account registrations must include a valid EAB credential (RFC 8555 §7.3.4).
+external_account_required = true
+
+# Static EAB keys seeded into the database at startup.
+# Values are base64url-encoded HMAC-SHA256 keys (≥ 32 bytes recommended).
+# Generate a key: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
+[server.eab_keys]
+"client-webapp-01" = "REPLACE_WITH_BASE64URL_KEY_FOR_WEBAPP"
+"client-iot-fleet"  = "REPLACE_WITH_BASE64URL_KEY_FOR_IOT"

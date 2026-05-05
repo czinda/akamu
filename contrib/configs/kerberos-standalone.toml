@@ -1,0 +1,24 @@
+# kerberos-standalone.toml — Akāmu handles GSSAPI/SPNEGO authentication directly.
+#
+# Use when there is no Kerberos-aware reverse proxy in front of Akāmu.
+# Akāmu accepts "Authorization: Negotiate <token>" on all ACME endpoints and
+# maps the authenticated Kerberos principal to an ACME account.
+# Requires a Kerberos keytab for the HTTP service principal.
+# If a reverse proxy already strips the Negotiate header, see kerberos-proxy.toml.
+
+listen_addr = "0.0.0.0:8080"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "sqlite:///var/lib/akamu/acme.db"
+
+[ca]
+key_file  = "/etc/akamu/certs/ca.key.pem"
+cert_file = "/etc/akamu/certs/ca.cert.pem"
+
+[server.gssapi]
+# Keytab containing the HTTP/<hostname>@REALM service principal.
+# Create with: kadmin -q "ktadd -k /etc/akamu/http.keytab HTTP/acme.example.com"
+keytab_file  = "/etc/akamu/http.keytab"
+# MIT Kerberos appends @<hostname> automatically; adjust for Heimdal if needed.
+service_name = "HTTP"

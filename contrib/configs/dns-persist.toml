@@ -1,0 +1,30 @@
+# dns-persist.toml — dns-persist-01 challenge support (draft-ietf-acme-dns-persist).
+#
+# Use when ACME clients cannot respond to ephemeral dns-01 challenges in real
+# time (e.g. appliances, embedded systems, or environments with slow DNS TTLs).
+# dns-persist-01 lets a client provision a long-lived TXT record once and reuse
+# it across multiple orders.  Akāmu checks for the TXT record under a fixed
+# label derived from the account key and the issuer domain.
+
+listen_addr = "0.0.0.0:8080"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "sqlite:///var/lib/akamu/acme.db"
+
+[ca]
+key_file  = "/etc/akamu/certs/ca.key.pem"
+cert_file = "/etc/akamu/certs/ca.cert.pem"
+
+[server]
+# Issuer domain(s) placed in the dns-persist-01 "issuer-domain-names" field
+# and matched against the TXT record label.  Defaults to the host portion of
+# base_url when absent.  Accepts a single string or an array.
+dns_persist_issuer_domains = ["acme.example.com"]
+
+# Optional: separate resolver for dns-persist-01 lookups only.
+# Falls back to dns_resolver_addr (or the system resolver) when absent.
+# Useful when persistent records are served by a different internal nameserver.
+# dns_persist01_resolver_addr = "192.168.1.53:53"
+
+validate_dnssec = true

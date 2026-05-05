@@ -1,0 +1,26 @@
+# hsm.toml — CA private key stored in a Hardware Security Module via PKCS#11.
+#
+# Use when key material must never leave a hardware boundary (FIPS 140-3,
+# Common Criteria).  The pkcs11-provider OpenSSL module must be installed
+# and configured before starting Akāmu (see /etc/openssl-pkcs11.conf).
+# The PKCS#11 URI format is defined in RFC 7512.
+
+listen_addr = "0.0.0.0:8080"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "sqlite:///var/lib/akamu/acme.db"
+
+[ca]
+# PKCS#11 URI identifying the CA key object on the HSM token.
+# Adjust token label, object label, and slot to match your HSM configuration.
+key_file  = "pkcs11:token=AkamuCA;object=ca-signing-key;type=private"
+cert_file = "/etc/akamu/certs/ca.cert.pem"
+
+# The HSM enforces key protection; software-side encryption is not applicable.
+# Do not set require_encrypted_key = true with a PKCS#11 key_file.
+
+# Key algorithm for the CA — must match the key pre-loaded on the HSM.
+# Common HSM-supported types: "ec:P-256", "ec:P-384", "rsa:3072", "rsa:4096".
+key_type = "ec:P-384"
+hash_alg = "sha384"

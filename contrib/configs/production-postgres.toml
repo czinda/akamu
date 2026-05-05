@@ -1,0 +1,31 @@
+# production-postgres.toml — Hardened production configuration with PostgreSQL.
+#
+# Suitable as a baseline for a public WebPKI or private enterprise ACME CA.
+# Enforces the CA/B Forum BR §6.3.2 validity cap, requires an encrypted CA key,
+# mandatory database TLS, and advertises CAA and TOS to ACME clients.
+
+listen_addr = "0.0.0.0:8080"
+base_url    = "https://acme.example.com"
+
+[database]
+url             = "postgres://akamu:CHANGE_ME@db.example.com/akamu?sslmode=require"
+max_connections = 20
+# Refuse to start if the database URL does not enable TLS (FPT_ITT.1).
+require_tls = true
+
+[ca]
+key_file             = "/etc/akamu/certs/ca.key.pem"
+cert_file            = "/etc/akamu/certs/ca.cert.pem"
+# Require the CA private key to be PKCS#8-encrypted at rest (FCS_STG_EXT.1).
+require_encrypted_key = true
+key_password_file    = "/etc/akamu/ca-key-passphrase"
+# Enforce the 200-day maximum validity required by CA/B Forum BR §6.3.2.
+enforce_validity_cap = true
+validity_days        = 90
+
+[server]
+terms_of_service_url = "https://acme.example.com/tos.html"
+website_url          = "https://acme.example.com"
+# Domain(s) to match against CAA DNS records.  Must include all names under
+# which this CA issues (RFC 8659).
+caa_identities = ["acme.example.com"]

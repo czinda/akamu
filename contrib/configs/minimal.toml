@@ -1,0 +1,16 @@
+# minimal.toml — Bare-minimum Akāmu configuration.
+#
+# Use this as a starting point when running Akāmu for the first time.
+# SQLite database, auto-generated CA, plain HTTP, no authentication required.
+# Not suitable for production; see production-postgres.toml for a hardened setup.
+
+listen_addr = "0.0.0.0:8080"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "sqlite:///var/lib/akamu/acme.db"
+
+[ca]
+# Both files are auto-generated on first run if they do not exist.
+key_file  = "/etc/akamu/certs/ca.key.pem"
+cert_file = "/etc/akamu/certs/ca.cert.pem"
