@@ -33,7 +33,7 @@ Send a POST request to `/acme/new-account` with a JWS signed by the account's pu
 | `contact` | array of strings | No | mailto: URIs for contact addresses |
 | `onlyReturnExisting` | boolean | No | If `true`, return the existing account or error |
 
-Only `mailto:` URIs are accepted as contact values. Any other scheme causes a `unsupportedContact` error.
+Contact values must be URIs (containing `:`). The server does not restrict schemes — `mailto:`, `tel:`, and other URI schemes are accepted. Reachability is not verified.
 
 **Example payload:**
 
@@ -168,4 +168,4 @@ After an account is created using `key-1`, it will have `profile_grants = ["inte
 
 - Each account is identified by the SHA-256 thumbprint of its JWK public key. The server uses this thumbprint to look up accounts without needing to parse or compare full public key material on every request.
 - Key rollover is the only mechanism to change the signing key. There is no password or other credential; possession of the private key is the sole proof of identity.
-- Contact email addresses are not validated against any mail server. Only `mailto:` URIs are accepted, but reachability is not checked.
+- Contact URIs are not validated for reachability. The server accepts any URI containing `:` (e.g. `mailto:`, `tel:`); it does not restrict the scheme or verify that the address is reachable.
