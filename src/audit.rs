@@ -432,7 +432,9 @@ pub async fn record(
         if state.row_count.load(Ordering::Acquire) > 0 {
             state.row_count.fetch_sub(1, Ordering::AcqRel);
         }
-        return Err(AcmeError::Database(format!("commit audit transaction: {e}")));
+        return Err(AcmeError::Database(format!(
+            "commit audit transaction: {e}"
+        )));
     }
 
     // FAU_ARP.1: rolling-window alarm for repeated SecurityViolation events.
@@ -500,8 +502,16 @@ pub async fn record_pair(
         return Ok(());
     }
 
-    record(db, state, policy, ev1).await?;
-    record(db, state, policy, ev2).await?;
+    // Attempt both inserts regardless of individual failures so that a failed
+    // ev1 does not silently drop ev2.  Return the first error encountered.
+    let err1 = record(db, state, policy, ev1).await.err();
+    let err2 = record(db, state, policy, ev2).await.err();
+    if let Some(e) = err1 {
+        return Err(e);
+    }
+    if let Some(e) = err2 {
+        return Err(e);
+    }
     Ok(())
 }
 
