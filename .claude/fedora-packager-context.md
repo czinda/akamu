@@ -56,7 +56,7 @@ The crate links against OpenSSL and SQLite.  Add to `rust2rpm.toml`:
 build = ["openssl-devel", "sqlite-devel"]
 comments = [
     "Rebuild this package whenever openssl-devel is updated in Fedora.",
-    "The project uses an OpenSSL fork (pqc-prs) for ML-DSA/PQ support;",
+    "ML-DSA support uses native OpenSSL 3.5+ APIs via the native-ossl crate;",
     "verify compatibility when the system OpenSSL major version changes.",
 ]
 ```
