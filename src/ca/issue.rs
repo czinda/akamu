@@ -865,7 +865,7 @@ fn lint_issued_ca_cert(cert_der: &[u8], ca_cert_der: &[u8], now: i64) -> Result<
 /// extracted from `subject_cert_der`.
 ///
 /// The issued certificate carries:
-/// - BasicConstraints: cA=TRUE, no pathLenConstraint
+/// - BasicConstraints: cA=TRUE, pathLen=0 (subject CA may sign EE certs but not further CAs)
 /// - KeyUsage: keyCertSign + cRLSign (critical)
 /// - SubjectKeyIdentifier from the subject CA's SPKI
 /// - AuthorityKeyIdentifier from the issuer CA's SPKI

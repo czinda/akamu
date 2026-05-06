@@ -170,7 +170,12 @@ The CRL:
 
 The CRL Number is encoded as a positive DER INTEGER. `encode_integer_der` handles the two's complement padding (adding a `0x00` prefix when the high bit of the first content byte is set).
 
-`build_crl` is called on each `GET /ca/crl` request by `src/routes/crl.rs`. The handler fetches all revoked entries from the DB via `db::certs::list_revoked`, converts them to `RevokedEntry` values, and returns the DER response directly. No pre-generation or caching is needed at expected issuance volumes.
+`build_crl` is called by the CRL handler in `src/routes/crl.rs`, which serves both `GET /ca/crl` (legacy, defaults to the default CA) and `GET /ca/{ca_id}/crl` (per-CA). The handler uses a per-CA in-memory cache (`AppState::crl_caches`) keyed by CA ID:
+
+1. **Fast path**: if the cached DER is still within its TTL, it is returned immediately without a DB query or signing operation.
+2. **Slow path**: if the cache is empty or expired, `db::certs::list_revoked(ca_id)` fetches all revoked certificates for that CA (bounded to `MAX_CRL_ENTRIES = 500,000`), `build_crl` signs a fresh CRL, and the result is stored in the cache with a TTL of `crl_next_update_secs / 2` (minimum 30 seconds).
+
+The `POST /admin/ca/{id}/crl/force` endpoint invalidates the per-CA cache so operators can force an immediate rebuild after a revocation.
 
 ## Multi-CA support
 
@@ -233,6 +238,20 @@ let default_ca_id = config.default_ca().id.clone();
 
 The admin API allows an operator to issue a cross-certificate: a CA certificate signed by one Akāmu CA for the public key of another CA (same-server or external). Cross-certificates are stored in the `cross_certs` table and served at `/ca/{ca_id}/cross-certs`.
 
+### Request body (`CrossSignSubject`)
+
+`POST /admin/ca/{id}/cross-sign` accepts a JSON body with two variants (mutually exclusive; serde uses `untagged` dispatch):
+
+```json
+// Variant 1 — same-server CA:
+{ "subject_ca_id": "rsa", "validity_years": 5 }
+
+// Variant 2 — external CA supplied as PEM:
+{ "subject_cert_pem": "-----BEGIN CERTIFICATE-----\n…", "validity_years": 5 }
+```
+
+`validity_years` defaults to 5 when omitted. The `{id}` path parameter identifies the issuing CA; the `subject_ca_id` or `subject_cert_pem` identifies the subject whose public key is signed.
+
 ### `issue_ca_cert`
 
 ```rust
@@ -247,12 +266,12 @@ Issues a CA certificate signed by `issuer_ca` for the public key extracted from 
 
 | Extension | Value |
 |---|---|
-| BasicConstraints | Critical; `cA=TRUE`, no `pathLenConstraint` |
+| BasicConstraints | Critical; `cA=TRUE`, `pathLen=0` |
 | KeyUsage | Critical; `keyCertSign + cRLSign` |
 | SubjectKeyIdentifier | RFC 7093 §2 Method 1 hash of the subject CA's SPKI |
 | AuthorityKeyIdentifier | RFC 7093 §2 Method 1 hash of the issuer CA's SPKI |
 
-There is deliberately no `pathLenConstraint` because cross-certificates are CA certificates — restricting the path length would prevent the subject CA from issuing end-entity certificates to subscribers. The issuer CA's own CA certificate constrains the overall chain depth.
+`pathLen=0` limits the cross-certificate to a one-hop chain: the subject CA may sign end-entity certificates but may not sign further intermediate CAs. This is the narrowest `cA=TRUE` constraint that still allows the subject CA to fulfil its role while preventing the creation of unlimited additional CA layers beneath it.
 
 Validity is computed as `validity_years` Julian years (365.25 days each) from `now`, with no 5-minute backdate clamp applied (cross-certificate issuance is operator-initiated, not time-sensitive).
 
@@ -266,4 +285,4 @@ pub(crate) fn check_is_ca_cert(cert_der: &[u8], now: i64) -> Result<(), AcmeErro
 
 Validates that a DER certificate has `BasicConstraints cA=TRUE` before it is accepted as a cross-signing subject. Uses `ValidationProfile::Rfc5280` with `ee_extension_policy = new_default_webpki_ca()` so that CABF WebPKI end-entity restrictions are bypassed and `cA=TRUE` is required. The certificate is used as its own trust anchor (self-signed root CA scenario). Returns `AcmeError::BadRequest` when the check fails.
 
-The admin cross-cert endpoint (`POST /admin/cross-certs`) calls `check_is_ca_cert` before calling `issue_ca_cert` to reject requests that supply an end-entity certificate as the subject.
+The admin cross-cert endpoint (`POST /admin/ca/{id}/cross-sign`) calls `check_is_ca_cert` before calling `issue_ca_cert` to reject requests that supply an end-entity certificate as the subject.
