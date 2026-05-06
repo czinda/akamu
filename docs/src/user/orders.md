@@ -45,12 +45,18 @@ POST to `/acme/new-order` with a JWS signed by the account key. The payload:
 
 Supported identifier types:
 
-| Type | Description | Supported challenges |
+| Type | Value | Supported challenges |
 |---|---|---|
-| `dns` | DNS domain name | http-01, dns-01, tls-alpn-01 |
+| `dns` | Regular domain name | http-01, dns-01, tls-alpn-01, dns-persist-01 (when configured) |
+| `dns` | Wildcard (`*.example.com`) | dns-01, dns-persist-01 (when configured) |
+| `dns` | `.onion` v3 hidden service | onion-csr-01; additionally http-01 and tls-alpn-01 when `tor_connectivity_enabled = true` |
 | `ip` | IP address literal | http-01, tls-alpn-01 |
 
-Wildcard identifiers (`*.example.com`) are accepted as `dns` type identifiers. Only the dns-01 challenge can authorize wildcard identifiers. Attempting to validate a wildcard with http-01 or tls-alpn-01 will fail.
+Wildcard identifiers (`*.example.com`) are accepted as `dns` type identifiers. Only dns-01 (and dns-persist-01, when configured) can authorize wildcard identifiers. Attempting to validate a wildcard with http-01 or tls-alpn-01 will fail.
+
+**`dns-persist-01`** (draft-ietf-acme-dns-persist) is offered alongside the standard DNS challenges when the server operator has configured at least one entry in `server.dns_persist_issuer_domains`. If that list is empty the challenge type is not offered.
+
+**`.onion` identifiers** (RFC 9799) are submitted as `type: "dns"` with a v3 `.onion` value (a 56-character base32 label followed by `.onion`, e.g. `bbcweb3hytmzhn5d532owbu6oqadra5z3ar726vq5kgwwn6aucdccrad.onion`). Only v3 addresses are accepted; v2 (16-character label) addresses are rejected. The server always offers `onion-csr-01` for these identifiers. When `server.tor_connectivity_enabled = true`, it also offers http-01 and tls-alpn-01 (for CAs with Tor network connectivity). dns-01 and dns-persist-01 are never offered for `.onion` identifiers.
 
 **Response (201 Created):**
 
@@ -79,6 +85,18 @@ POST to `/acme/order/<id>` with an empty payload (POST-as-GET). The response con
 ## Completing authorizations
 
 For each authorization URL in the order's `authorizations` array, the client must complete one challenge. See the [Challenges](challenges.md) chapter for details.
+
+For `onion-csr-01` (RFC 9799), the challenge response payload must carry the validation CSR rather than being empty. The client POSTs:
+
+```json
+{ "csr": "<base64url-encoded DER PKCS#10 CSR>" }
+```
+
+The CSR must contain:
+- The `.onion` domain in a SubjectAlternativeName `dNSName` entry.
+- The `cabf-onion-csr-nonce` extension (OID 2.23.140.41) whose value is the key authorization string (`token.thumbprint`).
+- A self-signature by the CSR key.
+- An Ed25519 signature by the hidden-service key whose public key is encoded in the `.onion` address (the outer CSR signature, or the CSR key itself when it is the hidden-service key).
 
 ## Finalizing an order
 

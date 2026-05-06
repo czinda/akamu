@@ -1,10 +1,12 @@
 # Challenges
 
-A challenge is the mechanism by which `Akāmu` verifies that an ACME client controls the identifier (domain name or IP address) in an authorization. The server supports four challenge types: **http-01**, **dns-01**, **tls-alpn-01**, and **dns-persist-01**.
+A challenge is the mechanism by which `Akāmu` verifies that an ACME client controls the identifier (domain name or IP address) in an authorization. The server supports five challenge types: **http-01**, **dns-01**, **tls-alpn-01**, **dns-persist-01**, and **onion-csr-01**.
 
 For each identifier in an order, the server creates one challenge of each supported type. The client chooses which challenge type to complete.
 
 `dns-persist-01` is an opt-in type that requires explicit server configuration. When it is not configured, clients see the standard three types and are not affected. See [dns-persist-01](#dns-persist-01) below for the full description.
+
+`onion-csr-01` is offered exclusively for `.onion` identifiers (Tor hidden services) and uses a CSR-based proof-of-control mechanism rather than a network probe. See [onion-csr-01](#onion-csr-01-rfc-9799) below for the full description.
 
 ## Key authorization
 
@@ -23,6 +25,8 @@ In practice, ACME client libraries compute this for you.
 
 `dns-persist-01` does not use this formula. Instead of a token, the client receives an `issuer-domain-names` array, and the server matches the account URI directly against the TXT record. See [dns-persist-01](#dns-persist-01) below for details.
 
+`onion-csr-01` uses the standard `token.thumbprint` key authorization formula. The server also includes an `authKey` field in the challenge object containing the JWK thumbprint so the client can construct the key authorization without a separate lookup.
+
 ## Responding to a challenge
 
 To signal that the client has provisioned the challenge response, POST to the challenge URL with an empty JSON object payload:
@@ -30,6 +34,8 @@ To signal that the client has provisioned the challenge response, POST to the ch
 ```json
 {}
 ```
+
+`onion-csr-01` is an exception: the POST body must include the DER-encoded CSR (see [onion-csr-01](#onion-csr-01-rfc-9799) for the payload format).
 
 The server immediately marks the challenge as `processing` and spawns a background task to validate it. The response returns the current challenge status:
 
@@ -69,9 +75,11 @@ flowchart TD
     B -->|dns-01| D["Add DNS TXT record<br/>_acme-challenge.DOMAIN<br/>= base64url(SHA-256(key_auth))"]
     B -->|tls-alpn-01| E["Configure TLS on port 443<br/>ALPN: acme-tls/1<br/>Cert with id-pe-acmeIdentifier ext<br/>= SHA-256(key_auth)"]
     B -->|dns-persist-01| F["Persistent DNS TXT record<br/>_validation-persist.DOMAIN<br/>with issuer + accounturi + policy fields"]
+    B -->|onion-csr-01| G2["Build DER CSR with<br/>cabf-onion-csr-nonce ext (OID 2.23.140.41)<br/>= key_auth (UTF8String)<br/>Sign with hidden-service Ed25519 key"]
 
     C & D & E & F --> G["POST {} to challenge URL"]
-    G --> H["Server validates in background"]
+    G2 --> G2P["POST {csr: base64url-DER} to challenge URL"]
+    G & G2P --> H["Server validates in background"]
 
     H -->|probe succeeds| I(["Authorization → valid<br/>Order → ready when all valid"])
     H -->|probe fails| J(["Authorization → invalid<br/>Order → invalid<br/>Create new order to retry"])
@@ -351,6 +359,98 @@ validate_dnssec     = true
 
 ---
 
+## onion-csr-01 (RFC 9799)
+
+`onion-csr-01` validates control of a Tor v3 hidden service (`.onion`) identifier. Instead of making a network probe, the server verifies a PKCS #10 CSR that the client constructs and submits in the challenge response body. The challenge type is defined by [RFC 9799](https://www.rfc-editor.org/rfc/rfc9799).
+
+This challenge is offered **only for `.onion` DNS identifiers**. It cannot be used for regular DNS names or IP address identifiers. The identifier in the ACME order must use `"type": "dns"` and the value must be a valid v3 `.onion` address (56-character base32 label + `.onion`). v2 `.onion` addresses (16-character label) are rejected.
+
+### Challenge object
+
+When the authorization is created for a `.onion` identifier, the server includes an `onion-csr-01` challenge object. Unlike other challenge types, it also carries an `authKey` field containing the account's JWK thumbprint:
+
+```json
+{
+  "type": "onion-csr-01",
+  "url": "https://acme.example.com/acme/chall/<authz-id>/onion-csr-01",
+  "status": "pending",
+  "token": "<token>",
+  "authKey": "<jwk-thumbprint>"
+}
+```
+
+The `authKey` field is provided as a convenience: the client needs the JWK thumbprint to compute the key authorization, and `authKey` exposes it directly so the client does not need to derive it from the account key a second time.
+
+### Key authorization
+
+Compute the key authorization using the standard formula:
+
+```
+key_authorization = token + "." + authKey
+```
+
+Where `authKey` is the `authKey` field from the challenge object (equal to `base64url(SHA-256(JWK-thumbprint-of-account-key))`).
+
+### Client provisioning
+
+The client must build a DER-encoded PKCS #10 CSR that satisfies all of the following:
+
+1. **Subject Alternative Name**: contains the `.onion` domain as a `dNSName`.
+2. **`cabf-onion-csr-nonce` extension** (OID `2.23.140.41`): the extension value is a DER `UTF8String` (tag `0x0C`) containing the key authorization string (`token.thumbprint`). This extension does not need to be marked critical.
+3. **Signature**: the CSR must be signed by the hidden-service Ed25519 private key — the key whose public key is encoded in the v3 `.onion` address. The most common approach is to use the hidden-service key directly as the CSR key, producing a single self-signature that also proves hidden-service key control.
+
+**Example OID DER encoding for `2.23.140.41`:** `06 04 67 81 0C 29`
+
+### Challenge response
+
+POST to the challenge URL with the base64url-encoded DER CSR as the payload (this is the only challenge type where the POST body is not an empty `{}`):
+
+```json
+{
+  "csr": "<base64url-encoded DER CSR>"
+}
+```
+
+The server decodes the `csr` field from base64url immediately and returns `400 Bad Request` if the field is missing or the encoding is invalid.
+
+### Server validation
+
+After the challenge is flipped to `processing`, the server performs these checks synchronously (no network probe is made):
+
+1. Decode the 32-byte Ed25519 public key from the v3 `.onion` address label (56-character lowercase base32, version byte `0x03`).
+2. Parse the DER CSR structure.
+3. Verify the CSR self-signature.
+4. Locate the `cabf-onion-csr-nonce` extension (OID `2.23.140.41`) and verify that its value decodes to the expected key authorization string.
+5. Verify that the Ed25519 signature over the `CertificationRequestInfo` DER is valid under the hidden-service public key. This succeeds if the CSR signing key is the hidden-service key (self-signed CSR), or if the outer CSR signature verifies directly with the hidden-service key.
+6. Verify that the CSR's SAN extension contains the `.onion` domain as a `dNSName`.
+
+### Challenge types offered for .onion identifiers
+
+RFC 9799 §4 requires that `onion-csr-01` is always offered for `.onion` identifiers and that `dns-01` is never offered. Whether `http-01` and `tls-alpn-01` are also offered depends on the `server.tor_connectivity_enabled` configuration:
+
+- **`tor_connectivity_enabled = false`** (default): only `onion-csr-01` is offered. The server cannot reach `.onion` addresses, so HTTP and TLS probes would always fail.
+- **`tor_connectivity_enabled = true`**: `onion-csr-01`, `http-01`, and `tls-alpn-01` are all offered, giving the client a choice.
+
+`dns-persist-01` is never offered for `.onion` identifiers.
+
+### Constraints
+
+- Only valid for `dns` type identifiers whose value ends in `.onion`.
+- Only v3 `.onion` addresses (56-character base32 label) are accepted; v2 addresses are rejected at order/pre-authorization creation time.
+- `dns-01` and `dns-persist-01` are never offered for `.onion` identifiers.
+- Wildcard `.onion` identifiers (`*.xxx...xxx.onion`) are not supported.
+
+### Configuration
+
+No additional server configuration is required to enable `onion-csr-01`; it is always offered when an order or pre-authorization contains a `.onion` identifier. To additionally offer `http-01` and `tls-alpn-01` for `.onion` identifiers (requires Tor network access from the server), set:
+
+```toml
+[server]
+tor_connectivity_enabled = true
+```
+
+---
+
 ## Challenge failure
 
 If validation fails, the challenge transitions to `invalid` and an error is recorded:
@@ -371,9 +471,11 @@ Common error types:
 
 | Error type | Meaning |
 |---|---|
-| `connection` | Could not connect to the applicant server |
-| `dns` | DNS TXT lookup failed or name not found |
-| `incorrectResponse` | Server responded but the content did not match |
-| `tls` | TLS handshake failed or extension verification failed |
+| `connection` | Could not connect to the applicant server (http-01, tls-alpn-01) |
+| `dns` | DNS TXT lookup failed or name not found (dns-01, dns-persist-01) |
+| `incorrectResponse` | Server responded but the content did not match; or, for onion-csr-01, the CSR failed validation (missing nonce extension, nonce mismatch, invalid Ed25519 signature, missing SAN, or malformed .onion address) |
+| `tls` | TLS handshake failed or extension verification failed (tls-alpn-01) |
+
+For `onion-csr-01`, the server also returns an immediate `400 Bad Request` (before the background validation task starts) if the POST body is not valid JSON with a `csr` field, or if the `csr` value is not valid base64url.
 
 A failed authorization invalidates the parent order. Create a new order to try again.
