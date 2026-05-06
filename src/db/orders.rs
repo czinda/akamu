@@ -39,17 +39,23 @@ pub async fn insert(
 }
 
 /// Cancel a STAR order by setting star_canceled_at to the current timestamp.
+///
+/// The WHERE guard `star_canceled_at IS NULL` makes this idempotent: concurrent
+/// cancellation requests both run the UPDATE but only the first one makes a
+/// change.  Subsequent calls silently succeed with 0 rows affected.
 pub async fn cancel_star(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
     now: i64,
 ) -> Result<(), AcmeError> {
-    sqlx::query("UPDATE orders SET star_canceled_at = ?, updated = ? WHERE id = ?")
-        .bind(now)
-        .bind(now)
-        .bind(id)
-        .execute(executor)
-        .await?;
+    sqlx::query(
+        "UPDATE orders SET star_canceled_at = ?, updated = ? WHERE id = ? AND star_canceled_at IS NULL",
+    )
+    .bind(now)
+    .bind(now)
+    .bind(id)
+    .execute(executor)
+    .await?;
     Ok(())
 }
 
