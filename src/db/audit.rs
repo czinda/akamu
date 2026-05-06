@@ -42,6 +42,38 @@ pub async fn insert(
     Ok(())
 }
 
+/// Insert two audit rows in a single SQL round-trip.
+///
+/// Used by the finalize handler to record `OrderFinalize` + `CertIssue` atomically
+/// without paying two separate INSERT round-trips.  Each row is a tuple of:
+/// `(occurred_at, event_type, subject, principal, outcome, detail)`.
+pub async fn insert_two(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    r1: (&str, &str, Option<&str>, Option<&str>, &str, Option<&str>),
+    r2: (&str, &str, Option<&str>, Option<&str>, &str, Option<&str>),
+) -> Result<(), AcmeError> {
+    sqlx::query(
+        "INSERT INTO audit_events \
+         (occurred_at, event_type, subject, principal, outcome, detail) \
+         VALUES (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(r1.0)
+    .bind(r1.1)
+    .bind(r1.2)
+    .bind(r1.3)
+    .bind(r1.4)
+    .bind(r1.5)
+    .bind(r2.0)
+    .bind(r2.1)
+    .bind(r2.2)
+    .bind(r2.3)
+    .bind(r2.4)
+    .bind(r2.5)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
 /// Total number of audit event rows.
 pub async fn count(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,

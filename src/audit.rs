@@ -286,6 +286,26 @@ impl Default for AuditState {
 
 // ── Record ─────────────────────────────────────────────────────────────────────
 
+fn handle_alarm(state: &AuditState, policy: &AuditPolicy) {
+    match policy.alarm_action {
+        AlarmAction::Syslog => {
+            tracing::error!(
+                threshold = policy.alarm_threshold,
+                window_secs = 300,
+                "SECURITY ALARM: repeated SecurityViolation events detected (FAU_ARP.1)"
+            );
+        }
+        AlarmAction::Halt => {
+            tracing::error!(
+                threshold = policy.alarm_threshold,
+                window_secs = 300,
+                "SECURITY ALARM: halting server due to repeated SecurityViolation events (FAU_ARP.1)"
+            );
+            state.should_halt.store(true, Ordering::Release);
+        }
+    }
+}
+
 /// Persist one audit event, enforce the overflow policy, and update the
 /// FAU_ARP.1 alarm counter.
 ///
@@ -301,6 +321,42 @@ pub async fn record(
 ) -> Result<(), AcmeError> {
     let is_violation = ev.event_type == AuditEventType::SecurityViolation;
     let occurred_at = crate::util::rfc3339_now();
+
+    // Fast path: when there is no row cap the overflow check is never needed,
+    // so we can skip the explicit BEGIN/COMMIT and let SQLite handle the INSERT
+    // as a single auto-committed statement.  This reduces the audit DB cost
+    // from 3 round-trips (BEGIN + INSERT + COMMIT) to 1 (INSERT only).
+    if policy.max_rows.is_none() {
+        crate::db::audit::insert(
+            db,
+            &occurred_at,
+            ev.event_type.as_str(),
+            ev.subject.as_deref(),
+            ev.principal.as_deref(),
+            ev.outcome.as_str(),
+            ev.detail.as_deref(),
+        )
+        .await?;
+
+        if is_violation {
+            let threshold_exceeded = {
+                let mut times = state.violation_times.lock().unwrap_or_else(|e| {
+                    tracing::error!(
+                        "violation_times mutex poisoned — FAU_ARP.1 alarm state may be inconsistent"
+                    );
+                    e.into_inner()
+                });
+                let cutoff = Instant::now() - Duration::from_secs(300);
+                times.retain(|&t| t >= cutoff);
+                times.push_back(Instant::now());
+                times.len() as u32 >= policy.alarm_threshold
+            };
+            if threshold_exceeded {
+                handle_alarm(state, policy);
+            }
+        }
+        return Ok(());
+    }
 
     // FAU_STG.1 / FAU_STG.4: INSERT and overflow enforcement must be atomic so
     // that concurrent writes cannot interleave between the COUNT and DELETE and
@@ -393,25 +449,8 @@ pub async fn record(
             times.push_back(Instant::now());
             times.len() as u32 >= policy.alarm_threshold
         };
-
         if threshold_exceeded {
-            match policy.alarm_action {
-                AlarmAction::Syslog => {
-                    tracing::error!(
-                        threshold = policy.alarm_threshold,
-                        window_secs = 300,
-                        "SECURITY ALARM: repeated SecurityViolation events detected (FAU_ARP.1)"
-                    );
-                }
-                AlarmAction::Halt => {
-                    tracing::error!(
-                        threshold = policy.alarm_threshold,
-                        window_secs = 300,
-                        "SECURITY ALARM: halting server due to repeated SecurityViolation events (FAU_ARP.1)"
-                    );
-                    state.should_halt.store(true, Ordering::Release);
-                }
-            }
+            handle_alarm(state, policy);
         }
     }
 
@@ -422,6 +461,86 @@ pub async fn record(
 ///
 /// Tracks consecutive insert failures; when they reach `alarm_threshold`,
 /// sets `should_halt` (FAU_STG.1 — audit store unavailable).
+/// Record two audit events in a single DB round-trip when the fast path is available.
+///
+/// Fast path (max_rows = None, no SecurityViolation): uses a single two-row INSERT.
+/// Slow path: falls back to two sequential `record` calls with full overflow enforcement.
+pub async fn record_pair(
+    db: &Db,
+    state: &AuditState,
+    policy: &AuditPolicy,
+    ev1: AuditEvent,
+    ev2: AuditEvent,
+) -> Result<(), AcmeError> {
+    let is_viol1 = ev1.event_type == AuditEventType::SecurityViolation;
+    let is_viol2 = ev2.event_type == AuditEventType::SecurityViolation;
+
+    if policy.max_rows.is_none() && !is_viol1 && !is_viol2 {
+        let occurred_at = crate::util::rfc3339_now();
+        crate::db::audit::insert_two(
+            db,
+            (
+                &occurred_at,
+                ev1.event_type.as_str(),
+                ev1.subject.as_deref(),
+                ev1.principal.as_deref(),
+                ev1.outcome.as_str(),
+                ev1.detail.as_deref(),
+            ),
+            (
+                &occurred_at,
+                ev2.event_type.as_str(),
+                ev2.subject.as_deref(),
+                ev2.principal.as_deref(),
+                ev2.outcome.as_str(),
+                ev2.detail.as_deref(),
+            ),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    record(db, state, policy, ev1).await?;
+    record(db, state, policy, ev2).await?;
+    Ok(())
+}
+
+pub async fn record_or_log_pair(
+    db: &Db,
+    state: &AuditState,
+    policy: &AuditPolicy,
+    ev1: AuditEvent,
+    ev2: AuditEvent,
+) {
+    let ev1_type = ev1.event_type.as_str();
+    let ev2_type = ev2.event_type.as_str();
+    if let Err(e) = record_pair(db, state, policy, ev1, ev2).await {
+        let n = state
+            .consecutive_insert_failures
+            .fetch_add(1, Ordering::AcqRel)
+            + 1;
+        tracing::error!(
+            error = %e,
+            event_type1 = ev1_type,
+            event_type2 = ev2_type,
+            consecutive_failures = n,
+            "audit record failed"
+        );
+        if n >= policy.alarm_threshold {
+            tracing::error!(
+                consecutive_failures = n,
+                threshold = policy.alarm_threshold,
+                "AUDIT UNAVAILABLE: halting server after repeated insert failures (FAU_STG.1)"
+            );
+            state.should_halt.store(true, Ordering::Release);
+        }
+    } else {
+        state
+            .consecutive_insert_failures
+            .store(0, Ordering::Release);
+    }
+}
+
 pub async fn record_or_log(db: &Db, state: &AuditState, policy: &AuditPolicy, ev: AuditEvent) {
     let ev_type = ev.event_type.as_str();
     let ev_outcome = ev.outcome.as_str();

@@ -240,6 +240,15 @@ impl AppState {
     pub async fn record_audit(&self, ev: crate::audit::AuditEvent) {
         crate::audit::record_or_log(&self.db, &self.audit, &self.audit_policy, ev).await;
     }
+
+    pub async fn record_audit_pair(
+        &self,
+        ev1: crate::audit::AuditEvent,
+        ev2: crate::audit::AuditEvent,
+    ) {
+        crate::audit::record_or_log_pair(&self.db, &self.audit, &self.audit_policy, ev1, ev2)
+            .await;
+    }
 }
 
 /// TLS client-auth state available to handlers for introspection.

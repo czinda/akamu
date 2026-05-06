@@ -63,10 +63,8 @@ pub async fn finalize_order(
         .map_err(|e| AcmeError::BadCsr(format!("base64url decode: {e}")))?;
 
     // Parse order identifiers.
-    let identifiers: Vec<serde_json::Value> =
-        serde_json::from_str(&order.identifiers).map_err(|e| {
-            AcmeError::Internal(format!("corrupt identifiers in order {id}: {e}"))
-        })?;
+    let identifiers: Vec<serde_json::Value> = serde_json::from_str(&order.identifiers)
+        .map_err(|e| AcmeError::Internal(format!("corrupt identifiers in order {id}: {e}")))?;
     let allowed: Vec<(&str, &str)> = identifiers
         .iter()
         .filter_map(|id| {
@@ -93,9 +91,9 @@ pub async fn finalize_order(
 
     // Resolve the CA for this order.  Must happen before the CAA check because
     // per-CA caa_identities may differ from the server-level default.
-    let order_ca = state
-        .get_ca(&order.ca_id)
-        .ok_or_else(|| AcmeError::Internal(format!("order references unknown CA '{}'", order.ca_id)))?;
+    let order_ca = state.get_ca(&order.ca_id).ok_or_else(|| {
+        AcmeError::Internal(format!("order references unknown CA '{}'", order.ca_id))
+    })?;
 
     // CAA check (RFC 8659 + RFC 8657): only when caa_identities is configured.
     // Per-CA identities take precedence; fall back to server-level when the CA
@@ -343,24 +341,15 @@ pub async fn finalize_order(
         (authz_ids, pred_already_replaced)
     };
 
+    let principal = format!("acme:{}", ctx.jwk_thumbprint.as_deref().unwrap_or(""));
     state
-        .record_audit(
+        .record_audit_pair(
             crate::audit::AuditEvent::success(crate::audit::AuditEventType::OrderFinalize)
                 .with_subject(&id)
-                .with_principal(format!(
-                    "acme:{}",
-                    ctx.jwk_thumbprint.as_deref().unwrap_or("")
-                )),
-        )
-        .await;
-    state
-        .record_audit(
+                .with_principal(&principal),
             crate::audit::AuditEvent::success(crate::audit::AuditEventType::CertIssue)
                 .with_subject(&issued.serial_hex)
-                .with_principal(format!(
-                    "acme:{}",
-                    ctx.jwk_thumbprint.as_deref().unwrap_or("")
-                )),
+                .with_principal(&principal),
         )
         .await;
 
@@ -410,7 +399,11 @@ pub async fn finalize_order(
     updated_order.certificate_id = Some(issued.id.clone());
     updated_order.updated = now;
 
-    let order_pfx = acme_prefix(&state.config.base_url, &updated_order.ca_id, &state.default_ca_id);
+    let order_pfx = acme_prefix(
+        &state.config.base_url,
+        &updated_order.ca_id,
+        &state.default_ca_id,
+    );
     let authz_urls: Vec<_> = authz_ids
         .iter()
         .map(|aid| format!("{order_pfx}/authz/{aid}"))
