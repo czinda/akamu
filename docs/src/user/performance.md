@@ -22,14 +22,16 @@ given client.
 > this because every SQLite in-memory connection opens its own private, empty
 > database.  File-backed databases use it to avoid `SQLITE_BUSY_SNAPSHOT` (error 517),
 > a WAL-mode contention error that bypasses the busy handler and cannot be retried.
-> Approximately 21 SQL round-trips are needed per issuance (reduced from ~55 by moving
+> Approximately 23 SQL round-trips are needed per issuance (reduced from ~55 by moving
 > anti-replay nonces to an in-memory store, using JOIN queries to collapse read pairs,
-> and consolidating multi-CA scope checks inside write transactions to eliminate
-> redundant reads); throughput peaks at ≈ 720–790 iss/s around 10 concurrent
-> clients and remains stable at 25–50 clients (≈ 640–730 iss/s), determined by how
-> fast the single database connection can process queries rather than by crypto, network,
-> or storage speed.  See the [Database scalability](#database-scalability) section for
-> guidance on exceeding this ceiling.
+> consolidating multi-CA scope checks inside write transactions, replacing explicit
+> 4-RT transactions with conditional-UPDATE autocommit in the challenge handler, and
+> batching finalize audit events into a single two-row INSERT); throughput peaks at
+> ≈ 940–980 iss/s around 10–25 concurrent clients and remains stable at 50 clients
+> (≈ 800–960 iss/s), determined by how fast the single database connection can process
+> queries rather than by crypto, network, or storage speed.  See the
+> [Database scalability](#database-scalability) section for guidance on exceeding
+> this ceiling.
 
 ---
 
@@ -41,14 +43,14 @@ the bottleneck:
 
 | Concurrent clients | Throughput (iss/s) | Mean latency (ms) | p95 (ms) |
 |-------------------:|-------------------:|------------------:|---------:|
-|  1                 |   119              |  8.4              | 13.2     |
-|  5                 |   719              |  6.9              |  8.2     |
-| 10                 |   765              | 12.9              | 14.7     |
-| 25                 |   732              | 28.3              | 30.1     |
-| 50                 |   639              | 58.6              | 71.6     |
+|  1                 |   124              |  8.0              | 11.7     |
+|  5                 |   872              |  5.7              |  6.7     |
+| 10                 |   939              | 10.6              | 12.1     |
+| 25                 |   943              | 24.9              | 30.2     |
+| 50                 |   811              | 47.2              | 53.1     |
 
-Throughput peaks around 10 concurrent clients at ~765 iss/s and remains
-stable at 25–50 clients (≈ 640–730 iss/s); latency grows roughly linearly with
+Throughput peaks around 10–25 concurrent clients at ≈ 940 iss/s and remains
+stable at 50 clients (≈ 810 iss/s); latency grows roughly linearly with
 client count, consistent with a single serialised resource.  The practical
 bottleneck is the in-memory SQLite single connection; crypto and network are not
 limiting factors at these rates.
@@ -62,19 +64,19 @@ The table below compares issuance performance for different CSR key types at
 
 | CSR key type | Throughput (iss/s) | Mean latency (ms) | p95 (ms) | Finalize phase (ms) |
 |:-------------|-------------------:|------------------:|---------:|--------------------:|
-| ec:P-256     |   713              | 28.9              | 32.7     |   8.8               |
-| ed25519      |   601              | 32.3              | 34.1     |   9.8               |
-| ec:P-384     |   603              | 33.6              | 37.3     |  12.0               |
-| ml-dsa-44    |   618              | 33.5              | 36.6     |  11.2               |
-| ml-dsa-65    |   606              | 33.4              | 39.1     |  12.6               |
-| ml-dsa-87    |   559              | 37.1              | 42.1     |  14.5               |
-| rsa:2048     |   151              | 134.3             | 254.1    | 105.7               |
+| ec:P-256     |   883              | 25.9              | 29.8     |   6.5               |
+| ed25519      |   892              | 25.8              | 28.6     |   7.1               |
+| ec:P-384     |   793              | 28.8              | 33.7     |  10.1               |
+| ml-dsa-44    |   868              | 26.4              | 30.5     |   8.1               |
+| ml-dsa-65    |   806              | 28.3              | 34.0     |   9.4               |
+| ml-dsa-87    |   791              | 29.0              | 32.5     |  10.1               |
+| rsa:2048     |   178              | 124.8             | 242.6    |  99.8               |
 | rsa:4096     |    15              | 1048.8            | 1749.7   | 945.4               |
 
-All classical and post-quantum key types cluster around 560–710 iss/s because
+All classical and post-quantum key types cluster around 790–890 iss/s because
 throughput is bounded by the single-connection database pool, not by crypto.
 Finalize-phase latency (CSR verification + certificate issuance) still reflects
-relative signing cost: EC and Ed25519 are fastest (~9–10 ms), ML-DSA adds ~2–6 ms
+relative signing cost: EC and Ed25519 are fastest (~6–7 ms), ML-DSA adds ~2–4 ms
 over EC, and RSA adds tens to hundreds of milliseconds.
 
 RSA is the outlier: RSA 2048 adds ~106 ms to finalize, and RSA 4096 adds ~945 ms.
@@ -168,12 +170,14 @@ validation round-trips.
 ## Database scalability
 
 Both in-memory (`:memory:`) and file-backed databases use a single-connection
-pool, so the throughput ceiling of ≈ 640–765 iss/s applies to both.  The ceiling
+pool, so the throughput ceiling of ≈ 810–970 iss/s applies to both.  The ceiling
 is set by how fast the SQLite worker thread can process one query at a time —
-each query requires a channel round-trip to the background thread, and ~21 such
+each query requires a channel round-trip to the background thread, and ~23 such
 round-trips are needed per issuance (reduced from ~55 by moving anti-replay nonces
-to an in-memory store, using JOIN queries to collapse read pairs, and consolidating
-multi-CA scope checks inside write transactions).
+to an in-memory store, using JOIN queries to collapse read pairs, consolidating
+multi-CA scope checks inside write transactions, replacing explicit 4-RT transactions
+with conditional-UPDATE autocommit in the challenge handler, and batching finalize
+audit events).
 
 ### Backend comparison (tmpfs vs in-memory)
 
@@ -190,10 +194,12 @@ is within run-to-run noise.
 | 25                 |   606             |   599             |
 | 50                 |   643             |   548             |
 
-Both backends peak around 640–770 iss/s at 10 concurrent clients and remain
-above 540 iss/s at 50 clients.  The bottleneck is the database connection
-round-trip per query, not storage speed; switching from in-memory to a
-tmpfs-backed file provides durability without a significant throughput penalty.
+Both backends produce equivalent throughput at each concurrency level (within
+run-to-run noise).  The bottleneck is the database connection round-trip per
+query, not storage speed; switching from in-memory to a tmpfs-backed file
+provides durability without a significant throughput penalty.  Note: the
+absolute numbers in the table above reflect an earlier optimization baseline;
+current in-memory throughput is ~25% higher (see the concurrency scaling table).
 
 For sustained high-throughput targets consider:
 
@@ -203,7 +209,7 @@ For sustained high-throughput targets consider:
   Throughput matches in-memory while providing crash durability.
 - **Sharding** — multiple Akāmu instances behind a load balancer, each with its
   own database — for production-scale deployments requiring higher aggregate
-  issuance rates above the ≈ 640–770 iss/s per-instance ceiling.
+  issuance rates above the ≈ 810–970 iss/s per-instance ceiling.
 
 ### Connection pool size and `BEGIN IMMEDIATE`
 
