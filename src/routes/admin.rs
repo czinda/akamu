@@ -489,7 +489,11 @@ pub async fn get_certs(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    require_role!(operator, state, Administrator | CaOperations | Auditor);
+    require_role!(
+        operator,
+        state,
+        Administrator | CaOperations | CaRa | Auditor
+    );
 
     let limit: i64 = params
         .get("limit")
@@ -506,10 +510,26 @@ pub async fn get_certs(
     let account_id = params.get("account_id").map(String::as_str);
     let status = params.get("status").map(String::as_str);
     let subject_dn = params.get("subject").map(String::as_str);
-    let ca_id = params.get("ca_id").map(String::as_str);
+    // ca_ra operators are always scoped to their own CA; override any supplied ca_id.
+    let ca_id_str;
+    let ca_id = if operator.role == OperatorRole::CaRa {
+        ca_id_str = operator.ca_id.clone();
+        Some(ca_id_str.as_str())
+    } else {
+        params.get("ca_id").map(String::as_str)
+    };
 
     let result = db::certs::search(
-        &state.db, serial, account_id, status, subject_dn, ca_id, limit, offset,
+        &state.db,
+        db::certs::CertSearchParams {
+            serial,
+            account_id,
+            status,
+            subject_dn,
+            ca_id,
+            limit,
+            offset,
+        },
     )
     .await;
 
@@ -1369,29 +1389,43 @@ pub async fn get_cert(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Response {
-    require_role!(operator, state, Administrator | CaOperations | Auditor);
+    require_role!(
+        operator,
+        state,
+        Administrator | CaOperations | CaRa | Auditor
+    );
 
     match db::certs::get_by_id(&state.db, &id).await {
-        Ok(Some(r)) => (
-            StatusCode::OK,
-            Json(json!({
-                "id": r.id,
-                "order_id": r.order_id,
-                "account_id": r.account_id,
-                "serial_number": r.serial_number,
-                "status": r.status,
-                "not_before": r.not_before,
-                "not_after": r.not_after,
-                "revoked_at": r.revoked_at,
-                "revocation_reason": r.revocation_reason,
-                "mtc_log_index": r.mtc_log_index,
-                "created": r.created,
-                "suggested_window_start": r.suggested_window_start,
-                "suggested_window_end": r.suggested_window_end,
-                "replaced_by": r.replaced_by,
-            })),
-        )
-            .into_response(),
+        Ok(Some(r)) => {
+            // ca_ra operators may only view certificates from their own CA.
+            if operator.role == OperatorRole::CaRa && r.ca_id != operator.ca_id {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"status": 404, "detail": "certificate not found"})),
+                )
+                    .into_response();
+            }
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "id": r.id,
+                    "order_id": r.order_id,
+                    "account_id": r.account_id,
+                    "serial_number": r.serial_number,
+                    "status": r.status,
+                    "not_before": r.not_before,
+                    "not_after": r.not_after,
+                    "revoked_at": r.revoked_at,
+                    "revocation_reason": r.revocation_reason,
+                    "mtc_log_index": r.mtc_log_index,
+                    "created": r.created,
+                    "suggested_window_start": r.suggested_window_start,
+                    "suggested_window_end": r.suggested_window_end,
+                    "replaced_by": r.replaced_by,
+                })),
+            )
+                .into_response()
+        }
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(json!({"status": 404, "detail": "certificate not found"})),
@@ -1419,25 +1453,35 @@ pub async fn get_cert_download(
     Path(id): Path<String>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    require_role!(operator, state, Administrator | CaOperations);
+    require_role!(operator, state, Administrator | CaOperations | CaRa);
 
     let format = params.get("format").map(String::as_str).unwrap_or("pem");
 
     match db::certs::get_by_id(&state.db, &id).await {
-        Ok(Some(r)) => match format {
-            "der" => (
-                StatusCode::OK,
-                [("content-type", "application/pkix-cert")],
-                r.der,
-            )
-                .into_response(),
-            _ => (
-                StatusCode::OK,
-                [("content-type", "application/pem-certificate-chain")],
-                r.pem,
-            )
-                .into_response(),
-        },
+        Ok(Some(r)) => {
+            // ca_ra operators may only download certificates from their own CA.
+            if operator.role == OperatorRole::CaRa && r.ca_id != operator.ca_id {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"status": 404, "detail": "certificate not found"})),
+                )
+                    .into_response();
+            }
+            match format {
+                "der" => (
+                    StatusCode::OK,
+                    [("content-type", "application/pkix-cert")],
+                    r.der,
+                )
+                    .into_response(),
+                _ => (
+                    StatusCode::OK,
+                    [("content-type", "application/pem-certificate-chain")],
+                    r.pem,
+                )
+                    .into_response(),
+            }
+        }
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(json!({"status": 404, "detail": "certificate not found"})),

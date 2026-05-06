@@ -35,7 +35,6 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
             require_tls: false,
         },
         cas: vec![CaConfig {
-
             id: "default".to_owned(),
 
             is_default: true,
@@ -119,7 +118,8 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
 
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
-        db: db_conn,
+        db: db_conn.clone(),
+        db_ro: db_conn,
         db_kind: db::DbKind::Sqlite,
         profiles: akamu::profiles::ProfileRegistry::empty(&ca),
         cas: {
@@ -140,15 +140,16 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         spki_cache: Arc::new(std::sync::RwLock::new(HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),
         link_headers: Arc::new({
-
             let mut _lh_map = std::collections::HashMap::new();
 
-            _lh_map.insert("default".to_string(), Arc::new(axum::http::HeaderValue::from_static(
-            "<https://acme.test/acme/directory>;rel=\"index\"",
-        )));
+            _lh_map.insert(
+                "default".to_string(),
+                Arc::new(axum::http::HeaderValue::from_static(
+                    "<https://acme.test/acme/directory>;rel=\"index\"",
+                )),
+            );
 
             _lh_map
-
         }),
         validation_client: {
             let https = hyper_rustls::HttpsConnectorBuilder::new()
@@ -161,13 +162,11 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
                 .build(https)
         },
         crl_caches: Arc::new({
-
             let mut _crl_map = std::collections::HashMap::new();
 
             _crl_map.insert("default".to_string(), Default::default());
 
             _crl_map
-
         }),
         audit: Arc::new(akamu::audit::AuditState::new()),
         audit_policy: Arc::new(akamu::audit::AuditPolicy::default()),
@@ -273,6 +272,7 @@ static RBAC_TABLE: &[RbacRow] = &[
         &[
             OperatorRole::Administrator,
             OperatorRole::CaOperations,
+            OperatorRole::CaRa,
             OperatorRole::Auditor,
         ],
     ),
