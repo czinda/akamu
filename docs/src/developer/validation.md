@@ -35,11 +35,23 @@ pub struct ChallengeParams<'a> {
 | `chall_type` | Module | Function |
 |---|---|---|
 | `"http-01"` | `validation::http01` | `validate(domain, token, key_auth, port, allow_private_ips, client)` |
-| `"dns-01"` | `validation::dns01` | `validate(domain, key_auth, validate_dnssec)` |
+| `"dns-01"` | `validation::dns01` | `validate(domain, key_auth, validate_dnssec, dot_server_name)` |
 | `"tls-alpn-01"` | `validation::tls_alpn01` | `validate(id_type, domain, key_auth)` |
-| `"dns-persist-01"` | `validation::dns_persist_01` | `validate(domain, key_auth, issuer_domains, resolver_addr, validate_dnssec)` |
+| `"dns-persist-01"` | `validation::dns_persist_01` | `validate(domain, account_uri, issuer_domains, resolver_addr, validate_dnssec, dot_server_name)` |
 | `"onion-csr-01"` | `validation::onion_csr_01` | `validate(domain, csr_der, key_auth)` |
 | Any other | — | Returns `AcmeError::IncorrectResponse` |
+
+### dns-persist-01 account pre-check
+
+For `dns-persist-01` only, `validate_challenge` performs an account status check **before** calling `dispatch`. Because the TXT record is long-lived and may have been provisioned weeks before the order is placed, the account could have been deactivated or revoked in the intervening time. The pre-check queries the database:
+
+```sql
+SELECT status FROM accounts WHERE id = ?
+```
+
+- If the account status is `"valid"`, dispatch proceeds normally.
+- If the status is anything else (e.g., `"deactivated"`, `"revoked"`), `on_invalid` is called immediately with `AcmeError::Unauthorized` and the challenge is marked `invalid` without any DNS query.
+- If the database query itself fails, `on_invalid` is called with `AcmeError::Internal`.
 
 After `dispatch` returns, `validate_challenge` calls either `on_valid` or `on_invalid` to update the database.
 
@@ -109,7 +121,7 @@ let handle = tokio::spawn(async move {
             id_value: &id_value,
             key_auth: &key_auth,
             token: &token,
-            onion_csr_der: None,
+            onion_csr_der: onion_csr_der.as_deref(), // Some(der) for onion-csr-01, None otherwise
             account_id: &account_id,
         },
     )
@@ -203,13 +215,13 @@ Error mapping:
 
 ## dns-01 validator (`src/validation/dns01.rs`)
 
-Uses `hickory_resolver::TokioAsyncResolver` with the system default resolver configuration.
+Uses `crate::dns::dns_query` backed by `hickory_resolver`. DNS-over-TLS (DoT) is supported when `server.dns_dot_server_name` is set.
 
 Validation steps:
 1. Strip any leading `*.` prefix from the domain (RFC 8555 §8.4 requires this for wildcard orders).
 2. Construct the query name `_acme-challenge.<base_domain>`.
 3. Compute `expected = base64url(SHA-256(key_auth))`.
-4. Perform a TXT record lookup.
+4. Perform a TXT record lookup via `crate::dns::dns_query` (UDP, DNSSEC-aware, or DoT depending on config).
 5. For each TXT record, join all character-strings (TXT records may be split) and compare the trimmed result with `expected`.
 6. If at least one record matches, return `Ok(())`.
 
@@ -217,40 +229,42 @@ Error mapping:
 - DNS lookup failure → `AcmeError::Dns`
 - No matching TXT record → `AcmeError::IncorrectResponse`
 
-The inner function `validate_with_resolver(domain, key_auth, resolver)` accepts a custom resolver for testability. Unit tests provide a local UDP stub DNS server.
+The inner function `validate_with_resolver(domain, key_auth, resolver_addr, validate_dnssec, dot_server_name)` accepts explicit resolver settings for testability. Unit tests provide a local UDP stub DNS server.
 
 ## tls-alpn-01 validator (`src/validation/tls_alpn01.rs`)
 
-Uses `rustls` and `tokio-rustls`.
+Uses `rustls` and `tokio-rustls`. Supports both DNS identifiers (RFC 8737) and IP identifiers (RFC 8738).
 
 Validation steps:
 1. Compute `expected_hash = SHA-256(key_auth)`.
-2. Build a `rustls::ClientConfig` that:
+2. **For IP identifiers (RFC 8738 §4)**: convert the IP address to its reverse-DNS form for SNI (`1.2.3.4` → `4.3.2.1.in-addr.arpa`; IPv6 uses the nibble-expanded `.ip6.arpa` form). For DNS identifiers, the SNI is the identifier value directly.
+3. Build a `rustls::ClientConfig` that:
    - Accepts any server certificate without chain validation (`AcceptAnyCert` custom verifier).
    - Advertises only the ALPN protocol `"acme-tls/1"`.
    - Supports both TLS 1.2 and TLS 1.3.
-3. TCP-connect to `<domain>:443`.
-4. Perform the TLS handshake.
-5. Extract the end-entity certificate from the peer certificate chain.
-6. Call `verify_acme_cert(domain, cert_der, &expected_hash)`.
+4. TCP-connect to `<id_value>:443` (the raw IP or DNS name, not the reverse-DNS SNI).
+5. Perform the TLS handshake with the SNI from step 2.
+6. Extract the end-entity certificate from the peer certificate chain.
+7. Call `verify_acme_cert(id_type, id_value, cert_der, &expected_hash)`.
 
 `verify_acme_cert` walks the certificate DER manually:
 - Finds the `id-pe-acmeIdentifier` extension (OID `1.3.6.1.5.5.7.1.31`).
 - Checks it is marked critical.
 - Checks its value is `OCTET STRING(32 bytes)` equal to `expected_hash`.
 - Finds the SubjectAlternativeName extension.
-- Checks it contains `domain` as a `dNSName`.
+- For DNS identifiers: checks it contains `id_value` as a `dNSName` (tag `0x82`).
+- For IP identifiers: checks it contains `id_value` as an `iPAddress` (tag `0x87`) encoded as 4 (IPv4) or 16 (IPv6) raw bytes.
 
 The DER walker (`find_extension_value`) navigates the `Certificate → TBSCertificate → Extensions` structure using hand-written TLV parsing helpers (`read_tlv`, `decode_length`, `strip_sequence`, etc.). This approach avoids requiring the full synta decoder for a security-critical path.
 
 Error mapping:
-- Invalid server name → `AcmeError::Tls`
+- Invalid server name or IP-to-reverse-DNS conversion failure → `AcmeError::Tls`
 - TCP connect failure → `AcmeError::Connection`
 - TLS handshake failure → `AcmeError::Tls`
 - Missing or non-critical `id-pe-acmeIdentifier` → `AcmeError::IncorrectResponse`
 - Hash mismatch → `AcmeError::IncorrectResponse`
 - Missing SAN → `AcmeError::IncorrectResponse`
-- Domain not in SAN → `AcmeError::IncorrectResponse`
+- Identifier not found in SAN → `AcmeError::IncorrectResponse`
 
 ### `AcceptAnyCert`
 
@@ -258,24 +272,34 @@ The `AcceptAnyCert` struct implements `rustls::client::danger::ServerCertVerifie
 
 ## dns-persist-01 validator (`src/validation/dns_persist_01.rs`)
 
-Uses `hickory_resolver::TokioAsyncResolver`. The resolver is either the system default or the address configured via `server.dns_resolver_addr`.
+Uses `crate::dns::dns_query` backed by `hickory_resolver`. The resolver address comes from `server.dns_persist01_resolver_addr` when set; if absent it falls back to `server.dns_resolver_addr`, and if that is also absent it uses the system default. DNS-over-TLS is supported when `server.dns_dot_server_name` is set.
 
 Unlike the other challenge types, `dns-persist-01` does not use a `token · thumbprint` key authorization. The `key_auth` value passed to the validator is the requesting account's full URI (constructed as `<base_url>/acme/account/<account_id>` in `routes::challenge`). This URI is matched directly against the `accounturi=` field in the TXT record.
 
 Validation steps:
 1. Strip any leading `*.` prefix from the domain; record whether the order is a wildcard.
 2. Construct the query name `_validation-persist.<base_domain>`.
-3. Perform a TXT record lookup.
-4. For each TXT record value, call `matches_record(value, issuer_domain, account_uri, is_wildcard, now)`.
+3. Perform a TXT record lookup via `crate::dns::dns_query`.
+4. For each TXT record value, call `matches_record(value, issuer_domains, account_uri, is_wildcard, now)`.
 5. If at least one record matches, return `Ok(())`.
 
 ### `matches_record`
 
 `matches_record` is `pub(crate)` and is unit-tested independently of the DNS stack.
 
+```rust
+pub(crate) fn matches_record(
+    raw: &str,
+    expected_issuers: &[&str],
+    expected_account_uri: &str,
+    require_wildcard_policy: bool,
+    now: i64,
+) -> bool
+```
+
 It splits the raw TXT value on `;` and applies the following checks in order:
 
-1. The first token (trimmed, trailing dot stripped, lowercased) equals `expected_issuer` (same normalization applied).
+1. The first token (trimmed, trailing dot stripped, lowercased) equals **any** entry in `expected_issuers` (same normalization applied). Multiple issuer domains are supported.
 2. Among the remaining tokens, `accounturi=<uri>` is present and the URI matches `expected_account_uri` exactly (case-sensitive).
 3. If `require_wildcard_policy` is true, `policy=wildcard` is present among the tokens.
 4. If a `persistUntil=<ts>` token is present, `parse_persist_until(ts)` returns a Unix timestamp that is greater than or equal to `now`.
@@ -284,8 +308,34 @@ Unknown tokens are silently ignored. The function returns `false` as soon as any
 
 ### `parse_persist_until`
 
-A pure-Rust, zero-dependency parser for the `YYYY-MM-DDTHH:MM:SSZ` timestamp format. It performs the proleptic Gregorian day count from the Unix epoch without using any external date/time crate. Returns `None` for malformed input (wrong separators, out-of-range fields, missing `Z` suffix).
+A pure-Rust, zero-dependency parser for the `YYYY-MM-DDTHH:MM:SSZ` timestamp format (lowercase `z` is also accepted). It performs the proleptic Gregorian day count from the Unix epoch without using any external date/time crate. Returns `None` for malformed input (wrong separators, out-of-range fields, missing `Z` suffix).
 
-Error mapping:
+Error mapping for dns-persist-01:
 - DNS lookup failure → `AcmeError::Dns`
 - No matching TXT record → `AcmeError::IncorrectResponse`
+
+## onion-csr-01 validator (`src/validation/onion_csr_01.rs`)
+
+Implements server-side validation for hidden-service domain ownership per RFC 9799 §3.2. The client submits a DER-encoded CSR in the challenge response payload (`{"csr": "<base64url>"}`); the handler decodes it and passes it to this validator via `onion_csr_der`.
+
+Validation steps:
+1. **Decode hidden-service public key**: extract the 32-byte Ed25519 public key from the v3 `.onion` address label. The label is 56 base32 characters encoding 35 bytes: `[pubkey(32)] || [checksum(2)] || [version=0x03(1)]`. Version byte must be `0x03`; v2 addresses (16-character label) are rejected.
+2. **Parse CSR**: decode `csr_der` as a DER PKCS#10 `CertificationRequest` using synta.
+3. **Re-encode CRI**: re-encode the `CertificationRequestInfo` to obtain the exact bytes that were signed.
+4. **Verify CSR self-signature**: call `BackendPublicKey::verify_signature` on the CRI bytes using the CSR's own public key. Returns `IncorrectResponse` if invalid.
+5. **Verify `cabf-onion-csr-nonce` extension** (OID `2.23.140.41`): the extension value must be a DER `UTF8String` (or `IA5String` / raw bytes) whose decoded string equals `key_auth` (`token.thumbprint`). Returns `IncorrectResponse` if absent or mismatched.
+6. **Verify hidden-service Ed25519 signature** over the CRI bytes using the public key from step 1. Two cases are accepted:
+   - If the outer CSR signature (the `BIT STRING` at the top level) verifies with the hidden-service Ed25519 key, the challenge passes.
+   - Otherwise, if the CSR's own public key matches the hidden-service key, the self-signature from step 4 already proves key control and no separate HS signature is required.
+   If neither condition holds, `IncorrectResponse` is returned.
+7. **Verify SAN**: check that the `.onion` domain appears as a `dNSName` in the CSR's `SubjectAlternativeName` extension.
+
+The `validate_onion_v3(domain)` helper (exported as `pub`) can be called by the order/authorization handler to reject non-v3 `.onion` domains before creating a challenge.
+
+Error mapping:
+- Cannot decode `.onion` public key → `AcmeError::IncorrectResponse`
+- CSR parse failure → `AcmeError::IncorrectResponse`
+- CSR self-signature invalid → `AcmeError::IncorrectResponse`
+- Missing or mismatched `cabf-onion-csr-nonce` extension → `AcmeError::IncorrectResponse`
+- Hidden-service signature verification failed → `AcmeError::IncorrectResponse`
+- Domain not found in CSR SAN → `AcmeError::IncorrectResponse`
