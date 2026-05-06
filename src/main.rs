@@ -163,7 +163,13 @@ async fn run() -> Result<(), String> {
             .map_err(|e| format!("CA '{}' public key: {e}", ca_cfg.id))?
             .spki_der()
             .to_vec();
-        let ca_aki_bytes = ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
+        let ca_aki_bytes =
+            ca::init::compute_aki_from_spki(&ca_spki_der).ok_or_else(|| {
+                format!(
+                    "CA '{}': cannot compute Authority Key Identifier from SPKI",
+                    ca_cfg.id
+                )
+            })?;
 
         // Derive CRL/OCSP URLs if not set explicitly in config.
         let crl_url = ca_cfg.crl_url.clone().or_else(|| {
