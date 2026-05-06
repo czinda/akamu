@@ -74,30 +74,30 @@ async fn run() -> Result<(), String> {
     let config = Config::from_file(&config_path)?;
 
     // CA/B Forum BR §7.1.3.2.1: SHA-1 prohibited in certificate/CRL signatures since 2026-09-15.
-    {
-        let alg = config.default_ca().hash_alg.to_lowercase();
+    // CA/B Forum BR §6.3.2 validity caps: 200 days since 2026-03-15, 100 from 2027-03-15.
+    for ca_cfg in &config.cas {
+        let alg = ca_cfg.hash_alg.to_lowercase();
         if alg == "sha1" || alg == "sha-1" {
             return Err(format!(
-                "ca.hash_alg='{}' is prohibited by CA/B Forum BR §7.1.3.2.1 \
+                "ca[{}].hash_alg='{}' is prohibited by CA/B Forum BR §7.1.3.2.1 \
                  (SHA-1 sunset 2026-09-15); use 'sha256', 'sha384', or 'sha512'",
-                config.default_ca().hash_alg
+                ca_cfg.id, ca_cfg.hash_alg
             ));
         }
-    }
-
-    // CA/B Forum BR §6.3.2 validity caps: 200 days since 2026-03-15, 100 from 2027-03-15.
-    if config.default_ca().validity_days > 200 {
-        tracing::warn!(
-            "ca.validity_days={} exceeds the 200-day CA/B Forum BR limit (§6.3.2, since 2026-03-15); \
-             certificates issued by this CA cannot be used in public WebPKI chains",
-            config.default_ca().validity_days
-        );
-    } else if config.default_ca().validity_days > 100 {
-        tracing::warn!(
-            "ca.validity_days={} will exceed the upcoming 100-day CA/B Forum BR limit \
-             (§6.3.2, from 2027-03-15)",
-            config.default_ca().validity_days
-        );
+        if ca_cfg.validity_days > 200 {
+            tracing::warn!(
+                "ca[{}].validity_days={} exceeds the 200-day CA/B Forum BR limit \
+                 (§6.3.2, since 2026-03-15); certificates issued by this CA cannot \
+                 be used in public WebPKI chains",
+                ca_cfg.id, ca_cfg.validity_days
+            );
+        } else if ca_cfg.validity_days > 100 {
+            tracing::warn!(
+                "ca[{}].validity_days={} will exceed the upcoming 100-day CA/B Forum \
+                 BR limit (§6.3.2, from 2027-03-15)",
+                ca_cfg.id, ca_cfg.validity_days
+            );
+        }
     }
 
     if config.server.account_scope == "ca" {

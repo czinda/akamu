@@ -124,7 +124,7 @@ pub async fn new_authz(
     let identifier_json = serde_json::to_string(
         &json!({"type": payload.identifier.r#type, "value": payload.identifier.value}),
     )
-    .unwrap();
+    .map_err(|e| AcmeError::Internal(format!("identifier serialization: {e}")))?;
 
     let now = unix_now();
 
@@ -315,11 +315,13 @@ pub async fn get_authz(
             "authorization belongs to different account".into(),
         ));
     }
-    let order = db::orders::get_by_id(&state.db, &authz.order_id)
-        .await?
-        .ok_or(AcmeError::NotFound)?;
-    if order.ca_id != ca_id.0 {
-        return Err(AcmeError::NotFound);
+    if !authz.order_id.is_empty() {
+        let order = db::orders::get_by_id(&state.db, &authz.order_id)
+            .await?
+            .ok_or(AcmeError::NotFound)?;
+        if order.ca_id != ca_id.0 {
+            return Err(AcmeError::NotFound);
+        }
     }
     let thumbprint = ctx.jwk_thumbprint.as_deref().unwrap_or("");
     let body = build_authz_json(&authz, &challenges, &pfx, &state, thumbprint);

@@ -171,7 +171,9 @@ pub async fn new_account(
     let contact_json = payload
         .contact
         .as_ref()
-        .map(|c| serde_json::to_string(c).unwrap());
+        .map(|c| serde_json::to_string(c))
+        .transpose()
+        .map_err(|e| AcmeError::Internal(format!("contact serialization: {e}")))?;
 
     // Profile grants inherited from the EAB key (None when no EAB was used).
     let eab_profile_grants = verified_eab.as_ref().and_then(|(_, g)| g.clone());
@@ -309,7 +311,8 @@ pub async fn update_account(
     // Update contact.
     if let Some(new_contacts) = &payload.contact {
         validate_contacts(new_contacts)?;
-        let contact_json = serde_json::to_string(new_contacts).unwrap();
+        let contact_json = serde_json::to_string(new_contacts)
+            .map_err(|e| AcmeError::Internal(format!("contact serialization: {e}")))?;
         db::accounts::update_contact(&state.db, &id, Some(contact_json), unix_now()).await?;
     }
 

@@ -68,7 +68,7 @@ pub async fn list_by_issuer_ca(
         "SELECT id, issuer_ca_id, subject_ca_id, subject_dn, subject_spki,
          cross_cert_der, cross_cert_pem, not_before, not_after, serial_number, created
          FROM cross_certs WHERE issuer_ca_id = ?
-         ORDER BY created DESC",
+         ORDER BY created DESC LIMIT 100",
     )
     .bind(issuer_ca_id)
     .fetch_all(executor)
@@ -110,7 +110,10 @@ pub async fn list(
     qb.push(" OFFSET ");
     qb.push_bind(offset);
 
-    let rows = qb.build_query_as::<CrossCertRow>().fetch_all(executor).await?;
+    let rows = qb
+        .build_query_as::<CrossCertRow>()
+        .fetch_all(executor)
+        .await?;
     Ok(rows)
 }
 
@@ -183,7 +186,9 @@ mod tests {
 
         let ml_dsa_certs = list_by_subject_ca(&pool, "ml-dsa").await.unwrap();
         assert_eq!(ml_dsa_certs.len(), 2);
-        assert!(ml_dsa_certs.iter().all(|r| r.subject_ca_id.as_deref() == Some("ml-dsa")));
+        assert!(ml_dsa_certs
+            .iter()
+            .all(|r| r.subject_ca_id.as_deref() == Some("ml-dsa")));
 
         let ec_certs = list_by_subject_ca(&pool, "ec").await.unwrap();
         assert_eq!(ec_certs.len(), 1);

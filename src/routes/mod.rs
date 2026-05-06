@@ -505,12 +505,15 @@ pub(crate) fn acme_headers(state: &AppState, ca_id: &str, nonce: &str) -> Header
         HeaderName::from_static("replay-nonce"),
         HeaderValue::from_str(nonce).unwrap(),
     );
-    let link = state
+    if let Some(link) = state
         .link_headers
         .get(ca_id)
         .or_else(|| state.link_headers.get(state.default_ca_id.as_str()))
-        .expect("default CA link header must always be present");
-    headers.insert(axum::http::header::LINK, (**link).clone());
+    {
+        headers.insert(axum::http::header::LINK, (**link).clone());
+    } else {
+        tracing::error!(ca_id, "link header missing for CA — ACME Link header omitted");
+    }
     headers
 }
 

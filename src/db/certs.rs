@@ -364,10 +364,10 @@ pub async fn search(
         qb.push_bind(st);
     }
     if let Some(dn) = subject_dn {
-        let escaped = dn.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+        let escaped = dn.replace('!', "!!").replace('%', "!%").replace('_', "!_");
         qb.push(" AND subject_dn LIKE ");
         qb.push_bind(format!("%{escaped}%"));
-        qb.push(" ESCAPE '\\\\'");
+        qb.push(" ESCAPE '!'");
     }
     if let Some(ca) = ca_id {
         qb.push(" AND ca_id = ");

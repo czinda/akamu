@@ -374,14 +374,17 @@ pub async fn finalize_order(
 
     // For STAR orders, persist the CSR DER so the background task can reissue.
     if order.star_end_date.is_some() {
-        if let Err(e) = db::orders::set_star_csr(&state.db, &id, csr_der.clone()).await {
-            tracing::error!(
-                order_id = %id,
-                account_id = %order.account_id,
-                error = %e,
-                "STAR CSR not stored — background renewal will fail"
-            );
-        }
+        db::orders::set_star_csr(&state.db, &id, csr_der.clone())
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    order_id = %id,
+                    account_id = %order.account_id,
+                    error = %e,
+                    "STAR CSR not stored — background renewal will fail"
+                );
+                AcmeError::Internal("failed to persist STAR CSR; please retry finalization".into())
+            })?;
     }
 
     // Build the response from the known post-finalize state without a DB re-fetch.

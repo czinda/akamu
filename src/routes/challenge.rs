@@ -55,11 +55,13 @@ pub async fn respond_challenge(
             "authorization belongs to different account".into(),
         ));
     }
-    let order = db::orders::get_by_id(&state.db, &authz.order_id)
-        .await?
-        .ok_or(AcmeError::NotFound)?;
-    if order.ca_id != ca_id.0 {
-        return Err(AcmeError::NotFound);
+    if !authz.order_id.is_empty() {
+        let order = db::orders::get_by_id(&state.db, &authz.order_id)
+            .await?
+            .ok_or(AcmeError::NotFound)?;
+        if order.ca_id != ca_id.0 {
+            return Err(AcmeError::NotFound);
+        }
     }
     if authz.status != "pending" {
         return Err(AcmeError::BadRequest(format!(
@@ -84,7 +86,7 @@ pub async fn respond_challenge(
     let jwk_thumbprint = ctx
         .jwk_thumbprint
         .clone()
-        .expect("challenge handler always uses kid-authenticated requests");
+        .ok_or_else(|| AcmeError::Internal("JWK thumbprint missing in challenge handler".into()))?;
     // dns-persist-01 is validated against the account URI stored as the key_auth;
     // all other challenge types use the standard token·thumbprint form.
     let key_auth = if chall_type == "dns-persist-01" {

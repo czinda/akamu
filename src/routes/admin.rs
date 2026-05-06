@@ -826,7 +826,10 @@ pub async fn post_crl_force(
 
     // Drop all CRL caches; the next GET /ca/crl (per CA) will regenerate each.
     for cache in state.crl_caches.values() {
-        *cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *cache.lock().unwrap_or_else(|e| {
+            tracing::error!("CRL cache mutex poisoned — recovering and invalidating");
+            e.into_inner()
+        }) = None;
     }
 
     state
@@ -884,7 +887,10 @@ pub async fn post_revoke(
                 // Cert row missing (shouldn't happen after a successful revoke) —
                 // fall back to invalidating all caches.
                 for cache in state.crl_caches.values() {
-                    *cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                    *cache.lock().unwrap_or_else(|e| {
+                        tracing::error!("CRL cache mutex poisoned — recovering and invalidating");
+                        e.into_inner()
+                    }) = None;
                 }
             }
             state
@@ -1893,6 +1899,13 @@ pub async fn post_ca_cross_sign(
     // Resolve the subject cert DER from either field.
     let subject_cert_der = match (&payload.subject_ca_id, &payload.subject_cert_pem) {
         (Some(subj_id), None) => {
+            if subj_id == &issuer_id {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"status": 400, "detail": "issuer and subject CA must be different"})),
+                )
+                    .into_response();
+            }
             match state.get_ca(subj_id) {
                 Some(ca) => ca.cert_der.clone(),
                 None => {
@@ -1975,7 +1988,20 @@ pub async fn post_ca_cross_sign(
 
     if let Err(e) = db::cross_certs::insert(&state.db, &row).await {
         tracing::error!(error = %e, "failed to store cross-cert");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        state
+            .record_audit(
+                AuditEvent::failure(AuditEventType::CrossSignIssue)
+                    .with_principal(&operator.name)
+                    .with_detail(&format!(
+                        "DB insert failed: {e}; issuer={issuer_id}"
+                    )),
+            )
+            .await;
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"status": 500, "detail": "failed to persist cross-certificate"})),
+        )
+            .into_response();
     }
 
     state
@@ -2034,11 +2060,12 @@ pub async fn get_cross_certs(
         .get("limit")
         .and_then(|v| v.parse().ok())
         .unwrap_or(100)
-        .min(1000);
+        .clamp(1, 1000);
     let offset: i64 = params
         .get("offset")
         .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .max(0);
 
     let rows = match db::cross_certs::list(&state.db, issuer_ca_id, subject_ca_id, limit, offset)
         .await
