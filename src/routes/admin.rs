@@ -1603,11 +1603,7 @@ pub async fn put_operator(
                 .into_response();
         }
         if !cid.is_empty() && !state.cas.contains_key(cid.as_str()) {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("unknown ca_id '{cid}'"),
-            )
-                .into_response();
+            return (StatusCode::BAD_REQUEST, format!("unknown ca_id '{cid}'")).into_response();
         }
         Some(cid.as_str())
     } else if effective_role == "ca_ra" {
@@ -1617,7 +1613,10 @@ pub async fn put_operator(
             "ca_id is required when setting role to ca_ra",
         )
             .into_response();
-    } else if matches!(effective_role, "administrator" | "ca_operations" | "auditor") {
+    } else if matches!(
+        effective_role,
+        "administrator" | "ca_operations" | "auditor"
+    ) {
         // Role changing away from ca_ra — clear ca_id automatically.
         Some("")
     } else {
@@ -1628,16 +1627,22 @@ pub async fn put_operator(
     match db::operators::update(
         &state.db,
         id,
-        payload.name.as_deref(),
-        payload.role.as_deref(),
-        payload.cert_fingerprint.as_deref(),
-        payload.gssapi_principal.as_deref(),
-        ca_id_update,
+        db::operators::OperatorUpdateParams {
+            name: payload.name.as_deref(),
+            role: payload.role.as_deref(),
+            cert_fingerprint: payload.cert_fingerprint.as_deref(),
+            gssapi_principal: payload.gssapi_principal.as_deref(),
+            ca_id: ca_id_update,
+        },
         &now,
     )
     .await
     {
         Ok(true) => {
+            // Role or CA scope may have changed — invalidate any live sessions for this operator.
+            if let Some(sessions) = &state.admin_sessions {
+                sessions.lock().await.retain(|_, s| s.operator_id != id);
+            }
             state
                 .record_audit(
                     AuditEvent::success(AuditEventType::AdminAction)
