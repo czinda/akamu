@@ -118,7 +118,7 @@ The MTC signing key.  This key **must** be distinct from any TLS certificate key
 
 **Optional. Default: `"ec:P-256"`.**
 
-Key algorithm for auto-generation.  Accepts the same values as `[ca].key_type` in `akamu`: `"ec:P-256"`, `"ec:P-384"`, `"ec:P-521"`, `"rsa:2048"`, `"rsa:3072"`, `"rsa:4096"`, `"ed25519"`.
+Key algorithm for auto-generation.  Accepts the same values as `[[ca]].key_type` in `akamu`: `"ec:P-256"`, `"ec:P-384"`, `"ec:P-521"`, `"rsa:2048"`, `"rsa:3072"`, `"rsa:4096"`, `"ed25519"`, `"ed448"`.
 
 ### `hash_alg`
 

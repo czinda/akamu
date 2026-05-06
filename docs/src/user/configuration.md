@@ -272,6 +272,7 @@ Algorithm used when auto-generating a new CA key. Ignored when loading an existi
 | `"rsa:3072"` | RSA 3072-bit, exponent 65537 |
 | `"rsa:4096"` | RSA 4096-bit, exponent 65537 |
 | `"ed25519"` | Ed25519 |
+| `"ed448"` | Ed448 |
 
 ```toml
 key_type = "ec:P-256"

@@ -304,7 +304,7 @@ server_name = "akamu.internal"
 
 # Key algorithm for the auto-generated server certificate.
 # Accepted values: "ec:P-256", "ec:P-384", "ec:P-521",
-#                  "rsa:2048", "rsa:3072", "rsa:4096", "ed25519".
+#                  "rsa:2048", "rsa:3072", "rsa:4096", "ed25519", "ed448".
 # Default: "ec:P-256".
 bootstrap_key_type = "ec:P-256"
 ```
