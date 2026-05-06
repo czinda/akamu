@@ -37,7 +37,7 @@ Each library crate ships its own unit tests:
 
 ```bash
 cargo test -p akamu-jose    # 66 tests: JWK parsing, JWS sign/verify, ML-DSA
-cargo test -p akamu-client  # 16 tests: AccountKey, EAB, CSR, challenge helpers
+cargo test -p akamu-client  # 25 tests: AccountKey, EAB, CSR, challenge helpers
 ```
 
 `akamu-jose` tests cover every key type including ML-DSA-44/65/87 round-trip sign/verify. `akamu-client` tests use real OpenSSL key generation (no mocking). See `crates/akamu-jose/src/` and `crates/akamu-client/src/` for test modules.
@@ -129,8 +129,9 @@ Tests verify:
 - IP SAN issuance works.
 - Invalid IP SAN string returns `AcmeError::Builder`.
 - Unknown SAN type is silently skipped.
-- `issue_ca_cert` produces a CA certificate with `BasicConstraints cA=TRUE` and no `pathLenConstraint`.
-- `check_is_ca_cert` accepts a CA cert and rejects an end-entity cert.
+- `not_before_override` is honoured; values more than 5 minutes in the past are clamped.
+- `not_after_override` is honoured; invalid values (not after `not_before`) fall back to `not_before + validity_days * 86400`.
+- `issue_with_params` rejects issuance when `enforce_validity_cap=true` and `validity_days > 200`; allows exactly 200 days.
 
 ### `src/ca/revoke.rs`
 
@@ -173,6 +174,29 @@ Tests use a hand-crafted UDP DNS stub server:
 - Non-existent domain returns an error.
 - Wildcard prefix is stripped before querying.
 
+### `src/validation/dns_persist_01.rs`
+
+Tests cover both the `parse_persist_until` timestamp parser and the `matches_record` record-matching logic:
+- `parse_persist_until` accepts epoch, known timestamps, and leap-year dates; rejects bad separators, missing `Z`, and out-of-range fields.
+- `matches_record` verifies issuer match (case-insensitive, trailing-dot stripped), `accounturi` match and mismatch, wildcard `policy=deny` handling, `persist-until` expiry, unknown key-value tokens, and multi-issuer lists.
+- Async integration tests using a UDP DNS stub server: matching record returns `Ok`, wrong issuer returns error, wildcard domain strips `*.` prefix, wildcard requires `policy=deny`, non-existent domain returns a DNS error.
+
+### `src/validation/onion_csr_01.rs`
+
+Tests cover v3 onion address validation and CSR cryptographic binding:
+- `validate_onion_v3` accepts a valid 56-char base32 label and rejects v2 (16-char), too-short, wrong-chars, and non-.onion addresses.
+- `base32_decode_no_pad` handles valid input, invalid chars, and non-zero trailing bits.
+- `decode_onion_pubkey` rejects wrong version bytes; decodes a synthetic v3 address correctly.
+- `ed25519_spki_der` produces the correct 44-byte DER structure.
+- `decode_utf8string_or_raw` handles DER UTF8String tags and falls back to raw UTF-8.
+- Full CSR validation: Ed25519 CSR key matches the onion address public key; missing nonce extension fails; wrong nonce value fails; wrong SAN fails.
+
+### `src/validation/caa.rs`
+
+Tests cover the `build_name_walk` helper and `check_caa` async lookups using a UDP DNS stub server:
+- `build_name_walk` produces the correct ordered list of names to query (single subdomain, deep subdomain, trailing-dot stripped, single-label returns empty).
+- `check_caa`: empty `ca_identities` is a no-op; no CAA records returns `Ok`; matching issuer returns `Ok`; non-matching issuer returns error; wildcard falls back from `issuewild` to `issue`; `validationmethods` tag filtering; `accounturi` matching and mismatch; case-insensitive CA identity comparison.
+
 ### `src/validation/tls_alpn01.rs`
 
 Tests include both unit tests for the DER walker and integration tests using local TLS servers:
@@ -205,9 +229,12 @@ All integration test files live under `tests/`.  Each builds a full `AppState` w
 | File | What it covers |
 |---|---|
 | `tests/acme_flow.rs` | Core ACME lifecycle: account creation, order creation, challenge signaling, status transitions, and certificate download |
+| `tests/admin_auth.rs` | Admin authentication paths: Bearer token, mTLS client-certificate, and expired-token rejection; operator deactivation purges live sessions; audit event end-to-end (insert via `db::audit::insert`, query via `GET /admin/audit`) |
+| `tests/admin_rbac.rs` | Table-driven RBAC: for every `(route, method)` pair and each of the four operator roles, verifies allowed roles are not 403 and disallowed roles get exactly 403 |
 | `tests/ari_flow.rs` | ACME Renewal Information (RFC 9773) query and renewal window logic |
 | `tests/dns_persist_flow.rs` | Full dns-persist-01 challenge flow against a local DNS stub server |
 | `tests/mtc_cosigner_flow.rs` | End-to-end ACME issuance followed by MTC checkpoint production, cosignature gathering from an inline cosigner HTTP server, and `StandaloneCertificate` verification |
+| `tests/multi_ca.rs` | Multi-CA routing: per-CA directory and CRL endpoints, legacy path falls through to default CA, unknown CA ID returns 404, CRL isolation across CAs, order CA isolation |
 | `tests/tls_server.rs` | Helper module providing a local TLS server for tls-alpn-01 integration tests |
 | `tests/mtc_playground_compat.rs` | Wire-compatibility tests for the C2SP tlog-tiles and signed-note implementation (RFC 9162 Merkle hashing, tile path encoding, checkpoint/cosignature note format, live HTTP endpoint smoke tests); optional DigiCert playground integration gated behind `MTC_PLAYGROUND_DIR` env var and `--ignored` |
 
@@ -244,7 +271,7 @@ Integration tests that exercise ACME handlers need a full `AppState`. The multi-
 
 ```rust
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use indexmap::IndexMap;
 
 // 1. Open an in-memory database with the full schema.
@@ -258,9 +285,14 @@ let ca_state = Arc::new(CaState {
     key_type: ca_cfg.key_type.clone(),
     key,
     cert_der,
+    hash_alg: "sha256".into(),
+    validity_days: 90,
+    crl_url: None,
+    ocsp_url: None,
+    aki_bytes: vec![],
+    enforce_validity_cap: false,
     crl_next_update_secs: 86400,
     caa_identities: vec![],
-    // … other required fields (hash_alg, validity_days, etc.) …
 });
 
 // 3. Build the IndexMap of CAs.
@@ -271,34 +303,74 @@ let default_ca_id = Arc::new(ca_cfg.id.clone());
 
 // 4. Build per-CA CRL cache and Link headers.
 let mut crl_caches_map: HashMap<String, crate::state::CrlCache> = HashMap::new();
-crl_caches_map.insert(ca_cfg.id.clone(), Arc::new(Mutex::new(None)));
+crl_caches_map.insert(ca_cfg.id.clone(), Default::default());
 let crl_caches = Arc::new(crl_caches_map);
 
 let mut link_headers_map = HashMap::new();
-let link_value = axum::http::HeaderValue::from_str(
-    &format!("<{}/acme/directory>; rel=\"index\"", base_url)
-).unwrap();
+let link_value = axum::http::HeaderValue::from_static(
+    "<https://acme.test/acme/directory>;rel=\"index\""
+);
 link_headers_map.insert(ca_cfg.id.clone(), Arc::new(link_value));
 let link_headers = Arc::new(link_headers_map);
 
-// 5. Assemble AppState.
+// 5. Build the outbound HTTPS client for challenge validation.
+let validation_client = {
+    let https = hyper_rustls::HttpsConnectorBuilder::new()
+        .with_native_roots()
+        .expect("native roots")
+        .https_or_http()
+        .enable_http1()
+        .build();
+    hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+        .build(https)
+};
+
+// 6. Assemble AppState.
 let state = Arc::new(AppState {
     config: Arc::new(config),
     db,
+    db_kind: crate::db::DbKind::Sqlite,
     cas,
     default_ca_id,
-    crl_caches,
+    mtc: Arc::new(MtcState {
+        log: None,
+        algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
+        signing_key: None,
+        signing_hash_alg: "sha256".into(),
+        cosigner_clients: vec![],
+        _log_lock: None,
+    }),
+    profiles: crate::profiles::ProfileRegistry::empty(&ca_state),
+    tls: None,
+    spki_cache: Arc::new(RwLock::new(HashMap::new())),
+    nonces: Arc::new(NonceBucket::new()),
     link_headers,
-    // … all other required fields …
+    validation_client,
+    crl_caches,
+    gss_cred: None,
+    admin_gss_cred: None,
+    eab_master_secret: None,
+    audit: Arc::new(crate::audit::AuditState::new()),
+    audit_policy: Arc::new(crate::audit::AuditPolicy::default()),
+    admin_sessions: None,
+    admin_auth_limiter: None,
+    startup_time: std::time::Instant::now(),
 });
 ```
 
 Key points:
 
-- `CaState` now requires `id`, `key_type`, and `crl_next_update_secs` in addition to the existing fields. Tests that construct `CaState` directly must supply all three.
+- `CaState` requires all fields: `id`, `key_type`, `key`, `cert_der`, `hash_alg`, `validity_days`, `crl_url`, `ocsp_url`, `aki_bytes`, `enforce_validity_cap`, `crl_next_update_secs`, and `caa_identities`. None have defaults.
 - `AppState::cas` is an `Arc<IndexMap<String, Arc<CaState>>>`, not a single `Arc<CaState>`. All lookups go through `state.get_ca(id)` or `state.default_ca()`.
-- `AppState::crl_caches` is an `Arc<HashMap<String, CrlCache>>`. Each entry must be keyed by the same CA ID as the corresponding `cas` entry.
+- `AppState::db_kind` must be set; use `DbKind::Sqlite` for in-memory test databases.
+- `AppState::profiles` holds the certificate profile registry; use `ProfileRegistry::empty(&ca)` to get a no-op registry that falls back to CA defaults for all issuance.
+- `AppState::crl_caches` is an `Arc<HashMap<String, CrlCache>>`. Each entry must be keyed by the same CA ID as the corresponding `cas` entry; `Default::default()` yields `Arc::new(Mutex::new(None))`.
 - `AppState::link_headers` is an `Arc<HashMap<String, Arc<HeaderValue>>>`. The `acme_headers` helper falls back to the default CA's header when a per-CA header is missing, but tests should always populate the map for every registered CA ID to avoid log noise.
+- `AppState::nonces` holds the in-memory anti-replay nonce store; construct with `Arc::new(NonceBucket::new())`.
+- `AppState::spki_cache` holds account key material; initialise with an empty `RwLock`-protected `HashMap`.
+- `AppState::validation_client` is required even for tests that do not perform outbound challenge validation; build a standard HTTPS client as shown above.
+- `AppState::audit` and `AppState::audit_policy` are always required; use `AuditState::new()` and `AuditPolicy::default()` respectively.
+- Optional fields (`tls`, `gss_cred`, `admin_gss_cred`, `eab_master_secret`, `admin_sessions`, `admin_auth_limiter`) should be set to `None` unless the test exercises those features.
 - Tests that only need a single CA can keep using a single entry in the `IndexMap`; there is no requirement to configure multiple CAs in tests.
 
 ## Coverage
