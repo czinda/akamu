@@ -39,6 +39,18 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let app = Arc::<AppState>::from_ref(state);
+
+        // Fast path: if the matched route template has no `{ca_id}` segment this
+        // is a legacy route — return the default CA without allocating anything.
+        if !parts
+            .extensions
+            .get::<axum::extract::MatchedPath>()
+            .is_some_and(|mp| mp.as_str().contains("{ca_id}"))
+        {
+            return Ok(CaId((*app.default_ca_id).clone()));
+        }
+
+        // Per-CA route: extract `{ca_id}` from the path parameters.
         if let Ok(Path(params)) =
             Path::<HashMap<String, String>>::from_request_parts(parts, state).await
         {
@@ -310,15 +322,12 @@ pub fn build_admin_router(state: Arc<AppState>) -> Router {
             "/admin/cas/{id}/cert",
             axum::routing::get(admin::get_ca_cert),
         )
+        .route("/admin/ca/{id}/crl/force", post(admin::post_ca_crl_force))
+        .route("/admin/ca/{id}/cross-sign", post(admin::post_ca_cross_sign))
         .route(
-            "/admin/ca/{id}/crl/force",
-            post(admin::post_ca_crl_force),
+            "/admin/cross-certs",
+            axum::routing::get(admin::get_cross_certs),
         )
-        .route(
-            "/admin/ca/{id}/cross-sign",
-            post(admin::post_ca_cross_sign),
-        )
-        .route("/admin/cross-certs", axum::routing::get(admin::get_cross_certs))
         .route(
             "/admin/cross-certs/{id}",
             axum::routing::get(admin::get_cross_cert),
@@ -516,7 +525,10 @@ pub(crate) fn acme_headers(state: &AppState, ca_id: &str, nonce: &str) -> Header
     {
         headers.insert(axum::http::header::LINK, (**link).clone());
     } else {
-        tracing::error!(ca_id, "link header missing for CA — ACME Link header omitted");
+        tracing::error!(
+            ca_id,
+            "link header missing for CA — ACME Link header omitted"
+        );
     }
     headers
 }

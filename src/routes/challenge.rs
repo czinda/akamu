@@ -28,44 +28,39 @@ pub async fn respond_challenge(
         .account_id
         .ok_or(AcmeError::Unauthorized("kid required".into()))?;
 
-    // First read the authorization and validate ownership + CA context before
-    // any write. This prevents a TOCTOU where the challenge could be flipped to
-    // "processing" for an authz belonging to a different account or CA.
-    let (authz, _) = db::authz::get_with_challenges(&state.db, &authz_id)
-        .await?
-        .ok_or(AcmeError::NotFound)?;
-
-    if authz.account_id != account_id {
-        return Err(AcmeError::Unauthorized(
-            "authorization belongs to different account".into(),
-        ));
-    }
-    if !authz.order_id.is_empty() {
-        let order = db::orders::get_by_id(&state.db, &authz.order_id)
+    // Load authz + challenges and validate ownership, CA scope, and authz status
+    // all within one write transaction, then flip the target challenge to
+    // "processing" atomically.  Doing everything in a single round-trip (BEGIN
+    // IMMEDIATE → SELECT → checks → UPDATE → COMMIT) eliminates the two extra
+    // pre-transaction reads that the old split approach required, recovering the
+    // throughput regression introduced by the multi-CA refactor.
+    //
+    // CA scope: `authz.ca_id` is set to the CA ID at `new-order` time
+    // (migration 009 backfills old rows to 'default').  Order-based authzs
+    // therefore carry the correct CA ID directly — no order lookup needed.
+    let now = unix_now();
+    let (authz, challenge) = {
+        let mut tx = db::begin_write(&state.db, state.db_kind).await?;
+        let (authz, challenges) = db::authz::get_with_challenges(&mut *tx, &authz_id)
             .await?
             .ok_or(AcmeError::NotFound)?;
-        if order.ca_id != ca_id.0 {
+
+        if authz.account_id != account_id {
+            return Err(AcmeError::Unauthorized(
+                "authorization belongs to different account".into(),
+            ));
+        }
+        // 'default' is the migration-backfill sentinel; allow it on any CA.
+        if !authz.ca_id.is_empty() && authz.ca_id != "default" && authz.ca_id != ca_id.0 {
             return Err(AcmeError::NotFound);
         }
-    } else if !authz.ca_id.is_empty() && authz.ca_id != "default" && authz.ca_id != ca_id.0 {
-        // Standalone pre-authz: enforce the CA namespace it was created under.
-        return Err(AcmeError::NotFound);
-    }
-    if authz.status != "pending" {
-        return Err(AcmeError::BadRequest(format!(
-            "authorization status is '{}', expected 'pending'",
-            authz.status
-        )));
-    }
+        if authz.status != "pending" {
+            return Err(AcmeError::BadRequest(format!(
+                "authorization status is '{}', expected 'pending'",
+                authz.status
+            )));
+        }
 
-    // Now atomically find the target challenge and flip it to "processing" if
-    // still "pending". All checks above have passed.
-    let now = unix_now();
-    let challenge = {
-        let mut tx = db::begin_write(&state.db, state.db_kind).await?;
-        let (_authz, challenges) = db::authz::get_with_challenges(&mut *tx, &authz_id)
-            .await?
-            .ok_or(AcmeError::NotFound)?;
         let challenge = challenges
             .into_iter()
             .find(|c| c.r#type == chall_type)
@@ -74,7 +69,7 @@ pub async fn respond_challenge(
             db::challenges::set_processing(&mut *tx, &challenge.id, now).await?;
         }
         tx.commit().await.map_err(AcmeError::from)?;
-        challenge
+        (authz, challenge)
     };
 
     if challenge.status != "pending" {

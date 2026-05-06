@@ -331,15 +331,9 @@ pub async fn get_authz(
             "authorization belongs to different account".into(),
         ));
     }
-    if !authz.order_id.is_empty() {
-        let order = db::orders::get_by_id(&state.db, &authz.order_id)
-            .await?
-            .ok_or(AcmeError::NotFound)?;
-        if order.ca_id != ca_id.0 {
-            return Err(AcmeError::NotFound);
-        }
-    } else if !authz.ca_id.is_empty() && authz.ca_id != "default" && authz.ca_id != ca_id.0 {
-        // Standalone pre-authz: enforce the CA namespace it was created under.
+    // authz.ca_id is set to the order's CA at creation time (migration 009
+    // backfills pre-existing rows to 'default', which is allowed on any CA).
+    if !authz.ca_id.is_empty() && authz.ca_id != "default" && authz.ca_id != ca_id.0 {
         return Err(AcmeError::NotFound);
     }
     let thumbprint = ctx.jwk_thumbprint.as_deref().unwrap_or("");
