@@ -926,7 +926,7 @@ pub fn issue_ca_cert(
     // Build extensions.
     let hasher = default_key_id_hasher();
 
-    let bc_der = encode_basic_constraints(true, None)
+    let bc_der = encode_basic_constraints(true, Some(0))
         .ok_or_else(|| AcmeError::Builder("BasicConstraints encode".into()))?;
 
     let ku_der =

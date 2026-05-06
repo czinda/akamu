@@ -248,18 +248,46 @@ pub async fn post_operators(
 
     match result {
         Ok(()) => {
+            // Look up the newly inserted operator to retrieve its DB-assigned id.
+            let op_row = if let Some(fp) = payload.cert_fingerprint.as_deref() {
+                db::operators::get_by_fingerprint(&state.db, fp).await
+            } else if let Some(p) = payload.gssapi_principal.as_deref() {
+                db::operators::get_by_principal(&state.db, p).await
+            } else {
+                Ok(None) // unreachable: validated above
+            };
+            let op_id = match op_row {
+                Ok(Some(row)) => row.id,
+                Ok(None) => {
+                    tracing::error!("post_operators: operator not found after insert");
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"status": 500, "detail": "operator created but id lookup failed"})),
+                    )
+                        .into_response();
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "post_operators: id lookup db error");
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"status": 500, "detail": "database error"})),
+                    )
+                        .into_response();
+                }
+            };
             state
                 .record_audit(
                     AuditEvent::success(AuditEventType::AdminAction)
                         .with_principal(&operator.name)
                         .with_detail(
-                            json!({"action": "operator.create", "name": payload.name}).to_string(),
+                            json!({"action": "operator.create", "name": payload.name, "id": op_id})
+                                .to_string(),
                         ),
                 )
                 .await;
             (
                 StatusCode::CREATED,
-                Json(json!({"name": payload.name, "created_at": now})),
+                Json(json!({"id": op_id, "name": payload.name, "created_at": now})),
             )
                 .into_response()
         }
@@ -718,13 +746,17 @@ pub async fn get_eab(
 /// `POST /admin/eab`
 ///
 /// Provision a new EAB key, optionally with profile grants.
-/// Requires: `administrator`, `ca_operations`, or `ca_ra`.
+/// Requires: `administrator` or `ca_operations`.
+///
+/// `ca_ra` is intentionally excluded: EAB keys are server-global and not
+/// bound to any CA, so a CA-scoped operator could otherwise create keys
+/// usable for account creation under any CA.
 pub async fn post_eab(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     body: Bytes,
 ) -> Response {
-    require_role!(operator, state, Administrator | CaOperations | CaRa);
+    require_role!(operator, state, Administrator | CaOperations);
 
     let payload: NewEabPayload = match serde_json::from_slice(&body) {
         Ok(p) => p,
@@ -892,11 +924,24 @@ pub async fn post_revoke(
             .into_response();
     }
 
+    // ca_ra operators must always have a CA scope — an empty ca_id is a
+    // misconfiguration that would grant server-wide revocation authority.
+    if operator.role == OperatorRole::CaRa && operator.ca_id.is_empty() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"status": 403, "detail": "ca_ra operator has no CA scope configured"})),
+        )
+            .into_response();
+    }
+
     // CA-scoped ca_ra operators may only revoke certificates from their own CA.
-    if operator.role == OperatorRole::CaRa && !operator.ca_id.is_empty() {
+    if operator.role == OperatorRole::CaRa {
         match db::certs::get_by_id(&state.db, &payload.cert_id).await {
             Ok(Some(cert)) if cert.ca_id != operator.ca_id => {
-                return (StatusCode::FORBIDDEN, "certificate does not belong to your CA scope")
+                return (
+                    StatusCode::FORBIDDEN,
+                    "certificate does not belong to your CA scope",
+                )
                     .into_response();
             }
             Ok(None) => {
@@ -1226,7 +1271,14 @@ pub async fn get_accounts(
         .unwrap_or(0)
         .max(0);
     let status = params.get("status").map(String::as_str);
-    let ca_id = params.get("ca_id").map(String::as_str);
+    // ca_ra operators are always scoped to their own CA; override any supplied ca_id.
+    let ca_id_str;
+    let ca_id = if operator.role == OperatorRole::CaRa {
+        ca_id_str = operator.ca_id.clone();
+        Some(ca_id_str.as_str())
+    } else {
+        params.get("ca_id").map(String::as_str)
+    };
 
     match db::accounts::list(&state.db, status, ca_id, limit, offset).await {
         Ok(rows) => {
@@ -1422,6 +1474,7 @@ pub async fn get_operator(
                 "id": r.id,
                 "name": r.name,
                 "role": r.role,
+                "ca_id": r.ca_id,
                 "cert_fingerprint": r.cert_fingerprint,
                 "gssapi_principal": r.gssapi_principal,
                 "created_at": r.created_at,
@@ -1467,6 +1520,10 @@ pub async fn put_operator(
         role: Option<String>,
         cert_fingerprint: Option<String>,
         gssapi_principal: Option<String>,
+        /// CA scope for `ca_ra` role.  Empty string clears the scope (server-wide,
+        /// which is rejected for `ca_ra`).  Omitting the field leaves the existing
+        /// value unchanged.  Must be a known CA ID when the effective role is `ca_ra`.
+        ca_id: Option<String>,
     }
 
     let payload: PutOperatorPayload = match serde_json::from_slice(&body) {
@@ -1474,6 +1531,7 @@ pub async fn put_operator(
         Err(e) => return (StatusCode::BAD_REQUEST, format!("JSON: {e}")).into_response(),
     };
 
+    let effective_role = payload.role.as_deref().unwrap_or("");
     if let Some(ref r) = payload.role {
         match r.as_str() {
             "administrator" | "ca_operations" | "ca_ra" | "auditor" => {}
@@ -1487,6 +1545,85 @@ pub async fn put_operator(
         }
     }
 
+    // When ca_id is supplied, validate it.
+    let ca_id_update: Option<&str> = if let Some(ref cid) = payload.ca_id {
+        let target_role = if effective_role.is_empty() {
+            // Role not being changed — we need to know the current role to validate.
+            // Fetch the operator to determine its current role.
+            match db::operators::get_by_id(&state.db, id).await {
+                Ok(Some(ref op)) => {
+                    if cid.is_empty() && op.role == "ca_ra" {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            "ca_ra operators must have a non-empty ca_id",
+                        )
+                            .into_response();
+                    }
+                    if !cid.is_empty() && op.role != "ca_ra" {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            "ca_id is only valid for the ca_ra role",
+                        )
+                            .into_response();
+                    }
+                    op.role.clone()
+                }
+                Ok(None) => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(json!({"status": 404, "detail": "operator not found"})),
+                    )
+                        .into_response();
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "put_operator: db lookup for ca_id validation");
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"status": 500, "detail": "database error"})),
+                    )
+                        .into_response();
+                }
+            }
+        } else {
+            effective_role.to_string()
+        };
+
+        if !cid.is_empty() && target_role != "ca_ra" {
+            return (
+                StatusCode::BAD_REQUEST,
+                "ca_id is only valid for the ca_ra role",
+            )
+                .into_response();
+        }
+        if cid.is_empty() && target_role == "ca_ra" {
+            return (
+                StatusCode::BAD_REQUEST,
+                "ca_ra operators must have a non-empty ca_id",
+            )
+                .into_response();
+        }
+        if !cid.is_empty() && !state.cas.contains_key(cid.as_str()) {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("unknown ca_id '{cid}'"),
+            )
+                .into_response();
+        }
+        Some(cid.as_str())
+    } else if effective_role == "ca_ra" {
+        // Role changing to ca_ra but no ca_id provided — require it.
+        return (
+            StatusCode::BAD_REQUEST,
+            "ca_id is required when setting role to ca_ra",
+        )
+            .into_response();
+    } else if matches!(effective_role, "administrator" | "ca_operations" | "auditor") {
+        // Role changing away from ca_ra — clear ca_id automatically.
+        Some("")
+    } else {
+        None
+    };
+
     let now = crate::util::rfc3339_now();
     match db::operators::update(
         &state.db,
@@ -1495,6 +1632,7 @@ pub async fn put_operator(
         payload.role.as_deref(),
         payload.cert_fingerprint.as_deref(),
         payload.gssapi_principal.as_deref(),
+        ca_id_update,
         &now,
     )
     .await
@@ -1556,7 +1694,14 @@ pub async fn get_orders(
         .max(0);
     let account_id = params.get("account_id").map(String::as_str);
     let status = params.get("status").map(String::as_str);
-    let ca_id = params.get("ca_id").map(String::as_str);
+    // ca_ra operators are always scoped to their own CA; override any supplied ca_id.
+    let ca_id_str;
+    let ca_id = if operator.role == OperatorRole::CaRa {
+        ca_id_str = operator.ca_id.clone();
+        Some(ca_id_str.as_str())
+    } else {
+        params.get("ca_id").map(String::as_str)
+    };
 
     match db::orders::list(&state.db, account_id, status, ca_id, limit, offset).await {
         Ok(rows) => {

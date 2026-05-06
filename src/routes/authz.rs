@@ -146,8 +146,12 @@ pub async fn new_authz(
         let thumbprint = ctx.jwk_thumbprint.as_deref().unwrap_or("");
         let body = build_authz_json(&authz, &challenges, &pfx, &state, thumbprint)?;
         let mut resp = json_response(&state, &ca_id.0, StatusCode::CREATED, body, &ctx.next_nonce)?;
-        resp.headers_mut()
-            .insert(axum::http::header::LOCATION, location.parse().unwrap());
+        resp.headers_mut().insert(
+            axum::http::header::LOCATION,
+            location
+                .parse()
+                .map_err(|e| AcmeError::Internal(format!("invalid Location header: {e}")))?,
+        );
         return Ok(resp);
     }
 
@@ -226,8 +230,12 @@ pub async fn new_authz(
     let thumbprint = ctx.jwk_thumbprint.as_deref().unwrap_or("");
     let body = build_authz_json(&authz, &chall_rows, &pfx, &state, thumbprint)?;
     let mut resp = json_response(&state, &ca_id.0, StatusCode::CREATED, body, &ctx.next_nonce)?;
-    resp.headers_mut()
-        .insert(axum::http::header::LOCATION, location.parse().unwrap());
+    resp.headers_mut().insert(
+        axum::http::header::LOCATION,
+        location
+            .parse()
+            .map_err(|e| AcmeError::Internal(format!("invalid Location header: {e}")))?,
+    );
     Ok(resp)
 }
 

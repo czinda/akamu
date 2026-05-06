@@ -199,19 +199,36 @@ pub async fn get_by_id(
     Ok(row)
 }
 
-/// Update operator fields.  Only non-`None` parameters are changed.
+/// Fields to update on an operator row.  Only `Some` fields are modified.
+///
+/// Pass `ca_id = Some("")` to clear the CA scope (server-wide), or
+/// `ca_id = Some("rsa")` to set a specific CA scope.  `ca_id = None`
+/// leaves the existing value unchanged.
+pub struct OperatorUpdateParams<'a> {
+    pub name: Option<&'a str>,
+    pub role: Option<&'a str>,
+    pub cert_fingerprint: Option<&'a str>,
+    pub gssapi_principal: Option<&'a str>,
+    pub ca_id: Option<&'a str>,
+}
+
+/// Update operator fields.  Only `Some` fields in `params` are changed.
 ///
 /// Returns `true` when the operator was found and updated, `false` when no
 /// row with the given `id` exists.
 pub async fn update(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: i64,
-    name: Option<&str>,
-    role: Option<&str>,
-    cert_fingerprint: Option<&str>,
-    gssapi_principal: Option<&str>,
+    params: OperatorUpdateParams<'_>,
     now: &str,
 ) -> Result<bool, AcmeError> {
+    let OperatorUpdateParams {
+        name,
+        role,
+        cert_fingerprint,
+        gssapi_principal,
+        ca_id,
+    } = params;
     let mut qb = sqlx::QueryBuilder::<sqlx::Any>::new("UPDATE operators SET last_seen_at = ");
     qb.push_bind(now);
     if let Some(n) = name {
@@ -229,6 +246,10 @@ pub async fn update(
     if let Some(p) = gssapi_principal {
         qb.push(", gssapi_principal = ");
         qb.push_bind(p);
+    }
+    if let Some(c) = ca_id {
+        qb.push(", ca_id = ");
+        qb.push_bind(c);
     }
     qb.push(" WHERE id = ");
     qb.push_bind(id);

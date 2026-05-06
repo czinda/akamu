@@ -282,7 +282,8 @@ static RBAC_TABLE: &[RbacRow] = &[
         &[
             OperatorRole::Administrator,
             OperatorRole::CaOperations,
-            OperatorRole::CaRa,
+            // CaRa intentionally excluded: EAB keys are server-global and
+            // must not be provisioned by a CA-scoped operator.
         ],
     ),
     (
