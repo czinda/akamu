@@ -1,3 +1,4 @@
+-- no-transaction
 -- Multi-CA support: record which CA issued each order and certificate,
 -- and which CA an account is scoped to.
 --
@@ -8,17 +9,16 @@
 --   certificates.ca_id = 'default' — same.
 --     'default' is the auto-assigned ID for single-CA compatibility mode.
 --
--- NOTE on index creation: plain CREATE INDEX acquires a ShareLock that blocks
--- writes for the duration of the build.  On large Postgres instances run this
--- migration during a maintenance window, or split the index statements into a
--- separate "-- no-transaction" migration and use CREATE INDEX CONCURRENTLY.
+-- Run outside a transaction so that CREATE INDEX CONCURRENTLY can proceed
+-- without a lock (ALTER TABLE ADD COLUMN is instant in Postgres 11+ outside
+-- a transaction because it is a catalog-only change).
 
-ALTER TABLE accounts     ADD COLUMN ca_id TEXT NOT NULL DEFAULT '';
-ALTER TABLE orders       ADD COLUMN ca_id TEXT NOT NULL DEFAULT 'default';
-ALTER TABLE certificates ADD COLUMN ca_id TEXT NOT NULL DEFAULT 'default';
+ALTER TABLE accounts     ADD COLUMN IF NOT EXISTS ca_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE orders       ADD COLUMN IF NOT EXISTS ca_id TEXT NOT NULL DEFAULT 'default';
+ALTER TABLE certificates ADD COLUMN IF NOT EXISTS ca_id TEXT NOT NULL DEFAULT 'default';
 
-CREATE INDEX idx_accounts_ca_id ON accounts(ca_id);
-CREATE INDEX idx_orders_ca_id ON orders(ca_id);
-CREATE INDEX idx_certs_ca_id  ON certificates(ca_id);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_accounts_ca_id ON accounts(ca_id);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_orders_ca_id ON orders(ca_id);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_certs_ca_id  ON certificates(ca_id);
 -- Partial index for CRL generation: WHERE status = 'revoked' AND ca_id = ?
-CREATE INDEX idx_certs_ca_id_revoked ON certificates(ca_id) WHERE status = 'revoked';
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_certs_ca_id_revoked ON certificates(ca_id) WHERE status = 'revoked';
