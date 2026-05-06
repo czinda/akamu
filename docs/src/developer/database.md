@@ -27,30 +27,35 @@ WAL (Write-Ahead Logging) mode is enabled after migrations rather than before, b
 
 At server startup, nonces older than 24 hours are swept: `db::nonces::sweep_expired(&db, 86400)`.
 
+## Migration numbering
+
+Each database backend has its own migration directory (`migrations/sqlite/`, `migrations/postgres/`, `migrations/mariadb/`). SQLite has one extra migration (`0006_mtc_log_index.sql` — an index-tuning step specific to SQLite WAL mode) that does not apply to PostgreSQL or MariaDB. As a result, SQLite migration numbers are one higher than the corresponding PostgreSQL/MariaDB numbers for all migrations from 0007 onward. The remainder of this document uses SQLite numbers as the canonical reference and notes the PostgreSQL/MariaDB equivalent where they differ.
+
 ## Schema
 
-The core schema begins with six tables applied through three migration files. Later migrations add additional columns and tables as described below.
+All seven core tables are created in a single initial migration (`0001_initial.sql`). Later migrations add columns and additional tables.
 
-### Migration 001 — Initial schema
+### Migration 0001 — Initial schema
 
-**`nonces`** — Anti-replay nonces consumed on first use.
+**`nonces`** — Anti-replay nonces. The in-memory `NonceBucket` is the hot path; this table exists for startup cleanup of nonces written by a previous process version.
 
 ```sql
 CREATE TABLE nonces (
     nonce   TEXT    PRIMARY KEY,
     created INTEGER NOT NULL  -- Unix epoch seconds
 );
+CREATE INDEX idx_nonces_created ON nonces(created);
 ```
 
 **`accounts`** — ACME accounts.
 
 ```sql
 CREATE TABLE accounts (
-    id             TEXT    PRIMARY KEY,
-    status         TEXT    NOT NULL DEFAULT 'valid',
-    contact        TEXT,                        -- JSON array of mailto: URIs
-    public_key     BLOB    NOT NULL,            -- DER-encoded SubjectPublicKeyInfo
-    jwk_thumbprint TEXT    NOT NULL UNIQUE,     -- base64url SHA-256 JWK thumbprint
+    id             TEXT    PRIMARY KEY,      -- UUID
+    status         TEXT    NOT NULL DEFAULT 'valid',  -- valid|deactivated|revoked
+    contact        TEXT,                     -- JSON array of mailto: URIs
+    public_key     BLOB    NOT NULL,         -- DER-encoded SubjectPublicKeyInfo
+    jwk_thumbprint TEXT    NOT NULL UNIQUE,  -- base64url SHA-256 JWK thumbprint
     created        INTEGER NOT NULL,
     updated        INTEGER NOT NULL
 );
@@ -58,51 +63,65 @@ CREATE TABLE accounts (
 
 `jwk_thumbprint` has a unique constraint so the database enforces that no two accounts share a key.
 
-**`orders`** — ACME orders.
+**`orders`** — ACME orders, including STAR (RFC 8739) auto-renewal fields.
 
 ```sql
 CREATE TABLE orders (
-    id             TEXT    PRIMARY KEY,
-    account_id     TEXT    NOT NULL REFERENCES accounts(id),
-    status         TEXT    NOT NULL DEFAULT 'pending',
-    expires        INTEGER,
-    identifiers    TEXT    NOT NULL,            -- JSON [{type,value}]
-    not_before     INTEGER,
-    not_after      INTEGER,
-    error          TEXT,                        -- problem+json string if invalid
-    certificate_id TEXT,
-    created        INTEGER NOT NULL,
-    updated        INTEGER NOT NULL
+    id                        TEXT    PRIMARY KEY,
+    account_id                TEXT    NOT NULL REFERENCES accounts(id),
+    status                    TEXT    NOT NULL DEFAULT 'pending',
+    expires                   INTEGER,
+    identifiers               TEXT    NOT NULL,   -- JSON [{type,value}]
+    not_before                INTEGER,
+    not_after                 INTEGER,
+    error                     TEXT,               -- problem+json string if invalid
+    certificate_id            TEXT,               -- FK to certificates.id when valid
+    replaces                  TEXT,               -- RFC 9773 ARI: cert_id of predecessor
+    created                   INTEGER NOT NULL,
+    updated                   INTEGER NOT NULL,
+    -- RFC 8739 STAR auto-renewal
+    star_start_date           INTEGER,
+    star_end_date             INTEGER,
+    star_lifetime_secs        INTEGER,
+    star_lifetime_adjust_secs INTEGER NOT NULL DEFAULT 0,
+    star_allow_cert_get       INTEGER NOT NULL DEFAULT 0,
+    star_canceled_at          INTEGER,
+    star_csr_der              BLOB,               -- stored CSR DER for reissuance
+    -- draft-aaron-acme-profiles-01
+    profile                   TEXT
 );
+CREATE INDEX idx_orders_account  ON orders(account_id);
+CREATE INDEX idx_orders_status   ON orders(status);
+CREATE INDEX idx_orders_replaces ON orders(replaces) WHERE replaces IS NOT NULL;
+CREATE INDEX idx_orders_star     ON orders(star_end_date) WHERE star_end_date IS NOT NULL;
 ```
 
-`identifiers` is stored as a JSON string, e.g. `[{"type":"dns","value":"example.com"}]`.
-
-**`authorizations`** — One per identifier per order.
+**`authorizations`** — One per identifier per order. `account_id` is denormalized from the parent order to allow efficient per-account queries without joins. `subdomain_auth_allowed` records whether RFC 9444 subdomain authorization was granted.
 
 ```sql
 CREATE TABLE authorizations (
-    id         TEXT    PRIMARY KEY,
-    order_id   TEXT    NOT NULL REFERENCES orders(id),
-    account_id TEXT    NOT NULL REFERENCES accounts(id),
-    status     TEXT    NOT NULL DEFAULT 'pending',
-    identifier TEXT    NOT NULL,                -- JSON {"type":..,"value":..}
-    expires    INTEGER,
-    wildcard   INTEGER NOT NULL DEFAULT 0,      -- 0=false, 1=true
-    created    INTEGER NOT NULL,
-    updated    INTEGER NOT NULL
+    id                    TEXT    PRIMARY KEY,
+    order_id              TEXT    NOT NULL REFERENCES orders(id),
+    account_id            TEXT    NOT NULL REFERENCES accounts(id),
+    status                TEXT    NOT NULL DEFAULT 'pending',
+    identifier            TEXT    NOT NULL,   -- JSON {"type":"dns","value":"example.com"}
+    expires               INTEGER,
+    wildcard              INTEGER NOT NULL DEFAULT 0,
+    subdomain_auth_allowed INTEGER NOT NULL DEFAULT 0,  -- RFC 9444
+    created               INTEGER NOT NULL,
+    updated               INTEGER NOT NULL
 );
+CREATE INDEX idx_authz_order   ON authorizations(order_id);
+CREATE INDEX idx_authz_account ON authorizations(account_id);
 ```
 
-`account_id` is denormalized from the parent order to allow efficient per-account queries without joins.
-
-**`challenges`** — One or more per authorization.
+**`challenges`** — One or more per authorization. All challenges for a given authorization share the same `token`.
 
 ```sql
 CREATE TABLE challenges (
     id        TEXT    PRIMARY KEY,
     authz_id  TEXT    NOT NULL REFERENCES authorizations(id),
-    type      TEXT    NOT NULL,                -- http-01|dns-01|tls-alpn-01
+    type      TEXT    NOT NULL,     -- http-01|dns-01|tls-alpn-01
     status    TEXT    NOT NULL DEFAULT 'pending',
     token     TEXT    NOT NULL,
     validated INTEGER,
@@ -110,68 +129,255 @@ CREATE TABLE challenges (
     created   INTEGER NOT NULL,
     updated   INTEGER NOT NULL
 );
+CREATE INDEX idx_chall_authz ON challenges(authz_id);
 ```
 
-All challenges for a given authorization share the same `token` (generated once per authorization at order creation).
-
-**`certificates`** — Issued X.509 certificates.
+**`certificates`** — Issued X.509 certificates. `der` stores only the leaf DER; `pem` stores the full chain (leaf + CA). Both are stored because CRL generation and MTC logging need DER while the download endpoint serves PEM.
 
 ```sql
 CREATE TABLE certificates (
-    id                TEXT    PRIMARY KEY,
-    order_id          TEXT    NOT NULL REFERENCES orders(id),
-    account_id        TEXT    NOT NULL REFERENCES accounts(id),
-    serial_number     TEXT    NOT NULL UNIQUE,  -- hex-encoded
-    status            TEXT    NOT NULL DEFAULT 'valid',
-    der               BLOB    NOT NULL,
-    pem               TEXT    NOT NULL,
-    not_before        INTEGER NOT NULL,
-    not_after         INTEGER NOT NULL,
-    revoked_at        INTEGER,
-    revocation_reason INTEGER,
-    mtc_log_index     INTEGER,
-    created           INTEGER NOT NULL
+    id                    TEXT    PRIMARY KEY,   -- UUID used in the cert URL path
+    order_id              TEXT    NOT NULL REFERENCES orders(id),
+    account_id            TEXT    NOT NULL REFERENCES accounts(id),
+    serial_number         TEXT    NOT NULL UNIQUE,
+    status                TEXT    NOT NULL DEFAULT 'valid',  -- valid|revoked
+    der                   BLOB    NOT NULL,
+    pem                   TEXT    NOT NULL,
+    not_before            INTEGER NOT NULL,
+    not_after             INTEGER NOT NULL,
+    revoked_at            INTEGER,
+    revocation_reason     INTEGER,
+    mtc_log_index         INTEGER,
+    created               INTEGER NOT NULL,
+    suggested_window_start INTEGER,  -- RFC 9773 ARI renewal window
+    suggested_window_end   INTEGER,
+    replaced_by           TEXT        -- RFC 9773: order_id that superseded this cert
+);
+CREATE INDEX idx_certs_account                  ON certificates(account_id);
+CREATE INDEX idx_certs_serial                   ON certificates(serial_number);
+CREATE INDEX idx_certs_order                    ON certificates(order_id);
+CREATE INDEX idx_certs_status                   ON certificates(status);
+CREATE INDEX idx_certs_account_status_not_after ON certificates(account_id, status, not_after);
+CREATE INDEX idx_certs_replaced_by              ON certificates(replaced_by)
+    WHERE replaced_by IS NOT NULL;
+```
+
+**`eab_keys`** — External Account Binding (RFC 8555 §7.3.4) pre-provisioned HMAC keys.
+
+```sql
+CREATE TABLE eab_keys (
+    kid           TEXT    PRIMARY KEY,
+    hmac_key_b64u TEXT    NOT NULL,
+    created       INTEGER NOT NULL,
+    used_at       INTEGER,
+    profile_grants TEXT               -- JSON array of profile IDs; NULL = unrestricted
 );
 ```
 
-`der` stores only the leaf certificate DER. `pem` stores the full PEM chain (leaf + CA). Both `der` and `pem` are stored because some operations (CRL generation, MTC logging) need the DER, while the download endpoint serves the PEM.
+(`profile_grants` is added inline in the initial migration. The old `0007_profile_grants` migration added it as `ALTER TABLE` in the original schema; it is now baked into the `0001` baseline for new installations.)
 
-### Migration 002 — Renewal info
+### Migration 0002 — MTC checkpoints
 
-Adds ARI (ACME Renewal Information) columns to `certificates`:
-
-```sql
-ALTER TABLE certificates ADD COLUMN suggested_window_start INTEGER;
-ALTER TABLE certificates ADD COLUMN suggested_window_end   INTEGER;
-```
-
-These are `NULL` by default. The ARI endpoint computes a default window if they are not set.
-
-### Migration 003 — Performance indexes
+Adds the Merkle Tree Certificate issuance-log checkpoint table:
 
 ```sql
-CREATE INDEX IF NOT EXISTS idx_certs_status
-    ON certificates(status);
-
-CREATE INDEX IF NOT EXISTS idx_certs_account_status_not_after
-    ON certificates(account_id, status, not_after);
-
-CREATE INDEX IF NOT EXISTS idx_nonces_created
-    ON nonces(created);
+CREATE TABLE mtc_checkpoints (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    tree_size INTEGER NOT NULL UNIQUE,
+    root_hex  TEXT    NOT NULL,
+    signature BLOB    NOT NULL,
+    created   INTEGER NOT NULL
+);
 ```
 
-`idx_certs_status` speeds up CRL generation (which selects all revoked certificates). `idx_certs_account_status_not_after` speeds up per-account certificate listing. `idx_nonces_created` speeds up the expiry sweep.
+### Migration 0003 — MTC standalone DER
+
+```sql
+ALTER TABLE certificates ADD COLUMN mtc_standalone_der BLOB;
+```
+
+Stores the standalone (non-chained) DER encoding of an MTC-logged certificate, used when serving MTC certificate downloads.
+
+### Migration 0004 — MTC cosignatures
+
+```sql
+CREATE TABLE mtc_cosignatures (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    checkpoint_id INTEGER NOT NULL REFERENCES mtc_checkpoints(id) ON DELETE CASCADE,
+    cosigner_url  TEXT    NOT NULL,
+    signature_der BLOB    NOT NULL,
+    created       INTEGER NOT NULL,
+    UNIQUE(checkpoint_id, cosigner_url)
+);
+CREATE INDEX idx_mtc_cosignatures_checkpoint ON mtc_cosignatures(checkpoint_id);
+```
+
+### Migration 0005 — MTC landmarks
+
+```sql
+CREATE TABLE mtc_landmarks (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    sequence_no INTEGER NOT NULL UNIQUE,
+    tree_size   INTEGER NOT NULL UNIQUE,
+    cert_der    BLOB,     -- DER-encoded LandmarkCertificate; NULL until built
+    created     INTEGER NOT NULL
+);
+```
+
+### Migration 0006 — MTC log index (SQLite only)
+
+```sql
+CREATE INDEX idx_certs_mtc_log_index
+    ON certificates(mtc_log_index)
+    WHERE mtc_log_index IS NOT NULL;
+```
+
+This index is specific to SQLite WAL mode and has no equivalent in the PostgreSQL/MariaDB migrations. All subsequent SQLite migration numbers are therefore one higher than their PostgreSQL/MariaDB counterparts.
+
+### Migration 0007 — Profile grants (PostgreSQL/MariaDB: 0006)
+
+```sql
+ALTER TABLE accounts  ADD COLUMN profile_grants TEXT;
+ALTER TABLE eab_keys  ADD COLUMN profile_grants TEXT;
+```
+
+`profile_grants` is a JSON array of profile IDs (e.g. `'["tls-server","mtc-tls"]'`). `NULL` means no restriction. When an EAB key has grants set, they are copied to the account at registration time.
+
+### Migration 0008 — Audit events (PostgreSQL/MariaDB: 0007)
+
+PP CA v2.1 FAU structured audit trail. Records are append-only (never `UPDATE`ed or `DELETE`d):
+
+```sql
+CREATE TABLE audit_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    occurred_at TEXT    NOT NULL,     -- RFC 3339
+    event_type  TEXT    NOT NULL,
+    subject     TEXT,                 -- JWK thumbprint, account UUID, cert serial, etc.
+    principal   TEXT,                 -- operator name or "acme:<jwk_thumbprint>"
+    outcome     TEXT    NOT NULL CHECK(outcome IN ('success','failure')),
+    detail      TEXT                  -- JSON object with event-specific fields
+);
+CREATE INDEX audit_idx_type      ON audit_events(event_type);
+CREATE INDEX audit_idx_subj      ON audit_events(subject);
+CREATE INDEX audit_idx_time      ON audit_events(occurred_at);
+CREATE INDEX audit_idx_principal ON audit_events(principal);
+CREATE INDEX audit_idx_outcome   ON audit_events(outcome);
+```
+
+### Migration 0009 — Operators (PostgreSQL/MariaDB: 0008)
+
+PP CA v2.1 FMT role-based access control. Operators authenticate via mTLS client certificate, Kerberos/GSSAPI, or both:
+
+```sql
+CREATE TABLE operators (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    name             TEXT    NOT NULL UNIQUE,
+    role             TEXT    NOT NULL
+                             CHECK(role IN ('administrator','ca_operations','ca_ra','auditor')),
+    cert_fingerprint TEXT    UNIQUE,   -- SHA-256 hex of DER leaf cert
+    gssapi_principal TEXT    UNIQUE,   -- Kerberos principal e.g. alice@REALM
+    created_at       TEXT    NOT NULL, -- RFC 3339
+    last_seen_at     TEXT,             -- RFC 3339
+    active           INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
+    CHECK(cert_fingerprint IS NOT NULL OR gssapi_principal IS NOT NULL)
+);
+```
+
+### Migration 0010 — Certificate subject DN (PostgreSQL/MariaDB: 0009)
+
+Adds a searchable subject DN column for FAU_SCR_EXT.1 audit queries:
+
+```sql
+ALTER TABLE certificates ADD COLUMN subject_dn TEXT;
+CREATE INDEX idx_certs_subject_dn ON certificates(subject_dn);
+```
+
+### Migration 0011 — Operator lockout (PostgreSQL/MariaDB: 0010)
+
+FIA_AFL.1 per-operator authentication lockout after repeated failures:
+
+```sql
+ALTER TABLE operators ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE operators ADD COLUMN locked_until TEXT;
+```
+
+### Migration 0012 — Multi-CA support (PostgreSQL/MariaDB: 0011)
+
+Adds `ca_id` to `accounts`, `orders`, and `certificates`. Sentinel conventions:
+
+- `accounts.ca_id = ''` — server-wide account scope; the account may use any CA. The empty string is not a valid CA ID (config validator requires `^[a-z0-9]`).
+- `orders.ca_id = 'default'` — backfills pre-migration rows to the canonical single-CA name.
+- `certificates.ca_id = 'default'` — same.
+
+```sql
+ALTER TABLE accounts     ADD COLUMN ca_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE orders       ADD COLUMN ca_id TEXT NOT NULL DEFAULT 'default';
+ALTER TABLE certificates ADD COLUMN ca_id TEXT NOT NULL DEFAULT 'default';
+
+CREATE INDEX idx_accounts_ca_id      ON accounts(ca_id);
+CREATE INDEX idx_orders_ca_id        ON orders(ca_id);
+CREATE INDEX idx_certs_ca_id         ON certificates(ca_id);
+CREATE INDEX idx_certs_ca_id_revoked ON certificates(ca_id) WHERE status = 'revoked';
+```
+
+### Migration 0013 — Cross-certificates (PostgreSQL/MariaDB: 0012)
+
+Stores CA certificates issued by one akāmu CA for another CA's public key. Rows are insert-only.
+
+```sql
+CREATE TABLE cross_certs (
+    id             TEXT    PRIMARY KEY,   -- UUID
+    issuer_ca_id   TEXT    NOT NULL,
+    subject_ca_id  TEXT,                  -- akāmu CA ID if same-server; NULL if external
+    subject_dn     TEXT    NOT NULL,      -- RFC 4514 subject DN
+    subject_spki   BLOB    NOT NULL,      -- DER SubjectPublicKeyInfo of subject CA key
+    cross_cert_der BLOB    NOT NULL,
+    cross_cert_pem TEXT    NOT NULL,
+    not_before     INTEGER NOT NULL,
+    not_after      INTEGER NOT NULL,
+    serial_number  TEXT    NOT NULL,
+    created        INTEGER NOT NULL,
+    UNIQUE (issuer_ca_id, serial_number)
+);
+CREATE INDEX idx_cross_certs_issuer  ON cross_certs(issuer_ca_id);
+CREATE INDEX idx_cross_certs_subject ON cross_certs(subject_ca_id)
+    WHERE subject_ca_id IS NOT NULL;
+```
+
+### Migration 0014 — Authorization CA scope (PostgreSQL/MariaDB: 0013)
+
+Records which CA owns each authorization, enabling per-CA namespace isolation. Pre-migration rows are backfilled from the parent order's `ca_id`:
+
+```sql
+ALTER TABLE authorizations ADD COLUMN ca_id TEXT NOT NULL DEFAULT 'default';
+
+UPDATE authorizations
+   SET ca_id = (SELECT ca_id FROM orders WHERE id = authorizations.order_id)
+ WHERE order_id IS NOT NULL AND order_id != '';
+
+CREATE INDEX idx_orders_ca_account ON orders(ca_id, account_id);
+CREATE INDEX idx_authzs_ca_id      ON authorizations(ca_id);
+```
+
+### Migration 0015 — Operator CA scope (PostgreSQL/MariaDB: 0014)
+
+Scopes `ca_ra` operators to a single CA. Empty string = server-wide (the operator can act on any CA):
+
+```sql
+ALTER TABLE operators ADD COLUMN ca_id TEXT NOT NULL DEFAULT '';
+```
 
 ## Row types
 
-`src/db/schema.rs` defines Rust structs mirroring each table row. These are plain data structs used to move data between the database layer and the application logic:
+`src/db/schema.rs` defines Rust structs mirroring each table row:
 
-- `AccountRow` — mirrors `accounts`. Includes `ca_id: String` (empty = server-wide scope; non-empty only when `server.account_scope = "ca"`).
-- `OrderRow` — mirrors `orders`. Includes `ca_id: String` (the CA that issued/will issue the certificate for this order; defaults to `"default"` for rows created before migration 0012).
-- `AuthorizationRow` — mirrors `authorizations`. Includes `ca_id: String` (the CA that owns this authorization; empty for pre-migration rows).
+- `AccountRow` — mirrors `accounts`. Includes `ca_id: String` (empty = server-wide; non-empty only when `server.account_scope = "ca"`), `profile_grants: Option<String>`.
+- `OrderRow` — mirrors `orders`. Includes `ca_id: String` (defaults to `"default"` for pre-migration rows), `profile: Option<String>`, and all `star_*` fields.
+- `AuthorizationRow` — mirrors `authorizations`. Includes `ca_id: String` and `subdomain_auth_allowed: bool`.
 - `ChallengeRow` — mirrors `challenges`.
-- `CertificateRow` — mirrors `certificates`. Includes `ca_id: String` (the issuing CA; defaults to `"default"` for rows created before migration 0012).
-- `CrossCertRow` — mirrors `cross_certs`. Fields: `issuer_ca_id`, `subject_ca_id` (nullable — `None` when the subject is an external CA), `subject_dn`, `subject_spki`, `cross_cert_der`, `cross_cert_pem`, `serial_number`, `not_before`, `not_after`, `created`.
+- `CertificateRow` — mirrors `certificates`. Includes `ca_id: String`, `subject_dn: Option<String>`, `suggested_window_start/end: Option<i64>`, `replaced_by: Option<String>`.
+- `CrossCertRow` — mirrors `cross_certs`. `subject_ca_id: Option<String>` is `None` when the subject is an external CA.
+- `OperatorRow` — mirrors `operators`. Includes `ca_id: String` (CA scope for `ca_ra` operators; empty = server-wide), `failed_attempts: i64`, `locked_until: Option<String>`.
 
 ## Database module structure
 
@@ -183,35 +389,35 @@ Each table has its own submodule in `src/db/`:
 | `db::orders` | `insert`, `get_by_id`, `update_status`, `list_authz_ids` |
 | `db::authz` | `insert`, `get_by_id`, `update_status` |
 | `db::challenges` | `insert`, `get_by_id`, `list_by_authz`, `set_processing`, `set_invalid` |
-| `db::certs` | `get_by_id`, `get_by_serial`, `revoke`, `set_mtc_log_index` |
-| `db::cross_certs` | `insert`, `list_by_issuer`, `list_by_subject`, `get_by_id` |
+| `db::certs` | `get_by_id`, `get_by_serial`, `revoke`, `set_mtc_log_index`, `list_revoked` |
+| `db::cross_certs` | `insert`, `list`, `get_by_id` |
+| `db::eab` | `insert`, `get_by_kid`, `mark_used`, `list`, `delete` |
 | `db::nonces` | `insert`, `consume`, `sweep_expired` |
+| `db::operators` | `insert`, `get_by_id`, `get_by_fingerprint`, `get_by_principal`, `list`, `update`, `set_active`, `update_last_seen`, `increment_failed`, `reset_failed`, `unlock`, `is_locked` |
+| `db::audit` | `insert`, `list` |
 
 ## Transactions
 
-Multi-table writes use explicit SQLite transactions to ensure atomicity:
+Multi-table writes use explicit transactions to ensure atomicity:
 
 - **Order creation**: the order row, all authorization rows, and all challenge rows are inserted in a single transaction.
 - **Challenge validation success**: the challenge, authorization, and (if all authorizations are now valid) the order are updated in a single transaction.
-- **Certificate issuance**: the certificate row is inserted and the order is updated to `valid` in a single transaction.
-
-This prevents the database from being left in an inconsistent state if the process crashes between writes.
+- **Certificate issuance**: the certificate row is inserted and the order is updated to `valid` in a single transaction. STAR re-issuance also stores the new CSR DER in the same transaction.
 
 ## Schema diagram
 
-The entity-relationship diagram below shows all six tables and their foreign-key
-relationships. The `account_id` column on `authorizations` is denormalized from the
-parent order; both FKs exist in the database.
+The entity-relationship diagram below shows the ACME core tables and their foreign-key relationships. MTC tables (`mtc_checkpoints`, `mtc_cosignatures`, `mtc_landmarks`) and the standalone `nonces` and `audit_events` tables are omitted for readability.
 
 ```mermaid
 erDiagram
     accounts {
         TEXT id PK
-        TEXT ca_id
         TEXT status
         TEXT contact
         BLOB public_key
         TEXT jwk_thumbprint UK
+        TEXT profile_grants
+        TEXT ca_id
         INTEGER created
         INTEGER updated
     }
@@ -222,8 +428,12 @@ erDiagram
         TEXT status
         INTEGER expires
         TEXT identifiers
+        TEXT replaces
         TEXT error
         TEXT certificate_id
+        TEXT profile
+        INTEGER star_end_date
+        INTEGER star_lifetime_secs
         INTEGER created
         INTEGER updated
     }
@@ -231,10 +441,12 @@ erDiagram
         TEXT id PK
         TEXT order_id FK
         TEXT account_id FK
+        TEXT ca_id
         TEXT status
         TEXT identifier
         INTEGER expires
         INTEGER wildcard
+        INTEGER subdomain_auth_allowed
         INTEGER created
         INTEGER updated
     }
@@ -258,16 +470,36 @@ erDiagram
         TEXT status
         BLOB der
         TEXT pem
+        TEXT subject_dn
         INTEGER not_before
         INTEGER not_after
         INTEGER revoked_at
         INTEGER revocation_reason
         INTEGER mtc_log_index
+        INTEGER suggested_window_start
+        INTEGER suggested_window_end
+        TEXT replaced_by
         INTEGER created
     }
-    nonces {
-        TEXT nonce PK
+    eab_keys {
+        TEXT kid PK
+        TEXT hmac_key_b64u
+        TEXT profile_grants
         INTEGER created
+        INTEGER used_at
+    }
+    operators {
+        INTEGER id PK
+        TEXT name UK
+        TEXT role
+        TEXT cert_fingerprint UK
+        TEXT gssapi_principal UK
+        TEXT ca_id
+        INTEGER active
+        INTEGER failed_attempts
+        TEXT locked_until
+        TEXT created_at
+        TEXT last_seen_at
     }
     cross_certs {
         TEXT id PK
@@ -291,73 +523,6 @@ erDiagram
     orders ||--o{ certificates : "order_id"
 ```
 
-### Migration 009 — Operator lockout
-
-Adds `failed_attempts INTEGER NOT NULL DEFAULT 0` and `locked_until TEXT` columns to the `operators` table for FIA_AFL.1 lockout support.
-
-### Migration 0012 — Multi-CA support (SQLite), 0011 (PostgreSQL/MariaDB)
-
-Adds `ca_id TEXT NOT NULL DEFAULT ''` to `accounts`, and `ca_id TEXT NOT NULL DEFAULT 'default'` to `orders` and `certificates`. Also adds supporting indexes:
-
-```sql
-ALTER TABLE accounts     ADD COLUMN ca_id TEXT NOT NULL DEFAULT '';
-ALTER TABLE orders       ADD COLUMN ca_id TEXT NOT NULL DEFAULT 'default';
-ALTER TABLE certificates ADD COLUMN ca_id TEXT NOT NULL DEFAULT 'default';
-
-CREATE INDEX idx_accounts_ca_id ON accounts(ca_id);
-CREATE INDEX idx_orders_ca_id   ON orders(ca_id);
-CREATE INDEX idx_certs_ca_id    ON certificates(ca_id);
--- Partial index for CRL generation (WHERE status = 'revoked' AND ca_id = ?)
-CREATE INDEX idx_certs_ca_id_revoked ON certificates(ca_id) WHERE status = 'revoked';
-```
-
-Sentinel conventions:
-
-- `accounts.ca_id = ''` (empty string) — server-wide account scope; the account may use any CA. Empty string is not a valid CA ID (config validator requires at least one alphanumeric character).
-- `orders.ca_id = 'default'` — backfills pre-migration rows to the canonical single-CA name. `"default"` is the auto-assigned ID for single-CA compatibility mode.
-- `certificates.ca_id = 'default'` — same backfill convention.
-
-### Migration 0013 — Cross-certificates (SQLite), 0012 (PostgreSQL/MariaDB)
-
-Adds the `cross_certs` table:
-
-```sql
-CREATE TABLE cross_certs (
-    id              TEXT    PRIMARY KEY,        -- UUID
-    issuer_ca_id    TEXT    NOT NULL,           -- CA that signed the cross-cert
-    subject_ca_id   TEXT,                      -- akamu CA ID if same-server; NULL if external
-    subject_dn      TEXT    NOT NULL,           -- RFC 4514 subject DN string
-    subject_spki    BLOB    NOT NULL,           -- DER SubjectPublicKeyInfo of subject CA key
-    cross_cert_der  BLOB    NOT NULL,           -- DER of the issued cross-certificate
-    cross_cert_pem  TEXT    NOT NULL,           -- PEM for download
-    not_before      INTEGER NOT NULL,           -- Unix epoch
-    not_after       INTEGER NOT NULL,           -- Unix epoch
-    serial_number   TEXT    NOT NULL,           -- hex-encoded (same format as certificates)
-    created         INTEGER NOT NULL,           -- Unix epoch
-    UNIQUE (issuer_ca_id, serial_number)        -- RFC 5280: unique within issuing CA
-);
-```
-
-`subject_ca_id` is `NULL` when the subject is an external CA whose certificate was uploaded via the admin API. When the subject is another same-server CA, `subject_ca_id` matches its `CaConfig.id`.
-
-Rows are insert-only (never mutated after creation). The module `src/db/cross_certs.rs` provides `insert`, `list_by_issuer`, `list_by_subject`, and `get_by_id`.
-
-### Migration 0014/0015 — Authorization CA scope and operator CA scope
-
-Migration 0014 (SQLite) / 0013 (PostgreSQL/MariaDB) adds `ca_id TEXT NOT NULL DEFAULT ''` to `authorizations`, recording which CA owns each authorization.
-
-Migration 0015 (SQLite) / 0014 (PostgreSQL/MariaDB) adds `ca_id TEXT NOT NULL DEFAULT ''` to `operators`. For `ca_ra` operators, a non-empty `ca_id` restricts the operator to that specific CA; empty means server-wide. The `db::operators::update()` function accepts `ca_id: Option<&str>`: `None` means no change, `Some("")` clears the CA scope, `Some("x")` sets it.
-
-The `OperatorRow` struct in `src/db/operators.rs` includes:
-
-```rust
-/// CA scope for ca_ra operators.  Empty string means server-wide (no restriction).
-/// Ignored for all roles other than ca_ra.
-pub ca_id: String,
-```
-
-`AdminSession.ca_id` is populated from the operator row at login time and propagated to all admin request handlers.
-
 ## Foreign key enforcement
 
 Foreign key constraints are enabled at database open time. The constraint graph is:
@@ -368,5 +533,6 @@ Foreign key constraints are enabled at database open time. The constraint graph 
 - `challenges.authz_id` → `authorizations.id`
 - `certificates.order_id` → `orders.id`
 - `certificates.account_id` → `accounts.id`
+- `mtc_cosignatures.checkpoint_id` → `mtc_checkpoints.id` (with `ON DELETE CASCADE`)
 
 Enabling foreign keys is done before running migrations so that any migration that would violate a constraint fails immediately rather than silently inserting orphaned rows.
