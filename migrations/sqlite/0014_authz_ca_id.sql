@@ -8,7 +8,7 @@
 ALTER TABLE authorizations ADD COLUMN ca_id TEXT NOT NULL DEFAULT 'default';
 
 UPDATE authorizations
-   SET ca_id = (SELECT ca_id FROM orders WHERE id = authorizations.order_id)
+   SET ca_id = COALESCE((SELECT ca_id FROM orders WHERE id = authorizations.order_id), 'default')
  WHERE order_id IS NOT NULL AND order_id != '';
 
 -- Composite index for admin API queries that filter by both CA and account.
