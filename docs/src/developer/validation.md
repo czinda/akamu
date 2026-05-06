@@ -61,47 +61,47 @@ After `dispatch` returns, `validate_challenge` calls either `on_valid` or `on_in
 sequenceDiagram
     participant Client as ACME Client
     participant H as Route Handler
-    participant V as validate_challenge (spawned)
-    participant D as dispatch()
-    participant Ext as Applicant Server / DNS
+    participant V as validate_challenge
+    participant D as dispatch
+    participant Ext as Applicant Server
     participant DB as SQLite
 
-    Client->H: POST to challenge URL
-    H->DB: challenge -> processing
-    H->V: tokio::spawn(validate_challenge)
-    H-->Client: 200 processing (immediate return)
+    Client->>H: POST /acme/.../chall/...
+    H->>DB: challenge status = processing
+    H->>V: tokio::spawn
+    H-->>Client: 200 processing
 
-    V->D: dispatch(chall_type, domain, key_auth, ...)
+    V->>D: chall_type, domain, key_auth
 
     alt http-01
-        D->Ext: GET /.well-known/acme-challenge/TOKEN
-        Ext-->D: 200 key_authorization body
+        D->>Ext: GET /.well-known/acme-challenge/TOKEN
+        Ext-->>D: 200 key_authorization body
     else dns-01
-        D->Ext: TXT _acme-challenge.DOMAIN
-        Ext->D: TXT record value
+        D->>Ext: TXT _acme-challenge.DOMAIN
+        Ext-->>D: TXT record value
     else tls-alpn-01
-        D->Ext: TLS connect :443, ALPN acme-tls/1
-        Ext->D: Certificate with id-pe-acmeIdentifier
+        D->>Ext: TLS connect port 443, ALPN acme-tls/1
+        Ext-->>D: Certificate with id-pe-acmeIdentifier
     else dns-persist-01
-        D->Ext: TXT _validation-persist.DOMAIN
-        Ext->D: TXT record value (issuer;accounturi;policy;persistUntil)
+        D->>Ext: TXT _validation-persist.DOMAIN
+        Ext-->>D: TXT record value
     end
 
     alt probe succeeded
-        V->DB: BEGIN TRANSACTION
-        V->DB: challenge -> valid (+ validated timestamp)
-        V->DB: authorization -> valid
-        V->DB: order -> ready (conditional UPDATE, no extra round-trip)
-        V->DB: COMMIT
+        V->>DB: BEGIN TRANSACTION
+        V->>DB: challenge status = valid
+        V->>DB: authorization status = valid
+        V->>DB: order status = ready
+        V->>DB: COMMIT
     else probe failed
-        V->DB: BEGIN TRANSACTION
-        V->DB: challenge -> invalid (+ error JSON)
-        V->DB: authorization -> invalid
-        V->DB: order -> invalid
-        V->DB: COMMIT
+        V->>DB: BEGIN TRANSACTION
+        V->>DB: challenge status = invalid
+        V->>DB: authorization status = invalid
+        V->>DB: order status = invalid
+        V->>DB: COMMIT
     end
 
-    Note over Client: Client polls authorization URL (POST-as-GET)
+    Note over Client: Client polls authorization URL
 ```
 
 ## Background execution
