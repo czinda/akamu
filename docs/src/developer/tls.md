@@ -6,11 +6,13 @@ This chapter documents the internal implementation of Akāmu's native TLS server
 
 ```
 src/tls/
-  mod.rs       TLS module re-exports; build_rustls_server_config entry point
-  init.rs      tls::init::load_or_generate — certificate bootstrap
-  loader.rs    PEM loading helpers (pem_to_der, BackendPrivateKey::from_pem)
-  schemes.rs   Composite ML-DSA+classical code points (COMPOSITE_SCHEMES)
-  verifier.rs  SyntaClientCertVerifier — rustls ClientCertVerifier impl
+  mod.rs              TLS module re-exports; build_rustls_server_config and
+                      build_admin_rustls_server_config entry points; leaf_cert_der helper
+  init.rs             tls::init::load_or_generate — certificate bootstrap
+  loader.rs           PEM loading helpers (pem_to_der, BackendPrivateKey::from_pem)
+  schemes.rs          Composite ML-DSA+classical code points (COMPOSITE_SCHEMES)
+  verifier.rs         SyntaClientCertVerifier — rustls ClientCertVerifier impl
+  channel_binding.rs  RFC 5929 tls-server-end-point channel binding computation
 ```
 
 TLS is optional. When `config.tls.enabled` is `false`, the server uses a plain `axum::serve` call and the entire `src/tls/` subsystem is never entered.
@@ -43,9 +45,9 @@ When generating:
 
 1. `ca::init::generate_backend_key(&tls.bootstrap_key_type)` generates a fresh server key.
 2. `ca::issue::sign_server_cert(&tls.server_name, &server_key, ca)` produces a CA-signed certificate DER.
-3. `synta_certificate::der_to_pem("CERTIFICATE", &cert_der)` converts to PEM.
-4. The PEM chain written to `cert_file` is `leaf cert + CA cert` (PEM-concatenated) so TLS clients see a complete chain without needing the CA cert separately.
-5. `server_key.to_pem(None)` serialises the private key PEM.
+3. `server_key.to_pem(None)` serialises the private key PEM; written to `key_file` first via `crate::util::write_key_file`.
+4. `synta_certificate::der_to_pem("CERTIFICATE", &cert_der)` converts the certificate to PEM.
+5. The PEM chain written to `cert_file` is `leaf cert + CA cert` (PEM-concatenated) so TLS clients see a complete chain without needing the CA cert separately.
 
 The function signature is:
 
@@ -99,8 +101,8 @@ On each TLS handshake, rustls calls this method. It:
 
 1. Clones the DER bytes out of the short-lived `CertificateDer` borrows into owned `Vec<u8>` allocations.
 2. Parses the leaf and each intermediate via `synta::Decoder::decode::<Certificate>()`.
-3. Builds a `PolicyDefinition` from the configured profile, depth, minimum RSA modulus, and algorithm sets.
-4. Calls `self.owned_store.verify(...)` — no re-parsing of trust anchors.
+3. Builds a `PolicyDefinition` via `PolicyDefinition::new_client(OpensslSignatureVerifier, validation_time)`, then applies the configured profile, depth, minimum RSA modulus, and algorithm sets.
+4. Calls `self.owned_store.verify(&leaf_vc, &inter_vcs, &policy, RevocationChecks::default())` — no re-parsing of trust anchors.
 
 Algorithm sets are chosen based on `allow_post_quantum`:
 
@@ -111,12 +113,14 @@ Algorithm sets are chosen based on `allow_post_quantum`:
 
 ### `verify_tls12_signature`
 
-All TLS 1.2 `CertificateVerify` schemes delegate to the `rustls-native-ossl` provider:
+All TLS 1.2 `CertificateVerify` schemes delegate to the `rustls-native-ossl` provider via
+the `provider` field cached at construction time — no new `default_provider()` call per
+handshake:
 
 ```rust
 rustls::crypto::verify_tls12_signature(
     message, cert, dss,
-    &rustls_native_ossl::default_provider().signature_verification_algorithms,
+    &self.provider.signature_verification_algorithms,
 )
 ```
 
@@ -132,12 +136,15 @@ if crate::tls::schemes::is_composite(dss.scheme) {
 } else {
     rustls::crypto::verify_tls13_signature(
         message, cert, dss,
-        &rustls_native_ossl::default_provider().signature_verification_algorithms,
+        &self.provider.signature_verification_algorithms,
     )
 }
 ```
 
-Classical schemes go to `rustls-native-ossl`; composite ML-DSA schemes go to the native-ossl EVP path.
+Classical schemes go to `rustls-native-ossl`; composite ML-DSA schemes go to the
+native-ossl EVP path.  The `provider` is stored as `Arc<rustls::crypto::CryptoProvider>`
+in the verifier struct (built once at `SyntaClientCertVerifier::new`), so a single
+`rustls_native_ossl::default_provider()` call is shared across every connection.
 
 ## Composite scheme code points (`src/tls/schemes.rs`)
 
@@ -205,41 +212,104 @@ verifier.verify(sig_bytes)?
 | `0x090A` MLDSA87_ECDSA_P384_SHA512 | `SHA2-512` |
 | … | … |
 
+## Channel binding (`src/tls/channel_binding.rs`)
+
+Implements RFC 5929 §4 `tls-server-end-point` channel binding, used by the GSSAPI
+authentication layer to bind Kerberos tokens to the TLS session.
+
+### `TlsServerEndpointBinding`
+
+```rust
+#[derive(Clone)]
+pub struct TlsServerEndpointBinding(pub Vec<u8>);
+```
+
+A typed request extension injected per-connection.  Contains the raw binding bytes
+(the hash of the leaf certificate DER per RFC 5929 §4).  Absent when the server
+certificate uses an algorithm with no defined hash (ML-DSA pure or composite, Ed448,
+or any unrecognised algorithm) — in those cases the field is not inserted and the
+GSSAPI layer passes `None` channel bindings.
+
+### `tls_server_endpoint_binding`
+
+```rust
+pub fn tls_server_endpoint_binding(cert_der: &[u8]) -> Option<Vec<u8>>
+```
+
+Parses the leaf certificate DER with `synta::Decoder`, extracts the signature
+algorithm OID, and selects the appropriate hash:
+
+| Signature algorithm | Hash used |
+|---|---|
+| ecdsa-with-SHA256 / sha256WithRSAEncryption | SHA-256 |
+| md5WithRSAEncryption / sha1WithRSAEncryption | SHA-256 (RFC 5929 §4 override) |
+| id-RSASSA-PSS with SHA-1 or SHA-256 params | SHA-256 (SHA-1 overridden) |
+| id-RSASSA-PSS with SHA-384 params | SHA-384 |
+| id-RSASSA-PSS with SHA-512 params | SHA-512 |
+| ecdsa-with-SHA384 / sha384WithRSAEncryption | SHA-384 |
+| ecdsa-with-SHA512 / sha512WithRSAEncryption / id-Ed25519 | SHA-512 |
+| ML-DSA pure (FIPS 204), Composite ML-DSA, id-Ed448 | `None` — no canonical hash |
+
+Returns `None` for unsupported algorithms; the caller logs an informational message
+and disables GSSAPI channel bindings for that server certificate.
+
 ## TLS connection acceptance loop (`src/main.rs`)
 
 When `config.tls.enabled` is `true`, the server does **not** use `axum::serve`. Instead it runs a manual accept loop:
 
 ```rust
-let server_cfg = akamu::tls::build_rustls_server_config(&config.tls)?;
+let mut server_cfg = akamu::tls::build_rustls_server_config(&config.tls)?;
 server_cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_cfg));
 
+// Pre-compute RFC 5929 tls-server-end-point channel binding once at startup.
+let tls_channel_binding: Option<Arc<Vec<u8>>> = { ... };
+
 loop {
-    let (stream, _) = listener.accept().await?;
-    let acceptor = acceptor.clone();
-    let router = router.clone();
-    tokio::spawn(async move {
-        let tls = match acceptor.accept(stream).await { Ok(s) => s, Err(e) => { ... return; } };
-        let io = hyper_util::rt::TokioIo::new(tls);
-        // route request through tower::ServiceExt::oneshot
-        hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
-            .serve_connection(io, svc)
-            .await
-    });
+    tokio::select! {
+        _ = &mut shutdown => { break; }
+        result = listener.accept() => {
+            let (stream, peer_addr) = result?;
+            let acceptor = acceptor.clone();
+            let router = router.clone();
+            let tls_channel_binding = tls_channel_binding.clone();
+            tokio::spawn(async move {
+                let tls = match acceptor.accept(stream).await {
+                    Ok(s) => s,
+                    Err(e) => { tracing::warn!("TLS handshake failed: {e}"); return; }
+                };
+                let io = hyper_util::rt::TokioIo::new(tls);
+                let svc = hyper::service::service_fn(move |mut req| {
+                    // Inject peer address so axum::extract::ConnectInfo works.
+                    req.extensions_mut().insert(axum::extract::ConnectInfo(peer_addr));
+                    // Inject pre-computed channel binding if available.
+                    if let Some(ref b) = tls_channel_binding {
+                        req.extensions_mut().insert(TlsServerEndpointBinding(b.as_ref().clone()));
+                    }
+                    ...
+                });
+                hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
+                    .serve_connection(io, svc)
+                    .await
+            });
+        }
+    }
 }
 ```
 
 Each accepted TCP connection is handed to `tokio_rustls::TlsAcceptor::accept`, which completes the TLS handshake (including client certificate verification if `client_auth` is configured). TLS handshake failures log a warning via `tracing::warn!` and the task returns without serving any HTTP.
 
-For the plain HTTP path, `axum::serve(listener, router).await` is used without modification.
+For the plain HTTP path, `axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await` is used without modification.
 
 ALPN protocols `["h2", "http/1.1"]` are negotiated; hyper's `auto::Builder` handles both HTTP/1.1 and HTTP/2.
 
-The remote client IP address is available via `hyper::Request` header inspection (`X-Forwarded-For`, `X-Real-IP`) from an upstream proxy, or directly from the `std::net::SocketAddr` returned by `listener.accept()`. Because `axum::serve` is not used in the TLS path, axum's `ConnectInfo` extractor is not available in TLS-enabled mode; handlers relying on the client IP must inspect headers.
+**`ConnectInfo` is available in the TLS path.** The accept loop explicitly inserts `axum::extract::ConnectInfo(peer_addr)` into each request's extensions before routing, so handlers can use axum's `ConnectInfo<SocketAddr>` extractor normally regardless of whether TLS is enabled.
+
+**Channel binding injection.** The `tls-server-end-point` binding bytes (see [Channel binding](#channel-binding-srctlschannel_bindingrs) above) are pre-computed once at startup from the leaf certificate DER and stored as `Option<Arc<Vec<u8>>>`. Each spawned connection task clones the `Arc` and injects a `TlsServerEndpointBinding` extension into the request so GSSAPI handlers can access it without re-reading the certificate.
 
 ## `build_rustls_server_config` (`src/tls/mod.rs`)
 
-The central assembly function:
+The central assembly function for the ACME listener:
 
 ```rust
 pub fn build_rustls_server_config(
@@ -253,3 +323,30 @@ pub fn build_rustls_server_config(
 4. If `tls.client_auth` is present: builds `SyntaClientCertVerifier` and calls `.with_client_cert_verifier(verifier)`.
 5. If absent: calls `.with_no_client_auth()`.
 6. Calls `.with_single_cert(certs, key)` to install the server certificate and key.
+
+### `build_admin_rustls_server_config` (`src/tls/mod.rs`)
+
+A parallel function for the dedicated admin listener:
+
+```rust
+pub fn build_admin_rustls_server_config(
+    admin: &crate::config::AdminConfig,
+) -> Result<rustls::ServerConfig, String>
+```
+
+Differences from `build_rustls_server_config`:
+
+- Always enables both TLS 1.2 and TLS 1.3 (not configurable via `protocols`).
+- Client auth is **optional**: if `admin.ca_certs` is empty, `with_no_client_auth()` is used; otherwise a `SyntaClientCertVerifier` is built with `required = false` so the same listener serves both mTLS (cert path) and GSSAPI (no cert presented) connections.
+- Uses a fixed `ClientAuthConfig` with `profile = "rfc5280"`, `max_chain_depth = 5`, `minimum_rsa_modulus = 2048`, and `allow_post_quantum = false`.
+- Admin ALPN is `["http/1.1"]` only (set by the caller after this function returns).
+
+### `leaf_cert_der` (`src/tls/mod.rs`)
+
+```rust
+pub fn leaf_cert_der(tls: &crate::config::TlsConfig) -> Result<Vec<u8>, String>
+```
+
+Returns the DER bytes of the first (leaf) certificate in the configured `cert_file`.
+Used at startup to pre-compute the `tls-server-end-point` channel binding without
+keeping a parsed certificate in memory.
