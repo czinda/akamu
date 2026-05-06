@@ -175,22 +175,41 @@ pub async fn set_renewal_window(
     Ok(())
 }
 
+/// Maximum number of revoked certificates loaded per CRL generation.
+///
+/// CRLs must list all unexpired revocations; exceeding this limit returns an
+/// error so operators know to implement delta CRLs rather than silently
+/// producing a truncated (incorrect) CRL.
+const MAX_CRL_ENTRIES: i64 = 500_000;
+
 /// List revoked certificates for a specific CA (for CRL generation).
 ///
 /// Only certificates issued by `ca_id` are included so each CA's CRL contains
 /// only its own revocations.  Returns a narrow projection (`CrlEntry`) to avoid
 /// loading DER/PEM blobs — the CRL builder only needs serial, timestamp, and reason.
+///
+/// Returns `AcmeError::Database` if the revocation set exceeds `MAX_CRL_ENTRIES`
+/// to prevent unbounded memory growth.  Operators should enable delta CRLs
+/// when revocation counts approach this threshold.
 pub async fn list_revoked(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     ca_id: &str,
 ) -> Result<Vec<CrlEntry>, AcmeError> {
     let rows = sqlx::query_as::<_, CrlEntry>(
         "SELECT serial_number, revoked_at, revocation_reason
-         FROM certificates WHERE status = 'revoked' AND ca_id = ?",
+         FROM certificates WHERE status = 'revoked' AND ca_id = ?
+         LIMIT ?",
     )
     .bind(ca_id)
+    .bind(MAX_CRL_ENTRIES + 1)
     .fetch_all(executor)
     .await?;
+    if rows.len() as i64 > MAX_CRL_ENTRIES {
+        return Err(AcmeError::Database(format!(
+            "CA '{ca_id}' has more than {MAX_CRL_ENTRIES} revoked certificates; \
+             CRL generation aborted to prevent OOM — implement delta CRLs"
+        )));
+    }
     Ok(rows)
 }
 
@@ -652,12 +671,20 @@ mod tests {
 
         // list_revoked("ca-a") must return only cert-ca-a.
         let revoked_a = list_revoked(&db, "ca-a").await.unwrap();
-        assert_eq!(revoked_a.len(), 1, "ca-a CRL must contain exactly one entry");
+        assert_eq!(
+            revoked_a.len(),
+            1,
+            "ca-a CRL must contain exactly one entry"
+        );
         assert_eq!(revoked_a[0].serial_number, "serial-cert-ca-a");
 
         // list_revoked("ca-b") must return only cert-ca-b.
         let revoked_b = list_revoked(&db, "ca-b").await.unwrap();
-        assert_eq!(revoked_b.len(), 1, "ca-b CRL must contain exactly one entry");
+        assert_eq!(
+            revoked_b.len(),
+            1,
+            "ca-b CRL must contain exactly one entry"
+        );
         assert_eq!(revoked_b[0].serial_number, "serial-cert-ca-b");
 
         // list_revoked("default") must return nothing (no certs with ca_id = 'default').
