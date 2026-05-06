@@ -9,11 +9,11 @@ recovery.
 | Asset | Location | Notes |
 |-------|----------|-------|
 | Database | `database.url` in config | SQLite file or PostgreSQL/MariaDB dump |
-| CA private key | `ca.key_file` | PEM or PKCS#11 — see below |
-| CA certificate | `ca.cert_file` | PEM |
+| CA private key(s) | `[[ca]] key_file` | PEM or PKCS#11 — see below; one entry per configured CA |
+| CA certificate(s) | `[[ca]] cert_file` | PEM; one entry per configured CA |
 | Admin TLS key/cert | `admin.key_file`, `admin.cert_file` | If not auto-generated |
 | Configuration file | `akamu.toml` | Server configuration |
-| MTC log directory | `mtc.log_dir` | Only if MTC is enabled |
+| MTC log directory | `mtc.log_path` | Only if MTC is enabled |
 | Cosigner config & key | `akamu-cosigner.toml` + key file | If cosigner is deployed |
 
 ## Database backup
