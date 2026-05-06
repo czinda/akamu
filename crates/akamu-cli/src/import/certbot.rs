@@ -36,7 +36,10 @@ pub fn discover_accounts(certbot_dir: &Path) -> Vec<CertbotAccount> {
 
     let ca_dirs = match fs::read_dir(&accounts_dir) {
         Ok(d) => d,
-        Err(_) => return accounts,
+        Err(e) => {
+            eprintln!("Warning: cannot read certbot accounts dir {}: {e}", accounts_dir.display());
+            return accounts;
+        }
     };
 
     for ca_entry in ca_dirs.flatten() {
@@ -52,7 +55,10 @@ pub fn discover_accounts(certbot_dir: &Path) -> Vec<CertbotAccount> {
 
         let acct_dirs = match fs::read_dir(&ca_path) {
             Ok(d) => d,
-            Err(_) => continue,
+            Err(e) => {
+                eprintln!("Warning: cannot read certbot CA dir {}: {e}", ca_path.display());
+                continue;
+            }
         };
 
         for acct_entry in acct_dirs.flatten() {
@@ -68,7 +74,13 @@ pub fn discover_accounts(certbot_dir: &Path) -> Vec<CertbotAccount> {
 
             let jwk_json = match fs::read_to_string(acct_path.join("private_key.json")) {
                 Ok(s) => s,
-                Err(_) => continue,
+                Err(e) => {
+                    eprintln!(
+                        "Warning: skipping account {account_id} ({}): cannot read private_key.json: {e}",
+                        acct_path.display()
+                    );
+                    continue;
+                }
             };
 
             let (account_url, contacts) = parse_regr_json(&acct_path.join("regr.json"));
@@ -91,11 +103,17 @@ pub fn discover_accounts(certbot_dir: &Path) -> Vec<CertbotAccount> {
 fn parse_regr_json(path: &Path) -> (Option<String>, Vec<String>) {
     let text = match fs::read_to_string(path) {
         Ok(s) => s,
-        Err(_) => return (None, vec![]),
+        Err(e) => {
+            eprintln!("Warning: cannot read {}: {e}", path.display());
+            return (None, vec![]);
+        }
     };
     let v: serde_json::Value = match serde_json::from_str(&text) {
         Ok(v) => v,
-        Err(_) => return (None, vec![]),
+        Err(e) => {
+            eprintln!("Warning: cannot parse {}: {e}", path.display());
+            return (None, vec![]);
+        }
     };
     let url = v["uri"].as_str().map(|s| s.to_string());
     let contacts = v["body"]["contact"]
@@ -124,7 +142,10 @@ pub fn discover_renewals(certbot_dir: &Path) -> Vec<CertbotRenewal> {
 
     let entries = match fs::read_dir(&renewal_dir) {
         Ok(d) => d,
-        Err(_) => return renewals,
+        Err(e) => {
+            eprintln!("Warning: cannot read certbot renewal dir {}: {e}", renewal_dir.display());
+            return renewals;
+        }
     };
 
     for entry in entries.flatten() {
@@ -141,7 +162,10 @@ pub fn discover_renewals(certbot_dir: &Path) -> Vec<CertbotRenewal> {
 
         let content = match fs::read_to_string(&path) {
             Ok(s) => s,
-            Err(_) => continue,
+            Err(e) => {
+                eprintln!("Warning: cannot read renewal config {}: {e}", path.display());
+                continue;
+            }
         };
 
         let kv = parse_ini_flat(&content);
