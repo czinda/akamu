@@ -5,13 +5,15 @@ summary = "ACME server with post-quantum certificate support"
 
 description = """
 akamu is an ACME (RFC 8555) certificate authority server that supports
-post-quantum cryptography via an ML-DSA/PQC-capable OpenSSL fork.  It
-implements the full ACME protocol including http-01, dns-01, and tls-alpn-01
-challenge types, and supports Merkle Tree Certificates (MTC) for
-compressed certificate delivery.
+post-quantum cryptography via native OpenSSL 3.2+ APIs (ML-DSA requires
+OpenSSL 3.5+).  It implements the full ACME protocol including http-01,
+dns-01, tls-alpn-01, dns-persist-01, and onion-csr-01 (RFC 9799) challenge
+types, and supports Merkle Tree Certificates (MTC) for compressed certificate
+delivery.
 
-This SRPM produces three binary packages from the workspace:
+This SRPM produces four binary packages from the workspace:
   akamu          — the main ACME CA server daemon
+  akamuctl       — the admin CLI
   akamu-cosigner — the MTC cosigner daemon (POST /sign endpoint)
   akamu-client   — the command-line ACME client (akamu-cli binary)
 
