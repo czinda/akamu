@@ -425,7 +425,7 @@ struct CaListArgs {
     #[arg(long, default_value = "https://acme-v02.api.letsencrypt.org/directory")]
     server: String,
 
-    /// Admin API base URL (e.g. https://admin.acme.example.com:9443).
+    /// Admin API base URL (e.g. <https://admin.acme.example.com:9443>).
     /// When provided, attempts GET /admin/cas for a full CA list.
     #[arg(long)]
     admin_url: Option<String>,
