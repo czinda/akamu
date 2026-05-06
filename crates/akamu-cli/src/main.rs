@@ -1467,10 +1467,6 @@ fn load_key(path: &Path) -> Result<AccountKey, String> {
     AccountKey::from_pem(&pem).map_err(|e| e.to_string())
 }
 
-fn load_account_url(key_path: &Path) -> Result<String, String> {
-    load_account_url_for_ca(key_path, None)
-}
-
 fn build_eab_options(flags: &EabFlags) -> Result<Option<(String, Vec<u8>, String)>, String> {
     flags.to_eab_options()
 }
