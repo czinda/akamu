@@ -1,9 +1,10 @@
 # Client Library Internals
 
-This page documents the internal design of `akamu-client` and the
-`akamu-cli import certbot` subcommand.  It covers the `DnsHookSolver`,
-the `RenewalConfig` type contract, the `AccountKey::from_jwk_private`
-implementation, and the certbot migration flow.
+This page documents the internal design of `akamu-client` and the `akamu-cli`
+command-line tool.  It covers the `DnsHookSolver`, the `RenewalConfig` type
+contract, the `AccountKey::from_jwk_private` implementation, the certbot
+migration flow, and the multi-CA `--ca` flag that is available on all
+subcommands.
 
 ## Source layout
 
@@ -11,11 +12,55 @@ implementation, and the certbot migration flow.
 |------|----------|
 | `crates/akamu-client/src/account.rs` | `AccountKey`, `Account`, key generation, `alg_for_key`, `jwk_private_to_backend_key` |
 | `crates/akamu-client/src/challenge.rs` | `ChallengeSolver` trait, `Http01Solver`, `TlsAlpn01Solver`, `Dns01Helper`, `DnsPersist01Helper`, `DnsHookSolver` |
-| `crates/akamu-client/src/types.rs` | `Identifier`, `Order`, `Authorization`, `Challenge`, `RenewalConfig`, `AccountOptions`, `EabOptions`, `StarOrderParams`, `StarOrder`, `RenewalInfo` |
 | `crates/akamu-client/src/client.rs` | `AcmeClient` — directory-aware async HTTP client with nonce management |
 | `crates/akamu-client/src/csr.rs` | `build_csr` — DER-encoded CSR construction |
+| `crates/akamu-client/src/eab.rs` | `create_eab_jws` — client-side EAB JWS construction (RFC 8555 §7.3.4) |
+| `crates/akamu-client/src/error.rs` | `ClientError` — unified error type |
 | `crates/akamu-client/src/gssapi_eab.rs` | `fetch_eab_via_gssapi`, `GssapiEabResult` — GSSAPI-authenticated EAB credential fetch |
+| `crates/akamu-client/src/onion.rs` | `build_onion_csr` — DER-encoded CSR for onion-csr-01 challenges (RFC 9799) |
+| `crates/akamu-client/src/types.rs` | `Identifier`, `Order`, `Authorization`, `Challenge`, `RenewalConfig`, `AccountOptions`, `EabOptions`, `StarOrderParams`, `StarOrder`, `RenewalInfo` |
 | `crates/akamu-cli/src/import/certbot.rs` | `discover_accounts`, `discover_renewals`, `jwk_to_account_key`, `map_challenge_type`, `build_renewal_config`, `live_cert_paths` |
+
+---
+
+## `akamu-cli` subcommands
+
+`akamu-cli` is the end-user ACME client.  All subcommands that contact an
+ACME server accept `--server <URL>` and `--ca <CA_ID>`.  When `--ca` is
+provided and `--server` does not already end in `/directory`, the directory
+URL is derived as `{server}/acme/{ca}/directory`.
+
+```text
+akamu-cli account register   [--server <URL>] [--ca <CA_ID>] --account-key <FILE> ...
+akamu-cli account deregister [--server <URL>] [--ca <CA_ID>] --account-key <FILE>
+akamu-cli account show       [--server <URL>] [--ca <CA_ID>] --account-key <FILE>
+akamu-cli account update     [--server <URL>] [--ca <CA_ID>] --account-key <FILE> [--contact <URI>...]
+akamu-cli account key-change [--server <URL>] [--ca <CA_ID>] --account-key <FILE> --new-key <FILE>
+akamu-cli issue              [--server <URL>] [--ca <CA_ID>] --domain <DOMAIN> ... --out <FILE>
+akamu-cli renew              [--server <URL>] [--ca <CA_ID>] --domain <DOMAIN> ... --out <FILE> [--cert <FILE>] [--force]
+akamu-cli revoke             [--server <URL>] [--ca <CA_ID>] --account-key <FILE> --cert <FILE>
+akamu-cli import certbot     [--certbot-dir <DIR>] --account-key <FILE> ...
+akamu-cli ca list            [--server <URL>]
+akamu-cli ca show            [--server <URL>] --ca <CA_ID>
+```
+
+### EAB flags (shared by `account register` and `issue`)
+
+| Flag | Description |
+|------|-------------|
+| `--eab-kid <KID>` | EAB key identifier |
+| `--eab-key <KEY>` | EAB HMAC key (base64url, no padding) |
+| `--eab-alg <ALG>` | HMAC algorithm: `HS256` \| `HS384` \| `HS512` (default `HS256`) |
+| `--gssapi-keytab <PATH>` | Kerberos keytab for GSSAPI-authenticated EAB fetch; mutually exclusive with `--eab-kid`/`--eab-key` |
+
+### `ca list` and `ca show`
+
+`akamu-cli ca list` contacts the server's default ACME directory to confirm
+connectivity and prints a one-line entry.  Use `akamuctl ca list` for a full
+multi-CA listing via the admin API.
+
+`akamu-cli ca show --ca <CA_ID>` fetches the per-CA directory at
+`{server}/acme/{CA_ID}/directory` and prints the CA identifier and URL.
 
 ---
 
@@ -195,11 +240,37 @@ tls-alpn-01 (RFC 8737).
 
 ## Dns01Helper and DnsPersist01Helper
 
-Both helpers expose a single static method `txt_value(key_auth) -> Result<String, ClientError>` that returns `base64url(SHA-256(key_auth))`.  The computation is done by `dns_txt_value` in `account.rs`, which calls `synta_certificate::default_data_hasher().hash_data("sha256", key_auth.as_bytes())` and base64url-encodes the result.
+`Dns01Helper` exposes one static method:
 
-`DnsPersist01Helper` uses the same math as `Dns01Helper`.  The difference
-between the two challenge types lies in lifecycle, not in the TXT value
-computation.
+```rust
+pub fn txt_value(key_auth: &str) -> Result<String, ClientError>
+```
+
+This returns `base64url(SHA-256(key_auth))`.  The computation is done by
+`dns_txt_value` in `account.rs`, which calls
+`synta_certificate::default_data_hasher().hash_data("sha256",
+key_auth.as_bytes())` and base64url-encodes the result.
+
+`DnsPersist01Helper` is a different design — it does **not** hash the key
+authorization.  Instead, it builds the structured TXT record content
+specified by `draft-ietf-acme-dns-persist`.  It exposes two static methods:
+
+```rust
+// Non-wildcard: placed at _validation-persist.<domain>
+pub fn txt_record(issuer_domain: &str, account_url: &str) -> String
+// Returns: "<issuer_domain>; accounturi=<account_url>"
+
+// Wildcard / subdomain coverage:
+pub fn txt_record_wildcard(issuer_domain: &str, account_url: &str) -> String
+// Returns: "<issuer_domain>; accounturi=<account_url>; policy=wildcard"
+```
+
+`issuer_domain` is taken from the `issuer-domain-names` array in the
+server's challenge object.  `account_url` is the ACME account URL returned
+at registration time.
+
+Unlike dns-01, the dns-persist-01 record is long-lived; it is provisioned
+once and left in place — there is no cleanup call.
 
 ---
 
@@ -248,12 +319,23 @@ message.
 
 **Public API:**
 
-- `deploy(domain, token, key_auth)` — calls `run_hook("add", …)`.
-- `clean(domain, token, key_auth)` — calls `run_hook("remove", …)`.
+- `deploy(domain, token, key_auth)` — calls `run_hook("add", …)` for dns-01.
+- `clean(domain, token, key_auth)` — calls `run_hook("remove", …)` for dns-01.
+- `deploy_persist(domain, txt_record)` — for dns-persist-01: invokes the hook
+  with `add` and passes only `AKAMU_DOMAIN` and `AKAMU_TXT` (the full
+  structured record content built by `DnsPersist01Helper`).  There is no
+  corresponding `clean` for dns-persist-01 because the record is long-lived.
+
+**Environment variables for dns-persist-01 (`deploy_persist`):**
+
+| Variable | Value |
+|---|---|
+| `AKAMU_DOMAIN` | DNS name being validated |
+| `AKAMU_TXT` | Full TXT record content (`"issuer; accounturi=…[; policy=wildcard]"`) |
 
 `DnsHookSolver` does not implement the `ChallengeSolver` trait directly
 because the trait's `present`/`cleanup` signatures do not carry the domain
-name.  Callers use `deploy` and `clean` explicitly.
+name.  Callers use `deploy`, `clean`, and `deploy_persist` explicitly.
 
 ---
 
@@ -315,7 +397,8 @@ parameter needed to repeat a certificate issuance without user interaction.
 
 | Field | Type | Serde default | Notes |
 |-------|------|---------------|-------|
-| `server` | `String` | (required) | ACME directory URL |
+| `server` | `String` | (required) | ACME directory URL (base URL or full per-CA directory URL) |
+| `ca` | `Option<String>` | `None` | CA identifier for akamu multi-CA servers; derives directory URL as `{server}/acme/{ca}/directory`; ignored when `server` already ends in `/directory`; omitted from TOML when absent |
 | `domains` | `Vec<Identifier>` | (required) | Identifiers to certify |
 | `account_key` | `PathBuf` | (required) | Path to account private key PEM |
 | `account_key_type` | `String` | `"ec:P-256"` | Key type string for account key |
@@ -331,6 +414,7 @@ parameter needed to repeat a certificate issuance without user interaction.
 | `eab_kid` | `Option<String>` | `None` | EAB key identifier |
 | `eab_key` | `Option<String>` | `None` | EAB HMAC key (base64url) |
 | `eab_alg` | `String` | `"HS256"` | EAB HMAC algorithm |
+| `gssapi_keytab` | `Option<PathBuf>` | `None` | Path to a Kerberos keytab for GSSAPI-authenticated EAB fetch; mutually exclusive with `eab_kid`/`eab_key` |
 | `dns_hook` | `Option<String>` | `None` | DNS hook script path |
 
 Fields with serde defaults use `#[serde(default = "defaults::…")]` pointing
