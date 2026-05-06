@@ -30,8 +30,12 @@
 #     the total run time reasonable; all other runs use 100 or 300 issuances.
 #   - ML-DSA requires OpenSSL 3.5 or later.  The script aborts with an error
 #     if OpenSSL < 3.5 is detected.
-#   - The pool comparison section creates and deletes temporary database files
-#     under /dev/shm.
+#   - The pool/RO-split comparison sections create and delete temporary database
+#     files under /dev/shm.
+#   - Section 9 measures the WAL read-only pool split: pure-read handlers
+#     (get_order, get_authz, download_cert, star_cert, renewal_info, ocsp) are
+#     served by a separate ?mode=ro pool, freeing the single write connection
+#     for write-path handlers only.
 
 set -euo pipefail
 
@@ -182,6 +186,37 @@ for p in 1 2 4 8; do
             --db "sqlite://$POOLDB" --pool-connections "$p"
         rm -f "$POOLDB" "${POOLDB}-wal" "${POOLDB}-shm"
     done
+done
+
+# ── Section 9: Read-only pool split (tmpfs WAL) ──────────────────────────────
+# Compare tmpfs WAL with and without --ro-connections across concurrency levels,
+# then sweep ro-connections count at the peak concurrency to find the sweet spot.
+
+echo "" >&2
+echo "=== 9. RO pool split comparison (tmpfs WAL, ec:P-256, 300 req) ===" >&2
+
+echo "  --- 9a. no split vs split (ro=4) across concurrency ---" >&2
+for n in 1 5 10 25 50; do
+    RODB=$(mktemp /dev/shm/akamu_bench_ro_XXXXXX.db)
+    bench "ro_nosplit_${n}" \
+        --clients "$n" --requests 300 --warmup 20 --poll-ms "$POLL" \
+        --db "sqlite://$RODB"
+    rm -f "$RODB" "${RODB}-wal" "${RODB}-shm"
+
+    RODB=$(mktemp /dev/shm/akamu_bench_ro_XXXXXX.db)
+    bench "ro_split4_${n}" \
+        --clients "$n" --requests 300 --warmup 20 --poll-ms "$POLL" \
+        --db "sqlite://$RODB" --ro-connections 4
+    rm -f "$RODB" "${RODB}-wal" "${RODB}-shm"
+done
+
+echo "  --- 9b. ro-connections sweep at c=10 ---" >&2
+for ro in 1 2 4 8 16; do
+    RODB=$(mktemp /dev/shm/akamu_bench_ro_XXXXXX.db)
+    bench "ro_sweep_ro${ro}" \
+        --clients 10 --requests 300 --warmup 20 --poll-ms "$POLL" \
+        --db "sqlite://$RODB" --ro-connections "$ro"
+    rm -f "$RODB" "${RODB}-wal" "${RODB}-shm"
 done
 
 echo "" >&2
