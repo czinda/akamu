@@ -49,6 +49,8 @@ use synta_certificate::{
 };
 use tokio::{net::UdpSocket, sync::RwLock};
 
+use indexmap::IndexMap;
+
 use akamu::{
     ca,
     config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig},
@@ -680,7 +682,10 @@ async fn start_server(args: &Args) -> BenchServer {
             max_connections: None,
             require_tls: false,
         },
-        ca: CaConfig {
+        cas: vec![CaConfig {
+            id: "bench".into(),
+            is_default: true,
+            caa_identities: vec![],
             key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
             cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
             key_type: args.ca_key_type.clone(),
@@ -697,7 +702,7 @@ async fn start_server(args: &Args) -> BenchServer {
             enforce_validity_cap: false,
             require_encrypted_key: false,
             key_password_file: None,
-        },
+        }],
         mtc: MtcConfig {
             log_path: "/dev/null".into(),
             enabled: false,
@@ -712,6 +717,9 @@ async fn start_server(args: &Args) -> BenchServer {
             http_validation_port,
             dns_persist_issuer_domains: issuer_domain.into_iter().collect(),
             dns_resolver_addr,
+            // The bench challenge responder binds to 127.0.0.1; allow the
+            // SSRF guard to follow redirects to loopback for in-process testing.
+            http_validation_allow_private_ips: true,
             ..ServerConfig::default()
         },
         tls: Default::default(),
@@ -719,7 +727,7 @@ async fn start_server(args: &Args) -> BenchServer {
         admin: None,
     });
 
-    let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.ca).unwrap();
+    let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.cas[0]).unwrap();
     let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();
     let ca_aki_bytes = akamu::ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
     db::install_drivers();
@@ -732,6 +740,8 @@ async fn start_server(args: &Args) -> BenchServer {
     };
     let db_conn = db::open(&args.db, effective_pool, false).await.unwrap();
     let ca = Arc::new(CaState {
+        id: "bench".into(),
+        key_type: args.ca_key_type.clone(),
         key: ca_key,
         cert_der: ca_cert_der,
         hash_alg: "sha256".into(),
@@ -740,13 +750,34 @@ async fn start_server(args: &Args) -> BenchServer {
         ocsp_url: None,
         aki_bytes: ca_aki_bytes,
         enforce_validity_cap: false,
+        crl_next_update_secs: 86400,
+        caa_identities: vec![],
     });
+    let default_ca_id = Arc::new("bench".to_string());
+    let cas: Arc<IndexMap<String, Arc<CaState>>> =
+        Arc::new(IndexMap::from([("bench".to_string(), Arc::clone(&ca))]));
+    let crl_caches: Arc<std::collections::HashMap<String, akamu::state::CrlCache>> =
+        Arc::new(std::collections::HashMap::from([
+            ("bench".to_string(), Default::default()),
+        ]));
+    let link_headers: Arc<std::collections::HashMap<String, Arc<axum::http::HeaderValue>>> =
+        Arc::new(std::collections::HashMap::from([(
+            "bench".to_string(),
+            Arc::new(
+                axum::http::HeaderValue::from_str(&format!(
+                    "<{}/acme/directory>;rel=\"index\"",
+                    base_url
+                ))
+                .expect("base_url produces a valid Link header value"),
+            ),
+        )]));
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db_conn,
         db_kind,
         profiles: akamu::profiles::ProfileRegistry::empty(&ca),
-        ca,
+        cas,
+        default_ca_id,
         mtc: Arc::new(MtcState {
             log: None,
             algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
@@ -756,16 +787,10 @@ async fn start_server(args: &Args) -> BenchServer {
             _log_lock: None,
         }),
         tls: None,
-        crl_cache: Default::default(),
+        crl_caches,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),
-        link_header: Arc::new(
-            axum::http::HeaderValue::from_str(&format!(
-                "<{}/acme/directory>;rel=\"index\"",
-                base_url
-            ))
-            .expect("base_url produces a valid Link header value"),
-        ),
+        link_headers,
         validation_client: {
             let https = hyper_rustls::HttpsConnectorBuilder::new()
                 .with_native_roots()
