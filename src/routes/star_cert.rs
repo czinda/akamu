@@ -31,7 +31,7 @@ pub async fn star_cert_get(
     }
 
     // Check order exists and has allow_certificate_get enabled.
-    let order = db::orders::get_by_id(&state.db, &order_id)
+    let order = db::orders::get_by_id(&state.db_ro, &order_id)
         .await?
         .ok_or(AcmeError::NotFound)?;
 
@@ -68,7 +68,7 @@ pub async fn star_cert_post(
         .account_id
         .ok_or_else(|| AcmeError::Unauthorized("kid required".into()))?;
 
-    let order = db::orders::get_by_id(&state.db, &order_id)
+    let order = db::orders::get_by_id(&state.db_ro, &order_id)
         .await?
         .ok_or(AcmeError::NotFound)?;
 
@@ -103,7 +103,7 @@ async fn serve_star_cert(
 
     // Find the most recent certificate for this order.
     let now = unix_now();
-    let cert = db::certs::get_latest_for_order(&state.db, &order.id)
+    let cert = db::certs::get_latest_for_order(&state.db_ro, &order.id)
         .await?
         .ok_or(AcmeError::NotFound)?;
 

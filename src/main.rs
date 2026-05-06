@@ -10,8 +10,8 @@ use tracing_subscriber::EnvFilter;
 use akamu::audit::AuditState;
 use akamu::config::{Config, MtcSigningKeyConfig};
 use akamu::state::{AppState, CaState, CrlCache, MtcState, NonceBucket, TlsState};
-use indexmap::IndexMap;
 use akamu::{ca, db, mtc, routes, star};
+use indexmap::IndexMap;
 
 use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::Client;
@@ -89,23 +89,23 @@ async fn run() -> Result<(), String> {
                 "ca[{}].validity_days={} exceeds the 200-day CA/B Forum BR limit \
                  (§6.3.2, since 2026-03-15); certificates issued by this CA cannot \
                  be used in public WebPKI chains",
-                ca_cfg.id, ca_cfg.validity_days
+                ca_cfg.id,
+                ca_cfg.validity_days
             );
         } else if ca_cfg.validity_days > 100 {
             tracing::warn!(
                 "ca[{}].validity_days={} will exceed the upcoming 100-day CA/B Forum \
                  BR limit (§6.3.2, from 2027-03-15)",
-                ca_cfg.id, ca_cfg.validity_days
+                ca_cfg.id,
+                ca_cfg.validity_days
             );
         }
     }
 
     if config.server.account_scope == "ca" {
-        return Err(
-            "server.account_scope = \"ca\" is not yet supported; \
+        return Err("server.account_scope = \"ca\" is not yet supported; \
              remove the setting or set it to \"server\" to start the server."
-                .to_string(),
-        );
+            .to_string());
     }
 
     let config = Arc::new(config);
@@ -125,6 +125,17 @@ async fn run() -> Result<(), String> {
     )
     .await
     .map_err(|e| format!("database init: {e}"))?;
+
+    let db_ro = match db::open_ro(&config.database.url, 4)
+        .await
+        .map_err(|e| format!("read-only database pool: {e}"))?
+    {
+        Some(ro) => {
+            tracing::info!("opened read-only pool (4 connections)");
+            ro
+        }
+        None => db.clone(),
+    };
 
     // Sweep DB nonces older than 24 h at startup (best-effort; handles any
     // nonces written by a previous process that used the DB-backed store).
@@ -155,21 +166,20 @@ async fn run() -> Result<(), String> {
 
     for ca_cfg in &config.cas {
         tracing::info!("loading CA '{}' from '{}'", ca_cfg.id, ca_cfg.key_file);
-        let (ca_key, ca_cert_der) =
-            ca::init::load_or_generate(ca_cfg).map_err(|e| format!("CA '{}' init: {e}", ca_cfg.id))?;
+        let (ca_key, ca_cert_der) = ca::init::load_or_generate(ca_cfg)
+            .map_err(|e| format!("CA '{}' init: {e}", ca_cfg.id))?;
 
         let ca_spki_der = ca_key
             .public_key()
             .map_err(|e| format!("CA '{}' public key: {e}", ca_cfg.id))?
             .spki_der()
             .to_vec();
-        let ca_aki_bytes =
-            ca::init::compute_aki_from_spki(&ca_spki_der).ok_or_else(|| {
-                format!(
-                    "CA '{}': cannot compute Authority Key Identifier from SPKI",
-                    ca_cfg.id
-                )
-            })?;
+        let ca_aki_bytes = ca::init::compute_aki_from_spki(&ca_spki_der).ok_or_else(|| {
+            format!(
+                "CA '{}': cannot compute Authority Key Identifier from SPKI",
+                ca_cfg.id
+            )
+        })?;
 
         // Derive CRL/OCSP URLs if not set explicitly in config.
         let crl_url = ca_cfg.crl_url.clone().or_else(|| {
@@ -412,6 +422,7 @@ async fn run() -> Result<(), String> {
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db.clone(),
+        db_ro,
         db_kind,
         cas: Arc::new(cas_map),
         default_ca_id: Arc::new(default_ca_id),

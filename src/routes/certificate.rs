@@ -22,7 +22,7 @@ pub async fn download_cert(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Response, AcmeError> {
-    let cert = db::certs::get_by_id(&state.db, &id)
+    let cert = db::certs::get_by_id(&state.db_ro, &id)
         .await?
         .ok_or(AcmeError::NotFound)?;
     Ok(cert_pem_response(cert))
@@ -56,7 +56,7 @@ pub async fn download_cert_post(
         .account_id
         .ok_or_else(|| AcmeError::Unauthorized("kid required".into()))?;
 
-    let cert = db::certs::get_by_id(&state.db, &id)
+    let cert = db::certs::get_by_id(&state.db_ro, &id)
         .await?
         .ok_or(AcmeError::NotFound)?;
 

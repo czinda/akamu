@@ -177,6 +177,43 @@ pub async fn open(url: &str, max_connections: u32, require_tls: bool) -> Result<
     Ok(pool)
 }
 
+/// Open a read-only connection pool to a SQLite file-backed database.
+///
+/// Returns `None` for `:memory:` databases (each connection is private and
+/// would see an empty schema) and for non-SQLite backends where read-write
+/// pool splitting is not needed.  Does NOT run migrations.  Callers must
+/// ensure the write pool has already opened and migrated the database file.
+pub async fn open_ro(url: &str, max_connections: u32) -> Result<Option<Db>, AcmeError> {
+    if !url.starts_with("sqlite") || url.contains(":memory:") {
+        return Ok(None);
+    }
+    // Build the read-only URL, preserving existing query parameters but
+    // replacing (or adding) `mode=ro`.  Naive `split_once('?')` would discard
+    // all existing params; filter them individually instead.
+    let ro_url = if let Some((base, query)) = url.split_once('?') {
+        let filtered: Vec<&str> = query.split('&').filter(|p| !p.starts_with("mode=")).collect();
+        if filtered.is_empty() {
+            format!("{base}?mode=ro")
+        } else {
+            format!("{base}?{}&mode=ro", filtered.join("&"))
+        }
+    } else {
+        format!("{url}?mode=ro")
+    };
+
+    let pool = sqlx::any::AnyPoolOptions::new()
+        .max_connections(max_connections.max(1))
+        .connect(&ro_url)
+        .await
+        .map_err(|e| AcmeError::Database(format!("open read-only database '{url}': {e}")))?;
+
+    for pragma in &["PRAGMA mmap_size=134217728", "PRAGMA cache_size=-65536"] {
+        sqlx::query(pragma).execute(&pool).await.ok();
+    }
+
+    Ok(Some(pool))
+}
+
 /// Begin a write transaction.
 ///
 /// SQLite needs `BEGIN IMMEDIATE` to prevent `SQLITE_BUSY_SNAPSHOT` (error 517)

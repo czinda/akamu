@@ -398,7 +398,6 @@ async fn start_tls_server() -> TlsTestServer {
             require_tls: false,
         },
         cas: vec![CaConfig {
-
             id: "default".to_owned(),
 
             is_default: true,
@@ -467,7 +466,7 @@ async fn start_tls_server() -> TlsTestServer {
         aki_bytes: Vec::new(),
         enforce_validity_cap: false,
         crl_next_update_secs: 86400,
-            caa_identities: vec![],
+        caa_identities: vec![],
     });
 
     // Bootstrap TLS cert/key signed by the CA.
@@ -486,6 +485,7 @@ async fn start_tls_server() -> TlsTestServer {
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db_conn.clone(),
+        db_ro: db_conn.clone(),
         db_kind: db::DbKind::Sqlite,
         profiles: akamu::profiles::ProfileRegistry::empty(&ca_state),
         cas: {
@@ -506,15 +506,16 @@ async fn start_tls_server() -> TlsTestServer {
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),
         link_headers: Arc::new({
-
             let mut _lh_map = std::collections::HashMap::new();
 
-            _lh_map.insert("default".to_string(), Arc::new(axum::http::HeaderValue::from_static(
-            "<https://acme.test/acme/directory>;rel=\"index\"",
-        )));
+            _lh_map.insert(
+                "default".to_string(),
+                Arc::new(axum::http::HeaderValue::from_static(
+                    "<https://acme.test/acme/directory>;rel=\"index\"",
+                )),
+            );
 
             _lh_map
-
         }),
         validation_client: {
             let https = hyper_rustls::HttpsConnectorBuilder::new()
@@ -527,13 +528,11 @@ async fn start_tls_server() -> TlsTestServer {
                 .build(https)
         },
         crl_caches: Arc::new({
-
             let mut _crl_map = std::collections::HashMap::new();
 
             _crl_map.insert("default".to_string(), Default::default());
 
             _crl_map
-
         }),
         audit: std::sync::Arc::new(akamu::audit::AuditState::new()),
         audit_policy: std::sync::Arc::new(akamu::audit::AuditPolicy::default()),

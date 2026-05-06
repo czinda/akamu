@@ -102,7 +102,11 @@ struct CertEntry {
     issuer_key_hash: Vec<u8>,
 }
 
-async fn handle_ocsp_request(der: &[u8], state: &AppState, ca: &CaState) -> Result<Vec<u8>, AcmeError> {
+async fn handle_ocsp_request(
+    der: &[u8],
+    state: &AppState,
+    ca: &CaState,
+) -> Result<Vec<u8>, AcmeError> {
     use synta_certificate::ocsp_2024_88_types::OCSPRequest;
 
     // ── Step 1: parse request and extract all data into owned types ───────────
@@ -175,7 +179,7 @@ async fn handle_ocsp_request(der: &[u8], state: &AppState, ca: &CaState) -> Resu
     // ── Step 2: DB lookups (async, no signer held) ────────────────────────────
     let mut statuses: Vec<u8> = Vec::with_capacity(entries.len());
     for entry in &entries {
-        let row = db::certs::get_by_serial(&state.db, &entry.serial_hex).await?;
+        let row = db::certs::get_by_serial(&state.db_ro, &entry.serial_hex).await?;
         let status: u8 = match &row {
             None => OCSP_UNKNOWN,
             Some(r) if r.status == "revoked" => OCSP_REVOKED,

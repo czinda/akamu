@@ -282,8 +282,8 @@ fn build_authz_json<'a>(
             }
         })
         .collect();
-    let identifier = serde_json::value::RawValue::from_string(authz.identifier.clone())
-        .map_err(|e| {
+    let identifier =
+        serde_json::value::RawValue::from_string(authz.identifier.clone()).map_err(|e| {
             AcmeError::Internal(format!(
                 "corrupt identifier JSON in authorization {}: {e}",
                 authz.id
@@ -323,7 +323,7 @@ pub async fn get_authz(
         .account_id
         .ok_or(AcmeError::Unauthorized("kid required".into()))?;
 
-    let (authz, challenges) = db::authz::get_with_challenges(&state.db, &id)
+    let (authz, challenges) = db::authz::get_with_challenges(&state.db_ro, &id)
         .await?
         .ok_or(AcmeError::NotFound)?;
     if authz.account_id != account_id {

@@ -526,7 +526,7 @@ pub async fn get_order(
         .ok_or(AcmeError::Unauthorized("kid required".into()))?;
 
     // Fetch order and its authz IDs in one DB call.
-    let (mut order, authz_ids) = db::orders::get_with_authz_ids(&state.db, &id)
+    let (mut order, authz_ids) = db::orders::get_with_authz_ids(&state.db_ro, &id)
         .await?
         .ok_or(AcmeError::NotFound)?;
     if order.ca_id != ca_id.0 {

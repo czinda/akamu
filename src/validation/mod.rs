@@ -471,17 +471,16 @@ mod tests {
         });
         Arc::new(AppState {
             config: Arc::clone(&config),
-            db: db_conn,
+            db: db_conn.clone(),
+            db_ro: db_conn,
             db_kind: crate::db::DbKind::Sqlite,
             profiles: crate::profiles::ProfileRegistry::empty(&ca),
             cas: {
-
                 let mut map = indexmap::IndexMap::new();
 
                 map.insert("default".to_string(), ca.clone());
 
                 Arc::new(map)
-
             },
 
             default_ca_id: Arc::new("default".to_string()),
@@ -498,9 +497,12 @@ mod tests {
             nonces: Arc::new(NonceBucket::new()),
             link_headers: {
                 let mut m = std::collections::HashMap::new();
-                m.insert("default".to_string(), Arc::new(axum::http::HeaderValue::from_static(
-                    "<https://acme.test/acme/directory>;rel=\"index\"",
-                )));
+                m.insert(
+                    "default".to_string(),
+                    Arc::new(axum::http::HeaderValue::from_static(
+                        "<https://acme.test/acme/directory>;rel=\"index\"",
+                    )),
+                );
                 Arc::new(m)
             },
             validation_client: {
@@ -986,17 +988,16 @@ mod tests {
         });
         let state = Arc::new(AppState {
             config: Arc::clone(&config),
-            db: db_conn,
+            db: db_conn.clone(),
+            db_ro: db_conn,
             db_kind: crate::db::DbKind::Sqlite,
             profiles: crate::profiles::ProfileRegistry::empty(&ca),
             cas: {
-
                 let mut map = indexmap::IndexMap::new();
 
                 map.insert("default".to_string(), ca.clone());
 
                 Arc::new(map)
-
             },
 
             default_ca_id: Arc::new("default".to_string()),
@@ -1013,9 +1014,12 @@ mod tests {
             nonces: Arc::new(NonceBucket::new()),
             link_headers: {
                 let mut m = std::collections::HashMap::new();
-                m.insert("default".to_string(), Arc::new(axum::http::HeaderValue::from_static(
-                    "<https://acme.test/acme/directory>;rel=\"index\"",
-                )));
+                m.insert(
+                    "default".to_string(),
+                    Arc::new(axum::http::HeaderValue::from_static(
+                        "<https://acme.test/acme/directory>;rel=\"index\"",
+                    )),
+                );
                 Arc::new(m)
             },
             validation_client: {
@@ -1314,17 +1318,16 @@ mod tests {
         });
         Arc::new(AppState {
             config,
+            db_ro: db.clone(),
             db,
             db_kind: crate::db::DbKind::Sqlite,
             profiles: crate::profiles::ProfileRegistry::empty(&ca),
             cas: {
-
                 let mut map = indexmap::IndexMap::new();
 
                 map.insert("default".to_string(), ca.clone());
 
                 Arc::new(map)
-
             },
 
             default_ca_id: Arc::new("default".to_string()),
@@ -1341,9 +1344,12 @@ mod tests {
             nonces: Arc::new(NonceBucket::new()),
             link_headers: {
                 let mut m = std::collections::HashMap::new();
-                m.insert("default".to_string(), Arc::new(axum::http::HeaderValue::from_static(
-                    "<https://acme.test/acme/directory>;rel=\"index\"",
-                )));
+                m.insert(
+                    "default".to_string(),
+                    Arc::new(axum::http::HeaderValue::from_static(
+                        "<https://acme.test/acme/directory>;rel=\"index\"",
+                    )),
+                );
                 Arc::new(m)
             },
             validation_client: {

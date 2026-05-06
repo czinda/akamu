@@ -221,6 +221,12 @@ struct Args {
     #[arg(long, default_value_t = 1)]
     pool_connections: u32,
 
+    /// Read-only SQLite connection pool size.  Only effective for file-backed
+    /// SQLite databases; :memory: always uses the write pool for all reads.
+    /// Set to 0 (default) to disable the read-only split.
+    #[arg(long, default_value_t = 0)]
+    ro_connections: u32,
+
     /// Issue wildcard certificates — dns-persist-01 only
     #[arg(long)]
     wildcard: bool,
@@ -739,6 +745,17 @@ async fn start_server(args: &Args) -> BenchServer {
         args.pool_connections.max(1)
     };
     let db_conn = db::open(&args.db, effective_pool, false).await.unwrap();
+    let db_ro_conn = if args.ro_connections > 0 {
+        match db::open_ro(&args.db, args.ro_connections).await.unwrap() {
+            Some(ro) => ro,
+            None => {
+                eprintln!("warning: --ro-connections ignored for :memory: or non-SQLite");
+                db_conn.clone()
+            }
+        }
+    } else {
+        db_conn.clone()
+    };
     let ca = Arc::new(CaState {
         id: "bench".into(),
         key_type: args.ca_key_type.clone(),
@@ -756,10 +773,9 @@ async fn start_server(args: &Args) -> BenchServer {
     let default_ca_id = Arc::new("bench".to_string());
     let cas: Arc<IndexMap<String, Arc<CaState>>> =
         Arc::new(IndexMap::from([("bench".to_string(), Arc::clone(&ca))]));
-    let crl_caches: Arc<std::collections::HashMap<String, akamu::state::CrlCache>> =
-        Arc::new(std::collections::HashMap::from([
-            ("bench".to_string(), Default::default()),
-        ]));
+    let crl_caches: Arc<std::collections::HashMap<String, akamu::state::CrlCache>> = Arc::new(
+        std::collections::HashMap::from([("bench".to_string(), Default::default())]),
+    );
     let link_headers: Arc<std::collections::HashMap<String, Arc<axum::http::HeaderValue>>> =
         Arc::new(std::collections::HashMap::from([(
             "bench".to_string(),
@@ -774,6 +790,7 @@ async fn start_server(args: &Args) -> BenchServer {
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db_conn,
+        db_ro: db_ro_conn,
         db_kind,
         profiles: akamu::profiles::ProfileRegistry::empty(&ca),
         cas,

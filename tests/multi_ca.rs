@@ -150,18 +150,18 @@ async fn build_two_ca_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir
     link_headers.insert(
         "rsa".to_string(),
         Arc::new(
-            axum::http::HeaderValue::from_str(
-                &format!("<{base_url}/acme/directory>;rel=\"index\""),
-            )
+            axum::http::HeaderValue::from_str(&format!(
+                "<{base_url}/acme/directory>;rel=\"index\""
+            ))
             .unwrap(),
         ),
     );
     link_headers.insert(
         "ec".to_string(),
         Arc::new(
-            axum::http::HeaderValue::from_str(
-                &format!("<{base_url}/acme/ec/directory>;rel=\"index\""),
-            )
+            axum::http::HeaderValue::from_str(&format!(
+                "<{base_url}/acme/ec/directory>;rel=\"index\""
+            ))
             .unwrap(),
         ),
     );
@@ -169,6 +169,7 @@ async fn build_two_ca_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db_conn.clone(),
+        db_ro: db_conn.clone(),
         db_kind: db::DbKind::Sqlite,
         profiles: akamu::profiles::ProfileRegistry::empty(&ca_rsa),
         cas: Arc::new(cas_map),
@@ -280,7 +281,11 @@ async fn unknown_ca_id_returns_404() {
     let router = routes::build_router(Arc::clone(&state));
 
     let (status, _) = get_json(&router, "/acme/nonexistent/directory").await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "/acme/nonexistent/directory should 404");
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "/acme/nonexistent/directory should 404"
+    );
 }
 
 /// Per-CA directory URLs contain the CA ID prefix for the non-default CA.
@@ -404,7 +409,9 @@ async fn crl_isolation_revocation_only_affects_issuing_ca() {
     .unwrap();
 
     // Revoke the certificate (sets status to 'revoked', records revoked_at).
-    db::certs::revoke(&state.db, cert_id, Some(1), now).await.unwrap();
+    db::certs::revoke(&state.db, cert_id, Some(1), now)
+        .await
+        .unwrap();
 
     // Invalidate the RSA CA's CRL cache so the next GET rebuilds it.
     state.invalidate_crl_cache("rsa");
@@ -665,6 +672,7 @@ async fn admin_cas_list_returns_both_cas() {
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db_conn.clone(),
+        db_ro: db_conn.clone(),
         db_kind: db::DbKind::Sqlite,
         profiles: akamu::profiles::ProfileRegistry::empty(&ca_rsa),
         cas: Arc::new(cas_map),
@@ -717,7 +725,9 @@ async fn admin_cas_list_returns_both_cas() {
         .await
         .unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
-    let cas = json["cas"].as_array().expect("response must have 'cas' array");
+    let cas = json["cas"]
+        .as_array()
+        .expect("response must have 'cas' array");
     assert_eq!(cas.len(), 2, "must have 2 CAs");
 
     let ids: Vec<&str> = cas.iter().filter_map(|c| c["id"].as_str()).collect();
@@ -728,7 +738,11 @@ async fn admin_cas_list_returns_both_cas() {
     assert_eq!(rsa["is_default"], json!(true), "rsa must be marked default");
 
     let ec = cas.iter().find(|c| c["id"] == "ec").unwrap();
-    assert_eq!(ec["is_default"], json!(false), "ec must not be marked default");
+    assert_eq!(
+        ec["is_default"],
+        json!(false),
+        "ec must not be marked default"
+    );
 }
 
 /// The new-nonce endpoint works for both per-CA paths and the legacy path.
@@ -737,18 +751,18 @@ async fn new_nonce_available_for_all_ca_paths() {
     let (state, _dir) = build_two_ca_state("https://acme.test").await;
     let router = routes::build_router(Arc::clone(&state));
 
-    for path in &["/acme/new-nonce", "/acme/rsa/new-nonce", "/acme/ec/new-nonce"] {
+    for path in &[
+        "/acme/new-nonce",
+        "/acme/rsa/new-nonce",
+        "/acme/ec/new-nonce",
+    ] {
         let req = Request::builder()
             .method(Method::HEAD)
             .uri(*path)
             .body(Body::empty())
             .unwrap();
         let resp = router.clone().oneshot(req).await.unwrap();
-        assert_eq!(
-            resp.status(),
-            StatusCode::OK,
-            "HEAD {path} must return 200"
-        );
+        assert_eq!(resp.status(), StatusCode::OK, "HEAD {path} must return 200");
         assert!(
             resp.headers().contains_key("replay-nonce"),
             "HEAD {path} must return a Replay-Nonce header"

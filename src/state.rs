@@ -114,6 +114,12 @@ pub type CrlCache = Arc<Mutex<Option<(Vec<u8>, std::time::Instant)>>>;
 pub struct AppState {
     pub config: Arc<Config>,
     pub db: crate::db::Db,
+    /// Read-only connection pool for pure-read handlers (WAL concurrent reads).
+    ///
+    /// For SQLite file-backed databases this is a `?mode=ro` pool that never
+    /// acquires the write lock.  For `:memory:` and non-SQLite backends this
+    /// is a clone of `db` (no split advantage, but also no regression).
+    pub db_ro: crate::db::Db,
     pub db_kind: DbKind,
     /// All CAs keyed by their `id`, in insertion order (first entry = config order).
     pub cas: Arc<IndexMap<String, Arc<CaState>>>,
@@ -246,8 +252,7 @@ impl AppState {
         ev1: crate::audit::AuditEvent,
         ev2: crate::audit::AuditEvent,
     ) {
-        crate::audit::record_or_log_pair(&self.db, &self.audit, &self.audit_policy, ev1, ev2)
-            .await;
+        crate::audit::record_or_log_pair(&self.db, &self.audit, &self.audit_policy, ev1, ev2).await;
     }
 }
 

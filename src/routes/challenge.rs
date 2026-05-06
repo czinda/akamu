@@ -2,15 +2,15 @@
 
 use std::sync::Arc;
 
+use crate::db;
+use crate::error::AcmeError;
+use crate::state::AppState;
+use crate::validation;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use serde::Serialize;
-use crate::db;
-use crate::error::AcmeError;
-use crate::state::AppState;
-use crate::validation;
 
 use super::{acme_prefix, fmt_time, json_response, parse_jws, unix_now, CaId};
 
@@ -42,7 +42,7 @@ pub async fn respond_challenge(
     // backfills pre-existing rows to 'default', which is allowed on any CA.
     let now = unix_now();
     let (authz, challenge) = {
-        let (authz, challenges) = db::authz::get_with_challenges(&state.db, &authz_id)
+        let (authz, challenges) = db::authz::get_with_challenges(&state.db_ro, &authz_id)
             .await?
             .ok_or(AcmeError::NotFound)?;
 
@@ -84,12 +84,11 @@ pub async fn respond_challenge(
     // challenge.status was "pending" — the DB has now flipped it to "processing".
 
     // Extract identifier.
-    let identifier: serde_json::Value =
-        serde_json::from_str(&authz.identifier).map_err(|e| {
-            AcmeError::Internal(format!(
-                "corrupt identifier in authorization {authz_id}: {e}"
-            ))
-        })?;
+    let identifier: serde_json::Value = serde_json::from_str(&authz.identifier).map_err(|e| {
+        AcmeError::Internal(format!(
+            "corrupt identifier in authorization {authz_id}: {e}"
+        ))
+    })?;
     let id_type = identifier["type"].as_str().unwrap_or("").to_string();
     let id_value = identifier["value"].as_str().unwrap_or("").to_string();
 
@@ -218,7 +217,10 @@ fn challenge_response(
     };
     let body = ChallengeJson {
         r#type: &challenge.r#type,
-        url: format!("{acme_pfx}/chall/{}/{}", challenge.authz_id, challenge.r#type),
+        url: format!(
+            "{acme_pfx}/chall/{}/{}",
+            challenge.authz_id, challenge.r#type
+        ),
         status: &challenge.status,
         token,
         issuer_domain_names,

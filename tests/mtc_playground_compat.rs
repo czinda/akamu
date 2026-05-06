@@ -65,7 +65,6 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
             require_tls: false,
         },
         cas: vec![CaConfig {
-
             id: "default".to_owned(),
 
             is_default: true,
@@ -138,6 +137,7 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
     Arc::new(AppState {
         config: Arc::clone(&config),
         db: db_conn.clone(),
+        db_ro: db_conn.clone(),
         db_kind: db::DbKind::Sqlite,
         profiles: akamu::profiles::ProfileRegistry::empty(&ca),
         cas: {
@@ -183,13 +183,11 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
             Client::builder(TokioExecutor::new()).build(https)
         },
         crl_caches: Arc::new({
-
             let mut _crl_map = std::collections::HashMap::new();
 
             _crl_map.insert("default".to_string(), Default::default());
 
             _crl_map
-
         }),
         audit: std::sync::Arc::new(akamu::audit::AuditState::new()),
         audit_policy: std::sync::Arc::new(akamu::audit::AuditPolicy::default()),

@@ -347,7 +347,6 @@ async fn build_akamu_state(
             require_tls: false,
         },
         cas: vec![CaConfig {
-
             id: "default".to_owned(),
 
             is_default: true,
@@ -433,6 +432,7 @@ async fn build_akamu_state(
     Arc::new(AppState {
         config: Arc::clone(&config),
         db: db_conn.clone(),
+        db_ro: db_conn.clone(),
         db_kind: db::DbKind::Sqlite,
         profiles: akamu::profiles::ProfileRegistry::empty(&ca),
         cas: {
