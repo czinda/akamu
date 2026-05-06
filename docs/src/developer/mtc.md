@@ -10,6 +10,13 @@ The file is created by `DiskBackedLog::create` and opened by `DiskBackedLog::ope
 
 A brand-new log is immediately seeded with a `null_entry` at index 0 (required by §5.3 of the MTC draft so that no real certificate ever receives log index 0 as its serial number).
 
+### Root-hash cache
+
+`DiskBackedLog` is wrapped in a `CachedLog` struct (`src/mtc/log.rs`) which adds an in-memory `(tree_size, root_hash)` cache. Because `compute_root` is an O(N) disk read, the cache avoids repeated traversals when the tree has not grown since the last checkpoint or HTTP read. Cache coherence rules:
+
+- Warmed by `compute_root()` and `tree_size_and_root()`.
+- Invalidated by `append_leaf()` (any write to the log).
+
 ## Appending a certificate
 
 Appending a certificate leaf involves:
@@ -25,20 +32,29 @@ If the append fails, a warning is logged but the certificate issuance response i
 
 ## Concurrency model
 
-`DiskBackedLog` is not thread-safe internally. The server wraps it in a `tokio::sync::Mutex<DiskBackedLog>` (the `SharedLog` type alias in `src/mtc/log.rs`). All leaf appends and reads acquire this mutex, serializing concurrent operations at the async level.
+`DiskBackedLog` is not thread-safe internally. The server wraps it in a `CachedLog` struct, which is then placed behind a `tokio::sync::Mutex` (the `SharedLog` type alias in `src/mtc/log.rs` is `Arc<Mutex<CachedLog>>`). All leaf appends and reads acquire this mutex, serializing concurrent operations at the async level.
 
-Multiple processes accessing the same log file concurrently are not supported. A single Akāmu process is the exclusive writer.
+Multiple processes accessing the same log file concurrently are not supported. The server enforces single-process exclusive access via an advisory `flock(LOCK_EX|LOCK_NB)` on a sidecar lock file at `{log_path}.lock` (`src/mtc/log.rs::acquire_log_lock`). The lock file handle is stored in `MtcState::_log_lock` for the lifetime of the process; the kernel releases the lock automatically on exit or drop. A second process attempting to open the same log will receive an immediate error rather than blocking.
 
 ## Checkpoint production
 
-The checkpoint background task (`src/mtc/checkpoint.rs`) fires every `checkpoint_interval_secs` seconds. If the log has grown since the last checkpoint:
+The checkpoint background task (`src/mtc/checkpoint.rs`) fires every `checkpoint_interval_secs` seconds. If the log has grown since the last checkpoint, `produce_checkpoint` runs the following phases:
 
-1. It acquires the `SharedLog` mutex and reads the current tree size and computes the Merkle root via `compute_root`.
-2. It constructs a `Checkpoint` structure (per §6.2 of the MTC draft).
-3. It DER-encodes the `Checkpoint` and signs it with the MTC signing key.
-4. It inserts a row into the `mtc_checkpoints` database table.
-5. It triggers the cosignature gathering step (see below).
-6. It triggers the standalone certificate build step.
+**Phase 1 (blocking thread):**
+
+1. Acquires the `SharedLog` mutex via `blocking_lock()` and reads the current tree size and computes the Merkle root via `compute_root` (which also warms the root cache).
+2. Generates Merkle inclusion proofs for all certificates that are newly covered by the checkpoint.
+3. Builds and DER-encodes a `Checkpoint` structure (per §6.2 of the MTC draft).
+4. Signs the `Checkpoint` DER with the MTC signing key.
+
+**Async phase:**
+
+5. Inserts a row into the `mtc_checkpoints` database table.
+6. Contacts all configured external cosigners in parallel to gather `SubtreeSignature` responses.
+
+**Phase 2 (blocking thread):**
+
+7. Builds `StandaloneCertificate` DER blobs for each newly covered certificate (with cosignatures embedded) and persists them to the `certificates.mtc_standalone_der` database column.
 
 Checkpoints are idempotent: if the tree size has not grown the task is a no-op.
 
@@ -53,24 +69,24 @@ After each checkpoint is produced, `src/mtc/cosign.rs` contacts all configured e
 - Each request uses a 30-second timeout.
 - Failures are logged and skipped; partial success is acceptable.
 
-When `cosigner_id_cert_pem` is set, the received `SubtreeSignature` is cryptographically verified before being stored. Verification uses `synta_mtc::cosignature::validate_cosignature_quorum_with_crypto`, which builds the TLS-framed `CosignedMessage` (per §5.4.1 of the MTC draft) internally from the checkpoint and signature fields, then delegates the actual signature check to `OpensslSignatureVerifier`.
+The `CosignerClient` struct (one per `[[mtc.cosigners]]` entry) is built once at server startup. This surfaces misconfigured cosigners at startup rather than silently at checkpoint time, and preserves the HTTP connection pool across checkpoint intervals.
+
+When `cosigner_id_cert_pem` is set for a cosigner, the PEM file is loaded at startup and the cosigner's public key is stored inside the `CosignerClient` as an `AkamuCosignerVerifier`. At checkpoint time, the received `SubtreeSignature` is cryptographically verified using this pre-loaded material before being stored. Verification uses `synta_mtc::cosignature::validate_cosignature_quorum_with_crypto`, which builds the TLS-framed `CosignedMessage` (per §5.4.1 of the MTC draft) internally from the checkpoint and signature fields, then delegates the actual signature check to `OpensslSignatureVerifier`.
 
 Each `SubtreeSignature` is stored in the `mtc_cosignatures` table, keyed by checkpoint sequence number and cosigner URL.
-
-When `cosigner_id_cert_pem` is configured for a cosigner, the PEM file is loaded at checkpoint time and added to the rustls trust store for that HTTPS connection.
 
 ## Standalone certificate construction
 
 There are two code paths that produce a `StandaloneCertificate`:
 
-**Checkpoint-driven (background)**: After cosignatures are gathered, `src/mtc/standalone.rs` builds a `StandaloneCertificate` (§6.1) for every certificate covered by the new checkpoint that does not already have one. This is the path for ordinary X.509 certificates issued with `[mtc]` enabled — logging is asynchronous and the standalone certificate is built during the next checkpoint cycle.
+**Checkpoint-driven (background)**: After cosignatures are gathered, `produce_checkpoint` in `src/mtc/checkpoint.rs` builds a `StandaloneCertificate` (§6.1) for every certificate covered by the new checkpoint that does not already have one. The DER is stored in `certificates.mtc_standalone_der`. This is the path for ordinary X.509 certificates issued with `[mtc]` enabled — logging is asynchronous and the standalone certificate is built during the next checkpoint cycle.
 
 **Profile-driven (synchronous)**: When a `builtin` profile has `issue_as = "mtc"`, the finalize handler (`src/routes/finalize.rs`) builds the `StandaloneCertificate` synchronously during the request itself, before the database transaction:
 
 1. The X.509 `TBSCertificate` is issued as normal.
 2. The certificate is appended to the MTC log (synchronously, not via a background task) to obtain the leaf index immediately.
 3. `crate::mtc::standalone::build_standalone_der` constructs the `StandaloneCertificate` DER.
-4. The DER is stored in the `certificates.der` column; `certificates.pem` stores a PEM-armored wrapper with the `STANDALONE MTC CERTIFICATE` marker so the download handler can detect the format.
+4. The DER is stored in the `certificates.mtc_standalone_der` column; `certificates.pem` stores a PEM-armored wrapper with the `STANDALONE MTC CERTIFICATE` marker so the download handler can detect the format.
 5. `certificates.mtc_log_index` is set to the leaf index (not `NULL`), so the regular checkpoint-driven path skips this certificate.
 
 The download handler (`src/routes/certificate.rs::cert_pem_response`) detects MTC certificates by the PEM marker prefix and returns the raw DER with `Content-Type: application/pkix-cert` instead of the PEM bundle.
@@ -100,7 +116,23 @@ The Merkle root is computed from all leaf hashes using the RFC 6962 / synta-mtc 
 - For a log with zero leaves the root is undefined.
 - For a log with one or more leaves the root is the SHA-256 Merkle root of all leaf hashes.
 
-The computation is performed under the `SharedLog` mutex and is exposed to handlers by `src/mtc/log.rs::proof_and_tree_size` and `tree_size`.
+The computation is performed under the `SharedLog` mutex and is exposed to handlers by `src/mtc/log.rs::proof_and_tree_size`, `tree_size_and_root`, and `tree_size`. The `tree_size_and_root` function reads both values under the same lock guard so that `treeSize` and `rootHash` in HTTP responses are always consistent; it also leverages the `CachedLog` root cache to avoid repeated O(N) traversals.
+
+## HTTP endpoints
+
+The following read-only endpoints are served under `/acme/mtc/` and return 404 when MTC is disabled:
+
+| Endpoint | Handler |
+|---|---|
+| `GET /acme/mtc/tree-size` | `mtc::get_tree_size` |
+| `GET /acme/mtc/root` | `mtc::get_root` |
+| `GET /acme/mtc/inclusion-proof/{cert_id}` | `mtc::get_inclusion_proof` |
+| `GET /acme/mtc/cert/{cert_id}/standalone` | `mtc::get_standalone` |
+| `GET /acme/mtc/landmarks` | `mtc::get_landmarks` |
+| `GET /acme/mtc/landmarks/{seq}/cert` | `mtc::get_landmark_cert` |
+| `GET /acme/mtc/tlog/checkpoint` | `mtc::get_tlog_checkpoint` |
+| `GET /acme/mtc/tlog/tile/{*path}` | `mtc::get_tlog_tile` |
+| `GET /acme/mtc/tlog/cosignature` | `mtc::get_tlog_cosignature` |
 
 ## C2SP tlog-tiles module (`src/mtc/tlog.rs`)
 
@@ -115,6 +147,7 @@ Key IDs are 4-byte prefixes derived from `SHA-256` of a type-specific input:
 | Ed25519 | Log operator | 0x01 | `SHA-256(name \| LF \| 0x01 \| 32-byte pubkey)[:4]` |
 | ECDSA | Log operator or cosigner | 0x02 | `SHA-256(SPKI_DER)[:4]` |
 | Ed25519 | Cosigner | 0x04 | `SHA-256(name \| LF \| 0x04 \| 32-byte pubkey)[:4]` |
+| (RFC 6962 CT) | CT log | 0x05 | per c2sp.org/static-ct-api — not produced by Akāmu |
 | ML-DSA-44 | Cosigner | 0x06 | `SHA-256(name \| LF \| 0x06 \| 1312-byte pubkey)[:4]` |
 
 ML-DSA-44 as a primary log operator key and Ed448/RSA keys are rejected — they have no assigned C2SP signed-note type byte.
