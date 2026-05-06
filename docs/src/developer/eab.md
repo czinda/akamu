@@ -4,15 +4,31 @@ This chapter describes the internal implementation of External Account Binding (
 
 ## `eab_keys` table schema
 
-EAB keys are stored in the `eab_keys` table. Migration `0007_profile_grants` added a `profile_grants` column:
+EAB keys are stored in the `eab_keys` table. The table was created in migration `0001_initial` and the `profile_grants` column was added by migration `0007_profile_grants`:
+
+```sql
+-- 0001_initial.sql
+CREATE TABLE eab_keys (
+    kid           TEXT    PRIMARY KEY,
+    hmac_key_b64u TEXT    NOT NULL,    -- base64url-encoded raw HMAC key bytes
+    created       INTEGER NOT NULL,    -- Unix epoch seconds
+    used_at       INTEGER              -- NULL = unused; non-NULL = consumed timestamp
+);
+
+-- 0007_profile_grants.sql
+ALTER TABLE eab_keys ADD COLUMN profile_grants TEXT;
+-- NULL = no restriction; JSON array of profile IDs
+```
+
+The current effective schema after all migrations is therefore:
 
 ```sql
 CREATE TABLE eab_keys (
     kid            TEXT    PRIMARY KEY,
-    hmac_key_b64u  TEXT    NOT NULL,    -- base64url-encoded raw HMAC key bytes
-    created        INTEGER NOT NULL,    -- Unix epoch seconds
-    used_at        INTEGER,             -- NULL = unused; non-NULL = consumed timestamp
-    profile_grants TEXT                 -- NULL = no restriction; JSON array of profile IDs
+    hmac_key_b64u  TEXT    NOT NULL,
+    created        INTEGER NOT NULL,
+    used_at        INTEGER,
+    profile_grants TEXT
 );
 ```
 
@@ -103,7 +119,9 @@ if key_row.used_at.is_some() {
     return Err(AcmeError::Unauthorized(format!("EAB: kid '{kid}' has already been used")));
 }
 
-let hmac_key = URL_SAFE_NO_PAD.decode(&key_row.hmac_key_b64u)?;
+let hmac_key = URL_SAFE_NO_PAD
+    .decode(&key_row.hmac_key_b64u)
+    .map_err(|e| AcmeError::BadRequest(format!("EAB: invalid HMAC key encoding: {e}")))?;
 if let Err(e) = crate::jose::eab::verify_eab_jws(eab_val, &url, &kid, &thumbprint, &hmac_key) {
     // On HMAC verification failure, two audit events are emitted:
     //   EabReject  ("eab.reject", failure)  — records the rejected kid.
@@ -120,15 +138,18 @@ if let Err(e) = crate::jose::eab::verify_eab_jws(eab_val, &url, &kid, &thumbprin
 
 On successful HMAC verification an `EabUse` (`"eab.use"`, success) audit event is emitted for the `kid`.
 
-After verification, `verified_eab_kid` is `Some(kid)` and the account insert, EAB mark, and profile grant transfer are committed atomically:
+After verification, `verified_eab` is `Some((kid, profile_grants))` and the account insert, EAB mark, and profile grant transfer are committed atomically:
 
 ```rust
+// Profile grants inherited from the EAB key (None when no EAB was used).
+let eab_profile_grants = verified_eab.as_ref().and_then(|(_, g)| g.clone());
+
 let mut tx = db::begin_write(&state.db, state.db_kind).await?;
 db::accounts::insert(&mut *tx, AccountRow {
-    profile_grants: eab_row.profile_grants.clone(),  // inherited from EAB key
+    profile_grants: eab_profile_grants,  // inherited from EAB key
     …
 }).await?;
-if let Some(eab_kid) = verified_eab_kid {
+if let Some((eab_kid, _)) = verified_eab {
     db::eab::mark_used(&mut *tx, &eab_kid, now).await?;
 }
 tx.commit().await.map_err(AcmeError::from)?;
@@ -146,8 +167,9 @@ When the EAB key's `profile_grants` is `NULL`, the new account's `profile_grants
 | `insert(executor, kid, hmac_key_b64u, now)` | Unconditional insert without grants; returns `Conflict` if `kid` exists |
 | `insert_with_grants(executor, kid, hmac_key_b64u, profile_grants, now)` | Unconditional insert with optional grants (used by the Admin API); returns `Conflict` if `kid` exists |
 | `get_by_kid(executor, kid)` | Fetch `EabKeyRow`; returns `None` for unknown `kid` |
+| `list(db, used_filter, limit, offset)` | List keys with optional used-status filter (`Some(true)` = used only, `Some(false)` = unused only, `None` = all) and pagination |
 | `mark_used(executor, kid, now)` | Set `used_at`; intended to be called within a write transaction. Returns `Conflict` when `rows_affected == 0`, meaning the key was already consumed by a concurrent request between the outer `get_by_kid` check and the transaction commit (TOCTOU guard). |
-| `delete(executor, kid)` | Remove the key entirely |
+| `delete(executor, kid)` | Remove the key entirely; returns `Result<u64, AcmeError>` where the `u64` is the number of rows deleted (0 = not found) |
 
 `EabKeyRow` mirrors the table columns:
 
@@ -193,9 +215,33 @@ or `{"profile_grants": null}` for a NULL column. Returns 404 when the account ID
 { "kid": "...", "hmac_key_b64u": "...", "profile_grants": ["p1"] }
 ```
 
-`profile_grants` is optional (absent or `null` = no restriction). The handler calls `db::eab::insert_with_grants`, which inserts the key row with the `profile_grants` column set accordingly. Returns 201 with `{"kid": "...", "created": <unix-epoch>}`; returns 409 when the `kid` already exists (detected by a `UNIQUE` constraint violation).
+`profile_grants` is optional (absent or `null` = no restriction). The handler calls `db::eab::insert_with_grants`, which inserts the key row with the `profile_grants` column set accordingly. Returns 201 with `{"kid": "...", "created": <unix-epoch>}`; returns 409 when the `kid` already exists (detected by a `UNIQUE` constraint violation). Requires `administrator` or `ca_operations` role; `ca_ra` is intentionally excluded because EAB keys are server-global (not CA-scoped).
 
 Keys provisioned via this endpoint behave identically to keys seeded from `[server.eab_keys]` during EAB verification. The only difference is that config-file keys have `profile_grants = NULL` always (they are seeded via `insert_if_absent`, which does not write the `profile_grants` column), while admin-provisioned keys may carry grants.
+
+### EAB key listing endpoint
+
+`GET /admin/eab` lists EAB keys. Query parameters:
+
+- `used=true|false` — filter by used status (omit for all keys)
+- `limit=N` — maximum rows returned (default 200, max 1000)
+- `offset=N` — skip first N rows (default 0)
+
+Returns `{"eab_keys": [...]}` where each element contains `kid`, `created`, `used_at`, and `profile_grants`. Calls `db::eab::list`. Requires any role.
+
+### EAB key detail endpoint
+
+`GET /admin/eab/{kid}` returns a single key's details:
+
+```json
+{ "kid": "...", "created": <unix-epoch>, "used_at": <unix-epoch or null>, "profile_grants": <array or null> }
+```
+
+Returns 404 when the `kid` is not found. Calls `db::eab::get_by_kid`. Requires any role.
+
+### EAB key deletion endpoint
+
+`DELETE /admin/eab/{kid}` removes the key row entirely. Returns 204 on success; 404 when the `kid` is not found. Calls `db::eab::delete`. Requires `administrator` or `ca_operations` role.
 
 ---
 
