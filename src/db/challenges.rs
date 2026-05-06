@@ -64,6 +64,24 @@ pub async fn set_processing(
     Ok(())
 }
 
+/// Atomically flip a challenge from "pending" to "processing" without an
+/// explicit transaction (autocommit).  Returns the number of rows updated:
+/// 1 if the flip succeeded, 0 if the challenge was already processing/valid.
+/// The conditional WHERE avoids double-processing under concurrent requests.
+pub async fn set_processing_if_pending(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    id: &str,
+    now: i64,
+) -> Result<u64, AcmeError> {
+    let result =
+        sqlx::query("UPDATE challenges SET status = 'processing', updated = ? WHERE id = ? AND status = 'pending'")
+            .bind(now)
+            .bind(id)
+            .execute(executor)
+            .await?;
+    Ok(result.rows_affected())
+}
+
 pub async fn set_valid(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,

@@ -28,20 +28,21 @@ pub async fn respond_challenge(
         .account_id
         .ok_or(AcmeError::Unauthorized("kid required".into()))?;
 
-    // Load authz + challenges and validate ownership, CA scope, and authz status
-    // all within one write transaction, then flip the target challenge to
-    // "processing" atomically.  Doing everything in a single round-trip (BEGIN
-    // IMMEDIATE → SELECT → checks → UPDATE → COMMIT) eliminates the two extra
-    // pre-transaction reads that the old split approach required, recovering the
-    // throughput regression introduced by the multi-CA refactor.
+    // Two-step approach: one autocommit SELECT to validate ownership and get
+    // challenge data, then one autocommit conditional UPDATE to flip the
+    // challenge to "processing" atomically.  This avoids the overhead of an
+    // explicit BEGIN/COMMIT pair (saving 2 DB round-trips vs a 4-RT transaction).
     //
-    // CA scope: `authz.ca_id` is set to the CA ID at `new-order` time
-    // (migration 009 backfills old rows to 'default').  Order-based authzs
-    // therefore carry the correct CA ID directly — no order lookup needed.
+    // The conditional UPDATE (`WHERE status = 'pending'`) handles concurrent
+    // duplicate requests: if two requests arrive simultaneously, only one
+    // succeeds (rows_affected = 1); the other gets rows_affected = 0 and
+    // returns the current (already-processing) state.
+    //
+    // CA scope: `authz.ca_id` is set at `new-order` time; migration 009
+    // backfills pre-existing rows to 'default', which is allowed on any CA.
     let now = unix_now();
     let (authz, challenge) = {
-        let mut tx = db::begin_write(&state.db, state.db_kind).await?;
-        let (authz, challenges) = db::authz::get_with_challenges(&mut *tx, &authz_id)
+        let (authz, challenges) = db::authz::get_with_challenges(&state.db, &authz_id)
             .await?
             .ok_or(AcmeError::NotFound)?;
 
@@ -65,17 +66,21 @@ pub async fn respond_challenge(
             .into_iter()
             .find(|c| c.r#type == chall_type)
             .ok_or(AcmeError::NotFound)?;
-        if challenge.status == "pending" {
-            db::challenges::set_processing(&mut *tx, &challenge.id, now).await?;
+
+        let already_processing = if challenge.status == "pending" {
+            let affected =
+                db::challenges::set_processing_if_pending(&state.db, &challenge.id, now).await?;
+            affected == 0 // race: another request beat us to it
+        } else {
+            true // already processing / valid
+        };
+
+        if already_processing {
+            // Return current state without spawning another validation task.
+            return challenge_response(&state, &challenge, &pfx, &ca_id.0, &ctx.next_nonce);
         }
-        tx.commit().await.map_err(AcmeError::from)?;
         (authz, challenge)
     };
-
-    if challenge.status != "pending" {
-        // Already processing or completed; return current state.
-        return challenge_response(&state, &challenge, &pfx, &ca_id.0, &ctx.next_nonce);
-    }
     // challenge.status was "pending" — the DB has now flipped it to "processing".
 
     // Extract identifier.
