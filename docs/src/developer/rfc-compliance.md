@@ -1,6 +1,30 @@
 # RFC Compliance Internals
 
-This chapter documents how specific RFC requirements are implemented in code: EAB (RFC 8555 §7.3.4), ML-DSA JWS (draft-ietf-cose-dilithium-11), DER structures, and the pre-issuance linting step.
+This chapter documents how specific RFC requirements are implemented in code: EAB (RFC 8555 §7.3.4), JWS algorithm support (RFC 8555 §6.2), ML-DSA JWS (draft-ietf-cose-dilithium-11), DER structures, the pre-issuance linting step, supported challenge types, ACME STAR (RFC 8739), Renewal Info / ARI (RFC 9773), and IP identifier support (RFC 8738).
+
+## JWS algorithm support (RFC 8555 §6.2)
+
+All ACME POST requests are signed with JWS flattened JSON serialization (RFC 7515 §7.2.6). The server accepts the following `alg` values in the JWS protected header:
+
+| `alg` | Key type | Curve / variant |
+|---|---|---|
+| `RS256` | RSA | SHA-256 |
+| `RS384` | RSA | SHA-384 |
+| `RS512` | RSA | SHA-512 |
+| `PS256` | RSA-PSS | SHA-256 |
+| `PS384` | RSA-PSS | SHA-384 |
+| `PS512` | RSA-PSS | SHA-512 |
+| `ES256` | EC | P-256 |
+| `ES384` | EC | P-384 |
+| `ES512` | EC | P-521 |
+| `EdDSA` | OKP | Ed25519 or Ed448 |
+| `ML-DSA-44` | AKP | FIPS 204 ML-DSA-44 |
+| `ML-DSA-65` | AKP | FIPS 204 ML-DSA-65 |
+| `ML-DSA-87` | AKP | FIPS 204 ML-DSA-87 |
+
+Any other `alg` value returns `JoseError::UnsupportedAlgorithm`. ECDSA signatures use IEEE P1363 encoding (raw `r||s`) on the wire; the server converts them to DER before passing to the OpenSSL backend. ML-DSA is handled separately — see the next section.
+
+The JWK thumbprint computation (RFC 7638) supports key types `RSA`, `EC`, `OKP`, and `AKP` (ML-DSA). The canonical JSON fields and their order per key type are implemented in `crates/akamu-jose/src/jwk.rs`.
 
 ## EAB implementation walkthrough
 
@@ -64,7 +88,7 @@ BackendPublicKey::verify_ml_dsa_with_context(
 )
 ```
 
-This is dispatched from the JWS verification path in `src/jose/jws.rs` after the `ML-DSA-*` algorithm is detected in the JWS protected header `alg` field.
+This is dispatched from the JWS verification path in `crates/akamu-jose/src/jws.rs` after the `ML-DSA-*` algorithm is detected in the JWS protected header `alg` field.
 
 ### JWK thumbprint for `AKP` keys
 
@@ -75,6 +99,80 @@ Per draft-ietf-cose-dilithium-11 §6, the canonical JSON for the thumbprint hash
 ```
 
 Members in lexicographic order: `alg`, `kty`, `pub`. The SHA-256 of the UTF-8 encoding of this JSON string is base64url-encoded to produce the thumbprint. The `pub` field contains the raw public key bytes (no DER wrapping).
+
+## Supported challenge types
+
+The `src/validation/mod.rs` dispatch table recognises the following challenge types:
+
+| Challenge type | Identifier types | Specification |
+|---|---|---|
+| `http-01` | `dns`, `ip` | RFC 8555 §8.3 |
+| `dns-01` | `dns` | RFC 8555 §8.4 |
+| `tls-alpn-01` | `dns`, `ip` | RFC 8737 / RFC 8738 §4 |
+| `dns-persist-01` | `dns` | draft-ietf-acme-dns-persist |
+| `onion-csr-01` | `dns` (`.onion` only) | RFC 9799 §3.2 |
+
+Any unrecognised challenge type returns `AcmeError::IncorrectResponse("unsupported challenge type: …")`.
+
+### dns-persist-01 (draft-ietf-acme-dns-persist)
+
+The `dns-persist-01` challenge uses a long-lived TXT record that the client pre-provisions and keeps in DNS. Because the record persists across issuance cycles, the server performs an extra safety check at validation time: it queries the account status from the database and rejects the challenge with `unauthorized` if the account is not in the `valid` state. This prevents a deactivated or revoked account from continuing to use a stale TXT record.
+
+The challenge is only offered when the operator has configured at least one `dns_persist_issuer_domains` entry. The server validates the TXT record content against the issuer domain list. A separate per-challenge DNS resolver address (`dns_persist01_resolver_addr`) can be configured independently of the general DNS resolver.
+
+### onion-csr-01 (RFC 9799)
+
+The `onion-csr-01` challenge is offered exclusively for `.onion` identifiers (Tor v3 hidden services). The client submits a PKCS#10 CSR containing:
+
+1. The `.onion` domain in a SAN `dNSName`.
+2. The `cabf-onion-csr-nonce` extension (OID `2.23.140.41`) whose value is the key authorization string (`token.thumbprint`).
+3. A signature by both the CSR key and the hidden-service Ed25519 key derived from the v3 `.onion` address.
+
+The server-side validation in `src/validation/onion_csr_01.rs`:
+
+1. Decodes the 32-byte Ed25519 public key from the `.onion` label (base32, 56 chars, version byte `0x03`).
+2. Parses the DER CSR and verifies its self-signature.
+3. Extracts the `cabf-onion-csr-nonce` extension and compares its value to the key authorization.
+4. Verifies the hidden-service Ed25519 signature over the `CertificationRequestInfo` DER.
+5. Confirms the CSR SAN contains the `.onion` domain.
+
+RFC 9799 §2 prohibits v2 `.onion` addresses (16-character label); the server enforces this in both the new-order and pre-authorization paths.
+
+### IP identifiers (RFC 8738)
+
+The server accepts `"type": "ip"` identifiers in new-order requests (RFC 8738). IP identifiers support two challenge types:
+
+- `http-01` — standard HTTP challenge, connecting directly to the IP address.
+- `tls-alpn-01` — per RFC 8738 §4, the TLS SNI is the reverse-DNS form of the IP address (`arpa.` suffix), and the acmeIdentifier extension carries an `iPAddress` GeneralName rather than a `dNSName`.
+
+`dns-01` is not offered for IP identifiers (no DNS name to validate against).
+
+## ACME STAR — short-term auto-renewal (RFC 8739)
+
+The ACME STAR protocol (RFC 8739) is implemented across several files:
+
+- **New order** (`src/routes/order.rs`): accepts the `auto-renewal` object in the new-order payload (§3.1.1), stores `start-date`, `end-date`, `lifetime`, `lifetime-adjust`, and `allow-certificate-get` on the order row.
+- **Finalize** (`src/routes/finalize.rs`): issues the first STAR certificate; the background reissuance task (`src/star.rs`) issues renewals automatically until `end-date` is reached or the order is canceled.
+- **STAR certificate URL** (`src/routes/star_cert.rs`): serves the most recent certificate at `GET /acme/cert/star/{order_id}` (unauthenticated when `allow_certificate_get` is set; authenticated POST-as-GET always allowed for the order owner). The response includes `Cert-Not-Before` and `Cert-Not-After` headers per RFC 8739 §3.3.
+- **Cancellation**: a `POST /acme/order/{id}` with `{"status":"canceled"}` sets `star_canceled_at`; subsequent certificate GET requests return `autoRenewalCanceled`.
+
+The server-level `star_allow_certificate_get` config flag gates unauthenticated certificate retrieval globally (RFC 8739 §3.1.3).
+
+## Renewal Info / ARI (RFC 9773)
+
+The `GET /acme/renewal-info/{cert_id}` endpoint is implemented in `src/routes/renewal_info.rs`. The `cert_id` path parameter is `base64url(AKI) "." base64url(serial)` per RFC 9773 §4.1.
+
+The handler:
+
+1. Validates the AKI component against the CA's key identifier; returns 404 if the AKI does not match this CA.
+2. Looks up the certificate by `cert_id` in the database.
+3. Returns a `suggestedWindow` object with `start` and `end` timestamps. If explicit window fields are set in the database (operator override), they are used directly. Otherwise the default is: start at two-thirds of the certificate lifetime, end one day before expiry.
+4. Includes an `explanationURL` field if `ari_explanation_url` is configured.
+5. Sets the `Retry-After` response header to `ari_retry_after_secs` (RFC 9773 §4.3).
+
+The response content type is `application/json` (not the ACME JWS envelope — ARI responses are plain JSON per RFC 9773).
+
+Per-CA ARI is also available at `/acme/{ca_id}/renewal-info/{cert_id}`.
 
 ## DER structures
 
