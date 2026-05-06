@@ -1141,6 +1141,11 @@ where
 /// This list is used in [`Config::validate`] and exported so the router can
 /// enforce the same constraint without duplicating it.
 pub const RESERVED_CA_IDS: &[&str] = &[
+    // NOTE: "default" is intentionally excluded from this list because the legacy
+    // single-[ca] compatibility mode auto-assigns id = "default" to the sole CA.
+    // The constraint for "default" is enforced separately below: it may only be
+    // used as the CA ID when is_default = true (so migration sentinel rows point
+    // to the correct CA).
     "directory",
     "new-nonce",
     "new-account",
@@ -1169,7 +1174,7 @@ impl Config {
     }
 
     /// Validate semantic constraints on the config that cannot be expressed with
-    /// serde alone.  Called automatically by [`from_file`].  Unit tests that
+    /// serde alone.  Called automatically by [`Self::from_file`].  Unit tests that
     /// construct configs via `toml::from_str` directly may call this manually.
     pub fn validate(&self) -> Result<(), String> {
         if self.cas.is_empty() {
@@ -1191,6 +1196,15 @@ impl Config {
                     "CA id {:?} is a reserved ACME path segment and cannot be used",
                     ca.id
                 ));
+            }
+            // "default" is the migration backfill sentinel; only the default CA may use it.
+            // The legacy [ca] format auto-injects id="default" with is_default=true, which is correct.
+            if ca.id == "default" && !ca.is_default {
+                return Err(
+                    "CA id \"default\" is the migration sentinel and may only be used on the \
+                     default CA (is_default = true)"
+                        .into(),
+                );
             }
         }
 
@@ -1251,7 +1265,7 @@ impl Config {
     /// # Panics
     ///
     /// Panics if `cas` is empty or no CA is marked default in a multi-CA
-    /// config.  [`validate`] prevents both situations when loading from a file.
+    /// config.  [`Self::validate`] prevents both situations when loading from a file.
     pub fn default_ca(&self) -> &CaConfig {
         if self.cas.len() == 1 {
             return &self.cas[0];
@@ -2008,12 +2022,7 @@ description = "TLS server"
 ca_ids = ["rsa", "ec"]
 "#;
         let cfg: Config = toml::from_str(toml).unwrap();
-        let builtin = match cfg
-            .profiles
-            .providers
-            .get("local")
-            .expect("local provider")
-        {
+        let builtin = match cfg.profiles.providers.get("local").expect("local provider") {
             ProviderConfig::Builtin(b) => b,
             _ => panic!("expected builtin"),
         };
