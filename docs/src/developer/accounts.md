@@ -4,7 +4,7 @@ This chapter describes the internal implementation of ACME account creation, key
 
 ## Database representation
 
-Accounts are stored in the `accounts` table (defined in `src/db/schema.rs` and migration 001, extended in migration `0007_profile_grants`):
+Accounts are stored in the `accounts` table (defined in `src/db/schema.rs` and migration `0001_initial`, extended in migrations `0007_profile_grants` and `0012_multi_ca`):
 
 ```sql
 CREATE TABLE accounts (
@@ -15,7 +15,8 @@ CREATE TABLE accounts (
     jwk_thumbprint TEXT    NOT NULL UNIQUE,       -- base64url SHA-256 JWK thumbprint (RFC 7638)
     created        INTEGER NOT NULL,
     updated        INTEGER NOT NULL,
-    profile_grants TEXT                           -- NULL = unrestricted; JSON array of profile IDs
+    profile_grants TEXT,                          -- NULL = unrestricted; JSON array of profile IDs
+    ca_id          TEXT    NOT NULL DEFAULT ''    -- empty = server-wide scope (any CA)
 );
 ```
 
@@ -26,6 +27,8 @@ Two fields carry cryptographic identity:
 
 `profile_grants` stores a JSON array of profile ID strings (e.g. `'["tls-server","mtc-tls"]'`), or `NULL` when no restriction is in force. The `NULL` state is distinct from an empty array: `NULL` means "no restriction" while an empty array would grant access to no profiles. When a profile has `require_account_grant = true`, the finalize handler checks this column via `db::accounts::get_profile_grants`.
 
+`ca_id` records the CA scope of the account. An empty string (`''`) means the account is server-wide and may place orders against any CA. A non-empty value restricts the account to a specific CA; this is set when the server is configured with `server.account_scope = "ca"`. The column was added in migration `0012_multi_ca` with `DEFAULT ''` so all pre-migration accounts are treated as server-wide.
+
 ## Account creation flow (`src/routes/account.rs`)
 
 `routes::account::new_account` handles `POST /acme/new-account`:
@@ -33,15 +36,15 @@ Two fields carry cryptographic identity:
 1. `parse_jws` verifies the outer JWS and extracts the `JwsKeyRef::Jwk { jwk }`.
 2. `jwk.thumbprint()` computes the RFC 7638 thumbprint.
 3. `db::accounts::get_by_thumbprint(&state.db, &thumbprint)` checks for an existing account. If found, returns HTTP 200 with the existing account (idempotent creation).
-4. If `external_account_required` is set, the EAB JWS is validated (see [EAB Internals](eab.md)).
-5. `contacts` are validated — only `mailto:` URIs are accepted.
+4. `contacts` are validated — any URI scheme is accepted (any string containing `:`); bare strings without a scheme separator are rejected per RFC 8555 §7.1.2. Note: this step happens before EAB validation in the code.
+5. If `external_account_required` is set, the EAB JWS is validated (see [EAB Internals](eab.md)).
 6. A new UUID account ID is generated.
 7. Account insertion and EAB key consumption happen atomically in a single `db::begin_write` transaction:
 
 ```rust
 let mut tx = db::begin_write(&state.db, state.db_kind).await?;
 db::accounts::insert(&mut *tx, AccountRow { … }).await?;
-if let Some(eab_kid) = verified_eab_kid {
+if let Some((eab_kid, _)) = verified_eab {
     db::eab::mark_used(&mut *tx, &eab_kid, now).await?;
 }
 tx.commit().await.map_err(AcmeError::from)?;
@@ -51,12 +54,30 @@ tx.commit().await.map_err(AcmeError::from)?;
 
 Every authenticated `POST` endpoint (other than `new-account`) must look up the account's public key to verify the JWS signature. Fetching `public_key` from the database on every request would add a read round-trip to every ACME operation.
 
-`AppState.spki_cache` is an `Arc<RwLock<HashMap<String, Vec<u8>>>>` that caches `account_id → SPKI DER`. After the first authenticated request for an account, the SPKI bytes are stored here. Subsequent requests hit the in-memory cache instead of the database.
+`AppState.spki_cache` is an `Arc<RwLock<HashMap<String, CachedAccount>>>` that caches account key material keyed by account ID. `CachedAccount` is defined in `src/state.rs` and holds three fields:
 
-Cache eviction occurs in two places:
+```rust
+pub struct CachedAccount {
+    pub spki_der: Vec<u8>,        // DER-encoded SubjectPublicKeyInfo
+    pub jwk_thumbprint: String,   // RFC 7638 JWK thumbprint (base64url SHA-256)
+    pub status: String,           // "valid", "deactivated", or "revoked"
+}
+```
 
-- **Deactivation** (`update_account`): `state.spki_cache.write().unwrap().remove(&id)` removes the entry immediately after marking the account `deactivated`. This ensures that subsequent requests with the deactivated account's key are rejected at the database layer (where `status='valid'` is required for updates) rather than using a stale cached key.
-- **Key rollover** (`key_change`): the same removal is applied after `db::accounts::update_key` succeeds, so the next request with the new key is re-loaded from the database rather than finding the old SPKI bytes.
+After the first authenticated request for an account, the full `CachedAccount` is stored here. Subsequent requests hit the in-memory cache instead of the database — and routes that need the JWK thumbprint (e.g., key-change audit events) avoid a second `get_by_id` call. The cache also enables fast status checks: if `cached_account.status != "valid"`, the request is rejected immediately without a DB round-trip.
+
+Cache eviction occurs in two places and uses a poison-guard pattern to avoid panicking on a poisoned `RwLock`:
+
+- **Deactivation** (`update_account`):
+  ```rust
+  match state.spki_cache.write() {
+      Ok(mut cache) => { cache.remove(&id); }
+      Err(e) => { e.into_inner().remove(&id); }
+  }
+  ```
+  This removes the entry immediately after marking the account `deactivated`, so subsequent requests with the deactivated account's key are rejected at the database layer (where `status='valid'` is required for updates) rather than served from a stale cache entry.
+
+- **Key rollover** (`key_change`): the same poison-guard removal is applied after `db::accounts::update_key` succeeds, so the next request with the new key re-loads the `CachedAccount` from the database rather than finding the old SPKI bytes.
 
 The cache is not bounded in size because the number of accounts is expected to be small relative to available memory. A future improvement could add LRU eviction.
 
@@ -75,7 +96,7 @@ The cache is not bounded in size because the number of accounts is expected to b
 9. Convert `inner_payload.old_key` to SPKI DER and compare with `ctx.spki_der` (the outer JWS's key). This is the RFC-mandated proof that the requester controls the old key.
 10. Check that the new thumbprint is not already in use by another account: `db::accounts::get_by_thumbprint(&state.db, &new_thumbprint)`.
 11. Call `db::accounts::update_key(&state.db, &account_id, new_spki, new_thumbprint, now)`.
-12. Evict the old SPKI from the cache: `state.spki_cache.write().unwrap().remove(&account_id)`.
+12. Evict the old entry from the cache using the poison-guard pattern (see the SPKI cache section above).
 13. Emit an `AccountKeyChange` (`"account.key-change"`) audit event with:
     - `subject`: the account ID.
     - `principal`: `"acme:<old_thumbprint>"` (the thumbprint of the key that was replaced).
@@ -104,6 +125,7 @@ The account DB module exposes:
 | `update_key(executor, id, public_key, jwk_thumbprint, now)` | `UPDATE accounts SET public_key = ?, jwk_thumbprint = ? … WHERE id = ? AND status = 'valid'` |
 | `set_profile_grants(executor, id, grants, now)` | `UPDATE accounts SET profile_grants = ? … WHERE id = ? AND status = 'valid'` |
 | `get_profile_grants(executor, id)` | `SELECT profile_grants FROM accounts WHERE id = ?` |
+| `list(executor, status, ca_id, limit, offset)` | `SELECT … FROM accounts WHERE 1=1 [AND status = ?] [AND (ca_id = ? OR id IN (SELECT …))] ORDER BY created DESC LIMIT ? OFFSET ?` |
 
 `get_profile_grants` returns a nested `Option`:
 - `Ok(None)` — account not found.
