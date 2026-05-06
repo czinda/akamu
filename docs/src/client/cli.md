@@ -684,7 +684,7 @@ If the server has `external_account_required = true` and you omit all EAB flags,
 | Post-quantum certificate key | `ml-dsa-44` | Smallest PQ key; suitable for most cases |
 | Legacy RSA-only environments | `rsa:2048` or `rsa:4096` | Avoid unless forced by policy |
 
-ML-DSA keys require that the Akāmu server is built with the PQC OpenSSL fork. Vanilla Let's Encrypt does not support ML-DSA.
+ML-DSA keys require an Akāmu server linked against OpenSSL 3.5 or later, which provides native ML-DSA support via the standard EVP interface. Vanilla Let's Encrypt does not support ML-DSA.
 
 ## Logging
 
@@ -730,7 +730,7 @@ The sidecar file is missing. Run `account register` first, or restore the sideca
 
 **`Unsupported algorithm: ML-DSA-65`**
 
-The server does not support the requested key type. Use a classical key type such as `ec:P-256`, or connect to an Akāmu server built with the PQC OpenSSL fork.
+The server does not support the requested key type. Use a classical key type such as `ec:P-256`, or connect to an Akāmu server linked against OpenSSL 3.5 or later (which provides native ML-DSA support).
 
 **`dns hook '...' add exited with status 1: ...`**
 
