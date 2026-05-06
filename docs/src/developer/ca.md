@@ -75,19 +75,19 @@ Internal timestamps are represented as Unix epoch seconds. The helper function `
 
 ```mermaid
 flowchart TD
-    A([CSR DER bytes]) --> B["1. Parse PKCS#10<br/>CertificationRequest via synta"]
-    B --> C["2. Re-encode CRI to DER<br/>exact bytes that were signed"]
-    C --> D[3. Re-encode AlgorithmIdentifier]
-    D --> E[4. Re-encode SubjectPublicKeyInfo]
-    E --> F{"5. Verify CSR<br/>self-signature"}
+    A([CSR DER bytes]) --> B["(1) Parse PKCS#10<br/>CertificationRequest via synta"]
+    B --> C["(2) Re-encode CRI to DER<br/>exact bytes that were signed"]
+    C --> D["(3) Re-encode AlgorithmIdentifier"]
+    D --> E["(4) Re-encode SubjectPublicKeyInfo"]
+    E --> F{"(5) Verify CSR<br/>self-signature"}
     F -->|invalid| FAIL([Return BadCsr])
-    F -->|valid| G["6. Walk CSR attributes<br/>for extensionRequest OID"]
-    G --> H{"7. BasicConstraints<br/>cA=TRUE?"}
+    F -->|valid| G["(6) Walk CSR attributes<br/>for extensionRequest OID"]
+    G --> H{"(7) BasicConstraints<br/>cA=TRUE?"}
     H -->|yes| FAIL
-    H -->|no / absent| I["8. Parse SANs<br/>dNSName + iPAddress entries"]
-    I --> J{"9. Bidirectional set equality<br/>CSR SANs == allowed identifiers"}
+    H -->|no / absent| I["(8) Parse SANs<br/>dNSName + iPAddress entries"]
+    I --> J{"(9) Bidirectional set equality<br/>CSR SANs == allowed identifiers"}
     J -->|mismatch| FAIL
-    J -->|match| K[10. Re-encode Subject DER]
+    J -->|match| K["(10) Re-encode Subject DER"]
     K --> L(["Return ValidatedCsr<br/>SPKI + Subject + SANs"])
 
     classDef ok   fill:#f0fdf4,stroke:#16a34a,color:#0f172a
