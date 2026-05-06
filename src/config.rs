@@ -554,8 +554,9 @@ pub struct CaConfig {
     /// legacy `[ca]` single-table format this field is absent from the config
     /// and the deserializer sets it to `"default"` automatically.
     ///
-    /// Must match `^[a-zA-Z0-9][a-zA-Z0-9_-]*$` and must not be a reserved ACME
-    /// path segment (`"directory"`, `"new-nonce"`, `"new-account"`, …).
+    /// Must match `^[a-z0-9][a-z0-9_-]*$` (lowercase letters, digits, underscore, hyphen;
+    /// maximum 64 characters) and must not be a reserved ACME path segment
+    /// (`"directory"`, `"new-nonce"`, `"new-account"`, …).
     #[serde(default)]
     pub id: String,
     /// Marks this CA as the one that serves the backward-compatible
