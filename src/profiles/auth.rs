@@ -154,7 +154,7 @@ async fn check_auth_hook(
 
     let reason = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let detail = if reason.is_empty() {
-        format!("auth hook '{hook_path}' denied issuance")
+        "auth hook denied issuance".to_string()
     } else {
         format!("auth hook denied issuance: {reason}")
     };
