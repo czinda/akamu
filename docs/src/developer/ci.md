@@ -36,10 +36,10 @@ degrades gracefully for any that are missing.
 | Job | Command | Depends on |
 |:----|:--------|:-----------|
 | `build` | `cargo build --workspace` + `cargo build --benches` | — |
-| `fmt` | `cargo fmt --all -- --check` | — |
+| `fmt` | `cargo fmt -- --check` | — |
 | `clippy` | `cargo clippy -- -D warnings` | `build` |
 | `doc` | `cargo doc --no-deps` + `mdbook build docs/` | `build` |
-| `test` | `cargo test` | `build` |
+| `test` | `cargo test --features test-utils` | `build` |
 | `bench` | `cargo build --benches` (compile-only) | `build` |
 | `lint-workflows` | `actionlint` or `yamllint` on `.github/workflows/*.yml` | — |
 
@@ -98,10 +98,16 @@ The script exits with status 0 when all executed jobs pass and 1 if any job
 fails.  Skipped jobs (due to a failed dependency) are shown as `SKIP` and do
 not affect the exit status.
 
-## Use inside GitHub Actions
+## Use inside CI workflows
 
-When running a single job from within a workflow step, pass `--no-deps` so the
-script does not re-run prerequisites that the workflow `needs:` graph has
+The project is hosted on Codeberg and uses Forgejo Actions
+(`.github/workflows/ci.yml`).  Each workflow job runs on a self-hosted
+`vdali` runner inside the `quay.io/hummingbird/rust:latest-builder`
+container image.  Required system packages (OpenSSL, SQLite, libldap,
+Kerberos, clang, etc.) are installed via `dnf` at the start of each job.
+
+When running a single job from within a workflow step, pass `--no-deps` so
+the script does not re-run prerequisites that the workflow `needs:` graph has
 already enforced:
 
 ```yaml

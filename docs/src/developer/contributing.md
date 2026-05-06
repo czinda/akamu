@@ -88,13 +88,20 @@ Transactions must be used when writing to multiple tables atomically. Do not rel
 
 ## Commit conventions
 
-Commits follow the format:
+Commits follow the conventional commit format with a mandatory scope:
 
 ```
-<type>: <short summary (imperative, lowercase, no period)>
+<type>(<scope>): <short summary (imperative, lowercase, no period)>
 
-[optional body]
+[optional body explaining why the change was made]
+
+Signed-off-by: Your Name <email@example.com>
 ```
+
+The scope identifies the subsystem or area affected (e.g. `multi-ca`,
+`admin`, `routes`, `db`, `tls`, `developer`, `docs`, `cli`).  A
+`Signed-off-by` trailer is required on every commit (use `git commit -s`
+or `git commit --signoff`).
 
 Types used in this repository:
 
@@ -102,22 +109,23 @@ Types used in this repository:
 |---|---|
 | `feat` | A new feature visible to users or operators |
 | `fix` | A bug fix |
-| `doc` | Documentation changes only |
+| `docs` | Documentation changes only |
 | `test` | Adding or modifying tests without changing production code |
 | `refactor` | Code change that neither fixes a bug nor adds a feature |
 | `perf` | Performance improvement |
 | `chore` | Build system, dependency updates, CI |
+| `style` | Formatting-only changes (e.g. `cargo fmt` application) |
 
 Keep the summary line under 72 characters. Use the body to explain *why* the change was made, not *what* was changed (the diff explains what).
 
 Examples from the repository:
 
 ```
-doc: document thread-safety assumption for CaState key field
-fix: eliminate TOCTOU race in MTC log open_or_create
-fix: log panics in background validation task
-fix: use compile-time-safe HeaderValue in error response
-fix: use saturating_sub in nonce sweep to avoid debug-mode panic
+docs(developer): update TLS chapter to match current implementation
+fix(multi-ca): enforce ca_ra revocation scope, set pathLen=0 on cross-certs
+feat(multi-ca): core multi-CA infrastructure, authz isolation, and ca_ra scoping
+fix(security): prevent LIKE injection, STAR race, and header parse panics
+test(admin): add admin auth and RBAC integration tests
 ```
 
 ## Pull request process
