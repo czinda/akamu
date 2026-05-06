@@ -39,6 +39,7 @@ at the repository root.
 | [subdomain-auth.toml](subdomain-auth.toml) | RFC 9444 subdomain authorization | `allow_subdomain_auth` |
 | [tor-onion.toml](tor-onion.toml) | Certificates for .onion identifiers (RFC 9799) | `tor_connectivity_enabled` |
 | [post-quantum.toml](post-quantum.toml) | ML-DSA post-quantum CA and profiles | `key_type = "ml-dsa-65"` |
+| [multi-ca.toml](multi-ca.toml) | Multiple CA instances (RSA + EC) | `[[ca]]`, `account_scope`, `ca_ids` |
 
 ## Further reading
 

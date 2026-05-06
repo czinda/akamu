@@ -29,6 +29,9 @@ Key features:
   HKDF-SHA-256 self-service key derivation.
 - Administration REST API secured by mTLS and/or GSSAPI/Kerberos.
 - Audit trail (FAU_GEN.1) with operator role-based access control.
+- Multiple CA instances (*multi-CA*) with per-CA ACME directory
+  endpoints, per-CA CRL/OCSP, cross-signing, and CA-scoped operator
+  roles.
 
 Configuration is supplied via a TOML file.  An annotated example is
 installed at */etc/akamu/config.toml.example*.
@@ -100,7 +103,29 @@ installed at */etc/akamu/config.toml.example*.
 	_ssl-mode=REQUIRED_ (or stronger).  Ignored for SQLite.
 	Default: *false*.
 
-## [ca] — encrypted key enforcement
+## [[ca]] / [ca] — CA configuration
+
+The server supports one or more CA instances.  Use *[[ca]]* (array-of-tables)
+to define multiple CAs; the legacy single *[ca]* table remains accepted and
+receives *id="default"* and *is_default=true* automatically.
+
+*id* = _string_
+	Unique identifier for this CA.  Must be lowercase alphanumeric, *_*,
+	or *-*, at most 64 characters.  Reserved ACME path segments
+	(*directory*, *new-nonce*, *new-account*, *new-order*, etc.) are
+	rejected.  Required when multiple *[[ca]]* entries are configured.
+
+*is_default* = _bool_
+	When multiple *[[ca]]* entries are configured, exactly one must have
+	*is_default = true*.  The default CA is served at the backward-
+	compatible */acme/directory* alias.  Default: *false* (except when
+	using the legacy single *[ca]* table, where it is implicit).
+
+*caa_identities* = _[string, ...]_
+	Per-CA CAA identity list.  When non-empty, overrides
+	*[server].caa_identities* for orders processed through this CA's
+	ACME endpoint.  When empty (the default), falls back to
+	*[server].caa_identities*.  Default: *[]* (inherit from server).
 
 *require_encrypted_key* = _bool_
 	When *true*, plaintext PEM private keys are rejected at startup
@@ -155,6 +180,87 @@ installed at */etc/akamu/config.toml.example*.
 	*akamuctl login --gssapi* succeeds without manual operator registration.
 	Mutually exclusive with *bootstrap_operator_cert_file* /
 	*bootstrap_operator_key_file*.
+
+## URL structure
+
+When multiple CAs are configured, the server exposes per-CA ACME and
+revocation endpoints alongside backward-compatible aliases:
+
+	*/acme/{ca_id}/directory*, */acme/directory*
+		Per-CA ACME directory (and default-CA alias).
+
+	*/acme/{ca_id}/new-nonce*, */acme/{ca_id}/new-account*, ...
+		All standard ACME endpoints are available under each CA prefix.
+
+	*/ca/{ca_id}/crl*, */ca/crl*
+		Per-CA CRL endpoint (and default-CA alias).
+
+	*/ca/{ca_id}/ocsp*, */ca/ocsp*
+		Per-CA OCSP responder (and default-CA alias).
+
+	*/ca/{ca_id}/cross-certs*
+		Public list of cross-certificates where *{ca_id}* is the subject.
+
+## [server] — account_scope
+
+*account_scope* = _string_
+	Controls whether ACME accounts are shared across CAs or isolated
+	per CA.  Accepted values:
+
+	*"server"* (default)
+		One account works with all configured CAs.  This matches the
+		behavior of single-CA deployments and is the default.
+
+	*"ca"*
+		Accounts are isolated per CA.  An account registered via one
+		CA's *new-account* endpoint cannot create orders via another CA.
+
+## Builtin profile — ca_ids restriction
+
+*ca_ids* = _[string, ...]_
+	List of CA IDs for which this profile is available.  When set,
+	ACME clients that request this profile via a CA not in the list
+	receive an *invalidProfile* error at finalize time.  When empty
+	(the default) the profile is available via all configured CAs.
+	Config validation rejects *ca_ids* entries that do not match any
+	configured CA *id*.
+
+## Admin API — multi-CA endpoints
+
+The admin API exposes additional endpoints for multi-CA management:
+
+	*GET /admin/cas*
+		List all configured CAs.
+
+	*GET /admin/cas/{id}*
+		Show details of a single CA including the CA certificate PEM.
+
+	*POST /admin/ca/{id}/crl/force*
+		Force immediate CRL regeneration for a specific CA.
+		Requires *ca_operations* or *administrator* role.
+
+	*POST /admin/ca/{id}/cross-sign*
+		Issue a cross-certificate: CA *{id}* signs the public key of
+		another CA.  Body: *{ "subject_ca_id": "other", "validity_years": 5 }*
+		or *{ "subject_cert_pem": "-----...", "validity_years": 5 }*.
+		Requires *administrator* or *ca_operations* role.
+
+	*GET /admin/cross-certs*
+		List stored cross-certificates.  Filters: *issuer_ca_id*,
+		*subject_ca_id*, *limit*, *offset*.
+
+	*GET /admin/cross-certs/{id}*
+		Show a single cross-certificate including its PEM.
+
+The existing *GET /admin/certs*, *GET /admin/orders*, and
+*GET /admin/accounts* endpoints accept an optional *?ca_id=* query
+parameter to limit results to a specific CA.
+
+The *ca_ra* operator role now accepts a *ca_id* field (set via
+*PATCH /admin/operators/{id}*).  A *ca_ra* operator with a *ca_id*
+may only revoke and view certificates issued by that CA.  An unscoped
+*ca_ra* (empty *ca_id*) is rejected with *403 Forbidden* at all
+restricted endpoints.
 
 # SEE ALSO
 

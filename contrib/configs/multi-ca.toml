@@ -1,0 +1,116 @@
+# multi-ca.toml — Multiple CA instances (RSA + EC) with shared ACME accounts.
+#
+# Each CA is reachable at its own ACME directory URL:
+#   https://acme.example.com/acme/rsa/directory
+#   https://acme.example.com/acme/ec/directory
+#
+# Backward-compatible aliases (default CA) remain available at:
+#   https://acme.example.com/acme/directory
+#
+# Per-CA CRL/OCSP endpoints:
+#   https://acme.example.com/ca/rsa/crl   https://acme.example.com/ca/rsa/ocsp
+#   https://acme.example.com/ca/ec/crl    https://acme.example.com/ca/ec/ocsp
+#
+# Cross-certificates (where one CA signs the other's public key) are available
+# at the public endpoint:
+#   GET /ca/{id}/cross-certs
+
+listen_addr = "0.0.0.0:8080"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "sqlite:///var/lib/akamu/acme.db"
+
+# ── RSA CA (default) ─────────────────────────────────────────────────────────
+[[ca]]
+id         = "rsa"
+is_default = true
+
+key_file  = "/etc/akamu/certs/rsa-ca.key.pem"
+cert_file = "/etc/akamu/certs/rsa-ca.cert.pem"
+key_type  = "rsa:4096"
+hash_alg  = "sha256"
+
+validity_days    = 90
+ca_validity_years = 10
+common_name      = "Example RSA CA"
+organization     = "Example Org"
+
+crl_url              = "http://acme.example.com/ca/rsa/crl"
+ocsp_url             = "http://acme.example.com/ca/rsa/ocsp"
+crl_next_update_secs = 86400
+
+# CAA identities for this CA.  When non-empty, overrides [server].caa_identities
+# for orders processed through this CA's ACME endpoint.
+caa_identities = ["rsa.acme.example.com", "acme.example.com"]
+
+# ── EC CA ─────────────────────────────────────────────────────────────────────
+[[ca]]
+id = "ec"
+
+key_file  = "/etc/akamu/certs/ec-ca.key.pem"
+cert_file = "/etc/akamu/certs/ec-ca.cert.pem"
+key_type  = "ec:P-384"
+hash_alg  = "sha384"
+
+validity_days    = 90
+ca_validity_years = 10
+common_name      = "Example EC CA"
+organization     = "Example Org"
+
+crl_url              = "http://acme.example.com/ca/ec/crl"
+ocsp_url             = "http://acme.example.com/ca/ec/ocsp"
+crl_next_update_secs = 86400
+
+caa_identities = ["ec.acme.example.com", "acme.example.com"]
+
+# ── Server ───────────────────────────────────────────────────────────────────
+[server]
+terms_of_service_url = "https://acme.example.com/tos.html"
+caa_identities       = ["acme.example.com"]   # fallback when ca.caa_identities is empty
+
+# "server" (default): one account works with all CAs.
+# "ca": accounts are isolated per CA — an account registered via one CA's
+#       new-account endpoint cannot create orders via another CA.
+account_scope = "server"
+
+# ── Certificate profiles ──────────────────────────────────────────────────────
+[profiles]
+refresh_interval_secs = 3600
+
+[profiles.providers.local]
+type = "builtin"
+
+# A profile available via both CAs (ca_ids omitted → no restriction).
+[profiles.providers.local.profiles.tlsserver]
+description   = "Standard TLS server certificate"
+validity_days = 90
+key_usage     = ["digital_signature", "key_encipherment"]
+eku           = ["server_auth"]
+
+# A profile restricted to the EC CA only.
+[profiles.providers.local.profiles.ec-tls]
+description   = "TLS certificate restricted to the EC CA"
+validity_days = 90
+key_usage     = ["digital_signature"]
+eku           = ["server_auth"]
+ca_ids        = ["ec"]
+
+# A profile restricted to the RSA CA only.
+[profiles.providers.local.profiles.rsa-legacy]
+description   = "RSA TLS certificate for legacy relying parties"
+validity_days = 90
+key_usage     = ["digital_signature", "key_encipherment"]
+eku           = ["server_auth"]
+ca_ids        = ["rsa"]
+
+# ── Admin API ─────────────────────────────────────────────────────────────────
+[admin]
+listen_addr = "127.0.0.1:9443"
+cert_file   = "/etc/akamu/admin-tls.pem"
+key_file    = "/etc/akamu/admin-tls-key.pem"
+ca_certs    = ["/etc/akamu/operator-ca.pem"]
+
+# Bootstrap an Administrator operator on first run.
+# bootstrap_operator_cert_file = "/etc/akamu/admin-bootstrap.pem"
+# bootstrap_operator_key_file  = "/etc/akamu/admin-bootstrap-key.pem"

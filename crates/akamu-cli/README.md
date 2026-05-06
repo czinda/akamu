@@ -18,6 +18,19 @@ OpenSSL patch (see the note at the end of this file).
 
 ## Commands
 
+### `ca list` and `ca show`
+
+Discover the CAs available on a multi-CA server.
+
+```
+akamu-cli ca list --server <URL>
+akamu-cli ca show <CA_ID> --server <URL>
+```
+
+`ca list` prints the CA IDs, default flags, key types, and CRL/OCSP URLs.
+`ca show` prints detailed information about a single CA including its
+certificate PEM.
+
 ### `account register`
 
 Register a new ACME account.  If the account key file does not exist, a new key
@@ -30,6 +43,7 @@ akamu-cli account register [OPTIONS] --account-key <FILE>
 Options:
   --server <URL>          ACME directory URL
                           [default: https://acme-v02.api.letsencrypt.org/directory]
+  --ca <CA_ID>            CA identifier (constructs {server}/acme/{ca}/directory)
   --account-key <FILE>    PEM file for the account key (generated if absent)
   --key-type <TYPE>       Key type for a newly generated key [default: ec:P-256]
   --contact <URI>         Contact URI, e.g. "mailto:admin@example.com"
@@ -81,6 +95,10 @@ akamu-cli issue [OPTIONS] --account-key <FILE> --out <FILE>
 Options:
   --server <URL>              ACME directory URL
                               [default: https://acme-v02.api.letsencrypt.org/directory]
+  --ca <CA_ID>                CA identifier.  When set, the directory URL is
+                              constructed as {server}/acme/{ca}/directory,
+                              overriding any --server value.  Use this flag to
+                              target a specific CA in a multi-CA deployment.
   --domain <DOMAIN>, -d       Domain name (may be repeated; first domain → CN)
   --account-key <FILE>        PEM file for the account key (generated if absent)
   --key-type <TYPE>           Account key type for a newly generated key
@@ -130,6 +148,7 @@ Options:
                               (written by `issue` or `import certbot`);
                               explicit flags override values from the file
   --server <URL>              ACME directory URL
+  --ca <CA_ID>                CA identifier (see `issue --ca` above)
   --domain <DOMAIN>, -d       Domain name (may be repeated)
   --account-key <FILE>        PEM file for the account key
   --key-type <TYPE>           Account key type [default: ec:P-256]
@@ -225,10 +244,17 @@ preview the import first.
 ### Account URL sidecar
 
 After a successful `account register` or inline registration inside `issue` or
-`import certbot`, the account URL is written to a file named
-`<account-key>.account-url` in the same directory as the account key.  For
-example, if `--account-key` is `/etc/akamu/acme.pem`, the sidecar is
-`/etc/akamu/acme.pem.account-url`.
+`import certbot`, the account URL is written to a sidecar file next to the
+account key.
+
+| Scenario | Sidecar filename |
+|----------|------------------|
+| Single CA or server-wide account scope | `<account-key>.account-url` |
+| CA-scoped account (`--ca <CA_ID>`) | `<account-key>.<ca_id>.account-url` |
+
+For example, with `--account-key /etc/akamu/acme.pem --ca rsa` the sidecar
+is `/etc/akamu/acme.pem.rsa.account-url`. Without `--ca` (or when the CA
+scope is server-wide) the sidecar is `/etc/akamu/acme.pem.account-url`.
 
 `account deregister` reads this file to find the account URL and removes it
 after deactivation.  `issue` and `renew` read it to skip re-registration when
@@ -242,6 +268,7 @@ renew the certificate:
 
 ```toml
 server          = "https://acme.example.com/acme/directory"
+ca              = "rsa"   # CA ID; absent for single-CA or default CA
 account_key     = "/etc/akamu/account.pem"
 account_key_type = "ec:P-256"
 cert_path       = "/etc/ssl/example.com/fullchain.pem"

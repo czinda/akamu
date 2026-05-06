@@ -55,7 +55,7 @@ the operator may call.
 |------|-------------|
 | `administrator` | Full access to all admin endpoints. |
 | `ca_operations` | Certificate, EAB, CRL, and revocation operations. Cannot manage operators. |
-| `ca_ra` | Registration-authority operations: issue EAB keys, revoke certificates, read profile grants. |
+| `ca_ra` | Registration-authority operations: issue EAB keys, revoke certificates, read profile grants. A `ca_ra` operator must have a `ca_id` assigned; it may only revoke and view certificates issued by that CA. An unscoped `ca_ra` is rejected at all restricted endpoints. |
 | `auditor` | Read-only access: audit log, certificates, EAB keys, stats. |
 
 ## Endpoint reference
@@ -100,6 +100,12 @@ field controls the address; the default in the configuration example is
 | `POST` | `/admin/crl/force` | Y | Y | | |
 | `POST` | `/admin/revoke` | Y | Y | Y | |
 | `GET` | `/admin/stats` | Y | Y | Y | Y |
+| `GET` | `/admin/cas` | Y | Y | Y | Y |
+| `GET` | `/admin/cas/{id}` | Y | Y | Y | Y |
+| `POST` | `/admin/ca/{id}/crl/force` | Y | Y | | |
+| `POST` | `/admin/ca/{id}/cross-sign` | Y | Y | | |
+| `GET` | `/admin/cross-certs` | Y | Y | Y | Y |
+| `GET` | `/admin/cross-certs/{id}` | Y | Y | Y | Y |
 
 ### `POST /admin/session`
 
@@ -228,7 +234,7 @@ exist.
 
 ### `PATCH /admin/operators/{id}`
 
-Activate or deactivate an operator.
+Update the `active` status or `ca_id` scope of an operator.
 
 **Request body:**
 
@@ -236,8 +242,18 @@ Activate or deactivate an operator.
 { "active": false }
 ```
 
-Set `active` to `false` to deactivate, `true` to reactivate.  Deactivating an
+or, to assign a CA scope to a `ca_ra` operator:
+
+```json
+{ "ca_id": "rsa" }
+```
+
+Set `active` to `false` to deactivate, `true` to reactivate. Deactivating an
 operator immediately invalidates all of that operator's active session tokens.
+
+When `ca_id` is provided, the operator's CA scope is updated. Setting
+`role = "ca_ra"` without also providing a non-empty `ca_id` (either in this
+request or already stored) is rejected with `422 Unprocessable Entity`.
 
 **Response: `204 No Content`** on success, `404 Not Found` when the ID does not
 exist.
@@ -365,6 +381,7 @@ Query parameters:
 
 | Parameter | Description |
 |-----------|-------------|
+| `ca_id` | Filter by CA ID. Only accounts registered via the named CA's `new-account` endpoint are returned. |
 | `status` | Filter by account status (`valid` or `deactivated`). |
 | `limit` | 1–1000, default 100. |
 | `offset` | Default 0. |
@@ -457,7 +474,7 @@ Clear all profile restrictions.  Sets `profile_grants` to `null`
 
 Search the certificate table.
 
-Query parameters: `serial`, `subject` (subject DN substring match), `account_id`,
+Query parameters: `ca_id` (filter by CA ID), `serial`, `subject` (subject DN substring match), `account_id`,
 `after` (RFC 3339), `before` (RFC 3339), `status` (`active` or `revoked`),
 `limit` (1–1000, default 100), `offset`.
 
@@ -604,6 +621,7 @@ Query parameters:
 
 | Parameter | Description |
 |-----------|-------------|
+| `ca_id` | Filter by CA ID. |
 | `account_id` | Filter by account UUID. |
 | `status` | Filter by order status (`pending`, `ready`, `processing`, `valid`, `invalid`). |
 | `limit` | 1–1000, default 100. |
@@ -714,6 +732,145 @@ Return live server statistics.  All authenticated roles may call this endpoint.
   "audit_events": { "total": 5000 }
 }
 ```
+
+## CA management endpoints
+
+### `GET /admin/cas`
+
+List all configured CAs.
+
+**Response `200 OK`:**
+
+```json
+{
+  "cas": [
+    {
+      "id": "rsa",
+      "is_default": true,
+      "key_type": "rsa:4096",
+      "hash_alg": "sha256",
+      "crl_url": "http://acme.example.com/ca/rsa/crl",
+      "ocsp_url": "http://acme.example.com/ca/rsa/ocsp"
+    }
+  ]
+}
+```
+
+### `GET /admin/cas/{id}`
+
+Show details of a single CA including the CA certificate PEM.
+
+**Response `200 OK`:**
+
+```json
+{
+  "id": "rsa",
+  "is_default": true,
+  "key_type": "rsa:4096",
+  "hash_alg": "sha256",
+  "crl_url": "http://acme.example.com/ca/rsa/crl",
+  "ocsp_url": "http://acme.example.com/ca/rsa/ocsp",
+  "cert_pem": "-----BEGIN CERTIFICATE-----\n…\n-----END CERTIFICATE-----\n"
+}
+```
+
+Returns `404 Not Found` when the CA ID does not exist.
+
+### `POST /admin/ca/{id}/crl/force`
+
+Force immediate CRL regeneration for the specified CA. The cached CRL is
+invalidated so the next `GET /ca/{id}/crl` request produces a fresh CRL
+reflecting all current revocations for that CA.
+
+Requires the `ca_operations` or `administrator` role.
+
+**Response: `204 No Content`.** Returns `404 Not Found` when the CA ID does
+not exist.
+
+### `POST /admin/ca/{id}/cross-sign`
+
+Issue a cross-certificate: CA `{id}` (the issuer) signs the public key of
+another CA or an externally supplied certificate. The resulting cross-cert is
+stored in the database and retrievable via `GET /admin/cross-certs/{id}` and
+the public `GET /ca/{subject_id}/cross-certs` endpoint.
+
+The issued cross-certificate always has `pathLenConstraint = 0` — the subject
+CA cannot use it to issue further subordinate CAs.
+
+**Request body** (exactly one of `subject_ca_id` or `subject_cert_pem` must
+be provided):
+
+```json
+{ "subject_ca_id": "ec", "validity_years": 5 }
+```
+
+or
+
+```json
+{ "subject_cert_pem": "-----BEGIN CERTIFICATE-----\n…", "validity_years": 5 }
+```
+
+Requires the `administrator` or `ca_operations` role.
+
+**Response `201 Created`:**
+
+```json
+{ "id": "a1b2c3d4-…", "created_at": "2026-05-06T12:00:00Z" }
+```
+
+Returns `404 Not Found` when the issuer CA ID or `subject_ca_id` does not exist.
+
+### `GET /admin/cross-certs`
+
+List stored cross-certificates.
+
+Query parameters:
+
+| Parameter | Description |
+|-----------|-------------|
+| `issuer_ca_id` | Filter by issuing CA ID. |
+| `subject_ca_id` | Filter by subject CA ID. |
+| `limit` | 1–1000, default 100. |
+| `offset` | Default 0. |
+
+**Response `200 OK`:**
+
+```json
+{
+  "cross_certs": [
+    {
+      "id": "a1b2c3d4-…",
+      "issuer_ca_id": "rsa",
+      "subject_ca_id": "ec",
+      "not_before": "2026-05-06T12:00:00Z",
+      "not_after": "2031-05-06T12:00:00Z",
+      "created_at": "2026-05-06T12:00:00Z"
+    }
+  ],
+  "limit": 100,
+  "offset": 0
+}
+```
+
+### `GET /admin/cross-certs/{id}`
+
+Show a single cross-certificate by UUID, including its PEM.
+
+**Response `200 OK`:**
+
+```json
+{
+  "id": "a1b2c3d4-…",
+  "issuer_ca_id": "rsa",
+  "subject_ca_id": "ec",
+  "not_before": "2026-05-06T12:00:00Z",
+  "not_after": "2031-05-06T12:00:00Z",
+  "created_at": "2026-05-06T12:00:00Z",
+  "cert_pem": "-----BEGIN CERTIFICATE-----\n…\n-----END CERTIFICATE-----\n"
+}
+```
+
+Returns `404 Not Found` when the cross-cert ID does not exist.
 
 ## Audit trail
 

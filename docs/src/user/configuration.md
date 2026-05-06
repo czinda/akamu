@@ -19,7 +19,9 @@ base_url    = "https://acme.example.com"
 [database]
 url = "sqlite:///var/lib/akamu/akamu.db"
 
-[ca]
+[[ca]]
+id               = "default"
+is_default       = true
 key_file         = "/etc/akamu/ca.key.pem"
 cert_file        = "/etc/akamu/ca.cert.pem"
 key_type         = "ec:P-256"
@@ -47,6 +49,7 @@ max_body_bytes              = 65536
 ari_retry_after_secs        = 21600
 ari_explanation_url         = "https://acme.example.com/docs/renewal-policy"
 allow_subdomain_auth        = false
+account_scope               = "server"
 star_min_lifetime_secs      = 86400
 star_max_duration_secs      = 31536000
 star_allow_certificate_get  = true
@@ -164,7 +167,75 @@ require_tls = true
 
 ---
 
-## `[ca]`
+## `[[ca]]` / `[ca]`
+
+Akāmu supports one or more CA instances.  Use the TOML array-of-tables
+syntax `[[ca]]` to configure multiple CAs; the legacy single `[ca]` table
+continues to work and is treated as a single CA with `id = "default"` and
+`is_default = true`.
+
+```toml
+# Single CA (backward-compatible)
+[ca]
+key_file  = "/etc/akamu/ca.key.pem"
+cert_file = "/etc/akamu/ca.cert.pem"
+
+# Multiple CAs
+[[ca]]
+id         = "rsa"
+is_default = true
+key_file   = "/etc/akamu/rsa-ca.key.pem"
+cert_file  = "/etc/akamu/rsa-ca.cert.pem"
+
+[[ca]]
+id        = "ec"
+key_file  = "/etc/akamu/ec-ca.key.pem"
+cert_file = "/etc/akamu/ec-ca.cert.pem"
+```
+
+### `id`
+
+**Required when multiple `[[ca]]` entries are present. Optional for a
+single `[ca]` table (defaults to `"default"`).**
+
+Unique identifier for this CA. Must be lowercase alphanumeric with `_`
+or `-` allowed, at most 64 characters. Reserved ACME path segments
+(`directory`, `new-nonce`, `new-account`, `new-order`, `new-authz`,
+`revoke-cert`, `key-change`) are rejected at startup.
+
+```toml
+[[ca]]
+id = "rsa"
+```
+
+### `is_default`
+
+**Required (as `true`) for exactly one CA when multiple `[[ca]]` entries
+are configured. Implicit `true` for the legacy single `[ca]` table.**
+
+The default CA is also served at the backward-compatible `/acme/directory`
+alias (without a CA ID prefix).
+
+```toml
+[[ca]]
+id         = "rsa"
+is_default = true
+```
+
+### `caa_identities` (per-CA)
+
+**Optional. Default: `[]` (inherit from `[server].caa_identities`).**
+
+Per-CA list of CA domain names for CAA record verification (RFC 8659).
+When non-empty, this list overrides `[server].caa_identities` for orders
+processed through this CA's ACME endpoint. When empty (the default), the
+server-level list applies.
+
+```toml
+[[ca]]
+id             = "rsa"
+caa_identities = ["rsa.acme.example.com", "acme.example.com"]
+```
 
 ### `key_file`
 
@@ -489,6 +560,23 @@ When the list is empty (the default), CAA checking is skipped entirely — inclu
 
 ```toml
 caa_identities = ["acme.example.com"]
+```
+
+### `account_scope`
+
+**Optional. Default: `"server"`.**
+
+Controls whether ACME accounts are shared across all CAs or isolated per
+CA.
+
+| Value | Behaviour |
+|-------|-----------|
+| `"server"` | One account works with all CAs. This is the default and matches the behavior of single-CA deployments. |
+| `"ca"` | Accounts are isolated per CA. An account registered via one CA's `new-account` endpoint cannot create orders via a different CA. |
+
+```toml
+[server]
+account_scope = "server"
 ```
 
 ### `external_account_required`
@@ -1137,7 +1225,13 @@ Explicit servers (`uri` / `uris`) are always tried before SRV-discovered servers
 
 **Additional `builtin` profile fields**
 
-Beyond the core extension fields, each `builtin` profile supports three groups of optional settings:
+Beyond the core extension fields, each `builtin` profile supports four groups of optional settings:
+
+*Multi-CA restriction*
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `ca_ids` | `[]` | List of CA IDs for which this profile is available. When non-empty, the profile is only accessible via the named CAs' ACME endpoints; requests via other CAs receive `invalidProfile`. Empty = available via all CAs. Config validation rejects entries not matching a configured CA `id`. |
 
 *Certificate format*
 
@@ -1444,6 +1538,12 @@ service_name = "HTTP"
 | `POST` | `/admin/crl/force` | Y | Y | | |
 | `POST` | `/admin/revoke` | Y | Y | Y | |
 | `GET` | `/admin/stats` | Y | Y | Y | Y |
+| `GET` | `/admin/cas` | Y | Y | Y | Y |
+| `GET` | `/admin/cas/{id}` | Y | Y | Y | Y |
+| `POST` | `/admin/ca/{id}/crl/force` | Y | Y | | |
+| `POST` | `/admin/ca/{id}/cross-sign` | Y | Y | | |
+| `GET` | `/admin/cross-certs` | Y | Y | Y | Y |
+| `GET` | `/admin/cross-certs/{id}` | Y | Y | Y | Y |
 
 See [Admin API and Operator Management](admin-api.md) for the full request/response format of each endpoint.
 

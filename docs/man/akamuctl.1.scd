@@ -144,6 +144,13 @@ Session tokens obtained after *login* are cached in
 	*--role* _ROLE_
 		New role: *administrator*, *ca_operations*, *ca_ra*, or *auditor*.
 
+	*--ca-id* _CA_ID_
+		Assign a CA scope to a *ca_ra* operator.  The operator may
+		then only revoke and view certificates issued by that CA.
+		Setting *--role ca_ra* without *--ca-id* is rejected.  Pass
+		an empty string to clear the CA scope (only valid when
+		changing the role away from *ca_ra*).
+
 	*--cert-file* _FILE_
 		Path to a new client certificate.  The SHA-256 fingerprint
 		is extracted and replaces the stored fingerprint.
@@ -195,6 +202,10 @@ Session tokens obtained after *login* are cached in
 *cert list* [OPTIONS]
 	List issued certificates.
 
+	*--ca* _CA_ID_
+		Filter by CA ID.  Only certificates issued by the named CA
+		are returned.
+
 	*--serial* _HEX_
 		Filter by certificate serial number.
 
@@ -235,12 +246,17 @@ Session tokens obtained after *login* are cached in
 	_CODE_ is an RFC 5280 CRL reason code (default: 0 = unspecified).
 
 *crl-force*
-	Force immediate regeneration of the CRL.
+	Force immediate CRL regeneration for the default CA.  To force
+	regeneration for a specific CA use *ca crl-force* _CA_ID_ instead.
 
 ## Account management
 
 *account list* [OPTIONS]
 	List ACME accounts.
+
+	*--ca* _CA_ID_
+		Filter by CA ID.  Only accounts registered through the named
+		CA's *new-account* endpoint are returned.
 
 	*--status* _STATUS_
 		Filter by status: *valid* or *deactivated*.
@@ -301,6 +317,10 @@ Session tokens obtained after *login* are cached in
 *order list* [OPTIONS]
 	List certificate orders.
 
+	*--ca* _CA_ID_
+		Filter by CA ID.  Only orders placed against the named CA
+		are returned.
+
 	*--account-id* _ACCOUNT_ID_
 		Filter by account UUID.
 
@@ -318,6 +338,66 @@ Session tokens obtained after *login* are cached in
 	Show a single order's details by its UUID, including identifiers,
 	associated authorization IDs, certificate ID, profile, and
 	timing fields.
+
+## CA management
+
+*ca list*
+	List all configured CAs with their ID, default flag, key type,
+	hash algorithm, CRL URL, and OCSP URL.
+
+*ca show* _CA_ID_
+	Show details of a single CA by ID.
+
+*ca cert* _CA_ID_
+	Print the CA certificate PEM for the specified CA.
+
+*ca crl-force* _CA_ID_
+	Force immediate CRL regeneration for the specified CA.
+	Requires the *ca_operations* or *administrator* role.
+
+*ca cross-sign* _ISSUER_ID_ [OPTIONS]
+	Issue a cross-certificate: CA _ISSUER_ID_ signs the public key
+	of another CA or an externally provided certificate.
+
+	*--subject-ca* _CA_ID_
+		ID of the subject CA whose public key will be cross-signed.
+		Mutually exclusive with *--subject-cert*.
+
+	*--subject-cert* _FILE_
+		PEM file containing the subject CA certificate to cross-sign.
+		Mutually exclusive with *--subject-ca*.
+
+	*--validity-years* _N_
+		Validity period in years for the cross-certificate.
+		Default: 5.
+
+	Requires the *administrator* or *ca_operations* role.
+
+## Cross-certificate management
+
+*cross-cert list* [OPTIONS]
+	List stored cross-certificates.
+
+	*--issuer-ca* _CA_ID_
+		Filter by issuing CA ID.
+
+	*--subject-ca* _CA_ID_
+		Filter by subject CA ID.
+
+	*--limit* _N_
+		Maximum results (default: 100).
+
+	*--offset* _N_
+		Pagination offset (default: 0).
+
+*cross-cert download* _CROSS_CERT_ID_ [OPTIONS]
+	Download a cross-certificate by its UUID.
+
+	*--format* _FORMAT_
+		Output format: *pem* (default) or *der*.
+
+	*-o*, *--output* _FILE_
+		Write to file instead of standard output.
 
 ## Server configuration
 

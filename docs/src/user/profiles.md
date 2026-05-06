@@ -80,6 +80,9 @@ ocsp_url      = "http://ocsp.example.com"          # optional
 allowed_key_types = ["ec:P-256", "rsa:2048"]       # optional; empty = any
 issue_as      = "mtc"       # optional; "mtc" or absent/"x509" for standard X.509
 
+# Multi-CA restriction (optional; empty = available via all CAs)
+ca_ids               = ["rsa", "ec"]              # restrict to specific CA IDs
+
 # Per-profile authorization (all three checks are AND-combined)
 allowed_identifiers  = ['^dns:.*\.example\.com$']  # optional; empty = no restriction
 identifier_match     = "all"                        # "all" (default) or "any"
@@ -301,6 +304,23 @@ The profile name is echoed back in every order response:
 ```
 
 ---
+
+## CA restriction (`ca_ids`)
+
+When `ca_ids` is set on a `builtin` profile, the profile is only offered via
+the ACME endpoints of the listed CAs. Requests for this profile via any other
+CA's endpoint receive `urn:ietf:params:acme:error:invalidProfile` at finalize
+time.
+
+```toml
+[profiles.providers.local.profiles.rsa-only]
+description = "Certificate restricted to the RSA CA"
+ca_ids      = ["rsa"]
+```
+
+Config validation rejects `ca_ids` entries that do not match any configured
+CA `id`. When `ca_ids` is empty (the default), the profile is available via
+all configured CAs.
 
 ## Per-profile authorization
 

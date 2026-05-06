@@ -233,10 +233,16 @@ akamuctl operator update 3 --role ca_operations
 # Replace client certificate
 akamuctl operator update 3 --cert-file /etc/akamu/alice-new.pem
 
+# Assign a CA scope to a ca_ra operator
+akamuctl operator update 5 --role ca_ra --ca-id rsa
+
 # Update multiple fields at once
 akamuctl operator update 3 --name "Alice Smith" --role administrator \
     --gssapi-principal alice@NEWREALM.COM
 ```
+
+When the new role is `ca_ra`, `--ca-id` must also be provided. Setting
+`--role ca_ra` without a CA scope is rejected by the server.
 
 ### `operator remove`
 
@@ -343,6 +349,7 @@ akamuctl cert list --after 2026-01-01T00:00:00Z \
 
 | Flag | Description |
 |------|-------------|
+| `--ca CA_ID` | Filter by CA ID. Only certificates issued by the named CA are returned. |
 | `--serial HEX` | Filter by hex serial number. |
 | `--subject TEXT` | Filter by subject distinguished name substring. |
 | `--after RFC3339` | Issued at or after this timestamp. |
@@ -402,11 +409,15 @@ Requires the `administrator`, `ca_operations`, or `ca_ra` role.
 
 ### `crl-force`
 
-Force immediate CRL regeneration without waiting for the next scheduled update:
+Force immediate CRL regeneration for the default CA without waiting for the
+next scheduled update:
 
 ```bash
 akamuctl crl-force
 ```
+
+To force regeneration for a specific CA use the `ca crl-force` subcommand
+(see [CA management](#ca-management) below).
 
 Requires the `administrator` or `ca_operations` role.
 
@@ -424,6 +435,7 @@ akamuctl account list --status deactivated
 
 | Flag | Description |
 |------|-------------|
+| `--ca CA_ID` | Filter by CA ID. Only accounts registered via the named CA's `new-account` endpoint are returned. |
 | `--status VALUE` | `valid` or `deactivated`. |
 | `--limit N` | Maximum results (default 100). |
 | `--offset N` | Pagination offset (default 0). |
@@ -483,6 +495,98 @@ akamuctl account grants clear <account-uuid>
 ```
 
 Requires the `administrator` role.
+
+## CA management
+
+In multi-CA deployments, these subcommands let you inspect the configured
+CAs, issue cross-certificates, and force per-CA CRL regeneration.
+
+### `ca list`
+
+List all configured CAs:
+
+```bash
+akamuctl ca list
+```
+
+Returns each CA's ID, default flag, key type, hash algorithm, CRL URL, and
+OCSP URL. All authenticated roles may call this command.
+
+### `ca show`
+
+Show details of a single CA:
+
+```bash
+akamuctl ca show rsa
+```
+
+### `ca cert`
+
+Print the CA certificate PEM for the specified CA:
+
+```bash
+akamuctl ca cert rsa
+akamuctl ca cert rsa -o /etc/akamu/rsa-ca.cert.pem
+```
+
+### `ca crl-force`
+
+Force immediate CRL regeneration for a specific CA:
+
+```bash
+akamuctl ca crl-force rsa
+akamuctl ca crl-force ec
+```
+
+Requires the `administrator` or `ca_operations` role.
+
+### `ca cross-sign`
+
+Issue a cross-certificate from one CA to another:
+
+```bash
+# Cross-sign another configured CA by its ID
+akamuctl ca cross-sign rsa --subject-ca ec --validity-years 5
+
+# Cross-sign an externally provided CA certificate
+akamuctl ca cross-sign rsa --subject-cert /path/to/partner-ca.pem \
+    --validity-years 3
+```
+
+The issuer CA (`rsa` in the examples above) signs the subject's public key.
+The resulting cross-certificate has `pathLenConstraint = 0`.
+
+Requires the `administrator` or `ca_operations` role.
+
+## Cross-certificate management
+
+### `cross-cert list`
+
+List stored cross-certificates:
+
+```bash
+akamuctl cross-cert list
+akamuctl cross-cert list --issuer-ca rsa
+akamuctl cross-cert list --subject-ca ec
+```
+
+| Flag | Description |
+|------|-------------|
+| `--issuer-ca CA_ID` | Filter by issuing CA ID. |
+| `--subject-ca CA_ID` | Filter by subject CA ID. |
+| `--limit N` | Maximum results (default 100). |
+| `--offset N` | Pagination offset (default 0). |
+
+### `cross-cert download`
+
+Download a cross-certificate by UUID:
+
+```bash
+akamuctl cross-cert download <cross-cert-uuid>
+akamuctl cross-cert download <cross-cert-uuid> --format pem -o cross.pem
+```
+
+Requires any authenticated role.
 
 ## Profile management
 
@@ -557,6 +661,7 @@ akamuctl order list --status pending --limit 50
 
 | Flag | Description |
 |------|-------------|
+| `--ca CA_ID` | Filter by CA ID. Only orders placed against the named CA are returned. |
 | `--account-id UUID` | Filter by account UUID. |
 | `--status VALUE` | Filter by order status (`pending`, `ready`, `processing`, `valid`, `invalid`). |
 | `--limit N` | Maximum results (default 100). |
