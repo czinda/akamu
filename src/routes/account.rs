@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{MatchedPath, Path, State};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -31,9 +31,17 @@ struct NewAccountPayload {
 
 pub async fn new_account(
     State(state): State<Arc<AppState>>,
+    matched: MatchedPath,
     ca_id: CaId,
     body: Bytes,
 ) -> Result<Response, AcmeError> {
+    // Per-CA new-account endpoint is only valid in CA-scoped account mode.
+    // When account_scope = "server" (the default), accounts are server-wide and
+    // clients must use the canonical /acme/new-account URL from the directory.
+    if matched.as_str().contains("{ca_id}") && state.config.server.account_scope != "ca" {
+        return Err(AcmeError::NotFound);
+    }
+
     let pfx = acme_prefix(&state.config.base_url, &ca_id.0, &state.default_ca_id);
     let url = format!("{pfx}/new-account");
     let ctx = parse_jws(&state, body, &url).await?;
@@ -171,7 +179,7 @@ pub async fn new_account(
     let contact_json = payload
         .contact
         .as_ref()
-        .map(|c| serde_json::to_string(c))
+        .map(serde_json::to_string)
         .transpose()
         .map_err(|e| AcmeError::Internal(format!("contact serialization: {e}")))?;
 
@@ -284,9 +292,13 @@ pub async fn update_account(
     if payload.status.as_deref() == Some("deactivated") {
         db::accounts::update_status(&state.db, &id, "deactivated", unix_now()).await?;
         match state.spki_cache.write() {
-            Ok(mut cache) => { cache.remove(&id); }
+            Ok(mut cache) => {
+                cache.remove(&id);
+            }
             Err(e) => {
-                tracing::error!("spki_cache RwLock poisoned; evicting deactivated account under poison guard");
+                tracing::error!(
+                    "spki_cache RwLock poisoned; evicting deactivated account under poison guard"
+                );
                 e.into_inner().remove(&id);
             }
         }
