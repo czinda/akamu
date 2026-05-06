@@ -38,16 +38,17 @@ These map to ACME problem type URNs (`urn:ietf:params:acme:error:*`):
 
 ### Generic HTTP-mapped errors
 
-These do not have dedicated ACME error types; they fall through to `serverInternal` in the ACME type, but carry the appropriate HTTP status:
+These do not have dedicated ACME error types and carry the appropriate HTTP status. `NotFound` maps to the `malformed` ACME type; all others fall through to `serverInternal`.
 
-| Variant | HTTP status |
-|---|---|
-| `NotFound` | 404 |
-| `MethodNotAllowed` | 405 |
-| `Conflict(String)` | 409 |
-| `UnsupportedMediaType` | 415 |
-| `PayloadTooLarge` | 413 |
-| `BadRequest(String)` | 400 |
+| Variant | ACME type | HTTP status |
+|---|---|---|
+| `NotFound` | `malformed` | 404 |
+| `MethodNotAllowed` | `serverInternal` | 405 |
+| `Conflict(String)` | `serverInternal` | 409 |
+| `UnsupportedMediaType` | `serverInternal` | 415 |
+| `PayloadTooLarge` | `serverInternal` | 413 |
+| `BadRequest(String)` | `serverInternal` | 400 |
+| `ServiceUnavailable(String)` | `serverInternal` | 503 |
 
 ### Internal errors
 
@@ -59,6 +60,7 @@ These indicate server-side failures. They map to `serverInternal` in the ACME er
 | `Crypto(String)` | Cryptographic operation failure |
 | `Builder(String)` | Certificate or CRL builder error |
 | `Mtc(String)` | MTC log operation failure |
+| `Config(String)` | Configuration or startup error |
 | `Internal(String)` | General internal error |
 
 ## Response format
@@ -77,17 +79,18 @@ These indicate server-side failures. They map to `serverInternal` in the ACME er
 }
 ```
 
-For responses with an HTTP 4xx status, the `detail` field is the `Display` string of the variant, which for parameterized variants includes the inner string.
+For responses with an HTTP 4xx status, the `detail` field is the `Display` string of the variant, which for parameterised variants includes the inner string.
 
-For responses with an HTTP 5xx status (server errors), the `detail` field is always the fixed string `"internal server error"`, regardless of the underlying cause. The actual error is logged server-side at `ERROR` level but is never included in the response body.
+For responses with an HTTP 5xx status (server errors), the `detail` field is always the fixed string `"internal server error"`, regardless of the underlying cause. The actual error is logged server-side at `ERROR` level but is never included in the response body. This applies to `ServiceUnavailable` (503) as well as the 500-class internal errors.
 
 ## From implementations
 
-One `From` implementation allows the `?` operator to be used with database errors:
+Two `From` implementations allow the `?` operator to be used with library errors:
 
 - `From<sqlx::Error> for AcmeError` → wraps in `AcmeError::Database`.
+- `From<akamu_jose::JoseError> for AcmeError` → maps to `AcmeError::BadRequest`, `AcmeError::Crypto`, or `AcmeError::BadSignatureAlgorithm` depending on the JOSE error kind.
 
-This means any `sqlx::query!(...).fetch_one(&db).await?` will automatically convert database errors to `AcmeError::Database(msg)`.
+This means any `sqlx::query!(...).fetch_one(&db).await?` will automatically convert database errors to `AcmeError::Database(msg)`, and any JOSE verification failure will convert to the appropriate ACME error without an explicit `match`.
 
 ## Error propagation in handlers
 
@@ -113,5 +116,5 @@ Background validation tasks (`tokio::spawn`) must not panic and must not propaga
 ## Design principles
 
 - **No `unwrap()` in production paths.** All fallible operations use `?` or explicit error handling.
-- **Internal errors do not leak details to clients.** `AcmeError::Internal`, `AcmeError::Database`, `AcmeError::Crypto`, `AcmeError::Builder`, and `AcmeError::Mtc` all produce HTTP 500 responses whose `detail` field is the fixed string `"internal server error"`. The actual error message is written to the server log only.
+- **Internal errors do not leak details to clients.** `AcmeError::Internal`, `AcmeError::Database`, `AcmeError::Crypto`, `AcmeError::Builder`, `AcmeError::Mtc`, `AcmeError::Config`, and `AcmeError::ServiceUnavailable` all produce 5xx responses whose `detail` field is the fixed string `"internal server error"`. The actual error message is written to the server log only.
 - **Challenge errors are ACME errors.** The validation layer converts `hyper`, `hickory-resolver`, and `rustls` errors into specific `AcmeError` variants (`Connection`, `Dns`, `Tls`, `IncorrectResponse`) so the client receives a meaningful ACME error type.
