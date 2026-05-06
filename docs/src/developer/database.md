@@ -4,28 +4,34 @@
 
 ## Connection model
 
-The server holds a single `sqlx::AnyPool` shared across all handler tasks (stored in `AppState`). sqlx manages an async connection pool internally; callers simply use `pool.acquire()` or pass `&pool` directly to query macros.
+The server holds two `sqlx::AnyPool` instances stored in `AppState`:
 
-All queries use the sqlx macro pattern:
+- **`db`** (write pool) — all migrations run here; all write transactions use it; most read queries also use it.
+- **`db_ro`** (read-only pool) — opened with the `?mode=ro` SQLite URI parameter. Pure-read handlers (`get_order`, `get_authz`, `download_cert`) route through this pool so concurrent reads do not contend on the WAL write lock. For `:memory:` databases and non-SQLite backends `db_ro` is a clone of `db`.
+
+`db::open_ro(url, max_connections)` in `src/db/mod.rs` opens the read-only pool. It returns `None` for `:memory:` URLs (each connection sees an empty schema) and for non-SQLite URLs.
+
+sqlx manages each pool's connection count internally; callers pass `&pool` to query helpers or `&mut *tx` inside transactions.
+
+All queries use the sqlx `QueryBuilder` or typed-query pattern:
 
 ```rust
 sqlx::query_as!(Row, "SELECT … FROM …", param)
-    .fetch_one(&db)
+    .fetch_one(&db_ro)
     .await?
 ```
 
 ### Initialization
 
-`db::open(url, max_connections, migrations_dir)` in `src/db/mod.rs` performs the following in order:
+`db::open(url, max_connections, require_tls)` in `src/db/mod.rs` performs the following in order:
 
 1. Registers all compiled-in sqlx drivers via `sqlx::any::install_default_drivers()`.
-2. Opens the pool (creates the SQLite file if needed; for `:memory:` a fresh in-memory database is used).
-3. Runs all pending migrations from `migrations_dir` via `sqlx::migrate::Migrator`.
-4. Enables WAL mode for SQLite: `PRAGMA journal_mode=WAL`.
+2. Optionally validates the URL for SSL/TLS parameters when `require_tls` is `true` (FPT_ITT.1).
+3. Opens the pool (creates the SQLite file if needed via the `?mode=rwc` URI parameter; for `:memory:` a fresh in-memory database is used).
+4. Enables WAL mode and performance pragmas for SQLite: `PRAGMA journal_mode=WAL`, `PRAGMA synchronous=NORMAL`, `PRAGMA foreign_keys=ON`, `PRAGMA mmap_size=134217728`, `PRAGMA cache_size=-65536`.
+5. Runs all pending migrations via the compiled-in `sqlx::migrate!` macro, selecting the backend-specific migration directory (`migrations/sqlite/`, `migrations/postgres/`, or `migrations/mariadb/`).
 
-WAL (Write-Ahead Logging) mode is enabled after migrations rather than before, because changing the journal mode during a migration can cause transaction issues.
-
-At server startup, nonces older than 24 hours are swept: `db::nonces::sweep_expired(&db, 86400)`.
+At server startup, nonces older than 24 hours are swept from the in-memory `NonceBucket`.
 
 ## Migration numbering
 
@@ -352,7 +358,7 @@ Records which CA owns each authorization, enabling per-CA namespace isolation. P
 ALTER TABLE authorizations ADD COLUMN ca_id TEXT NOT NULL DEFAULT 'default';
 
 UPDATE authorizations
-   SET ca_id = (SELECT ca_id FROM orders WHERE id = authorizations.order_id)
+   SET ca_id = COALESCE((SELECT ca_id FROM orders WHERE id = authorizations.order_id), 'default')
  WHERE order_id IS NOT NULL AND order_id != '';
 
 CREATE INDEX idx_orders_ca_account ON orders(ca_id, account_id);
@@ -385,16 +391,50 @@ Each table has its own submodule in `src/db/`:
 
 | Module | Exposed functions |
 |---|---|
-| `db::accounts` | `insert`, `get_by_id`, `get_by_thumbprint`, `update_contact`, `update_status`, `update_key` |
+| `db::accounts` | `insert`, `get_by_id`, `get_by_thumbprint`, `update_contact`, `update_status`, `update_key`, `set_profile_grants`, `get_profile_grants`, `list` |
 | `db::orders` | `insert`, `get_by_id`, `update_status`, `list_authz_ids` |
 | `db::authz` | `insert`, `get_by_id`, `update_status` |
 | `db::challenges` | `insert`, `get_by_id`, `list_by_authz`, `set_processing`, `set_invalid` |
-| `db::certs` | `get_by_id`, `get_by_serial`, `revoke`, `set_mtc_log_index`, `list_revoked` |
-| `db::cross_certs` | `insert`, `list`, `get_by_id` |
+| `db::certs` | `insert`, `get_by_id`, `get_by_serial`, `get_by_cert_id`, `mark_replaced`, `revoke`, `set_mtc_log_index`, `set_renewal_window`, `list_revoked`, `list_valid_for_account`, `get_latest_for_order`, `search` |
+| `db::cross_certs` | `insert`, `get_by_id`, `list` |
 | `db::eab` | `insert`, `get_by_kid`, `mark_used`, `list`, `delete` |
 | `db::nonces` | `insert`, `consume`, `sweep_expired` |
-| `db::operators` | `insert`, `get_by_id`, `get_by_fingerprint`, `get_by_principal`, `list`, `update`, `set_active`, `update_last_seen`, `increment_failed`, `reset_failed`, `unlock`, `is_locked` |
+| `db::operators` | `insert`, `insert_if_absent`, `is_empty`, `get_by_id`, `get_by_fingerprint`, `get_by_principal`, `list`, `update`, `set_active`, `update_last_seen`, `increment_failed`, `reset_failed`, `unlock`, `is_locked` |
 | `db::audit` | `insert`, `list` |
+
+### `CertSearchParams`
+
+`db::certs::search` accepts a `CertSearchParams<'_>` struct to satisfy `clippy::too_many_arguments`. All filter fields are optional; only `Some` values are emitted as `WHERE` clauses via `QueryBuilder`:
+
+```rust
+pub struct CertSearchParams<'a> {
+    pub serial: Option<&'a str>,
+    pub account_id: Option<&'a str>,
+    pub status: Option<&'a str>,
+    pub subject_dn: Option<&'a str>,  // LIKE-escaped substring match
+    pub ca_id: Option<&'a str>,
+    pub limit: i64,
+    pub offset: i64,
+}
+```
+
+The `subject_dn` filter uses `LIKE` with `!` as the escape character; `%` and `_` in the input are automatically escaped to prevent injection.
+
+### `OperatorUpdateParams`
+
+`db::operators::update` accepts an `OperatorUpdateParams<'_>` struct. Only `Some` fields are included in the generated `UPDATE` statement:
+
+```rust
+pub struct OperatorUpdateParams<'a> {
+    pub name: Option<&'a str>,
+    pub role: Option<&'a str>,
+    pub cert_fingerprint: Option<&'a str>,
+    pub gssapi_principal: Option<&'a str>,
+    pub ca_id: Option<&'a str>,  // Some("") clears CA scope; None leaves it unchanged
+}
+```
+
+`update` is called by the `PUT /admin/operators/{id}` handler, which evicts any active session for that operator from `AppState::admin_sessions` on every successful update. This ensures that role and CA-scope changes take effect immediately rather than at the next session expiry.
 
 ## Transactions
 

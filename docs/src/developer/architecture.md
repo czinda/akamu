@@ -271,7 +271,8 @@ src/
 Defined in `src/state.rs`. Every axum handler receives an `Arc<AppState>` via axum's `State` extractor. It contains:
 
 - `config: Arc<Config>` — immutable configuration parsed at startup.
-- `db: crate::db::Db` — shared connection pool. All database access goes through this.
+- `db: crate::db::Db` — write connection pool. All write transactions and most read queries use this pool.
+- `db_ro: crate::db::Db` — read-only connection pool for SQLite file-backed databases (opened with `?mode=ro` URI parameter). Pure-read handlers (`get_order`, `get_authz`, `download_cert`) route through this pool so WAL concurrent reads do not contend on the write lock. For `:memory:` databases and non-SQLite backends this is a clone of `db`.
 - `db_kind: DbKind` — discriminant indicating the underlying database backend (SQLite, Postgres, MariaDB); used by a small number of queries that need backend-specific SQL.
 - `cas: Arc<IndexMap<String, Arc<CaState>>>` — all configured CAs keyed by their ID, in config-file insertion order. Replaces the old single `ca` field.
 - `default_ca_id: Arc<String>` — the CA ID that serves the backward-compatible `/acme/directory` and `/ca/crl` routes. Set to the entry with `is_default = true` in `[[ca]]` config.
