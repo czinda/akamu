@@ -14,14 +14,14 @@
 /*
  * Rustdoc is embedded in an iframe whose viewport width equals the mdBook
  * content area (page width minus sidebar ≈ 83 % of full page width).
- * mdBook uses clamp(20px, 1.2vw, 26px) on :root relative to the full page.
+ * mdBook uses clamp(15px, 0.935vw, 20px) on :root relative to the full page.
  * To produce the same effective size relative to the iframe viewport:
- *   1.2 / 0.83 ≈ 1.45vw  →  rounded up to 1.5vw for a comfortable match.
+ *   0.935 / 0.83 ≈ 1.13vw  →  rounded up to 1.275vw for a comfortable match.
  * Rustdoc sets body { font: 1rem/1.5 … } so all rem-based sizes scale with
  * this root value.
  */
 html {
-    font-size: clamp(16px, 1.5vw, 26px);
+    font-size: clamp(14px, 1.275vw, 22px);
 }
 
 /* ── Font stack ──────────────────────────────────────────────────────────────── */

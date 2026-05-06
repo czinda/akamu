@@ -56,7 +56,7 @@ graph TB
 
 ## Crate layout
 
-The repository is organized as a **Cargo workspace** with six members:
+The repository is organized as a **Cargo workspace** with eight members:
 
 ```
 Cargo.toml          <- workspace root (members: ., crates/*)
@@ -70,6 +70,14 @@ crates/
                        provides LdapConnection (sync) and AsyncLdapConnection
                        (tokio::task::spawn_blocking) with simple-bind and
                        SASL GSSAPI/Kerberos authentication
+  akamu-gssapi/     <- safe Rust GSSAPI/SPNEGO bindings (FFI to libgssapi_krb5);
+                       provides GssServerCred and GssClientCred for keytab- and
+                       ccache-based credential acquisition, plus accept_token /
+                       init_token convenience wrappers; MIT Kerberos thread-safety
+                       guarantees allow an Arc<GssServerCred> to be shared across
+                       all handler threads without a mutex
+  akamuctl/         <- server administration CLI binary; talks to /admin/* endpoints
+                       over mTLS or GSSAPI/Kerberos (ccache-based) authentication
 ```
 
 ### Crate dependencies
@@ -82,20 +90,64 @@ graph LR
     COSIGNER["akamu-cosigner"]
     JOSE["akamu-jose"]
     SYNTA["synta-certificate"]
+    SYNTABASE["synta"]
+    SYNTAVERIF["synta-x509-verification"]
     LDAP["akamu-ldap"]
+    GSSAPI["akamu-gssapi"]
+    AKAMUCTL["akamuctl"]
+    NATIVEOSSL["native-ossl"]
+    HYPERRUSTLS["hyper-rustls"]
 
     SERVER --> JOSE
     SERVER --> SYNTA
+    SERVER --> SYNTABASE
+    SERVER --> SYNTAVERIF
     SERVER --> LDAP
+    SERVER --> GSSAPI
+    SERVER --> NATIVEOSSL
+    SERVER --> HYPERRUSTLS
     CLIENT --> JOSE
     CLIENT --> SYNTA
+    CLIENT --> GSSAPI
+    CLIENT --> HYPERRUSTLS
     CLI --> CLIENT
     COSIGNER --> CLIENT
     COSIGNER --> SERVER
+    COSIGNER --> NATIVEOSSL
+    COSIGNER --> HYPERRUSTLS
     JOSE --> SYNTA
+    SYNTA --> SYNTABASE
+    AKAMUCTL --> GSSAPI
+    AKAMUCTL --> SYNTA
+    AKAMUCTL --> NATIVEOSSL
 ```
 
-The server and `akamu-client` both depend directly on `akamu-jose` and `synta-certificate`. The server additionally depends on `akamu-ldap` for reading Dogtag and IPA certificate profiles from LDAP. `akamu-cli` depends only on `akamu-client`. `akamu-cosigner` depends on both `akamu-client` (for ACME EAB bootstrap) and `akamu` itself (to reuse TLS loader helpers and key generation utilities).
+The server and `akamu-client` both depend directly on `akamu-jose` and `synta-certificate`. The server additionally depends on:
+
+- `akamu-ldap` for reading Dogtag and IPA certificate profiles from LDAP.
+- `akamu-gssapi` for standalone SPNEGO authentication (`gss_cred`, `admin_gss_cred` in `AppState`).
+- `native-ossl` directly for digest operations (SHA-256 fingerprinting, channel-binding hashes), HKDF key derivation (`eab_derivation.rs`), and asymmetric-key signature verification in the mTLS verifier. `rustls-native-ossl` (a thin rustls crypto-provider shim over `native-ossl`) supplies the OpenSSL backend to rustls.
+- `synta` (the base ASN.1 codec crate) for `Decoder`/`Encoder` and the `Integer` type used in certificate serial number and OID handling; `synta-certificate` is built on top of it.
+- `synta-x509-verification` for X.509 certification-path validation (trust anchor resolution, name constraints, key usage checking) used in mTLS client-certificate verification and OCSP response validation.
+- `hyper-rustls` as the HTTPS connector for outbound MTC cosigner requests; paired with `rustls-native-certs` to load the OS root CA store for verifying cosigner TLS certificates.
+
+`akamu-client` uses `akamu-gssapi` for GSSAPI-authenticated ACME requests and `hyper-rustls` for all outbound HTTPS. `akamu-cli` depends only on `akamu-client`. `akamu-cosigner` depends on both `akamu-client` (for ACME EAB bootstrap) and `akamu` itself (to reuse TLS loader helpers and key generation utilities), and uses `native-ossl` directly for crypto operations. `akamuctl` is a standalone admin CLI that depends on `akamu-gssapi` for ccache-based Kerberos login to the `/admin/*` endpoints, on `synta-certificate` for certificate handling, and on `native-ossl` directly; it does not depend on `akamu-client` or `akamu-jose`.
+
+### Key external dependencies
+
+The following external crates are direct server dependencies whose role is not otherwise obvious from the module descriptions above.
+
+| Crate | Purpose |
+|-------|---------|
+| `uuid` | Generates UUIDv4 identifiers for every ACME resource (orders, authorizations, challenges, certificates, nonces). |
+| `getrandom` | Cryptographically random byte source for anti-replay nonce generation (`NonceBucket`). |
+| `subtle` | Constant-time byte comparison (`subtle::ConstantTimeEq`) used in admin session-token lookup to prevent timing-based token recovery. |
+| `zeroize` | `Zeroizing<T>` wrapper that zeroes memory on drop; applied to the EAB master secret in `AppState` to satisfy FDP_RIP.1 (residual information protection). |
+| `ipnet` | CIDR range type (`IpNet`) used to match incoming request source addresses against the `[server].trusted_proxies` allow-list. |
+| `regex` | Compiled regular expressions for profile identifier authorization (`auth.rs` `check_profile_auth` — identifier pattern matching against the `allowed_identifiers` field). |
+| `libc` | `flock(2)` call that takes an exclusive advisory lock on the MTC log file, preventing two server processes from writing the same log concurrently. |
+| `rustls-native-certs` | Loads the operating-system root certificate store into rustls for verifying cosigner HTTPS connections. |
+| `indexmap` | `IndexMap` preserves config-file insertion order for the multi-CA registry (`AppState::cas`), ensuring deterministic directory listing and default-CA fallback. |
 
 See [Client Libraries](../client/overview.md) for the standalone client API.
 

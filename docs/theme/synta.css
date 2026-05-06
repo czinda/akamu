@@ -12,12 +12,12 @@
      * Base font size — scales with viewport so the document feels comfortable
      * from 1080p up to 4K without manual browser zoom.
      *
-     *   ≤ 1636 px wide  →  clamp floor: 18 px  (1.125× browser default 16 px)
-     *     1920 px wide  →  1.1vw ≈ 21 px        (1.31×)
-     *     2560 px wide  →  1.1vw ≈ 28 px → 24 px cap
-     *     3840 px (4K)  →  cap    24 px          (1.5×)
+     *   ≤ 1604 px wide  →  clamp floor: 15 px  (0.94× browser default 16 px)
+     *     1920 px wide  →  0.935vw ≈ 18 px      (1.13×)
+     *     2560 px wide  →  0.935vw ≈ 24 px → 20 px cap
+     *     3840 px (4K)  →  cap    20 px          (1.25×)
      */
-    font-size: clamp(18px, 1.1vw, 24px);
+    font-size: clamp(15px, 0.935vw, 20px);
 
     /*
      * Wide reading column.  The sidebar (300 px) is separate; setting this to
@@ -245,7 +245,7 @@
 /* ── Typography ───────────────────────────────────────────────────────────────── */
 
 body {
-    font-size: 1rem;    /* inherits :root clamp — 20 px @ 1440p, 23 px @ 1080p, 26 px @ 4K */
+    font-size: 1rem;    /* inherits :root clamp — 15 px @ ≤1604p, 18 px @ 1920p, 20 px @ 4K */
     line-height: 1.75;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -489,7 +489,7 @@ hr {
 /* On small screens drop the font back to a fixed comfortable size */
 @media screen and (max-width: 600px) {
     :root {
-        font-size: 18px;
+        font-size: 15px;
         --page-padding: 16px;
     }
 }
