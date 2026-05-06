@@ -123,48 +123,93 @@ src/
   lib.rs           Re-exports public modules for integration tests
   config.rs        TOML configuration structs (Config, CaConfig, MtcConfig, ServerConfig,
                    ProfilesConfig, ProviderConfig, BuiltinProviderConfig, AdminConfig, …)
-  state.rs         Shared application state (AppState, CaState, MtcState)
+  state.rs         Shared application state (AppState, CaState, MtcState, NonceBucket,
+                   CrlCache, TlsState, CachedAccount, OperatorRole, AdminSession, …)
   error.rs         AcmeError enum with HTTP mapping and problem+json serialization
+  audit.rs         Structured audit trail (FAU family): AuditEvent, AuditState,
+                   AuditPolicy, record_or_log, overflow handling (FAU_STG.4)
+  dns.rs           Thin DNS query helper (hickory-resolver; optional DNS-over-TLS)
+  eab_derivation.rs HKDF-SHA-256 (RFC 5869) credential derivation for /acme/eab
+  extract.rs       Axum extractors: RemoteUser (proxy header or standalone GSSAPI)
+  star.rs          RFC 8739 ACME STAR background reissuance task
+  util.rs          Shared utilities: unix_now, unix_to_rfc3339, certificate helpers
+
+  admin/
+    mod.rs         Re-exports admin submodules
+    auth.rs        Operator authentication (mTLS cert or GSSAPI/Kerberos session token),
+                   OperatorContext extractor, session management (POST/DELETE /admin/session)
+    init.rs        Admin operator bootstrap — seeds the first operator from config on startup
 
   db/
     mod.rs         Database initialization (open, migrations, WAL mode)
     schema.rs      Row types mirroring database columns
     accounts.rs    CRUD for accounts table
+    audit.rs       Append-only CRUD for audit_events table (insert, count, query, delete_oldest)
     authz.rs       CRUD for authorizations table
     certs.rs       CRUD for certificates table (includes mtc_standalone_der column)
     challenges.rs  CRUD for challenges table
     checkpoints.rs CRUD for mtc_checkpoints table (upsert, get_latest, prune_oldest)
     cosignatures.rs CRUD for mtc_cosignatures table
+    cross_certs.rs CRUD for cross_certs table (insert, get_by_id, list by issuer/subject CA)
     eab.rs         CRUD for eab_keys table
     landmarks.rs   CRUD for mtc_landmarks table (insert, get_by_seq, list, prune_oldest)
     nonces.rs      Anti-replay nonce management
+    operators.rs   CRUD for operators table (insert, get_by_fingerprint/principal, update,
+                   failed-attempt tracking and account locking — FIA_AFL.1)
     orders.rs      CRUD for orders table
-    cross_certs.rs CRUD for cross_certs table (insert, list by issuer/subject CA)
+    stats.rs       Aggregate statistics queries for GET /admin/stats
 
   routes/
-    mod.rs         Router assembly, shared helpers (parse_jws, acme_headers, json_response)
+    mod.rs         Router assembly (build_router, build_admin_router), CaId extractor,
+                   shared helpers (parse_jws, acme_headers, json_response, acme_prefix)
     directory.rs   GET /acme/directory
     nonce.rs       HEAD/GET /acme/new-nonce
     account.rs     POST /acme/new-account, POST /acme/account/{id}
     order.rs       POST /acme/new-order, POST /acme/order/{id}
-    authz.rs       POST /acme/authz/{id}
+    authz.rs       POST /acme/new-authz, POST /acme/authz/{id}
     challenge.rs   POST /acme/chall/{authz_id}/{type}
     finalize.rs    POST /acme/order/{id}/finalize
-    certificate.rs GET /acme/cert/{id} (auto-detects MTC vs X.509 by PEM marker)
+    certificate.rs GET /acme/cert/{id}, POST /acme/cert/{id}
+                   (auto-detects MTC vs X.509 by PEM marker)
+    star_cert.rs   GET/POST /acme/cert/star/{order_id} (RFC 8739 §3.3 STAR rolling cert URL)
     revoke.rs      POST /acme/revoke-cert
     key_change.rs  POST /acme/key-change
     renewal_info.rs GET /acme/renewal-info/{cert_id}
     mtc.rs         GET /acme/mtc/tree-size, /root, /inclusion-proof/{id},
-                   /cert/{id}/standalone, /landmarks, /landmarks/{seq}/cert
-    admin.rs       GET/PUT/DELETE /admin/account/{id}/profile-grants,
-                   POST/GET/DELETE /admin/eab, GET /admin/audit,
-                   GET /admin/certs, POST /admin/crl/force, POST /admin/revoke,
-                   GET /admin/stats, GET/POST/PATCH /admin/operators
+                   /cert/{id}/standalone, /landmarks, /landmarks/{seq}/cert;
+                   C2SP tlog-tiles: /acme/mtc/tlog/checkpoint, /tlog/cosignature,
+                   /tlog/tile/{*path}
+    crl.rs         GET /ca/crl, GET /ca/{ca_id}/crl — serve DER-encoded CRLs (cached);
+                   GET /ca/cross-certs, GET /ca/{ca_id}/cross-certs — PEM cross-cert bundles
+    ocsp.rs        POST /ca/ocsp, GET /ca/ocsp/{request},
+                   POST /ca/{ca_id}/ocsp, GET /ca/{ca_id}/ocsp/{request} (RFC 6960)
+    eab_identity.rs GET /acme/eab — derive and return EAB credentials for
+                    the authenticated principal (proxy or standalone GSSAPI)
+    admin.rs       All /admin/* endpoints served on the dedicated admin listener;
+                   POST/DELETE /admin/session (auth);
+                   GET/POST /admin/operators, GET/PUT/PATCH /admin/operators/{id},
+                   POST /admin/operators/{id}/unlock;
+                   GET/POST/PUT/DELETE /admin/account/{id}/profile-grants,
+                   POST /admin/account/{id}/deactivate;
+                   GET /admin/accounts, GET /admin/account/{id};
+                   POST/GET/DELETE /admin/eab, GET/DELETE /admin/eab/{kid};
+                   GET /admin/audit;
+                   GET /admin/certs, GET /admin/certs/{id},
+                   GET /admin/certs/{id}/download;
+                   GET/POST /admin/profiles, PUT/DELETE /admin/profiles/{id};
+                   GET /admin/orders, GET /admin/orders/{id};
+                   GET /admin/config;
+                   POST /admin/crl/force, POST /admin/revoke;
+                   GET /admin/stats;
+                   GET /admin/cas, GET /admin/cas/{id}, GET /admin/cas/{id}/cert;
+                   POST /admin/ca/{id}/crl/force, POST /admin/ca/{id}/cross-sign;
+                   GET /admin/cross-certs, GET /admin/cross-certs/{id}
                    (role-based access control; admin listener not started when [admin] absent)
 
   ca/
     mod.rs         Re-exports ca submodules
     init.rs        CA key and certificate load-or-generate
+    key_loader.rs  CaKeyLoader — routes key loading to PEM file or PKCS#11 token URI
     csr.rs         PKCS#10 CSR parsing and validation
     issue.rs       End-entity and CA certificate issuance (issue_certificate,
                    issue_with_params, issue_ca_cert, check_is_ca_cert)
@@ -180,6 +225,16 @@ src/
     ipa.rs           FreeIPA/IPAThinCA provider (filesystem or LDAP — simple bind and GSSAPI/Kerberos)
     ldap_resolve.rs  resolve_ldap_uris() — merges uri/uris/srv_domain into a space-separated
                      URI string for ldap_initialize; SRV records sorted per RFC 2782
+    ldap_session.rs  Shared LDAP connect→bind→search→parse helper used by dogtag and ipa providers
+
+  tls/
+    mod.rs           Re-exports tls submodules; module-level doc for standalone TLS support
+    channel_binding.rs TLS channel binding helpers (tls-unique / tls-exporter)
+    init.rs          load_or_generate — loads or auto-generates the server TLS certificate
+    loader.rs        Async TLS config reloader (hot-reload of cert/key without restart)
+    schemes.rs       Custom rustls SignatureScheme negotiation for hybrid post-quantum keys
+    verifier.rs      SyntaClientCertVerifier — mTLS client certificate verification
+                     (CAB Forum or RFC 5280 profile; hybrid ML-DSA+classical chains)
 
   validation/
     mod.rs             Challenge dispatch and DB state transitions (validate_challenge)
@@ -197,9 +252,16 @@ src/
     cosign.rs      CosignerClient; parallel cosignature gathering from external cosigners
     landmark.rs    Landmark background task; allocates and builds LandmarkCertificate DERs
     standalone.rs  StandaloneCertificate construction after each checkpoint
+    tlog.rs        C2SP tlog-tiles and signed-note support: checkpoint format, key-ID
+                   computation, cosignature production, hash tile computation for all
+                   C2SP signature types (Ed25519, ECDSA, ML-DSA-44 cosignatures)
 
-  jose/            Thin re-exports from crates/akamu-jose
-                   (JwkPublic, JwsFlattened, JwsKeyRef, JwsProtectedHeader)
+  jose/            Thin re-exports and helpers for crates/akamu-jose
+    mod.rs         Module re-exports
+    jwk.rs         Re-exports JwkPublic from akamu-jose
+    jws.rs         Re-exports JwsFlattened, JwsKeyRef, JwsProtectedHeader from akamu-jose
+    eab.rs         EAB (External Account Binding) HMAC verification helpers
+    kid.rs         account_id_from_kid — extracts and validates the account ID from a JWS kid URL
 ```
 
 ## Key types
@@ -209,16 +271,26 @@ src/
 Defined in `src/state.rs`. Every axum handler receives an `Arc<AppState>` via axum's `State` extractor. It contains:
 
 - `config: Arc<Config>` — immutable configuration parsed at startup.
-- `db: sqlx::AnyPool` — shared connection pool. All database access goes through this.
+- `db: crate::db::Db` — shared connection pool. All database access goes through this.
+- `db_kind: DbKind` — discriminant indicating the underlying database backend (SQLite, Postgres, MariaDB); used by a small number of queries that need backend-specific SQL.
 - `cas: Arc<IndexMap<String, Arc<CaState>>>` — all configured CAs keyed by their ID, in config-file insertion order. Replaces the old single `ca` field.
 - `default_ca_id: Arc<String>` — the CA ID that serves the backward-compatible `/acme/directory` and `/ca/crl` routes. Set to the entry with `is_default = true` in `[[ca]]` config.
-- `crl_caches: Arc<HashMap<String, CrlCache>>` — per-CA CRL cache keyed by CA ID. Each entry starts as `None` and is populated on first CRL request for that CA. Replaces the old single `crl_cache` field.
+- `crl_caches: Arc<HashMap<String, CrlCache>>` — per-CA CRL cache keyed by CA ID. Each entry is `None` until the first CRL request for that CA. Replaces the old single `crl_cache` field.
 - `link_headers: Arc<HashMap<String, Arc<HeaderValue>>>` — per-CA precomputed `Link: …; rel="index"` header values keyed by CA ID. `acme_headers(state, ca_id, nonce)` looks up the header for the request's CA, falling back to the default CA's header. Replaces the old single `link_header` field.
 - `mtc: Arc<MtcState>` — MTC log handle, signing key, and pre-built cosigner HTTPS clients.
 - `profiles: Arc<ProfileRegistry>` — in-memory certificate profile cache; empty when no providers are configured, in which case every order falls back to CA defaults.
+- `tls: Option<Arc<TlsState>>` — present when `[tls]` is enabled and client auth is configured; holds the client-auth config for introspection by handlers.
 - `nonces: Arc<NonceBucket>` — in-memory anti-replay nonce store.
-- `spki_cache: Arc<RwLock<HashMap<…>>>` — per-account SPKI/thumbprint cache to avoid a DB round-trip per authenticated request after the first.
+- `spki_cache: Arc<RwLock<HashMap<String, CachedAccount>>>` — per-account SPKI/thumbprint cache to avoid a DB round-trip per authenticated request after the first.
 - `validation_client: ValidationClient` — shared hyper HTTP client for http-01 challenge validation; connection-pooled so TCP connections are reused across validations.
+- `gss_cred: Option<Arc<GssServerCred>>` — server-side GSSAPI credential for standalone SPNEGO authentication. `None` when `[server.gssapi]` is absent.
+- `admin_gss_cred: Option<Arc<GssServerCred>>` — admin-specific GSSAPI credential from `[admin.gssapi]`; takes precedence over `gss_cred` for admin SPNEGO. `None` when `[admin.gssapi]` is absent.
+- `eab_master_secret: Option<Arc<Zeroizing<Vec<u8>>>>` — decoded master secret for HKDF-based EAB key derivation. `None` when `[server].eab_master_secret` is absent.
+- `audit: Arc<AuditState>` — shared in-memory audit state (overflow flag, FAU_ARP.1 alarm counter). Always present.
+- `audit_policy: Arc<AuditPolicy>` — audit policy extracted from `[admin]` at startup.
+- `admin_sessions: Option<Arc<tokio::sync::Mutex<HashMap<String, AdminSession>>>>` — opaque session token store for admin operator sessions. `None` when `[admin]` is absent.
+- `admin_auth_limiter: Option<AdminAuthLimiter>` — per-source-IP credential-attempt timestamps for admin auth rate-limiting. `None` when `[admin]` is absent.
+- `startup_time: Instant` — time the server process started; used for uptime reporting in `GET /admin/stats`.
 
 `AppState` is `Clone` because `Arc<T>` is `Clone` and `sqlx::AnyPool` is `Clone`. Cloning is cheap (reference count bump). All mutable state (the database and MTC log) is protected at a lower level by sqlx's internal pool management and a `tokio::sync::Mutex<DiskBackedLog>`, respectively.
 
@@ -230,6 +302,12 @@ Holds the key material and issuance policy for a single CA. Key fields:
 - `key_type: String` — the key algorithm string (e.g. `"ec:P-256"`, `"rsa:2048"`).
 - `key: BackendPrivateKey` — CA private key used for certificate and CRL signing.
 - `cert_der: Vec<u8>` — DER-encoded CA certificate.
+- `hash_alg: String` — hash algorithm string for certificate and CRL signatures (e.g. `"sha256"`).
+- `validity_days: u32` — default validity period for issued end-entity certificates.
+- `crl_url: Option<String>` — optional CRL distribution point URL embedded in issued certificates.
+- `ocsp_url: Option<String>` — optional OCSP responder URL embedded in issued certificates.
+- `aki_bytes: Vec<u8>` — RFC 7093 §2 Method 1 key identifier bytes (leftmost 20 bytes of the SHA-256 of the CA public key BIT STRING). Used to validate the AKI component of ARI cert-ids (RFC 9773 §4.1).
+- `enforce_validity_cap: bool` — when `true`, `issue_with_params` rejects issuance when the computed validity exceeds 200 days (CA/B Forum BR §6.3.2).
 - `crl_next_update_secs: u64` — validity window for signed CRLs (determines cache TTL).
 - `caa_identities: Vec<String>` — CAA domain identities specific to this CA; falls back to `[server].caa_identities` when empty.
 
