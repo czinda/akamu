@@ -139,6 +139,7 @@ src/
     landmarks.rs   CRUD for mtc_landmarks table (insert, get_by_seq, list, prune_oldest)
     nonces.rs      Anti-replay nonce management
     orders.rs      CRUD for orders table
+    cross_certs.rs CRUD for cross_certs table (insert, list by issuer/subject CA)
 
   routes/
     mod.rs         Router assembly, shared helpers (parse_jws, acme_headers, json_response)
@@ -165,7 +166,8 @@ src/
     mod.rs         Re-exports ca submodules
     init.rs        CA key and certificate load-or-generate
     csr.rs         PKCS#10 CSR parsing and validation
-    issue.rs       End-entity certificate issuance (issue_certificate + issue_with_params)
+    issue.rs       End-entity and CA certificate issuance (issue_certificate,
+                   issue_with_params, issue_ca_cert, check_is_ca_cert)
     revoke.rs      CRL generation
 
   profiles/
@@ -208,19 +210,35 @@ Defined in `src/state.rs`. Every axum handler receives an `Arc<AppState>` via ax
 
 - `config: Arc<Config>` — immutable configuration parsed at startup.
 - `db: sqlx::AnyPool` — shared connection pool. All database access goes through this.
-- `ca: Arc<CaState>` — CA private key, certificate, and signing policy.
+- `cas: Arc<IndexMap<String, Arc<CaState>>>` — all configured CAs keyed by their ID, in config-file insertion order. Replaces the old single `ca` field.
+- `default_ca_id: Arc<String>` — the CA ID that serves the backward-compatible `/acme/directory` and `/ca/crl` routes. Set to the entry with `is_default = true` in `[[ca]]` config.
+- `crl_caches: Arc<HashMap<String, CrlCache>>` — per-CA CRL cache keyed by CA ID. Each entry starts as `None` and is populated on first CRL request for that CA. Replaces the old single `crl_cache` field.
+- `link_headers: Arc<HashMap<String, Arc<HeaderValue>>>` — per-CA precomputed `Link: …; rel="index"` header values keyed by CA ID. `acme_headers(state, ca_id, nonce)` looks up the header for the request's CA, falling back to the default CA's header. Replaces the old single `link_header` field.
 - `mtc: Arc<MtcState>` — MTC log handle, signing key, and pre-built cosigner HTTPS clients.
 - `profiles: Arc<ProfileRegistry>` — in-memory certificate profile cache; empty when no providers are configured, in which case every order falls back to CA defaults.
 - `nonces: Arc<NonceBucket>` — in-memory anti-replay nonce store.
 - `spki_cache: Arc<RwLock<HashMap<…>>>` — per-account SPKI/thumbprint cache to avoid a DB round-trip per authenticated request after the first.
 - `validation_client: ValidationClient` — shared hyper HTTP client for http-01 challenge validation; connection-pooled so TCP connections are reused across validations.
-- `link_header: Arc<HeaderValue>` — precomputed `Link: <base_url>/acme/directory>; rel="index"` header.
 
 `AppState` is `Clone` because `Arc<T>` is `Clone` and `sqlx::AnyPool` is `Clone`. Cloning is cheap (reference count bump). All mutable state (the database and MTC log) is protected at a lower level by sqlx's internal pool management and a `tokio::sync::Mutex<DiskBackedLog>`, respectively.
 
 ### `CaState`
 
-Holds the CA private key (`BackendPrivateKey` from `synta-certificate`) and the DER-encoded CA certificate. The key is used for both certificate signing and CRL signing. `CaState` is shared across all concurrent handler tasks via `Arc<CaState>`. The underlying `BackendPrivateKey` delegates to the OpenSSL backend, which serializes concurrent signing operations internally.
+Holds the key material and issuance policy for a single CA. Key fields:
+
+- `id: String` — the CA's unique identifier, matching `CaConfig.id` from the config file.
+- `key_type: String` — the key algorithm string (e.g. `"ec:P-256"`, `"rsa:2048"`).
+- `key: BackendPrivateKey` — CA private key used for certificate and CRL signing.
+- `cert_der: Vec<u8>` — DER-encoded CA certificate.
+- `crl_next_update_secs: u64` — validity window for signed CRLs (determines cache TTL).
+- `caa_identities: Vec<String>` — CAA domain identities specific to this CA; falls back to `[server].caa_identities` when empty.
+
+`CaState` is shared across all concurrent handler tasks via `Arc<CaState>`. The underlying `BackendPrivateKey` delegates to the OpenSSL backend, which serializes concurrent signing operations internally.
+
+Two helpers on `AppState` provide access to CA instances:
+
+- `AppState::get_ca(id: &str) -> Option<&Arc<CaState>>` — look up a CA by ID; returns `None` for unknown IDs.
+- `AppState::default_ca() -> &Arc<CaState>` — return the default CA (the one designated by `is_default = true`). Panics only if the server was constructed incorrectly.
 
 ### `AcmeError`
 
@@ -244,11 +262,21 @@ hyper parses the HTTP request (method, URL, headers, body). Tower middleware is 
 
 ### 3. Route dispatch
 
-axum matches the request method and path against the router built in `routes::build_router`. Each route maps to a handler function in the corresponding `routes/` module. The handler receives the following extractors:
+axum matches the request method and path against the router built in `routes::build_router`. Two route sets are registered:
+
+- **Legacy routes** (`/acme/directory`, `/acme/new-account`, etc.) — served by the same handlers, using `default_ca_id` as the implicit CA context.
+- **Per-CA routes** (`/acme/{ca_id}/directory`, `/acme/{ca_id}/new-account`, etc.) — the same handlers, but the `{ca_id}` path parameter selects the CA. Axum resolves static path segments before dynamic ones, so the legacy `/acme/directory` route is always matched before `/acme/{ca_id}/directory`; config validation ensures no CA ID collides with reserved ACME path segments (`"directory"`, `"new-nonce"`, etc.).
+
+The `CaId` extractor (`src/routes/mod.rs`) resolves the active CA for each request. When the `{ca_id}` path parameter is present it validates the value against `state.cas` and returns `404 Not Found` for unknown IDs. On legacy routes without `{ca_id}`, it returns the `default_ca_id`. Every handler that is CA-aware accepts a `CaId` argument.
+
+Each route maps to a handler function in the corresponding `routes/` module. The handler receives the following extractors:
 
 - `State(state): State<Arc<AppState>>` — shared application state.
+- `CaId(ca_id): CaId` — resolved CA identifier for this request.
 - `Path(...)` — URL path parameters (e.g., order ID, authz ID).
 - `body: Bytes` — raw request body for JWS verification.
+
+The `account_scope` setting in `[server]` affects account creation and JWS validation. When set to `"server"` (the default), one account registration is valid for all CAs. When set to `"ca"`, accounts are isolated per CA and each CA directory advertises its own `/acme/{ca_id}/new-account` endpoint; JWS `kid` validation additionally checks that the account's `ca_id` matches the request's CA.
 
 ### 4. JWS verification (POST endpoints)
 
@@ -257,7 +285,7 @@ Almost every POST endpoint calls `routes::parse_jws` before processing the paylo
 1. **Parse**: deserialize the `Bytes` body as a JWS flattened JSON serialization.
 2. **Decode header**: base64url-decode the `protected` header and parse the JSON.
 3. **URL check**: compare `header.url` with the expected full URL for this endpoint. A mismatch returns `unauthorized`.
-4. **Nonce check**: look up `header.nonce` in the `nonces` database table and mark it consumed. A missing or already-used nonce returns `badNonce`. Anti-replay protection is thus database-backed, surviving server restarts.
+4. **Nonce check**: look up `header.nonce` in the in-memory `NonceBucket` and atomically replace it with a fresh nonce. A missing or already-used nonce returns `badNonce`. The nonce store is in-memory (a `Mutex<HashMap>` inside `AppState::nonces`); nonces issued before a server restart are silently dropped, and clients detect the resulting `badNonce` and retry per RFC 8555 §6.5.
 5. **Key resolution**: if the header uses `jwk`, extract the SPKI DER from the JWK directly. If it uses `kid`, look up the account in the database and fetch its stored SPKI DER.
 6. **Signature verification**: verify the JWS signature over `protected || "." || payload` using the resolved public key via `synta-certificate`. Classical algorithms (RS256, RS384,
    RS512, PS256, PS384, PS512, ES256, ES384, ES512, EdDSA) use `verify_signature`. ML-DSA algorithms (`ML-DSA-44`, `ML-DSA-65`, `ML-DSA-87`) are dispatched first — their raw-byte signatures (not DER) are verified with `verify_ml_dsa_with_context` using an empty context string, as required by draft-ietf-cose-dilithium-11 §4.
@@ -276,8 +304,8 @@ For write operations that span multiple tables (e.g., creating an order with its
 Handlers return `Result<Response, AcmeError>`. On success, they call `routes::json_response`, which:
 
 1. Generates a new anti-replay nonce.
-2. Inserts it into the `nonces` table.
-3. Adds the `Replay-Nonce` and `Link: <directory>; rel="index"` headers.
+2. Stores it in the in-memory `NonceBucket`.
+3. Adds the `Replay-Nonce` and `Link: <directory>; rel="index"` headers, selecting the correct `Link` value from `state.link_headers` for the active CA.
 4. Serializes the JSON body and sets `Content-Type: application/json`.
 
 On error, `AcmeError::into_response` builds a `application/problem+json` body.

@@ -29,7 +29,7 @@ At server startup, nonces older than 24 hours are swept: `db::nonces::sweep_expi
 
 ## Schema
 
-The database has six tables, applied through three migration files.
+The core schema begins with six tables applied through three migration files. Later migrations add additional columns and tables as described below.
 
 ### Migration 001 — Initial schema
 
@@ -166,11 +166,12 @@ CREATE INDEX IF NOT EXISTS idx_nonces_created
 
 `src/db/schema.rs` defines Rust structs mirroring each table row. These are plain data structs used to move data between the database layer and the application logic:
 
-- `AccountRow` — mirrors `accounts`.
-- `OrderRow` — mirrors `orders`.
-- `AuthorizationRow` — mirrors `authorizations`.
+- `AccountRow` — mirrors `accounts`. Includes `ca_id: String` (empty = server-wide scope; non-empty only when `server.account_scope = "ca"`).
+- `OrderRow` — mirrors `orders`. Includes `ca_id: String` (the CA that issued/will issue the certificate for this order; defaults to `"default"` for rows created before migration 0012).
+- `AuthorizationRow` — mirrors `authorizations`. Includes `ca_id: String` (the CA that owns this authorization; empty for pre-migration rows).
 - `ChallengeRow` — mirrors `challenges`.
-- `CertificateRow` — mirrors `certificates`.
+- `CertificateRow` — mirrors `certificates`. Includes `ca_id: String` (the issuing CA; defaults to `"default"` for rows created before migration 0012).
+- `CrossCertRow` — mirrors `cross_certs`. Fields: `issuer_ca_id`, `subject_ca_id` (nullable — `None` when the subject is an external CA), `subject_dn`, `subject_spki`, `cross_cert_der`, `cross_cert_pem`, `serial_number`, `not_before`, `not_after`, `created`.
 
 ## Database module structure
 
@@ -183,6 +184,7 @@ Each table has its own submodule in `src/db/`:
 | `db::authz` | `insert`, `get_by_id`, `update_status` |
 | `db::challenges` | `insert`, `get_by_id`, `list_by_authz`, `set_processing`, `set_invalid` |
 | `db::certs` | `get_by_id`, `get_by_serial`, `revoke`, `set_mtc_log_index` |
+| `db::cross_certs` | `insert`, `list_by_issuer`, `list_by_subject`, `get_by_id` |
 | `db::nonces` | `insert`, `consume`, `sweep_expired` |
 
 ## Transactions
@@ -205,6 +207,7 @@ parent order; both FKs exist in the database.
 erDiagram
     accounts {
         TEXT id PK
+        TEXT ca_id
         TEXT status
         TEXT contact
         BLOB public_key
@@ -215,6 +218,7 @@ erDiagram
     orders {
         TEXT id PK
         TEXT account_id FK
+        TEXT ca_id
         TEXT status
         INTEGER expires
         TEXT identifiers
@@ -249,6 +253,7 @@ erDiagram
         TEXT id PK
         TEXT order_id FK
         TEXT account_id FK
+        TEXT ca_id
         TEXT serial_number UK
         TEXT status
         BLOB der
@@ -264,6 +269,19 @@ erDiagram
         TEXT nonce PK
         INTEGER created
     }
+    cross_certs {
+        TEXT id PK
+        TEXT issuer_ca_id
+        TEXT subject_ca_id
+        TEXT subject_dn
+        BLOB subject_spki
+        BLOB cross_cert_der
+        TEXT cross_cert_pem
+        TEXT serial_number
+        INTEGER not_before
+        INTEGER not_after
+        INTEGER created
+    }
 
     accounts ||--o{ orders : "account_id"
     accounts ||--o{ authorizations : "account_id (denormalized)"
@@ -272,6 +290,73 @@ erDiagram
     authorizations ||--o{ challenges : "authz_id"
     orders ||--o{ certificates : "order_id"
 ```
+
+### Migration 009 — Operator lockout
+
+Adds `failed_attempts INTEGER NOT NULL DEFAULT 0` and `locked_until TEXT` columns to the `operators` table for FIA_AFL.1 lockout support.
+
+### Migration 0012 — Multi-CA support (SQLite), 0011 (PostgreSQL/MariaDB)
+
+Adds `ca_id TEXT NOT NULL DEFAULT ''` to `accounts`, and `ca_id TEXT NOT NULL DEFAULT 'default'` to `orders` and `certificates`. Also adds supporting indexes:
+
+```sql
+ALTER TABLE accounts     ADD COLUMN ca_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE orders       ADD COLUMN ca_id TEXT NOT NULL DEFAULT 'default';
+ALTER TABLE certificates ADD COLUMN ca_id TEXT NOT NULL DEFAULT 'default';
+
+CREATE INDEX idx_accounts_ca_id ON accounts(ca_id);
+CREATE INDEX idx_orders_ca_id   ON orders(ca_id);
+CREATE INDEX idx_certs_ca_id    ON certificates(ca_id);
+-- Partial index for CRL generation (WHERE status = 'revoked' AND ca_id = ?)
+CREATE INDEX idx_certs_ca_id_revoked ON certificates(ca_id) WHERE status = 'revoked';
+```
+
+Sentinel conventions:
+
+- `accounts.ca_id = ''` (empty string) — server-wide account scope; the account may use any CA. Empty string is not a valid CA ID (config validator requires at least one alphanumeric character).
+- `orders.ca_id = 'default'` — backfills pre-migration rows to the canonical single-CA name. `"default"` is the auto-assigned ID for single-CA compatibility mode.
+- `certificates.ca_id = 'default'` — same backfill convention.
+
+### Migration 0013 — Cross-certificates (SQLite), 0012 (PostgreSQL/MariaDB)
+
+Adds the `cross_certs` table:
+
+```sql
+CREATE TABLE cross_certs (
+    id              TEXT    PRIMARY KEY,        -- UUID
+    issuer_ca_id    TEXT    NOT NULL,           -- CA that signed the cross-cert
+    subject_ca_id   TEXT,                      -- akamu CA ID if same-server; NULL if external
+    subject_dn      TEXT    NOT NULL,           -- RFC 4514 subject DN string
+    subject_spki    BLOB    NOT NULL,           -- DER SubjectPublicKeyInfo of subject CA key
+    cross_cert_der  BLOB    NOT NULL,           -- DER of the issued cross-certificate
+    cross_cert_pem  TEXT    NOT NULL,           -- PEM for download
+    not_before      INTEGER NOT NULL,           -- Unix epoch
+    not_after       INTEGER NOT NULL,           -- Unix epoch
+    serial_number   TEXT    NOT NULL,           -- hex-encoded (same format as certificates)
+    created         INTEGER NOT NULL,           -- Unix epoch
+    UNIQUE (issuer_ca_id, serial_number)        -- RFC 5280: unique within issuing CA
+);
+```
+
+`subject_ca_id` is `NULL` when the subject is an external CA whose certificate was uploaded via the admin API. When the subject is another same-server CA, `subject_ca_id` matches its `CaConfig.id`.
+
+Rows are insert-only (never mutated after creation). The module `src/db/cross_certs.rs` provides `insert`, `list_by_issuer`, `list_by_subject`, and `get_by_id`.
+
+### Migration 0014/0015 — Authorization CA scope and operator CA scope
+
+Migration 0014 (SQLite) / 0013 (PostgreSQL/MariaDB) adds `ca_id TEXT NOT NULL DEFAULT ''` to `authorizations`, recording which CA owns each authorization.
+
+Migration 0015 (SQLite) / 0014 (PostgreSQL/MariaDB) adds `ca_id TEXT NOT NULL DEFAULT ''` to `operators`. For `ca_ra` operators, a non-empty `ca_id` restricts the operator to that specific CA; empty means server-wide. The `db::operators::update()` function accepts `ca_id: Option<&str>`: `None` means no change, `Some("")` clears the CA scope, `Some("x")` sets it.
+
+The `OperatorRow` struct in `src/db/operators.rs` includes:
+
+```rust
+/// CA scope for ca_ra operators.  Empty string means server-wide (no restriction).
+/// Ignored for all roles other than ca_ra.
+pub ca_id: String,
+```
+
+`AdminSession.ca_id` is populated from the operator row at login time and propagated to all admin request handlers.
 
 ## Foreign key enforcement
 

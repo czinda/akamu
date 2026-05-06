@@ -129,6 +129,8 @@ Tests verify:
 - IP SAN issuance works.
 - Invalid IP SAN string returns `AcmeError::Builder`.
 - Unknown SAN type is silently skipped.
+- `issue_ca_cert` produces a CA certificate with `BasicConstraints cA=TRUE` and no `pathLenConstraint`.
+- `check_is_ca_cert` accepts a CA cert and rejects an end-entity cert.
 
 ### `src/ca/revoke.rs`
 
@@ -233,6 +235,71 @@ mod tests {
 For tests that need a database, call `crate::db::open(":memory:").await.unwrap()` to get a fresh in-memory database with the full schema applied.
 
 For tests that need a CA, call `crate::ca::init::load_or_generate(&config).unwrap()` with a `CaConfig` pointing to a `tempfile::TempDir`.
+
+For tests that need a full `AppState` with multi-CA support, build `cas` as an `IndexMap` and populate `crl_caches` and `link_headers` as `HashMap`s keyed by CA ID. See the "Building a test AppState" section below for the canonical pattern.
+
+## Building a test AppState
+
+Integration tests that exercise ACME handlers need a full `AppState`. The multi-CA refactor changed several fields; the canonical test-setup pattern is:
+
+```rust
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use indexmap::IndexMap;
+
+// 1. Open an in-memory database with the full schema.
+let db = crate::db::open(":memory:").await.unwrap();
+
+// 2. Generate a test CA (or load from tempfile).
+let ca_cfg = CaConfig { id: "default".to_string(), key_type: "ec:P-256".to_string(), .. };
+let (key, cert_der) = crate::ca::init::load_or_generate(&ca_cfg).unwrap();
+let ca_state = Arc::new(CaState {
+    id: ca_cfg.id.clone(),
+    key_type: ca_cfg.key_type.clone(),
+    key,
+    cert_der,
+    crl_next_update_secs: 86400,
+    caa_identities: vec![],
+    // … other required fields (hash_alg, validity_days, etc.) …
+});
+
+// 3. Build the IndexMap of CAs.
+let mut cas_map = IndexMap::new();
+cas_map.insert(ca_cfg.id.clone(), ca_state.clone());
+let cas = Arc::new(cas_map);
+let default_ca_id = Arc::new(ca_cfg.id.clone());
+
+// 4. Build per-CA CRL cache and Link headers.
+let mut crl_caches_map: HashMap<String, crate::state::CrlCache> = HashMap::new();
+crl_caches_map.insert(ca_cfg.id.clone(), Arc::new(Mutex::new(None)));
+let crl_caches = Arc::new(crl_caches_map);
+
+let mut link_headers_map = HashMap::new();
+let link_value = axum::http::HeaderValue::from_str(
+    &format!("<{}/acme/directory>; rel=\"index\"", base_url)
+).unwrap();
+link_headers_map.insert(ca_cfg.id.clone(), Arc::new(link_value));
+let link_headers = Arc::new(link_headers_map);
+
+// 5. Assemble AppState.
+let state = Arc::new(AppState {
+    config: Arc::new(config),
+    db,
+    cas,
+    default_ca_id,
+    crl_caches,
+    link_headers,
+    // … all other required fields …
+});
+```
+
+Key points:
+
+- `CaState` now requires `id`, `key_type`, and `crl_next_update_secs` in addition to the existing fields. Tests that construct `CaState` directly must supply all three.
+- `AppState::cas` is an `Arc<IndexMap<String, Arc<CaState>>>`, not a single `Arc<CaState>`. All lookups go through `state.get_ca(id)` or `state.default_ca()`.
+- `AppState::crl_caches` is an `Arc<HashMap<String, CrlCache>>`. Each entry must be keyed by the same CA ID as the corresponding `cas` entry.
+- `AppState::link_headers` is an `Arc<HashMap<String, Arc<HeaderValue>>>`. The `acme_headers` helper falls back to the default CA's header when a per-CA header is missing, but tests should always populate the map for every registered CA ID to avoid log noise.
+- Tests that only need a single CA can keep using a single entry in the `IndexMap`; there is no requirement to configure multiple CAs in tests.
 
 ## Coverage
 

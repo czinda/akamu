@@ -171,3 +171,99 @@ The CRL:
 The CRL Number is encoded as a positive DER INTEGER. `encode_integer_der` handles the two's complement padding (adding a `0x00` prefix when the high bit of the first content byte is set).
 
 `build_crl` is called on each `GET /ca/crl` request by `src/routes/crl.rs`. The handler fetches all revoked entries from the DB via `db::certs::list_revoked`, converts them to `RevokedEntry` values, and returns the DER response directly. No pre-generation or caching is needed at expected issuance volumes.
+
+## Multi-CA support
+
+When more than one `[[ca]]` entry is present in `config.toml`, `main.rs` runs the `ca::init::load_or_generate` loop for each entry and builds an `IndexMap<String, Arc<CaState>>` stored in `AppState::cas`.
+
+### `CaState` structure
+
+Each `CaState` instance carries all information needed to issue and revoke certificates for one CA. The fields added for multi-CA deployments are:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `String` | Unique CA identifier; matches `CaConfig.id` and appears as the `{ca_id}` URL segment. |
+| `key_type` | `String` | Key algorithm string from config (e.g. `"ec:P-256"`, `"rsa:2048"`). Stored for logging and API responses. |
+| `crl_next_update_secs` | `u64` | Validity window for signed CRLs in seconds; determines the CRL cache TTL. |
+| `caa_identities` | `Vec<String>` | CAA domain identities specific to this CA. When empty, falls back to `[server].caa_identities`. |
+
+All other `CaState` fields (`key`, `cert_der`, `hash_alg`, `validity_days`, `crl_url`, `ocsp_url`, `aki_bytes`, `enforce_validity_cap`) exist in single-CA deployments as well.
+
+### CA lookup helpers
+
+Two methods on `AppState` are the canonical way to obtain a `CaState` reference inside handlers:
+
+```rust
+// Look up a CA by its string ID; returns None for unknown IDs.
+let ca: Option<&Arc<CaState>> = state.get_ca("rsa");
+
+// Return the default CA (the one with is_default = true in config).
+// Panics only if the server was constructed incorrectly.
+let ca: &Arc<CaState> = state.default_ca();
+```
+
+The `CaId` extractor in `src/routes/mod.rs` resolves the per-request CA ID from the `{ca_id}` URL path parameter or falls back to `state.default_ca_id`. Handlers pass this string to `state.get_ca(ca_id)` when they need the full `CaState`.
+
+### Per-CA initialization loop
+
+`main.rs` builds the multi-CA state with a loop:
+
+```rust
+for ca_cfg in &config.cas {
+    let (key, cert_der) = ca::init::load_or_generate(ca_cfg)?;
+    let ca_state = Arc::new(CaState {
+        id: ca_cfg.id.clone(),
+        key_type: ca_cfg.key_type.clone(),
+        // … other fields …
+    });
+    crl_caches_map.insert(ca_cfg.id.clone(), Default::default());
+    link_headers_map.insert(ca_cfg.id.clone(), build_link_header(&config, &ca_cfg.id));
+    cas_map.insert(ca_cfg.id.clone(), ca_state);
+}
+let default_ca_id = config.default_ca().id.clone();
+```
+
+`Config::default_ca()` returns the `CaConfig` entry with `is_default = true`. `Config::validate()` enforces that exactly one entry is default, all IDs are unique and lowercase, and no ID matches a reserved ACME path segment.
+
+### Profile filtering per CA
+
+`ProfileRegistry::profiles_for_ca(ca_id)` returns only the profiles whose `ca_ids` list is empty (unrestricted) or explicitly contains `ca_id`. `ProfileRegistry::resolve_for_ca(name, ca_id)` applies the same filter to a single profile lookup. Handlers call these instead of the unfiltered `all_profiles()` / `resolve()` methods when operating on a specific CA.
+
+## Cross-signing
+
+The admin API allows an operator to issue a cross-certificate: a CA certificate signed by one Akāmu CA for the public key of another CA (same-server or external). Cross-certificates are stored in the `cross_certs` table and served at `/ca/{ca_id}/cross-certs`.
+
+### `issue_ca_cert`
+
+```rust
+pub fn issue_ca_cert(
+    issuer_ca: &CaState,
+    subject_cert_der: &[u8],
+    validity_years: u32,
+) -> Result<IssuedCaCert, AcmeError>
+```
+
+Issues a CA certificate signed by `issuer_ca` for the public key extracted from `subject_cert_der`. The issued certificate carries:
+
+| Extension | Value |
+|---|---|
+| BasicConstraints | Critical; `cA=TRUE`, no `pathLenConstraint` |
+| KeyUsage | Critical; `keyCertSign + cRLSign` |
+| SubjectKeyIdentifier | RFC 7093 §2 Method 1 hash of the subject CA's SPKI |
+| AuthorityKeyIdentifier | RFC 7093 §2 Method 1 hash of the issuer CA's SPKI |
+
+There is deliberately no `pathLenConstraint` because cross-certificates are CA certificates — restricting the path length would prevent the subject CA from issuing end-entity certificates to subscribers. The issuer CA's own CA certificate constrains the overall chain depth.
+
+Validity is computed as `validity_years` Julian years (365.25 days each) from `now`, with no 5-minute backdate clamp applied (cross-certificate issuance is operator-initiated, not time-sensitive).
+
+The return value is an `IssuedCaCert` struct containing `cert_der`, `cert_pem`, the hex `serial_number`, Unix timestamps `not_before` / `not_after`, the `subject_spki_der`, and a `subject_dn` RFC 4514 string.
+
+### `check_is_ca_cert`
+
+```rust
+pub(crate) fn check_is_ca_cert(cert_der: &[u8], now: i64) -> Result<(), AcmeError>
+```
+
+Validates that a DER certificate has `BasicConstraints cA=TRUE` before it is accepted as a cross-signing subject. Uses `ValidationProfile::Rfc5280` with `ee_extension_policy = new_default_webpki_ca()` so that CABF WebPKI end-entity restrictions are bypassed and `cA=TRUE` is required. The certificate is used as its own trust anchor (self-signed root CA scenario). Returns `AcmeError::BadRequest` when the check fails.
+
+The admin cross-cert endpoint (`POST /admin/cross-certs`) calls `check_is_ca_cert` before calling `issue_ca_cert` to reject requests that supply an end-entity certificate as the subject.
