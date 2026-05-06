@@ -58,12 +58,12 @@ impl NonceBucket {
     }
 
     /// Store a new nonce with its creation timestamp.
-    pub fn insert(&self, nonce: &str) {
+    pub fn insert(&self, nonce: String) {
         let now = nonce_now_secs();
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(nonce.to_string(), now);
+            .insert(nonce, now);
     }
 
     /// Consume `old_nonce` and atomically insert `new_nonce`.
@@ -262,6 +262,8 @@ pub struct TlsState {
 pub struct CaState {
     /// Unique identifier for this CA (matches `CaConfig.id`).
     pub id: String,
+    /// Key type string from config, e.g. `"ec:P-256"` or `"rsa:2048"`.
+    pub key_type: String,
     /// CA private key (used for signing certificates and CRLs).
     pub key: BackendPrivateKey,
     /// DER-encoded CA certificate.
@@ -348,14 +350,14 @@ pub enum OperatorRole {
 }
 
 impl std::str::FromStr for OperatorRole {
-    type Err = ();
+    type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "administrator" => Ok(OperatorRole::Administrator),
             "ca_operations" => Ok(OperatorRole::CaOperations),
             "ca_ra" => Ok(OperatorRole::CaRa),
             "auditor" => Ok(OperatorRole::Auditor),
-            _ => Err(()),
+            _ => Err(format!("unknown operator role: {s:?}")),
         }
     }
 }
@@ -369,6 +371,12 @@ impl OperatorRole {
             OperatorRole::CaRa => "ca_ra",
             OperatorRole::Auditor => "auditor",
         }
+    }
+}
+
+impl std::fmt::Display for OperatorRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 

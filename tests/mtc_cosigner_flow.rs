@@ -416,6 +416,8 @@ async fn build_akamu_state(
     let cosigner_client = build_cosigner_client_http(cosigner_url.to_owned());
 
     let ca = Arc::new(CaState {
+        id: "default".into(),
+        key_type: "ec:P-256".into(),
         key: ca_key,
         cert_der: ca_cert_der,
         hash_alg: "sha256".into(),
@@ -423,6 +425,7 @@ async fn build_akamu_state(
         crl_url: None,
         ocsp_url: None,
         aki_bytes: ca_aki_bytes,
+        crl_next_update_secs: 86400,
         enforce_validity_cap: false,
         caa_identities: vec![],
     });
@@ -432,7 +435,12 @@ async fn build_akamu_state(
         db: db_conn.clone(),
         db_kind: db::DbKind::Sqlite,
         profiles: akamu::profiles::ProfileRegistry::empty(&ca),
-        ca,
+        cas: {
+            let mut _cas = indexmap::IndexMap::new();
+            _cas.insert("default".to_string(), ca.clone());
+            Arc::new(_cas)
+        },
+        default_ca_id: Arc::new("default".to_string()),
         mtc: Arc::new(MtcState {
             log: Some(shared_log),
             algorithm: HashAlgorithm::Sha256,
@@ -444,12 +452,19 @@ async fn build_akamu_state(
         tls: None,
         spki_cache: Arc::new(RwLock::new(HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),
-        link_header: Arc::new(
-            axum::http::HeaderValue::from_str(&format!(
-                "<{base_url}/acme/directory>;rel=\"index\""
-            ))
-            .unwrap(),
-        ),
+        link_headers: {
+            let mut _lh = std::collections::HashMap::new();
+            _lh.insert(
+                "default".to_string(),
+                Arc::new(
+                    axum::http::HeaderValue::from_str(&format!(
+                        "<{base_url}/acme/directory>;rel=\"index\""
+                    ))
+                    .unwrap(),
+                ),
+            );
+            Arc::new(_lh)
+        },
         validation_client: {
             let https = hyper_rustls::HttpsConnectorBuilder::new()
                 .with_native_roots()
@@ -460,7 +475,11 @@ async fn build_akamu_state(
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
                 .build(https)
         },
-        crl_cache: Default::default(),
+        crl_caches: {
+            let mut _cc = std::collections::HashMap::new();
+            _cc.insert("default".to_string(), Default::default());
+            Arc::new(_cc)
+        },
         audit: std::sync::Arc::new(akamu::audit::AuditState::new()),
         audit_policy: std::sync::Arc::new(akamu::audit::AuditPolicy::default()),
         admin_sessions: None,

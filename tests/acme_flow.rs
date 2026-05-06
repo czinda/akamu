@@ -244,6 +244,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
 
     let ca = Arc::new(CaState {
         id: "default".into(),
+        key_type: "ec:P-256".into(),
         crl_next_update_secs: 86400,
         key: ca_key,
         cert_der: ca_cert_der,
@@ -2283,6 +2284,7 @@ async fn test_directory_with_optional_fields() {
     let db_conn = db::open("sqlite::memory:", 1, false).await.unwrap();
     let ca = Arc::new(akamu::state::CaState {
         id: "default".into(),
+        key_type: "ec:P-256".into(),
         crl_next_update_secs: 86400,
         key: ca_key,
         cert_der: ca_cert_der,
@@ -2695,6 +2697,7 @@ async fn test_finalize_with_mtc_enabled() {
 
     let ca = Arc::new(CaState {
         id: "default".into(),
+        key_type: "ec:P-256".into(),
         crl_next_update_secs: 86400,
         key: ca_key,
         cert_der: ca_cert_der,
@@ -2985,6 +2988,7 @@ async fn test_finalize_with_aia_and_cdp() {
     let db_conn = db::open("sqlite::memory:", 1, false).await.unwrap();
     let ca = Arc::new(CaState {
         id: "default".into(),
+        key_type: "ec:P-256".into(),
         crl_next_update_secs: 86400,
         key: ca_key,
         cert_der: ca_cert_der,

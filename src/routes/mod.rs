@@ -488,7 +488,7 @@ pub(crate) fn new_nonce(state: &AppState) -> Result<String, AcmeError> {
     let mut bytes = [0u8; 16];
     getrandom::getrandom(&mut bytes).map_err(|e| AcmeError::Internal(format!("nonce rng: {e}")))?;
     let nonce = URL_SAFE_NO_PAD.encode(bytes);
-    state.nonces.insert(&nonce);
+    state.nonces.insert(nonce.clone());
     Ok(nonce)
 }
 

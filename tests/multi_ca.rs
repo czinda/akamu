@@ -111,6 +111,7 @@ async fn build_two_ca_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir
 
     let ca_rsa = Arc::new(CaState {
         id: "rsa".into(),
+        key_type: "rsa:2048".into(),
         crl_next_update_secs: 86400,
         key: rsa_key,
         cert_der: rsa_cert_der,
@@ -124,6 +125,7 @@ async fn build_two_ca_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir
     });
     let ca_ec = Arc::new(CaState {
         id: "ec".into(),
+        key_type: "ec:P-256".into(),
         crl_next_update_secs: 86400,
         key: ec_key,
         cert_der: ec_cert_der,
@@ -594,6 +596,7 @@ async fn admin_cas_list_returns_both_cas() {
 
     let ca_rsa = Arc::new(CaState {
         id: "rsa".into(),
+        key_type: "rsa:2048".into(),
         crl_next_update_secs: 86400,
         key: rsa_key,
         cert_der: rsa_cert_der,
@@ -607,6 +610,7 @@ async fn admin_cas_list_returns_both_cas() {
     });
     let ca_ec = Arc::new(CaState {
         id: "ec".into(),
+        key_type: "ec:P-256".into(),
         crl_next_update_secs: 86400,
         key: ec_key,
         cert_der: ec_cert_der,

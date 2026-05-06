@@ -183,6 +183,7 @@ async fn run() -> Result<(), String> {
 
         let ca_state = Arc::new(CaState {
             id: ca_cfg.id.clone(),
+            key_type: ca_cfg.key_type.clone(),
             key: ca_key,
             cert_der: ca_cert_der,
             hash_alg: ca_cfg.hash_alg.clone(),

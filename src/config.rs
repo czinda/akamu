@@ -1074,6 +1074,8 @@ impl Default for ServerConfig {
 
 fn is_valid_ca_id(id: &str) -> bool {
     // max 64 chars: matches MariaDB VARCHAR(64) column for ca_id
+    // lowercase-only so reserved-segment checks are unambiguous and Axum
+    // route matching stays consistent (paths are case-sensitive).
     if id.is_empty() || id.len() > 64 {
         return false;
     }
@@ -1081,12 +1083,12 @@ fn is_valid_ca_id(id: &str) -> bool {
     match chars.next() {
         None => return false,
         Some(c) => {
-            if !c.is_ascii_alphanumeric() {
+            if !c.is_ascii_lowercase() && !c.is_ascii_digit() {
                 return false;
             }
         }
     }
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
 /// Deserialize either a `[ca]` single-table (backward compat) or a
@@ -1180,12 +1182,11 @@ impl Config {
             }
             if !is_valid_ca_id(&ca.id) {
                 return Err(format!(
-                    "CA id {:?} must match ^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                    "CA id {:?} must match ^[a-z0-9][a-z0-9_-]*$",
                     ca.id
                 ));
             }
-            let id_lower = ca.id.to_ascii_lowercase();
-            if RESERVED_CA_IDS.contains(&id_lower.as_str()) {
+            if RESERVED_CA_IDS.contains(&ca.id.as_str()) {
                 return Err(format!(
                     "CA id {:?} is a reserved ACME path segment and cannot be used",
                     ca.id
@@ -1220,6 +1221,24 @@ impl Config {
                     "[server].account_scope must be \"server\" or \"ca\", got {:?}",
                     other
                 ));
+            }
+        }
+
+        // Validate that ca_ids in builtin profiles reference configured CAs.
+        let known_ca_ids: std::collections::HashSet<&str> =
+            self.cas.iter().map(|c| c.id.as_str()).collect();
+        for (provider_name, provider) in &self.profiles.providers {
+            if let ProviderConfig::Builtin(builtin) = provider {
+                for (profile_name, profile) in &builtin.profiles {
+                    for ca_id in &profile.ca_ids {
+                        if !known_ca_ids.contains(ca_id.as_str()) {
+                            return Err(format!(
+                                "profile {profile_name:?} in provider {provider_name:?}: \
+                                 ca_ids references unknown CA id {ca_id:?}"
+                            ));
+                        }
+                    }
+                }
             }
         }
 
@@ -1795,7 +1814,8 @@ enabled = false
 
     #[test]
     fn multi_ca_validate_rejects_reserved_id_case_insensitive() {
-        // "Directory" (mixed case) must be rejected like "directory".
+        // "Directory" (mixed case) must be rejected — CA IDs are lowercase-only
+        // so mixed-case collisions with reserved path segments cannot happen.
         let toml = r#"
 listen_addr = "127.0.0.1:8080"
 base_url = "https://acme.example.com"
@@ -1812,7 +1832,12 @@ enabled = false
 "#;
         let cfg: Config = toml::from_str(toml).unwrap();
         let err = cfg.validate().unwrap_err();
-        assert!(err.contains("reserved"), "err: {err}");
+        // Mixed-case IDs are now rejected at the format check (lowercase-only)
+        // before the reserved-segment check is reached.
+        assert!(
+            err.contains("reserved") || err.contains("must match"),
+            "err: {err}"
+        );
     }
 
     #[test]

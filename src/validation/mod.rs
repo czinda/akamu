@@ -457,6 +457,7 @@ mod tests {
 
         let ca = Arc::new(CaState {
             id: "default".into(),
+            key_type: "ec:P-256".into(),
             key: ca_key,
             cert_der: ca_cert_der,
             hash_alg: "sha256".into(),
@@ -971,6 +972,7 @@ mod tests {
         let db_conn = db::open("sqlite::memory:", 1, false).await.unwrap();
         let ca = Arc::new(CaState {
             id: "default".into(),
+            key_type: "ec:P-256".into(),
             key: ca_key,
             cert_der: ca_cert_der,
             hash_alg: "sha256".into(),
@@ -1298,6 +1300,7 @@ mod tests {
         let (ca_key, ca_cert_der) = crate::ca::init::load_or_generate(config.default_ca()).unwrap();
         let ca = Arc::new(CaState {
             id: "default".into(),
+            key_type: "ec:P-256".into(),
             key: ca_key,
             cert_der: ca_cert_der,
             hash_alg: "sha256".into(),

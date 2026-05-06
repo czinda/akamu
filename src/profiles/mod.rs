@@ -470,6 +470,7 @@ mod tests {
     fn make_ca() -> CaState {
         CaState {
             id: "default".into(),
+            key_type: "ec:P-256".into(),
             key: synta_certificate::BackendPrivateKey::generate_ec("P-256").unwrap(),
             cert_der: vec![],
             hash_alg: "sha256".into(),
@@ -504,7 +505,9 @@ mod tests {
         }
     }
 
-    fn make_registry(profiles: HashMap<String, (String, CertificateParameters)>) -> Arc<ProfileRegistry> {
+    fn make_registry(
+        profiles: HashMap<String, (String, CertificateParameters)>,
+    ) -> Arc<ProfileRegistry> {
         let ca = make_ca();
         let reg = Arc::new(ProfileRegistry {
             cache: RwLock::new(ProfileCache {

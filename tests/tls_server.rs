@@ -457,6 +457,7 @@ async fn start_tls_server() -> TlsTestServer {
 
     let ca_state = Arc::new(CaState {
         id: "default".into(),
+        key_type: "ec:P-256".into(),
         key: ca_key,
         cert_der: ca_cert_der.clone(),
         hash_alg: "sha256".into(),

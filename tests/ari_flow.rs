@@ -181,6 +181,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
     let db_conn = db::open("sqlite::memory:", 1, false).await.unwrap();
     let ca = Arc::new(CaState {
         id: "default".into(),
+        key_type: "ec:P-256".into(),
         crl_next_update_secs: 86400,
         key: ca_key,
         cert_der: ca_cert_der,

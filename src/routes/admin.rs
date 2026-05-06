@@ -1920,15 +1920,10 @@ pub async fn get_cas(operator: OperatorContext, State(state): State<Arc<AppState
         .cas
         .values()
         .map(|ca| {
-            let cfg = state
-                .config
-                .cas
-                .iter()
-                .find(|c| c.id == ca.id);
             json!({
                 "id": ca.id,
                 "is_default": ca.id == state.default_ca_id.as_str(),
-                "key_type": cfg.map(|c| c.key_type.as_str()).unwrap_or("unknown"),
+                "key_type": ca.key_type,
                 "hash_alg": ca.hash_alg,
                 "crl_url": ca.crl_url,
                 "ocsp_url": ca.ocsp_url,
@@ -1958,17 +1953,23 @@ pub async fn get_ca(
             .into_response();
     };
 
-    let cfg = state.config.cas.iter().find(|c| c.id == ca.id);
-    let cert_pem =
-        String::from_utf8(der_to_pem("CERTIFICATE", &ca.cert_der))
-            .unwrap_or_default();
+    let cert_pem = match String::from_utf8(der_to_pem("CERTIFICATE", &ca.cert_der)) {
+        Ok(p) => p,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": 500, "detail": "failed to encode CA certificate"})),
+            )
+                .into_response();
+        }
+    };
 
     (
         StatusCode::OK,
         Json(json!({
             "id": ca.id,
             "is_default": ca.id == state.default_ca_id.as_str(),
-            "key_type": cfg.map(|c| c.key_type.as_str()).unwrap_or("unknown"),
+            "key_type": ca.key_type,
             "hash_alg": ca.hash_alg,
             "validity_days": ca.validity_days,
             "crl_url": ca.crl_url,
@@ -2050,15 +2051,23 @@ pub async fn post_ca_crl_force(
 
 // ── Cross-signing ─────────────────────────────────────────────────────────────
 
+/// The subject for a cross-sign request: either a same-server CA by ID, or an
+/// external CA supplied as a PEM certificate block.  Exactly one variant must
+/// be present; serde rejects JSON with neither or both keys.
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub enum CrossSignSubject {
+    /// Same-server CA whose certificate will become the cross-cert subject.
+    SameServer { subject_ca_id: String },
+    /// PEM-encoded certificate of an external CA to cross-sign.
+    External { subject_cert_pem: String },
+}
+
 /// Request body for `POST /admin/ca/{id}/cross-sign`.
-///
-/// Exactly one of `subject_ca_id` or `subject_cert_pem` must be supplied.
 #[derive(Deserialize)]
 pub struct CrossSignPayload {
-    /// Same-server CA whose certificate will become the cross-cert subject.
-    subject_ca_id: Option<String>,
-    /// PEM-encoded certificate of an external CA to cross-sign.
-    subject_cert_pem: Option<String>,
+    #[serde(flatten)]
+    subject: CrossSignSubject,
     /// Validity of the cross-certificate in years (default: 5).
     #[serde(default = "default_cross_sign_validity")]
     validity_years: u32,
@@ -2081,6 +2090,15 @@ pub async fn post_ca_cross_sign(
 ) -> Response {
     require_role!(operator, state, Administrator | CaOperations);
 
+    // Validate validity_years before doing any CA lookups.
+    if payload.validity_years == 0 || payload.validity_years > 50 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"status": 400, "detail": "validity_years must be between 1 and 50"})),
+        )
+            .into_response();
+    }
+
     // Resolve the issuer CA.
     let issuer_ca = match state.get_ca(&issuer_id) {
         Some(ca) => ca.clone(),
@@ -2093,18 +2111,20 @@ pub async fn post_ca_cross_sign(
         }
     };
 
-    // Resolve the subject cert DER from either field.
-    let subject_cert_der = match (&payload.subject_ca_id, &payload.subject_cert_pem) {
-        (Some(subj_id), None) => {
-            if subj_id == &issuer_id {
+    // Resolve the subject cert DER and the subject_ca_id for audit/response.
+    let (subject_cert_der, subject_ca_id) = match &payload.subject {
+        CrossSignSubject::SameServer { subject_ca_id } => {
+            if subject_ca_id == &issuer_id {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(json!({"status": 400, "detail": "issuer and subject CA must be different"})),
+                    Json(
+                        json!({"status": 400, "detail": "issuer and subject CA must be different"}),
+                    ),
                 )
                     .into_response();
             }
-            match state.get_ca(subj_id) {
-                Some(ca) => ca.cert_der.clone(),
+            match state.get_ca(subject_ca_id) {
+                Some(ca) => (ca.cert_der.clone(), Some(subject_ca_id.clone())),
                 None => {
                     return (
                         StatusCode::NOT_FOUND,
@@ -2114,9 +2134,9 @@ pub async fn post_ca_cross_sign(
                 }
             }
         }
-        (None, Some(pem)) => {
+        CrossSignSubject::External { subject_cert_pem } => {
             // Require a "CERTIFICATE" label so operators don't accidentally submit a CSR or key.
-            let blocks = synta_certificate::pem_blocks(pem.as_bytes());
+            let blocks = synta_certificate::pem_blocks(subject_cert_pem.as_bytes());
             let der = match blocks.into_iter().find(|(label, _)| label == "CERTIFICATE") {
                 Some((_, d)) => d,
                 None => {
@@ -2136,24 +2156,9 @@ pub async fn post_ca_cross_sign(
                 )
                     .into_response();
             }
-            der
-        }
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"status": 400, "detail": "exactly one of subject_ca_id or subject_cert_pem must be provided"})),
-            )
-                .into_response();
+            (der, None)
         }
     };
-
-    if payload.validity_years == 0 || payload.validity_years > 50 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"status": 400, "detail": "validity_years must be between 1 and 50"})),
-        )
-            .into_response();
-    }
 
     let issued = match crate::ca::issue::issue_ca_cert(
         &issuer_ca,
@@ -2176,7 +2181,7 @@ pub async fn post_ca_cross_sign(
     let row = crate::db::schema::CrossCertRow {
         id: id.clone(),
         issuer_ca_id: issuer_id.clone(),
-        subject_ca_id: payload.subject_ca_id.clone(),
+        subject_ca_id: subject_ca_id.clone(),
         subject_dn: issued.subject_dn.clone(),
         subject_spki: issued.subject_spki_der,
         cross_cert_der: issued.cert_der,
@@ -2193,9 +2198,7 @@ pub async fn post_ca_cross_sign(
             .record_audit(
                 AuditEvent::failure(AuditEventType::CrossSignIssue)
                     .with_principal(&operator.name)
-                    .with_detail(&format!(
-                        "DB insert failed: {e}; issuer={issuer_id}"
-                    )),
+                    .with_detail(format!("DB insert failed: {e}; issuer={issuer_id}")),
             )
             .await;
         return (
@@ -2213,7 +2216,7 @@ pub async fn post_ca_cross_sign(
                 .with_detail(
                     serde_json::json!({
                         "issuer_ca_id": issuer_id,
-                        "subject_ca_id": payload.subject_ca_id,
+                        "subject_ca_id": subject_ca_id,
                         "subject_dn": issued.subject_dn,
                         "serial": issued.serial_hex,
                         "validity_years": payload.validity_years,
@@ -2228,7 +2231,7 @@ pub async fn post_ca_cross_sign(
         Json(json!({
             "id": id,
             "issuer_ca_id": issuer_id,
-            "subject_ca_id": payload.subject_ca_id,
+            "subject_ca_id": subject_ca_id,
             "subject_dn": issued.subject_dn,
             "serial_number": issued.serial_hex,
             "not_before": issued.not_before,
@@ -2241,6 +2244,25 @@ pub async fn post_ca_cross_sign(
 }
 
 /// `GET /admin/cross-certs`
+/// Query parameters for `GET /admin/cross-certs`.
+#[derive(Deserialize, Default)]
+pub struct CrossCertsQuery {
+    /// Filter by issuing CA ID.
+    pub issuer_ca_id: Option<String>,
+    /// Filter by subject CA ID.
+    pub subject_ca_id: Option<String>,
+    /// Maximum number of results to return (1–1000, default 100).
+    #[serde(default = "default_cross_certs_limit")]
+    pub limit: i64,
+    /// Pagination offset (default 0).
+    #[serde(default)]
+    pub offset: i64,
+}
+
+fn default_cross_certs_limit() -> i64 {
+    100
+}
+
 ///
 /// List cross-certificates.  Optional query parameters:
 /// - `issuer_ca_id` — filter by issuing CA
@@ -2251,36 +2273,27 @@ pub async fn post_ca_cross_sign(
 pub async fn get_cross_certs(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    axum::extract::Query(params): axum::extract::Query<CrossCertsQuery>,
 ) -> Response {
     require_role!(operator, state, Administrator | CaOperations | Auditor);
 
-    let issuer_ca_id = params.get("issuer_ca_id").map(String::as_str);
-    let subject_ca_id = params.get("subject_ca_id").map(String::as_str);
-    let limit: i64 = params
-        .get("limit")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(100)
-        .clamp(1, 1000);
-    let offset: i64 = params
-        .get("offset")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0)
-        .max(0);
+    let issuer_ca_id = params.issuer_ca_id.as_deref();
+    let subject_ca_id = params.subject_ca_id.as_deref();
+    let limit = params.limit.clamp(1, 1000);
+    let offset = params.offset.max(0);
 
-    let rows = match db::cross_certs::list(&state.db, issuer_ca_id, subject_ca_id, limit, offset)
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!(error = %e, "get_cross_certs DB query failed");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "failed to query cross-certificates"})),
-            )
-                .into_response();
-        }
-    };
+    let rows =
+        match db::cross_certs::list(&state.db, issuer_ca_id, subject_ca_id, limit, offset).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(error = %e, "get_cross_certs DB query failed");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"status": 500, "detail": "failed to query cross-certificates"})),
+                )
+                    .into_response();
+            }
+        };
 
     let items: Vec<_> = rows
         .into_iter()

@@ -914,7 +914,8 @@ pub fn issue_ca_cert(
     // Validity window: now to now + validity_years * 365.25 days.
     let now = unix_now();
     let not_before_unix = now;
-    let not_after_unix = now + (validity_years as i64) * 365 * 86400 + (validity_years as i64) * 21600;
+    let not_after_unix =
+        now + (validity_years as i64) * 365 * 86400 + (validity_years as i64) * 21600;
 
     let not_before_str = unix_to_generalized_time(not_before_unix);
     let not_after_str = unix_to_generalized_time(not_after_unix);
@@ -929,9 +930,8 @@ pub fn issue_ca_cert(
     let bc_der = encode_basic_constraints(true, Some(0))
         .ok_or_else(|| AcmeError::Builder("BasicConstraints encode".into()))?;
 
-    let ku_der =
-        encode_key_usage((1u16 << KEY_USAGE_KEY_CERT_SIGN) | (1u16 << KEY_USAGE_C_RLSIGN))
-            .ok_or_else(|| AcmeError::Builder("KeyUsage encode".into()))?;
+    let ku_der = encode_key_usage((1u16 << KEY_USAGE_KEY_CERT_SIGN) | (1u16 << KEY_USAGE_C_RLSIGN))
+        .ok_or_else(|| AcmeError::Builder("KeyUsage encode".into()))?;
 
     let ski_der = encode_subject_key_identifier(
         &subject_spki_der,
@@ -1474,6 +1474,7 @@ mod tests {
 
         let ca = crate::state::CaState {
             id: "test".into(),
+            key_type: "ec:P-256".into(),
             key: ca_key,
             cert_der: ca_cert_der,
             hash_alg: "sha256".into(),
@@ -1528,6 +1529,7 @@ mod tests {
 
         let ca = crate::state::CaState {
             id: "test".into(),
+            key_type: "ec:P-256".into(),
             key: ca_key,
             cert_der: ca_cert_der,
             hash_alg: "sha256".into(),
