@@ -191,7 +191,10 @@ pub async fn open_ro(url: &str, max_connections: u32) -> Result<Option<Db>, Acme
     // replacing (or adding) `mode=ro`.  Naive `split_once('?')` would discard
     // all existing params; filter them individually instead.
     let ro_url = if let Some((base, query)) = url.split_once('?') {
-        let filtered: Vec<&str> = query.split('&').filter(|p| !p.starts_with("mode=")).collect();
+        let filtered: Vec<&str> = query
+            .split('&')
+            .filter(|p| !p.starts_with("mode="))
+            .collect();
         if filtered.is_empty() {
             format!("{base}?mode=ro")
         } else {
@@ -276,6 +279,61 @@ mod tests {
             DbKind::MariaDb
         );
         assert_eq!(DbKind::from_url("mysql://localhost/acme"), DbKind::MariaDb);
+    }
+
+    #[tokio::test]
+    async fn open_ro_returns_none_for_memory_db() {
+        install_drivers();
+        let result = open_ro("sqlite::memory:", 2).await.unwrap();
+        assert!(result.is_none(), "open_ro must return None for :memory:");
+    }
+
+    #[tokio::test]
+    async fn open_ro_returns_none_for_postgres_url() {
+        install_drivers();
+        // Not a SQLite URL — open_ro returns None without attempting a connection.
+        let result = open_ro("postgres://localhost/acme", 2).await.unwrap();
+        assert!(result.is_none(), "open_ro must return None for non-SQLite");
+    }
+
+    #[tokio::test]
+    async fn open_ro_returns_pool_for_file_backed_sqlite() {
+        install_drivers();
+        let dir = tempfile::tempdir().unwrap();
+        let path = format!(
+            "sqlite://{}",
+            dir.path().join("ro_test.db").to_string_lossy()
+        );
+        // Write pool must be opened first to create the schema.
+        let _rw = open(&path, 1, false).await.unwrap();
+        let ro = open_ro(&path, 2).await.unwrap();
+        assert!(
+            ro.is_some(),
+            "open_ro must return Some for file-backed SQLite"
+        );
+        let pool = ro.unwrap();
+        let row: (i64,) = sqlx::query_as("SELECT 1").fetch_one(&pool).await.unwrap();
+        assert_eq!(row.0, 1);
+    }
+
+    #[tokio::test]
+    async fn open_ro_preserves_existing_query_params() {
+        install_drivers();
+        let dir = tempfile::tempdir().unwrap();
+        let base_path = dir
+            .path()
+            .join("param_test.db")
+            .to_string_lossy()
+            .to_string();
+        // URL with an existing query param (immutable is not valid with mode=ro together
+        // but cache=shared is a valid combination to test param preservation).
+        let url_with_params = format!("sqlite://{}?cache=shared", base_path);
+        let _rw = open(&format!("sqlite://{}", base_path), 1, false)
+            .await
+            .unwrap();
+        // open_ro should preserve cache=shared and add mode=ro.
+        let ro = open_ro(&url_with_params, 1).await.unwrap();
+        assert!(ro.is_some(), "open_ro must work with existing query params");
     }
 
     #[test]

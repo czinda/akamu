@@ -404,6 +404,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn set_processing_if_pending_returns_1_for_pending() {
+        let db = open_db().await;
+        insert_challenge(
+            &db,
+            "chall-sip-1",
+            "acct-sip-1",
+            "order-sip-1",
+            "authz-sip-1",
+        )
+        .await;
+
+        let affected = set_processing_if_pending(&db, "chall-sip-1", 1_700_000_010)
+            .await
+            .unwrap();
+        assert_eq!(affected, 1, "should update one pending challenge");
+
+        let row = get_by_id(&db, "chall-sip-1").await.unwrap().unwrap();
+        assert_eq!(row.status, "processing");
+        assert_eq!(row.updated, 1_700_000_010);
+    }
+
+    #[tokio::test]
+    async fn set_processing_if_pending_returns_0_when_already_processing() {
+        let db = open_db().await;
+        insert_challenge(
+            &db,
+            "chall-sip-2",
+            "acct-sip-2",
+            "order-sip-2",
+            "authz-sip-2",
+        )
+        .await;
+
+        // First call flips to "processing".
+        set_processing_if_pending(&db, "chall-sip-2", 1_700_000_010)
+            .await
+            .unwrap();
+
+        // Second concurrent call must not double-process: WHERE status = 'pending' skips it.
+        let affected = set_processing_if_pending(&db, "chall-sip-2", 1_700_000_020)
+            .await
+            .unwrap();
+        assert_eq!(
+            affected, 0,
+            "already-processing challenge should not be updated"
+        );
+
+        // Status and timestamp must remain from the first flip.
+        let row = get_by_id(&db, "chall-sip-2").await.unwrap().unwrap();
+        assert_eq!(row.status, "processing");
+        assert_eq!(
+            row.updated, 1_700_000_010,
+            "timestamp must not be overwritten"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_processing_if_pending_returns_0_for_valid_challenge() {
+        let db = open_db().await;
+        insert_challenge(
+            &db,
+            "chall-sip-3",
+            "acct-sip-3",
+            "order-sip-3",
+            "authz-sip-3",
+        )
+        .await;
+        set_valid(&db, "chall-sip-3", 1_700_000_010).await.unwrap();
+
+        let affected = set_processing_if_pending(&db, "chall-sip-3", 1_700_000_020)
+            .await
+            .unwrap();
+        assert_eq!(
+            affected, 0,
+            "valid challenge must not be flipped to processing"
+        );
+
+        let row = get_by_id(&db, "chall-sip-3").await.unwrap().unwrap();
+        assert_eq!(row.status, "valid", "valid status must not change");
+    }
+
+    #[tokio::test]
     async fn db_error_paths_no_table() {
         crate::db::install_drivers();
         let raw: Db = sqlx::any::AnyPoolOptions::new()

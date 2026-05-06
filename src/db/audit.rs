@@ -295,4 +295,48 @@ mod tests {
         let n = count_since(&db, "2026-06-01T00:00:00Z").await.unwrap();
         assert_eq!(n, 1);
     }
+
+    #[tokio::test]
+    async fn insert_two_inserts_both_rows() {
+        let db = open_db().await;
+        assert_eq!(count(&db).await.unwrap(), 0);
+        insert_two(
+            &db,
+            (
+                "2026-01-01T00:00:00Z",
+                "order.finalize",
+                Some("order-1"),
+                Some("alice"),
+                "success",
+                None,
+            ),
+            (
+                "2026-01-01T00:00:00Z",
+                "cert.issue",
+                Some("cert-1"),
+                Some("alice"),
+                "success",
+                Some("issued"),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(count(&db).await.unwrap(), 2);
+
+        // Verify both rows are retrievable and distinct.
+        let q = AuditQuery {
+            event_type: None,
+            subject: None,
+            from: None,
+            until: None,
+            outcome: None,
+            limit: 100,
+            offset: 0,
+        };
+        let rows = query(&db, &q).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        let types: Vec<&str> = rows.iter().map(|r| r.event_type.as_str()).collect();
+        assert!(types.contains(&"order.finalize"), "missing order.finalize");
+        assert!(types.contains(&"cert.issue"), "missing cert.issue");
+    }
 }
