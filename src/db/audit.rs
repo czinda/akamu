@@ -70,7 +70,15 @@ pub async fn insert_two(
     .bind(r2.4)
     .bind(r2.5)
     .execute(executor)
-    .await?;
+    .await
+    .and_then(|result| {
+        if result.rows_affected() == 2 {
+            Ok(())
+        } else {
+            Err(sqlx::Error::RowNotFound)
+        }
+    })
+    .map_err(|e| AcmeError::Database(format!("insert_two: expected 2 rows affected: {e}")))?;
     Ok(())
 }
 
