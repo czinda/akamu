@@ -26,42 +26,6 @@ Any other `alg` value returns `JoseError::UnsupportedAlgorithm`. ECDSA signature
 
 The JWK thumbprint computation (RFC 7638) supports key types `RSA`, `EC`, `OKP`, and `AKP` (ML-DSA). The canonical JSON fields and their order per key type are implemented in `crates/akamu-jose/src/jwk.rs`.
 
-## EAB implementation walkthrough
-
-See [EAB Internals](eab.md) for the database schema, `insert_if_absent`, and the two-step verification pipeline (`parse_eab_kid` + `verify_eab_jws`). The summary below focuses on the JWS wire format.
-
-### EAB JWS structure
-
-The EAB JWS is a JWS Flattened JSON Serialization with three fields:
-
-```json
-{
-  "protected": "<base64url(JSON protected header)>",
-  "payload":   "<base64url(JSON public JWK of the account key)>",
-  "signature": "<base64url(HMAC-SHA256/384/512 over 'protected.payload')>"
-}
-```
-
-The protected header must contain:
-
-```json
-{ "alg": "HS256", "kid": "<eab-key-id>", "url": "<new-account endpoint URL>" }
-```
-
-The signing input is the ASCII concatenation `"{protected}.{payload}"` (the two base64url strings joined by a period), matching the JWS compact serialization format. The HMAC is computed over this string using the raw HMAC key bytes (after base64url-decoding `hmac_key_b64u` from the database).
-
-The payload must be the canonical JSON representation of the account's public JWK. The server verifies this by computing the RFC 7638 thumbprint of the payload JWK and comparing it with the thumbprint of the outer JWS's account key. This prevents a client from using someone else's EAB credential to create an account under a different key.
-
-### Algorithm-to-hash mapping
-
-| EAB `alg` | HMAC hash function |
-|---|---|
-| `HS256` | SHA-256 |
-| `HS384` | SHA-384 |
-| `HS512` | SHA-512 |
-
-Any other `alg` value returns `AcmeError::BadRequest("EAB: unsupported algorithm …")`.
-
 ## ML-DSA JWS verification (draft-ietf-cose-dilithium-11)
 
 ### Signature format
@@ -193,13 +157,49 @@ n=128 → 02 02 00 80   (zero-pad because high bit set)
 n=256 → 02 02 01 00
 ```
 
-### EAB HMAC verification: constant-time comparison
-
-`default_hmac_provider().hmac_verify(hash_alg, hmac_key, message, signature)` uses OpenSSL's `HMAC_CTX` and a constant-time byte comparison. The OpenSSL backend returns `false` rather than an early exit if the MAC does not match, preventing timing side-channels.
-
 ### CSR extensions: manual DER walking
 
 The `extensionRequest` attribute (OID `1.2.840.113549.1.9.14`) inside a PKCS#10 CSR is nested in a `SET OF ANY`, which `synta`'s high-level decoder does not unwrap automatically. `src/ca/csr.rs` walks the attribute bytes manually using `read_tlv`, `decode_length`, and `strip_sequence` helpers to locate and extract the extension list. This is deliberate: the alternative of using a fully-general ASN.1 parser for this path would add complexity with no benefit.
+
+## EAB implementation walkthrough
+
+See [EAB Internals](eab.md) for the database schema, `insert_if_absent`, and the two-step verification pipeline (`parse_eab_kid` + `verify_eab_jws`). The summary below focuses on the JWS wire format.
+
+### EAB JWS structure
+
+The EAB JWS is a JWS Flattened JSON Serialization with three fields:
+
+```json
+{
+  "protected": "<base64url(JSON protected header)>",
+  "payload":   "<base64url(JSON public JWK of the account key)>",
+  "signature": "<base64url(HMAC-SHA256/384/512 over 'protected.payload')>"
+}
+```
+
+The protected header must contain:
+
+```json
+{ "alg": "HS256", "kid": "<eab-key-id>", "url": "<new-account endpoint URL>" }
+```
+
+The signing input is the ASCII concatenation `"{protected}.{payload}"` (the two base64url strings joined by a period), matching the JWS compact serialization format. The HMAC is computed over this string using the raw HMAC key bytes (after base64url-decoding `hmac_key_b64u` from the database).
+
+The payload must be the canonical JSON representation of the account's public JWK. The server verifies this by computing the RFC 7638 thumbprint of the payload JWK and comparing it with the thumbprint of the outer JWS's account key. This prevents a client from using someone else's EAB credential to create an account under a different key.
+
+### Algorithm-to-hash mapping
+
+| EAB `alg` | HMAC hash function |
+|---|---|
+| `HS256` | SHA-256 |
+| `HS384` | SHA-384 |
+| `HS512` | SHA-512 |
+
+Any other `alg` value returns `AcmeError::BadRequest("EAB: unsupported algorithm …")`.
+
+### EAB HMAC verification: constant-time comparison
+
+`default_hmac_provider().hmac_verify(hash_alg, hmac_key, message, signature)` uses OpenSSL's `HMAC_CTX` and a constant-time byte comparison. The OpenSSL backend returns `false` rather than an early exit if the MAC does not match, preventing timing side-channels.
 
 ## Pre-issuance linting
 
