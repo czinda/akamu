@@ -230,12 +230,19 @@ fn challenge_response(
             .filter(|ec| ec.enabled)
         {
             Some(ec) => Some(ec.from_address.clone()),
+            // Resolved challenges no longer need the from field.
+            None if matches!(challenge.status.as_str(), "valid" | "invalid") => None,
             None => {
                 tracing::warn!(
                     challenge_id = %challenge.id,
+                    status = %challenge.status,
                     "email-reply-00 challenge exists but email_challenge is not configured or enabled"
                 );
-                None
+                return Err(AcmeError::Internal(
+                    "email-reply-00 challenge cannot be served: \
+                     email_challenge is not configured or enabled"
+                        .into(),
+                ));
             }
         };
         (Some(challenge.token.as_str()), None, None, from_addr)

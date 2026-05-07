@@ -275,7 +275,7 @@ fn build_authz_json<'a>(
     let issuer_domains = state.config.dns_persist_issuer_domains();
     let challs: Vec<ChallengeJson<'_>> = challenges
         .iter()
-        .map(|c| {
+        .map(|c| -> Result<ChallengeJson<'_>, AcmeError> {
             let (token, issuer_domain_names, auth_key) = if c.r#type == "dns-persist-01" {
                 (None, Some(issuer_domains.clone()), None)
             } else if c.r#type == "onion-csr-01" {
@@ -292,18 +292,27 @@ fn build_authz_json<'a>(
             let from = if c.r#type == "email-reply-00" {
                 match state.config.email_challenge.as_ref().filter(|ec| ec.enabled) {
                     Some(ec) => Some(ec.from_address.clone()),
+                    // For already-resolved challenges, omit the field — it is no
+                    // longer needed and the config may have been legitimately
+                    // removed after the challenge completed.
+                    None if matches!(c.status.as_str(), "valid" | "invalid") => None,
                     None => {
                         tracing::warn!(
                             challenge_id = %c.id,
+                            status = %c.status,
                             "email-reply-00 challenge exists but email_challenge is not configured or enabled"
                         );
-                        None
+                        return Err(AcmeError::Internal(
+                            "email-reply-00 challenge cannot be served: \
+                             email_challenge is not configured or enabled"
+                                .into(),
+                        ));
                     }
                 }
             } else {
                 None
             };
-            ChallengeJson {
+            Ok(ChallengeJson {
                 r#type: &c.r#type,
                 url: format!("{acme_pfx}/chall/{}/{}", authz.id, c.r#type),
                 status: &c.status,
@@ -323,9 +332,9 @@ fn build_authz_json<'a>(
                         })
                         .ok()
                 }),
-            }
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
     let identifier =
         serde_json::value::RawValue::from_string(authz.identifier.clone()).map_err(|e| {
             AcmeError::Internal(format!(
