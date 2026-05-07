@@ -30,7 +30,7 @@ pub struct ChallengeParams<'a> {
 }
 ```
 
-`validate_challenge` calls `dispatch(...)`, which routes to one of five validators:
+`validate_challenge` calls `dispatch(...)`, which routes to one of five validators. `email-reply-00` is handled separately — see [email-reply-00 two-phase model](#email-reply-00-two-phase-model) below.
 
 | `chall_type` | Module | Function |
 |---|---|---|
@@ -40,6 +40,104 @@ pub struct ChallengeParams<'a> {
 | `"dns-persist-01"` | `validation::dns_persist_01` | `validate(domain, account_uri, issuer_domains, resolver_addr, validate_dnssec, dot_server_name)` |
 | `"onion-csr-01"` | `validation::onion_csr_01` | `validate(domain, csr_der, key_auth)` |
 | Any other | — | Returns `AcmeError::IncorrectResponse` |
+
+> **Note:** `email-reply-00` does NOT appear in the dispatch table above. Client POST to the
+> challenge URL triggers `send_challenge_email` (Phase 1), not a network probe. Validation
+> completes later via the webhook endpoint. See the section below for the full model.
+
+### email-reply-00 two-phase model
+
+`email-reply-00` (`src/validation/email_reply_00.rs`) works differently from all other
+challenge types. Instead of a network probe, it uses a two-channel token delivered by
+email, with completion driven by an inbound webhook rather than by `validate_challenge`.
+
+**Phase 1 — client POST triggers `send_challenge_email`**
+
+When the ACME client POSTs to the challenge URL, the route handler calls
+`email_reply_00::send_challenge_email(state, challenge_id, email_addr, token_part2_b64)`
+instead of spawning a `validate_challenge` task. The function:
+
+1. Generates `token-part1`: 20 random bytes encoded as base64url (≥128 bits of entropy).
+2. Generates a unique `Message-ID` of the form `<uuid@from-domain>`.
+3. Writes both values to `challenges.email_token_part1` and `challenges.email_message_id`
+   in the database **before** invoking the send script, so a script failure leaves the
+   token record in a recoverable state.
+4. Invokes the configured `send_script` with `env_clear()`, passing `ACME_TO`,
+   `ACME_FROM`, `ACME_SUBJECT`, `ACME_MESSAGE_ID`, `ACME_AUTO_SUBMITTED`, and
+   `ACME_TOKEN_PART2` as environment variables. The script must exit 0 on success.
+5. If the script exits non-zero or times out, returns an error and the route handler
+   marks the challenge `"invalid"`. Otherwise the challenge stays `"processing"` and the
+   client polls until Phase 2 completes it.
+
+**Phase 2 — webhook receives email reply via `verify_response`**
+
+The MTA that receives the applicant's reply POSTs the parsed reply to
+`POST /acme/email-webhook`. This endpoint does not use ACME JWS authentication;
+instead it verifies the `X-Akamu-Signature: sha256=<hex>` header against the raw
+request body using HMAC-SHA256 with `email_challenge.webhook_hmac_secret`.
+
+After the HMAC check passes, `email_reply_00::verify_response(state, payload)` is called.
+The payload is a `WebhookPayload` struct with fields `from`, `in_reply_to`, `dkim_domain`,
+`dkim_status`, and `body`. The function:
+
+1. Looks up the challenge via `challenges.email_message_id = payload.in_reply_to` using
+   the **write pool** (`state.db`) to avoid stale WAL reads that could miss Phase 1 writes.
+2. Checks that the challenge is in `"processing"` state.
+3. Checks that the authorization has not expired.
+4. Verifies that `payload.from` matches the identifier's email address (local-part
+   case-sensitive, domain case-insensitive per RFC 5321 §2.4).
+5. Verifies that `payload.dkim_domain` matches the domain part of `payload.from`
+   (case-insensitive), enforcing RFC 8823 §3.2.
+6. Verifies that `payload.dkim_status` is `"pass"` (case-insensitive to accommodate
+   MTAs that report `"Pass"`).
+7. Extracts the base64url payload between `-----BEGIN ACME RESPONSE-----` /
+   `-----END ACME RESPONSE-----` delimiters; rejects if absent, whitespace-only,
+   non-ASCII, or longer than 512 bytes.
+8. Computes the expected digest: `SHA-256(token-part1 || token-part2 || "." || thumbprint)`
+   where both token parts are the stored base64url strings and `thumbprint` is the
+   account's JWK thumbprint (from `accounts.jwk_thumbprint`).
+9. Compares the decoded response bytes with the digest using `constant_time_eq`.
+10. On match, calls `on_valid`; on any mismatch or error, calls `on_invalid`.
+
+The webhook handler always returns HTTP 200 regardless of outcome (to prevent oracle
+attacks on the HMAC or challenge state).
+
+```mermaid
+sequenceDiagram
+    participant Client as ACME Client
+    participant H as Route Handler
+    participant E as send_challenge_email
+    participant Script as send_script
+    participant Inbox as Applicant Inbox
+    participant MTA as Inbound MTA
+    participant W as Webhook Handler
+    participant V as verify_response
+    participant DB as Database
+
+    Client->>H: POST /acme/.../chall/... (email-reply-00)
+    H->>E: send_challenge_email(challenge_id, email, token_part2)
+    E->>DB: INSERT email_token_part1, email_message_id
+    E->>Script: exec send_script (ACME_TO, ACME_FROM, ACME_SUBJECT, ...)
+    Script->>Inbox: delivers challenge email
+    E-->>H: Ok(())
+    H->>DB: challenge status = processing
+    H-->>Client: 200 processing
+
+    Note over Client: Client polls authorization URL
+
+    Inbox->>MTA: applicant replies to challenge email
+    MTA->>W: POST /acme/email-webhook (X-Akamu-Signature: sha256=...)
+    W->>W: verify HMAC-SHA256
+    W->>V: verify_response(payload)
+    V->>DB: lookup challenge by email_message_id
+    V->>V: verify From, DKIM domain, DKIM status, response digest
+    alt digest matches
+        V->>DB: challenge/authz/order = valid
+    else mismatch or error
+        V->>DB: challenge/authz/order = invalid
+    end
+    W-->>MTA: 200 OK
+```
 
 ### dns-persist-01 account pre-check
 

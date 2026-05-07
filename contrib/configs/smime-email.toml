@@ -1,0 +1,64 @@
+# smime-email.toml — S/MIME end-user certificate issuance via RFC 8823 email-reply-00.
+#
+# Use when ACME clients need certificates for email addresses (S/MIME signing and
+# encryption).  The email-reply-00 challenge delivers a token to the inbox of the
+# address being validated; the applicant replies with an ACME response block so
+# the server can confirm two-channel control over the address.
+#
+# Integration overview:
+#   1. Akāmu sends the challenge email by invoking send_script (see below).
+#   2. The applicant's MUA/MTA replies to the challenge email.
+#   3. The receiving MTA forwards the inbound reply to the Akāmu webhook:
+#        POST /acme/email-webhook
+#      authenticated by X-Akamu-Signature: sha256=<hex> (HMAC-SHA256 of the body
+#      using webhook_hmac_secret).
+#   4. Akāmu verifies the reply digest and DKIM signature, then marks the
+#      challenge valid or invalid.
+#
+# send_script interface:
+#   The script is invoked with env_clear(); only these environment variables are set:
+#     ACME_TO            — recipient address (the email identifier being validated)
+#     ACME_FROM          — the from_address configured below
+#     ACME_SUBJECT       — "ACME: <token-part1-base64url>"  (use as Subject: header)
+#     ACME_MESSAGE_ID    — RFC 5322 Message-ID in angle-bracket form
+#     ACME_AUTO_SUBMITTED — "auto-generated; type=acme"  (set as Auto-Submitted: header)
+#     ACME_TOKEN_PART2   — base64url token-part2 (MUST appear verbatim in the email body)
+#   Exit code 0 = email delivered to MTA; any other exit code marks the challenge invalid.
+#   The email body must include token-part2 so the applicant's reply can include it
+#   inside the ACME response block.
+
+listen_addr = "0.0.0.0:8080"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "sqlite:///var/lib/akamu/acme.db"
+
+[ca]
+key_file  = "/etc/akamu/certs/ca.key.pem"
+cert_file = "/etc/akamu/certs/ca.cert.pem"
+
+[email_challenge]
+enabled     = true
+from_address = "acme@acme.example.com"
+send_script  = "/etc/akamu/send-email.sh"
+
+# Timeout for the send_script call.  Increase if your MTA submission is slow.
+send_script_timeout_secs = 30
+
+# HMAC-SHA256 secret shared with the inbound webhook caller.
+# Generate with: openssl rand -hex 32
+webhook_hmac_secret = "replace-with-output-of--openssl-rand-hex-32"
+
+# ── S/MIME certificate profile ────────────────────────────────────────────────
+# Restrict this profile to email identifier orders only.
+# The CSR must include an rfc822Name SAN and the emailProtection EKU.
+
+[profiles.providers.local]
+type = "builtin"
+
+[profiles.providers.local.profiles.smime]
+description          = "S/MIME end-user certificate (RFC 8823)"
+validity_days        = 365
+key_usage            = ["digital_signature", "non_repudiation", "key_encipherment"]
+eku                  = ["email_protection"]
+allowed_identifiers  = ['^email:.*$']
