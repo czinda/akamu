@@ -74,6 +74,7 @@ pub mod challenge;
 pub mod crl;
 pub mod directory;
 pub mod eab_identity;
+pub mod email_webhook;
 pub mod finalize;
 pub mod key_change;
 pub mod mtc;
@@ -219,10 +220,18 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             halt_check,
         ));
 
-    // Non-ACME routes: CRL/OCSP/cross-certs (public, read-only).  Admin routes
-    // are served on the dedicated admin listener via `build_admin_router`; they
-    // are not registered here so the main ACME listener never handles /admin/*.
+    // Non-ACME routes: CRL/OCSP/cross-certs (public, read-only) and provider
+    // webhooks.  Admin routes are served on the dedicated admin listener via
+    // `build_admin_router`; they are not registered here.
     let other_router = Router::new()
+        // RFC 8823 email-reply-00 webhook — HMAC-authenticated, not JWS-authenticated.
+        // Body is capped at 64 KiB; legitimate payloads are a few KiB.
+        // halt_check exemption is documented in src/routes/email_webhook.rs.
+        .route(
+            "/acme/email-webhook",
+            post(email_webhook::handle_webhook)
+                .layer(axum::extract::DefaultBodyLimit::max(64 * 1024)),
+        )
         // Legacy CRL/OCSP/cross-certs — alias to default CA
         .route("/ca/crl", get(crl::get_crl))
         .route("/ca/ocsp", post(ocsp::post_ocsp))

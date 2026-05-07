@@ -369,15 +369,25 @@ async fn on_invalid(
         let mut tx = state.db.begin().await?;
         crate::db::pg_local_async_commit(&mut tx, state.db_kind).await?;
 
-        // 1. Mark challenge invalid with the error detail.
-        crate::db::query(
-            "UPDATE challenges SET status = 'invalid', error = ?, updated = ? WHERE id = ?",
+        // 1. Mark challenge invalid only if still in 'processing' state.
+        // The AND guard mirrors on_valid's idempotency guard: a concurrent
+        // on_valid that already committed 'valid' must not be overwritten.
+        let chall_rows = crate::db::query(
+            "UPDATE challenges SET status = 'invalid', error = ?, updated = ?
+             WHERE id = ? AND status = 'processing'",
         )
         .bind(&error_json)
         .bind(now)
         .bind(challenge_id)
         .execute(&mut *tx)
-        .await?;
+        .await?
+        .rows_affected();
+
+        if chall_rows == 0 {
+            // Already transitioned (concurrent on_valid or duplicate on_invalid); nothing more to do.
+            tx.commit().await?;
+            return Ok(());
+        }
 
         // 2. Mark authorization invalid.
         crate::db::query("UPDATE authorizations SET status = 'invalid', updated = ? WHERE id = ?")
@@ -890,7 +900,8 @@ mod tests {
                 id: chall_id.clone(),
                 authz_id: authz_id.clone(),
                 r#type: "http-01".to_string(),
-                status: "pending".to_string(),
+                // on_invalid's idempotency guard requires AND status = 'processing'.
+                status: "processing".to_string(),
                 token: "mytoken".to_string(),
                 validated: None,
                 error: None,
@@ -1501,7 +1512,8 @@ mod tests {
                 id: chall_id.to_string(),
                 authz_id: authz_id.to_string(),
                 r#type: "http-01".into(),
-                status: "pending".into(),
+                // Both on_valid and on_invalid require AND status = 'processing'.
+                status: "processing".into(),
                 token: "tok".into(),
                 validated: None,
                 error: None,

@@ -155,6 +155,7 @@ pub async fn send_challenge_email(
 /// request body against `email_challenge.webhook_hmac_secret` before calling
 /// this function.  `dkim_domain` and `dkim_status` are caller-supplied and
 /// must not be trusted until the HMAC check passes.
+#[derive(serde::Deserialize)]
 pub struct WebhookPayload {
     /// Sender address from the reply email `From:` header.
     pub from: String,
@@ -186,23 +187,23 @@ pub async fn verify_response(state: &Arc<AppState>, payload: &WebhookPayload) ->
     let now = unix_now();
 
     // 1. Look up challenge by In-Reply-To / Message-ID.
-    let chall = match db::challenges::get_by_email_message_id(&state.db, &payload.in_reply_to).await
-    {
-        Ok(Some(c)) => c,
-        Ok(None) => {
-            return VerifyOutcome::Invalid(format!(
-                "no email-reply-00 challenge found for In-Reply-To '{}'",
-                payload.in_reply_to
-            ));
-        }
-        Err(e) => {
-            tracing::error!(
-                in_reply_to = %payload.in_reply_to,
-                "email-reply-00 webhook: DB lookup failed: {e}"
-            );
-            return VerifyOutcome::Invalid("internal error".into());
-        }
-    };
+    let chall =
+        match db::challenges::get_by_email_message_id(&state.db_ro, &payload.in_reply_to).await {
+            Ok(Some(c)) => c,
+            Ok(None) => {
+                return VerifyOutcome::Invalid(format!(
+                    "no email-reply-00 challenge found for In-Reply-To '{}'",
+                    payload.in_reply_to
+                ));
+            }
+            Err(e) => {
+                tracing::error!(
+                    in_reply_to = %payload.in_reply_to,
+                    "email-reply-00 webhook: DB lookup failed: {e}"
+                );
+                return VerifyOutcome::Invalid("internal error".into());
+            }
+        };
 
     // Only accept challenges in "processing" state (already triggered).
     if chall.status != "processing" {
@@ -257,6 +258,14 @@ pub async fn verify_response(state: &Arc<AppState>, payload: &WebhookPayload) ->
                 authz_id = %chall.authz_id,
                 "email-reply-00 webhook: authz lookup failed: {e}"
             );
+            on_invalid(
+                state,
+                &chall.id,
+                &chall.authz_id,
+                AcmeError::Internal("authorization lookup failed".into()),
+                now,
+            )
+            .await;
             return VerifyOutcome::Invalid("internal error".into());
         }
     };
@@ -310,6 +319,14 @@ pub async fn verify_response(state: &Arc<AppState>, payload: &WebhookPayload) ->
             expected = %expected_email,
             "email-reply-00: From address does not match challenge identifier"
         );
+        on_invalid(
+            state,
+            &chall.id,
+            &chall.authz_id,
+            AcmeError::IncorrectResponse("From address does not match identifier".into()),
+            now,
+        )
+        .await;
         return VerifyOutcome::Invalid(format!(
             "From '{}' does not match identifier '{}'",
             payload.from, expected_email
@@ -327,6 +344,14 @@ pub async fn verify_response(state: &Arc<AppState>, payload: &WebhookPayload) ->
             from_domain,
             "email-reply-00: DKIM domain does not match From domain"
         );
+        on_invalid(
+            state,
+            &chall.id,
+            &chall.authz_id,
+            AcmeError::IncorrectResponse("DKIM domain does not match From domain".into()),
+            now,
+        )
+        .await;
         return VerifyOutcome::Invalid(format!(
             "DKIM domain '{}' does not match From domain '{}'",
             payload.dkim_domain, from_domain
@@ -341,6 +366,14 @@ pub async fn verify_response(state: &Arc<AppState>, payload: &WebhookPayload) ->
             dkim_status = %payload.dkim_status,
             "email-reply-00: DKIM verification did not pass"
         );
+        on_invalid(
+            state,
+            &chall.id,
+            &chall.authz_id,
+            AcmeError::IncorrectResponse("DKIM verification did not pass".into()),
+            now,
+        )
+        .await;
         return VerifyOutcome::Invalid(format!(
             "DKIM status is '{}', expected 'pass'",
             payload.dkim_status
@@ -351,6 +384,14 @@ pub async fn verify_response(state: &Arc<AppState>, payload: &WebhookPayload) ->
     let response_b64 = match extract_acme_response(&payload.body) {
         Some(s) => s,
         None => {
+            on_invalid(
+                state,
+                &chall.id,
+                &chall.authz_id,
+                AcmeError::IncorrectResponse("no ACME response block found in email body".into()),
+                now,
+            )
+            .await;
             return VerifyOutcome::Invalid("no ACME response block found in email body".into());
         }
     };
@@ -359,6 +400,16 @@ pub async fn verify_response(state: &Arc<AppState>, payload: &WebhookPayload) ->
     let response_bytes = match URL_SAFE_NO_PAD.decode(response_b64.as_bytes()) {
         Ok(b) => b,
         Err(e) => {
+            on_invalid(
+                state,
+                &chall.id,
+                &chall.authz_id,
+                AcmeError::IncorrectResponse(format!(
+                    "ACME response block is not valid base64url: {e}"
+                )),
+                now,
+            )
+            .await;
             return VerifyOutcome::Invalid(format!(
                 "ACME response block is not valid base64url: {e}"
             ));
@@ -391,6 +442,14 @@ pub async fn verify_response(state: &Arc<AppState>, payload: &WebhookPayload) ->
                 authz_id = %chall.authz_id,
                 "email-reply-00 webhook: account lookup failed: {e}"
             );
+            on_invalid(
+                state,
+                &chall.id,
+                &chall.authz_id,
+                AcmeError::Internal("account lookup failed".into()),
+                now,
+            )
+            .await;
             return VerifyOutcome::Invalid("internal error".into());
         }
     };
@@ -400,14 +459,28 @@ pub async fn verify_response(state: &Arc<AppState>, payload: &WebhookPayload) ->
     //   keyAuth = base64url(token-part1) || base64url(token-part2) || "." || thumbprint
     // Both stored values are already base64url; token (token-part2) is the challenge token.
     let key_auth = format!("{}{}.{}", token_part1, chall.token, thumbprint);
-    let hasher = default_data_hasher();
-    let expected_digest = match hasher.hash_data("sha256", key_auth.as_bytes()) {
+    // The hasher is !Send, so it must be dropped before any .await.
+    // Compute the digest in a non-async block; propagate errors outside.
+    let digest_result = {
+        let hasher = default_data_hasher();
+        hasher.hash_data("sha256", key_auth.as_bytes())
+        // hasher dropped here
+    };
+    let expected_digest = match digest_result {
         Ok(d) => d,
         Err(e) => {
             tracing::error!(
                 challenge_id = %chall.id,
                 "email-reply-00: SHA-256 failed: {e}"
             );
+            on_invalid(
+                state,
+                &chall.id,
+                &chall.authz_id,
+                AcmeError::Internal("digest computation failed".into()),
+                now,
+            )
+            .await;
             return VerifyOutcome::Invalid("digest computation error".into());
         }
     };
@@ -476,6 +549,369 @@ fn emails_match(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── DB-backed integration tests for verify_response ───────────────────────
+
+    #[cfg(test)]
+    async fn make_verify_state() -> (Arc<crate::state::AppState>, String, String, String, String) {
+        use crate::ca;
+        use crate::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
+        use crate::db;
+        use crate::db::schema::{AccountRow, AuthorizationRow, ChallengeRow};
+        use crate::state::{AppState, CaState, MtcState, NonceBucket};
+
+        let now = crate::util::unix_now();
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = Arc::new(Config {
+            listen_addr: "127.0.0.1:0".into(),
+            base_url: "https://acme.test".into(),
+            database: DatabaseConfig {
+                url: "sqlite::memory:".into(),
+                max_connections: None,
+                require_tls: false,
+            },
+            cas: vec![CaConfig {
+                id: "default".to_owned(),
+                is_default: true,
+                caa_identities: vec![],
+                key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
+                cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
+                key_type: "ec:P-256".into(),
+                hash_alg: "sha256".into(),
+                validity_days: 90,
+                crl_url: None,
+                ocsp_url: None,
+                common_name: "Test CA".into(),
+                organization: "Test".into(),
+                ca_validity_years: 10,
+                crl_next_update_secs: 86400,
+                enforce_validity_cap: false,
+                require_encrypted_key: false,
+                key_password_file: None,
+            }],
+            mtc: MtcConfig {
+                log_path: "/dev/null".into(),
+                enabled: false,
+                signing_key: None,
+                checkpoint_interval_secs: 3600,
+                cosigners: vec![],
+                landmark_interval_secs: 86400,
+                max_active_landmarks: 100,
+                checkpoint_retention_count: 1000,
+            },
+            server: ServerConfig::default(),
+            tls: Default::default(),
+            profiles: Default::default(),
+            admin: None,
+            email_challenge: None,
+        });
+        let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
+        db::install_drivers();
+        let db_conn = db::open("sqlite::memory:", 1, false).await.unwrap();
+        let ca = Arc::new(CaState {
+            id: "default".into(),
+            key_type: "ec:P-256".into(),
+            key: ca_key,
+            cert_der: ca_cert_der,
+            hash_alg: "sha256".into(),
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            aki_bytes: Vec::new(),
+            enforce_validity_cap: false,
+            crl_next_update_secs: 604800,
+            caa_identities: vec![],
+        });
+
+        let acc_id = "acc-vr-001".to_string();
+        let order_id = "ord-vr-001".to_string();
+        let authz_id = "authz-vr-001".to_string();
+        let chall_id = "chall-vr-001".to_string();
+
+        let token_part1 = "aaaaabbbbbcccccdddddeeeee"; // 24-char fake base64url
+        let token_part2 = "zzzzzyyyyyxxxxwwwwvvvvuuuu"; // challenge token field
+        let thumbprint = "test-thumbprint-001";
+        let message_id = "<test-msg-001@acme.test>";
+        let email_addr = "user@example.com";
+
+        db::accounts::insert(
+            &db_conn,
+            AccountRow {
+                id: acc_id.clone(),
+                status: "valid".to_string(),
+                contact: None,
+                public_key: vec![0u8; 4],
+                jwk_thumbprint: thumbprint.to_string(),
+                created: now,
+                updated: now,
+                profile_grants: None,
+                ca_id: String::new(),
+            },
+        )
+        .await
+        .unwrap();
+
+        db::orders::insert(
+            &db_conn,
+            crate::db::schema::OrderRow {
+                id: order_id.clone(),
+                account_id: acc_id.clone(),
+                status: "pending".to_string(),
+                expires: Some(now + 3600),
+                identifiers: format!(r#"[{{"type":"email","value":"{}"}}]"#, email_addr),
+                not_before: None,
+                not_after: None,
+                error: None,
+                certificate_id: None,
+                replaces: None,
+                created: now,
+                updated: now,
+                star_start_date: None,
+                star_end_date: None,
+                star_lifetime_secs: None,
+                star_lifetime_adjust_secs: 0,
+                star_allow_cert_get: 0,
+                star_canceled_at: None,
+                star_csr_der: None,
+                profile: None,
+                ca_id: "default".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        db::authz::insert(
+            &db_conn,
+            AuthorizationRow {
+                id: authz_id.clone(),
+                order_id: order_id.clone(),
+                account_id: acc_id.clone(),
+                status: "pending".to_string(),
+                identifier: format!(r#"{{"type":"email","value":"{}"}}"#, email_addr),
+                expires: Some(now + 3600),
+                wildcard: 0,
+                subdomain_auth_allowed: 0,
+                created: now,
+                updated: now,
+                ca_id: "default".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        db::challenges::insert(
+            &db_conn,
+            ChallengeRow {
+                id: chall_id.clone(),
+                authz_id: authz_id.clone(),
+                r#type: "email-reply-00".to_string(),
+                status: "processing".to_string(),
+                token: token_part2.to_string(),
+                validated: None,
+                error: None,
+                created: now,
+                updated: now,
+                email_token_part1: None,
+                email_message_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        // insert() does not write email-challenge columns; write them separately.
+        db::challenges::set_email_token(&db_conn, &chall_id, token_part1, message_id, now)
+            .await
+            .unwrap();
+
+        let state = Arc::new(AppState {
+            config: Arc::clone(&config),
+            db: db_conn.clone(),
+            db_ro: db_conn,
+            db_kind: crate::db::DbKind::Sqlite,
+            profiles: crate::profiles::ProfileRegistry::empty(&ca),
+            cas: {
+                let mut map = indexmap::IndexMap::new();
+                map.insert("default".to_string(), ca.clone());
+                Arc::new(map)
+            },
+            default_ca_id: Arc::new("default".to_string()),
+            mtc: Arc::new(MtcState {
+                log: None,
+                algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
+                signing_key: None,
+                signing_hash_alg: "sha256".into(),
+                cosigner_clients: vec![],
+                _log_lock: None,
+            }),
+            tls: None,
+            spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+            nonces: Arc::new(NonceBucket::new()),
+            link_headers: {
+                let mut m = std::collections::HashMap::new();
+                m.insert(
+                    "default".to_string(),
+                    Arc::new(axum::http::HeaderValue::from_static(
+                        "<https://acme.test/acme/directory>;rel=\"index\"",
+                    )),
+                );
+                Arc::new(m)
+            },
+            validation_client: {
+                let https = hyper_rustls::HttpsConnectorBuilder::new()
+                    .with_native_roots()
+                    .expect("native roots")
+                    .https_or_http()
+                    .enable_http1()
+                    .build();
+                hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                    .build(https)
+            },
+            crl_caches: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("default".to_string(), Default::default());
+                Arc::new(m)
+            },
+            gss_cred: None,
+            admin_gss_cred: None,
+            eab_master_secret: None,
+            audit: Arc::new(crate::audit::AuditState::new()),
+            audit_policy: Arc::new(crate::audit::AuditPolicy::default()),
+            admin_sessions: None,
+            admin_auth_limiter: None,
+            startup_time: std::time::Instant::now(),
+        });
+
+        (
+            state,
+            chall_id,
+            message_id.to_string(),
+            token_part1.to_string(),
+            token_part2.to_string(),
+        )
+    }
+
+    fn make_response_digest(token_part1: &str, token_part2: &str, thumbprint: &str) -> String {
+        let key_auth = format!("{token_part1}{token_part2}.{thumbprint}");
+        let hasher = default_data_hasher();
+        let digest = hasher.hash_data("sha256", key_auth.as_bytes()).unwrap();
+        URL_SAFE_NO_PAD.encode(&digest)
+    }
+
+    fn make_acme_body(digest_b64: &str) -> String {
+        format!(
+            "Please reply.\n\
+             -----BEGIN ACME RESPONSE-----\n\
+             {}\n\
+             -----END ACME RESPONSE-----\n",
+            digest_b64
+        )
+    }
+
+    #[tokio::test]
+    async fn verify_response_valid_digest_returns_valid() {
+        let (state, _chall_id, message_id, token_part1, token_part2) = make_verify_state().await;
+        let thumbprint = "test-thumbprint-001";
+        let digest = make_response_digest(&token_part1, &token_part2, thumbprint);
+        let payload = WebhookPayload {
+            from: "user@example.com".to_string(),
+            in_reply_to: message_id,
+            dkim_domain: "example.com".to_string(),
+            dkim_status: "pass".to_string(),
+            body: make_acme_body(&digest),
+        };
+        let outcome = verify_response(&state, &payload).await;
+        assert_eq!(outcome, VerifyOutcome::Valid);
+    }
+
+    #[tokio::test]
+    async fn verify_response_wrong_digest_returns_invalid() {
+        let (state, _chall_id, message_id, _token_part1, _token_part2) = make_verify_state().await;
+        let payload = WebhookPayload {
+            from: "user@example.com".to_string(),
+            in_reply_to: message_id,
+            dkim_domain: "example.com".to_string(),
+            dkim_status: "pass".to_string(),
+            body: make_acme_body("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+        };
+        match verify_response(&state, &payload).await {
+            VerifyOutcome::Invalid(_) => {}
+            other => panic!("expected Invalid, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_response_dkim_domain_mismatch_returns_invalid() {
+        let (state, _chall_id, message_id, token_part1, token_part2) = make_verify_state().await;
+        let thumbprint = "test-thumbprint-001";
+        let digest = make_response_digest(&token_part1, &token_part2, thumbprint);
+        let payload = WebhookPayload {
+            from: "user@example.com".to_string(),
+            in_reply_to: message_id,
+            dkim_domain: "attacker.com".to_string(), // does not match From domain
+            dkim_status: "pass".to_string(),
+            body: make_acme_body(&digest),
+        };
+        match verify_response(&state, &payload).await {
+            VerifyOutcome::Invalid(r) if r.contains("DKIM domain") => {}
+            other => panic!("expected DKIM domain mismatch Invalid, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_response_dkim_status_fail_returns_invalid() {
+        let (state, _chall_id, message_id, token_part1, token_part2) = make_verify_state().await;
+        let thumbprint = "test-thumbprint-001";
+        let digest = make_response_digest(&token_part1, &token_part2, thumbprint);
+        let payload = WebhookPayload {
+            from: "user@example.com".to_string(),
+            in_reply_to: message_id,
+            dkim_domain: "example.com".to_string(),
+            dkim_status: "fail".to_string(), // not "pass"
+            body: make_acme_body(&digest),
+        };
+        match verify_response(&state, &payload).await {
+            VerifyOutcome::Invalid(r) if r.contains("DKIM status") => {}
+            other => panic!("expected DKIM status Invalid, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_response_already_validated_is_idempotent() {
+        let (state, chall_id, message_id, token_part1, token_part2) = make_verify_state().await;
+        let thumbprint = "test-thumbprint-001";
+        let digest = make_response_digest(&token_part1, &token_part2, thumbprint);
+        let payload = WebhookPayload {
+            from: "user@example.com".to_string(),
+            in_reply_to: message_id.clone(),
+            dkim_domain: "example.com".to_string(),
+            dkim_status: "pass".to_string(),
+            body: make_acme_body(&digest),
+        };
+        // Mark the challenge as already valid (simulates a concurrent webhook).
+        crate::db::query("UPDATE challenges SET status = 'valid' WHERE id = ?")
+            .bind(&chall_id)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        // A second delivery must not overwrite the already-valid challenge.
+        let outcome = verify_response(&state, &payload).await;
+        match outcome {
+            VerifyOutcome::Invalid(_) => {} // expected: status != 'processing'
+            VerifyOutcome::Valid => {
+                // Also acceptable if somehow it re-validates (idempotent on_valid).
+            }
+        }
+        let chall = crate::db::challenges::get_by_id(&state.db, &chall_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            chall.status, "valid",
+            "challenge must remain valid after duplicate webhook delivery"
+        );
+    }
+
+    // ── Helper function unit tests ─────────────────────────────────────────────
 
     #[test]
     fn extract_acme_response_basic() {

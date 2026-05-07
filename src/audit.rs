@@ -61,6 +61,8 @@ pub enum AuditEventType {
     AdminLogin,
     AdminLogout,
     AdminAction,
+    // Email webhook HMAC authentication
+    AuthWebhookHmacFail,
     // Security anomalies
     SecurityViolation,
 }
@@ -91,6 +93,7 @@ impl AuditEventType {
             AuditEventType::AdminLogin => "admin.login",
             AuditEventType::AdminLogout => "admin.logout",
             AuditEventType::AdminAction => "admin.action",
+            AuditEventType::AuthWebhookHmacFail => "auth.webhook.hmac.fail",
             AuditEventType::SecurityViolation => "security.violation",
         }
     }
