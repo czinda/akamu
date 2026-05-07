@@ -56,6 +56,201 @@ impl DbKind {
     }
 }
 
+/// Whether the active backend is PostgreSQL.
+///
+/// sqlx 0.8's `AnyPool` does not reliably rewrite `?` parameter placeholders
+/// to `$N` when dispatching to the PostgreSQL backend, because PostgreSQL also
+/// uses `?` as the JSONB existence operator and the two conflict in the parser.
+/// Call [`pg_sql`] on every SQL string that contains `?` before passing it to
+/// sqlx when the backend may be PostgreSQL.
+///
+/// MariaDB/MySQL use `?` natively, so no rewriting is required for that backend.
+static IS_POSTGRES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Rewrite `?` → `$1`, `$2`, … for PostgreSQL; return the string unchanged for
+/// all other backends.
+///
+/// The rewritten string is cached permanently (via `Box::leak`) keyed by the
+/// pointer identity of the static string literal, so each unique query string
+/// is rewritten at most once regardless of how often the function is called.
+///
+/// Usage:
+/// ```rust,ignore
+/// sqlx::query(pg_sql("SELECT … WHERE a = ? AND b = ?"))
+///     .bind(v1).bind(v2).fetch_optional(executor).await?
+/// ```
+pub(crate) fn pg_sql(s: &'static str) -> &'static str {
+    if !IS_POSTGRES.get().copied().unwrap_or(false) {
+        return s;
+    }
+    // Cache rewritten strings by the pointer address of the static literal.
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<usize, &'static str>>,
+    > = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let key = s.as_ptr() as usize;
+    {
+        let guard = cache.lock().unwrap();
+        if let Some(&cached) = guard.get(&key) {
+            return cached;
+        }
+    }
+    // Slow path: rewrite then store for the lifetime of the process.
+    let mut n = 0u32;
+    let mut out = String::with_capacity(s.len() + 8);
+    for ch in s.chars() {
+        if ch == '?' {
+            n += 1;
+            out.push('$');
+            out.push_str(&n.to_string());
+        } else {
+            out.push(ch);
+        }
+    }
+    let leaked: &'static str = Box::leak(out.into_boxed_str());
+    cache.lock().unwrap().insert(key, leaked);
+    leaked
+}
+
+/// Convenience wrapper: rewrite `?` placeholders for PostgreSQL, then call
+/// [`sqlx::query`].  Use this instead of `sqlx::query` for every SQL string
+/// that contains at least one `?`.
+///
+/// The lifetime `'q` is left to the caller to infer from the `.bind()` chain,
+/// matching the behaviour of `sqlx::query("literal")`.  `pg_sql` always
+/// returns `&'static str` which is a subtype of `&'q str` for any `'q`, so
+/// the coercion in the body is always sound.
+#[inline]
+pub(crate) fn query<'q>(
+    sql: &'static str,
+) -> sqlx::query::Query<'q, sqlx::Any, sqlx::any::AnyArguments<'q>> {
+    sqlx::query(pg_sql(sql))
+}
+
+/// Convenience wrapper: rewrite `?` placeholders for PostgreSQL, then call
+/// [`sqlx::query_as`].  Use this instead of `sqlx::query_as` for every SQL
+/// string that contains at least one `?`.
+#[inline]
+pub(crate) fn query_as<'q, O>(
+    sql: &'static str,
+) -> sqlx::query::QueryAs<'q, sqlx::Any, O, sqlx::any::AnyArguments<'q>>
+where
+    O: for<'r> sqlx::FromRow<'r, sqlx::any::AnyRow>,
+{
+    sqlx::query_as::<sqlx::Any, O>(pg_sql(sql))
+}
+
+/// Dynamic query builder that emits `$N` placeholders for PostgreSQL and `?`
+/// for all other backends, solving the same JSONB operator conflict that
+/// [`pg_sql`] solves for static SQL strings.
+pub(crate) struct DynQueryBuilder<'args> {
+    sql: String,
+    args: sqlx::any::AnyArguments<'args>,
+    bind_count: u32,
+    is_postgres: bool,
+    /// Set to `true` while inside a `push_values` row so that `push_bind`
+    /// emits `, ` before every placeholder except the first in that row.
+    in_row: bool,
+    /// Becomes `false` after the first `push_bind` call within a row.
+    row_first: bool,
+}
+
+impl<'args> DynQueryBuilder<'args> {
+    pub fn new(initial: &str) -> Self {
+        Self {
+            sql: initial.to_owned(),
+            args: Default::default(),
+            bind_count: 0,
+            is_postgres: IS_POSTGRES.get().copied().unwrap_or(false),
+            in_row: false,
+            row_first: false,
+        }
+    }
+
+    pub fn push(&mut self, sql: &str) -> &mut Self {
+        self.sql.push_str(sql);
+        self
+    }
+
+    pub fn push_bind<T>(&mut self, value: T) -> &mut Self
+    where
+        T: 'args + sqlx::Encode<'args, sqlx::Any> + sqlx::Type<sqlx::Any> + Send,
+    {
+        use sqlx::Arguments as _;
+        if self.in_row && !self.row_first {
+            self.sql.push_str(", ");
+        }
+        self.row_first = false;
+        self.bind_count += 1;
+        if self.is_postgres {
+            self.sql.push('$');
+            self.sql.push_str(&self.bind_count.to_string());
+        } else {
+            self.sql.push('?');
+        }
+        let _ = self.args.add(value);
+        self
+    }
+
+    /// Emit a multi-row VALUES clause, analogous to `QueryBuilder::push_values`.
+    ///
+    /// Each call to the closure receives `&mut DynQueryBuilder` (so it can call
+    /// `push_bind`) and one element from the iterator.  Rows are separated by
+    /// `, ` and each row is wrapped in `( … )`.  Column values within a row are
+    /// separated by `, ` automatically — the closure only needs to call
+    /// `push_bind` for each column.
+    pub fn push_values<I, F>(&mut self, iter: I, mut f: F) -> &mut Self
+    where
+        I: IntoIterator,
+        F: FnMut(&mut DynQueryBuilder<'args>, I::Item),
+    {
+        let mut first_row = true;
+        for item in iter {
+            if !first_row {
+                self.sql.push_str(", ");
+            }
+            first_row = false;
+            self.sql.push('(');
+            self.in_row = true;
+            self.row_first = true;
+            f(self, item);
+            self.in_row = false;
+            self.sql.push(')');
+        }
+        self
+    }
+
+    pub async fn execute<'e, E>(self, executor: E) -> Result<sqlx::any::AnyQueryResult, AcmeError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Any>,
+    {
+        Ok(sqlx::query_with::<sqlx::Any, _>(&self.sql, self.args)
+            .execute(executor)
+            .await?)
+    }
+
+    pub async fn fetch_all<'e, E, O>(self, executor: E) -> Result<Vec<O>, AcmeError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Any>,
+        O: for<'r> sqlx::FromRow<'r, sqlx::any::AnyRow> + Send + Unpin,
+    {
+        Ok(sqlx::query_as_with::<sqlx::Any, O, _>(&self.sql, self.args)
+            .fetch_all(executor)
+            .await?)
+    }
+
+    #[allow(dead_code)]
+    pub async fn fetch_optional<'e, E, O>(self, executor: E) -> Result<Option<O>, AcmeError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Any>,
+        O: for<'r> sqlx::FromRow<'r, sqlx::any::AnyRow> + Send + Unpin,
+    {
+        Ok(sqlx::query_as_with::<sqlx::Any, O, _>(&self.sql, self.args)
+            .fetch_optional(executor)
+            .await?)
+    }
+}
+
 /// Register all compiled-in sqlx drivers with the `Any` dispatcher.
 ///
 /// Must be called once at startup, before any pool is created.  It is safe to
@@ -169,6 +364,10 @@ pub async fn open(url: &str, max_connections: u32, require_tls: bool) -> Result<
         }
     }
 
+    IS_POSTGRES
+        .set(matches!(DbKind::from_url(url), DbKind::Postgres))
+        .ok();
+
     let map_err = |e| AcmeError::Database(format!("migration failed: {e}"));
     match DbKind::from_url(url) {
         DbKind::Sqlite => sqlx::migrate!("migrations/sqlite")
@@ -243,6 +442,28 @@ pub async fn begin_write(
     }
     .map_err(|e| AcmeError::Database(format!("begin write transaction: {e}")))?;
     Ok(tx)
+}
+
+/// Issue `SET LOCAL synchronous_commit = off` inside the current PostgreSQL
+/// transaction, eliminating the per-commit WAL flush (~1–4 ms on SSD) for
+/// state transitions that are eventually consistent by ACME protocol design.
+///
+/// Safe for challenge validation, order/authz creation, and the invalid-path
+/// writes — the client re-polls if the server restarts mid-flight.  Do NOT
+/// call this before inserting an issued certificate; cert durability is a hard
+/// requirement.
+///
+/// No-op on SQLite and MariaDB.
+pub(crate) async fn pg_local_async_commit(
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    kind: DbKind,
+) -> Result<(), sqlx::Error> {
+    if kind == DbKind::Postgres {
+        sqlx::query("SET LOCAL synchronous_commit = off")
+            .execute(&mut **tx)
+            .await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
