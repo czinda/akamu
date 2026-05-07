@@ -28,7 +28,8 @@ pub async fn get_by_id(
     id: &str,
 ) -> Result<Option<ChallengeRow>, AcmeError> {
     let row = super::query_as::<ChallengeRow>(
-        "SELECT id, authz_id, type, status, token, validated, error, created, updated
+        "SELECT id, authz_id, type, status, token, validated, error, created, updated,
+                email_token_part1, email_message_id
          FROM challenges WHERE id = ?",
     )
     .bind(id)
@@ -42,7 +43,8 @@ pub async fn list_by_authz(
     authz_id: &str,
 ) -> Result<Vec<ChallengeRow>, AcmeError> {
     let rows = super::query_as::<ChallengeRow>(
-        "SELECT id, authz_id, type, status, token, validated, error, created, updated
+        "SELECT id, authz_id, type, status, token, validated, error, created, updated,
+                email_token_part1, email_message_id
          FROM challenges WHERE authz_id = ?",
     )
     .bind(authz_id)

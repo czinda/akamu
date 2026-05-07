@@ -155,6 +155,9 @@ pub async fn get_with_challenges(
                 error: r.error,
                 created: r.chall_created?,
                 updated: r.chall_updated?,
+                // email_token_part1 and email_message_id are not included in
+                // this JOIN query: they are only needed by the webhook path
+                // (get_by_email_message_id) and would bloat all authz fetches.
                 email_token_part1: None,
                 email_message_id: None,
             })
