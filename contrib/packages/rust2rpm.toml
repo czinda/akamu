@@ -21,27 +21,326 @@ Systemd service units for akamu and akamu-cosigner are installed from
 contrib/systemd/ in the source tree.
 """
 
-# Install the server binary; the library is internal.
-# akamu-cosigner and akamu-client binaries are added via explicit
-# %cargo_install calls in the custom sections of the spec.
-cargo-install-bin = true
+# Binaries are copied explicitly from target/rpm/ in %install; the workspace
+# layout means %cargo_install would only install the root crate binary and
+# cannot reach sub-crate binaries without extra flags.  Per the Fedora Rust
+# packaging guidelines for workspace projects, %cargo_install SHOULD NOT be
+# used here.
+cargo-install-bin = false
 cargo-install-lib = false
+
+# LICENSE is the only license file present in the source tree.
+# LICENSE.dependencies and cargo-vendor.txt are generated during %build by
+# %{cargo_license}, %{cargo_license_summary}, and %{cargo_vendor_manifest}.
+license-files = ["../../LICENSE"]
+
+# Additional Sources beyond Source0 (the source tarball) and Source1 (the
+# vendor tarball, handled by the -V manual flag to rust2rpm).
+extra-sources = [
+    { number = 2, file = "akamu.service", comments = ["Systemd service unit for the akamu ACME CA server daemon."] },
+    { number = 3, file = "config.toml.example", comments = ["Example server configuration; installed as %{_sysconfdir}/akamu/config.toml.example."] },
+    { number = 4, file = "akamu-cosigner.service", comments = ["Systemd service unit for the MTC cosigner daemon."] },
+    { number = 5, file = "akamu-sysusers.conf", comments = ["sysusers.d entry that creates the akamu system user/group."] },
+    { number = 6, file = "akamu-cosigner-sysusers.conf", comments = ["sysusers.d entry that creates the akamu-cosigner system user/group."] },
+    { number = 7, file = "akamu-tmpfiles.conf", comments = ["tmpfiles.d entry that creates /var/lib/akamu at boot."] },
+    { number = 8, file = "akamu-cosigner-tmpfiles.conf", comments = ["tmpfiles.d entry that creates /var/lib/akamu-cosigner at boot."] },
+    { number = 9, file = "akamuctl.toml.example", comments = ["Example akamuctl configuration; installed as a %doc file."] },
+]
+
+# Additional %files entries for the main akamu binary subpackage.
+extra-files = [
+    "%license LICENSE.dependencies",
+    "%license cargo-vendor.txt",
+    "%{_unitdir}/akamu.service",
+    "%{_sysusersdir}/akamu.conf",
+    "%{_tmpfilesdir}/akamu.conf",
+    "%dir %{_sysconfdir}/akamu",
+    "%config(noreplace) %{_sysconfdir}/akamu/config.toml.example",
+    "%ghost %dir %attr(0750,akamu,akamu) %{_sharedstatedir}/akamu",
+    "%{_mandir}/man8/akamu.8.gz",
+]
+
+# Additional RPM metadata and systemd scriptlets injected into the main akamu
+# binary package header (between the License: tag and %description).
+bin-package-extra = """
+Requires:       akamuctl = %{version}-%{release}
+%{?systemd_requires}
+
+%pre
+%sysusers_create_compat %{SOURCE5}
+
+%post
+%systemd_post akamu.service
+%tmpfiles_create %{_tmpfilesdir}/akamu.conf
+
+%preun
+%systemd_preun akamu.service
+
+%postun
+%systemd_postun_with_restart akamu.service
+"""
+
+# Additional subpackages.  This block is injected verbatim after the main
+# binary package definition and before any -devel subpackages.
+#
+# The %bcond declarations, %global macros, and conditional BuildRequires for
+# the optional database backends are placed here so they appear in the spec
+# before the subpackage definitions that reference them.
+package-extra = """
+# Snapshot release identifiers — substituted by 'make srpm' via sed.
+# The %bcond check is generated automatically from the [tests] configuration.
+%global snapdate    0
+%global snapcommit  0000000
+
+# Optional database backends (always-on SQLite is the baseline).
+# Disable with: rpmbuild --without backend_postgres
+#           or: rpmbuild --without backend_mariadb
+%bcond backend_postgres 1
+%bcond backend_mariadb  1
+
+# Force --locked for all cargo invocations so that cargo uses Cargo.lock as-is
+# and resolves dependencies from the vendor directory without network access.
+%global __cargo_common_opts %{?_smp_mflags} -Z avoid-dev-deps --locked
+
+# Feature list: sqlite is always enabled; postgres and mariadb are opt-in.
+%global _akamu_features backend-sqlite
+%if %{with backend_postgres}
+%global _akamu_features %{_akamu_features},backend-postgres
+%endif
+%if %{with backend_mariadb}
+%global _akamu_features %{_akamu_features},backend-mariadb
+%endif
+
+# Optional backend: PostgreSQL (libpq)
+%if %{with backend_postgres}
+BuildRequires:  pkgconfig(libpq)
+BuildRequires:  libpq-devel
+%endif
+# Optional backend: MariaDB / MySQL (Connector/C)
+%if %{with backend_mariadb}
+BuildRequires:  pkgconfig(libmariadb)
+BuildRequires:  mariadb-connector-c-devel
+%endif
+
+
+# ── Subpackage: MTC cosigner daemon ───────────────────────────────────────────
+%package -n akamu-cosigner
+Summary:        MTC cosigner daemon for akamu
+License:        GPL-3.0-or-later
+Requires:       akamuctl = %{version}-%{release}
+%{?systemd_requires}
+
+%description -n akamu-cosigner
+akamu-cosigner is a lightweight daemon that implements the Merkle Tree
+Certificates (MTC) cosigner REST API (POST /sign).  It signs checkpoints
+produced by the akamu CA and returns DER-encoded SubtreeSignature blobs,
+adding an independent trust layer to the MTC ecosystem.  Supports optional
+ACME EAB bootstrap (http-01, dns-01, tls-alpn-01) to obtain a WebPKI
+identity certificate at first run.
+
+%files -n akamu-cosigner
+%license LICENSE
+%license LICENSE.dependencies
+%license cargo-vendor.txt
+%{_bindir}/akamu-cosigner
+%{_unitdir}/akamu-cosigner.service
+%{_sysusersdir}/akamu-cosigner.conf
+%{_tmpfilesdir}/akamu-cosigner.conf
+%dir %{_sysconfdir}/akamu-cosigner
+%ghost %dir %attr(0750,akamu-cosigner,akamu-cosigner) %{_sharedstatedir}/akamu-cosigner
+%{_mandir}/man8/akamu-cosigner.8.gz
+
+%pre -n akamu-cosigner
+%sysusers_create_compat %{SOURCE6}
+
+%post -n akamu-cosigner
+%systemd_post akamu-cosigner.service
+%tmpfiles_create %{_tmpfilesdir}/akamu-cosigner.conf
+
+%preun -n akamu-cosigner
+%systemd_preun akamu-cosigner.service
+
+%postun -n akamu-cosigner
+%systemd_postun_with_restart akamu-cosigner.service
+
+
+# ── Subpackage: CLI client binary ──────────────────────────────────────────────
+%package -n akamu-client
+Summary:        ACME client CLI with ML-DSA account key support
+License:        GPL-3.0-or-later
+
+%description -n akamu-client
+akamu-client is a command-line ACME client that supports ML-DSA (Dilithium)
+account keys in addition to the standard RSA and ECDSA key types.  It can
+register accounts, obtain and renew certificates, handle http-01, dns-01,
+tls-alpn-01, and onion-csr-01 challenges, and supports ARI-aware renewal
+(RFC 9773).
+
+%files -n akamu-client
+%license LICENSE
+%license LICENSE.dependencies
+%{_bindir}/akamu-cli
+
+
+# ── Subpackage: server administration CLI ─────────────────────────────────────
+%package -n akamuctl
+Summary:        akamu server administration CLI
+License:        GPL-3.0-or-later
+Requires:       krb5-libs
+
+%description -n akamuctl
+akamuctl is a command-line administration tool for the akamu ACME server.
+It communicates with the akamu admin API over mTLS and GSSAPI/Kerberos
+authentication, and provides commands for managing accounts, orders,
+external account bindings, and server state.
+
+%files -n akamuctl
+%license LICENSE
+%license LICENSE.dependencies
+%license cargo-vendor.txt
+%{_bindir}/akamuctl
+%{_mandir}/man1/akamuctl.1.gz
+%doc %{_docdir}/akamuctl/akamuctl.toml.example
+
+
+# ── Subpackage: documentation (markdown sources) ──────────────────────────────
+%package -n akamu-doc
+Summary:        Documentation for akamu (markdown)
+License:        GPL-3.0-or-later
+BuildArch:      noarch
+
+%description -n akamu-doc
+Markdown documentation for the akamu ACME server, covering server
+configuration, challenge validation, MTC cosigner protocol, administration
+via akamuctl, certificate profiles, and the admin API.  Also includes
+the contrib/configs sample configuration files for common deployment
+scenarios.
+
+%files -n akamu-doc
+%license LICENSE
+%doc docs/src
+%doc contrib/configs
+"""
+
 
 [requires]
 build = [
+    "cargo-rpm-macros >= 26",
+    # System OpenSSL — the openssl-sys / native-ossl-sys crates link against it.
+    # Rebuild this package whenever openssl-devel is updated in Fedora.
+    "pkgconfig(openssl)",
     "openssl-devel",
+    # SQLite — required by the always-on backend-sqlite feature.
+    "pkgconfig(sqlite3)",
     "sqlite-devel",
+    # bindgen (openssl-sys / native-ossl-sys build scripts) requires libclang
+    # to generate FFI bindings at build time.
     "clang-devel",
-    "pkgconfig(libsqlite3)",
-    # LDAP / SASL / GSSAPI (akamu-ldap FFI crate)
+    # LDAP / SASL / GSSAPI — required by the akamu-ldap FFI crate.
     "openldap-devel",
     "cyrus-sasl-devel",
     "krb5-devel",
+    # synta* crates are packaged separately (COPR).  Install them into the mock
+    # chroot before rebuilding this SRPM:
+    #   mock --install rust-synta-devel rust-synta-certificate-devel \
+    #                  rust-synta-x509-verification-devel rust-synta-mtc-devel
+    "rust-synta-devel",
+    "rust-synta-certificate-devel",
+    "rust-synta-x509-verification-devel",
+    "rust-synta-mtc-devel",
+    # Man page compiler (docs/man/*.scd -> gzipped groff).
+    "scdoc",
+    # Provides %systemd_post / %systemd_preun / %systemd_postun_with_restart
+    # and the %{?systemd_requires} macro used in the package headers.
+    "systemd-rpm-macros",
+    # NOTE: Rebuild this package whenever openssl-devel is updated in Fedora.
+    # ML-DSA support uses native OpenSSL 3.5+ APIs via the native-ossl crate;
+    # verify compatibility when the system OpenSSL major version changes.
+    # The optional backend_postgres and backend_mariadb bconds add
+    # pkgconfig(libpq)/libpq-devel and pkgconfig(libmariadb)/mariadb-connector-c-devel
+    # respectively; those conditional BuildRequires live in package-extra.
 ]
 
+
+[features]
+# The default feature set includes only backend-sqlite.  The spec builds with
+# --no-default-features --features backend-sqlite[,backend-postgres][,backend-mariadb]
+# so that the optional backends are controlled by bcond switches.
+disable-default = true
+enable = ["backend-sqlite", "backend-postgres", "backend-mariadb"]
+
+
 [tests]
-skip = ["doc"]
+# Run lib unit tests and binary smoke tests, but skip documentation tests.
+# Doc tests require live external infrastructure (ACME endpoints, DNS resolver,
+# TLS server) that is not available inside the mock build environment.
+run = ["lib", "bins"]
 comments = [
     "Documentation tests require external infrastructure (live ACME endpoints,",
     "DNS resolver, TLS server) not available inside the mock build environment.",
+]
+
+
+[scripts.build]
+post = [
+    # Generate the bundled-dependency license summary required by Fedora policy.
+    "%{cargo_license_summary}",
+    "%{cargo_license} > LICENSE.dependencies",
+    "%{cargo_vendor_manifest}",
+    # cargo2rpm generates the vendor manifest with --target=all, which pulls in
+    # platform-specific crates never compiled on Linux.  Remove them so that
+    # the bundled(crate()) Provides reflect what is actually linked.
+    "sed -i -E \\",
+    "    -e '/^windows[-_]/d' \\",
+    "    -e '/^(schannel|ipconfig|widestring|find-msvc-tools) /d' \\",
+    "    -e '/^core-foundation/d' \\",
+    "    -e '/^security-framework/d' \\",
+    "    -e '/^(js-sys|web-sys) /d' \\",
+    "    -e '/^wasm-bindgen/d' \\",
+    "    -e '/^wit-bindgen/d' \\",
+    "    -e '/^(wasi|wasip2|wasip3|wasite) /d' \\",
+    "    -e '/^(redox_syscall|libredox|r-efi) /d' \\",
+    "    cargo-vendor.txt",
+    # Compile man pages from scdoc sources.
+    "scdoc < docs/man/akamu.8.scd          | gzip -9 > akamu.8.gz",
+    "scdoc < docs/man/akamu-cosigner.8.scd | gzip -9 > akamu-cosigner.8.gz",
+    "scdoc < docs/man/akamuctl.1.scd       | gzip -9 > akamuctl.1.gz",
+]
+
+[scripts.install]
+post = [
+    # Copy built binaries from target/rpm/ into the buildroot.
+    # Per Fedora Rust packaging guidelines for workspace projects,
+    # %cargo_install SHOULD NOT be used; copy executables explicitly.
+    "install -Dpm 0755 target/rpm/akamu           %{buildroot}%{_bindir}/akamu",
+    "install -Dpm 0755 target/rpm/akamu-cli       %{buildroot}%{_bindir}/akamu-cli",
+    "install -Dpm 0755 target/rpm/akamu-cosigner  %{buildroot}%{_bindir}/akamu-cosigner",
+    "install -Dpm 0755 target/rpm/akamuctl        %{buildroot}%{_bindir}/akamuctl",
+    # Systemd service units
+    "install -Dpm 0644 %{SOURCE2} %{buildroot}%{_unitdir}/akamu.service",
+    "install -Dpm 0644 %{SOURCE4} %{buildroot}%{_unitdir}/akamu-cosigner.service",
+    # sysusers.d — system user/group definitions
+    "install -Dpm 0644 %{SOURCE5} %{buildroot}%{_sysusersdir}/akamu.conf",
+    "install -Dpm 0644 %{SOURCE6} %{buildroot}%{_sysusersdir}/akamu-cosigner.conf",
+    # tmpfiles.d — /var/lib state directory creation
+    "install -Dpm 0644 %{SOURCE7} %{buildroot}%{_tmpfilesdir}/akamu.conf",
+    "install -Dpm 0644 %{SOURCE8} %{buildroot}%{_tmpfilesdir}/akamu-cosigner.conf",
+    # Example configuration files
+    "install -Dpm 0644 %{SOURCE3} %{buildroot}%{_sysconfdir}/akamu/config.toml.example",
+    "install -Dpm 0644 %{SOURCE9} %{buildroot}%{_docdir}/akamuctl/akamuctl.toml.example",
+    # Man pages (compiled from scdoc sources in %build)
+    "install -Dpm 0644 akamu.8.gz          %{buildroot}%{_mandir}/man8/akamu.8.gz",
+    "install -Dpm 0644 akamu-cosigner.8.gz %{buildroot}%{_mandir}/man8/akamu-cosigner.8.gz",
+    "install -Dpm 0644 akamuctl.1.gz       %{buildroot}%{_mandir}/man1/akamuctl.1.gz",
+    # Create the cosigner configuration directory
+    "install -dm 0755 %{buildroot}%{_sysconfdir}/akamu-cosigner",
+]
+
+[scripts.genbr]
+post = [
+    # The vendor tarball (Source1) bundles Rust crate dependencies used at
+    # versions or configurations not yet available as Fedora system packages.
+    # hickory-resolver 0.24 IS a Fedora system package; its BuildRequires
+    # (including +dns-over-native-tls-devel and +dnssec-openssl-devel feature
+    # subpackages) are generated automatically by %cargo_generate_buildrequires.
 ]

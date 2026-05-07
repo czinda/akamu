@@ -2,16 +2,24 @@
 #
 # Quick start:
 #   make sources   # create all source files (tarball + vendor; requires network)
+#   make spec      # validate rust2rpm.toml and generate akamu.spec
 #   make srpm      # build an SRPM in the current directory (no ~/rpmbuild needed)
 #   make mock      # rebuild SRPM in a clean mock chroot
 #
 # Override GIT_REF to build from a tag:
 #   make sources GIT_REF=v0.1.0
 #
-# Requires: git, cargo, rpmbuild, rpmlint
+# Requires: git, cargo, rust2rpm, rpmbuild, rpmlint
 # For 'mock': mock package + your user in the 'mock' group
 #   sudo usermod -aG mock $$USER   (then log out and back in)
 # For 'copr-build': copr-cli configured with your API token
+#
+# rust2rpm is used to validate rust2rpm.toml (which is the canonical record of
+# all package metadata and build requirements) before each spec/SRPM build.
+# Full spec generation via rust2rpm is not possible for workspace crates that
+# are not published on crates.io — rust2rpm requires a .crate archive and
+# rejects workspace Cargo.toml files.  The spec template (akamu.spec.in) is
+# therefore maintained alongside rust2rpm.toml; both must be kept in sync.
 
 # Enable pipefail so that a failed 'git archive | gzip' pipe is not silently
 # swallowed (gzip always exits 0, which would make Make think the tarball
@@ -26,14 +34,19 @@ SHELL       := /bin/bash
 # Variables
 # ──────────────────────────────────────────────────────────────────────────────
 
-SPEC     := akamu.spec.in
-SPEC_TMP := akamu.spec
-
-NAME    := $(shell awk '/^Name:/{print $$2; exit}' $(SPEC))
-VERSION := $(shell awk '/^Version:/{print $$2; exit}' $(SPEC))
+SPEC_IN  := akamu.spec.in
+SPEC_OUT := akamu.spec
 
 # Absolute path to the git repository root (two levels above this Makefile).
 REPOROOT := $(abspath $(dir $(abspath $(lastword $(MAKEFILE_LIST))))/../..)
+
+# Derive NAME and VERSION from the canonical sources (Cargo.toml / rust2rpm.toml)
+# rather than from the spec template so that they stay correct even if the
+# spec.in header is out of date.
+NAME    := akamu
+VERSION := $(shell python3 -c \
+    "import tomllib; print(tomllib.load(open('$(REPOROOT)/Cargo.toml','rb'))['package']['version'])" \
+    2>/dev/null)
 
 # Resolved synta version from Cargo.lock (the lock file pins the exact version
 # selected by the resolver, unlike Cargo.toml which only has a requirement).
@@ -72,7 +85,7 @@ MOCK_CONFIG ?= fedora-rawhide-x86_64
 
 # ──────────────────────────────────────────────────────────────────────────────
 
-.PHONY: all sources tarball vendor srpm mock lint validate-spec check-deps clean help copr-build
+.PHONY: all sources tarball vendor spec srpm mock lint check-deps clean help copr-build
 
 all: sources
 
@@ -81,22 +94,22 @@ help:
 	@echo "  sources       prepare all source files (tarball + vendor)"
 	@echo "  tarball       create $(TARBALL) from GIT_REF=$(GIT_REF)"
 	@echo "  vendor        create $(VENDOR_TARBALL)  [needs network]"
+	@echo "  spec          validate rust2rpm.toml and generate $(SPEC_OUT)"
 	@echo "  srpm          build SRPM (Release: $(RELEASE)%{?dist})"
 	@echo "  mock          rebuild SRPM in mock chroot (MOCK_CONFIG=$(MOCK_CONFIG))"
-	@echo "  lint          run rpmlint on $(SPEC)"
-	@echo "  validate-spec validate rust2rpm.toml against the rust2rpm schema"
+	@echo "  lint          run rpmlint on the generated $(SPEC_OUT)"
 	@echo "  check-deps    check which Cargo.lock crates are available as system packages"
 	@echo "  copr-build    submit SRPM to COPR  (COPR=project required)"
 	@echo "                example: make copr-build COPR=@mygroup/akamu"
-	@echo "  clean         remove generated source files and the temporary spec"
+	@echo "  clean         remove generated source files and the generated spec"
 	@echo ""
 	@echo "Snapshot: GIT_REF=$(GIT_REF)  date=$(SNAPDATE)  commit=$(SNAPCOMMIT)"
 	@echo ""
-	@echo "Note: rust-akamu.spec.in is maintained manually."
-	@echo "  rust2rpm cannot generate it automatically because akamu is a Cargo"
-	@echo "  workspace not published on crates.io (cargo package fails on path"
-	@echo "  dependencies, and rust2rpm rejects workspace Cargo.toml files)."
-	@echo "  Use 'make validate-spec' to check rust2rpm.toml for schema errors."
+	@echo "Note: rust2rpm validates rust2rpm.toml before every spec/SRPM build but"
+	@echo "  cannot generate the spec for this workspace (akamu is not on crates.io;"
+	@echo "  rust2rpm rejects workspace Cargo.toml files).  $(SPEC_IN) is the"
+	@echo "  spec template; rust2rpm.toml is the canonical metadata record.  Keep"
+	@echo "  both in sync when adding subpackages, BuildRequires, or scriptlets."
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SOURCE PREPARATION
@@ -161,23 +174,42 @@ $(VENDOR_TARBALL):
 	@echo "==> $@ ready"
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SRPM / MOCK / LINT
+# SPEC / SRPM / MOCK / LINT
 # ══════════════════════════════════════════════════════════════════════════════
 
-# ── srpm ──────────────────────────────────────────────────────────────────────
+# ── spec ──────────────────────────────────────────────────────────────────────
 #
-# Substitute the snapshot release globals into a temporary .spec file and
-# build the SRPM into the current directory (no ~/rpmbuild tree needed).
+# Validate rust2rpm.toml (the canonical metadata record), then generate the
+# RPM spec by substituting snapshot release globals into the spec template.
+#
+# rust2rpm validates that all keys in rust2rpm.toml are recognised and that
+# their values have the correct types.  This catches drift between the TOML
+# config and the spec template before the SRPM is assembled.
+#
+# Full spec generation via rust2rpm is not possible for this workspace:
+#   - rust2rpm requires a .crate archive as input.
+#   - It explicitly rejects workspace Cargo.toml files.
+#   - akamu is not published on crates.io, so --offline fetch fails too.
+# The spec template ($(SPEC_IN)) is therefore maintained alongside
+# rust2rpm.toml.  Both files must be kept in sync.
+#
+# Service units live in contrib/systemd/ as plain files; sysusers.d and
+# tmpfiles.d sources use the .conf.in convention and are staged as .conf
+# files in _sourcedir so rpmbuild can locate Source2–Source9.
 
-srpm: sources
-	@echo "==> Building SRPM (rust-$(NAME)-$(VERSION)-$(RELEASE))"
+spec:
+	@echo "==> Validating rust2rpm.toml"
+	rust2rpm --validate-only -C "$(CURDIR)/rust2rpm.toml"
+	@echo "==> Generating $(SPEC_OUT) from $(SPEC_IN)"
 	sed \
 	    -e "s/^%global snapdate[[:space:]].*/%global snapdate    $(SNAPDATE)/" \
 	    -e "s/^%global snapcommit[[:space:]].*/%global snapcommit  $(SNAPCOMMIT)/" \
-	    "$(SPEC)" > "$(SPEC_TMP)"
-	@# Service units live in contrib/systemd/ as plain files; sysusers.d and
-	@# tmpfiles.d sources use the .conf.in convention and are copied to .conf
-	@# here.  All are placed in _sourcedir so rpmbuild can locate Source2–Source9.
+	    "$(SPEC_IN)" > "$(SPEC_OUT)"
+
+# ── srpm ──────────────────────────────────────────────────────────────────────
+
+srpm: sources spec
+	@echo "==> Building SRPM ($(NAME)-$(VERSION)-$(RELEASE))"
 	cp "$(REPOROOT)/contrib/systemd/akamu.service" .
 	cp "$(REPOROOT)/contrib/systemd/akamu-cosigner.service" .
 	cp "$(REPOROOT)/contrib/systemd/akamu-sysusers.conf.in"          akamu-sysusers.conf
@@ -188,8 +220,8 @@ srpm: sources
 	    --define "_sourcedir $(CURDIR)" \
 	    --define "_specdir   $(CURDIR)" \
 	    --define "_srcrpmdir $(CURDIR)" \
-	    "$(SPEC_TMP)"
-	rm -f "$(SPEC_TMP)" \
+	    "$(SPEC_OUT)"
+	rm -f "$(SPEC_OUT)" \
 	      akamu.service akamu-cosigner.service \
 	      akamu-sysusers.conf akamu-cosigner-sysusers.conf \
 	      akamu-tmpfiles.conf akamu-cosigner-tmpfiles.conf
@@ -206,25 +238,13 @@ mock: srpm
 	mock -r "$(MOCK_CONFIG)" --rebuild "$(SRPM)"
 
 # ── lint ──────────────────────────────────────────────────────────────────────
-
-lint:
-	rpmlint "$(SPEC)"
-
-# ── validate-spec ─────────────────────────────────────────────────────────────
 #
-# Validate rust2rpm.toml against the rust2rpm JSON schema.
-#
-# Full spec regeneration via rust2rpm is not possible for this project:
-#   - akamu is a Cargo workspace; rust2rpm rejects workspace Cargo.toml files.
-#   - akamu is not published on crates.io; --offline fetch fails.
-#   - cargo package fails on workspace path dependencies (no explicit versions).
-# rust2rpm.toml is kept as a machine-validated record of the package metadata
-# and build requirements.  The spec itself (akamu.spec.in) is maintained
-# manually, bootstrapped from the rust2rpm-generated template.
+# Run rpmlint on the generated spec (not the .spec.in template, which contains
+# unresolved substitution placeholders that rpmlint would flag as errors).
 
-validate-spec:
-	rust2rpm --validate-only -C "$(CURDIR)/rust2rpm.toml"
-	@echo "rust2rpm.toml is valid."
+lint: spec
+	rpmlint "$(SPEC_OUT)"
+	rm -f "$(SPEC_OUT)"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DEPENDENCY CHECKING
@@ -268,5 +288,5 @@ copr-build:
 # ══════════════════════════════════════════════════════════════════════════════
 
 clean:
-	rm -f $(ALL_SOURCES) "$(SPEC_TMP)"
+	rm -f $(ALL_SOURCES) "$(SPEC_OUT)"
 	rm -rf "$(REPOROOT)/vendor"
