@@ -6,6 +6,7 @@
 pub mod caa;
 mod dns01;
 mod dns_persist_01;
+pub mod email_reply_00;
 mod http01;
 pub mod onion_csr_01;
 mod tls_alpn01;
@@ -91,6 +92,20 @@ pub async fn validate_challenge(
                 let err = AcmeError::Internal(format!("account status lookup: {e}"));
                 let now = unix_now();
                 on_invalid(state, challenge_id, authz_id, err, now).await;
+                return "invalid";
+            }
+        }
+    }
+
+    // email-reply-00 (RFC 8823): triggering the challenge sends the challenge
+    // email.  Validation happens asynchronously via the webhook — so we return
+    // "processing" rather than "valid" after a successful send.
+    if chall_type == "email-reply-00" {
+        let now = unix_now();
+        match email_reply_00::send_challenge_email(state, challenge_id, id_value, token).await {
+            Ok(()) => return "processing",
+            Err(e) => {
+                on_invalid(state, challenge_id, authz_id, e, now).await;
                 return "invalid";
             }
         }
@@ -253,15 +268,25 @@ async fn on_valid(state: &AppState, challenge_id: &str, authz_id: &str, order_id
         let mut tx = state.db.begin().await?;
         crate::db::pg_local_async_commit(&mut tx, state.db_kind).await?;
 
-        // 1. Mark challenge valid.
-        crate::db::query(
-            "UPDATE challenges SET status = 'valid', validated = ?, updated = ? WHERE id = ?",
+        // 1. Mark challenge valid only if still in 'processing' state.
+        // The AND status = 'processing' guard prevents duplicate on_valid calls
+        // (e.g. concurrent webhook delivery retries) from double-committing.
+        let chall_rows = crate::db::query(
+            "UPDATE challenges SET status = 'valid', validated = ?, updated = ?
+             WHERE id = ? AND status = 'processing'",
         )
         .bind(now)
         .bind(now)
         .bind(challenge_id)
         .execute(&mut *tx)
-        .await?;
+        .await?
+        .rows_affected();
+
+        if chall_rows == 0 {
+            // Already validated by a concurrent caller; nothing more to do.
+            tx.commit().await?;
+            return Ok(false);
+        }
 
         // 2. Mark authorization valid.
         crate::db::query("UPDATE authorizations SET status = 'valid', updated = ? WHERE id = ?")
@@ -297,18 +322,22 @@ async fn on_valid(state: &AppState, challenge_id: &str, authz_id: &str, order_id
     match result {
         Ok(true) => {
             tracing::info!("order {order_id} is now ready");
+            state
+                .record_audit(
+                    crate::audit::AuditEvent::success(
+                        crate::audit::AuditEventType::AuthChallengeOk,
+                    )
+                    .with_subject(authz_id),
+                )
+                .await;
         }
-        Ok(false) => {}
+        Ok(false) => {
+            // Challenge was already validated (concurrent webhook retry); no audit needed.
+        }
         Err(e) => {
             tracing::warn!("authz {authz_id_log}: on_valid transaction failed: {e}");
         }
     }
-    state
-        .record_audit(
-            crate::audit::AuditEvent::success(crate::audit::AuditEventType::AuthChallengeOk)
-                .with_subject(authz_id),
-        )
-        .await;
 }
 
 /// Handle a failed challenge validation.
@@ -741,7 +770,7 @@ mod tests {
                 id: chall_id.clone(),
                 authz_id: authz_id.clone(),
                 r#type: "http-01".to_string(),
-                status: "pending".to_string(),
+                status: "processing".to_string(),
                 token: "mytoken".to_string(),
                 validated: None,
                 error: None,
@@ -1135,7 +1164,10 @@ mod tests {
                 id: chall_id.clone(),
                 authz_id: authz_id.clone(),
                 r#type: "http-01".to_string(),
-                status: "pending".to_string(),
+                // The route handler always sets the challenge to "processing" before
+                // calling validate_challenge; mirror that here so on_valid's idempotency
+                // guard (AND status = 'processing') fires correctly.
+                status: "processing".to_string(),
                 token: token.to_string(),
                 validated: None,
                 error: None,

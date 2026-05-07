@@ -1209,9 +1209,16 @@ pub struct EmailChallengeConfig {
     /// Absolute path to the executable that sends the challenge email.
     #[serde(default)]
     pub send_script: String,
+    /// Timeout in seconds for `send_script` execution (default 30).
+    #[serde(default = "default_send_script_timeout_secs")]
+    pub send_script_timeout_secs: u64,
     /// Shared secret (≥ 32 chars) for `POST /acme/email-webhook` HMAC authentication.
     #[serde(default)]
     pub webhook_hmac_secret: String,
+}
+
+fn default_send_script_timeout_secs() -> u64 {
+    30
 }
 
 impl std::fmt::Debug for EmailChallengeConfig {

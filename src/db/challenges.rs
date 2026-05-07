@@ -139,7 +139,7 @@ pub async fn set_email_token(
     message_id: &str,
     now: i64,
 ) -> Result<(), AcmeError> {
-    super::query(
+    let rows = super::query(
         "UPDATE challenges
          SET email_token_part1 = ?, email_message_id = ?, updated = ?
          WHERE id = ?",
@@ -149,7 +149,14 @@ pub async fn set_email_token(
     .bind(now)
     .bind(id)
     .execute(executor)
-    .await?;
+    .await?
+    .rows_affected();
+
+    if rows == 0 {
+        return Err(AcmeError::Internal(format!(
+            "set_email_token: challenge {id} not found"
+        )));
+    }
     Ok(())
 }
 
