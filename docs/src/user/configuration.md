@@ -1155,6 +1155,7 @@ The domain portion of this address is used to construct the `Message-ID` header 
 | `ACME_SUBJECT` | `ACME: <base64url(token-part1)>` |
 | `ACME_MESSAGE_ID` | Server-generated `Message-ID` — the script must use this exactly in the outbound `Message-ID` header |
 | `ACME_AUTO_SUBMITTED` | `auto-generated; type=acme` |
+| `ACME_TOKEN_PART2` | token-part2 (base64url); the ACME challenge `token` field value, exposed for logging or advanced script use |
 
 Exit code 0 = success. Any non-zero exit code marks the challenge invalid and the client may retry.
 

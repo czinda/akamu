@@ -514,7 +514,7 @@ A failed authorization invalidates the parent order. Create a new order to try a
 
    ```
    full_token  = base64url(token-part1) || base64url(token-part2)
-   key_auth    = full_token || "." || base64url(SHA-256(account-key-thumbprint))
+   key_auth    = full_token || "." || base64url(SHA-256(canonical-JWK))
    response    = base64url(SHA-256(key_auth))
    ```
 
@@ -538,9 +538,11 @@ A failed authorization invalidates the parent order. Create a new order to try a
 
 ```
 full_token = base64url(token-part1) || base64url(token-part2)
-key_auth   = full_token || "." || base64url(SHA-256(JWK-thumbprint-of-account-key))
+key_auth   = full_token || "." || base64url(SHA-256(canonical-JWK))
 response   = base64url(SHA-256(key_auth as UTF-8 bytes))
 ```
+
+Where `base64url(SHA-256(canonical-JWK))` is the JWK thumbprint of the account key per [RFC 7638](https://www.rfc-editor.org/rfc/rfc7638) — the same value used as `thumbprint` in the standard key authorization formula. Do not hash the thumbprint string itself; hash the canonical JWK JSON.
 
 This is different from the standard `token.thumbprint` formula used by http-01/dns-01/tls-alpn-01. The `response` value (not `key_auth`) is what the client sends in the reply body.
 
@@ -576,7 +578,12 @@ The certificate profile should be configured to enforce `email_protection` EKU. 
 | `dkim_status` | `"pass"` if DKIM verification succeeded; any other value fails the challenge |
 | `body` | Full text body of the reply email |
 
-The DKIM verification and email parsing are performed by the webhook caller (the mail routing script). The server enforces that `dkim_domain` matches the domain portion of `from`. Returning anything other than `"pass"` for `dkim_status` causes the challenge to be marked invalid.
+**DKIM trust model:** The server does not perform DKIM verification itself. DKIM verification is the responsibility of the webhook caller (the mail routing script or MTA filter). The server enforces two properties on every request:
+
+1. `dkim_domain` must match the domain part of `from` (case-insensitively). This prevents a malicious script from claiming DKIM pass for a different domain.
+2. `dkim_status` must equal `"pass"` (case-insensitively; some MTAs report `"Pass"` or `"PASS"`).
+
+If your MTA or mail service provides DKIM results in a format other than `"pass"`, normalize it in your routing script before POSTing to the webhook.
 
 **HMAC authentication:** Every POST must include the header:
 
@@ -597,6 +604,7 @@ The server invokes the configured `send_script` with these environment variables
 | `ACME_SUBJECT` | `ACME: <base64url(token-part1)>` |
 | `ACME_MESSAGE_ID` | Server-generated `Message-ID` (script must preserve this exactly) |
 | `ACME_AUTO_SUBMITTED` | `auto-generated; type=acme` |
+| `ACME_TOKEN_PART2` | token-part2 (base64url, from the challenge JSON `token` field); exposed so advanced scripts can pre-compute or log the expected response |
 
 Exit code 0 = success. Non-zero = the challenge is marked invalid and the client must retry.
 
