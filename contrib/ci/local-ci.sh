@@ -67,6 +67,7 @@ has_cargo=0
 has_rustfmt=0
 has_clippy=0
 has_mdbook=0
+has_mdbook_pandoc=0
 has_actionlint=0
 has_yamllint=0
 
@@ -99,6 +100,13 @@ detect_tools() {
         echo -e "  ${GREEN}✓${NC} mdbook $(mdbook --version | cut -d' ' -f2)"
     else
         echo -e "  ${YELLOW}○${NC} mdbook (optional, install with: cargo install mdbook)"
+    fi
+
+    if command -v mdbook-pandoc >/dev/null 2>&1; then
+        has_mdbook_pandoc=1
+        echo -e "  ${GREEN}✓${NC} mdbook-pandoc $(mdbook-pandoc --version 2>/dev/null | head -n1 || echo '')"
+    else
+        echo -e "  ${YELLOW}○${NC} mdbook-pandoc (optional, for PDF output — cargo install mdbook-pandoc)"
     fi
 
     if command -v actionlint >/dev/null 2>&1; then
@@ -234,6 +242,22 @@ job_doc() {
     fi
 
     echo "Building mdBook…"
+    if [[ "$has_mdbook_pandoc" -eq 0 ]]; then
+        warn "mdbook-pandoc not found — building without PDF output (install with: cargo install mdbook-pandoc)"
+        local BOOK_TOML="docs/book.toml"
+        local BOOK_BAK="${BOOK_TOML}.ci-bak"
+        python3 -c "
+import re, sys, shutil
+shutil.copy('${BOOK_TOML}', '${BOOK_BAK}')
+content = open('${BOOK_TOML}').read()
+content = re.sub(r'\n\[output\.pandoc[^\n]*\].*?(?=\n\[(?!output\.pandoc)|\Z)', '', content, flags=re.DOTALL)
+open('${BOOK_TOML}', 'w').write(content)
+"
+        local rc=0
+        mdbook build docs/ || rc=$?
+        mv "${BOOK_BAK}" "${BOOK_TOML}"
+        return $rc
+    fi
     mdbook build docs/
 }
 
