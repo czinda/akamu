@@ -9,12 +9,53 @@
 #
 # Default output file: /tmp/akamu_bench_$(date +%Y%m%d_%H%M%S).ndjson
 #
+# Environment variables:
+#   BENCH_EXE   Path to a pre-built acme_bench binary.  When set the script
+#               runs it directly instead of compiling via `cargo bench`.
+#               Useful for running benchmarks on machines without a Rust
+#               toolchain, or for comparing two pre-built binaries.
+#               Example:
+#                 BENCH_EXE=/tmp/acme_bench contrib/performance/run_benchmarks.sh
+#
+#   PG_URL      PostgreSQL connection URL.  When set every bench run uses this
+#               database instead of sqlite::memory:.  Sections 7–9 (SQLite WAL,
+#               pool, and RO-split) are skipped because they are SQLite-specific.
+#               When using `cargo bench` (no BENCH_EXE), --features backend-postgres
+#               is added automatically.
+#               Example:
+#                 PG_URL=postgres://user:pass@localhost/bench \
+#                   contrib/performance/run_benchmarks.sh
+#
+#   PG_POOL     PostgreSQL connection pool size forwarded as --pool-connections.
+#               Defaults to 20.  Ignored when PG_URL is not set.
+#
+#   SQLITE_URL  SQLite connection URL used for sections 1–6 when PG_URL is not
+#               set.  Sections 7–9 always create their own /dev/shm temp files
+#               regardless of this setting.  The database file is NOT deleted
+#               automatically; callers should remove it after the run.
+#               Example:
+#                 DB=/dev/shm/akamu_bench.db
+#                 SQLITE_URL="sqlite://$DB" \
+#                   contrib/performance/run_benchmarks.sh
+#                 rm -f "$DB" "$DB-wal" "$DB-shm"
+#
+#   BENCH_RESET When set to any non-empty value and PG_URL is set, all ACME
+#               tables are truncated (RESTART IDENTITY CASCADE) before section 1
+#               runs.  This eliminates the row-accumulation artifact that makes
+#               later sections appear slower when an old benchmark left rows
+#               behind in a persistent database.
+#               Example:
+#                 BENCH_RESET=1 PG_URL=postgres://user:pass@localhost/bench \
+#                   contrib/performance/run_benchmarks.sh
+#
 # Each result line is a JSON object with the benchmark config merged with the
 # full acme_bench JSON output, plus an added "label" field.
 #
 # Prerequisites:
-#   - cargo (Rust toolchain)
+#   - cargo (Rust toolchain) — not required when BENCH_EXE is set
+#   - psql (PostgreSQL client) — required only when BENCH_RESET is set
 #   - /dev/shm (tmpfs, available on Linux) for the file-backed DB tests
+#     (sections 7–9; skipped when PG_URL is set)
 #
 # Post-processing (examples):
 #   # Print throughput for all runs
@@ -41,11 +82,88 @@ set -euo pipefail
 
 export LANG=C
 
+# ── Configuration ─────────────────────────────────────────────────────────────
+
+# Pre-built benchmark binary.  Empty = compile via cargo bench.
+BENCH_EXE="${BENCH_EXE:-}"
+
+# PostgreSQL URL.  Empty = use sqlite::memory:.
+PG_URL="${PG_URL:-}"
+
+# Pool size used for every PostgreSQL run (ignored for SQLite).
+PG_POOL="${PG_POOL:-20}"
+
+# SQLite URL for sections 1–6.  Empty = binary default (sqlite::memory:).
+SQLITE_URL="${SQLITE_URL:-}"
+
+# When non-empty and PG_URL is set, truncate all ACME tables before section 1.
+BENCH_RESET="${BENCH_RESET:-}"
+
+# ── Validate ──────────────────────────────────────────────────────────────────
+
+if [[ -n "$BENCH_EXE" ]] && [[ ! -x "$BENCH_EXE" ]]; then
+    echo "error: BENCH_EXE='$BENCH_EXE' is not executable" >&2
+    exit 1
+fi
+
+if [[ -z "$BENCH_EXE" ]] && ! command -v cargo &>/dev/null; then
+    echo "error: cargo not found and BENCH_EXE is not set" >&2
+    exit 1
+fi
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 OUT="${1:-/tmp/akamu_bench_$(date +%Y%m%d_%H%M%S).ndjson}"
 > "$OUT"
 echo "Writing results to: $OUT" >&2
+
+if [[ -n "$BENCH_EXE" ]]; then
+    echo "Using pre-built binary: $BENCH_EXE" >&2
+else
+    echo "Using: cargo bench" >&2
+fi
+if [[ -n "$PG_URL" ]]; then
+    reset_note=""
+    [[ -n "$BENCH_RESET" ]] && reset_note=", reset=yes"
+    echo "Database: PostgreSQL (pool=$PG_POOL${reset_note}, sections 7–9 skipped)" >&2
+elif [[ -n "$SQLITE_URL" ]]; then
+    echo "Database: SQLite $SQLITE_URL (sections 7–9 use own /dev/shm temp files)" >&2
+else
+    echo "Database: sqlite::memory: (sections 7–9 included)" >&2
+fi
+
+# Truncate all ACME transactional tables so each benchmark run starts from a
+# known-empty state.  Without this, rows accumulated by a previous run slow
+# later sections (larger seq scans, more index pages) and make comparisons
+# between runs misleading.
+reset_pg_db() {
+    echo "Resetting PostgreSQL benchmark database…" >&2
+    psql "$PG_URL" -q -c "
+        TRUNCATE
+            challenges,
+            mtc_cosignatures,
+            cross_certs,
+            mtc_landmarks,
+            mtc_checkpoints,
+            certificates,
+            authorizations,
+            orders,
+            eab_keys,
+            accounts,
+            nonces,
+            audit_events
+        RESTART IDENTITY CASCADE;
+    " 2>&1 | sed 's/^/  /' >&2
+    # Force a checkpoint immediately so the next automatic checkpoint is pushed
+    # 5 minutes into the future from a clean state.  Without this a checkpoint
+    # can fire mid-benchmark (during §5–§6) and cause uniform phase slowdowns.
+    # Requires the pg_checkpoint role; skipped with a warning if not granted.
+    if ! psql "$PG_URL" -q -c "CHECKPOINT;" 2>/dev/null; then
+        echo "  (warning: CHECKPOINT skipped — no pg_checkpoint privilege;" >&2
+        echo "   run as superuser: GRANT pg_checkpoint TO <bench-user>;)" >&2
+    fi
+    echo "Database reset complete." >&2
+}
 
 check_openssl_version() {
     local ver
@@ -60,14 +178,44 @@ check_openssl_version() {
 }
 
 # Run one benchmark, write result JSON to $OUT, print a summary line to stderr.
+#
+# When BENCH_EXE is set the binary is invoked directly; otherwise `cargo bench`
+# compiles and runs the benchmark.  PG_URL and PG_POOL are injected
+# automatically when set.
 bench() {
     local label="$1"; shift
     printf "  %-52s" "$label" >&2
-    local json
-    if ! json=$(cargo bench --bench acme_bench -- "$@" --output json 2>/dev/null); then
-        echo "  FAILED" >&2
-        return
+
+    # Extra args injected for the configured database backend.
+    # Suppressed when the per-bench call already carries --db (sections 7–9
+    # pass their own temp-file path); the bench binary rejects duplicate flags.
+    local db_args=()
+    local has_db=0
+    local a; for a in "$@"; do [[ "$a" == "--db" ]] && has_db=1; done
+    if [[ $has_db -eq 0 ]]; then
+        if [[ -n "$PG_URL" ]]; then
+            db_args=(--db "$PG_URL" --pool-connections "$PG_POOL")
+        elif [[ -n "$SQLITE_URL" ]]; then
+            db_args=(--db "$SQLITE_URL")
+        fi
     fi
+
+    local json
+    if [[ -n "$BENCH_EXE" ]]; then
+        if ! json=$("$BENCH_EXE" "${db_args[@]}" "$@" --output json 2>/dev/null); then
+            echo "  FAILED" >&2
+            return
+        fi
+    else
+        local cargo_features=()
+        [[ -n "$PG_URL" ]] && cargo_features=(--features backend-postgres)
+        if ! json=$(cargo bench "${cargo_features[@]}" --bench acme_bench -- \
+                        "${db_args[@]}" "$@" --output json 2>/dev/null); then
+            echo "  FAILED" >&2
+            return
+        fi
+    fi
+
     printf "%s\n" "$json" | jq --arg lbl "$label" '{label: $lbl} + .' >> "$OUT"
     local thr mean p95 fin alloc
     thr=$(printf "%s\n"  "$json" | jq '.summary.throughput_per_sec  | round')
@@ -80,6 +228,9 @@ bench() {
 }
 
 POLL=5
+
+check_openssl_version
+[[ -n "$BENCH_RESET" && -n "$PG_URL" ]] && reset_pg_db
 
 # ── Section 1: Concurrency scaling ───────────────────────────────────────────
 # EC P-256 leaf + CA, http-01, :memory:, 300 measured + 20 warmup
@@ -157,6 +308,10 @@ bench "challenge_dns_persist" \
     --clients 25 --requests 200 --warmup 20 --poll-ms "$POLL" \
     --challenge dns-persist-01
 
+# ── Sections 7–9: SQLite-specific (skipped when PG_URL is set) ───────────────
+
+if [[ -z "$PG_URL" ]]; then
+
 # ── Section 7: Backend comparison (:memory: vs tmpfs WAL) ────────────────────
 # EC P-256, sweep concurrency
 
@@ -218,6 +373,11 @@ for ro in 1 2 4 8 16; do
         --db "sqlite://$RODB" --ro-connections "$ro"
     rm -f "$RODB" "${RODB}-wal" "${RODB}-shm"
 done
+
+else
+    echo "" >&2
+    echo "=== 7–9. Skipped (SQLite-only; PG_URL is set) ===" >&2
+fi
 
 echo "" >&2
 echo "Done. Results written to: $OUT" >&2
