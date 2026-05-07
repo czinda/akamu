@@ -290,12 +290,16 @@ fn build_authz_json<'a>(
                 (Some(c.token.as_str()), None, None)
             };
             let from = if c.r#type == "email-reply-00" {
-                state
-                    .config
-                    .email_challenge
-                    .as_ref()
-                    .filter(|ec| ec.enabled)
-                    .map(|ec| ec.from_address.clone())
+                match state.config.email_challenge.as_ref().filter(|ec| ec.enabled) {
+                    Some(ec) => Some(ec.from_address.clone()),
+                    None => {
+                        tracing::warn!(
+                            challenge_id = %c.id,
+                            "email-reply-00 challenge exists but email_challenge is not configured or enabled"
+                        );
+                        None
+                    }
+                }
             } else {
                 None
             };
@@ -308,10 +312,17 @@ fn build_authz_json<'a>(
                 auth_key,
                 from,
                 validated: c.validated.map(fmt_time),
-                error: c
-                    .error
-                    .as_deref()
-                    .and_then(|s| serde_json::value::RawValue::from_string(s.to_string()).ok()),
+                error: c.error.as_deref().and_then(|s| {
+                    serde_json::value::RawValue::from_string(s.to_string())
+                        .map_err(|e| {
+                            tracing::warn!(
+                                challenge_id = %c.id,
+                                raw = s,
+                                "corrupt error JSON in challenge row: {e}"
+                            );
+                        })
+                        .ok()
+                }),
             }
         })
         .collect();

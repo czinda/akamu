@@ -432,6 +432,11 @@ pub async fn verify_response(state: &Arc<AppState>, payload: &WebhookPayload) ->
     let response_b64 = match extract_acme_response(&payload.body) {
         Some(s) => s,
         None => {
+            tracing::warn!(
+                challenge_id = %chall.id,
+                authz_id = %chall.authz_id,
+                "email-reply-00: no ACME response block found in email body"
+            );
             on_invalid(
                 state,
                 &chall.id,
@@ -448,6 +453,11 @@ pub async fn verify_response(state: &Arc<AppState>, payload: &WebhookPayload) ->
     let response_bytes = match URL_SAFE_NO_PAD.decode(response_b64.as_bytes()) {
         Ok(b) => b,
         Err(e) => {
+            tracing::warn!(
+                challenge_id = %chall.id,
+                authz_id = %chall.authz_id,
+                "email-reply-00: ACME response block is not valid base64url: {e}"
+            );
             on_invalid(
                 state,
                 &chall.id,

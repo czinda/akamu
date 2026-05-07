@@ -101,15 +101,21 @@ pub async fn handle_webhook(
         }
     };
 
-    let in_reply_to = payload.in_reply_to.clone();
+    // Truncate in_reply_to before logging to bound log line length and
+    // prevent log injection from attacker-controlled Message-ID values.
+    let in_reply_to_log = if payload.in_reply_to.len() > 256 {
+        format!("{}…", &payload.in_reply_to[..256])
+    } else {
+        payload.in_reply_to.clone()
+    };
     let outcome = verify_response(&state, &payload).await;
 
     match &outcome {
         VerifyOutcome::Valid => {
-            tracing::info!(in_reply_to, "email webhook: verification complete: valid");
+            tracing::info!(in_reply_to = %in_reply_to_log, "email webhook: verification complete: valid");
         }
         VerifyOutcome::Invalid(reason) => {
-            tracing::warn!(in_reply_to, reason, "email webhook: verification failed");
+            tracing::warn!(in_reply_to = %in_reply_to_log, reason, "email webhook: verification failed");
         }
     }
 

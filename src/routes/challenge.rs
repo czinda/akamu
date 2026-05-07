@@ -223,12 +223,21 @@ fn challenge_response(
             None,
         )
     } else if challenge.r#type == "email-reply-00" {
-        let from_addr = state
+        let from_addr = match state
             .config
             .email_challenge
             .as_ref()
             .filter(|ec| ec.enabled)
-            .map(|ec| ec.from_address.clone());
+        {
+            Some(ec) => Some(ec.from_address.clone()),
+            None => {
+                tracing::warn!(
+                    challenge_id = %challenge.id,
+                    "email-reply-00 challenge exists but email_challenge is not configured or enabled"
+                );
+                None
+            }
+        };
         (Some(challenge.token.as_str()), None, None, from_addr)
     } else {
         (Some(challenge.token.as_str()), None, None, None)
@@ -245,10 +254,17 @@ fn challenge_response(
         auth_key,
         from,
         validated: challenge.validated.map(fmt_time),
-        error: challenge
-            .error
-            .as_deref()
-            .and_then(|s| serde_json::value::RawValue::from_string(s.to_string()).ok()),
+        error: challenge.error.as_deref().and_then(|s| {
+            serde_json::value::RawValue::from_string(s.to_string())
+                .map_err(|e| {
+                    tracing::warn!(
+                        challenge_id = %challenge.id,
+                        raw = s,
+                        "corrupt error JSON in challenge row: {e}"
+                    );
+                })
+                .ok()
+        }),
     };
     json_response(state, ca_id, StatusCode::OK, body, nonce)
 }
