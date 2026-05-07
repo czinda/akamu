@@ -191,6 +191,9 @@ pub fn issue_certificate(params: IssueCertParams<'_>) -> Result<IssuedCert, Acme
                     .ok_or_else(|| AcmeError::Builder(format!("invalid IP SAN: {}", san.value)))?;
                 san_builder = san_builder.ip_address(&ip_bytes);
             }
+            "email" => {
+                san_builder = san_builder.rfc822_name(&san.value);
+            }
             other => {
                 tracing::warn!(
                     "issue_certificate: unrecognised SAN type '{}' — skipped",
@@ -482,6 +485,9 @@ pub fn issue_with_params(
                 let ip_bytes = ip_string_to_bytes(&san.value)
                     .ok_or_else(|| AcmeError::Builder(format!("invalid IP SAN: {}", san.value)))?;
                 san_builder = san_builder.ip_address(&ip_bytes);
+            }
+            "email" => {
+                san_builder = san_builder.rfc822_name(&san.value);
             }
             other => {
                 tracing::warn!(
@@ -1282,10 +1288,8 @@ mod tests {
         );
     }
 
-    /// Construct a ValidatedCsr with an "email" SAN (unsupported type).
-    /// The match in issue_certificate hits the `_ => {}` arm (line 123) → continues → cert issued.
     #[test]
-    fn issue_cert_unknown_san_type_is_silently_skipped() {
+    fn issue_cert_with_email_san() {
         let (ca_key, ca_cert_der) = make_test_ca();
         let key = BackendPrivateKey::generate_ec("P-256").unwrap();
         let spki_der = key.public_key().unwrap().spki_der().to_vec();
@@ -1298,7 +1302,6 @@ mod tests {
                 value: "user@example.com".into(),
             }],
         };
-        // The "email" type hits `_ => {}` (line 123) — SAN is ignored, cert issued with no SAN.
         let result = issue_certificate(IssueCertParams {
             ca_key: &ca_key,
             ca_cert_der: &ca_cert_der,
@@ -1312,7 +1315,18 @@ mod tests {
         });
         assert!(
             result.is_ok(),
-            "unknown SAN type should be skipped silently"
+            "email SAN type should produce a valid certificate: {result:?}"
+        );
+        // Verify the issued certificate contains the RFC822Name SAN.
+        let issued = result.unwrap();
+        let cert = synta_certificate::Certificate::from_der(&issued.cert_der).unwrap();
+        let sans = cert.subject_alt_names();
+        assert!(
+            sans.iter().any(
+                |(tag, content)| *tag == synta_certificate::general_name::RFC822_NAME
+                    && content == b"user@example.com"
+            ),
+            "certificate should contain rfc822Name SAN 'user@example.com'"
         );
     }
 

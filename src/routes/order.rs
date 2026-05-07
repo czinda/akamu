@@ -171,6 +171,14 @@ pub async fn new_order(
                 {
                     return Err(AcmeError::UnsupportedIdentifier("email".into()));
                 }
+                // STAR (RFC 8739) is TLS-only; email STAR orders are rejected because
+                // the STAR renewal path uses issue_certificate which hardcodes serverAuth
+                // EKU and cannot produce RFC 8823-compliant emailProtection certificates.
+                if payload.auto_renewal.is_some() {
+                    return Err(AcmeError::RejectedIdentifier(
+                        "email identifiers are not supported in STAR orders".into(),
+                    ));
+                }
                 // RFC 8823 §3: wildcards are not allowed for email identifiers.
                 if id.value.starts_with("*.") {
                     return Err(AcmeError::RejectedIdentifier(

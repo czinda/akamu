@@ -121,7 +121,24 @@ pub fn validate_csr(
                         value: ip,
                     });
                 }
-                _ => {} // rfc822Name, URI, etc. — ignored for ACME
+                general_name::RFC822_NAME => {
+                    let addr = std::str::from_utf8(&content).map_err(|_| {
+                        AcmeError::BadCsr("SAN rfc822Name is not valid UTF-8".into())
+                    })?;
+                    // Normalize domain to lowercase per RFC 5321 §2.4 (domain is
+                    // case-insensitive); local-part is left as-is (case-sensitive).
+                    let normalized = match addr.split_once('@') {
+                        Some((local, domain)) => {
+                            format!("{}@{}", local, domain.to_ascii_lowercase())
+                        }
+                        None => addr.to_owned(),
+                    };
+                    sans.push(SanEntry {
+                        san_type: "email".into(),
+                        value: normalized,
+                    });
+                }
+                _ => {} // URI, directoryName, etc. — ignored for ACME
             }
         }
     }
@@ -403,10 +420,9 @@ mod tests {
     }
 
     #[test]
-    fn csr_with_email_san_is_ignored() {
-        // CSR with rfc822Name (email) SAN — this SAN type is ignored by ACME,
-        // so with no allowed_identifiers, validation should succeed.
-        // This covers the `_ => {}` branch in parse_general_names.
+    fn csr_with_email_san_is_parsed() {
+        // CSR with rfc822Name (email) SAN — RFC 8823 support: the SAN must be
+        // parsed and matched against the order's email identifier.
         let key = BackendPrivateKey::generate_ec("P-256").unwrap();
         let spki_der = key.public_key().unwrap().spki_der().to_vec();
         let name_der = NameBuilder::new().common_name("email-san").build().unwrap();
@@ -430,16 +446,26 @@ mod tests {
             .sign(&signer)
             .unwrap();
 
-        // rfc822Name SAN is ignored → sans is empty → validates OK against empty identifiers
-        let result = validate_csr(&csr_der, &[]);
+        // RFC 8823: rfc822Name SAN must match the order's email identifier.
+        let result = validate_csr(&csr_der, &[("email", "a@b.com")]);
         assert!(
             result.is_ok(),
-            "rfc822Name SAN should be silently ignored: {result:?}"
+            "rfc822Name SAN should validate against matching email identifier: {result:?}"
         );
         let validated = result.unwrap();
+        assert_eq!(
+            validated.sans.len(),
+            1,
+            "email SAN should be in parsed SANs"
+        );
+        assert_eq!(validated.sans[0].san_type, "email");
+        assert_eq!(validated.sans[0].value, "a@b.com");
+
+        // A CSR with an email SAN not in the order's identifiers must be rejected.
+        let err = validate_csr(&csr_der, &[("dns", "example.com")]);
         assert!(
-            validated.sans.is_empty(),
-            "email SAN should be excluded from parsed SANs"
+            err.is_err(),
+            "email SAN not in order identifiers should be rejected"
         );
     }
 
