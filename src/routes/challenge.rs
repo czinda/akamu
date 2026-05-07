@@ -89,8 +89,22 @@ pub async fn respond_challenge(
             "corrupt identifier in authorization {authz_id}: {e}"
         ))
     })?;
-    let id_type = identifier["type"].as_str().unwrap_or("").to_string();
-    let id_value = identifier["value"].as_str().unwrap_or("").to_string();
+    let id_type = identifier["type"]
+        .as_str()
+        .ok_or_else(|| {
+            AcmeError::Internal(format!(
+                "missing or non-string 'type' in identifier for authorization {authz_id}"
+            ))
+        })?
+        .to_string();
+    let id_value = identifier["value"]
+        .as_str()
+        .ok_or_else(|| {
+            AcmeError::Internal(format!(
+                "missing or non-string 'value' in identifier for authorization {authz_id}"
+            ))
+        })?
+        .to_string();
 
     // JWK thumbprint was already loaded by parse_jws (SPKI cache or DB lookup).
     let jwk_thumbprint = ctx
