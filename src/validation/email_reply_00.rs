@@ -606,7 +606,7 @@ fn extract_acme_response(body: &str) -> Option<String> {
 
     let mut content = String::new();
     for b in rest[..end].bytes().filter(|b| !b.is_ascii_whitespace()) {
-        if content.len() >= MAX_LEN {
+        if !b.is_ascii() || content.len() >= MAX_LEN {
             return None;
         }
         content.push(b as char);
