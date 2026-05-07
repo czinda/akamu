@@ -163,11 +163,19 @@ pub fn issue_certificate(params: IssueCertParams<'_>) -> Result<IssuedCert, Acme
     let ku_der = encode_key_usage(1u16 << KEY_USAGE_DIGITAL_SIGNATURE)
         .ok_or_else(|| AcmeError::Builder("KeyUsage encode".into()))?;
 
-    // ExtendedKeyUsage: serverAuth.
-    let eku_der = ExtendedKeyUsageBuilder::new()
-        .server_auth()
-        .build()
-        .map_err(|e| AcmeError::Builder(format!("EKU: {e}")))?;
+    // ExtendedKeyUsage: emailProtection for email SANs, serverAuth otherwise.
+    let has_email_san = csr.sans.iter().any(|s| s.san_type == "email");
+    let eku_der = if has_email_san {
+        ExtendedKeyUsageBuilder::new()
+            .email_protection()
+            .build()
+            .map_err(|e| AcmeError::Builder(format!("EKU: {e}")))?
+    } else {
+        ExtendedKeyUsageBuilder::new()
+            .server_auth()
+            .build()
+            .map_err(|e| AcmeError::Builder(format!("EKU: {e}")))?
+    };
 
     // SubjectKeyIdentifier (from the end-entity public key in the CSR).
     let ski_der =

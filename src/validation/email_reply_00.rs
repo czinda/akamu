@@ -87,21 +87,37 @@ pub async fn send_challenge_email(
     // Invoke the external send script with a timeout.
     // env_clear() prevents server secrets (DATABASE_URL, etc.) from leaking
     // into the script's environment; only the ACME_* variables are injected.
-    let spawn_result = tokio::time::timeout(
-        Duration::from_secs(timeout_secs),
-        tokio::process::Command::new(&ec.send_script)
-            .env_clear()
-            .env("ACME_TO", email_addr)
-            .env("ACME_FROM", &ec.from_address)
-            .env("ACME_SUBJECT", &subject)
-            .env("ACME_MESSAGE_ID", &message_id)
-            .env("ACME_AUTO_SUBMITTED", "auto-generated; type=acme")
-            .env("ACME_TOKEN_PART2", token_part2_b64)
-            .status(),
-    )
-    .await;
+    //
+    // kill_on_drop(true) ensures the child is killed when the timeout future is
+    // dropped, preventing orphan processes from delivering the email after the
+    // challenge has already been marked invalid.
+    let mut child = match tokio::process::Command::new(&ec.send_script)
+        .env_clear()
+        .env("ACME_TO", email_addr)
+        .env("ACME_FROM", &ec.from_address)
+        .env("ACME_SUBJECT", &subject)
+        .env("ACME_MESSAGE_ID", &message_id)
+        .env("ACME_AUTO_SUBMITTED", "auto-generated; type=acme")
+        .env("ACME_TOKEN_PART2", token_part2_b64)
+        .kill_on_drop(true)
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(
+                challenge_id,
+                send_script = %ec.send_script,
+                "email-reply-00: failed to spawn send_script: {e}"
+            );
+            return Err(AcmeError::Internal(
+                "email-reply-00: send script could not be executed".into(),
+            ));
+        }
+    };
 
-    let exit_status = match spawn_result {
+    let wait_result = tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait()).await;
+
+    let exit_status = match wait_result {
         Err(_elapsed) => {
             tracing::error!(
                 challenge_id,
@@ -117,10 +133,10 @@ pub async fn send_challenge_email(
             tracing::error!(
                 challenge_id,
                 send_script = %ec.send_script,
-                "email-reply-00: failed to spawn send_script: {e}"
+                "email-reply-00: error waiting for send_script: {e}"
             );
             return Err(AcmeError::Internal(
-                "email-reply-00: send script could not be executed".into(),
+                "email-reply-00: send script wait failed".into(),
             ));
         }
         Ok(Ok(s)) => s,
@@ -187,23 +203,26 @@ pub async fn verify_response(state: &Arc<AppState>, payload: &WebhookPayload) ->
     let now = unix_now();
 
     // 1. Look up challenge by In-Reply-To / Message-ID.
-    let chall =
-        match db::challenges::get_by_email_message_id(&state.db_ro, &payload.in_reply_to).await {
-            Ok(Some(c)) => c,
-            Ok(None) => {
-                return VerifyOutcome::Invalid(format!(
-                    "no email-reply-00 challenge found for In-Reply-To '{}'",
-                    payload.in_reply_to
-                ));
-            }
-            Err(e) => {
-                tracing::error!(
-                    in_reply_to = %payload.in_reply_to,
-                    "email-reply-00 webhook: DB lookup failed: {e}"
-                );
-                return VerifyOutcome::Invalid("internal error".into());
-            }
-        };
+    // Use the write pool to avoid stale WAL reads: Phase 1 writes email_token_part1
+    // to state.db; a db_ro read before WAL checkpoint would return NULL and
+    // permanently invalidate a valid challenge.
+    let chall = match db::challenges::get_by_email_message_id(&state.db, &payload.in_reply_to).await
+    {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            return VerifyOutcome::Invalid(format!(
+                "no email-reply-00 challenge found for In-Reply-To '{}'",
+                payload.in_reply_to
+            ));
+        }
+        Err(e) => {
+            tracing::error!(
+                in_reply_to = %payload.in_reply_to,
+                "email-reply-00 webhook: DB lookup failed: {e}"
+            );
+            return VerifyOutcome::Invalid("internal error".into());
+        }
+    };
 
     // Only accept challenges in "processing" state (already triggered).
     if chall.status != "processing" {
@@ -269,6 +288,29 @@ pub async fn verify_response(state: &Arc<AppState>, payload: &WebhookPayload) ->
             return VerifyOutcome::Invalid("internal error".into());
         }
     };
+
+    // 2b. Reject if the authorization has expired — the client must re-order.
+    // Other challenge types complete synchronously within the HTTP request where
+    // the route handler already enforces expiry; the async webhook path does not.
+    if let Some(expires) = authz.expires {
+        if now > expires {
+            tracing::warn!(
+                challenge_id = %chall.id,
+                authz_id = %chall.authz_id,
+                expires,
+                "email-reply-00: authorization has expired; rejecting late reply"
+            );
+            on_invalid(
+                state,
+                &chall.id,
+                &chall.authz_id,
+                AcmeError::IncorrectResponse("authorization has expired".into()),
+                now,
+            )
+            .await;
+            return VerifyOutcome::Invalid("authorization expired".into());
+        }
+    }
 
     // Parse the identifier to get the email address.
     let identifier: serde_json::Value = match serde_json::from_str(&authz.identifier) {
