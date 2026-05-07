@@ -443,12 +443,10 @@ pub async fn record(
     // FAU_ARP.1: rolling-window alarm for repeated SecurityViolation events.
     if is_violation {
         let threshold_exceeded = {
-            let mut times = state.violation_times.lock().unwrap_or_else(|e| {
-                tracing::error!(
-                    "violation_times mutex poisoned — FAU_ARP.1 alarm state may be inconsistent"
-                );
-                e.into_inner()
-            });
+            let mut times = state
+                .violation_times
+                .lock()
+                .expect("violation_times mutex poisoned — FAU_ARP.1 alarm state is corrupt");
             let cutoff = Instant::now() - Duration::from_secs(300);
             times.retain(|&t| t >= cutoff);
             times.push_back(Instant::now());
