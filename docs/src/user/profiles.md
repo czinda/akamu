@@ -507,7 +507,7 @@ To issue S/MIME end-user certificates via the RFC 8823 `email-reply-00` challeng
 enabled             = true
 from_address        = "acme-validation@example.com"
 send_script         = "/etc/akamu/send-email.sh"
-webhook_hmac_secret = "change-me-strong-secret"
+webhook_hmac_secret = "replace-with-output-of--openssl-rand-hex-32"
 
 [profiles.providers.local]
 type = "builtin"

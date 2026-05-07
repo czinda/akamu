@@ -75,7 +75,7 @@ ca_certs    = ["/etc/akamu/operator-ca.pem"]
 enabled             = true
 from_address        = "acme-validation@example.com"
 send_script         = "/etc/akamu/send-email.sh"
-webhook_hmac_secret = "change-me-strong-secret"
+webhook_hmac_secret = "replace-with-output-of--openssl-rand-hex-32"
 
 [profiles]
 refresh_interval_secs = 3600
@@ -1125,7 +1125,7 @@ See [email-reply-00](challenges.md#email-reply-00-rfc-8823) in the Challenges re
 enabled             = true
 from_address        = "acme-validation@example.com"
 send_script         = "/etc/akamu/send-email.sh"
-webhook_hmac_secret = "change-me-strong-secret"
+webhook_hmac_secret = "replace-with-output-of--openssl-rand-hex-32"
 ```
 
 ### `enabled`
@@ -1165,6 +1165,16 @@ The script is responsible for DKIM signing of the outbound email. `Akāmu` does 
 send_script = "/etc/akamu/send-email.sh"
 ```
 
+### `send_script_timeout_secs`
+
+**Optional. Default: `30`.**
+
+Maximum time in seconds the server waits for `send_script` to exit. If the script does not exit within this limit, the server kills it and marks the challenge invalid. Must be at least 1. Increase this if your mail transfer agent has a slow startup or must authenticate to a relay.
+
+```toml
+send_script_timeout_secs = 30
+```
+
 ### `webhook_hmac_secret`
 
 **Required when `enabled = true`.** A shared secret used to authenticate `POST /acme/email-webhook` requests. The caller must include the header:
@@ -1176,7 +1186,7 @@ X-Akamu-Signature: sha256=<lowercase-hex(HMAC-SHA256(raw-body, webhook_hmac_secr
 Choose a long random value (≥256 bits recommended). Requests with a missing, malformed, or incorrect signature are rejected with `403 Forbidden`.
 
 ```toml
-webhook_hmac_secret = "change-me-strong-secret"
+webhook_hmac_secret = "replace-with-output-of--openssl-rand-hex-32"
 ```
 
 **Keep this value secret.** Anyone who knows it can submit webhook payloads and influence challenge outcomes.
