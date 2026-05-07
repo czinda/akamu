@@ -238,17 +238,6 @@ impl<'args> DynQueryBuilder<'args> {
             .fetch_all(executor)
             .await?)
     }
-
-    #[allow(dead_code)]
-    pub async fn fetch_optional<'e, E, O>(self, executor: E) -> Result<Option<O>, AcmeError>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::Any>,
-        O: for<'r> sqlx::FromRow<'r, sqlx::any::AnyRow> + Send + Unpin,
-    {
-        Ok(sqlx::query_as_with::<sqlx::Any, O, _>(&self.sql, self.args)
-            .fetch_optional(executor)
-            .await?)
-    }
 }
 
 /// Register all compiled-in sqlx drivers with the `Any` dispatcher.
