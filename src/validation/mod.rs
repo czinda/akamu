@@ -85,15 +85,17 @@ pub async fn validate_challenge(
                 let err =
                     AcmeError::Unauthorized(format!("dns-persist-01: account {account_id} is {s}"));
                 let now = unix_now();
-                on_invalid_with_order(state, challenge_id, authz_id, Some(order_id), err, now)
-                    .await;
+                let _ =
+                    on_invalid_with_order(state, challenge_id, authz_id, Some(order_id), err, now)
+                        .await;
                 return "invalid";
             }
             Err(e) => {
                 let err = AcmeError::Internal(format!("account status lookup: {e}"));
                 let now = unix_now();
-                on_invalid_with_order(state, challenge_id, authz_id, Some(order_id), err, now)
-                    .await;
+                let _ =
+                    on_invalid_with_order(state, challenge_id, authz_id, Some(order_id), err, now)
+                        .await;
                 return "invalid";
             }
         }
@@ -107,7 +109,9 @@ pub async fn validate_challenge(
         match email_reply_00::send_challenge_email(state, challenge_id, id_value, token).await {
             Ok(()) => return "processing",
             Err(e) => {
-                on_invalid_with_order(state, challenge_id, authz_id, Some(order_id), e, now).await;
+                let _ =
+                    on_invalid_with_order(state, challenge_id, authz_id, Some(order_id), e, now)
+                        .await;
                 return "invalid";
             }
         }
@@ -164,11 +168,12 @@ pub async fn validate_challenge(
     let now = unix_now();
     match result {
         Ok(()) => {
-            on_valid(state, challenge_id, authz_id, order_id, now).await;
+            let _ = on_valid(state, challenge_id, authz_id, order_id, now).await;
             "valid"
         }
         Err(e) => {
-            on_invalid_with_order(state, challenge_id, authz_id, Some(order_id), e, now).await;
+            let _ =
+                on_invalid_with_order(state, challenge_id, authz_id, Some(order_id), e, now).await;
             "invalid"
         }
     }
@@ -263,7 +268,13 @@ async fn dispatch(
 /// `order_id` is provided by the caller (from the already-loaded authz row)
 /// to avoid a redundant `SELECT order_id FROM authorizations` inside the
 /// transaction.
-async fn on_valid(state: &AppState, challenge_id: &str, authz_id: &str, order_id: &str, now: i64) {
+async fn on_valid(
+    state: &AppState,
+    challenge_id: &str,
+    authz_id: &str,
+    order_id: &str,
+    now: i64,
+) -> Result<bool, sqlx::Error> {
     let authz_id_log = authz_id.to_string();
 
     let result: Result<bool, sqlx::Error> = async {
@@ -332,12 +343,15 @@ async fn on_valid(state: &AppState, challenge_id: &str, authz_id: &str, order_id
                     .with_subject(authz_id),
                 )
                 .await;
+            Ok(true)
         }
         Ok(false) => {
             // Challenge was already validated (concurrent webhook retry); no audit needed.
+            Ok(false)
         }
         Err(e) => {
             tracing::error!("authz {authz_id_log}: on_valid transaction failed: {e}");
+            Err(e)
         }
     }
 }
@@ -359,8 +373,8 @@ pub(super) async fn on_invalid(
     authz_id: &str,
     err: AcmeError,
     now: i64,
-) {
-    on_invalid_with_order(state, challenge_id, authz_id, None, err, now).await;
+) -> Result<bool, sqlx::Error> {
+    on_invalid_with_order(state, challenge_id, authz_id, None, err, now).await
 }
 
 async fn on_invalid_with_order(
@@ -370,7 +384,7 @@ async fn on_invalid_with_order(
     order_id: Option<&str>,
     err: AcmeError,
     now: i64,
-) {
+) -> Result<bool, sqlx::Error> {
     tracing::info!("challenge {challenge_id} failed: {err}");
 
     let error_json = json!({
@@ -449,12 +463,15 @@ async fn on_invalid_with_order(
                     .with_subject(authz_id),
                 )
                 .await;
+            Ok(true)
         }
         Ok(false) => {
             // Challenge already transitioned; no audit needed.
+            Ok(false)
         }
         Err(e) => {
             tracing::error!("authz {authz_id_log}: on_invalid transaction failed: {e}");
+            Err(e)
         }
     }
 }

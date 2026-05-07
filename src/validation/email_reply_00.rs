@@ -258,7 +258,7 @@ pub(crate) async fn verify_response(
                 authz_id = %chall.authz_id,
                 "email-reply-00 webhook: processing challenge has no email_token_part1"
             );
-            on_invalid(
+            let _ = on_invalid(
                 state,
                 &chall.id,
                 &chall.authz_id,
@@ -279,7 +279,7 @@ pub(crate) async fn verify_response(
                 authz_id = %chall.authz_id,
                 "email-reply-00 webhook: authorization not found for processing challenge"
             );
-            on_invalid(
+            let _ = on_invalid(
                 state,
                 &chall.id,
                 &chall.authz_id,
@@ -295,7 +295,7 @@ pub(crate) async fn verify_response(
                 authz_id = %chall.authz_id,
                 "email-reply-00 webhook: authz lookup failed: {e}"
             );
-            on_invalid(
+            let _ = on_invalid(
                 state,
                 &chall.id,
                 &chall.authz_id,
@@ -318,7 +318,7 @@ pub(crate) async fn verify_response(
                 expires,
                 "email-reply-00: authorization has expired; rejecting late reply"
             );
-            on_invalid(
+            let _ = on_invalid(
                 state,
                 &chall.id,
                 &chall.authz_id,
@@ -339,7 +339,7 @@ pub(crate) async fn verify_response(
                 authz_id = %chall.authz_id,
                 "email-reply-00 webhook: corrupt identifier JSON in authz: {e}"
             );
-            on_invalid(
+            let _ = on_invalid(
                 state,
                 &chall.id,
                 &chall.authz_id,
@@ -358,7 +358,7 @@ pub(crate) async fn verify_response(
                 authz_id = %chall.authz_id,
                 "email-reply-00 webhook: identifier has no value field"
             );
-            on_invalid(
+            let _ = on_invalid(
                 state,
                 &chall.id,
                 &chall.authz_id,
@@ -379,7 +379,7 @@ pub(crate) async fn verify_response(
             expected = %expected_email,
             "email-reply-00: From address does not match challenge identifier"
         );
-        on_invalid(
+        let _ = on_invalid(
             state,
             &chall.id,
             &chall.authz_id,
@@ -404,7 +404,7 @@ pub(crate) async fn verify_response(
             from_domain,
             "email-reply-00: DKIM domain does not match From domain"
         );
-        on_invalid(
+        let _ = on_invalid(
             state,
             &chall.id,
             &chall.authz_id,
@@ -426,7 +426,7 @@ pub(crate) async fn verify_response(
             dkim_status = %payload.dkim_status,
             "email-reply-00: DKIM verification did not pass"
         );
-        on_invalid(
+        let _ = on_invalid(
             state,
             &chall.id,
             &chall.authz_id,
@@ -449,7 +449,7 @@ pub(crate) async fn verify_response(
                 authz_id = %chall.authz_id,
                 "email-reply-00: no ACME response block found in email body"
             );
-            on_invalid(
+            let _ = on_invalid(
                 state,
                 &chall.id,
                 &chall.authz_id,
@@ -470,7 +470,7 @@ pub(crate) async fn verify_response(
                 authz_id = %chall.authz_id,
                 "email-reply-00: ACME response block is not valid base64url: {e}"
             );
-            on_invalid(
+            let _ = on_invalid(
                 state,
                 &chall.id,
                 &chall.authz_id,
@@ -496,7 +496,7 @@ pub(crate) async fn verify_response(
                 account_id = %authz.account_id,
                 "email-reply-00 webhook: account not found"
             );
-            on_invalid(
+            let _ = on_invalid(
                 state,
                 &chall.id,
                 &chall.authz_id,
@@ -512,7 +512,7 @@ pub(crate) async fn verify_response(
                 authz_id = %chall.authz_id,
                 "email-reply-00 webhook: account lookup failed: {e}"
             );
-            on_invalid(
+            let _ = on_invalid(
                 state,
                 &chall.id,
                 &chall.authz_id,
@@ -543,7 +543,7 @@ pub(crate) async fn verify_response(
                 challenge_id = %chall.id,
                 "email-reply-00: SHA-256 failed: {e}"
             );
-            on_invalid(
+            let _ = on_invalid(
                 state,
                 &chall.id,
                 &chall.authz_id,
@@ -561,7 +561,7 @@ pub(crate) async fn verify_response(
     if response_bytes.len() != expected_digest.len()
         || !synta_certificate::crypto::constant_time_eq(&response_bytes, &expected_digest)
     {
-        on_invalid(
+        let _ = on_invalid(
             state,
             &chall.id,
             &chall.authz_id,
@@ -573,7 +573,14 @@ pub(crate) async fn verify_response(
     }
 
     // 11. Mark challenge + authz + order valid.
-    on_valid(state, &chall.id, &chall.authz_id, order_id, now).await;
+    if let Err(e) = on_valid(state, &chall.id, &chall.authz_id, order_id, now).await {
+        tracing::error!(
+            challenge_id = %chall.id,
+            authz_id = %chall.authz_id,
+            "email-reply-00: on_valid DB transaction failed: {e}; challenge remains in 'processing'"
+        );
+        return VerifyOutcome::Invalid("internal error — challenge state update failed".into());
+    }
 
     tracing::info!(
         challenge_id = chall.id,
