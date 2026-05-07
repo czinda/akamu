@@ -163,7 +163,10 @@ pub async fn new_authz(
             .await?
             .ok_or(AcmeError::NotFound)?;
         let location = format!("{pfx}/authz/{}", authz.id);
-        let thumbprint = ctx.jwk_thumbprint.as_deref().unwrap_or("");
+        let thumbprint = ctx
+            .jwk_thumbprint
+            .as_deref()
+            .ok_or_else(|| AcmeError::Internal("JWK thumbprint missing in authz handler".into()))?;
         let body = build_authz_json(&authz, &challenges, &pfx, &state, thumbprint)?;
         let mut resp = json_response(&state, &ca_id.0, StatusCode::CREATED, body, &ctx.next_nonce)?;
         resp.headers_mut().insert(
@@ -249,7 +252,10 @@ pub async fn new_authz(
         .ok_or(AcmeError::NotFound)?;
 
     let location = format!("{pfx}/authz/{authz_id}");
-    let thumbprint = ctx.jwk_thumbprint.as_deref().unwrap_or("");
+    let thumbprint = ctx
+        .jwk_thumbprint
+        .as_deref()
+        .ok_or_else(|| AcmeError::Internal("JWK thumbprint missing in authz handler".into()))?;
     let body = build_authz_json(&authz, &chall_rows, &pfx, &state, thumbprint)?;
     let mut resp = json_response(&state, &ca_id.0, StatusCode::CREATED, body, &ctx.next_nonce)?;
     resp.headers_mut().insert(
@@ -389,7 +395,10 @@ pub async fn get_authz(
     if !authz.ca_id.is_empty() && authz.ca_id != "default" && authz.ca_id != ca_id.0 {
         return Err(AcmeError::NotFound);
     }
-    let thumbprint = ctx.jwk_thumbprint.as_deref().unwrap_or("");
+    let thumbprint = ctx
+        .jwk_thumbprint
+        .as_deref()
+        .ok_or_else(|| AcmeError::Internal("JWK thumbprint missing in authz handler".into()))?;
     let body = build_authz_json(&authz, &challenges, &pfx, &state, thumbprint)?;
     json_response(&state, &ca_id.0, StatusCode::OK, body, &ctx.next_nonce)
 }
