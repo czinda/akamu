@@ -130,6 +130,49 @@ pub async fn set_invalid(
     Ok(())
 }
 
+/// Store the RFC 8823 email-reply-00 token-part1 and Message-ID after sending the
+/// challenge email.  Called once per challenge trigger.
+pub async fn set_email_token(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    id: &str,
+    token_part1: &str,
+    message_id: &str,
+    now: i64,
+) -> Result<(), AcmeError> {
+    super::query(
+        "UPDATE challenges
+         SET email_token_part1 = ?, email_message_id = ?, updated = ?
+         WHERE id = ?",
+    )
+    .bind(token_part1)
+    .bind(message_id)
+    .bind(now)
+    .bind(id)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// Look up a pending email-reply-00 challenge by the Message-ID of the sent challenge email.
+/// Used by the webhook endpoint to match an incoming reply to the originating challenge.
+pub async fn get_by_email_message_id(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    message_id: &str,
+) -> Result<Option<ChallengeRow>, AcmeError> {
+    let row = super::query_as::<ChallengeRow>(
+        "SELECT id, authz_id, type, status, token,
+                validated, error, created, updated,
+                email_token_part1, email_message_id
+         FROM challenges
+         WHERE email_message_id = ? AND type = 'email-reply-00'
+         LIMIT 1",
+    )
+    .bind(message_id)
+    .fetch_optional(executor)
+    .await?;
+    Ok(row)
+}
+
 /// Batch-insert new challenges for a single authorization in one SQL round-trip.
 ///
 /// `challenges` is a slice of `(id, type)` pairs; all rows share the same
@@ -253,6 +296,8 @@ mod tests {
             error: None,
             created: 1_700_000_000,
             updated: 1_700_000_000,
+            email_token_part1: None,
+            email_message_id: None,
         }
     }
 
@@ -298,6 +343,8 @@ mod tests {
                 error: None,
                 created: 1_700_000_000,
                 updated: 1_700_000_000,
+                email_token_part1: None,
+                email_message_id: None,
             },
         )
         .await
@@ -387,6 +434,8 @@ mod tests {
                 error: None,
                 created: 1_700_000_000,
                 updated: 1_700_000_000,
+                email_token_part1: None,
+                email_message_id: None,
             },
         )
         .await

@@ -155,6 +155,8 @@ pub async fn get_with_challenges(
                 error: r.error,
                 created: r.chall_created?,
                 updated: r.chall_updated?,
+                email_token_part1: None,
+                email_message_id: None,
             })
         })
         .collect();

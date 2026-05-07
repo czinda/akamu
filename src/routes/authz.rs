@@ -374,6 +374,8 @@ mod tests {
             error: None,
             created: 1_700_000_000,
             updated: 1_700_000_000,
+            email_token_part1: None,
+            email_message_id: None,
         }
     }
 

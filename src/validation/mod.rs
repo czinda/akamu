@@ -747,6 +747,8 @@ mod tests {
                 error: None,
                 created: now,
                 updated: now,
+                email_token_part1: None,
+                email_message_id: None,
             },
         )
         .await
@@ -865,6 +867,8 @@ mod tests {
                 error: None,
                 created: now,
                 updated: now,
+                email_token_part1: None,
+                email_message_id: None,
             },
         )
         .await
@@ -1137,6 +1141,8 @@ mod tests {
                 error: None,
                 created: now,
                 updated: now,
+                email_token_part1: None,
+                email_message_id: None,
             },
         )
         .await
@@ -1469,6 +1475,8 @@ mod tests {
                 error: None,
                 created: now,
                 updated: now,
+                email_token_part1: None,
+                email_message_id: None,
             },
         )
         .await

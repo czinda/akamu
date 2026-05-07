@@ -80,6 +80,12 @@ pub struct ChallengeRow {
     pub error: Option<String>,
     pub created: i64,
     pub updated: i64,
+    /// base64url token-part1 sent in the RFC 8823 email-reply-00 challenge email.
+    #[sqlx(default)]
+    pub email_token_part1: Option<String>,
+    /// Message-ID of the sent challenge email; matched against In-Reply-To in the response.
+    #[sqlx(default)]
+    pub email_message_id: Option<String>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
