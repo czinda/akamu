@@ -45,6 +45,10 @@ struct ChallengeJson<'a> {
     /// Value is the JWK thumbprint of the account key (base64url, SHA-256).
     #[serde(rename = "authKey", skip_serializing_if = "Option::is_none")]
     auth_key: Option<String>,
+    /// RFC 8823 §3: present only for `email-reply-00` challenges.
+    /// Value is the server's `From:` address for challenge emails.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    from: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     validated: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -104,6 +108,22 @@ pub async fn new_authz(
     // Validate identifier type.
     match payload.identifier.r#type.as_str() {
         "dns" | "ip" => {}
+        "email" => {
+            if !state
+                .config
+                .email_challenge
+                .as_ref()
+                .is_some_and(|ec| ec.enabled)
+            {
+                return Err(AcmeError::UnsupportedIdentifier("email".into()));
+            }
+            if !super::order::is_valid_email(&payload.identifier.value) {
+                return Err(AcmeError::BadRequest(format!(
+                    "invalid email identifier: '{}'",
+                    payload.identifier.value
+                )));
+            }
+        }
         other => return Err(AcmeError::UnsupportedIdentifier(other.into())),
     }
 
@@ -186,6 +206,7 @@ pub async fn new_authz(
         "dns" if is_onion => &["onion-csr-01", "http-01", "tls-alpn-01"],
         "dns" => dns_types,
         "ip" => &["http-01", "tls-alpn-01"],
+        "email" => &["email-reply-00"],
         _ => &[],
     };
 
@@ -268,6 +289,16 @@ fn build_authz_json<'a>(
             } else {
                 (Some(c.token.as_str()), None, None)
             };
+            let from = if c.r#type == "email-reply-00" {
+                state
+                    .config
+                    .email_challenge
+                    .as_ref()
+                    .filter(|ec| ec.enabled)
+                    .map(|ec| ec.from_address.clone())
+            } else {
+                None
+            };
             ChallengeJson {
                 r#type: &c.r#type,
                 url: format!("{acme_pfx}/chall/{}/{}", authz.id, c.r#type),
@@ -275,6 +306,7 @@ fn build_authz_json<'a>(
                 token,
                 issuer_domain_names,
                 auth_key,
+                from,
                 validated: c.validated.map(fmt_time),
                 error: c
                     .error
@@ -456,6 +488,7 @@ mod tests {
                 token: Some(c.token.as_str()),
                 issuer_domain_names: None,
                 auth_key: None,
+                from: None,
                 validated: None,
                 error: None,
             })

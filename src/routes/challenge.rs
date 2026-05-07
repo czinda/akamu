@@ -196,6 +196,12 @@ struct ChallengeJson<'a> {
         skip_serializing_if = "Option::is_none"
     )]
     issuer_domain_names: Option<Vec<String>>,
+    /// RFC 9799 §3.2: present only for `onion-csr-01` challenges.
+    #[serde(rename = "authKey", skip_serializing_if = "Option::is_none")]
+    auth_key: Option<String>,
+    /// RFC 8823 §3: present only for `email-reply-00` challenges.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    from: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     validated: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -209,11 +215,23 @@ fn challenge_response(
     ca_id: &str,
     nonce: &str,
 ) -> Result<Response, AcmeError> {
-    // dns-persist-01 has no per-challenge token; instead expose the issuer domains.
-    let (token, issuer_domain_names) = if challenge.r#type == "dns-persist-01" {
-        (None, Some(state.config.dns_persist_issuer_domains()))
+    let (token, issuer_domain_names, auth_key, from) = if challenge.r#type == "dns-persist-01" {
+        (
+            None,
+            Some(state.config.dns_persist_issuer_domains()),
+            None,
+            None,
+        )
+    } else if challenge.r#type == "email-reply-00" {
+        let from_addr = state
+            .config
+            .email_challenge
+            .as_ref()
+            .filter(|ec| ec.enabled)
+            .map(|ec| ec.from_address.clone());
+        (Some(challenge.token.as_str()), None, None, from_addr)
     } else {
-        (Some(challenge.token.as_str()), None)
+        (Some(challenge.token.as_str()), None, None, None)
     };
     let body = ChallengeJson {
         r#type: &challenge.r#type,
@@ -224,6 +242,8 @@ fn challenge_response(
         status: &challenge.status,
         token,
         issuer_domain_names,
+        auth_key,
+        from,
         validated: challenge.validated.map(fmt_time),
         error: challenge
             .error

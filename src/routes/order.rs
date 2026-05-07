@@ -160,6 +160,31 @@ pub async fn new_order(
                     )));
                 }
             }
+            "email" => {
+                // RFC 8823: email identifiers require the email-reply-00 challenge.
+                // Reject if the feature is not configured and enabled.
+                if !state
+                    .config
+                    .email_challenge
+                    .as_ref()
+                    .is_some_and(|ec| ec.enabled)
+                {
+                    return Err(AcmeError::UnsupportedIdentifier("email".into()));
+                }
+                // RFC 8823 §3: wildcards are not allowed for email identifiers.
+                if id.value.starts_with("*.") {
+                    return Err(AcmeError::RejectedIdentifier(
+                        "wildcard email identifiers are not permitted".into(),
+                    ));
+                }
+                // Validate basic email format: local-part@domain.tld
+                if !is_valid_email(&id.value) {
+                    return Err(AcmeError::BadRequest(format!(
+                        "invalid email identifier: '{}'",
+                        id.value
+                    )));
+                }
+            }
             other => return Err(AcmeError::UnsupportedIdentifier(other.into())),
         }
         // Validate ancestorDomain if present: identifier.value must end with
@@ -360,6 +385,7 @@ pub async fn new_order(
             "dns" if authz_value.starts_with("*.") => wildcard_dns_types,
             "dns" => dns_types,
             "ip" => &["http-01", "tls-alpn-01"],
+            "email" => &["email-reply-00"],
             _ => &[],
         };
         let challenges = challenge_types
@@ -698,6 +724,21 @@ pub(crate) fn order_json<'a>(
 /// that it is a properly formed v3 address.
 fn is_onion_domain(value: &str) -> bool {
     value.to_ascii_lowercase().ends_with(".onion")
+}
+
+/// Validate a basic email address format per RFC 8823 §3:
+/// must have a non-empty local-part, exactly one `@`, and a domain that
+/// contains at least one dot.  Control characters (including CRLF) are
+/// rejected to prevent SMTP header injection when the value is passed to
+/// the external send_script as an environment variable.
+pub(crate) fn is_valid_email(value: &str) -> bool {
+    if value.bytes().any(|b| b < 0x20 || b == 0x7f) {
+        return false;
+    }
+    match value.split_once('@') {
+        Some((local, domain)) => !local.is_empty() && domain.contains('.'),
+        None => false,
+    }
 }
 
 fn gen_token() -> Result<String, AcmeError> {
