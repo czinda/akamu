@@ -5,7 +5,7 @@ pub async fn insert(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     row: &CrossCertRow,
 ) -> Result<(), AcmeError> {
-    sqlx::query(
+    super::query(
         "INSERT INTO cross_certs
          (id, issuer_ca_id, subject_ca_id, subject_dn, subject_spki,
           cross_cert_der, cross_cert_pem, not_before, not_after, serial_number, created)
@@ -31,7 +31,7 @@ pub async fn get_by_id(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
 ) -> Result<Option<CrossCertRow>, AcmeError> {
-    let row = sqlx::query_as::<_, CrossCertRow>(
+    let row = super::query_as::<CrossCertRow>(
         "SELECT id, issuer_ca_id, subject_ca_id, subject_dn, subject_spki,
          cross_cert_der, cross_cert_pem, not_before, not_after, serial_number, created
          FROM cross_certs WHERE id = ?",
@@ -47,7 +47,7 @@ pub async fn list_by_subject_ca(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     subject_ca_id: &str,
 ) -> Result<Vec<CrossCertRow>, AcmeError> {
-    let rows = sqlx::query_as::<_, CrossCertRow>(
+    let rows = super::query_as::<CrossCertRow>(
         "SELECT id, issuer_ca_id, subject_ca_id, subject_dn, subject_spki,
          cross_cert_der, cross_cert_pem, not_before, not_after, serial_number, created
          FROM cross_certs WHERE subject_ca_id = ?
@@ -64,7 +64,7 @@ pub async fn list_by_issuer_ca(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     issuer_ca_id: &str,
 ) -> Result<Vec<CrossCertRow>, AcmeError> {
-    let rows = sqlx::query_as::<_, CrossCertRow>(
+    let rows = super::query_as::<CrossCertRow>(
         "SELECT id, issuer_ca_id, subject_ca_id, subject_dn, subject_spki,
          cross_cert_der, cross_cert_pem, not_before, not_after, serial_number, created
          FROM cross_certs WHERE issuer_ca_id = ?
@@ -86,9 +86,7 @@ pub async fn list(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<CrossCertRow>, AcmeError> {
-    use sqlx::QueryBuilder;
-
-    let mut qb: QueryBuilder<sqlx::Any> = QueryBuilder::new(
+    let mut qb = super::DynQueryBuilder::new(
         "SELECT id, issuer_ca_id, subject_ca_id, subject_dn, subject_spki,
          cross_cert_der, cross_cert_pem, not_before, not_after, serial_number, created
          FROM cross_certs WHERE 1=1",
@@ -102,18 +100,12 @@ pub async fn list(
         qb.push(" AND subject_ca_id = ");
         qb.push_bind(subject);
     }
-    // LIMIT and OFFSET are bound as parameters — safe with all three sqlx
-    // AnyPool backends (SQLite, Postgres, MariaDB). Values are server-controlled
-    // i64, not user input.
     qb.push(" ORDER BY created DESC LIMIT ");
     qb.push_bind(limit);
     qb.push(" OFFSET ");
     qb.push_bind(offset);
 
-    let rows = qb
-        .build_query_as::<CrossCertRow>()
-        .fetch_all(executor)
-        .await?;
+    let rows = qb.fetch_all::<_, CrossCertRow>(executor).await?;
     Ok(rows)
 }
 

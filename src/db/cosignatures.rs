@@ -13,7 +13,7 @@ pub async fn upsert(
     signature_der: &[u8],
     created: i64,
 ) -> Result<(), AcmeError> {
-    let updated = sqlx::query(
+    let updated = super::query(
         "UPDATE mtc_cosignatures SET signature_der = ?, created = ?
          WHERE checkpoint_id = ? AND cosigner_url = ?",
     )
@@ -26,7 +26,7 @@ pub async fn upsert(
     .rows_affected();
 
     if updated == 0 {
-        sqlx::query(
+        super::query(
             "INSERT INTO mtc_cosignatures (checkpoint_id, cosigner_url, signature_der, created)
              SELECT ?, ?, ?, ?
              WHERE NOT EXISTS (
@@ -65,7 +65,7 @@ pub async fn get_by_checkpoint(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     checkpoint_id: i64,
 ) -> Result<Vec<CosignatureRow>, AcmeError> {
-    let rows = sqlx::query_as::<_, CosignatureRow>(
+    let rows = super::query_as::<CosignatureRow>(
         "SELECT id, checkpoint_id, cosigner_url, signature_der, created
          FROM mtc_cosignatures WHERE checkpoint_id = ?",
     )

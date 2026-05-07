@@ -7,7 +7,7 @@ pub async fn insert(
     nonce: &str,
 ) -> Result<(), AcmeError> {
     let now = now_secs();
-    sqlx::query("INSERT INTO nonces (nonce, created) VALUES (?, ?)")
+    super::query("INSERT INTO nonces (nonce, created) VALUES (?, ?)")
         .bind(nonce)
         .bind(now)
         .execute(executor)
@@ -21,7 +21,7 @@ pub async fn consume(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     nonce: &str,
 ) -> Result<bool, AcmeError> {
-    let n = sqlx::query("DELETE FROM nonces WHERE nonce = ?")
+    let n = super::query("DELETE FROM nonces WHERE nonce = ?")
         .bind(nonce)
         .execute(executor)
         .await?
@@ -45,7 +45,7 @@ pub async fn consume_and_insert(
     let now = now_secs();
     let mut tx = crate::db::begin_write(db, kind).await?;
 
-    let n = sqlx::query("DELETE FROM nonces WHERE nonce = ?")
+    let n = super::query("DELETE FROM nonces WHERE nonce = ?")
         .bind(old_nonce)
         .execute(&mut *tx)
         .await?
@@ -56,7 +56,7 @@ pub async fn consume_and_insert(
         return Ok(false);
     }
 
-    sqlx::query("INSERT INTO nonces (nonce, created) VALUES (?, ?)")
+    super::query("INSERT INTO nonces (nonce, created) VALUES (?, ?)")
         .bind(new_nonce)
         .bind(now)
         .execute(&mut *tx)
@@ -72,7 +72,7 @@ pub async fn sweep_expired(
     max_age_secs: i64,
 ) -> Result<u64, AcmeError> {
     let cutoff = now_secs().saturating_sub(max_age_secs);
-    let n = sqlx::query("DELETE FROM nonces WHERE created < ?")
+    let n = super::query("DELETE FROM nonces WHERE created < ?")
         .bind(cutoff)
         .execute(executor)
         .await?

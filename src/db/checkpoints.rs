@@ -12,7 +12,7 @@ pub async fn prune_oldest(
     if keep_count == 0 {
         return Ok(0);
     }
-    let result = sqlx::query(
+    let result = super::query(
         "DELETE FROM mtc_checkpoints
          WHERE id NOT IN (
              SELECT id FROM (
@@ -53,7 +53,7 @@ pub async fn upsert(
     signature: &[u8],
     created: i64,
 ) -> Result<(), AcmeError> {
-    sqlx::query(
+    super::query(
         "INSERT INTO mtc_checkpoints (tree_size, root_hex, signature, created)
          SELECT ?, ?, ?, ?
          WHERE NOT EXISTS (SELECT 1 FROM mtc_checkpoints WHERE tree_size = ?)",
@@ -76,7 +76,7 @@ pub async fn get_by_tree_size(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     tree_size: i64,
 ) -> Result<Option<CheckpointRow>, AcmeError> {
-    let row = sqlx::query_as::<_, CheckpointRow>(
+    let row = super::query_as::<CheckpointRow>(
         "SELECT id, tree_size, root_hex, signature, created
          FROM mtc_checkpoints WHERE tree_size = ?",
     )

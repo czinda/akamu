@@ -48,7 +48,7 @@ pub async fn insert(
     ca_id: &str,
     now: &str,
 ) -> Result<(), AcmeError> {
-    sqlx::query(
+    super::query(
         "INSERT INTO operators \
          (name, role, cert_fingerprint, gssapi_principal, created_at, active, ca_id) \
          VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -70,7 +70,7 @@ pub async fn get_by_fingerprint(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     fingerprint: &str,
 ) -> Result<Option<OperatorRow>, AcmeError> {
-    let row = sqlx::query_as::<_, OperatorRow>(
+    let row = super::query_as::<OperatorRow>(
         "SELECT id, name, role, cert_fingerprint, gssapi_principal, \
          created_at, last_seen_at, active, failed_attempts, locked_until, ca_id \
          FROM operators WHERE cert_fingerprint = ? AND active = ?",
@@ -87,7 +87,7 @@ pub async fn get_by_principal(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     principal: &str,
 ) -> Result<Option<OperatorRow>, AcmeError> {
-    let row = sqlx::query_as::<_, OperatorRow>(
+    let row = super::query_as::<OperatorRow>(
         "SELECT id, name, role, cert_fingerprint, gssapi_principal, \
          created_at, last_seen_at, active, failed_attempts, locked_until, ca_id \
          FROM operators WHERE gssapi_principal = ? AND active = ?",
@@ -115,7 +115,7 @@ pub async fn insert_if_absent(
     ca_id: &str,
     now: &str,
 ) -> Result<bool, AcmeError> {
-    let result = sqlx::query(
+    let result = super::query(
         "INSERT INTO operators \
          (name, role, cert_fingerprint, gssapi_principal, created_at, active, ca_id) \
          SELECT ?, ?, ?, ?, ?, ?, ? \
@@ -153,7 +153,7 @@ pub async fn list(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<OperatorRow>, AcmeError> {
-    let rows = sqlx::query_as::<_, OperatorRow>(
+    let rows = super::query_as::<OperatorRow>(
         "SELECT id, name, role, cert_fingerprint, gssapi_principal, \
          created_at, last_seen_at, active, failed_attempts, locked_until, ca_id \
          FROM operators ORDER BY id ASC LIMIT ? OFFSET ?",
@@ -174,7 +174,7 @@ pub async fn set_active(
     active: bool,
     now: &str,
 ) -> Result<u64, AcmeError> {
-    let result = sqlx::query("UPDATE operators SET active = ?, last_seen_at = ? WHERE id = ?")
+    let result = super::query("UPDATE operators SET active = ?, last_seen_at = ? WHERE id = ?")
         .bind(if active { 1i64 } else { 0i64 })
         .bind(now)
         .bind(id)
@@ -188,7 +188,7 @@ pub async fn get_by_id(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: i64,
 ) -> Result<Option<OperatorRow>, AcmeError> {
-    let row = sqlx::query_as::<_, OperatorRow>(
+    let row = super::query_as::<OperatorRow>(
         "SELECT id, name, role, cert_fingerprint, gssapi_principal, \
          created_at, last_seen_at, active, failed_attempts, locked_until, ca_id \
          FROM operators WHERE id = ?",
@@ -229,7 +229,7 @@ pub async fn update(
         gssapi_principal,
         ca_id,
     } = params;
-    let mut qb = sqlx::QueryBuilder::<sqlx::Any>::new("UPDATE operators SET last_seen_at = ");
+    let mut qb = super::DynQueryBuilder::new("UPDATE operators SET last_seen_at = ");
     qb.push_bind(now);
     if let Some(n) = name {
         qb.push(", name = ");
@@ -254,7 +254,7 @@ pub async fn update(
     qb.push(" WHERE id = ");
     qb.push_bind(id);
 
-    let result = qb.build().execute(executor).await?;
+    let result = qb.execute(executor).await?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -264,7 +264,7 @@ pub async fn update_last_seen(
     id: i64,
     now: &str,
 ) -> Result<(), AcmeError> {
-    sqlx::query("UPDATE operators SET last_seen_at = ? WHERE id = ?")
+    super::query("UPDATE operators SET last_seen_at = ? WHERE id = ?")
         .bind(now)
         .bind(id)
         .execute(executor)
@@ -281,7 +281,7 @@ pub async fn increment_failed(
     max_attempts: u32,
     lock_until_rfc3339: &str,
 ) -> Result<(), AcmeError> {
-    sqlx::query(
+    super::query(
         "UPDATE operators \
          SET failed_attempts = failed_attempts + 1, \
              locked_until = CASE \
@@ -303,7 +303,7 @@ pub async fn reset_failed(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: i64,
 ) -> Result<(), AcmeError> {
-    sqlx::query("UPDATE operators SET failed_attempts = 0, locked_until = NULL WHERE id = ?")
+    super::query("UPDATE operators SET failed_attempts = 0, locked_until = NULL WHERE id = ?")
         .bind(id)
         .execute(executor)
         .await?;
@@ -316,7 +316,7 @@ pub async fn unlock(
     id: i64,
 ) -> Result<bool, AcmeError> {
     let result =
-        sqlx::query("UPDATE operators SET failed_attempts = 0, locked_until = NULL WHERE id = ?")
+        super::query("UPDATE operators SET failed_attempts = 0, locked_until = NULL WHERE id = ?")
             .bind(id)
             .execute(executor)
             .await?;

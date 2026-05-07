@@ -30,7 +30,7 @@ pub async fn insert_if_absent(
     hmac_key_b64u: &str,
     now: i64,
 ) -> Result<(), AcmeError> {
-    sqlx::query(
+    super::query(
         "INSERT INTO eab_keys (kid, hmac_key_b64u, created) \
          SELECT ?, ?, ? \
          WHERE NOT EXISTS (SELECT 1 FROM eab_keys WHERE kid = ?)",
@@ -53,7 +53,7 @@ pub async fn insert(
     hmac_key_b64u: &str,
     now: i64,
 ) -> Result<(), AcmeError> {
-    sqlx::query("INSERT INTO eab_keys (kid, hmac_key_b64u, created) VALUES (?, ?, ?)")
+    super::query("INSERT INTO eab_keys (kid, hmac_key_b64u, created) VALUES (?, ?, ?)")
         .bind(kid)
         .bind(hmac_key_b64u)
         .bind(now)
@@ -67,7 +67,7 @@ pub async fn get_by_kid(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     kid: &str,
 ) -> Result<Option<EabKeyRow>, AcmeError> {
-    let row = sqlx::query_as::<_, EabKeyRow>(
+    let row = super::query_as::<EabKeyRow>(
         "SELECT kid, hmac_key_b64u, created, used_at, profile_grants \
          FROM eab_keys WHERE kid = ?",
     )
@@ -89,7 +89,7 @@ pub async fn insert_with_grants(
     profile_grants: Option<&str>,
     now: i64,
 ) -> Result<(), AcmeError> {
-    sqlx::query(
+    super::query(
         "INSERT INTO eab_keys (kid, hmac_key_b64u, created, profile_grants) VALUES (?, ?, ?, ?)",
     )
     .bind(kid)
@@ -114,7 +114,7 @@ pub async fn mark_used(
     kid: &str,
     now: i64,
 ) -> Result<(), AcmeError> {
-    let result = sqlx::query("UPDATE eab_keys SET used_at = ? WHERE kid = ? AND used_at IS NULL")
+    let result = super::query("UPDATE eab_keys SET used_at = ? WHERE kid = ? AND used_at IS NULL")
         .bind(now)
         .bind(kid)
         .execute(executor)
@@ -136,7 +136,7 @@ pub async fn list(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<EabKeyRow>, AcmeError> {
-    let mut qb = sqlx::QueryBuilder::<sqlx::Any>::new(
+    let mut qb = super::DynQueryBuilder::new(
         "SELECT kid, hmac_key_b64u, created, used_at, profile_grants FROM eab_keys WHERE 1=1",
     );
     match used_filter {
@@ -148,7 +148,7 @@ pub async fn list(
     qb.push_bind(limit);
     qb.push(" OFFSET ");
     qb.push_bind(offset);
-    let rows = qb.build_query_as::<EabKeyRow>().fetch_all(db).await?;
+    let rows = qb.fetch_all::<_, EabKeyRow>(db).await?;
     Ok(rows)
 }
 
@@ -160,7 +160,7 @@ pub async fn delete(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     kid: &str,
 ) -> Result<u64, AcmeError> {
-    let result = sqlx::query("DELETE FROM eab_keys WHERE kid = ?")
+    let result = super::query("DELETE FROM eab_keys WHERE kid = ?")
         .bind(kid)
         .execute(executor)
         .await?;

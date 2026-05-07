@@ -5,7 +5,7 @@ pub async fn insert(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     row: OrderRow,
 ) -> Result<(), AcmeError> {
-    sqlx::query(
+    super::query(
         "INSERT INTO orders (id, account_id, status, expires, identifiers,
          not_before, not_after, error, certificate_id, replaces, created, updated,
          star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs,
@@ -48,7 +48,7 @@ pub async fn cancel_star(
     id: &str,
     now: i64,
 ) -> Result<(), AcmeError> {
-    sqlx::query(
+    super::query(
         "UPDATE orders SET star_canceled_at = ?, updated = ? WHERE id = ? AND star_canceled_at IS NULL",
     )
     .bind(now)
@@ -82,7 +82,7 @@ pub async fn set_star_csr(
     id: &str,
     csr_der: Vec<u8>,
 ) -> Result<(), AcmeError> {
-    sqlx::query("UPDATE orders SET star_csr_der = ? WHERE id = ?")
+    super::query("UPDATE orders SET star_csr_der = ? WHERE id = ?")
         .bind(&csr_der)
         .bind(id)
         .execute(executor)
@@ -94,7 +94,7 @@ pub async fn get_by_id(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
 ) -> Result<Option<OrderRow>, AcmeError> {
-    let row = sqlx::query_as::<_, OrderRow>(
+    let row = super::query_as::<OrderRow>(
         "SELECT id, account_id, status, expires, identifiers,
          not_before, not_after, error, certificate_id, replaces, created, updated,
          star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs,
@@ -114,7 +114,7 @@ pub async fn update_status(
     error: Option<String>,
     now: i64,
 ) -> Result<(), AcmeError> {
-    let result = sqlx::query("UPDATE orders SET status = ?, error = ?, updated = ? WHERE id = ?")
+    let result = super::query("UPDATE orders SET status = ?, error = ?, updated = ? WHERE id = ?")
         .bind(status)
         .bind(error)
         .bind(now)
@@ -136,7 +136,7 @@ pub async fn set_certificate(
     // AND status = 'ready' is an atomic finalization guard: if a concurrent
     // request already committed this order to 'valid', rows_affected == 0 and
     // we return Conflict instead of silently overwriting the certificate_id.
-    let result = sqlx::query(
+    let result = super::query(
         "UPDATE orders SET status = 'valid', certificate_id = ?, updated = ? \
          WHERE id = ? AND status = 'ready'",
     )
@@ -161,7 +161,7 @@ pub async fn update_star_certificate(
     certificate_id: &str,
     now: i64,
 ) -> Result<bool, AcmeError> {
-    let n = sqlx::query(
+    let n = super::query(
         "UPDATE orders SET certificate_id = ?, updated = ? \
          WHERE id = ? AND star_canceled_at IS NULL",
     )
@@ -215,7 +215,7 @@ pub async fn get_with_authz_ids(
         authz_id: Option<String>,
     }
 
-    let rows = sqlx::query_as::<_, OrderAuthzRow>(
+    let rows = super::query_as::<OrderAuthzRow>(
         "SELECT
              o.id, o.account_id, o.status, o.expires, o.identifiers,
              o.not_before, o.not_after, o.error, o.certificate_id, o.replaces,
@@ -274,7 +274,7 @@ pub async fn list(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<OrderRow>, AcmeError> {
-    let mut qb = sqlx::QueryBuilder::<sqlx::Any>::new(
+    let mut qb = super::DynQueryBuilder::new(
         "SELECT id, account_id, status, expires, identifiers, \
          not_before, not_after, error, certificate_id, replaces, created, updated, \
          star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs, \
@@ -298,7 +298,7 @@ pub async fn list(
     qb.push(" OFFSET ");
     qb.push_bind(offset);
 
-    let rows = qb.build_query_as::<OrderRow>().fetch_all(executor).await?;
+    let rows = qb.fetch_all::<_, OrderRow>(executor).await?;
     Ok(rows)
 }
 
@@ -307,7 +307,7 @@ pub async fn list_authz_ids(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     order_id: &str,
 ) -> Result<Vec<String>, AcmeError> {
-    let ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM authorizations WHERE order_id = ?")
+    let ids: Vec<(String,)> = super::query_as("SELECT id FROM authorizations WHERE order_id = ?")
         .bind(order_id)
         .fetch_all(executor)
         .await?;

@@ -26,7 +26,7 @@ pub async fn insert(
     outcome: &str,
     detail: Option<&str>,
 ) -> Result<(), AcmeError> {
-    sqlx::query(
+    super::query(
         "INSERT INTO audit_events \
          (occurred_at, event_type, subject, principal, outcome, detail) \
          VALUES (?, ?, ?, ?, ?, ?)",
@@ -52,7 +52,7 @@ pub async fn insert_two(
     r1: (&str, &str, Option<&str>, Option<&str>, &str, Option<&str>),
     r2: (&str, &str, Option<&str>, Option<&str>, &str, Option<&str>),
 ) -> Result<(), AcmeError> {
-    sqlx::query(
+    super::query(
         "INSERT INTO audit_events \
          (occurred_at, event_type, subject, principal, outcome, detail) \
          VALUES (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?)",
@@ -97,7 +97,7 @@ pub async fn count_since(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     since_rfc3339: &str,
 ) -> Result<i64, AcmeError> {
-    let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM audit_events WHERE occurred_at >= ?")
+    let row: (i64,) = super::query_as("SELECT COUNT(*) FROM audit_events WHERE occurred_at >= ?")
         .bind(since_rfc3339)
         .fetch_one(executor)
         .await?;
@@ -112,7 +112,7 @@ pub async fn delete_oldest(
     // Wrap the inner SELECT in a derived-table alias so this works on
     // Postgres (rejects DELETE…WHERE id IN (SELECT…FROM same_table)) and
     // MariaDB (raises error 1093 for the same reason). SQLite accepts both.
-    sqlx::query(
+    super::query(
         "DELETE FROM audit_events WHERE id IN \
          (SELECT id FROM (SELECT id FROM audit_events ORDER BY id ASC LIMIT ?) AS _oldest)",
     )
@@ -143,7 +143,7 @@ pub async fn query(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     q: &AuditQuery<'_>,
 ) -> Result<Vec<AuditEventRow>, AcmeError> {
-    let mut qb = sqlx::QueryBuilder::<sqlx::Any>::new(
+    let mut qb = super::DynQueryBuilder::new(
         "SELECT id, occurred_at, event_type, subject, principal, outcome, detail \
          FROM audit_events WHERE 1=1",
     );
@@ -172,10 +172,7 @@ pub async fn query(
     qb.push(" OFFSET ");
     qb.push_bind(q.offset);
 
-    let rows = qb
-        .build_query_as::<AuditEventRow>()
-        .fetch_all(executor)
-        .await?;
+    let rows = qb.fetch_all::<_, AuditEventRow>(executor).await?;
     Ok(rows)
 }
 

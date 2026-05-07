@@ -5,7 +5,7 @@ pub async fn insert(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     row: AuthorizationRow,
 ) -> Result<(), AcmeError> {
-    sqlx::query(
+    super::query(
         "INSERT INTO authorizations
          (id, order_id, account_id, status, identifier, expires, wildcard,
           subdomain_auth_allowed, created, updated, ca_id)
@@ -31,7 +31,7 @@ pub async fn get_by_id(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
 ) -> Result<Option<AuthorizationRow>, AcmeError> {
-    let row = sqlx::query_as::<_, AuthorizationRow>(
+    let row = super::query_as::<AuthorizationRow>(
         "SELECT id, order_id, account_id, status, identifier, expires, wildcard,
                 subdomain_auth_allowed, created, updated, ca_id
          FROM authorizations WHERE id = ?",
@@ -46,7 +46,7 @@ pub async fn list_by_order(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     order_id: &str,
 ) -> Result<Vec<AuthorizationRow>, AcmeError> {
-    let rows = sqlx::query_as::<_, AuthorizationRow>(
+    let rows = super::query_as::<AuthorizationRow>(
         "SELECT id, order_id, account_id, status, identifier, expires, wildcard,
                 subdomain_auth_allowed, created, updated, ca_id
          FROM authorizations WHERE order_id = ?",
@@ -93,7 +93,7 @@ pub async fn get_with_challenges(
         chall_updated: Option<i64>,
     }
 
-    let rows = sqlx::query_as::<_, AuthzChallRow>(
+    let rows = super::query_as::<AuthzChallRow>(
         "SELECT
              a.id          AS authz_id,
              a.order_id,
@@ -173,7 +173,7 @@ pub async fn find_valid_by_account_and_identifier(
     ca_id: &str,
     now: i64,
 ) -> Result<Option<AuthorizationRow>, AcmeError> {
-    let row = sqlx::query_as::<_, AuthorizationRow>(
+    let row = super::query_as::<AuthorizationRow>(
         "SELECT id, order_id, account_id, status, identifier, expires, wildcard,
                 subdomain_auth_allowed, created, updated, ca_id
          FROM authorizations
@@ -199,7 +199,7 @@ pub async fn update_status(
     status: &str,
     now: i64,
 ) -> Result<(), AcmeError> {
-    sqlx::query("UPDATE authorizations SET status = ?, updated = ? WHERE id = ?")
+    super::query("UPDATE authorizations SET status = ?, updated = ? WHERE id = ?")
         .bind(status)
         .bind(now)
         .bind(id)

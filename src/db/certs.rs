@@ -5,7 +5,7 @@ pub async fn insert(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     row: CertificateRow,
 ) -> Result<(), AcmeError> {
-    sqlx::query(
+    super::query(
         "INSERT INTO certificates
          (id, order_id, account_id, serial_number, status, der, pem,
           not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
@@ -38,7 +38,7 @@ pub async fn get_by_id(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
 ) -> Result<Option<CertificateRow>, AcmeError> {
-    let row = sqlx::query_as::<_, CertificateRow>(
+    let row = super::query_as::<CertificateRow>(
         "SELECT id, order_id, account_id, serial_number, status, der, pem,
          not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
          suggested_window_start, suggested_window_end, replaced_by, subject_dn, ca_id
@@ -54,7 +54,7 @@ pub async fn get_by_serial(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     serial: &str,
 ) -> Result<Option<CertificateRow>, AcmeError> {
-    let row = sqlx::query_as::<_, CertificateRow>(
+    let row = super::query_as::<CertificateRow>(
         "SELECT id, order_id, account_id, serial_number, status, der, pem,
          not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
          suggested_window_start, suggested_window_end, replaced_by, subject_dn, ca_id
@@ -103,7 +103,7 @@ pub async fn mark_replaced(
     cert_uuid: &str,
     replacing_order_id: &str,
 ) -> Result<bool, AcmeError> {
-    let n = sqlx::query(
+    let n = super::query(
         "UPDATE certificates SET replaced_by = ? \
          WHERE id = ? AND replaced_by IS NULL",
     )
@@ -122,7 +122,7 @@ pub async fn revoke(
     reason: Option<i64>,
     now: i64,
 ) -> Result<bool, AcmeError> {
-    let n = sqlx::query(
+    let n = super::query(
         "UPDATE certificates SET status = 'revoked', revoked_at = ?, revocation_reason = ?
          WHERE id = ? AND status = 'valid'",
     )
@@ -141,7 +141,7 @@ pub async fn set_mtc_log_index(
     id: &str,
     index: i64,
 ) -> Result<(), AcmeError> {
-    sqlx::query("UPDATE certificates SET mtc_log_index = ? WHERE id = ?")
+    super::query("UPDATE certificates SET mtc_log_index = ? WHERE id = ?")
         .bind(index)
         .bind(id)
         .execute(executor)
@@ -163,7 +163,7 @@ pub async fn set_renewal_window(
             "renewal window start ({start}) must be before end ({end})"
         )));
     }
-    sqlx::query(
+    super::query(
         "UPDATE certificates SET suggested_window_start = ?, suggested_window_end = ?
          WHERE id = ?",
     )
@@ -195,7 +195,7 @@ pub async fn list_revoked(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     ca_id: &str,
 ) -> Result<Vec<CrlEntry>, AcmeError> {
-    let rows = sqlx::query_as::<_, CrlEntry>(
+    let rows = super::query_as::<CrlEntry>(
         "SELECT serial_number, revoked_at, revocation_reason
          FROM certificates WHERE status = 'revoked' AND ca_id = ?
          LIMIT ?",
@@ -219,7 +219,7 @@ pub async fn list_valid_for_account(
     account_id: &str,
     now: i64,
 ) -> Result<Vec<CertificateRow>, AcmeError> {
-    let rows = sqlx::query_as::<_, CertificateRow>(
+    let rows = super::query_as::<CertificateRow>(
         "SELECT id, order_id, account_id, serial_number, status, der, pem,
          not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
          suggested_window_start, suggested_window_end, replaced_by, subject_dn, ca_id
@@ -241,7 +241,7 @@ pub async fn get_latest_for_order(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     order_id: &str,
 ) -> Result<Option<CertificateRow>, AcmeError> {
-    let row = sqlx::query_as::<_, CertificateRow>(
+    let row = super::query_as::<CertificateRow>(
         "SELECT id, order_id, account_id, serial_number, status, der, pem,
          not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
          suggested_window_start, suggested_window_end, replaced_by, subject_dn, ca_id
@@ -263,7 +263,7 @@ pub async fn get_pending_standalone(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     max_leaf_index: i64,
 ) -> Result<Vec<CertForStandalone>, AcmeError> {
-    let rows = sqlx::query_as::<_, CertForStandalone>(
+    let rows = super::query_as::<CertForStandalone>(
         "SELECT id, der, mtc_log_index FROM certificates
          WHERE mtc_log_index IS NOT NULL
            AND mtc_log_index < ?
@@ -283,7 +283,7 @@ pub async fn set_mtc_standalone_der(
     id: &str,
     der: &[u8],
 ) -> Result<(), AcmeError> {
-    let result = sqlx::query("UPDATE certificates SET mtc_standalone_der = ? WHERE id = ?")
+    let result = super::query("UPDATE certificates SET mtc_standalone_der = ? WHERE id = ?")
         .bind(der)
         .bind(id)
         .execute(executor)
@@ -304,7 +304,7 @@ pub async fn get_representative_for_landmark(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     max_leaf_index: i64,
 ) -> Result<Option<CertificateRow>, AcmeError> {
-    let row = sqlx::query_as::<_, CertificateRow>(
+    let row = super::query_as::<CertificateRow>(
         "SELECT id, order_id, account_id, serial_number, status, der, pem,
          not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created,
          suggested_window_start, suggested_window_end, replaced_by, subject_dn, ca_id
@@ -325,7 +325,7 @@ pub async fn get_mtc_standalone_der(
     id: &str,
 ) -> Result<Option<Vec<u8>>, AcmeError> {
     let row: Option<(Vec<u8>,)> =
-        sqlx::query_as("SELECT mtc_standalone_der FROM certificates WHERE id = ? AND mtc_standalone_der IS NOT NULL")
+        super::query_as("SELECT mtc_standalone_der FROM certificates WHERE id = ? AND mtc_standalone_der IS NOT NULL")
             .bind(id)
             .fetch_optional(executor)
             .await?;
@@ -364,7 +364,7 @@ pub async fn search(
         limit,
         offset,
     } = params;
-    let mut qb = sqlx::QueryBuilder::<sqlx::Any>::new(
+    let mut qb = super::DynQueryBuilder::new(
         "SELECT id, order_id, account_id, serial_number, status, der, pem, \
                 not_before, not_after, revoked_at, revocation_reason, mtc_log_index, created, \
                 suggested_window_start, suggested_window_end, replaced_by, subject_dn, ca_id \
@@ -397,10 +397,7 @@ pub async fn search(
     qb.push(" OFFSET ");
     qb.push_bind(offset);
 
-    let rows = qb
-        .build_query_as::<CertificateRow>()
-        .fetch_all(executor)
-        .await?;
+    let rows = qb.fetch_all::<_, CertificateRow>(executor).await?;
     Ok(rows)
 }
 

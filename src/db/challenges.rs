@@ -5,7 +5,7 @@ pub async fn insert(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     row: ChallengeRow,
 ) -> Result<(), AcmeError> {
-    sqlx::query(
+    super::query(
         "INSERT INTO challenges (id, authz_id, type, status, token, validated, error, created, updated)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
@@ -27,7 +27,7 @@ pub async fn get_by_id(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
 ) -> Result<Option<ChallengeRow>, AcmeError> {
-    let row = sqlx::query_as::<_, ChallengeRow>(
+    let row = super::query_as::<ChallengeRow>(
         "SELECT id, authz_id, type, status, token, validated, error, created, updated
          FROM challenges WHERE id = ?",
     )
@@ -41,7 +41,7 @@ pub async fn list_by_authz(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     authz_id: &str,
 ) -> Result<Vec<ChallengeRow>, AcmeError> {
-    let rows = sqlx::query_as::<_, ChallengeRow>(
+    let rows = super::query_as::<ChallengeRow>(
         "SELECT id, authz_id, type, status, token, validated, error, created, updated
          FROM challenges WHERE authz_id = ?",
     )
@@ -56,7 +56,7 @@ pub async fn set_processing(
     id: &str,
     now: i64,
 ) -> Result<(), AcmeError> {
-    sqlx::query("UPDATE challenges SET status = 'processing', updated = ? WHERE id = ?")
+    super::query("UPDATE challenges SET status = 'processing', updated = ? WHERE id = ?")
         .bind(now)
         .bind(id)
         .execute(executor)
@@ -74,7 +74,7 @@ pub async fn set_processing_if_pending(
     now: i64,
 ) -> Result<u64, AcmeError> {
     let result =
-        sqlx::query("UPDATE challenges SET status = 'processing', updated = ? WHERE id = ? AND status = 'pending'")
+        super::query("UPDATE challenges SET status = 'processing', updated = ? WHERE id = ? AND status = 'pending'")
             .bind(now)
             .bind(id)
             .execute(executor)
@@ -87,7 +87,7 @@ pub async fn set_valid(
     id: &str,
     validated: i64,
 ) -> Result<(), AcmeError> {
-    sqlx::query("UPDATE challenges SET status = 'valid', validated = ?, updated = ? WHERE id = ?")
+    super::query("UPDATE challenges SET status = 'valid', validated = ?, updated = ? WHERE id = ?")
         .bind(validated)
         .bind(validated)
         .bind(id)
@@ -106,7 +106,7 @@ pub async fn get_validated_type(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     authz_id: &str,
 ) -> Result<Option<String>, AcmeError> {
-    let row: Option<(String,)> = sqlx::query_as(
+    let row: Option<(String,)> = super::query_as(
         "SELECT type FROM challenges WHERE authz_id = ? AND status = 'valid' LIMIT 1",
     )
     .bind(authz_id)
@@ -121,7 +121,7 @@ pub async fn set_invalid(
     error: String,
     now: i64,
 ) -> Result<(), AcmeError> {
-    sqlx::query("UPDATE challenges SET status = 'invalid', error = ?, updated = ? WHERE id = ?")
+    super::query("UPDATE challenges SET status = 'invalid', error = ?, updated = ? WHERE id = ?")
         .bind(&error)
         .bind(now)
         .bind(id)
@@ -144,11 +144,11 @@ pub async fn insert_batch(
     if challenges.is_empty() {
         return Ok(());
     }
-    let mut qb = sqlx::QueryBuilder::<sqlx::Any>::new(
+    let mut qb = super::DynQueryBuilder::new(
         "INSERT INTO challenges \
-         (id, authz_id, type, status, token, validated, error, created, updated) ",
+         (id, authz_id, type, status, token, validated, error, created, updated) VALUES ",
     );
-    qb.push_values(challenges.iter(), |mut b, (chall_id, chall_type)| {
+    qb.push_values(challenges.iter(), |b, (chall_id, chall_type)| {
         b.push_bind(chall_id.as_str())
             .push_bind(authz_id)
             .push_bind(chall_type.as_str())
@@ -159,7 +159,7 @@ pub async fn insert_batch(
             .push_bind(now)
             .push_bind(now);
     });
-    qb.build().execute(executor).await?;
+    qb.execute(executor).await?;
     Ok(())
 }
 

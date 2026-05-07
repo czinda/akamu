@@ -35,7 +35,7 @@ pub async fn get_by_seq(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     sequence_no: i64,
 ) -> Result<Option<LandmarkRow>, AcmeError> {
-    let row = sqlx::query_as::<_, LandmarkRow>(
+    let row = super::query_as::<LandmarkRow>(
         "SELECT id, sequence_no, tree_size, cert_der, created
          FROM mtc_landmarks WHERE sequence_no = ?",
     )
@@ -58,7 +58,7 @@ pub async fn insert(
     // Use a FROM-less SELECT so that the aggregate MAX() subquery does not
     // produce a spurious output row when NOT EXISTS is false.  A SELECT without
     // FROM produces exactly 0 or 1 row depending on the WHERE condition.
-    let result = sqlx::query(
+    let result = super::query(
         "INSERT INTO mtc_landmarks (sequence_no, tree_size, cert_der, created)
          SELECT
              (SELECT COALESCE(MAX(sequence_no), -1) + 1 FROM mtc_landmarks),
@@ -80,7 +80,7 @@ pub async fn set_cert_der(
     id: i64,
     cert_der: &[u8],
 ) -> Result<(), AcmeError> {
-    let result = sqlx::query("UPDATE mtc_landmarks SET cert_der = ? WHERE id = ?")
+    let result = super::query("UPDATE mtc_landmarks SET cert_der = ? WHERE id = ?")
         .bind(cert_der)
         .bind(id)
         .execute(executor)
@@ -114,7 +114,7 @@ pub async fn prune_oldest(
     if keep_count == 0 {
         return Ok(0);
     }
-    let result = sqlx::query(
+    let result = super::query(
         "DELETE FROM mtc_landmarks
          WHERE sequence_no NOT IN (
              SELECT sequence_no FROM (

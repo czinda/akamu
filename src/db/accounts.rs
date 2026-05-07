@@ -5,7 +5,7 @@ pub async fn insert(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     row: AccountRow,
 ) -> Result<(), AcmeError> {
-    sqlx::query(
+    super::query(
         "INSERT INTO accounts \
          (id, status, contact, public_key, jwk_thumbprint, created, updated, profile_grants, ca_id)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -28,7 +28,7 @@ pub async fn get_by_id(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
 ) -> Result<Option<AccountRow>, AcmeError> {
-    let row = sqlx::query_as::<_, AccountRow>(
+    let row = super::query_as::<AccountRow>(
         "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated, profile_grants, ca_id
          FROM accounts WHERE id = ?",
     )
@@ -42,7 +42,7 @@ pub async fn get_by_thumbprint(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     thumbprint: &str,
 ) -> Result<Option<AccountRow>, AcmeError> {
-    let row = sqlx::query_as::<_, AccountRow>(
+    let row = super::query_as::<AccountRow>(
         "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated, profile_grants, ca_id
          FROM accounts WHERE jwk_thumbprint = ?",
     )
@@ -58,7 +58,7 @@ pub async fn update_contact(
     contact: Option<String>,
     now: i64,
 ) -> Result<bool, AcmeError> {
-    let n = sqlx::query(
+    let n = super::query(
         "UPDATE accounts SET contact = ?, updated = ? WHERE id = ? AND status = 'valid'",
     )
     .bind(contact)
@@ -76,7 +76,7 @@ pub async fn update_status(
     status: &str,
     now: i64,
 ) -> Result<bool, AcmeError> {
-    let n = sqlx::query("UPDATE accounts SET status = ?, updated = ? WHERE id = ?")
+    let n = super::query("UPDATE accounts SET status = ?, updated = ? WHERE id = ?")
         .bind(status)
         .bind(now)
         .bind(id)
@@ -94,7 +94,7 @@ pub async fn update_key(
     jwk_thumbprint: String,
     now: i64,
 ) -> Result<bool, AcmeError> {
-    let n = sqlx::query(
+    let n = super::query(
         "UPDATE accounts SET public_key = ?, jwk_thumbprint = ?, updated = ?
          WHERE id = ? AND status = 'valid'",
     )
@@ -120,7 +120,7 @@ pub async fn set_profile_grants(
     grants: Option<&str>,
     now: i64,
 ) -> Result<bool, AcmeError> {
-    let n = sqlx::query(
+    let n = super::query(
         "UPDATE accounts SET profile_grants = ?, updated = ? WHERE id = ? AND status = 'valid'",
     )
     .bind(grants)
@@ -142,7 +142,7 @@ pub async fn get_profile_grants(
     id: &str,
 ) -> Result<Option<Option<String>>, AcmeError> {
     let row: Option<(Option<String>,)> =
-        sqlx::query_as("SELECT profile_grants FROM accounts WHERE id = ?")
+        super::query_as("SELECT profile_grants FROM accounts WHERE id = ?")
             .bind(id)
             .fetch_optional(executor)
             .await?;
@@ -157,7 +157,7 @@ pub async fn list(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<AccountRow>, AcmeError> {
-    let mut qb = sqlx::QueryBuilder::<sqlx::Any>::new(
+    let mut qb = super::DynQueryBuilder::new(
         "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated, profile_grants, ca_id \
          FROM accounts WHERE 1=1",
     );
@@ -179,10 +179,7 @@ pub async fn list(
     qb.push(" OFFSET ");
     qb.push_bind(offset);
 
-    let rows = qb
-        .build_query_as::<AccountRow>()
-        .fetch_all(executor)
-        .await?;
+    let rows = qb.fetch_all::<_, AccountRow>(executor).await?;
     Ok(rows)
 }
 
