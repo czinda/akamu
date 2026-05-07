@@ -61,22 +61,17 @@ impl DbKind {
 /// Must be called once at startup, before any pool is created.  It is safe to
 /// call multiple times (the registry is idempotent).
 ///
-/// Uses the akamu `backend-*` feature flags directly rather than
-/// `install_default_drivers()`, which relies on sqlx's own internal feature
-/// flags and can miss drivers when the sqlx crate is compiled in a context
-/// where those flags differ from the akamu workspace flags.
+/// Delegates to `install_default_drivers()`, which uses sqlx's own internal
+/// feature flags (`#[cfg(feature = "postgres")]` etc.) evaluated in sqlx's
+/// compilation context.  This is reliable regardless of how Cargo distributes
+/// the `backend-*` feature flags across the workspace build graph: sqlx is
+/// compiled with the union of all enabled features, so any backend enabled via
+/// `backend-postgres = ["sqlx/postgres"]` is correctly reflected in sqlx's
+/// own cfg flags.
 pub fn install_drivers() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        sqlx::any::install_drivers(&[
-            #[cfg(feature = "backend-postgres")]
-            sqlx::postgres::any::DRIVER,
-            #[cfg(feature = "backend-mariadb")]
-            sqlx::mysql::any::DRIVER,
-            #[cfg(feature = "backend-sqlite")]
-            sqlx::sqlite::any::DRIVER,
-        ])
-        .expect("sqlx drivers already installed");
+        sqlx::any::install_default_drivers();
     });
 }
 
