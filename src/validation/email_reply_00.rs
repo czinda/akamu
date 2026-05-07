@@ -972,12 +972,10 @@ mod tests {
             .unwrap();
         // A second delivery must not overwrite the already-valid challenge.
         let outcome = verify_response(&state, &payload).await;
-        match outcome {
-            VerifyOutcome::Invalid(_) => {} // expected: status != 'processing'
-            VerifyOutcome::Valid => {
-                // Also acceptable if somehow it re-validates (idempotent on_valid).
-            }
-        }
+        assert!(
+            matches!(outcome, VerifyOutcome::Invalid(_)),
+            "duplicate webhook delivery must be rejected when challenge is already valid, got: {outcome}"
+        );
         let chall = crate::db::challenges::get_by_id(&state.db, &chall_id)
             .await
             .unwrap()
@@ -988,7 +986,95 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn verify_response_no_acme_block_returns_invalid() {
+        let (state, _chall_id, message_id, _token_part1, _token_part2) = make_verify_state().await;
+        let payload = WebhookPayload {
+            from: "user@example.com".to_string(),
+            in_reply_to: message_id,
+            dkim_domain: "example.com".to_string(),
+            dkim_status: "pass".to_string(),
+            body: "Hello, no ACME response block here.".to_string(),
+        };
+        match verify_response(&state, &payload).await {
+            VerifyOutcome::Invalid(r) => {
+                assert!(r.contains("ACME response block"), "reason: {r}")
+            }
+            other => panic!("expected Invalid, got {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_response_invalid_base64_returns_invalid() {
+        let (state, _chall_id, message_id, _token_part1, _token_part2) = make_verify_state().await;
+        let payload = WebhookPayload {
+            from: "user@example.com".to_string(),
+            in_reply_to: message_id,
+            dkim_domain: "example.com".to_string(),
+            dkim_status: "pass".to_string(),
+            body: make_acme_body("not!!valid!!base64url"),
+        };
+        match verify_response(&state, &payload).await {
+            VerifyOutcome::Invalid(r) => {
+                assert!(r.contains("base64url"), "reason: {r}")
+            }
+            other => panic!("expected Invalid, got {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_response_expired_authz_returns_invalid() {
+        let (state, _chall_id, message_id, token_part1, token_part2) = make_verify_state().await;
+        let thumbprint = "test-thumbprint-001";
+        let digest = make_response_digest(&token_part1, &token_part2, thumbprint);
+        // Back-date the authorization expiry to the past.
+        sqlx::query("UPDATE authorizations SET expires = 1 WHERE id = 'authz-vr-001'")
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let payload = WebhookPayload {
+            from: "user@example.com".to_string(),
+            in_reply_to: message_id,
+            dkim_domain: "example.com".to_string(),
+            dkim_status: "pass".to_string(),
+            body: make_acme_body(&digest),
+        };
+        match verify_response(&state, &payload).await {
+            VerifyOutcome::Invalid(r) => {
+                assert!(r.contains("expired"), "reason: {r}")
+            }
+            other => panic!("expected Invalid, got {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_response_unknown_in_reply_to_returns_invalid() {
+        let (state, _chall_id, _message_id, _token_part1, _token_part2) = make_verify_state().await;
+        let payload = WebhookPayload {
+            from: "user@example.com".to_string(),
+            in_reply_to: "<nonexistent@acme.test>".to_string(),
+            dkim_domain: "example.com".to_string(),
+            dkim_status: "pass".to_string(),
+            body: make_acme_body("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+        };
+        match verify_response(&state, &payload).await {
+            VerifyOutcome::Invalid(_) => {}
+            other => panic!("expected Invalid, got {other}"),
+        }
+    }
+
     // ── Helper function unit tests ─────────────────────────────────────────────
+
+    #[test]
+    fn extract_acme_response_oversized_returns_none() {
+        let content = "A".repeat(513);
+        let body = format!("-----BEGIN ACME RESPONSE-----\n{content}\n-----END ACME RESPONSE-----");
+        assert_eq!(
+            extract_acme_response(&body),
+            None,
+            "block over 512 bytes must be rejected"
+        );
+    }
 
     #[test]
     fn extract_acme_response_basic() {

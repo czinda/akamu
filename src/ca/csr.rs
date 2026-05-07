@@ -469,6 +469,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn csr_with_mixed_case_email_domain_is_normalised() {
+        // RFC 5321 §2.4: domain labels are case-insensitive; the CSR parser must
+        // normalise the domain to lowercase so that "user@EXAMPLE.COM" in a SAN
+        // matches the order identifier "user@example.com".
+        let key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let spki_der = key.public_key().unwrap().spki_der().to_vec();
+        let name_der = NameBuilder::new()
+            .common_name("email-mixed-case")
+            .build()
+            .unwrap();
+
+        let email = b"user@EXAMPLE.COM";
+        let mut san_der = vec![0x30, (email.len() + 2) as u8, 0x81, email.len() as u8];
+        san_der.extend_from_slice(email);
+
+        let signer = key.as_signer("sha256");
+        let csr_der = CsrBuilder::new()
+            .subject_name(&name_der)
+            .public_key_der(&spki_der)
+            .add_extension_oid(oids::SUBJECT_ALT_NAME, false, &san_der)
+            .sign(&signer)
+            .unwrap();
+
+        // Order uses lowercase; CSR has uppercase domain — must be accepted.
+        let result = validate_csr(&csr_der, &[("email", "user@example.com")]);
+        assert!(
+            result.is_ok(),
+            "mixed-case domain in rfc822Name SAN must match lowercase identifier: {result:?}"
+        );
+        let validated = result.unwrap();
+        assert_eq!(
+            validated.sans[0].value, "user@example.com",
+            "rfc822Name domain must be lowercased during parsing"
+        );
+    }
+
     /// Covers lines 173-176: extract_csr_extensions when CSR has attributes but
     /// none with the extensionRequest OID — the for loop completes without returning,
     /// falling through to `Ok(Vec::new())`.

@@ -545,6 +545,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_by_email_message_id_returns_processing_challenge() {
+        let db = open_db().await;
+        insert_parents(&db, "acct-em1", "order-em1", "authz-em1").await;
+        insert(
+            &db,
+            ChallengeRow {
+                id: "chall-em1".to_string(),
+                authz_id: "authz-em1".to_string(),
+                r#type: "email-reply-00".to_string(),
+                status: "processing".to_string(),
+                token: "token-em1".to_string(),
+                validated: None,
+                error: None,
+                created: 1_700_000_000,
+                updated: 1_700_000_000,
+                email_token_part1: None,
+                email_message_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        set_email_token(&db, "chall-em1", "pt1", "<msg-em1@test>", 1_700_000_001)
+            .await
+            .unwrap();
+
+        let found = get_by_email_message_id(&db, "<msg-em1@test>")
+            .await
+            .unwrap();
+        assert!(found.is_some(), "processing challenge must be found");
+        assert_eq!(found.unwrap().id, "chall-em1");
+    }
+
+    #[tokio::test]
+    async fn get_by_email_message_id_ignores_non_processing() {
+        let db = open_db().await;
+        insert_parents(&db, "acct-em2", "order-em2", "authz-em2").await;
+        insert(
+            &db,
+            ChallengeRow {
+                id: "chall-em2".to_string(),
+                authz_id: "authz-em2".to_string(),
+                r#type: "email-reply-00".to_string(),
+                status: "processing".to_string(),
+                token: "token-em2".to_string(),
+                validated: None,
+                error: None,
+                created: 1_700_000_000,
+                updated: 1_700_000_000,
+                email_token_part1: None,
+                email_message_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        set_email_token(&db, "chall-em2", "pt1", "<msg-em2@test>", 1_700_000_001)
+            .await
+            .unwrap();
+        // Mark valid — simulates already-resolved challenge.
+        sqlx::query("UPDATE challenges SET status = 'valid' WHERE id = 'chall-em2'")
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let found = get_by_email_message_id(&db, "<msg-em2@test>")
+            .await
+            .unwrap();
+        assert!(
+            found.is_none(),
+            "already-valid challenge must not be returned"
+        );
+    }
+
+    #[tokio::test]
     async fn db_error_paths_no_table() {
         crate::db::install_drivers();
         let raw: Db = sqlx::any::AnyPoolOptions::new()
