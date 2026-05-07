@@ -38,9 +38,9 @@
 
 %bcond check 1
 # Optional database backends (in addition to the always-on SQLite default).
-# Enable with: rpmbuild --with backend_postgres  or  --with backend_mariadb
-%bcond backend_postgres 0
-%bcond backend_mariadb  0
+# Disable with: rpmbuild --without backend_postgres  or  --without backend_mariadb
+%bcond backend_postgres 1
+%bcond backend_mariadb  1
 
 # Force --locked for all cargo invocations.  Without it, cargo resolves the
 # dependency graph from scratch in the offline build environment, fails to match
@@ -222,11 +222,14 @@ BuildArch:      noarch
 %description -n akamu-doc
 Markdown documentation for the akamu ACME server, covering server
 configuration, challenge validation, MTC cosigner protocol, administration
-via akamuctl, certificate profiles, and the admin API.
+via akamuctl, certificate profiles, and the admin API.  Also includes
+the contrib/configs sample configuration files for common deployment
+scenarios.
 
 %files -n akamu-doc
 %license LICENSE
 %doc docs/src
+%doc contrib/configs
 
 
 # ── Prep ───────────────────────────────────────────────────────────────────────

@@ -60,8 +60,24 @@ impl DbKind {
 ///
 /// Must be called once at startup, before any pool is created.  It is safe to
 /// call multiple times (the registry is idempotent).
+///
+/// Uses the akamu `backend-*` feature flags directly rather than
+/// `install_default_drivers()`, which relies on sqlx's own internal feature
+/// flags and can miss drivers when the sqlx crate is compiled in a context
+/// where those flags differ from the akamu workspace flags.
 pub fn install_drivers() {
-    sqlx::any::install_default_drivers();
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        sqlx::any::install_drivers(&[
+            #[cfg(feature = "backend-postgres")]
+            sqlx::postgres::any::DRIVER,
+            #[cfg(feature = "backend-mariadb")]
+            sqlx::mysql::any::DRIVER,
+            #[cfg(feature = "backend-sqlite")]
+            sqlx::sqlite::any::DRIVER,
+        ])
+        .expect("sqlx drivers already installed");
+    });
 }
 
 /// Validate that `url` contains an SSL/TLS mode parameter appropriate for
