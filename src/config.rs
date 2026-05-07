@@ -1370,6 +1370,11 @@ impl Config {
                             .into(),
                     );
                 }
+                if ec.send_script_timeout_secs == 0 {
+                    return Err(
+                        "[email_challenge].send_script_timeout_secs must be at least 1".into(),
+                    );
+                }
             }
         }
 

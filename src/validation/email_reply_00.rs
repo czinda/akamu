@@ -45,6 +45,12 @@ pub async fn send_challenge_email(
     email_addr: &str,
     token_part2_b64: &str,
 ) -> Result<(), AcmeError> {
+    if email_addr.is_empty() {
+        return Err(AcmeError::Internal(
+            "email-reply-00: recipient email address is empty".into(),
+        ));
+    }
+
     let ec = state
         .config
         .email_challenge
@@ -400,8 +406,8 @@ pub async fn verify_response(state: &Arc<AppState>, payload: &WebhookPayload) ->
         ));
     }
 
-    // 5. Verify DKIM status is "pass".
-    if payload.dkim_status != "pass" {
+    // 5. Verify DKIM status is "pass" (case-insensitive: Exim reports "Pass").
+    if !payload.dkim_status.eq_ignore_ascii_case("pass") {
         tracing::warn!(
             challenge_id = %chall.id,
             in_reply_to = %payload.in_reply_to,

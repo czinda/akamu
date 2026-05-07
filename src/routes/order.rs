@@ -734,17 +734,26 @@ fn is_onion_domain(value: &str) -> bool {
     value.to_ascii_lowercase().ends_with(".onion")
 }
 
-/// Validate a basic email address format per RFC 8823 §3:
-/// must have a non-empty local-part, exactly one `@`, and a domain that
-/// contains at least one dot.  Control characters (including CRLF) are
-/// rejected to prevent SMTP header injection when the value is passed to
-/// the external send_script as an environment variable.
+/// Validate a basic email address format per RFC 8823 §3 and RFC 5321 §4.5.3.1:
+/// must have a non-empty local-part (≤64 octets), exactly one `@`, a domain that
+/// contains at least one dot, and a total length of ≤320 octets.  Control characters
+/// (including CRLF) are rejected to prevent SMTP header injection when the value is
+/// passed to the external send_script as an environment variable.
 pub(crate) fn is_valid_email(value: &str) -> bool {
+    if value.len() > 320 {
+        return false;
+    }
     if value.bytes().any(|b| b < 0x20 || b == 0x7f) {
         return false;
     }
     match value.split_once('@') {
-        Some((local, domain)) => !local.is_empty() && domain.contains('.'),
+        Some((local, domain)) => {
+            !local.is_empty()
+                && local.len() <= 64
+                && !domain.is_empty()
+                && !domain.contains('@')
+                && domain.contains('.')
+        }
         None => false,
     }
 }
