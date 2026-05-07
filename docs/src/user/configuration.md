@@ -71,6 +71,12 @@ cert_file   = "/etc/akamu/admin-tls.pem"
 key_file    = "/etc/akamu/admin-tls-key.pem"
 ca_certs    = ["/etc/akamu/operator-ca.pem"]
 
+[email_challenge]
+enabled             = true
+from_address        = "acme-validation@example.com"
+send_script         = "/etc/akamu/send-email.sh"
+webhook_hmac_secret = "change-me-strong-secret"
+
 [profiles]
 refresh_interval_secs = 3600
 
@@ -1105,6 +1111,74 @@ Minimum RSA modulus size in bits for RSA client certificates. Connections presen
 ```toml
 minimum_rsa_modulus = 2048
 ```
+
+---
+
+## `[email_challenge]`
+
+The `[email_challenge]` section enables the RFC 8823 `email-reply-00` challenge type for S/MIME certificate issuance. When this section is absent or `enabled = false`, the server does not offer `email-reply-00` challenges and rejects orders with `email` identifier types.
+
+See [email-reply-00](challenges.md#email-reply-00-rfc-8823) in the Challenges reference for the full protocol description, CSR requirements, and webhook payload format.
+
+```toml
+[email_challenge]
+enabled             = true
+from_address        = "acme-validation@example.com"
+send_script         = "/etc/akamu/send-email.sh"
+webhook_hmac_secret = "change-me-strong-secret"
+```
+
+### `enabled`
+
+**Optional. Default: `false`.**
+
+Set to `true` to activate the `email-reply-00` challenge type. When `false`, any POST to `/acme/email-webhook` returns `503 Service Unavailable`.
+
+### `from_address`
+
+**Required when `enabled = true`.** The email address the server sends challenge emails from. This value is returned to clients in the `from` field of the challenge object and passed to the send script as `$ACME_FROM`.
+
+```toml
+from_address = "acme-validation@example.com"
+```
+
+The domain portion of this address is used to construct the `Message-ID` header (`<uuid@from-domain>`).
+
+### `send_script`
+
+**Required when `enabled = true`.** Absolute path to an executable that sends the challenge email. The server invokes it with no arguments; all parameters are passed as environment variables:
+
+| Variable | Value |
+|----------|-------|
+| `ACME_TO` | Recipient email address (the identifier value) |
+| `ACME_FROM` | Sender address (equals `from_address`) |
+| `ACME_SUBJECT` | `ACME: <base64url(token-part1)>` |
+| `ACME_MESSAGE_ID` | Server-generated `Message-ID` — the script must use this exactly in the outbound `Message-ID` header |
+| `ACME_AUTO_SUBMITTED` | `auto-generated; type=acme` |
+
+Exit code 0 = success. Any non-zero exit code marks the challenge invalid and the client may retry.
+
+The script is responsible for DKIM signing of the outbound email. `Akāmu` does not perform SMTP or DKIM internally.
+
+```toml
+send_script = "/etc/akamu/send-email.sh"
+```
+
+### `webhook_hmac_secret`
+
+**Required when `enabled = true`.** A shared secret used to authenticate `POST /acme/email-webhook` requests. The caller must include the header:
+
+```
+X-Akamu-Signature: sha256=<lowercase-hex(HMAC-SHA256(raw-body, webhook_hmac_secret))>
+```
+
+Choose a long random value (≥256 bits recommended). Requests with a missing, malformed, or incorrect signature are rejected with `403 Forbidden`.
+
+```toml
+webhook_hmac_secret = "change-me-strong-secret"
+```
+
+**Keep this value secret.** Anyone who knows it can submit webhook payloads and influence challenge outcomes.
 
 ---
 

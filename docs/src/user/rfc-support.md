@@ -17,12 +17,12 @@ This page documents every RFC that is relevant to `Akāmu`, explaining what each
 | [RFC 8737](#rfc-8737-tls-alpn-01-challenge) | ACME TLS-ALPN-01 Challenge Extension | Full |
 | [RFC 8738](#rfc-8738-ip-identifier-validation) | ACME IP Identifier Validation | Full |
 | [RFC 8739](#rfc-8739-acme-star) | ACME Short-Term, Automatically Renewed (STAR) Certificates | Full |
+| [RFC 8823](#rfc-8823-smime-certificates) | ACME Extensions for S/MIME Certificates | Full |
 | [RFC 9444](#rfc-9444-acme-for-subdomains) | ACME for Subdomains | Full |
 | [RFC 9773](#rfc-9773-acme-renewal-information-ari) | ACME Renewal Information (ARI) | Full |
 | [RFC 9799](#rfc-9799-acme-for-onion-domains) | ACME Extensions for .onion Special-Use Domain Names | Full |
 | [RFC 5280](#rfc-5280-x509-certificate-profile) | X.509 Certificate and CRL Profile | Full |
 | [RFC 6960](#rfc-6960-ocsp-responder) | Online Certificate Status Protocol (OCSP) | Full |
-| [RFC 8823](#rfc-8823-smime-certificates-informational) | ACME Extensions for S/MIME Certificates | Not implemented |
 | [RFC 9115](#rfc-9115-acme-profile-for-delegated-certificates) | ACME Profile for Delegated Certificates | Not implemented |
 | [RFC 9345](#rfc-9345-delegated-credentials-for-tls) | Delegated Credentials for TLS | Not implemented |
 | [RFC 9447](#rfc-9447-acme-authority-token-challenge) | ACME Challenges Using an Authority Token | Not implemented |
@@ -355,6 +355,58 @@ allow_subdomain_auth = true
 ```
 
 This adds `"subdomainAuthAllowed": true` to the directory `meta` object.
+
+---
+
+## RFC 8823 — S/MIME Certificates
+
+**[RFC 8823](https://www.rfc-editor.org/rfc/rfc8823)** defines the `email` identifier type and the `email-reply-00` challenge for issuing S/MIME end-user certificates. Proof of email address control is established via a DKIM-authenticated reply to a challenge email.
+
+### Identifier type
+
+Orders may include `{"type": "email", "value": "user@example.com"}` identifiers. The server validates the format (non-empty local-part, non-empty domain, exactly one `@`, no wildcard prefix) and returns `400 unsupportedIdentifier` for malformed addresses.
+
+### Challenge type
+
+`email-reply-00` is the only challenge offered for `email` identifiers. The challenge object includes a mandatory `from` field (the server's validation address) in addition to the standard `token` and `url` fields:
+
+```json
+{
+  "type": "email-reply-00",
+  "url": "https://acme.example.com/acme/chall/<id>",
+  "status": "pending",
+  "token": "<base64url(token-part2)>",
+  "from": "acme-validation@example.com"
+}
+```
+
+### Two-channel token
+
+The token is split across two channels per RFC 8823 §3:
+
+- **token-part2** (≥128 bits): returned in the challenge JSON. The client stores it.
+- **token-part1** (≥128 bits): sent by the server in the challenge email `Subject: ACME: <base64url(token-part1)>`. The client reads it from the email.
+
+The client concatenates them: `full_token = base64url(token-part1) || base64url(token-part2)`, then computes the key authorization and digest.
+
+### DKIM enforcement
+
+RFC 8823 §3.2 requires that the DKIM `d=` tag on the reply email matches the domain of the From address. `Akāmu` enforces this via the webhook payload: `dkim_domain` must equal the domain portion of `from`, and `dkim_status` must be `"pass"`.
+
+DKIM verification itself is performed by the mail routing infrastructure (the webhook caller), not by `Akāmu`. The server trusts the `dkim_domain` and `dkim_status` fields in the webhook payload — secure HMAC authentication of the webhook endpoint is therefore essential.
+
+### Certificate requirements
+
+Issued S/MIME certificates contain:
+
+- An `rfc822Name` Subject Alternative Name matching the validated email address.
+- The `emailProtection` Extended Key Usage (OID 1.3.6.1.5.5.7.3.4).
+
+These are enforced at CSR validation time (the server rejects CSRs where the `rfc822Name` SANs do not match the authorized email identifiers).
+
+### Configuration
+
+Requires `[email_challenge]` in the server configuration with `enabled = true`. See the [email_challenge configuration reference](configuration.md#email_challenge) and the [challenges documentation](challenges.md#email-reply-00-rfc-8823) for the full webhook payload format and send script interface.
 
 ---
 
@@ -822,12 +874,6 @@ These code points come from the **provisional IANA registry** for an in-progress
 ---
 
 ## Not implemented
-
-### RFC 8823 — S/MIME Certificates (Informational)
-
-Defines an `email` identifier type and `email-reply-00` challenge, where proof of control is a DKIM-signed reply email.
-
-**Not implemented.** Issuing S/MIME certificates requires an SMTP/IMAP email delivery stack that is outside the scope of an embedded CA.
 
 ### RFC 9115 — ACME Profile for Delegated Certificates
 

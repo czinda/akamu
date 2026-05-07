@@ -498,6 +498,34 @@ openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
 
 ---
 
+## S/MIME profile example
+
+To issue S/MIME end-user certificates via the RFC 8823 `email-reply-00` challenge, configure a profile with `email_protection` EKU and restrict it to `email` identifiers. Combine with `[email_challenge]` in the server configuration.
+
+```toml
+[email_challenge]
+enabled             = true
+from_address        = "acme-validation@example.com"
+send_script         = "/etc/akamu/send-email.sh"
+webhook_hmac_secret = "change-me-strong-secret"
+
+[profiles.providers.local]
+type = "builtin"
+
+[profiles.providers.local.profiles.smime]
+description          = "S/MIME end-user certificate (RFC 8823)"
+key_usage            = ["digital_signature", "non_repudiation", "key_encipherment"]
+eku                  = ["email_protection"]
+allowed_identifiers  = ['^email:.*$']
+validity_days        = 365
+```
+
+The `allowed_identifiers` pattern `'^email:.*$'` restricts this profile to email identifier orders; it is rejected for DNS/IP orders. The `non_repudiation` bit is optional but commonly included for S/MIME signing certificates per CA/Browser Forum S/MIME Baseline Requirements.
+
+The CSR submitted at finalize time must include an `rfc822Name` SAN and the `emailProtection` EKU. The server validates both before issuing. See [email-reply-00](challenges.md#email-reply-00-rfc-8823) in the Challenges reference for the complete protocol.
+
+---
+
 ## Legacy `[server.profiles]`
 
 Prior to the `[profiles]` subsystem, profile names were declared as a flat string map under `[server]`:

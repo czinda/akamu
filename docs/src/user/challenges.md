@@ -1,12 +1,14 @@
 # Challenges
 
-A challenge is the mechanism by which `Akāmu` verifies that an ACME client controls the identifier (domain name or IP address) in an authorization. The server supports five challenge types: **http-01**, **dns-01**, **tls-alpn-01**, **dns-persist-01**, and **onion-csr-01**.
+A challenge is the mechanism by which `Akāmu` verifies that an ACME client controls the identifier (domain name, IP address, or email address) in an authorization. The server supports six challenge types: **http-01**, **dns-01**, **tls-alpn-01**, **dns-persist-01**, **onion-csr-01**, and **email-reply-00**.
 
 For each identifier in an order, the server creates one challenge of each supported type. The client chooses which challenge type to complete.
 
 `dns-persist-01` is an opt-in type that requires explicit server configuration. When it is not configured, clients see the standard three types and are not affected. See [dns-persist-01](#dns-persist-01) below for the full description.
 
 `onion-csr-01` is offered exclusively for `.onion` identifiers (Tor hidden services) and uses a CSR-based proof-of-control mechanism rather than a network probe. See [onion-csr-01](#onion-csr-01-rfc-9799) below for the full description.
+
+`email-reply-00` is offered exclusively for `email` identifiers (RFC 8823 S/MIME) and uses a two-channel token delivered by email. It requires explicit server configuration. See [email-reply-00](#email-reply-00-rfc-8823) below for the full description.
 
 ## Key authorization
 
@@ -479,3 +481,142 @@ Common error types:
 For `onion-csr-01`, the server also returns an immediate `400 Bad Request` (before the background validation task starts) if the POST body is not valid JSON with a `csr` field, or if the `csr` value is not valid base64url.
 
 A failed authorization invalidates the parent order. Create a new order to try again.
+
+---
+
+## email-reply-00 (RFC 8823)
+
+`email-reply-00` is defined by [RFC 8823](https://www.rfc-editor.org/rfc/rfc8823). It is the only challenge type offered for `email` identifier orders and proves email address control via a DKIM-authenticated reply email. Issuing S/MIME certificates using this challenge requires the `[email_challenge]` configuration section — see [email_challenge configuration](configuration.md#email_challenge).
+
+### Protocol
+
+1. The client creates an order with `{"type": "email", "value": "user@example.com"}`.
+2. The server returns an authorization with an `email-reply-00` challenge object:
+
+   ```json
+   {
+     "type": "email-reply-00",
+     "url": "https://acme.example.com/acme/chall/<id>",
+     "status": "pending",
+     "token": "<base64url(token-part2)>",
+     "from": "acme-validation@example.com"
+   }
+   ```
+
+   `from` is the address the server will send the challenge email from. `token` is **token-part2** (server-generated, ≥128 bits of random data).
+
+3. The client POSTs `{}` to the challenge URL to trigger the challenge. The server:
+   - Generates **token-part1** (≥128 bits of random data) and a `Message-ID`.
+   - Stores both in the database.
+   - Invokes the configured `send_script` to send an email to the identifier address with subject `ACME: <base64url(token-part1)>` and the generated `Message-ID`.
+
+4. The client reads the email, extracts `token-part1` from the `Subject` header, then computes:
+
+   ```
+   full_token  = base64url(token-part1) || base64url(token-part2)
+   key_auth    = full_token || "." || base64url(SHA-256(account-key-thumbprint))
+   response    = base64url(SHA-256(key_auth))
+   ```
+
+5. The client sends a **reply email** (preserving `In-Reply-To` and DKIM signing) with body:
+
+   ```
+   -----BEGIN ACME RESPONSE-----
+   <response>
+   -----END ACME RESPONSE-----
+   ```
+
+6. Mail routing infrastructure (a filter script, procmail rule, or email service webhook) POSTs the reply to `POST /acme/email-webhook`. See [Webhook endpoint](#webhook-endpoint) below.
+
+7. The server verifies the DKIM domain, extracts and verifies the response digest, and marks the challenge and authorization valid.
+
+8. The client finalizes with a CSR containing an `rfc822Name` SAN matching the email address and the `emailProtection` EKU.
+
+### Key authorization formula
+
+`email-reply-00` uses a modified key authorization:
+
+```
+full_token = base64url(token-part1) || base64url(token-part2)
+key_auth   = full_token || "." || base64url(SHA-256(JWK-thumbprint-of-account-key))
+response   = base64url(SHA-256(key_auth as UTF-8 bytes))
+```
+
+This is different from the standard `token.thumbprint` formula used by http-01/dns-01/tls-alpn-01. The `response` value (not `key_auth`) is what the client sends in the reply body.
+
+### CSR requirements
+
+The CSR submitted at finalize time must:
+
+- Contain an `rfc822Name` Subject Alternative Name matching the email identifier value (case-insensitive).
+- Use the `emailProtection` Extended Key Usage (OID 1.3.6.1.5.5.7.3.4).
+- Not contain any DNS/IP SANs that were not authorized by a separate authorization.
+
+The certificate profile should be configured to enforce `email_protection` EKU. See the [S/MIME profile example](profiles.md#smime-profile-example) in the profiles documentation.
+
+### Webhook endpoint
+
+`POST /acme/email-webhook` receives the client's reply from any mail routing tool that can POST JSON:
+
+```json
+{
+  "from":        "user@example.com",
+  "in_reply_to": "<uuid@acme-server.example.com>",
+  "dkim_domain": "example.com",
+  "dkim_status": "pass",
+  "body":        "-----BEGIN ACME RESPONSE-----\nABC123==\n-----END ACME RESPONSE-----"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `from` | Envelope/header From address of the reply email |
+| `in_reply_to` | `In-Reply-To` header of the reply email (must match the server's `Message-ID`) |
+| `dkim_domain` | DKIM `d=` tag from a valid DKIM signature on the reply |
+| `dkim_status` | `"pass"` if DKIM verification succeeded; any other value fails the challenge |
+| `body` | Full text body of the reply email |
+
+The DKIM verification and email parsing are performed by the webhook caller (the mail routing script). The server enforces that `dkim_domain` matches the domain portion of `from`. Returning anything other than `"pass"` for `dkim_status` causes the challenge to be marked invalid.
+
+**HMAC authentication:** Every POST must include the header:
+
+```
+X-Akamu-Signature: sha256=<lowercase-hex(HMAC-SHA256(raw-body, webhook_hmac_secret))>
+```
+
+The `webhook_hmac_secret` is configured in `[email_challenge]`. Requests with a missing, malformed, or incorrect signature are rejected with `403 Forbidden`. All other responses are `200 OK` regardless of the challenge outcome (to prevent webhook callers from retrying indefinitely on validation failures).
+
+### Example send script
+
+The server invokes the configured `send_script` with these environment variables:
+
+| Variable | Value |
+|----------|-------|
+| `ACME_TO` | Recipient email address (the identifier) |
+| `ACME_FROM` | Sender address (`from_address` in `[email_challenge]`) |
+| `ACME_SUBJECT` | `ACME: <base64url(token-part1)>` |
+| `ACME_MESSAGE_ID` | Server-generated `Message-ID` (script must preserve this exactly) |
+| `ACME_AUTO_SUBMITTED` | `auto-generated; type=acme` |
+
+Exit code 0 = success. Non-zero = the challenge is marked invalid and the client must retry.
+
+A minimal script using `sendmail`:
+
+```bash
+#!/bin/bash
+set -euo pipefail
+sendmail -f "$ACME_FROM" "$ACME_TO" <<EOF
+From: $ACME_FROM
+To: $ACME_TO
+Subject: $ACME_SUBJECT
+Message-ID: $ACME_MESSAGE_ID
+Auto-Submitted: $ACME_AUTO_SUBMITTED
+MIME-Version: 1.0
+Content-Type: text/plain
+
+This email was sent automatically as part of an ACME S/MIME certificate
+issuance request. If you did not request a certificate, ignore this email.
+EOF
+```
+
+The script is responsible for DKIM signing. The server does not sign outbound email.
