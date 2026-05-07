@@ -271,7 +271,9 @@ pub(crate) async fn verify_response(
     };
 
     // 2. Look up the authorization to get the identifier value and order_id.
-    let authz = match db::authz::get_by_id(&state.db_ro, &chall.authz_id).await {
+    // Use the write pool: the authz may have been created in the same WAL
+    // transaction as the challenge, so db_ro may not yet see it.
+    let authz = match db::authz::get_by_id(&state.db, &chall.authz_id).await {
         Ok(Some(a)) => a,
         Ok(None) => {
             tracing::error!(
