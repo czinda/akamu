@@ -428,7 +428,7 @@ The result is a `JwsContext` struct containing the decoded header, payload bytes
 
 Each handler implements the ACME protocol semantics for its endpoint: reading from and writing to the database, dispatching validation, invoking the CA, etc.
 
-For write operations that span multiple tables (e.g., creating an order with its authorizations and challenges), the handler uses a single SQLite transaction to ensure atomicity.
+For write operations that span multiple tables (e.g., creating an order with its authorizations and challenges), the handler uses a single database transaction to ensure atomicity. On PostgreSQL, state-transition transactions (new-order, new-authz, challenge) additionally issue `SET LOCAL synchronous_commit = off` via `db::pg_local_async_commit` to eliminate per-commit WAL flush overhead; the certificate issuance transaction retains full durability.
 
 ### 6. Response construction
 

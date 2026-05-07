@@ -9,7 +9,7 @@ For a detailed breakdown of RFC and draft coverage — including which sections 
 - Implements the full RFC 8555 ACME server protocol: directory, nonces, accounts, orders, authorizations, challenges, certificate issuance, and revocation.
 - Validates domain ownership using **http-01**, **dns-01**, **tls-alpn-01**, and **dns-persist-01** challenge types (RFC 8555 §8, RFC 8737, and the [Let's Encrypt dns-persist-01 specification](https://letsencrypt.org/2026/02/18/dns-persist-01)).
 - Issues end-entity certificates signed by a built-in Certificate Authority whose key and self-signed root are generated automatically on first run, or loaded from existing PEM files.
-- Maintains a SQLite database for all ACME objects (accounts, orders, authorizations, challenges, certificates, nonces).
+- Persists all ACME objects (accounts, orders, authorizations, challenges, certificates, nonces) in a SQL database. The supported backends are **SQLite** (default; single-file, no external service required), **PostgreSQL**, and **MariaDB/MySQL**, selected by the `database.url` configuration key.
 - Generates and serves CRLs (Certificate Revocation Lists) at `GET /ca/crl`.
 - Serves OCSP responses at `GET /ca/ocsp/{request}` and `POST /ca/ocsp` (RFC 6960).
 - Implements the ACME Renewal Information extension ([RFC 9773](https://www.rfc-editor.org/rfc/rfc9773)) so ACME clients know when to renew.

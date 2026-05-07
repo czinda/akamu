@@ -35,7 +35,12 @@ At server startup, nonces older than 24 hours are swept from the in-memory `Nonc
 
 ## Migration numbering
 
-Each database backend has its own migration directory (`migrations/sqlite/`, `migrations/postgres/`, `migrations/mariadb/`). SQLite has one extra migration (`0006_mtc_log_index.sql` — an index-tuning step specific to SQLite WAL mode) that does not apply to PostgreSQL or MariaDB. As a result, SQLite migration numbers are one higher than the corresponding PostgreSQL/MariaDB numbers for all migrations from 0007 onward. The remainder of this document uses SQLite numbers as the canonical reference and notes the PostgreSQL/MariaDB equivalent where they differ.
+Each database backend has its own migration directory (`migrations/sqlite/`, `migrations/postgres/`, `migrations/mariadb/`). Two backend-specific migrations affect the numbering:
+
+- **SQLite 0006** (`0006_mtc_log_index.sql`) — a WAL-mode index-tuning step that does not apply to PostgreSQL or MariaDB.  All SQLite migrations from 0007 onward are therefore one higher than the corresponding PostgreSQL/MariaDB number.
+- **PostgreSQL 0015** (`0015_hot_indexes.sql`) — two partial/compound indexes on `authorizations` that are specific to PostgreSQL concurrency characteristics.  This migration has no SQLite or MariaDB counterpart.
+
+The remainder of this document uses SQLite numbers as the canonical reference and notes the PostgreSQL/MariaDB equivalent where the numbers differ.
 
 ## Schema
 
@@ -373,6 +378,23 @@ Scopes `ca_ra` operators to a single CA. Empty string = server-wide (the operato
 ALTER TABLE operators ADD COLUMN ca_id TEXT NOT NULL DEFAULT '';
 ```
 
+### Migration 0015 (PostgreSQL only) — Hot-path indexes
+
+Two partial and compound indexes on `authorizations` that speed up the hot paths hit during every successful challenge validation. This migration has no SQLite or MariaDB equivalent because both databases perform adequately without it at typical concurrency levels; SQLite uses a single write connection that serialises concurrent writers, and MariaDB's query planner handles these patterns differently.
+
+```sql
+-- Speeds up the NOT EXISTS subquery in on_valid: filters to non-valid rows only.
+CREATE INDEX IF NOT EXISTS idx_authz_order_nonvalid
+    ON authorizations(order_id)
+    WHERE status != 'valid';
+
+-- Speeds up find_valid_by_account_and_identifier: covers both filter columns.
+CREATE INDEX IF NOT EXISTS idx_authz_acct_ident
+    ON authorizations(account_id, identifier);
+```
+
+SQLite migration numbers remain one higher than the PostgreSQL/MariaDB equivalents from migration 0007 onward (due to the SQLite-only MTC log index at SQLite 0006). The PostgreSQL migration directory now contains 15 migrations (0001–0015); the SQLite directory also contains 15 migrations (0001–0015) — the SQLite offset means its 0015 corresponds to the shared operator CA-scope change, which is PostgreSQL 0014.
+
 ## Row types
 
 `src/db/schema.rs` defines Rust structs mirroring each table row:
@@ -436,13 +458,68 @@ pub struct OperatorUpdateParams<'a> {
 
 `update` is called by the `PUT /admin/operators/{id}` handler, which evicts any active session for that operator from `AppState::admin_sessions` on every successful update. This ensures that role and CA-scope changes take effect immediately rather than at the next session expiry.
 
+## Query helpers
+
+`src/db/mod.rs` exports several helpers that make raw sqlx queries portable across backends.
+
+### `pg_sql` / `query` / `query_as`
+
+PostgreSQL uses `$N` positional placeholders while SQLite and MariaDB use `?`.  sqlx's
+`AnyPool` does not automatically rewrite `?` for PostgreSQL because `?` is also the
+JSONB existence operator there.  The helpers below handle the rewrite transparently:
+
+| Helper | Usage |
+|--------|-------|
+| `pg_sql(sql)` | Rewrites `?` → `$1`, `$2`, … for PostgreSQL; returns the string unchanged for all other backends. The rewritten string is cached by static pointer identity, so each unique SQL literal is rewritten at most once. |
+| `query(sql)` | Calls `pg_sql`, then `sqlx::query`. Use everywhere a raw `?`-parameterised query string is needed. |
+| `query_as::<O>(sql)` | Calls `pg_sql`, then `sqlx::query_as`. Use for typed row mapping. |
+
+### `DynQueryBuilder`
+
+For dynamically constructed queries (variable number of `WHERE` clauses, multi-row
+`VALUES` inserts), `DynQueryBuilder` emits `$N` for PostgreSQL and `?` for all other
+backends, and tracks the bind count internally:
+
+```rust
+let mut q = DynQueryBuilder::new("SELECT id FROM certificates WHERE 1=1");
+if let Some(serial) = params.serial {
+    q.push(" AND serial_number = ").push_bind(serial);
+}
+let rows = q.fetch_all(&db).await?;
+```
+
+### `pg_local_async_commit`
+
+```rust
+pub(crate) async fn pg_local_async_commit(
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    kind: DbKind,
+) -> Result<(), sqlx::Error>
+```
+
+Issues `SET LOCAL synchronous_commit = off` inside the current PostgreSQL transaction,
+eliminating the per-commit WAL flush (~1–4 ms on SSD) for writes on state-transition
+paths that are eventually consistent by ACME protocol design.
+
+Called at the start of the following write transactions:
+
+- `new-order` — inserts the order, authorization, and challenge rows.
+- `new-authz` — inserts a standalone authorization row.
+- Challenge processing — updates challenge, authorization, and order status on `on_valid`
+  and `on_invalid`.
+
+The certificate issuance transaction (`finalize`) does **not** call this function; cert
+rows require full durability guarantees.
+
+No-op on SQLite and MariaDB.
+
 ## Transactions
 
 Multi-table writes use explicit transactions to ensure atomicity:
 
-- **Order creation**: the order row, all authorization rows, and all challenge rows are inserted in a single transaction.
-- **Challenge validation success**: the challenge, authorization, and (if all authorizations are now valid) the order are updated in a single transaction.
-- **Certificate issuance**: the certificate row is inserted and the order is updated to `valid` in a single transaction. STAR re-issuance also stores the new CSR DER in the same transaction.
+- **Order creation**: the order row, all authorization rows, and all challenge rows are inserted in a single transaction. For PostgreSQL, `pg_local_async_commit` is called at transaction start to defer WAL flush.
+- **Challenge validation success**: the challenge, authorization, and (if all authorizations are now valid) the order are updated in a single transaction. For PostgreSQL, `pg_local_async_commit` is called at transaction start.
+- **Certificate issuance**: the certificate row is inserted and the order is updated to `valid` in a single transaction. STAR re-issuance also stores the new CSR DER in the same transaction. Full WAL durability is retained for this transaction on all backends.
 
 ## Schema diagram
 

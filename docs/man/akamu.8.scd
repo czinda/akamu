@@ -65,7 +65,9 @@ _config-file_
 	Auto-generated CA certificate.
 
 */var/lib/akamu/acme.db*
-	Default SQLite database (SQLite backend only).
+	Default SQLite database file (SQLite backend only).  When PostgreSQL
+	or MariaDB is configured, no local database file is created; the path
+	is unused.
 
 */var/lib/akamu/mtc.log*
 	Merkle Tree Certificate transparency log (when MTC is enabled).
@@ -94,7 +96,21 @@ Start the server with a non-default configuration file:
 The configuration file is a TOML document.  An annotated example is
 installed at */etc/akamu/config.toml.example*.
 
-## [database] — new keys
+## [database]
+
+The server supports three database backends selected by the *url* key:
+
+| Backend    | URL prefix                          |
+|------------|-------------------------------------|
+| SQLite     | *sqlite://path* or *sqlite::memory:* |
+| PostgreSQL | *postgres://user:pass@host/db*       |
+| MariaDB    | *mariadb://user:pass@host/db*        |
+
+PostgreSQL is a fully supported production backend.  State-transition
+write transactions (*new-order*, *new-authz*, challenge validation) issue
+*SET LOCAL synchronous_commit = off* automatically, reducing per-commit
+WAL flush overhead by ~1–4 ms on SSD.  The certificate issuance
+transaction retains full durability.
 
 *require_tls* = _bool_
 	When *true*, the server refuses to start unless the database URL
