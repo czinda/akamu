@@ -172,6 +172,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         tls: Default::default(),
         profiles: Default::default(),
         admin: None,
+        email_challenge: None,
     });
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
     let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();
@@ -571,6 +572,7 @@ async fn test_renewal_info_explanation_url() {
         tls: Default::default(),
         profiles: Default::default(),
         admin: None,
+        email_challenge: None,
     });
     let state2 = Arc::new(AppState {
         config: Arc::clone(&config),

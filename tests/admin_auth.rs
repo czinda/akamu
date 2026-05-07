@@ -153,6 +153,7 @@ async fn build_state(
             max_failed_auth: 5,
             lockout_duration_secs: 1800,
         }),
+        email_challenge: None,
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();

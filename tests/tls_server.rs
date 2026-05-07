@@ -440,6 +440,7 @@ async fn start_tls_server() -> TlsTestServer {
             client_auth: None,
         },
         admin: None,
+        email_challenge: None,
     });
 
     // Initialise CA.

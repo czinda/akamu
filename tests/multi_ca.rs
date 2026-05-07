@@ -93,6 +93,7 @@ async fn build_two_ca_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir
         tls: Default::default(),
         profiles: Default::default(),
         admin: None,
+        email_challenge: None,
     });
 
     db::install_drivers();
@@ -586,6 +587,7 @@ async fn admin_cas_list_returns_both_cas() {
             max_failed_auth: 5,
             lockout_duration_secs: 1800,
         }),
+        email_challenge: None,
     });
 
     db::install_drivers();

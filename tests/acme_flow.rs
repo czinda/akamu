@@ -233,6 +233,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         tls: Default::default(),
         profiles: Default::default(),
         admin: None,
+        email_challenge: None,
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
@@ -2276,6 +2277,7 @@ async fn test_directory_with_optional_fields() {
         tls: Default::default(),
         profiles: Default::default(),
         admin: None,
+        email_challenge: None,
     });
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
     db::install_drivers();
@@ -2683,6 +2685,7 @@ async fn test_finalize_with_mtc_enabled() {
         tls: Default::default(),
         profiles: Default::default(),
         admin: None,
+        email_challenge: None,
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
@@ -2978,6 +2981,7 @@ async fn test_finalize_with_aia_and_cdp() {
         tls: Default::default(),
         profiles: Default::default(),
         admin: None,
+        email_challenge: None,
     });
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
     db::install_drivers();
