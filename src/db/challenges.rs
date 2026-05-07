@@ -162,8 +162,9 @@ pub async fn set_email_token(
     Ok(())
 }
 
-/// Look up a pending email-reply-00 challenge by the Message-ID of the sent challenge email.
+/// Look up a processing email-reply-00 challenge by the Message-ID of the sent challenge email.
 /// Used by the webhook endpoint to match an incoming reply to the originating challenge.
+/// Only returns challenges in `'processing'` state; already-resolved challenges are ignored.
 pub async fn get_by_email_message_id(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     message_id: &str,
@@ -173,7 +174,7 @@ pub async fn get_by_email_message_id(
                 validated, error, created, updated,
                 email_token_part1, email_message_id
          FROM challenges
-         WHERE email_message_id = ? AND type = 'email-reply-00'
+         WHERE email_message_id = ? AND type = 'email-reply-00' AND status = 'processing'
          LIMIT 1",
     )
     .bind(message_id)

@@ -103,10 +103,13 @@ pub async fn handle_webhook(
 
     // Truncate in_reply_to before logging to bound log line length and
     // prevent log injection from attacker-controlled Message-ID values.
-    let in_reply_to_log = if payload.in_reply_to.len() > 256 {
-        format!("{}…", &payload.in_reply_to[..256])
+    // Use a temporary owned String only for the truncated case; borrow otherwise.
+    let truncated;
+    let in_reply_to_log: &str = if payload.in_reply_to.len() > 256 {
+        truncated = format!("{}…", &payload.in_reply_to[..256]);
+        &truncated
     } else {
-        payload.in_reply_to.clone()
+        &payload.in_reply_to
     };
     let outcome = verify_response(&state, &payload).await;
 
@@ -123,11 +126,13 @@ pub async fn handle_webhook(
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().fold(String::new(), |mut s, b| {
-        use std::fmt::Write;
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            use std::fmt::Write;
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }
 
 #[cfg(test)]

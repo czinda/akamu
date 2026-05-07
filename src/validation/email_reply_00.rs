@@ -178,7 +178,7 @@ pub async fn send_challenge_email(
 /// this function.  `dkim_domain` and `dkim_status` are caller-supplied and
 /// must not be trusted until the HMAC check passes.
 #[derive(serde::Deserialize)]
-pub struct WebhookPayload {
+pub(crate) struct WebhookPayload {
     /// Sender address from the reply email `From:` header.
     pub from: String,
     /// `In-Reply-To:` header value — matches the `Message-ID` of the challenge email.
@@ -195,9 +195,18 @@ pub struct WebhookPayload {
 /// what to log; the handler always returns HTTP 200 regardless.
 #[derive(Debug, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum VerifyOutcome {
+pub(crate) enum VerifyOutcome {
     Valid,
     Invalid(String),
+}
+
+impl std::fmt::Display for VerifyOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Valid => write!(f, "valid"),
+            Self::Invalid(reason) => write!(f, "invalid: {reason}"),
+        }
+    }
 }
 
 /// Called from the webhook handler after HMAC authentication passes.
@@ -205,7 +214,10 @@ pub enum VerifyOutcome {
 /// Looks up the challenge by `In-Reply-To`, verifies the DKIM domain,
 /// extracts the ACME response block, and checks the SHA-256 digest against
 /// the expected key-authorization digest.  Updates challenge + authz status.
-pub async fn verify_response(state: &Arc<AppState>, payload: &WebhookPayload) -> VerifyOutcome {
+pub(crate) async fn verify_response(
+    state: &Arc<AppState>,
+    payload: &WebhookPayload,
+) -> VerifyOutcome {
     let now = unix_now();
 
     // 1. Look up challenge by In-Reply-To / Message-ID.
@@ -577,15 +589,22 @@ pub async fn verify_response(state: &Arc<AppState>, payload: &WebhookPayload) ->
 fn extract_acme_response(body: &str) -> Option<String> {
     const BEGIN: &str = "-----BEGIN ACME RESPONSE-----";
     const END: &str = "-----END ACME RESPONSE-----";
+    // SHA-256 base64url is 43 chars; 512 bytes is generous and prevents
+    // a malicious payload from building a very large string in memory.
+    const MAX_LEN: usize = 512;
+
     let start = body.find(BEGIN)? + BEGIN.len();
     let rest = &body[start..];
     let end = rest.find(END)?;
-    // Filter ASCII whitespace only — base64url is ASCII-only.
-    let content: String = rest[..end]
-        .bytes()
-        .filter(|b| !b.is_ascii_whitespace())
-        .map(|b| b as char)
-        .collect();
+
+    let mut content = String::new();
+    for b in rest[..end].bytes().filter(|b| !b.is_ascii_whitespace()) {
+        if content.len() >= MAX_LEN {
+            return None;
+        }
+        content.push(b as char);
+    }
+
     if content.is_empty() {
         None
     } else {
