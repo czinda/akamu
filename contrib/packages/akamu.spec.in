@@ -279,6 +279,20 @@ EOF
 %{cargo_license_summary}
 %{cargo_license} > LICENSE.dependencies
 %{cargo_vendor_manifest}
+# cargo2rpm generates the vendor manifest with --target=all, which pulls in
+# platform-specific crates that are never compiled when building for Linux.
+# Remove them so bundled(crate()) Provides reflect what is actually linked.
+sed -i -E \
+    -e '/^windows[-_]/d' \
+    -e '/^(schannel|ipconfig|widestring|find-msvc-tools) /d' \
+    -e '/^core-foundation/d' \
+    -e '/^security-framework/d' \
+    -e '/^(js-sys|web-sys) /d' \
+    -e '/^wasm-bindgen/d' \
+    -e '/^wit-bindgen/d' \
+    -e '/^(wasi|wasip2|wasip3|wasite) /d' \
+    -e '/^(redox_syscall|libredox|r-efi) /d' \
+    cargo-vendor.txt
 # Compile man pages from scdoc sources.
 scdoc < docs/man/akamu.8.scd          | gzip -9 > akamu.8.gz
 scdoc < docs/man/akamu-cosigner.8.scd | gzip -9 > akamu-cosigner.8.gz
