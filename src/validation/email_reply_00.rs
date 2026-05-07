@@ -228,9 +228,12 @@ pub(crate) async fn verify_response(
     {
         Ok(Some(c)) => c,
         Ok(None) => {
+            let in_reply_to_display = match payload.in_reply_to.char_indices().nth(128) {
+                Some((i, _)) => format!("{}…", &payload.in_reply_to[..i]),
+                None => payload.in_reply_to.clone(),
+            };
             return VerifyOutcome::Invalid(format!(
-                "no email-reply-00 challenge found for In-Reply-To '{}'",
-                payload.in_reply_to
+                "no email-reply-00 challenge found for In-Reply-To '{in_reply_to_display}'"
             ));
         }
         Err(e) => {
