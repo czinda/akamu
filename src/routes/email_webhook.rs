@@ -103,13 +103,14 @@ pub async fn handle_webhook(
 
     // Truncate in_reply_to before logging to bound log line length and
     // prevent log injection from attacker-controlled Message-ID values.
-    // Use a temporary owned String only for the truncated case; borrow otherwise.
+    // Use char_indices to find the 128th codepoint boundary (safe on multi-byte UTF-8).
     let truncated;
-    let in_reply_to_log: &str = if payload.in_reply_to.len() > 256 {
-        truncated = format!("{}…", &payload.in_reply_to[..256]);
-        &truncated
-    } else {
-        &payload.in_reply_to
+    let in_reply_to_log: &str = match payload.in_reply_to.char_indices().nth(128) {
+        Some((i, _)) => {
+            truncated = format!("{}…", &payload.in_reply_to[..i]);
+            &truncated
+        }
+        None => &payload.in_reply_to,
     };
     let outcome = verify_response(&state, &payload).await;
 
