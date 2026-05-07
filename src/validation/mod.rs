@@ -85,13 +85,15 @@ pub async fn validate_challenge(
                 let err =
                     AcmeError::Unauthorized(format!("dns-persist-01: account {account_id} is {s}"));
                 let now = unix_now();
-                on_invalid(state, challenge_id, authz_id, err, now).await;
+                on_invalid_with_order(state, challenge_id, authz_id, Some(order_id), err, now)
+                    .await;
                 return "invalid";
             }
             Err(e) => {
                 let err = AcmeError::Internal(format!("account status lookup: {e}"));
                 let now = unix_now();
-                on_invalid(state, challenge_id, authz_id, err, now).await;
+                on_invalid_with_order(state, challenge_id, authz_id, Some(order_id), err, now)
+                    .await;
                 return "invalid";
             }
         }
@@ -105,7 +107,7 @@ pub async fn validate_challenge(
         match email_reply_00::send_challenge_email(state, challenge_id, id_value, token).await {
             Ok(()) => return "processing",
             Err(e) => {
-                on_invalid(state, challenge_id, authz_id, e, now).await;
+                on_invalid_with_order(state, challenge_id, authz_id, Some(order_id), e, now).await;
                 return "invalid";
             }
         }
@@ -166,7 +168,7 @@ pub async fn validate_challenge(
             "valid"
         }
         Err(e) => {
-            on_invalid(state, challenge_id, authz_id, e, now).await;
+            on_invalid_with_order(state, challenge_id, authz_id, Some(order_id), e, now).await;
             "invalid"
         }
     }
@@ -335,7 +337,7 @@ async fn on_valid(state: &AppState, challenge_id: &str, authz_id: &str, order_id
             // Challenge was already validated (concurrent webhook retry); no audit needed.
         }
         Err(e) => {
-            tracing::warn!("authz {authz_id_log}: on_valid transaction failed: {e}");
+            tracing::error!("authz {authz_id_log}: on_valid transaction failed: {e}");
         }
     }
 }
@@ -348,10 +350,24 @@ async fn on_valid(state: &AppState, challenge_id: &str, authz_id: &str, order_id
 ///
 /// All three state transitions run inside a single SQLite transaction so a
 /// partial failure cannot leave challenge valid while authz/order stays pending.
-async fn on_invalid(
+///
+/// `order_id` may be `None` when the caller does not have it at hand; the
+/// function will retrieve it from the authorizations table in that case.
+pub(super) async fn on_invalid(
     state: &AppState,
     challenge_id: &str,
     authz_id: &str,
+    err: AcmeError,
+    now: i64,
+) {
+    on_invalid_with_order(state, challenge_id, authz_id, None, err, now).await;
+}
+
+async fn on_invalid_with_order(
+    state: &AppState,
+    challenge_id: &str,
+    authz_id: &str,
+    order_id: Option<&str>,
     err: AcmeError,
     now: i64,
 ) {
@@ -365,7 +381,7 @@ async fn on_invalid(
 
     let authz_id_log = authz_id.to_string();
 
-    let result: Result<(), sqlx::Error> = async {
+    let result: Result<bool, sqlx::Error> = async {
         let mut tx = state.db.begin().await?;
         crate::db::pg_local_async_commit(&mut tx, state.db_kind).await?;
 
@@ -386,7 +402,7 @@ async fn on_invalid(
         if chall_rows == 0 {
             // Already transitioned (concurrent on_valid or duplicate on_invalid); nothing more to do.
             tx.commit().await?;
-            return Ok(());
+            return Ok(false);
         }
 
         // 2. Mark authorization invalid.
@@ -396,14 +412,19 @@ async fn on_invalid(
             .execute(&mut *tx)
             .await?;
 
-        // 3. Find the parent order_id and mark it invalid.
-        let order_id_row: Option<(String,)> =
+        // 3. Mark the parent order invalid.  Use the caller-supplied order_id
+        // when available; fall back to a SELECT to avoid a JOIN.
+        let oid: Option<String> = if let Some(oid) = order_id {
+            Some(oid.to_owned())
+        } else {
             crate::db::query_as::<(String,)>("SELECT order_id FROM authorizations WHERE id = ?")
                 .bind(authz_id)
                 .fetch_optional(&mut *tx)
-                .await?;
+                .await?
+                .map(|(s,)| s)
+        };
 
-        if let Some((oid,)) = order_id_row {
+        if let Some(oid) = oid {
             crate::db::query(
                 "UPDATE orders SET status = 'invalid', error = NULL, updated = ? WHERE id = ?",
             )
@@ -414,19 +435,28 @@ async fn on_invalid(
         }
 
         tx.commit().await?;
-        Ok(())
+        Ok(true)
     }
     .await;
 
-    if let Err(e) = result {
-        tracing::warn!("authz {authz_id_log}: on_invalid transaction failed: {e}");
+    match result {
+        Ok(true) => {
+            state
+                .record_audit(
+                    crate::audit::AuditEvent::failure(
+                        crate::audit::AuditEventType::AuthChallengeFail,
+                    )
+                    .with_subject(authz_id),
+                )
+                .await;
+        }
+        Ok(false) => {
+            // Challenge already transitioned; no audit needed.
+        }
+        Err(e) => {
+            tracing::error!("authz {authz_id_log}: on_invalid transaction failed: {e}");
+        }
     }
-    state
-        .record_audit(
-            crate::audit::AuditEvent::failure(crate::audit::AuditEventType::AuthChallengeFail)
-                .with_subject(authz_id),
-        )
-        .await;
 }
 
 fn err_type(e: &AcmeError) -> &'static str {
