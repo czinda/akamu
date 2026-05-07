@@ -395,6 +395,7 @@ pub async fn new_order(
     // cannot leave orphaned orders, authorizations, or challenges.
     {
         let mut tx = db::begin_write(&state.db, state.db_kind).await?;
+        db::pg_local_async_commit(&mut tx, state.db_kind).await?;
 
         db::orders::insert(
             &mut *tx,

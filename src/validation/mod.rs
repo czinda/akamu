@@ -72,10 +72,11 @@ pub async fn validate_challenge(
     // count a stale record as a successful validation.
     if chall_type == "dns-persist-01" {
         let status: Result<String, _> =
-            sqlx::query_scalar("SELECT status FROM accounts WHERE id = ?")
+            crate::db::query_as::<(String,)>("SELECT status FROM accounts WHERE id = ?")
                 .bind(account_id)
                 .fetch_one(&state.db)
-                .await;
+                .await
+                .map(|(s,)| s);
 
         match status.as_deref() {
             Ok("valid") => {}
@@ -250,9 +251,10 @@ async fn on_valid(state: &AppState, challenge_id: &str, authz_id: &str, order_id
 
     let result: Result<bool, sqlx::Error> = async {
         let mut tx = state.db.begin().await?;
+        crate::db::pg_local_async_commit(&mut tx, state.db_kind).await?;
 
         // 1. Mark challenge valid.
-        sqlx::query(
+        crate::db::query(
             "UPDATE challenges SET status = 'valid', validated = ?, updated = ? WHERE id = ?",
         )
         .bind(now)
@@ -262,7 +264,7 @@ async fn on_valid(state: &AppState, challenge_id: &str, authz_id: &str, order_id
         .await?;
 
         // 2. Mark authorization valid.
-        sqlx::query("UPDATE authorizations SET status = 'valid', updated = ? WHERE id = ?")
+        crate::db::query("UPDATE authorizations SET status = 'valid', updated = ? WHERE id = ?")
             .bind(now)
             .bind(authz_id)
             .execute(&mut *tx)
@@ -272,7 +274,7 @@ async fn on_valid(state: &AppState, challenge_id: &str, authz_id: &str, order_id
         // valid.  A single conditional UPDATE replaces the previous
         // SELECT COUNT(*) + conditional UPDATE — saves one DB round-trip on
         // the common (single-identifier) path.
-        let rows = sqlx::query(
+        let rows = crate::db::query(
             "UPDATE orders SET status = 'ready', error = NULL, updated = ?
              WHERE id = ?
                AND NOT EXISTS (
@@ -336,9 +338,10 @@ async fn on_invalid(
 
     let result: Result<(), sqlx::Error> = async {
         let mut tx = state.db.begin().await?;
+        crate::db::pg_local_async_commit(&mut tx, state.db_kind).await?;
 
         // 1. Mark challenge invalid with the error detail.
-        sqlx::query(
+        crate::db::query(
             "UPDATE challenges SET status = 'invalid', error = ?, updated = ? WHERE id = ?",
         )
         .bind(&error_json)
@@ -348,7 +351,7 @@ async fn on_invalid(
         .await?;
 
         // 2. Mark authorization invalid.
-        sqlx::query("UPDATE authorizations SET status = 'invalid', updated = ? WHERE id = ?")
+        crate::db::query("UPDATE authorizations SET status = 'invalid', updated = ? WHERE id = ?")
             .bind(now)
             .bind(authz_id)
             .execute(&mut *tx)
@@ -356,13 +359,13 @@ async fn on_invalid(
 
         // 3. Find the parent order_id and mark it invalid.
         let order_id_row: Option<(String,)> =
-            sqlx::query_as("SELECT order_id FROM authorizations WHERE id = ?")
+            crate::db::query_as::<(String,)>("SELECT order_id FROM authorizations WHERE id = ?")
                 .bind(authz_id)
                 .fetch_optional(&mut *tx)
                 .await?;
 
         if let Some((oid,)) = order_id_row {
-            sqlx::query(
+            crate::db::query(
                 "UPDATE orders SET status = 'invalid', error = NULL, updated = ? WHERE id = ?",
             )
             .bind(now)

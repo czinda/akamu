@@ -199,7 +199,8 @@ pub async fn new_authz(
 
     {
         let mut tx = db::begin_write(&state.db, state.db_kind).await?;
-        sqlx::query(
+        db::pg_local_async_commit(&mut tx, state.db_kind).await?;
+        crate::db::query(
             "INSERT INTO authorizations
              (id, order_id, account_id, status, identifier, expires,
               wildcard, subdomain_auth_allowed, created, updated, ca_id)
