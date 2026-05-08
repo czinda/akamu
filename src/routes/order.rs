@@ -52,6 +52,12 @@ struct NewOrderPayload {
     /// draft-aaron-acme-profiles-01: optional profile identifier.
     #[serde(default)]
     profile: Option<String>,
+    /// RFC 9115 §2.3.2: URL of the delegation config object on this server.
+    #[serde(default)]
+    delegation: Option<String>,
+    /// RFC 9115 §2.3.5: request unauthenticated certificate GET (non-STAR delegation).
+    #[serde(default, rename = "allow-certificate-get")]
+    allow_certificate_get: bool,
 }
 
 /// Parse an RFC 3339 timestamp string to a Unix timestamp.
@@ -242,6 +248,37 @@ pub async fn new_order(
         None
     };
 
+    // RFC 9115 §2.3.2: parse delegation URL and validate ownership.
+    let (delegation_id, order_allow_cert_get): (Option<String>, i64) = if let Some(ref url) =
+        payload.delegation
+    {
+        if !state.config.server.delegation_enabled {
+            return Err(AcmeError::UnknownDelegation);
+        }
+        let dlg_id = delegation_id_from_url(&pfx, url)?;
+        let dlg = db::delegations::get_by_id(&state.db_ro, &dlg_id)
+            .await?
+            .ok_or(AcmeError::UnknownDelegation)?;
+        if dlg.account_id != account_id {
+            return Err(AcmeError::UnknownDelegation);
+        }
+        // RFC 9115 §2.3.2: notBefore and notAfter MUST NOT be present.
+        if payload.not_before.is_some() || payload.not_after.is_some() {
+            return Err(AcmeError::BadRequest(
+                "notBefore and notAfter MUST NOT be present in a delegation order".into(),
+            ));
+        }
+        // Non-STAR allow-certificate-get: honour only when the server permits it.
+        let acg = if payload.allow_certificate_get && state.config.server.allow_certificate_get {
+            1_i64
+        } else {
+            0_i64
+        };
+        (Some(dlg_id), acg)
+    } else {
+        (None, 0_i64)
+    };
+
     // RFC 8739 §3.1.1: parse auto-renewal if present.
     let (
         star_start_date,
@@ -310,6 +347,13 @@ pub async fn new_order(
     let expiry = now + state.config.server.order_expiry_secs as i64;
     let authz_expiry = now + state.config.server.authz_expiry_secs as i64;
 
+    // Delegation orders start in "ready" — no challenges to complete.
+    let initial_status = if delegation_id.is_some() {
+        "ready"
+    } else {
+        "pending"
+    };
+
     let order_id = uuid::Uuid::new_v4().to_string();
     let identifiers_json = serde_json::to_string(
         &payload
@@ -334,7 +378,12 @@ pub async fn new_order(
     let mut authz_plans: Vec<AuthzPlan> = Vec::new();
     let mut authz_urls: Vec<String> = Vec::new();
 
-    for id in &payload.identifiers {
+    // RFC 9115 §2.3.2: delegation orders skip challenge authorizations entirely.
+    for id in if delegation_id.is_none() {
+        &payload.identifiers[..]
+    } else {
+        &[]
+    } {
         let authz_id = uuid::Uuid::new_v4().to_string();
         // When ancestorDomain is set, issue the authz against the ancestor domain
         // and mark it subdomainAuthAllowed; the proof is for the ancestor, not
@@ -436,7 +485,7 @@ pub async fn new_order(
             OrderRow {
                 id: order_id.clone(),
                 account_id: account_id.clone(),
-                status: "pending".to_string(),
+                status: initial_status.to_string(),
                 expires: Some(expiry),
                 identifiers: identifiers_json.clone(),
                 not_before: order_not_before,
@@ -455,8 +504,8 @@ pub async fn new_order(
                 star_csr_der: None,
                 profile: order_profile.clone(),
                 ca_id: ca_id.0.clone(),
-                delegation_id: None,
-                allow_cert_get: 0,
+                delegation_id: delegation_id.clone(),
+                allow_cert_get: order_allow_cert_get,
                 upstream_order_url: None,
                 upstream_cert_url: None,
             },
@@ -498,7 +547,7 @@ pub async fn new_order(
     let new_order_row = OrderRow {
         id: order_id.clone(),
         account_id: account_id.clone(),
-        status: "pending".to_string(),
+        status: initial_status.to_string(),
         expires: Some(expiry),
         identifiers: identifiers_json.clone(),
         not_before: order_not_before,
@@ -517,8 +566,8 @@ pub async fn new_order(
         star_csr_der: None,
         profile: order_profile,
         ca_id: ca_id.0.clone(),
-        delegation_id: None,
-        allow_cert_get: 0,
+        delegation_id,
+        allow_cert_get: order_allow_cert_get,
         upstream_order_url: None,
         upstream_cert_url: None,
     };
@@ -669,6 +718,15 @@ pub(crate) struct OrderJson<'a> {
     /// draft-aaron-acme-profiles-01
     #[serde(skip_serializing_if = "Option::is_none")]
     profile: Option<&'a str>,
+    /// RFC 9115 §2.3.2: URL of the delegation config object.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delegation: Option<String>,
+    /// RFC 9115 §2.3.5: unauthenticated certificate GET (non-STAR delegation).
+    #[serde(
+        rename = "allow-certificate-get",
+        skip_serializing_if = "Option::is_none"
+    )]
+    allow_certificate_get: Option<bool>,
 }
 
 pub(crate) fn order_json<'a>(
@@ -703,9 +761,24 @@ pub(crate) fn order_json<'a>(
         },
     });
 
-    // star-certificate URL: present when order is valid and is a STAR order.
+    // star-certificate URL: prefer upstream_cert_url (pass-through), else local.
     let star_certificate = if order.star_end_date.is_some() && order.status == "valid" {
-        Some(format!("{acme_pfx}/cert/star/{}", order.id))
+        order
+            .upstream_cert_url
+            .clone()
+            .or_else(|| Some(format!("{acme_pfx}/cert/star/{}", order.id)))
+    } else {
+        None
+    };
+
+    // Non-STAR certificate URL: prefer upstream_cert_url, else local cert path.
+    let certificate = if order.status == "valid" && order.star_end_date.is_none() {
+        order.upstream_cert_url.clone().or_else(|| {
+            order
+                .certificate_id
+                .as_ref()
+                .map(|c| format!("{acme_pfx}/cert/{c}"))
+        })
     } else {
         None
     };
@@ -718,19 +791,21 @@ pub(crate) fn order_json<'a>(
         identifiers,
         authorizations: authz_urls,
         finalize: format!("{acme_pfx}/order/{}/finalize", order.id),
-        certificate: if order.status == "valid" && order.star_end_date.is_none() {
-            order
-                .certificate_id
-                .as_ref()
-                .map(|c| format!("{acme_pfx}/cert/{c}"))
-        } else {
-            None
-        },
+        certificate,
         star_certificate,
         error,
         replaces: order.replaces.as_deref(),
         auto_renewal,
         profile: order.profile.as_deref(),
+        delegation: order
+            .delegation_id
+            .as_ref()
+            .map(|did| format!("{acme_pfx}/delegation/{did}")),
+        allow_certificate_get: if order.delegation_id.is_some() && order.allow_cert_get != 0 {
+            Some(true)
+        } else {
+            None
+        },
     }
 }
 
@@ -773,6 +848,18 @@ fn gen_token() -> Result<String, AcmeError> {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
     Ok(URL_SAFE_NO_PAD.encode(bytes))
+}
+
+/// Extract a delegation ID from a URL of the form `{pfx}/delegation/{id}`.
+///
+/// Returns `UnknownDelegation` if the URL does not match the expected prefix
+/// or contains an empty ID segment.
+fn delegation_id_from_url(pfx: &str, url: &str) -> Result<String, AcmeError> {
+    let prefix = format!("{pfx}/delegation/");
+    match url.strip_prefix(&prefix) {
+        Some(id) if !id.is_empty() => Ok(id.to_string()),
+        _ => Err(AcmeError::UnknownDelegation),
+    }
 }
 
 #[cfg(test)]
