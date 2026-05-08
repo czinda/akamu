@@ -510,6 +510,18 @@ async fn run() -> Result<(), String> {
     // ── RFC 9115 IdO→CA upstream delegation task ──────────────────────────────
     let _delegation_task = delegation_upstream::spawn(Arc::clone(&state));
 
+    // ── Management web UI listener ────────────────────────────────────────────
+    let _webui_task = if let Some(webui_cfg) = config.server.webui.clone() {
+        let handle = tokio::spawn(async move {
+            if let Err(e) = akamu::webui::run(webui_cfg).await {
+                tracing::error!("webui listener failed: {e}");
+            }
+        });
+        Some(handle)
+    } else {
+        None
+    };
+
     // ── Dedicated admin listener ──────────────────────────────────────────────
     if let Some(ref admin_cfg) = config.admin {
         let mut admin_server_cfg = akamu::tls::build_admin_rustls_server_config(admin_cfg)
