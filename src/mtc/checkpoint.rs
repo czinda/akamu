@@ -222,7 +222,7 @@ fn build_checkpoint_der(
     use synta::types::constructed::Element;
     use synta::types::primitive::Null;
     use synta::types::string::OctetString;
-    use synta::{Decoder, Encoder, Encoding, Integer, ObjectIdentifier};
+    use synta::{Decoder, Encoder, Encoding, Integer};
     use synta_certificate::{AlgorithmIdentifier, SubjectPublicKeyInfo};
     use synta_mtc::types::{Checkpoint, LogID};
 
@@ -232,16 +232,7 @@ fn build_checkpoint_der(
         .decode()
         .map_err(|e| AcmeError::Mtc(format!("decode MTC signing key SPKI: {e}")))?;
 
-    // OID for the log entry hash algorithm (SHA-256/384/512).
-    let hash_oid = match log_algorithm {
-        HashAlgorithm::Sha256 => ObjectIdentifier::new(&[2u32, 16, 840, 1, 101, 3, 4, 2, 1]),
-        HashAlgorithm::Sha384 => ObjectIdentifier::new(&[2u32, 16, 840, 1, 101, 3, 4, 2, 2]),
-        HashAlgorithm::Sha512 => ObjectIdentifier::new(&[2u32, 16, 840, 1, 101, 3, 4, 2, 3]),
-        HashAlgorithm::Sha3_256 => ObjectIdentifier::new(&[2u32, 16, 840, 1, 101, 3, 4, 2, 8]),
-        HashAlgorithm::Sha3_384 => ObjectIdentifier::new(&[2u32, 16, 840, 1, 101, 3, 4, 2, 9]),
-        HashAlgorithm::Sha3_512 => ObjectIdentifier::new(&[2u32, 16, 840, 1, 101, 3, 4, 2, 10]),
-    }
-    .map_err(|e| AcmeError::Mtc(format!("hash algorithm OID: {e}")))?;
+    let hash_oid = crate::mtc::hash_algorithm_to_oid(log_algorithm)?;
 
     let log_id = LogID {
         hash_algorithm: AlgorithmIdentifier {

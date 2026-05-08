@@ -30,10 +30,9 @@ struct FinalizePayload {
 pub async fn finalize_order(
     State(state): State<Arc<AppState>>,
     ca_id: CaId,
-    Path(params): Path<std::collections::HashMap<String, String>>,
+    Path(id): Path<String>,
     body: Bytes,
 ) -> Result<Response, AcmeError> {
-    let id = params.get("id").cloned().ok_or(AcmeError::NotFound)?;
     let pfx = acme_prefix(&state.config.base_url, &ca_id.0, &state.default_ca_id);
     let url = format!("{pfx}/order/{id}/finalize");
     let ctx = parse_jws(&state, body, &url).await?;
@@ -77,57 +76,6 @@ pub async fn finalize_order(
 
     // Validate CSR.
     let validated_csr = ca::csr::validate_csr(&csr_der, &allowed)?;
-
-    // RFC 9115 §4: validate the CSR against the delegation template when present.
-    if let Some(ref dlg_id) = order.delegation_id {
-        let dlg = db::delegations::get_by_id(&state.db_ro, dlg_id)
-            .await?
-            .ok_or_else(|| AcmeError::Internal(format!("delegation {dlg_id} not found")))?;
-        let template: ca::csr_template::CsrTemplate = serde_json::from_str(&dlg.csr_template)
-            .map_err(|e| {
-                AcmeError::Internal(format!("corrupt csr_template in delegation {dlg_id}: {e}"))
-            })?;
-        ca::csr_template::validate_csr_against_template(&csr_der, &template)?;
-
-        // When an upstream CA is configured, transition to processing and hand off
-        // to the background delegation driver (implemented in src/delegation_upstream.rs).
-        if state.config.delegation_upstream.is_some() {
-            let now = unix_now();
-            // Atomically set status=processing and store the CSR in one UPDATE so a crash
-            // between the two writes cannot leave the order stuck without a CSR.
-            db::orders::set_processing_with_csr_der(&state.db, &id, &csr_der, now)
-                .await
-                .map_err(|e| match e {
-                    AcmeError::Conflict(_) => AcmeError::OrderNotReady,
-                    other => other,
-                })?;
-            let mut processing_order = order;
-            processing_order.status = "processing".to_string();
-            processing_order.updated = now;
-            let order_pfx = acme_prefix(
-                &state.config.base_url,
-                &processing_order.ca_id,
-                &state.default_ca_id,
-            );
-            state
-                .record_audit(
-                    crate::audit::AuditEvent::success(crate::audit::AuditEventType::OrderFinalize)
-                        .with_subject(&id)
-                        .with_principal(format!(
-                            "acme:{}",
-                            ctx.jwk_thumbprint.as_deref().unwrap_or("")
-                        )),
-                )
-                .await;
-            return json_response(
-                &state,
-                &processing_order.ca_id,
-                StatusCode::OK,
-                order_json(&processing_order, &[], &order_pfx),
-                &ctx.next_nonce,
-            );
-        }
-    }
 
     // draft-aaron-acme-profiles-01: if the order carries a profile name that the
     // registry does not recognise (or is restricted to a different CA), reject at
@@ -286,10 +234,14 @@ pub async fn finalize_order(
                 AcmeError::Mtc(format!("MTC inclusion proof for cert {}: {e}", issued.id))
             })?;
 
-        let spki_der = order_ca
-            .key
+        let mtc_signing_key = state.mtc.signing_key.as_ref().ok_or_else(|| {
+            AcmeError::InvalidProfile(
+                "profile 'issue_as = \"mtc\"' requires [mtc.signing_key] to be configured".into(),
+            )
+        })?;
+        let spki_der = mtc_signing_key
             .public_key()
-            .map_err(|e| AcmeError::Crypto(format!("MTC key SPKI for standalone: {e}")))?
+            .map_err(|e| AcmeError::Crypto(format!("MTC signing key SPKI for standalone: {e}")))?
             .spki_der()
             .to_vec();
         let standalone_der = crate::mtc::standalone::build_standalone_der(
