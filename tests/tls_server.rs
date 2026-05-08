@@ -441,6 +441,7 @@ async fn start_tls_server() -> TlsTestServer {
         },
         admin: None,
         email_challenge: None,
+        delegation_upstream: None,
     });
 
     // Initialise CA.

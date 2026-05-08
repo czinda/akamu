@@ -732,6 +732,7 @@ async fn start_server(args: &Args) -> BenchServer {
         profiles: Default::default(),
         admin: None,
         email_challenge: None,
+        delegation_upstream: None,
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.cas[0]).unwrap();

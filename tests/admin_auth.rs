@@ -154,6 +154,7 @@ async fn build_state(
             lockout_duration_secs: 1800,
         }),
         email_challenge: None,
+        delegation_upstream: None,
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();

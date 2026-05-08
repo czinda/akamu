@@ -29,6 +29,10 @@ pub struct Config {
     /// Absent or `enabled = false` → "email" identifier type is rejected.
     #[serde(default)]
     pub email_challenge: Option<EmailChallengeConfig>,
+    /// Upstream CA configuration for the IdO→CA leg of RFC 9115.
+    /// When absent, delegation orders are issued directly by Akamu's own CA.
+    #[serde(default)]
+    pub delegation_upstream: Option<DelegationUpstreamConfig>,
 }
 
 /// Admin API configuration (PP CA v2.1 FMT + FTA_SSL).
@@ -822,6 +826,13 @@ pub struct ServerConfig {
     /// unauthenticated GET requests are rejected even for orders that request it.
     #[serde(default = "default_star_allow_certificate_get")]
     pub star_allow_certificate_get: bool,
+    /// RFC 9115 §2.3.4: advertise delegation support in directory meta.
+    #[serde(default)]
+    pub delegation_enabled: bool,
+    /// RFC 9115 §2.3.5: advertise and allow unauthenticated cert GET for
+    /// non-STAR delegation orders.
+    #[serde(default)]
+    pub allow_certificate_get: bool,
     /// Certificate profiles (draft-aaron-acme-profiles-01).
     /// Maps profile identifier → human-readable description or documentation URL.
     /// Advertised in directory meta. Clients may request a profile by name in newOrder.
@@ -881,6 +892,38 @@ pub struct ServerConfig {
     ///
     /// Generate with: `openssl rand -base64 32 | tr '+/' '-_' | tr -d '='`
     pub eab_master_secret: Option<String>,
+}
+
+/// Upstream CA configuration for the IdO→CA leg of RFC 9115 delegation.
+///
+/// ```toml
+/// [delegation_upstream]
+/// directory_url      = "https://acme.ca.example/acme/directory"
+/// account_key_file   = "/etc/akamu/upstream-account.key"
+/// contacts           = ["mailto:admin@ido.example"]
+/// challenge_solver   = "dns-01"
+/// poll_interval_secs = 10
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct DelegationUpstreamConfig {
+    /// Directory URL of the upstream ACME CA.
+    pub directory_url: String,
+    /// PEM file containing the ACME account private key for the IdO's CA account.
+    pub account_key_file: String,
+    /// Contact URIs (e.g. `"mailto:admin@example.com"`) used when registering the
+    /// account if it does not yet exist on the upstream CA.
+    #[serde(default)]
+    pub contacts: Vec<String>,
+    /// Challenge solver to use for the upstream CA: `"dns-01"`, `"http-01"`, or
+    /// `"tls-alpn-01"`.
+    pub challenge_solver: String,
+    /// Seconds between upstream order status checks. Default: 10.
+    #[serde(default = "default_upstream_poll_secs")]
+    pub poll_interval_secs: u64,
+}
+
+fn default_upstream_poll_secs() -> u64 {
+    10
 }
 
 /// Standalone GSSAPI/SPNEGO configuration for Akamu acting as its own KDC client.
@@ -1066,6 +1109,8 @@ impl Default for ServerConfig {
             star_min_lifetime_secs: None,
             star_max_duration_secs: None,
             star_allow_certificate_get: false,
+            delegation_enabled: false,
+            allow_certificate_get: false,
             profiles: std::collections::HashMap::new(),
             eab_keys: std::collections::HashMap::new(),
             tor_connectivity_enabled: false,
@@ -1322,6 +1367,38 @@ impl Config {
                         }
                     }
                 }
+            }
+        }
+
+        if let Some(du) = &self.delegation_upstream {
+            const VALID_SOLVERS: &[&str] = &["dns-01", "http-01", "tls-alpn-01"];
+            if du.directory_url.is_empty() {
+                return Err("[delegation_upstream].directory_url must not be empty".into());
+            }
+            if !du.directory_url.starts_with("https://") {
+                return Err(format!(
+                    "[delegation_upstream].directory_url {:?} must use https://",
+                    du.directory_url
+                ));
+            }
+            if du.account_key_file.is_empty() {
+                return Err("[delegation_upstream].account_key_file must not be empty".into());
+            }
+            if !std::path::Path::new(&du.account_key_file).is_absolute() {
+                return Err(format!(
+                    "[delegation_upstream].account_key_file {:?} must be an absolute path",
+                    du.account_key_file
+                ));
+            }
+            if !VALID_SOLVERS.contains(&du.challenge_solver.as_str()) {
+                return Err(format!(
+                    "[delegation_upstream].challenge_solver {:?} must be one of: {}",
+                    du.challenge_solver,
+                    VALID_SOLVERS.join(", ")
+                ));
+            }
+            if du.poll_interval_secs == 0 {
+                return Err("[delegation_upstream].poll_interval_secs must be at least 1".into());
             }
         }
 

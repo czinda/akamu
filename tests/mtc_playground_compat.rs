@@ -104,6 +104,7 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
         profiles: Default::default(),
         admin: None,
         email_challenge: None,
+        delegation_upstream: None,
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
