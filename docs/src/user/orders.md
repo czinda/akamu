@@ -144,3 +144,46 @@ If a challenge fails, the corresponding authorization transitions to `invalid`. 
 ```
 
 Create a new order and begin the authorization process again.
+
+
+## Delegation orders (RFC 9115)
+
+When the server has `delegation_enabled = true`, ACME clients can place a delegation order by including a `"delegation"` field in the `new-order` payload. The value is the URL of a delegation object previously created by the IdO via the Admin API.
+
+```json
+{
+  "identifiers": [
+    { "type": "dns", "value": "cdn.example.com" }
+  ],
+  "delegation": "https://acme.example.com/acme/delegation/b1c2d3e4-…",
+  "allow-certificate-get": true
+}
+```
+
+**Delegation order behaviour differences from regular orders:**
+
+| Property | Regular order | Delegation order |
+|----------|--------------|-----------------|
+| Initial status | `pending` | `ready` |
+| `authorizations` array | One URL per identifier | Always empty (`[]`) |
+| Challenge/authz flow | Required | Skipped entirely |
+| CSR validation at finalize | SAN match check | SAN match + CSR template check |
+| `allow-certificate-get` | Not applicable | Supported (unauthenticated cert GET) |
+| Upstream CA leg | None | Driven automatically by `[delegation_upstream]` |
+
+The NDC (delegate client) discovers the delegation URL by fetching the IdO's account object and following the `"delegations"` URL, then POST-as-GETting `POST /acme/delegations/{account_id}` to list available delegation objects.
+
+**Response on creation (201 Created) for a delegation order:**
+
+```json
+{
+  "status": "ready",
+  "identifiers": [
+    { "type": "dns", "value": "cdn.example.com" }
+  ],
+  "authorizations": [],
+  "finalize": "https://acme.example.com/acme/order/<order-id>/finalize"
+}
+```
+
+The NDC may immediately proceed to finalize the order with a CSR. The CSR is validated against the delegation's stored CSR template before issuance proceeds.
