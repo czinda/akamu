@@ -591,7 +591,9 @@ pub async fn new_order(
     )?;
     resp.headers_mut().insert(
         axum::http::header::LOCATION,
-        format!("{pfx}/order/{order_id}").parse().unwrap(),
+        format!("{pfx}/order/{order_id}")
+            .parse()
+            .map_err(|_| AcmeError::Internal("base_url contains non-ASCII characters".into()))?,
     );
     Ok(resp)
 }
