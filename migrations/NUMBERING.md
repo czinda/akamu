@@ -17,9 +17,14 @@ migration 0007 onward:
 | 0011   | 0010               | operator_lockout        |
 | 0012   | 0011               | multi_ca                |
 | 0013   | 0012               | cross_certs             |
+| 0014   | 0013               | authz_ca_id             |
+| 0015   | 0014               | operator_ca_scope       |
+| 0016   | 0015               | email_challenge         |
+| —      | 0015               | hot_indexes (Postgres-only) |
+| 0017   | 0016               | delegation (RFC 9115)   |
 
 **Rule for future migrations:**
-- SQLite: use the next number in `migrations/sqlite/` (currently `0014_…`)
-- Postgres and MariaDB: use the next number in their directories (currently `0013_…`)
+- SQLite: use the next number in `migrations/sqlite/` (currently `0018_…`)
+- Postgres and MariaDB: use the next number in their directories (currently `0017_…`)
 
 The divergence is intentional and permanent.  Do not attempt to renumber.
