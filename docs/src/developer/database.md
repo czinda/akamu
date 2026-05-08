@@ -393,14 +393,61 @@ CREATE INDEX IF NOT EXISTS idx_authz_acct_ident
     ON authorizations(account_id, identifier);
 ```
 
-SQLite migration numbers remain one higher than the PostgreSQL/MariaDB equivalents from migration 0007 onward (due to the SQLite-only MTC log index at SQLite 0006). The PostgreSQL migration directory now contains 15 migrations (0001–0015); the SQLite directory also contains 15 migrations (0001–0015) — the SQLite offset means its 0015 corresponds to the shared operator CA-scope change, which is PostgreSQL 0014.
+SQLite migration numbers remain one higher than the PostgreSQL/MariaDB equivalents from migration 0007 onward (due to the SQLite-only MTC log index at SQLite 0006). The PostgreSQL migration directory now contains 17 migrations (0001–0016, plus the PostgreSQL-only hot-indexes file); the SQLite directory contains 17 migrations (0001–0017). The SQLite offset means its 0017 corresponds to the RFC 9115 delegation changes, which is PostgreSQL/MariaDB 0016.
+
+### Migration 0016 — Email challenge state (SQLite) / Migration 0015 (PostgreSQL/MariaDB)
+
+Adds two columns to the `challenges` table to support the two-channel token required by the RFC 8823 `email-reply-00` challenge:
+
+```sql
+ALTER TABLE challenges ADD COLUMN email_token_part1 TEXT;
+ALTER TABLE challenges ADD COLUMN email_message_id  TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chall_email_message_id
+    ON challenges(email_message_id)
+    WHERE email_message_id IS NOT NULL;
+```
+
+`email_token_part1` holds the server-generated first half of the RFC 8823 two-part token, delivered to the applicant in the challenge email subject. `email_message_id` is the `Message-ID` of the outbound challenge email, used to correlate the inbound webhook reply.
+
+### Migration 0017 — RFC 9115 delegation (SQLite) / Migration 0016 (PostgreSQL/MariaDB)
+
+Adds the `delegations` table and four new columns to `orders` to support RFC 9115 ACME delegated certificates:
+
+```sql
+CREATE TABLE IF NOT EXISTS delegations (
+    id           TEXT    PRIMARY KEY,
+    account_id   TEXT    NOT NULL REFERENCES accounts(id),
+    csr_template TEXT    NOT NULL,  -- JSON per RFC 9115 §4
+    cname_map    TEXT,              -- JSON {fqdn: fqdn} or NULL
+    created      INTEGER NOT NULL,
+    updated      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_delegations_account ON delegations(account_id);
+
+ALTER TABLE orders ADD COLUMN delegation_id       TEXT REFERENCES delegations(id);
+ALTER TABLE orders ADD COLUMN allow_cert_get      INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE orders ADD COLUMN upstream_order_url  TEXT;
+ALTER TABLE orders ADD COLUMN upstream_cert_url   TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_orders_delegation ON orders(delegation_id)
+    WHERE delegation_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_orders_delegation_status
+    ON orders(delegation_id, status)
+    WHERE delegation_id IS NOT NULL AND status = 'processing';
+```
+
+`delegation_id` is a nullable FK to `delegations(id)`. Orders with a non-null `delegation_id` skip the authorization flow and start in `ready` status. `allow_cert_get` mirrors the `"allow-certificate-get"` field from the `new-order` payload — when set to `1`, the certificate endpoint for that order accepts unauthenticated `GET`. `upstream_order_url` and `upstream_cert_url` are set by the background delegation task as it progresses through the upstream ACME flow.
+
+The PostgreSQL version uses `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` and `CREATE INDEX CONCURRENTLY` to allow the migration to run without an exclusive table lock.
 
 ## Row types
 
 `src/db/schema.rs` defines Rust structs mirroring each table row:
 
 - `AccountRow` — mirrors `accounts`. Includes `ca_id: String` (empty = server-wide; non-empty only when `server.account_scope = "ca"`), `profile_grants: Option<String>`.
-- `OrderRow` — mirrors `orders`. Includes `ca_id: String` (defaults to `"default"` for pre-migration rows), `profile: Option<String>`, and all `star_*` fields.
+- `OrderRow` — mirrors `orders`. Includes `ca_id: String` (defaults to `"default"` for pre-migration rows), `profile: Option<String>`, all `star_*` fields, and the RFC 9115 delegation fields: `delegation_id: Option<String>`, `allow_cert_get: bool`, `upstream_order_url: Option<String>`, `upstream_cert_url: Option<String>`.
+- `DelegationRow` — mirrors `delegations`. Fields: `id: String`, `account_id: String`, `csr_template: String` (JSON), `cname_map: Option<String>` (JSON), `created: i64`, `updated: i64`.
 - `AuthorizationRow` — mirrors `authorizations`. Includes `ca_id: String` and `subdomain_auth_allowed: bool`.
 - `ChallengeRow` — mirrors `challenges`.
 - `CertificateRow` — mirrors `certificates`. Includes `ca_id: String`, `subject_dn: Option<String>`, `suggested_window_start/end: Option<i64>`, `replaced_by: Option<String>`.
@@ -414,7 +461,8 @@ Each table has its own submodule in `src/db/`:
 | Module | Exposed functions |
 |---|---|
 | `db::accounts` | `insert`, `get_by_id`, `get_by_thumbprint`, `update_contact`, `update_status`, `update_key`, `set_profile_grants`, `get_profile_grants`, `list` |
-| `db::orders` | `insert`, `get_by_id`, `update_status`, `list_authz_ids` |
+| `db::orders` | `insert`, `get_by_id`, `update_status`, `list_authz_ids`, `list_pending_delegation_orders` |
+| `db::delegations` | `insert`, `get_by_id`, `update`, `delete`, `list`, `list_by_account` |
 | `db::authz` | `insert`, `get_by_id`, `update_status` |
 | `db::challenges` | `insert`, `get_by_id`, `list_by_authz`, `set_processing`, `set_invalid` |
 | `db::certs` | `insert`, `get_by_id`, `get_by_serial`, `get_by_cert_id`, `mark_replaced`, `revoke`, `set_mtc_log_index`, `set_renewal_window`, `list_revoked`, `list_valid_for_account`, `get_latest_for_order`, `search` |
@@ -551,6 +599,10 @@ erDiagram
         TEXT profile
         INTEGER star_end_date
         INTEGER star_lifetime_secs
+        TEXT delegation_id FK
+        INTEGER allow_cert_get
+        TEXT upstream_order_url
+        TEXT upstream_cert_url
         INTEGER created
         INTEGER updated
     }
@@ -632,12 +684,23 @@ erDiagram
         INTEGER created
     }
 
+    delegations {
+        TEXT id PK
+        TEXT account_id FK
+        TEXT csr_template
+        TEXT cname_map
+        INTEGER created
+        INTEGER updated
+    }
+
     accounts ||--o{ orders : "account_id"
     accounts ||--o{ authorizations : "account_id (denormalized)"
     accounts ||--o{ certificates : "account_id"
+    accounts ||--o{ delegations : "account_id"
     orders ||--o{ authorizations : "order_id"
     authorizations ||--o{ challenges : "authz_id"
     orders ||--o{ certificates : "order_id"
+    delegations ||--o{ orders : "delegation_id"
 ```
 
 ## Foreign key enforcement
@@ -651,5 +714,7 @@ Foreign key constraints are enabled at database open time. The constraint graph 
 - `certificates.order_id` → `orders.id`
 - `certificates.account_id` → `accounts.id`
 - `mtc_cosignatures.checkpoint_id` → `mtc_checkpoints.id` (with `ON DELETE CASCADE`)
+- `delegations.account_id` → `accounts.id`
+- `orders.delegation_id` → `delegations.id` (nullable)
 
 Enabling foreign keys is done before running migrations so that any migration that would violate a constraint fails immediately rather than silently inserting orphaned rows.
