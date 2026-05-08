@@ -25,7 +25,6 @@ This page documents every RFC that is relevant to `Akāmu`, explaining what each
 | [RFC 5280](#rfc-5280--x509-certificate-profile) | X.509 Certificate and CRL Profile | Full |
 | [RFC 6960](#rfc-6960--ocsp-responder) | Online Certificate Status Protocol (OCSP) | Full |
 | [RFC 9115](#rfc-9115--acme-profile-for-delegated-certificates) | ACME Profile for Delegated Certificates | Not implemented |
-| [RFC 9345](#rfc-9345--delegated-credentials-for-tls) | Delegated Credentials for TLS | Not implemented |
 | [RFC 9447](#rfc-9447--acme-challenges-using-an-authority-token) | ACME Challenges Using an Authority Token | Not implemented |
 | [RFC 9448](#rfc-9448--acme-tnauthlist-authority-token) | ACME TNAuthList Authority Token | Not implemented |
 | [RFC 9538](#rfc-9538--acme-delegation-metadata-for-cdni) | ACME Delegation Metadata for CDNI | Not implemented |
@@ -881,12 +880,6 @@ These code points come from the **provisional IANA registry** for an in-progress
 Enables a three-party delegation model: a domain owner (IdO) authorizes a third party (e.g., a CDN) to obtain certificates for the IdO's domain, where the certificate's public key belongs to the third party rather than the domain owner. The CA acts as a proxy between the two parties and enforces a JSON CSR template that restricts what the delegate may request.
 
 **Not implemented.** This requires a dedicated API surface for IdOs to manage delegation policies, plus proxy routing between the NDC and IdO accounts. It is primarily useful for large-scale CDN deployments.
-
-### RFC 9345 — Delegated Credentials for TLS
-
-Defines a TLS certificate extension (`delegated_credential`) that allows a TLS server to present short-lived sub-credentials derived from an issued certificate, without requiring a new CA-signed certificate for each sub-credential. The ACME interaction is limited to requesting certs with this extension set.
-
-**Not implemented.** Requires X.509 extension support in `synta-certificate` for the Delegated Credentials extension (OID TBD / draft status at time of implementation).
 
 ### RFC 9447 — ACME Challenges Using an Authority Token
 
