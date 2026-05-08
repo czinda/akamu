@@ -92,7 +92,9 @@ pub async fn finalize_order(
         // to the background delegation driver (implemented in src/delegation_upstream.rs).
         if state.config.delegation_upstream.is_some() {
             let now = unix_now();
-            db::orders::set_status_processing(&state.db, &id, now)
+            // Atomically set status=processing and store the CSR in one UPDATE so a crash
+            // between the two writes cannot leave the order stuck without a CSR.
+            db::orders::set_processing_with_csr_der(&state.db, &id, &csr_der, now)
                 .await
                 .map_err(|e| match e {
                     AcmeError::Conflict(_) => AcmeError::OrderNotReady,

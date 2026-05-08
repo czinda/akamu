@@ -917,6 +917,20 @@ pub struct DelegationUpstreamConfig {
     /// Challenge solver to use for the upstream CA: `"dns-01"`, `"http-01"`, or
     /// `"tls-alpn-01"`.
     pub challenge_solver: String,
+    /// Path to an executable that provisions a DNS-01 TXT record.
+    ///
+    /// Called with environment variables `CERTBOT_DOMAIN` (the bare domain,
+    /// without `_acme-challenge.` prefix) and `CERTBOT_VALIDATION` (the
+    /// base64url SHA-256 value to publish).  Required when `challenge_solver =
+    /// "dns-01"`.
+    #[serde(default)]
+    pub challenge_deploy_script: Option<String>,
+    /// Path to an executable that removes the DNS-01 TXT record after validation.
+    ///
+    /// Called with `CERTBOT_DOMAIN` and `CERTBOT_AUTH_OUTPUT` (same domain).
+    /// Optional; cleanup is skipped when absent.
+    #[serde(default)]
+    pub challenge_cleanup_script: Option<String>,
     /// Seconds between upstream order status checks. Default: 10.
     #[serde(default = "default_upstream_poll_secs")]
     pub poll_interval_secs: u64,
@@ -1399,6 +1413,11 @@ impl Config {
             }
             if du.poll_interval_secs == 0 {
                 return Err("[delegation_upstream].poll_interval_secs must be at least 1".into());
+            }
+            if du.challenge_solver == "dns-01" && du.challenge_deploy_script.is_none() {
+                return Err("[delegation_upstream].challenge_deploy_script is required \
+                     when challenge_solver = \"dns-01\""
+                    .into());
             }
         }
 

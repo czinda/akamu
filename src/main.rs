@@ -10,7 +10,7 @@ use tracing_subscriber::EnvFilter;
 use akamu::audit::AuditState;
 use akamu::config::{Config, MtcSigningKeyConfig};
 use akamu::state::{AppState, CaState, CrlCache, MtcState, NonceBucket, TlsState};
-use akamu::{ca, db, mtc, routes, star};
+use akamu::{ca, db, delegation_upstream, mtc, routes, star};
 use indexmap::IndexMap;
 
 use hyper_rustls::HttpsConnectorBuilder;
@@ -506,6 +506,9 @@ async fn run() -> Result<(), String> {
 
     // ── STAR background reissuance task ──────────────────────────────────────
     let _star_task = star::spawn(Arc::clone(&state));
+
+    // ── RFC 9115 IdO→CA upstream delegation task ──────────────────────────────
+    let _delegation_task = delegation_upstream::spawn(Arc::clone(&state));
 
     // ── Dedicated admin listener ──────────────────────────────────────────────
     if let Some(ref admin_cfg) = config.admin {
