@@ -62,7 +62,9 @@ pub async fn download_cert_post(
 
     // RFC 9115 §2.3.5: when the order's allow_cert_get flag is set, any
     // authenticated account may download the certificate (not just the owner).
-    let allow_cert_get = db::orders::get_by_id(&state.db_ro, &cert.order_id)
+    // Use the write pool to avoid replication-lag races where a newly-created
+    // delegation order's allow_cert_get hasn't propagated to the read replica.
+    let allow_cert_get = db::orders::get_by_id(&state.db, &cert.order_id)
         .await?
         .is_some_and(|o| o.allow_cert_get != 0);
 
