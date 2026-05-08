@@ -337,6 +337,16 @@ pub fn build_admin_router(state: Arc<AppState>) -> Router {
         .route("/admin/operators/{id}/unlock", post(admin::unlock_operator))
         .route("/admin/orders", axum::routing::get(admin::get_orders))
         .route("/admin/orders/{id}", axum::routing::get(admin::get_order))
+        .route(
+            "/admin/delegations",
+            axum::routing::get(admin::get_delegations).post(admin::post_delegations),
+        )
+        .route(
+            "/admin/delegations/{id}",
+            axum::routing::get(admin::get_delegation_admin)
+                .put(admin::put_delegation)
+                .delete(admin::delete_delegation),
+        )
         .route("/admin/config", axum::routing::get(admin::get_config))
         .route("/admin/crl/force", post(admin::post_crl_force))
         .route("/admin/revoke", post(admin::post_revoke))

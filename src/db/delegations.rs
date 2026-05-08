@@ -40,9 +40,21 @@ pub async fn list_for_account(
 ) -> Result<Vec<DelegationRow>, AcmeError> {
     let rows = super::query_as::<DelegationRow>(
         "SELECT id, account_id, csr_template, cname_map, created, updated
-         FROM delegations WHERE account_id = ? ORDER BY created DESC",
+         FROM delegations WHERE account_id = ? ORDER BY created DESC LIMIT 1000",
     )
     .bind(account_id)
+    .fetch_all(executor)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn list_all(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+) -> Result<Vec<DelegationRow>, AcmeError> {
+    let rows = super::query_as::<DelegationRow>(
+        "SELECT id, account_id, csr_template, cname_map, created, updated
+         FROM delegations ORDER BY created DESC LIMIT 1000",
+    )
     .fetch_all(executor)
     .await?;
     Ok(rows)
