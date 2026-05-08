@@ -26,9 +26,9 @@ This page documents every RFC that is relevant to `Akāmu`, explaining what each
 | [RFC 6960](#rfc-6960--ocsp-responder) | Online Certificate Status Protocol (OCSP) | Full |
 | [RFC 9115](#rfc-9115--acme-profile-for-delegated-certificates) | ACME Profile for Delegated Certificates | Not implemented |
 | [RFC 9447](#rfc-9447--acme-challenges-using-an-authority-token) | ACME Challenges Using an Authority Token | Not implemented |
-| [RFC 9448](#rfc-9448--acme-tnauthlist-authority-token) | ACME TNAuthList Authority Token | Not implemented |
+| [RFC 9448](#rfc-9448--acme-tnauthlist-authority-token) | ACME TNAuthList Authority Token | Not considered |
 | [RFC 9538](#rfc-9538--acme-delegation-metadata-for-cdni) | ACME Delegation Metadata for CDNI | Not implemented |
-| [RFC 9891](#rfc-9891--acme-dtn-node-id-validation-experimental) | ACME DTN Node ID Validation (Experimental) | Not implemented |
+| [RFC 9891](#rfc-9891--acme-dtn-node-id-validation-experimental) | ACME DTN Node ID Validation (Experimental) | Not considered |
 
 ---
 
@@ -891,7 +891,7 @@ Defines a generic `tkauth-01` challenge type where proof of control comes from a
 
 Extends RFC 9447 for telephone number (STIR/SHAKEN) use cases, where the authority token contains a TNAuthList claim.
 
-**Not implemented.** Telecom-specific; requires connectivity to a Secure Telephone Identity (STI) Policy Administrator.
+**Not considered.** Telecom-specific; outside the scope of Akāmu's target deployments.
 
 ### RFC 9538 — ACME Delegation Metadata for CDNI
 
@@ -903,4 +903,4 @@ Extends RFC 9115 for CDN Interconnection (CDNI) scenarios where multiple CDN tie
 
 An experimental RFC that defines a `bundleEID` identifier type and a Bundle Protocol (BP) challenge for validating Delay-Tolerant Networking node identities.
 
-**Not implemented.** Experimental status; targets space/satellite networks using the Bundle Protocol (RFC 9171).
+**Not considered.** Experimental status; targets space/satellite networks using the Bundle Protocol (RFC 9171), outside the scope of Akāmu's target deployments.
