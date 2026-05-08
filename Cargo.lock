@@ -2480,8 +2480,6 @@ dependencies = [
 [[package]]
 name = "synta"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39ca4eed9ee3e65cb3a33eb75163a54baae34f741ca10c6d490321b1587442fb"
 dependencies = [
  "smallvec",
  "synta-derive",
@@ -2490,8 +2488,6 @@ dependencies = [
 [[package]]
 name = "synta-certificate"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a8eeec61d2b0d116054812c9444c3ac966b95b33837fd7292f933eae330c800"
 dependencies = [
  "cryptoki",
  "log",
@@ -2504,14 +2500,10 @@ dependencies = [
 [[package]]
 name = "synta-codegen"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e6a9063537d3d92d7c6d25f4ffe080d64a74900c510f799b4a7db285e63fc20"
 
 [[package]]
 name = "synta-derive"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "816db420f10c3c8c3a47d2968689e31083c6c6848e2df3b66cea364f7c7af97f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2521,8 +2513,6 @@ dependencies = [
 [[package]]
 name = "synta-mtc"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52ff4a35ad6f5b2fda65ff326a0c39fb071911363cff53d7ab1b07eacc96c30d"
 dependencies = [
  "smallvec",
  "synta",
@@ -2534,8 +2524,6 @@ dependencies = [
 [[package]]
 name = "synta-x509-verification"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be1160aae64bc2cd36e8121c7d859ad8755d263f54ce25632fe96cff5f3d113d"
 dependencies = [
  "openssl",
  "synta",

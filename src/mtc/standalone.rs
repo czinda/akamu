@@ -89,7 +89,7 @@ pub fn build_standalone_der(p: StandaloneParams<'_>) -> Result<Vec<u8>, AcmeErro
     let mut builder = StandaloneCertificateBuilder::new()
         .tbs_certificate(tbs)
         .log_entry_index(leaf_index)
-        .with_proof_path(proof, tree_size)
+        .with_proof_path(proof, 0, tree_size)
         .hash_algorithm(log_algorithm)
         .signature_algorithm(sig_alg)
         .signature(

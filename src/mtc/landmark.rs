@@ -209,6 +209,9 @@ fn build_landmark_cert_der(
         HashAlgorithm::Sha256 => ObjectIdentifier::new(&[2u32, 16, 840, 1, 101, 3, 4, 2, 1]),
         HashAlgorithm::Sha384 => ObjectIdentifier::new(&[2u32, 16, 840, 1, 101, 3, 4, 2, 2]),
         HashAlgorithm::Sha512 => ObjectIdentifier::new(&[2u32, 16, 840, 1, 101, 3, 4, 2, 3]),
+        HashAlgorithm::Sha3_256 => ObjectIdentifier::new(&[2u32, 16, 840, 1, 101, 3, 4, 2, 8]),
+        HashAlgorithm::Sha3_384 => ObjectIdentifier::new(&[2u32, 16, 840, 1, 101, 3, 4, 2, 9]),
+        HashAlgorithm::Sha3_512 => ObjectIdentifier::new(&[2u32, 16, 840, 1, 101, 3, 4, 2, 10]),
     }
     .map_err(|e| AcmeError::Mtc(format!("hash algorithm OID for landmark: {e}")))?;
     let log_id = synta_mtc::types::LogID {

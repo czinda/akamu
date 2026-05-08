@@ -444,6 +444,9 @@ pub fn mth(hashes: &[Vec<u8>], algorithm: HashAlgorithm) -> Result<Vec<u8>, Acme
                 HashAlgorithm::Sha256 => "sha256",
                 HashAlgorithm::Sha384 => "sha384",
                 HashAlgorithm::Sha512 => "sha512",
+                HashAlgorithm::Sha3_256 => "sha3-256",
+                HashAlgorithm::Sha3_384 => "sha3-384",
+                HashAlgorithm::Sha3_512 => "sha3-512",
             };
             default_data_hasher()
                 .hash_data(alg_str, &[])
