@@ -24,7 +24,7 @@ This page documents every RFC that is relevant to `Akāmu`, explaining what each
 | [RFC 9799](#rfc-9799--acme-for-onion-domains) | ACME Extensions for .onion Special-Use Domain Names | Full |
 | [RFC 5280](#rfc-5280--x509-certificate-profile) | X.509 Certificate and CRL Profile | Full |
 | [RFC 6960](#rfc-6960--ocsp-responder) | Online Certificate Status Protocol (OCSP) | Full |
-| [RFC 9115](#rfc-9115--acme-profile-for-delegated-certificates) | ACME Profile for Delegated Certificates | Not implemented |
+| [RFC 9115](#rfc-9115--acme-profile-for-delegated-certificates) | ACME Profile for Delegated Certificates | Full |
 | [RFC 9447](#rfc-9447--acme-challenges-using-an-authority-token) | ACME Challenges Using an Authority Token | Not implemented |
 | [RFC 9448](#rfc-9448--acme-tnauthlist-authority-token) | ACME TNAuthList Authority Token | Not considered |
 | [RFC 9538](#rfc-9538--acme-delegation-metadata-for-cdni) | ACME Delegation Metadata for CDNI | Not implemented |
@@ -873,6 +873,153 @@ These code points come from the **provisional IANA registry** for an in-progress
 
 ---
 
+
+---
+
+## RFC 9115 — ACME Profile for Delegated Certificates
+
+**[RFC 9115](https://www.rfc-editor.org/rfc/rfc9115)** defines a three-party ACME delegation model in which an Identifier Owner (IdO) pre-authorizes a Name Delegation Consumer (NDC) to obtain certificates for the IdO's domain names. The CA enforces a JSON CSR template that constrains what the NDC may request. Akāmu implements both roles: it acts as the IdO-facing ACME CA (serving NDC clients) and as an IdO ACME client that drives the upstream CA leg automatically.
+
+### Roles
+
+| Role | Description |
+|------|-------------|
+| **IdO** | The domain owner. Creates delegation objects (CSR templates + CNAME maps) and holds the STAR or regular order on Akāmu. |
+| **NDC** | The delegate (e.g., a CDN PoP). Discovers the delegation URL via the IdO's account, submits a `new-order` referencing it, and finalizes with a CSR that satisfies the template. |
+| **Upstream CA** | An external ACME CA that issues to the IdO. Akāmu drives this leg automatically using `[delegation_upstream]`. |
+
+### What it adds to the ACME API
+
+| Feature | RFC 9115 section | Status |
+|---------|-----------------|--------|
+| `delegation-enabled` in directory `meta` | §2.3.1 | Yes — when `server.delegation_enabled = true` |
+| `allow-certificate-get` in directory `meta` | §2.3.5 | Yes — when `server.allow_certificate_get = true` |
+| `delegations` URL in account object | §2.3.2 | Yes — appears when `delegation_enabled = true` |
+| `POST /acme/delegations/{account_id}` — list delegations | §2.3.2 | Yes |
+| `POST /acme/delegation/{id}` — fetch one delegation | §2.3.3 | Yes |
+| `"delegation"` field in `new-order` payload | §2.3.4 | Yes |
+| `"allow-certificate-get"` field in `new-order` payload | §2.3.5 | Yes |
+| Delegation orders start in `ready` status (no challenge/authz flow) | §2.3.4 | Yes |
+| `"authorizations": []` on delegation orders | §2.3.4 | Yes |
+| CSR template validation at `finalize` | §4 | Yes |
+| Unauthenticated `GET /acme/cert/{id}` when `allow_cert_get = 1` | §2.3.5 | Yes |
+
+### CSR template format (RFC 9115 §4)
+
+The delegation object's `csr_template` field is a JSON object that constrains what an NDC may put in its CSR:
+
+```json
+{
+  "keyTypes": [{"type": "EC", "curve": "P-256"}],
+  "subject": {
+    "commonName": {},
+    "organization": "ExampleCorp"
+  },
+  "extensions": {
+    "subjectAltName": {},
+    "keyUsage": ["digitalSignature"],
+    "extendedKeyUsage": ["1.3.6.1.5.5.7.3.1"]
+  }
+}
+```
+
+Field value semantics:
+
+| Value | Meaning |
+|-------|---------|
+| `{}` | MandatoryWildcard — the field MUST be present in the CSR |
+| `null` | OptionalWildcard — the field MAY be present in the CSR |
+| `"ExampleCorp"` | Literal — the field must equal this exact value |
+| absent | The field is forbidden in the CSR |
+
+Akāmu validates the CSR against the stored template at `finalize` time. CSRs that violate the template are rejected with `urn:ietf:params:acme:error:badCSR`.
+
+### Server configuration (IdO-server role)
+
+```toml
+[server]
+# Enable the delegation API surface and advertise it in the directory.
+delegation_enabled      = true
+
+# Advertise and allow unauthenticated GET of delegation order certificates.
+allow_certificate_get   = true
+```
+
+When `delegation_enabled = true`, the directory `meta` object includes `"delegation-enabled": true` and every account response includes a `"delegations"` URL. The delegation endpoints become active:
+
+```
+POST /acme/delegations/{account_id}   — list delegations (POST-as-GET)
+POST /acme/delegation/{id}             — fetch one delegation object (POST-as-GET)
+```
+
+When `allow_certificate_get = true`, the directory `meta` also includes `"allow-certificate-get": true`, and orders placed with `"allow-certificate-get": true` in their payload allow the NDC (or any bearer) to fetch the certificate with an unauthenticated `GET`.
+
+### Upstream CA configuration (IdO-client role)
+
+The `[delegation_upstream]` section configures Akāmu to act as an ACME client toward an upstream CA. A background task polls orders whose `status = 'processing'` and a non-null `delegation_id`, drives the upstream ACME flow (account registration, order creation, dns-01 challenge, finalize), and stores the resulting certificate URL back on the order.
+
+```toml
+[delegation_upstream]
+# ACME directory URL of the upstream CA.
+directory_url = "https://upstream-ca.example.com/acme/directory"
+
+# PEM file containing the ACME account key for the upstream CA.
+account_key_file = "/etc/akamu/upstream-acme.key.pem"
+
+# Contact email(s) used when registering the upstream account.
+contacts = ["mailto:admin@example.com"]
+
+# Challenge type for the upstream authz flow.  Only "dns-01" is supported.
+challenge_solver = "dns-01"
+
+# Executable that deploys the dns-01 TXT record.
+# Called with env_clear(); receives CERTBOT_DOMAIN and CERTBOT_VALIDATION.
+challenge_deploy_script = "/etc/akamu/upstream-dns-deploy.sh"
+
+# Optional cleanup script called after the authz transitions to valid.
+# Receives CERTBOT_DOMAIN, CERTBOT_VALIDATION, and CERTBOT_AUTH_OUTPUT="".
+# challenge_cleanup_script = "/etc/akamu/upstream-dns-cleanup.sh"
+
+# Polling interval for the upstream order status (seconds). Default: 10.
+# poll_interval_secs = 10
+```
+
+The deploy script is invoked after Akāmu has triggered the challenge at the upstream CA. The cleanup script is called once the authorization has transitioned to `valid` — not immediately after the deploy script, which allows the TXT record to remain in place long enough for the upstream CA's validators to query it.
+
+### Admin API — delegation CRUD
+
+Delegations are managed through the Admin API. The `delegation_enabled` config flag must be set; the `[admin]` section must be configured with at least one operator.
+
+| Method | Path | Role required |
+|--------|------|---------------|
+| `GET` | `/admin/delegations` | `ca_operations`, `administrator` |
+| `GET` | `/admin/delegations?account_id={id}` | `ca_operations`, `administrator` |
+| `POST` | `/admin/delegations` | `administrator` |
+| `GET` | `/admin/delegations/{id}` | `ca_operations`, `administrator` |
+| `PUT` | `/admin/delegations/{id}` | `administrator` |
+| `DELETE` | `/admin/delegations/{id}` | `administrator` |
+
+`DELETE` returns `409 Conflict` when one or more orders still reference the delegation.
+
+The CSR template syntax is validated at write time (`POST` and `PUT`). A malformed template is rejected with `400 Bad Request` before it reaches the database.
+
+### Delegation order lifecycle
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> ready : new-order (with delegation URL)
+    ready --> processing : finalize (NDC submits CSR)
+    processing --> valid : upstream CA issues cert
+    processing --> invalid : CSR template mismatch or upstream failure
+    valid --> [*]
+    invalid --> [*]
+```
+
+Delegation orders skip the `pending` state and the challenge/authorization flow entirely. The `authorizations` array in the order response is always empty. The order transitions from `ready` to `processing` when the NDC calls `finalize`, and from `processing` to `valid` when the background upstream task has retrieved the certificate from the upstream CA.
+
+---
+
 ## Not implemented
 
 ### RFC 9115 — ACME Profile for Delegated Certificates
@@ -897,7 +1044,7 @@ Extends RFC 9447 for telephone number (STIR/SHAKEN) use cases, where the authori
 
 Extends RFC 9115 for CDN Interconnection (CDNI) scenarios where multiple CDN tiers chain certificate delegation.
 
-**Not implemented.** Layered on top of RFC 9115 and equally CDN-infrastructure-specific.
+**Not implemented.** RFC 9115 single-tier delegation is fully supported (see above). Chained multi-tier delegation across CDN interconnects as defined in RFC 9538 is not yet implemented.
 
 ### RFC 9891 — ACME DTN Node ID Validation (Experimental)
 
