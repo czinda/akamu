@@ -68,9 +68,10 @@ pub async fn get_inclusion_proof(
 
 /// GET /acme/mtc/cert/{cert_id}/standalone
 ///
-/// Returns the DER-encoded `StandaloneCertificate` for the given certificate,
-/// or 404 if the certificate is not found, has no MTC log index, or its
-/// standalone cert has not yet been built (waiting for the next checkpoint).
+/// Returns the DER-encoded X.509 standalone MTC certificate for the given
+/// certificate (Content-Type: application/pkix-cert), or 404 if the certificate
+/// is not found, has no MTC log index, or its standalone cert has not yet been
+/// built (waiting for the next checkpoint).
 pub async fn get_standalone(
     State(state): State<Arc<AppState>>,
     Path(cert_id): Path<String>,
@@ -83,10 +84,16 @@ pub async fn get_standalone(
 
     Ok((
         StatusCode::OK,
-        [(
-            axum::http::header::CONTENT_TYPE,
-            axum::http::HeaderValue::from_static("application/octet-stream"),
-        )],
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderValue::from_static("application/pkix-cert"),
+            ),
+            (
+                axum::http::HeaderName::from_static("x-mtc-version"),
+                axum::http::HeaderValue::from_static("draft-03"),
+            ),
+        ],
         der,
     )
         .into_response())
@@ -131,10 +138,16 @@ pub async fn get_landmark_cert(
 
     Ok((
         StatusCode::OK,
-        [(
-            axum::http::header::CONTENT_TYPE,
-            axum::http::HeaderValue::from_static("application/octet-stream"),
-        )],
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderValue::from_static("application/pkix-cert"),
+            ),
+            (
+                axum::http::HeaderName::from_static("x-mtc-version"),
+                axum::http::HeaderValue::from_static("draft-03"),
+            ),
+        ],
         der,
     )
         .into_response())
