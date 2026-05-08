@@ -86,6 +86,10 @@ pub enum AcmeError {
     #[error("auto-renewal certificates cannot be revoked")]
     AutoRenewalRevocationNotSupported,
 
+    // ── RFC 9115 delegation errors ────────────────────────────────────────────
+    #[error("unknown delegation")]
+    UnknownDelegation,
+
     // ── Generic HTTP-mapped errors ────────────────────────────────────────────
     #[error("not found")]
     NotFound,
@@ -186,6 +190,7 @@ impl AcmeError {
             AcmeError::AutoRenewalRevocationNotSupported => {
                 "urn:ietf:params:acme:error:autoRenewalRevocationNotSupported"
             }
+            AcmeError::UnknownDelegation => "urn:ietf:params:acme:error:unknownDelegation",
             AcmeError::InvalidProfile(_) => "urn:ietf:params:acme:error:invalidProfile",
             AcmeError::NotFound => "urn:ietf:params:acme:error:malformed",
             _ => "urn:ietf:params:acme:error:serverInternal",
@@ -225,6 +230,7 @@ impl AcmeError {
             AcmeError::AutoRenewalCanceled => StatusCode::FORBIDDEN,
             AcmeError::AutoRenewalCancellationInvalid => StatusCode::BAD_REQUEST,
             AcmeError::AutoRenewalRevocationNotSupported => StatusCode::FORBIDDEN,
+            AcmeError::UnknownDelegation => StatusCode::FORBIDDEN,
             AcmeError::InvalidProfile(_) => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -358,6 +364,10 @@ mod tests {
         assert_eq!(
             AcmeError::AutoRenewalRevocationNotSupported.acme_type(),
             "urn:ietf:params:acme:error:autoRenewalRevocationNotSupported"
+        );
+        assert_eq!(
+            AcmeError::UnknownDelegation.acme_type(),
+            "urn:ietf:params:acme:error:unknownDelegation"
         );
         assert_eq!(
             AcmeError::InvalidProfile("unknown".into()).acme_type(),
@@ -512,6 +522,10 @@ mod tests {
         );
         assert_eq!(
             AcmeError::AutoRenewalRevocationNotSupported.http_status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            AcmeError::UnknownDelegation.http_status(),
             StatusCode::FORBIDDEN
         );
         assert_eq!(
