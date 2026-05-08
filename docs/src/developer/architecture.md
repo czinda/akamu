@@ -184,6 +184,7 @@ src/
   eab_derivation.rs HKDF-SHA-256 (RFC 5869) credential derivation for /acme/eab
   extract.rs       Axum extractors: RemoteUser (proxy header or standalone GSSAPI)
   star.rs          RFC 8739 ACME STAR background reissuance task
+  delegation_upstream.rs  RFC 9115 upstream CA polling task (see delegation/ module)
   util.rs          Shared utilities: unix_now, unix_to_rfc3339, certificate helpers
 
   admin/
@@ -209,6 +210,7 @@ src/
     operators.rs   CRUD for operators table (insert, get_by_fingerprint/principal, update,
                    failed-attempt tracking and account locking — FIA_AFL.1)
     orders.rs      CRUD for orders table
+    delegations.rs CRUD for delegations table (insert, get_by_id, update, delete, list, list_by_account)
     stats.rs       Aggregate statistics queries for GET /admin/stats
 
   routes/
@@ -237,6 +239,10 @@ src/
                    POST /ca/{ca_id}/ocsp, GET /ca/{ca_id}/ocsp/{request} (RFC 6960)
     eab_identity.rs GET /acme/eab — derive and return EAB credentials for
                     the authenticated principal (proxy or standalone GSSAPI)
+    delegation.rs   POST /acme/delegations/{account_id} (list; POST-as-GET),
+                    POST /acme/delegation/{id} (fetch one; POST-as-GET) —
+                    RFC 9115 NDC-facing delegation endpoints; active when
+                    server.delegation_enabled = true
     admin.rs       All /admin/* endpoints served on the dedicated admin listener;
                    POST/DELETE /admin/session (auth);
                    GET/POST /admin/operators, GET/PUT/PATCH /admin/operators/{id},
@@ -255,7 +261,8 @@ src/
                    GET /admin/stats;
                    GET /admin/cas, GET /admin/cas/{id}, GET /admin/cas/{id}/cert;
                    POST /admin/ca/{id}/crl/force, POST /admin/ca/{id}/cross-sign;
-                   GET /admin/cross-certs, GET /admin/cross-certs/{id}
+                   GET /admin/cross-certs, GET /admin/cross-certs/{id};
+                   GET/POST /admin/delegations, GET/PUT/DELETE /admin/delegations/{id}
                    (role-based access control; admin listener not started when [admin] absent)
 
   ca/
@@ -307,6 +314,14 @@ src/
     tlog.rs        C2SP tlog-tiles and signed-note support: checkpoint format, key-ID
                    computation, cosignature production, hash tile computation for all
                    C2SP signature types (Ed25519, ECDSA, ML-DSA-44 cosignatures)
+
+  delegation/
+    mod.rs         Re-exports delegation submodules
+    upstream.rs    DelegationUpstreamTask — background tokio task that polls
+                   processing delegation orders and drives the upstream ACME
+                   flow (account registration, new-order, dns-01 deploy/poll,
+                   finalize, cert retrieval) using [delegation_upstream] config;
+                   not started when [delegation_upstream] is absent
 
   jose/            Thin re-exports and helpers for crates/akamu-jose
     mod.rs         Module re-exports
@@ -453,6 +468,8 @@ Challenge validation does not block the HTTP response. When a challenge is trigg
 Similarly, MTC log appends are spawned as background tasks after certificate issuance.
 
 A third background task (`ProfileRegistry::spawn_refresh_task`) wakes every `refresh_interval_secs` seconds, re-loads all configured profile providers, and atomically replaces the in-memory `ProfileCache` under a write lock. It holds a weak `Arc` reference to the registry so that dropping the server's strong reference causes the task to exit cleanly on shutdown.
+
+A fourth background task (`DelegationUpstreamTask`) is started at server startup when `[delegation_upstream]` is configured. It wakes every `poll_interval_secs` seconds (default 10), queries the database for delegation orders in `processing` status, and drives each one through the upstream ACME flow: it contacts the upstream CA's directory, registers an account (if not already registered), submits a new-order, triggers the dns-01 challenge by invoking `challenge_deploy_script`, polls until the upstream authorization is valid, calls `challenge_cleanup_script` (if configured), finalizes the order, and stores the resulting certificate URL back into the order row. On success the order transitions to `valid`; on any unrecoverable upstream failure it transitions to `invalid`.
 
 ## Database access model
 
