@@ -1147,9 +1147,7 @@ async fn star_delegation_order_finalizes_to_valid_with_star_cert_url() {
         "STAR+delegation order must start ready"
     );
     assert_eq!(
-        order_body["authorizations"]
-            .as_array()
-            .map(Vec::len),
+        order_body["authorizations"].as_array().map(Vec::len),
         Some(0),
         "STAR+delegation order must have no authorizations"
     );
@@ -1160,8 +1158,14 @@ async fn star_delegation_order_finalizes_to_valid_with_star_cert_url() {
         "order response must echo delegation URL"
     );
     let ar = &order_body["auto-renewal"];
-    assert!(ar.is_object(), "auto-renewal must be present in order response");
-    assert!(ar["end-date"].as_str().is_some(), "auto-renewal must have end-date");
+    assert!(
+        ar.is_object(),
+        "auto-renewal must be present in order response"
+    );
+    assert!(
+        ar["end-date"].as_str().is_some(),
+        "auto-renewal must have end-date"
+    );
     assert_eq!(ar["lifetime"].as_i64(), Some(86400));
 
     let order_url = location_from(&headers);
