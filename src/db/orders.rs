@@ -161,6 +161,63 @@ pub async fn set_certificate(
     Ok(())
 }
 
+/// Atomically transition a delegation order from `ready` to `processing` and store the CSR.
+///
+/// Combines the status transition and CSR storage into a single UPDATE so a crash between
+/// the two operations cannot leave the order in `processing` without a CSR to finalize with.
+/// The `AND status = 'ready'` guard prevents double-advancing under concurrent requests.
+///
+/// Returns `Conflict` when the order was already advanced past `ready`.
+pub async fn set_processing_with_csr_der(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    id: &str,
+    csr_der: &[u8],
+    now: i64,
+) -> Result<(), AcmeError> {
+    let result = super::query(
+        "UPDATE orders SET status = 'processing', star_csr_der = ?, updated = ? \
+         WHERE id = ? AND status = 'ready'",
+    )
+    .bind(csr_der)
+    .bind(now)
+    .bind(id)
+    .execute(executor)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(AcmeError::Conflict(
+            "order already advanced past ready".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Transition a delegation order from `ready` to `processing`.
+///
+/// Used by the finalize handler when an upstream CA handles issuance and the
+/// result is polled asynchronously.  The `AND status = 'ready'` guard prevents
+/// a concurrent request from double-advancing the order.
+///
+/// Returns `Conflict` when the order was already advanced past `ready`.
+pub async fn set_status_processing(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    id: &str,
+    now: i64,
+) -> Result<(), AcmeError> {
+    let result = super::query(
+        "UPDATE orders SET status = 'processing', updated = ? WHERE id = ? AND status = 'ready'",
+    )
+    .bind(now)
+    .bind(id)
+    .execute(executor)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(AcmeError::Conflict(
+            "order already advanced past ready".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Update the `certificate_id` on a STAR order, guarded against canceled orders.
 ///
 /// Returns `true` if the order was found and updated, `false` if it was already
@@ -397,7 +454,8 @@ pub async fn list_pending_delegation_orders(
          star_allow_cert_get, star_canceled_at, star_csr_der, profile, ca_id,
          delegation_id, allow_cert_get, upstream_order_url, upstream_cert_url
          FROM orders
-         WHERE delegation_id IS NOT NULL AND status = 'processing' AND upstream_cert_url IS NULL",
+         WHERE delegation_id IS NOT NULL AND status = 'processing' AND upstream_cert_url IS NULL
+         LIMIT 200",
     )
     .fetch_all(executor)
     .await?;

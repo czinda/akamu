@@ -77,6 +77,55 @@ pub async fn finalize_order(
     // Validate CSR.
     let validated_csr = ca::csr::validate_csr(&csr_der, &allowed)?;
 
+    // RFC 9115 §4: validate the CSR against the delegation template when present.
+    if let Some(ref dlg_id) = order.delegation_id {
+        let dlg = db::delegations::get_by_id(&state.db, dlg_id)
+            .await?
+            .ok_or_else(|| AcmeError::Internal(format!("delegation {dlg_id} not found")))?;
+        let template: ca::csr_template::CsrTemplate = serde_json::from_str(&dlg.csr_template)
+            .map_err(|e| {
+                AcmeError::Internal(format!("corrupt csr_template in delegation {dlg_id}: {e}"))
+            })?;
+        ca::csr_template::validate_csr_against_template(&csr_der, &template)?;
+
+        // When an upstream CA is configured, transition to processing and hand off
+        // to the background delegation driver (implemented in src/delegation_upstream.rs).
+        if state.config.delegation_upstream.is_some() {
+            let now = unix_now();
+            db::orders::set_status_processing(&state.db, &id, now)
+                .await
+                .map_err(|e| match e {
+                    AcmeError::Conflict(_) => AcmeError::OrderNotReady,
+                    other => other,
+                })?;
+            let mut processing_order = order;
+            processing_order.status = "processing".to_string();
+            processing_order.updated = now;
+            let order_pfx = acme_prefix(
+                &state.config.base_url,
+                &processing_order.ca_id,
+                &state.default_ca_id,
+            );
+            state
+                .record_audit(
+                    crate::audit::AuditEvent::success(crate::audit::AuditEventType::OrderFinalize)
+                        .with_subject(&id)
+                        .with_principal(format!(
+                            "acme:{}",
+                            ctx.jwk_thumbprint.as_deref().unwrap_or("")
+                        )),
+                )
+                .await;
+            return json_response(
+                &state,
+                &processing_order.ca_id,
+                StatusCode::OK,
+                order_json(&processing_order, &[], &order_pfx),
+                &ctx.next_nonce,
+            );
+        }
+    }
+
     // draft-aaron-acme-profiles-01: if the order carries a profile name that the
     // registry does not recognise (or is restricted to a different CA), reject at
     // finalize time.
