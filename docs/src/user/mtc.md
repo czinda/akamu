@@ -74,6 +74,7 @@ enabled                  = true
 checkpoint_interval_secs = 3600    # default: 3600 (1 hour)
 landmark_interval_secs   = 86400   # default: 86400 (1 day)
 max_active_landmarks     = 100     # default: 100
+hash_alg                 = "sha256"  # leaf hash algorithm: sha256 | sha384 | sha512 | sha3-256 | sha3-384 | sha3-512
 
 [mtc.signing_key]
 key_file = "/var/lib/akamu/mtc-signing.key"   # auto-generated if absent
@@ -225,7 +226,7 @@ Serves a C2SP hash tile. The path component encodes `{level}/{tile_index_path}[.
 - `tile_index_path` is the C2SP multi-level decimal encoding (e.g. `000`, `x001/234`).
 - The optional `.p/{width}` suffix requests a partial tile with fewer than 256 entries.
 
-Response `Content-Type` is `application/octet-stream`; each hash entry is 32 bytes for SHA-256.
+Response `Content-Type` is `application/octet-stream`; each hash entry is 32, 48, or 64 bytes depending on the `[mtc].hash_alg` configured for the log (SHA-256/SHA3-256, SHA-384/SHA3-384, or SHA-512/SHA3-512 respectively).
 
 Returns 404 when the tile is entirely beyond the current log size. Returns 501 for `tile/entries/...` paths because Akāmu stores only leaf hashes, not raw entry data.
 

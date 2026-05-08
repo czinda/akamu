@@ -4,7 +4,7 @@ This chapter describes the internal design of the Merkle Tree Certificate (MTC) 
 
 ## Log storage
 
-The log file is a binary file managed by `synta_mtc::storage::DiskBackedLog`. Entries are written as fixed-size SHA-256 hashes (32 bytes each) in leaf-order. The hash function includes Merkle tree domain separation (a `\x00` prefix byte) to prevent second-preimage attacks.
+The log file is a binary file managed by `synta_mtc::storage::DiskBackedLog`. Entries are written as fixed-size leaf hashes in leaf-order; the hash size (32, 48, or 64 bytes) is determined by `[mtc].hash_alg` and is stored in the log file's header at creation time. The hash function includes Merkle tree domain separation (a `\x00` prefix byte) to prevent second-preimage attacks.
 
 The file is created by `DiskBackedLog::create` and opened by `DiskBackedLog::open`. The server uses a "try create first, fall back to open" strategy to eliminate time-of-check-to-time-of-use races at startup (`src/mtc/log.rs::open_or_create`).
 
@@ -24,7 +24,7 @@ Appending a certificate leaf involves:
 1. Parsing the DER-encoded certificate to extract the `TBSCertificate`.
 2. Converting the `TBSCertificate` to a `TBSCertificateLogEntry` using `synta_mtc::integration::tbs_certificate_to_log_entry`.
 3. Wrapping the entry as a `MerkleTreeCertEntry::TbsCertEntry` and computing the Merkle leaf hash via `hash_log_entry(algorithm, &entry)`. This function TLS wire-encodes the entry (per spec §4.2) and then hashes it with the `\x00` domain separation prefix.
-4. Appending the 32-byte hash to the log file under a `tokio::sync::Mutex` guard.
+4. Appending the fixed-size leaf hash (32, 48, or 64 bytes depending on `[mtc].hash_alg`) to the log file under a `tokio::sync::Mutex` guard.
 
 Steps 1–3 run in a `tokio::task::spawn_blocking` thread to avoid blocking the async executor with CPU-bound encoding work. Step 4 takes the mutex and writes.
 
@@ -114,7 +114,7 @@ After each new landmark is built, rows beyond `max_active_landmarks` are pruned 
 The Merkle root is computed from all leaf hashes using the RFC 6962 / synta-mtc binary tree algorithm:
 
 - For a log with zero leaves the root is undefined.
-- For a log with one or more leaves the root is the SHA-256 Merkle root of all leaf hashes.
+- For a log with one or more leaves the root is the Merkle root of all leaf hashes, computed using the configured `[mtc].hash_alg` algorithm.
 
 The computation is performed under the `SharedLog` mutex and is exposed to handlers by `src/mtc/log.rs::proof_and_tree_size`, `tree_size_and_root`, and `tree_size`. The `tree_size_and_root` function reads both values under the same lock guard so that `treeSize` and `rootHash` in HTTP responses are always consistent; it also leverages the `CachedLog` root cache to avoid repeated O(N) traversals.
 
