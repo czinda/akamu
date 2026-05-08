@@ -854,12 +854,12 @@ fn gen_token() -> Result<String, AcmeError> {
 
 /// Extract a delegation ID from a URL of the form `{pfx}/delegation/{id}`.
 ///
-/// Returns `UnknownDelegation` if the URL does not match the expected prefix
-/// or contains an empty ID segment.
+/// Returns `UnknownDelegation` if the URL does not match the expected prefix,
+/// contains an empty ID segment, or the ID contains a `/` (path traversal guard).
 fn delegation_id_from_url(pfx: &str, url: &str) -> Result<String, AcmeError> {
     let prefix = format!("{pfx}/delegation/");
     match url.strip_prefix(&prefix) {
-        Some(id) if !id.is_empty() => Ok(id.to_string()),
+        Some(id) if !id.is_empty() && !id.contains('/') => Ok(id.to_string()),
         _ => Err(AcmeError::UnknownDelegation),
     }
 }
