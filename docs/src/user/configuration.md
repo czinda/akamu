@@ -60,6 +60,8 @@ dns_persist01_resolver_addr = "127.0.0.1:5354"
 validate_dnssec             = true
 trusted_proxies             = ["127.0.0.1/32"]
 eab_master_secret           = "Zm9vYmFyYmF6cXV4cXV1eGZvb2JhcmJhenF1eHF1dXg"
+delegation_enabled          = false
+allow_certificate_get       = false
 
 [server.gssapi]
 keytab_file  = "/etc/akamu/http.keytab"
@@ -76,6 +78,15 @@ enabled             = true
 from_address        = "acme-validation@example.com"
 send_script         = "/etc/akamu/send-email.sh"
 webhook_hmac_secret = "replace-with-output-of--openssl-rand-hex-32"
+
+# [delegation_upstream]
+# directory_url            = "https://upstream-ca.example.com/acme/directory"
+# account_key_file         = "/etc/akamu/upstream-acme.key.pem"
+# contacts                 = ["mailto:admin@example.com"]
+# challenge_solver         = "dns-01"
+# challenge_deploy_script  = "/etc/akamu/upstream-dns-deploy.sh"
+# challenge_cleanup_script = "/etc/akamu/upstream-dns-cleanup.sh"
+# poll_interval_secs       = 10
 
 [profiles]
 refresh_interval_secs = 3600
@@ -827,6 +838,38 @@ Controls whether the rolling STAR certificate URL (`/acme/cert/star/<order-id>`)
 star_allow_certificate_get = true
 ```
 
+### `delegation_enabled`
+
+**Optional. Default: `false`.**
+
+When `true`, Akāmu activates the RFC 9115 delegation API surface:
+
+- The directory `meta` object includes `"delegation-enabled": true`.
+- Every account response includes a `"delegations"` URL.
+- The delegation listing and fetch endpoints become active:
+  - `POST /acme/delegations/{account_id}` — list delegations for an account (POST-as-GET).
+  - `POST /acme/delegation/{id}` — fetch a single delegation object (POST-as-GET).
+- `POST /acme/new-order` accepts the `"delegation"` field to link an order to a delegation.
+- Delegation orders start in `ready` status and return `"authorizations": []`.
+
+Delegations themselves are managed via the Admin API (`/admin/delegations`). The `[admin]` section must be configured before delegations can be created.
+
+```toml
+[server]
+delegation_enabled = true
+```
+
+### `allow_certificate_get`
+
+**Optional. Default: `false`.**
+
+When `true`, the directory `meta` object includes `"allow-certificate-get": true` for RFC 9115 delegation orders (distinct from the `star_allow_certificate_get` flag, which covers RFC 8739 STAR certificates). When an order is placed with `"allow-certificate-get": true` in the `new-order` payload, the certificate endpoint for that order can be fetched with an unauthenticated `GET` rather than a POST-as-GET. The capability is advertised in the directory only when this flag is `true`.
+
+```toml
+[server]
+allow_certificate_get = true
+```
+
 ### `tor_connectivity_enabled`
 
 **Optional. Default: `false`.**
@@ -1190,6 +1233,97 @@ webhook_hmac_secret = "replace-with-output-of--openssl-rand-hex-32"
 ```
 
 **Keep this value secret.** Anyone who knows it can submit webhook payloads and influence challenge outcomes.
+
+
+---
+
+## `[delegation_upstream]`
+
+The `[delegation_upstream]` section configures Akāmu to act as an ACME client toward an upstream CA when processing RFC 9115 delegation orders. When this section is present, a background task polls delegation orders in `processing` status and drives them through the full ACME flow on the upstream CA: account registration (if needed), order creation, dns-01 challenge deployment, finalization, and certificate retrieval.
+
+When this section is absent, Akāmu operates only as an IdO ACME server — it issues delegation orders but does not drive an upstream CA leg. The background task is not started.
+
+```toml
+[delegation_upstream]
+directory_url           = "https://upstream-ca.example.com/acme/directory"
+account_key_file        = "/etc/akamu/upstream-acme.key.pem"
+contacts                = ["mailto:admin@example.com"]
+challenge_solver        = "dns-01"
+challenge_deploy_script = "/etc/akamu/upstream-dns-deploy.sh"
+# challenge_cleanup_script = "/etc/akamu/upstream-dns-cleanup.sh"
+# poll_interval_secs = 10
+```
+
+### `directory_url`
+
+**Required within `[delegation_upstream]`.** ACME directory URL of the upstream CA. Akāmu fetches the directory at startup to discover the upstream CA's endpoint URLs.
+
+```toml
+directory_url = "https://upstream-ca.example.com/acme/directory"
+```
+
+### `account_key_file`
+
+**Required within `[delegation_upstream]`.** Path to a PEM file containing the ACME account key used when registering with the upstream CA. The file is loaded at startup. If the key file is absent on disk, a new EC P-256 key is generated and written to this path on first run.
+
+```toml
+account_key_file = "/etc/akamu/upstream-acme.key.pem"
+```
+
+### `contacts`
+
+**Optional. Default: `[]`.**
+
+List of contact URIs (e.g. `mailto:` addresses) submitted to the upstream CA when registering the ACME account. Omit if the upstream CA does not require contacts.
+
+```toml
+contacts = ["mailto:admin@example.com"]
+```
+
+### `challenge_solver`
+
+**Required within `[delegation_upstream]`.** Challenge type used to satisfy the upstream CA's authorizations. Only `"dns-01"` is currently supported.
+
+```toml
+challenge_solver = "dns-01"
+```
+
+### `challenge_deploy_script`
+
+**Required within `[delegation_upstream]`.** Absolute path to an executable that deploys the dns-01 TXT record at the upstream CA's direction. The script is invoked with `env_clear()`; only the following environment variables are set:
+
+| Variable | Value |
+|----------|-------|
+| `CERTBOT_DOMAIN` | The domain name being validated (e.g. `_acme-challenge.example.com`) |
+| `CERTBOT_VALIDATION` | The TXT record value to publish |
+
+Exit code 0 = record deployed successfully. Any non-zero exit code marks the challenge attempt as failed.
+
+```toml
+challenge_deploy_script = "/etc/akamu/upstream-dns-deploy.sh"
+```
+
+The cleanup script is called only after the authorization has transitioned to `valid` at the upstream CA — not immediately after the deploy script exits. This ensures the TXT record remains queryable for the full upstream validation window.
+
+### `challenge_cleanup_script`
+
+**Optional. Default: absent (no cleanup).**
+
+Absolute path to an optional cleanup executable invoked after the upstream authorization has become `valid`. Receives the same `CERTBOT_DOMAIN` and `CERTBOT_VALIDATION` variables as the deploy script, plus `CERTBOT_AUTH_OUTPUT=""`. Use it to remove the TXT record from DNS.
+
+```toml
+challenge_cleanup_script = "/etc/akamu/upstream-dns-cleanup.sh"
+```
+
+### `poll_interval_secs`
+
+**Optional. Default: `10`.**
+
+How often the background task polls the upstream CA for order and authorization status, in seconds.
+
+```toml
+poll_interval_secs = 10
+```
 
 ---
 
@@ -1630,6 +1764,11 @@ service_name = "HTTP"
 | `POST` | `/admin/ca/{id}/cross-sign` | Y | Y | | |
 | `GET` | `/admin/cross-certs` | Y | Y | Y | Y |
 | `GET` | `/admin/cross-certs/{id}` | Y | Y | Y | Y |
+| `GET` | `/admin/delegations` | Y | Y | | |
+| `POST` | `/admin/delegations` | Y | | | |
+| `GET` | `/admin/delegations/{id}` | Y | Y | | |
+| `PUT` | `/admin/delegations/{id}` | Y | | | |
+| `DELETE` | `/admin/delegations/{id}` | Y | | | |
 
 See [Admin API and Operator Management](admin-api.md) for the full request/response format of each endpoint.
 
