@@ -3428,3 +3428,520 @@ async fn test_ocsp_endpoint_post_and_get() {
     // time, so just check they're both valid DER starting with SEQUENCE).
     assert!(get_body.len() > 10, "OCSP GET response too short");
 }
+
+// ── RFC 8823 S/MIME end-to-end flow ──────────────────────────────────────────
+
+/// Helper: decode the first PEM certificate block to DER.
+
+/// Full RFC 8823 S/MIME issuance: email identifier → email-reply-00 challenge →
+/// webhook verification → finalize with rfc822Name CSR → certificate.
+///
+/// The test drives every protocol layer through the axum router against an
+/// in-memory SQLite DB.  A stub send_script captures the ACME_MESSAGE_ID and
+/// ACME_TOKEN_PART2 environment variables to temp files so the test can
+/// reconstruct the response digest without an actual mail transfer agent.
+#[tokio::test]
+async fn test_smime_email_reply_00_full_flow() {
+    use akamu::config::EmailChallengeConfig;
+    use synta_certificate::crypto::{DataHasher, HmacProvider as _};
+    use synta_certificate::{default_data_hasher, default_hmac_provider};
+
+    let base_url = "https://acme.test";
+    let email_addr = "user@example.com";
+    let hmac_secret = "a-test-secret-that-is-at-least-32-bytes!!";
+
+    // ── Stub send_script: write env vars to temp files ────────────────────────
+    let tmp = tempfile::TempDir::new().unwrap();
+    let script_path = tmp.path().join("send-email.sh");
+    let mid_file = tmp.path().join("message_id.txt");
+    let tp2_file = tmp.path().join("token_part2.txt");
+    std::fs::write(
+        &script_path,
+        format!(
+            "#!/bin/sh\nprintf '%s' \"$ACME_MESSAGE_ID\" > {mid}\nprintf '%s' \"$ACME_TOKEN_PART2\" > {tp2}\n",
+            mid = mid_file.display(),
+            tp2 = tp2_file.display(),
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    // ── Build AppState with email_challenge enabled ────────────────────────────
+    let ca_dir = tmp.path().join("ca");
+    std::fs::create_dir_all(&ca_dir).unwrap();
+    let config = Arc::new(Config {
+        listen_addr: "127.0.0.1:0".into(),
+        base_url: base_url.into(),
+        database: DatabaseConfig {
+            url: "sqlite::memory:".into(),
+            max_connections: None,
+            require_tls: false,
+        },
+        cas: vec![CaConfig {
+            id: "default".to_owned(),
+            is_default: true,
+            caa_identities: vec![],
+            key_file: ca_dir.join("ca.key").to_string_lossy().into_owned(),
+            cert_file: ca_dir.join("ca.crt").to_string_lossy().into_owned(),
+            key_type: "ec:P-256".into(),
+            hash_alg: "sha256".into(),
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            common_name: "Test CA".into(),
+            organization: "Test".into(),
+            ca_validity_years: 10,
+            crl_next_update_secs: 86400,
+            enforce_validity_cap: false,
+            require_encrypted_key: false,
+            key_password_file: None,
+        }],
+        mtc: MtcConfig {
+            log_path: "/dev/null".into(),
+            enabled: false,
+            signing_key: None,
+            checkpoint_interval_secs: 3600,
+            cosigners: vec![],
+            landmark_interval_secs: 86400,
+            max_active_landmarks: 100,
+            checkpoint_retention_count: 1000,
+        },
+        server: ServerConfig::default(),
+        tls: Default::default(),
+        profiles: Default::default(),
+        admin: None,
+        email_challenge: Some(EmailChallengeConfig {
+            enabled: true,
+            from_address: "acme@acme.test".into(),
+            send_script: script_path.to_string_lossy().into_owned(),
+            send_script_timeout_secs: 10,
+            webhook_hmac_secret: hmac_secret.into(),
+        }),
+    });
+
+    let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
+    let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();
+    let ca_aki_bytes = ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
+    db::install_drivers();
+    let db_conn = db::open("sqlite::memory:", 1, false).await.unwrap();
+    let ca = Arc::new(CaState {
+        id: "default".into(),
+        key_type: "ec:P-256".into(),
+        crl_next_update_secs: 86400,
+        key: ca_key,
+        cert_der: ca_cert_der,
+        hash_alg: "sha256".into(),
+        validity_days: 90,
+        crl_url: None,
+        ocsp_url: None,
+        aki_bytes: ca_aki_bytes,
+        enforce_validity_cap: false,
+        caa_identities: vec![],
+    });
+    // Build a profile registry with the S/MIME profile so the finalize route
+    // picks up the emailProtection EKU instead of the CA default server_auth.
+    let smime_profiles_cfg: akamu::config::ProfilesConfig = toml::from_str(
+        r#"
+        [providers.local]
+        type = "builtin"
+
+        [providers.local.profiles.smime]
+        description = "S/MIME end-user certificate (RFC 8823)"
+        validity_days = 365
+        key_usage = ["digital_signature", "key_encipherment"]
+        eku = ["email_protection"]
+        allowed_identifiers = ['^email:.*$']
+        "#,
+    )
+    .unwrap();
+    let smime_profile_registry = akamu::profiles::ProfileRegistry::new(&smime_profiles_cfg, &ca)
+        .await
+        .unwrap();
+    let state = Arc::new(AppState {
+        config: Arc::clone(&config),
+        db: db_conn.clone(),
+        db_ro: db_conn.clone(),
+        db_kind: db::DbKind::Sqlite,
+        profiles: smime_profile_registry,
+        cas: {
+            let mut m = indexmap::IndexMap::new();
+            m.insert("default".to_string(), ca.clone());
+            Arc::new(m)
+        },
+        default_ca_id: Arc::new("default".to_string()),
+        mtc: Arc::new(MtcState {
+            log: None,
+            algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
+            signing_key: None,
+            signing_hash_alg: "sha256".into(),
+            cosigner_clients: vec![],
+            _log_lock: None,
+        }),
+        tls: None,
+        spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        nonces: Arc::new(NonceBucket::new()),
+        link_headers: Arc::new({
+            let mut m = std::collections::HashMap::new();
+            m.insert(
+                "default".to_string(),
+                Arc::new(axum::http::HeaderValue::from_static(
+                    "<https://acme.test/acme/directory>;rel=\"index\"",
+                )),
+            );
+            m
+        }),
+        validation_client: {
+            let https = hyper_rustls::HttpsConnectorBuilder::new()
+                .with_native_roots()
+                .expect("native roots")
+                .https_or_http()
+                .enable_http1()
+                .build();
+            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                .build(https)
+        },
+        crl_caches: Arc::new({
+            let mut m = std::collections::HashMap::new();
+            m.insert("default".to_string(), Default::default());
+            m
+        }),
+        audit: std::sync::Arc::new(akamu::audit::AuditState::new()),
+        audit_policy: std::sync::Arc::new(akamu::audit::AuditPolicy::default()),
+        admin_sessions: None,
+        admin_auth_limiter: None,
+        startup_time: std::time::Instant::now(),
+        gss_cred: None,
+        admin_gss_cred: None,
+        eab_master_secret: None,
+    });
+    let db = state.db.clone();
+    let router = routes::build_router(Arc::clone(&state));
+
+    // ── Step 1: create account ─────────────────────────────────────────────────
+    let acme_key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = acme_key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
+    let (status, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    // ── Step 2: new-order with email identifier and smime profile ────────────
+    let jws = acme_key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/new-order"),
+        Some(json!({
+            "identifiers": [{"type": "email", "value": email_addr}],
+            "profile": "smime"
+        })),
+    );
+    let (status, order_body, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
+    assert_eq!(status, StatusCode::CREATED, "new-order: {order_body}");
+    let order_url = location_header(&order_headers);
+    let order_id = order_url.split('/').next_back().unwrap().to_string();
+    let nonce = nonce_header(&order_headers);
+
+    // ── Step 3: fetch authorization — confirm email-reply-00 + `from` field ───
+    let authz_url = order_body["authorizations"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let authz_path = authz_url.trim_start_matches(base_url).to_string();
+    let authz_id = authz_url.split('/').next_back().unwrap().to_string();
+    let jws = acme_key.jws_with_kid(&account_url, &nonce, &authz_url, None);
+    let (status, authz_body, authz_headers) = post_acme(&router, &authz_path, jws).await;
+    assert_eq!(status, StatusCode::OK, "authz fetch: {authz_body}");
+    let nonce = nonce_header(&authz_headers);
+
+    let challenge = authz_body["challenges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["type"].as_str() == Some("email-reply-00"))
+        .expect("authorization must contain email-reply-00 challenge");
+    assert_eq!(challenge["status"].as_str().unwrap(), "pending");
+    assert_eq!(
+        challenge["from"].as_str().unwrap(),
+        "acme@acme.test",
+        "email-reply-00 challenge must expose `from` field"
+    );
+    let token_part2 = challenge["token"].as_str().unwrap().to_string();
+    let chall_url = challenge["url"].as_str().unwrap().to_string();
+    let chall_path = chall_url.trim_start_matches(base_url).to_string();
+
+    // ── Step 4: POST {} to challenge URL — triggers send_script ───────────────
+    let jws = acme_key.jws_with_kid(&account_url, &nonce, &chall_url, Some(json!({})));
+    let (status, chall_body, _) = post_acme(&router, &chall_path, jws).await;
+    assert_eq!(status, StatusCode::OK, "challenge respond: {chall_body}");
+    assert_eq!(
+        chall_body["status"].as_str().unwrap(),
+        "processing",
+        "challenge must be processing after client POST"
+    );
+
+    // ── Step 5: poll until background task writes email fields to DB ─────────
+    // Fixed sleeps are flaky under load; poll every 50 ms up to 5 s instead.
+    let (token_part1, message_id): (String, String) = {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let row: (Option<String>, Option<String>, String) = sqlx::query_as(
+                "SELECT email_token_part1, email_message_id, status \
+                 FROM challenges WHERE authz_id = ? AND type = 'email-reply-00'",
+            )
+            .bind(&authz_id)
+            .fetch_one(&db)
+            .await
+            .expect("challenge row must exist");
+            match row {
+                (Some(tp1), Some(mid), _) => break (tp1, mid),
+                (_, _, ref status) if status == "invalid" => {
+                    panic!("background task marked challenge invalid before webhook could be sent");
+                }
+                _ => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "background task did not write email token within 5 seconds"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            }
+        }
+    };
+
+    // Cross-check: script received the same values as DB.
+    // The script runs AFTER set_email_token, so poll briefly for the files.
+    let deadline_script = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if mid_file.exists() && tp2_file.exists() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline_script,
+            "send_script did not create output files within 5 seconds"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let script_mid = std::fs::read_to_string(&mid_file).unwrap();
+    assert_eq!(
+        script_mid.trim(),
+        message_id,
+        "ACME_MESSAGE_ID must match DB email_message_id"
+    );
+    let script_tp2 = std::fs::read_to_string(&tp2_file).unwrap();
+    assert_eq!(
+        script_tp2.trim(),
+        token_part2,
+        "ACME_TOKEN_PART2 must match challenge token"
+    );
+    // Confirm the challenge is still 'processing' (send_script exited 0).
+    let chall_status_pre: String = sqlx::query_scalar(
+        "SELECT status FROM challenges WHERE authz_id = ? AND type = 'email-reply-00'",
+    )
+    .bind(&authz_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(
+        chall_status_pre, "processing",
+        "challenge must be processing before webhook; send_script may have failed"
+    );
+
+    // ── Step 6: compute response digest ───────────────────────────────────────
+    // RFC 8823 §3: full_token = token_part1 || token_part2
+    //              key_auth   = full_token || "." || jwk_thumbprint
+    //              response   = base64url(SHA-256(key_auth))
+    let thumbprint: String = sqlx::query_as::<_, (String,)>(
+        "SELECT a.jwk_thumbprint FROM accounts a \
+         JOIN authorizations az ON a.id = az.account_id WHERE az.id = ?",
+    )
+    .bind(&authz_id)
+    .fetch_one(&db)
+    .await
+    .unwrap()
+    .0;
+
+    let key_auth = format!("{token_part1}{token_part2}.{thumbprint}");
+    let digest_bytes = default_data_hasher()
+        .hash_data("sha256", key_auth.as_bytes())
+        .unwrap();
+    let digest_b64 = URL_SAFE_NO_PAD.encode(&digest_bytes);
+    let acme_response_body =
+        format!("-----BEGIN ACME RESPONSE-----\n{digest_b64}\n-----END ACME RESPONSE-----\n");
+
+    // ── Step 7: POST /acme/email-webhook with correct HMAC ────────────────────
+    let payload_bytes = serde_json::to_vec(&json!({
+        "from":        email_addr,
+        "in_reply_to": message_id,
+        "dkim_domain": "example.com",
+        "dkim_status": "pass",
+        "body":        acme_response_body,
+    }))
+    .unwrap();
+
+    let mac = default_hmac_provider()
+        .hmac_compute("sha256", hmac_secret.as_bytes(), &payload_bytes)
+        .unwrap();
+    let sig_header = format!(
+        "sha256={}",
+        mac.iter().fold(String::new(), |mut s, b| {
+            use std::fmt::Write;
+            let _ = write!(s, "{b:02x}");
+            s
+        })
+    );
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/acme/email-webhook")
+        .header("content-type", "application/json")
+        .header("x-akamu-signature", &sig_header)
+        .body(Body::from(payload_bytes))
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "webhook must return 200");
+
+    // ── Step 8: confirm challenge, authz, and order state ─────────────────────
+    // on_valid runs synchronously within verify_response (before webhook returns
+    // 200), so no sleep is needed here.
+    let chall_status: String = sqlx::query_as::<_, (String,)>(
+        "SELECT status FROM challenges WHERE authz_id = ? AND type = 'email-reply-00'",
+    )
+    .bind(&authz_id)
+    .fetch_one(&db)
+    .await
+    .unwrap()
+    .0;
+    assert_eq!(
+        chall_status, "valid",
+        "challenge must be valid after webhook"
+    );
+
+    let authz_status: String =
+        sqlx::query_as::<_, (String,)>("SELECT status FROM authorizations WHERE id = ?")
+            .bind(&authz_id)
+            .fetch_one(&db)
+            .await
+            .unwrap()
+            .0;
+    assert_eq!(
+        authz_status, "valid",
+        "authorization must be valid after challenge"
+    );
+
+    let order_status: String =
+        sqlx::query_as::<_, (String,)>("SELECT status FROM orders WHERE id = ?")
+            .bind(&order_id)
+            .fetch_one(&db)
+            .await
+            .unwrap()
+            .0;
+    assert_eq!(
+        order_status, "ready",
+        "order must be ready after authorization becomes valid"
+    );
+
+    // ── Step 9: finalize with rfc822Name CSR ──────────────────────────────────
+    let ee_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+    let spki_der = ee_key.public_key().unwrap().spki_der().to_vec();
+    let name_der = NameBuilder::new().common_name(email_addr).build().unwrap();
+    // rfc822Name DER: SEQUENCE { [1] IMPLICIT IA5String "user@example.com" }
+    // Tag 0x81 = context class, primitive, tag 1 (rfc822Name).
+    let email_bytes = email_addr.as_bytes();
+    let mut san_der = vec![
+        0x30u8,
+        (email_bytes.len() + 2) as u8,
+        0x81,
+        email_bytes.len() as u8,
+    ];
+    san_der.extend_from_slice(email_bytes);
+    let signer = ee_key.as_signer("sha256");
+    let csr_der = CsrBuilder::new()
+        .subject_name(&name_der)
+        .public_key_der(&spki_der)
+        .add_extension_oid(synta_certificate::oids::SUBJECT_ALT_NAME, false, &san_der)
+        .sign(&signer)
+        .unwrap();
+    let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
+
+    let nonce = head_nonce(&router).await;
+    let finalize_url = format!("{base_url}/acme/order/{order_id}/finalize");
+    let jws = acme_key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &finalize_url,
+        Some(json!({"csr": csr_b64})),
+    );
+    let (status, final_body, _) =
+        post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
+    assert_eq!(status, StatusCode::OK, "finalize: {final_body}");
+    assert_eq!(final_body["status"].as_str().unwrap(), "valid");
+
+    // ── Step 10: download certificate and verify RFC 8823 fields ──────────────
+    let cert_path = final_body["certificate"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches(base_url)
+        .to_string();
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(&cert_path)
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let cert_pem_bytes = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let pem = std::str::from_utf8(&cert_pem_bytes).unwrap();
+    assert!(
+        pem.contains("-----BEGIN CERTIFICATE-----"),
+        "certificate endpoint must return PEM"
+    );
+
+    let leaf_der = synta_certificate::pem_blocks(pem.as_bytes())
+        .into_iter()
+        .find(|(label, _)| label == "CERTIFICATE")
+        .map(|(_, der)| der)
+        .expect("PEM response must contain at least one CERTIFICATE block");
+    let cert = synta_certificate::Certificate::from_der(&leaf_der)
+        .expect("issued certificate must parse as valid DER");
+
+    // Verify rfc822Name SAN matches the order identifier.
+    let sans = cert.subject_alt_names();
+    assert!(
+        sans.iter().any(
+            |(tag, val)| *tag == synta_certificate::general_name::RFC822_NAME
+                && val == email_addr.as_bytes()
+        ),
+        "issued cert must contain rfc822Name SAN '{email_addr}'; got {sans:?}"
+    );
+
+    // Verify emailProtection EKU (OID 1.3.6.1.5.5.7.3.4 = 06 08 2b 06 01 05 05 07 03 04).
+    let ext_raw = cert
+        .tbs_certificate
+        .extensions
+        .as_ref()
+        .map(|e| e.as_bytes())
+        .unwrap_or(b"");
+    let eku_value = synta_certificate::find_extension_value(
+        ext_raw,
+        synta_certificate::oids::EXTENDED_KEY_USAGE,
+    )
+    .expect("issued cert must have an EKU extension");
+    let email_prot_oid: &[u8] = &[0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x04];
+    assert!(
+        eku_value
+            .windows(email_prot_oid.len())
+            .any(|w| w == email_prot_oid),
+        "issued cert must have emailProtection EKU"
+    );
+}
