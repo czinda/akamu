@@ -234,14 +234,19 @@ pub async fn finalize_order(
                 AcmeError::Mtc(format!("MTC inclusion proof for cert {}: {e}", issued.id))
             })?;
 
+        let spki_der = order_ca
+            .key
+            .public_key()
+            .map_err(|e| AcmeError::Crypto(format!("MTC key SPKI for standalone: {e}")))?
+            .spki_der()
+            .to_vec();
         let standalone_der = crate::mtc::standalone::build_standalone_der(
             crate::mtc::standalone::StandaloneParams {
                 cert_der: &issued.cert_der,
                 leaf_index: idx,
                 proof,
                 tree_size,
-                signing_key: &order_ca.key,
-                hash_alg_str: &cert_params.hash_alg,
+                spki_der: &spki_der,
                 log_algorithm: state.mtc.algorithm,
                 cosignature_ders: &[],
             },

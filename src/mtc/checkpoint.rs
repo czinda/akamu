@@ -153,9 +153,14 @@ pub async fn produce_checkpoint(
     };
     let cosig_ders: Vec<Vec<u8>> = cosig_results.iter().map(|(_, d)| d.clone()).collect();
 
+    // Compute SPKI DER once for LogID construction inside build_standalone_der.
+    let spki_der: Vec<u8> = signing_key
+        .public_key()
+        .map_err(|e| AcmeError::Crypto(format!("MTC signing key public for standalone: {e}")))?
+        .spki_der()
+        .to_vec();
+
     // ── Phase 2 (blocking): build standalone DERs with proofs + cosignatures ──
-    let key2 = signing_key.clone();
-    let hash_alg2 = signing_hash_alg.to_string();
     let standalone_defs: Vec<(String, Vec<u8>)> = tokio::task::spawn_blocking(move || {
         let mut out = Vec::new();
         for entry in cert_proofs {
@@ -165,8 +170,7 @@ pub async fn produce_checkpoint(
                     leaf_index: entry.leaf_index,
                     proof: entry.proof,
                     tree_size: actual_tree_size,
-                    signing_key: &key2,
-                    hash_alg_str: &hash_alg2,
+                    spki_der: &spki_der,
                     log_algorithm,
                     cosignature_ders: &cosig_ders,
                 },
