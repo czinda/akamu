@@ -72,6 +72,7 @@ pub mod authz;
 pub mod certificate;
 pub mod challenge;
 pub mod crl;
+pub mod delegation;
 pub mod directory;
 pub mod eab_identity;
 pub mod email_webhook;
@@ -125,6 +126,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/acme/new-order", post(order::new_order))
         .route("/acme/order/{id}", post(order::get_order))
         .route("/acme/order/{id}/finalize", post(finalize::finalize_order))
+        // Delegations (RFC 9115)
+        .route(
+            "/acme/delegations/{account_id}",
+            post(delegation::list_delegations),
+        )
+        .route("/acme/delegation/{id}", post(delegation::get_delegation))
         // Authorizations
         .route("/acme/new-authz", post(authz::new_authz))
         .route("/acme/authz/{id}", post(authz::get_authz))
@@ -194,6 +201,15 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route(
             "/acme/{ca_id}/order/{id}/finalize",
             post(finalize::finalize_order),
+        )
+        // Delegations (RFC 9115)
+        .route(
+            "/acme/{ca_id}/delegations/{account_id}",
+            post(delegation::list_delegations),
+        )
+        .route(
+            "/acme/{ca_id}/delegation/{id}",
+            post(delegation::get_delegation),
         )
         .route("/acme/{ca_id}/new-authz", post(authz::new_authz))
         .route("/acme/{ca_id}/authz/{id}", post(authz::get_authz))
