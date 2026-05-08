@@ -1,6 +1,6 @@
 # RFC Compliance Internals
 
-This chapter documents how specific RFC requirements are implemented in code: EAB (RFC 8555 §7.3.4), JWS algorithm support (RFC 8555 §6.2), ML-DSA JWS (draft-ietf-cose-dilithium-11), DER structures, the pre-issuance linting step, supported challenge types, ACME STAR (RFC 8739), Renewal Info / ARI (RFC 9773), and IP identifier support (RFC 8738).
+This chapter documents how specific RFC requirements are implemented in code: EAB (RFC 8555 §7.3.4), JWS algorithm support (RFC 8555 §6.2), ML-DSA JWS (draft-ietf-cose-dilithium-11), DER structures, the pre-issuance linting step, supported challenge types, ACME STAR (RFC 8739), Renewal Info / ARI (RFC 9773), IP identifier support (RFC 8738), and RFC 9115 delegated certificates.
 
 ## JWS algorithm support (RFC 8555 §6.2)
 
@@ -221,6 +221,38 @@ The checks include:
 - SPKI algorithm on the WebPKI allowlist.
 - RSA modulus ≥ 2048 bits; EC key on a named curve.
 - CA signature cryptographically valid over the certificate body.
+
+## RFC 9115 — CSR template validation
+
+The CSR template validation in `src/routes/finalize.rs` enforces the RFC 9115 §4 constraints on delegation-order CSRs. When an order has a non-null `delegation_id`, `finalize` loads the delegation's `csr_template` from the database and passes it to `validate_csr_against_template`.
+
+### Template semantics
+
+Each field in the CSR template carries a JSON value whose type determines the constraint:
+
+| JSON value type | Constraint |
+|-----------------|-----------|
+| `{}` (empty object) | MandatoryWildcard — the field MUST appear in the CSR |
+| `null` | OptionalWildcard — the field MAY appear; its content is not checked |
+| `"<literal>"` (string) | Literal — the field MUST appear with this exact value |
+| absent | Forbidden — the field MUST NOT appear in the CSR |
+
+### Validated fields
+
+| Template field | CSR check |
+|---------------|-----------|
+| `keyTypes` | At least one entry in the array must match the CSR's SPKI algorithm and curve |
+| `subject.commonName` | MandatoryWildcard (`{}`) → must be present; Literal → must equal the string |
+| `subject.organization` | Same semantics as `commonName` |
+| `extensions.subjectAltName` | MandatoryWildcard → must be present; the SAN values themselves are constrained by the order identifiers (existing RFC 8555 check), not the template |
+| `extensions.keyUsage` | Array of allowed key usage bit names; the CSR's requested KeyUsage must be a subset |
+| `extensions.extendedKeyUsage` | Array of allowed EKU OIDs; the CSR's requested EKU must be a subset |
+
+A CSR that violates any constraint is rejected with `AcmeError::BadCSR` → HTTP 400 `urn:ietf:params:acme:error:badCSR`.
+
+### Template validation at Admin API write time
+
+`POST /admin/delegations` and `PUT /admin/delegations/{id}` both parse the `csr_template` JSON against the schema and reject malformed templates before they reach the database. This keeps the finalize-time validation path clean — by the time a CSR is checked against a template, the template is guaranteed to be structurally valid.
 
 ## `AcmeError` type strings
 
