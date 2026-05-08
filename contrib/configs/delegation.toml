@@ -1,0 +1,93 @@
+# delegation.toml — RFC 9115 ACME Delegated Certificates.
+#
+# Use when a domain owner (IdO) wants to authorise a third party (NDC, e.g. a CDN
+# PoP) to obtain certificates for its domains without giving the NDC access to its
+# private CA key or running a challenge responder on every host.
+#
+# Akāmu plays two roles in this scenario:
+#
+#   IdO-server role:
+#     - Exposes the /acme/delegations/* API so NDC clients can discover CSR templates.
+#     - Creates delegation orders that skip the challenge/authz flow and start in
+#       "ready" status.
+#     - Validates the NDC's CSR against the stored CSR template at finalize time.
+#     - Optionally allows unauthenticated GET of the issued certificate.
+#
+#   IdO-client role (requires [delegation_upstream]):
+#     - A background task polls processing delegation orders and drives the upstream
+#       ACME flow: new-order → dns-01 deploy → poll → finalize → cert retrieval.
+#     - The challenge_deploy_script and optional challenge_cleanup_script handle
+#       adding/removing the _acme-challenge TXT record.
+#
+# Workflow overview:
+#
+#   1. Admin creates a delegation object via:
+#        POST /admin/delegations
+#        {"account_id":"<ndc-account>","csr_template":{…},"cname_map":null}
+#
+#   2. NDC client discovers the delegation URL from the IdO account's "delegations"
+#      field, then fetches the delegation object to inspect the CSR template.
+#
+#   3. NDC submits a new-order with "delegation": "<delegation-url>".
+#      The order starts in "ready" status (no challenge required).
+#
+#   4. NDC generates a key pair satisfying the CSR template and calls finalize.
+#      Akāmu validates the CSR against the template, then drives the upstream CA
+#      leg to obtain the actual certificate.
+#
+#   5. Once the upstream CA issues the certificate, the delegation order transitions
+#      to "valid" and the NDC downloads the certificate.
+
+listen_addr = "0.0.0.0:8080"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "sqlite:///var/lib/akamu/acme.db"
+
+[ca]
+key_file  = "/etc/akamu/certs/ca.key.pem"
+cert_file = "/etc/akamu/certs/ca.cert.pem"
+
+[server]
+# Enable the delegation API surface.
+delegation_enabled    = true
+
+# Allow unauthenticated GET of delegation order certificates (RFC 9115 §2.3.5).
+# NDC clients or CDN PoPs that don't have ACME credentials can fetch certs this way.
+allow_certificate_get = true
+
+# ── Admin API (required to create and manage delegation objects) ──────────────
+[admin]
+listen_addr = "127.0.0.1:9443"
+cert_file   = "/etc/akamu/admin-tls.pem"
+key_file    = "/etc/akamu/admin-tls-key.pem"
+ca_certs    = ["/etc/akamu/operator-ca.pem"]
+
+# ── Upstream CA (IdO-client role) ─────────────────────────────────────────────
+# Remove or comment out this section if akamu is the terminal CA for delegation
+# orders (i.e. it issues the certificates itself without contacting an upstream CA).
+[delegation_upstream]
+# ACME directory URL of the upstream CA (e.g. Let's Encrypt production or staging).
+directory_url    = "https://acme-v02.api.letsencrypt.org/directory"
+
+# PEM file with the ACME account key for the upstream CA.
+# Auto-generated as EC P-256 on first run if the file does not exist.
+account_key_file = "/etc/akamu/upstream-acme.key.pem"
+
+# Contact email for the upstream account registration.
+contacts         = ["mailto:admin@example.com"]
+
+# Only "dns-01" is supported for the upstream authz flow.
+challenge_solver = "dns-01"
+
+# Script invoked to publish the _acme-challenge TXT record.
+# Called with env_clear(); receives CERTBOT_DOMAIN and CERTBOT_VALIDATION.
+# Exit 0 = record published.
+challenge_deploy_script  = "/etc/akamu/upstream-dns-deploy.sh"
+
+# Optional script called after the upstream authz transitions to valid.
+# Receives CERTBOT_DOMAIN, CERTBOT_VALIDATION, and CERTBOT_AUTH_OUTPUT="".
+# challenge_cleanup_script = "/etc/akamu/upstream-dns-cleanup.sh"
+
+# Polling interval for upstream order and authz status (seconds). Default: 10.
+# poll_interval_secs = 10
