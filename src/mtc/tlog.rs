@@ -385,7 +385,7 @@ pub fn sign_checkpoint_as_cosigner(
 /// log_origin       = bytes
 /// u64 big-endian   = start  (0 for full checkpoints)
 /// u64 big-endian   = end    (= tree_size for full checkpoints)
-/// u8[32]           = root_hash
+/// u8[N]            = root_hash (N = hash output size: 32/48/64 bytes)
 /// ```
 fn build_ml_dsa_cosigned_message(
     cosigner_name: &str,
@@ -404,9 +404,9 @@ fn build_ml_dsa_cosigned_message(
     if origin_bytes.len() > 255 {
         return Err(AcmeError::Mtc("log_origin exceeds 255 bytes".into()));
     }
-    if root_hash.len() != 32 {
+    if !matches!(root_hash.len(), 32 | 48 | 64) {
         return Err(AcmeError::Mtc(format!(
-            "root_hash must be 32 bytes, got {}",
+            "root_hash must be 32, 48, or 64 bytes, got {}",
             root_hash.len()
         )));
     }
@@ -417,8 +417,9 @@ fn build_ml_dsa_cosigned_message(
         ));
     }
 
-    let mut msg =
-        Vec::with_capacity(12 + 1 + name_bytes.len() + 8 + 1 + origin_bytes.len() + 8 + 8 + 32);
+    let mut msg = Vec::with_capacity(
+        12 + 1 + name_bytes.len() + 8 + 1 + origin_bytes.len() + 8 + 8 + root_hash.len(),
+    );
     msg.extend_from_slice(b"subtree/v1\n\0"); // 12-byte label (LF + NUL)
     msg.push(name_bytes.len() as u8);
     msg.extend_from_slice(name_bytes);
@@ -439,19 +440,9 @@ fn build_ml_dsa_cosigned_message(
 /// Interior nodes use `SHA-256(0x01 || left || right)`.
 pub fn mth(hashes: &[Vec<u8>], algorithm: HashAlgorithm) -> Result<Vec<u8>, AcmeError> {
     match hashes.len() {
-        0 => {
-            let alg_str = match algorithm {
-                HashAlgorithm::Sha256 => "sha256",
-                HashAlgorithm::Sha384 => "sha384",
-                HashAlgorithm::Sha512 => "sha512",
-                HashAlgorithm::Sha3_256 => "sha3-256",
-                HashAlgorithm::Sha3_384 => "sha3-384",
-                HashAlgorithm::Sha3_512 => "sha3-512",
-            };
-            default_data_hasher()
-                .hash_data(alg_str, &[])
-                .map_err(|e| AcmeError::Mtc(format!("hash empty MTH: {e}")))
-        }
+        0 => default_data_hasher()
+            .hash_data(&algorithm.to_string(), &[])
+            .map_err(|e| AcmeError::Mtc(format!("hash empty MTH: {e}"))),
         1 => Ok(hashes[0].clone()),
         n => {
             // k = 2^floor(log2(n-1)) — largest power of 2 that is < n
