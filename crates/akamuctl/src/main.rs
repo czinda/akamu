@@ -135,6 +135,9 @@ enum Commands {
     /// Manage cross-certificates.
     #[command(subcommand)]
     CrossCert(CrossCertCmd),
+    /// Manage RFC 9115 delegation objects.
+    #[command(subcommand)]
+    Delegation(DelegationCmd),
     /// Generate shell completions.
     Completions {
         /// Shell to generate completions for.
@@ -323,6 +326,11 @@ enum ProfileCmd {
         /// Profile ID.
         id: String,
     },
+    /// Show a single certificate profile by ID.
+    Show {
+        /// Profile ID.
+        id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -362,6 +370,52 @@ enum AccountGrantsCmd {
     },
     /// Clear all profile grants (unrestricted).
     Clear { id: String },
+}
+
+#[derive(Subcommand)]
+enum DelegationCmd {
+    /// List delegation objects (optionally filtered by account).
+    List {
+        /// Filter to delegations owned by this account ID.
+        #[arg(long)]
+        account_id: Option<String>,
+    },
+    /// Show a single delegation object.
+    Show {
+        /// Delegation ID (UUID).
+        id: String,
+    },
+    /// Create a delegation for an account.
+    Add {
+        /// Account ID to create the delegation for.
+        #[arg(long)]
+        account_id: String,
+        /// JSON file containing the CSR template (RFC 9115 §4).
+        #[arg(long, value_name = "FILE")]
+        csr_template: PathBuf,
+        /// JSON file containing the CNAME map (optional).
+        #[arg(long, value_name = "FILE")]
+        cname_map: Option<PathBuf>,
+    },
+    /// Replace the CSR template and CNAME map for a delegation.
+    Update {
+        /// Delegation ID (UUID).
+        id: String,
+        /// JSON file containing the replacement CSR template.
+        #[arg(long, value_name = "FILE")]
+        csr_template: PathBuf,
+        /// JSON file containing the replacement CNAME map.
+        #[arg(long, value_name = "FILE", conflicts_with = "clear_cname_map")]
+        cname_map: Option<PathBuf>,
+        /// Remove the CNAME map (set to null).
+        #[arg(long, conflicts_with = "cname_map")]
+        clear_cname_map: bool,
+    },
+    /// Delete a delegation (fails if active orders reference it).
+    Remove {
+        /// Delegation ID (UUID).
+        id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -438,6 +492,11 @@ enum CrossCertCmd {
         /// Write to file instead of stdout.
         #[arg(long, short = 'o', value_name = "FILE")]
         output: Option<PathBuf>,
+    },
+    /// Show cross-certificate metadata by UUID.
+    Show {
+        /// Cross-certificate UUID.
+        id: String,
     },
 }
 
@@ -680,6 +739,9 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
             ProfileCmd::Remove { id } => {
                 commands::server::profile_remove(&server_client, &fmt, &id).await?;
             }
+            ProfileCmd::Show { id } => {
+                commands::server::profile_show(&server_client, &fmt, &id).await?;
+            }
         },
         Commands::Order(order_cmd) => match order_cmd {
             OrderCmd::List {
@@ -791,6 +853,49 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
             }
             CrossCertCmd::Download { id, output } => {
                 commands::cross_cert::download(&server_client, &id, output).await?;
+            }
+            CrossCertCmd::Show { id } => {
+                commands::cross_cert::show(&server_client, &fmt, &id).await?;
+            }
+        },
+        Commands::Delegation(del_cmd) => match del_cmd {
+            DelegationCmd::List { account_id } => {
+                commands::delegation::list(&server_client, &fmt, account_id).await?;
+            }
+            DelegationCmd::Show { id } => {
+                commands::delegation::show(&server_client, &fmt, &id).await?;
+            }
+            DelegationCmd::Add {
+                account_id,
+                csr_template,
+                cname_map,
+            } => {
+                commands::delegation::add(
+                    &server_client,
+                    &fmt,
+                    account_id,
+                    &csr_template,
+                    cname_map.as_deref(),
+                )
+                .await?;
+            }
+            DelegationCmd::Update {
+                id,
+                csr_template,
+                cname_map,
+                clear_cname_map,
+            } => {
+                commands::delegation::update(
+                    &server_client,
+                    &id,
+                    &csr_template,
+                    cname_map.as_deref(),
+                    clear_cname_map,
+                )
+                .await?;
+            }
+            DelegationCmd::Remove { id } => {
+                commands::delegation::remove(&server_client, &id).await?;
             }
         },
         Commands::Config(cfg_cmd) => match cfg_cmd {

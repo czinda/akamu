@@ -11,6 +11,7 @@ pub mod cert;
 pub mod config_cmd;
 pub mod cosigner;
 pub mod cross_cert;
+pub mod delegation;
 pub mod eab;
 pub mod operator;
 pub mod server;
