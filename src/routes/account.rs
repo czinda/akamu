@@ -68,7 +68,12 @@ pub async fn new_account(
             &state,
             &ca_id.0,
             StatusCode::OK,
-            account_json(&existing, &contacts, &pfx),
+            account_json(
+                &existing,
+                &contacts,
+                &pfx,
+                state.config.server.delegation_enabled,
+            ),
             &ctx.next_nonce,
         )?;
         let loc = HeaderValue::from_str(&account_url)
@@ -234,7 +239,12 @@ pub async fn new_account(
         &state,
         &ca_id.0,
         StatusCode::CREATED,
-        account_json(&row, &contacts, &pfx),
+        account_json(
+            &row,
+            &contacts,
+            &pfx,
+            state.config.server.delegation_enabled,
+        ),
         &ctx.next_nonce,
     )?;
     let loc = HeaderValue::from_str(&account_url)
@@ -274,7 +284,12 @@ pub async fn update_account(
             &state,
             &ca_id.0,
             StatusCode::OK,
-            account_json(&account, &contacts, &pfx),
+            account_json(
+                &account,
+                &contacts,
+                &pfx,
+                state.config.server.delegation_enabled,
+            ),
             &ctx.next_nonce,
         );
     }
@@ -315,7 +330,12 @@ pub async fn update_account(
             &state,
             &ca_id.0,
             StatusCode::OK,
-            account_json(&deactivated, &contacts, &pfx),
+            account_json(
+                &deactivated,
+                &contacts,
+                &pfx,
+                state.config.server.delegation_enabled,
+            ),
             &ctx.next_nonce,
         );
     }
@@ -336,19 +356,33 @@ pub async fn update_account(
         &state,
         &ca_id.0,
         StatusCode::OK,
-        account_json(&updated, &contacts, &pfx),
+        account_json(
+            &updated,
+            &contacts,
+            &pfx,
+            state.config.server.delegation_enabled,
+        ),
         &ctx.next_nonce,
     )
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn account_json(row: &AccountRow, contacts: &[String], pfx: &str) -> serde_json::Value {
-    json!({
+fn account_json(
+    row: &AccountRow,
+    contacts: &[String],
+    pfx: &str,
+    delegation_enabled: bool,
+) -> serde_json::Value {
+    let mut obj = json!({
         "status": row.status,
         "contact": contacts,
         "orders": format!("{pfx}/orders/{}", row.id),
-    })
+    });
+    if delegation_enabled {
+        obj["delegations"] = json!(format!("{pfx}/delegations/{}", row.id));
+    }
+    obj
 }
 
 fn parse_contacts(contact_json: &Option<String>) -> Vec<String> {
@@ -476,8 +510,15 @@ mod tests {
             ca_id: String::new(),
         };
         let contacts = vec!["mailto:a@b.com".to_string()];
-        let json = account_json(&row, &contacts, "https://acme.test");
+        let json = account_json(&row, &contacts, "https://acme.test", false);
         assert_eq!(json["status"], "valid");
         assert!(json["orders"].as_str().unwrap().contains("test-id"));
+        assert!(json.get("delegations").is_none());
+
+        let json_with_delegation = account_json(&row, &contacts, "https://acme.test", true);
+        assert!(json_with_delegation["delegations"]
+            .as_str()
+            .unwrap()
+            .contains("test-id"));
     }
 }
