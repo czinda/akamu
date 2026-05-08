@@ -164,6 +164,22 @@ POST /admin/eab
 
 After an account is created using `key-1`, it will have `profile_grants = ["internal"]` without any additional admin action.
 
+## Delegation URL
+
+When `server.delegation_enabled = true`, the account object includes an additional `"delegations"` URL:
+
+```json
+{
+  "status": "valid",
+  "contact": ["mailto:admin@example.com"],
+  "orders": "https://acme.example.com/acme/orders/<account-id>",
+  "delegations": "https://acme.example.com/acme/delegations/<account-id>"
+}
+```
+
+POST-as-GET to the `delegations` URL returns the list of delegation objects available for that account. NDC clients use this URL to discover which CSR templates they are authorized to use. See [Orders — Delegation orders](orders.md#delegation-orders-rfc-9115) and the [RFC 9115 configuration reference](configuration.md#server-delegation_enabled) for the full workflow.
+
+
 ## Security considerations
 
 - Each account is identified by the SHA-256 thumbprint of its JWK public key. The server uses this thumbprint to look up accounts without needing to parse or compare full public key material on every request.
