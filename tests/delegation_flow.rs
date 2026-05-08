@@ -255,6 +255,7 @@ async fn build_delegation_state() -> (
     let server = ServerConfig {
         delegation_enabled: true,
         allow_certificate_get: true,
+        star_allow_certificate_get: true,
         ..Default::default()
     };
 
@@ -1084,6 +1085,145 @@ async fn delegation_order_rejects_not_before_not_after() {
     );
 
     drop(state);
+}
+
+/// STAR + delegation: an order with both `auto-renewal` and `delegation` starts
+/// `ready` (no authz), finalises to `valid`, and the `star-certificate` URL is
+/// accessible both as an unauthenticated GET and as an authenticated POST-as-GET.
+///
+/// RFC 8739 §3 + RFC 9115 §2.3.2: the two features may coexist; the delegated
+/// CSR is stored at finalize time so the STAR background task can reissue it.
+#[tokio::test]
+async fn star_delegation_order_finalizes_to_valid_with_star_cert_url() {
+    let (state, admin, acme, token, _tmp) = build_delegation_state().await;
+    let key = TestKey::generate();
+    let (account_url, _) = create_account(&acme, &key).await;
+    let account_id = account_url.split('/').next_back().unwrap().to_string();
+
+    let domain = "star-cdn.example.com";
+
+    // Admin creates a delegation for this NDC account.
+    let (status, body, _) = admin_post(
+        &admin,
+        "/admin/delegations",
+        &token,
+        json!({"account_id": account_id, "csr_template": test_csr_template(domain)}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "create delegation: {body}");
+    let delegation_id = body["id"].as_str().unwrap().to_string();
+    let delegation_url = format!("{BASE_URL}/acme/delegation/{delegation_id}");
+
+    // NDC places an order with both `auto-renewal` and `delegation`.
+    // AutoRenewalRequest uses rename_all = "kebab-case" so fields are:
+    //   end-date, lifetime, allow-certificate-get
+    let nonce = head_nonce(&acme).await;
+    let new_order_url = format!("{BASE_URL}/acme/new-order");
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &new_order_url,
+        Some(json!({
+            "identifiers": [{"type": "dns", "value": domain}],
+            "delegation": delegation_url,
+            "auto-renewal": {
+                "end-date": "2030-01-01T00:00:00Z",
+                "lifetime": 86400,
+                "allow-certificate-get": true,
+            },
+        })),
+    );
+    let (status, order_body, headers) = post_acme(&acme, "/acme/new-order", jws).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "STAR+delegation new-order: {order_body}"
+    );
+
+    // Delegation orders start `ready` with an empty authorizations list.
+    assert_eq!(
+        order_body["status"].as_str(),
+        Some("ready"),
+        "STAR+delegation order must start ready"
+    );
+    assert_eq!(
+        order_body["authorizations"]
+            .as_array()
+            .map(Vec::len),
+        Some(0),
+        "STAR+delegation order must have no authorizations"
+    );
+
+    // Both delegation and auto-renewal fields must be present.
+    assert!(
+        order_body["delegation"].as_str().is_some(),
+        "order response must echo delegation URL"
+    );
+    let ar = &order_body["auto-renewal"];
+    assert!(ar.is_object(), "auto-renewal must be present in order response");
+    assert!(ar["end-date"].as_str().is_some(), "auto-renewal must have end-date");
+    assert_eq!(ar["lifetime"].as_i64(), Some(86400));
+
+    let order_url = location_from(&headers);
+    let order_id = order_url.split('/').next_back().unwrap().to_string();
+    let finalize_url = order_body["finalize"].as_str().unwrap().to_string();
+    let finalize_path = finalize_url.strip_prefix(BASE_URL).unwrap();
+
+    // NDC finalises with a CSR that matches the template.
+    let ndc_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+    let csr_der = make_csr(domain, &ndc_key);
+    let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
+
+    let nonce = nonce_from(&headers);
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &finalize_url,
+        Some(json!({"csr": csr_b64})),
+    );
+    let (status, body, headers) = post_acme(&acme, finalize_path, jws).await;
+    assert_eq!(status, StatusCode::OK, "STAR+delegation finalize: {body}");
+    assert_eq!(
+        body["status"].as_str(),
+        Some("valid"),
+        "order must be valid after finalize; body: {body}"
+    );
+
+    // The response must contain a `star-certificate` URL (not a plain `certificate`).
+    let star_cert_url = body["star-certificate"]
+        .as_str()
+        .expect("star-certificate URL must be present after STAR finalize");
+    assert!(
+        star_cert_url.contains(&order_id),
+        "star-certificate URL must reference the order ID; got {star_cert_url}"
+    );
+    assert!(
+        body.get("certificate").is_none_or(|v| v.is_null()),
+        "STAR order must not have plain certificate URL"
+    );
+
+    // Unauthenticated GET works because:
+    //   server.star_allow_certificate_get = true
+    //   order.star_allow_cert_get != 0  (from allowCertificateGet: true)
+    let star_cert_path = star_cert_url.strip_prefix(BASE_URL).unwrap();
+    let (status, _, _) = get_req(&acme, star_cert_path).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unauthenticated GET of star-certificate must succeed"
+    );
+
+    // Authenticated POST-as-GET by the order owner also works.
+    let nonce = nonce_from(&headers);
+    let jws = key.jws_with_kid(&account_url, &nonce, star_cert_url, None);
+    let (status, _, _) = post_acme(&acme, star_cert_path, jws).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "authenticated POST-as-GET of star-certificate must succeed"
+    );
+
+    drop((state, order_id));
 }
 
 /// The directory advertises `delegation-enabled` when the feature is on.
