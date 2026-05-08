@@ -455,6 +455,10 @@ pub async fn new_order(
                 star_csr_der: None,
                 profile: order_profile.clone(),
                 ca_id: ca_id.0.clone(),
+                delegation_id: None,
+                allow_cert_get: 0,
+                upstream_order_url: None,
+                upstream_cert_url: None,
             },
         )
         .await?;
@@ -513,6 +517,10 @@ pub async fn new_order(
         star_csr_der: None,
         profile: order_profile,
         ca_id: ca_id.0.clone(),
+        delegation_id: None,
+        allow_cert_get: 0,
+        upstream_order_url: None,
+        upstream_cert_url: None,
     };
     state
         .record_audit(
@@ -799,6 +807,10 @@ mod tests {
             star_csr_der: None,
             profile: None,
             ca_id: "default".to_string(),
+            delegation_id: None,
+            allow_cert_get: 0,
+            upstream_order_url: None,
+            upstream_cert_url: None,
         }
     }
 

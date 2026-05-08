@@ -9,8 +9,9 @@ pub async fn insert(
         "INSERT INTO orders (id, account_id, status, expires, identifiers,
          not_before, not_after, error, certificate_id, replaces, created, updated,
          star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs,
-         star_allow_cert_get, star_canceled_at, star_csr_der, profile, ca_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         star_allow_cert_get, star_canceled_at, star_csr_der, profile, ca_id,
+         delegation_id, allow_cert_get, upstream_order_url, upstream_cert_url)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&row.id)
     .bind(&row.account_id)
@@ -33,6 +34,10 @@ pub async fn insert(
     .bind(&row.star_csr_der)
     .bind(&row.profile)
     .bind(&row.ca_id)
+    .bind(&row.delegation_id)
+    .bind(row.allow_cert_get)
+    .bind(&row.upstream_order_url)
+    .bind(&row.upstream_cert_url)
     .execute(executor)
     .await?;
     Ok(())
@@ -63,11 +68,12 @@ pub async fn cancel_star(
 pub async fn list_active_star(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
 ) -> Result<Vec<OrderRow>, AcmeError> {
-    let rows = sqlx::query_as::<_, OrderRow>(
+    let rows = super::query_as::<OrderRow>(
         "SELECT id, account_id, status, expires, identifiers,
          not_before, not_after, error, certificate_id, replaces, created, updated,
          star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs,
-         star_allow_cert_get, star_canceled_at, star_csr_der, profile, ca_id
+         star_allow_cert_get, star_canceled_at, star_csr_der, profile, ca_id,
+         delegation_id, allow_cert_get, upstream_order_url, upstream_cert_url
          FROM orders
          WHERE star_end_date IS NOT NULL AND star_canceled_at IS NULL AND status = 'valid'",
     )
@@ -82,11 +88,14 @@ pub async fn set_star_csr(
     id: &str,
     csr_der: Vec<u8>,
 ) -> Result<(), AcmeError> {
-    super::query("UPDATE orders SET star_csr_der = ? WHERE id = ?")
+    let result = super::query("UPDATE orders SET star_csr_der = ? WHERE id = ?")
         .bind(&csr_der)
         .bind(id)
         .execute(executor)
         .await?;
+    if result.rows_affected() == 0 {
+        return Err(AcmeError::NotFound);
+    }
     Ok(())
 }
 
@@ -98,7 +107,8 @@ pub async fn get_by_id(
         "SELECT id, account_id, status, expires, identifiers,
          not_before, not_after, error, certificate_id, replaces, created, updated,
          star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs,
-         star_allow_cert_get, star_canceled_at, star_csr_der, profile, ca_id
+         star_allow_cert_get, star_canceled_at, star_csr_der, profile, ca_id,
+         delegation_id, allow_cert_get, upstream_order_url, upstream_cert_url
          FROM orders WHERE id = ?",
     )
     .bind(id)
@@ -211,6 +221,11 @@ pub async fn get_with_authz_ids(
         star_csr_der: Option<Vec<u8>>,
         profile: Option<String>,
         ca_id: String,
+        // RFC 9115 delegation columns
+        delegation_id: Option<String>,
+        allow_cert_get: i64,
+        upstream_order_url: Option<String>,
+        upstream_cert_url: Option<String>,
         // Authz column (NULL when no authorizations exist for this order)
         authz_id: Option<String>,
     }
@@ -223,6 +238,7 @@ pub async fn get_with_authz_ids(
              o.star_start_date, o.star_end_date, o.star_lifetime_secs,
              o.star_lifetime_adjust_secs, o.star_allow_cert_get, o.star_canceled_at,
              o.star_csr_der, o.profile, o.ca_id,
+             o.delegation_id, o.allow_cert_get, o.upstream_order_url, o.upstream_cert_url,
              a.id AS authz_id
          FROM orders o
          LEFT JOIN authorizations a ON a.order_id = o.id
@@ -260,6 +276,10 @@ pub async fn get_with_authz_ids(
         star_csr_der: first.star_csr_der.clone(),
         profile: first.profile.clone(),
         ca_id: first.ca_id.clone(),
+        delegation_id: first.delegation_id.clone(),
+        allow_cert_get: first.allow_cert_get,
+        upstream_order_url: first.upstream_order_url.clone(),
+        upstream_cert_url: first.upstream_cert_url.clone(),
     };
     let authz_ids: Vec<String> = rows.into_iter().filter_map(|r| r.authz_id).collect();
     Ok(Some((order, authz_ids)))
@@ -278,7 +298,8 @@ pub async fn list(
         "SELECT id, account_id, status, expires, identifiers, \
          not_before, not_after, error, certificate_id, replaces, created, updated, \
          star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs, \
-         star_allow_cert_get, star_canceled_at, star_csr_der, profile, ca_id \
+         star_allow_cert_get, star_canceled_at, star_csr_der, profile, ca_id, \
+         delegation_id, allow_cert_get, upstream_order_url, upstream_cert_url \
          FROM orders WHERE 1=1",
     );
     if let Some(a) = account_id {
@@ -299,6 +320,87 @@ pub async fn list(
     qb.push_bind(offset);
 
     let rows = qb.fetch_all::<_, OrderRow>(executor).await?;
+    Ok(rows)
+}
+
+/// Attach a delegation to an order and record the allow-certificate-get flag.
+pub async fn set_delegation(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    id: &str,
+    delegation_id: &str,
+    allow_cert_get: i64,
+    now: i64,
+) -> Result<(), AcmeError> {
+    let result = super::query(
+        "UPDATE orders SET delegation_id = ?, allow_cert_get = ?, updated = ? WHERE id = ?",
+    )
+    .bind(delegation_id)
+    .bind(allow_cert_get)
+    .bind(now)
+    .bind(id)
+    .execute(executor)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(AcmeError::NotFound);
+    }
+    Ok(())
+}
+
+/// Record the Order2 URL returned by the upstream CA.
+pub async fn set_upstream_order_url(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    id: &str,
+    url: &str,
+    now: i64,
+) -> Result<(), AcmeError> {
+    let result = super::query("UPDATE orders SET upstream_order_url = ?, updated = ? WHERE id = ?")
+        .bind(url)
+        .bind(now)
+        .bind(id)
+        .execute(executor)
+        .await?;
+    if result.rows_affected() == 0 {
+        return Err(AcmeError::NotFound);
+    }
+    Ok(())
+}
+
+/// Record the certificate URL returned by the upstream CA once the order is valid.
+pub async fn set_upstream_cert_url(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    id: &str,
+    url: &str,
+    now: i64,
+) -> Result<(), AcmeError> {
+    let result = super::query("UPDATE orders SET upstream_cert_url = ?, updated = ? WHERE id = ?")
+        .bind(url)
+        .bind(now)
+        .bind(id)
+        .execute(executor)
+        .await?;
+    if result.rows_affected() == 0 {
+        return Err(AcmeError::NotFound);
+    }
+    Ok(())
+}
+
+/// List delegation orders that are in processing and have no upstream cert URL yet.
+///
+/// These are the orders the IdO→CA background task must drive to completion.
+pub async fn list_pending_delegation_orders(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+) -> Result<Vec<OrderRow>, AcmeError> {
+    let rows = super::query_as::<OrderRow>(
+        "SELECT id, account_id, status, expires, identifiers,
+         not_before, not_after, error, certificate_id, replaces, created, updated,
+         star_start_date, star_end_date, star_lifetime_secs, star_lifetime_adjust_secs,
+         star_allow_cert_get, star_canceled_at, star_csr_der, profile, ca_id,
+         delegation_id, allow_cert_get, upstream_order_url, upstream_cert_url
+         FROM orders
+         WHERE delegation_id IS NOT NULL AND status = 'processing' AND upstream_cert_url IS NULL",
+    )
+    .fetch_all(executor)
+    .await?;
     Ok(rows)
 }
 
@@ -368,6 +470,10 @@ mod tests {
             star_csr_der: None,
             profile: None,
             ca_id: "default".to_string(),
+            delegation_id: None,
+            allow_cert_get: 0,
+            upstream_order_url: None,
+            upstream_cert_url: None,
         }
     }
 
@@ -514,6 +620,218 @@ mod tests {
             .is_err());
         assert!(set_certificate(&raw, "any", "cert-id", 0).await.is_err());
         assert!(list_authz_ids(&raw, "any").await.is_err());
+        assert!(set_delegation(&raw, "any", "dlg-id", 0, 0).await.is_err());
+        assert!(
+            set_upstream_order_url(&raw, "any", "https://ca.example/order/1", 0)
+                .await
+                .is_err()
+        );
+        assert!(
+            set_upstream_cert_url(&raw, "any", "https://ca.example/cert/1", 0)
+                .await
+                .is_err()
+        );
+        assert!(list_pending_delegation_orders(&raw).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn update_status_nonexistent_returns_not_found() {
+        let db = open_db().await;
+        let err = update_status(&db, "no-such-order", "invalid", None, 0)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::error::AcmeError::NotFound));
+    }
+
+    #[tokio::test]
+    async fn set_certificate_already_valid_returns_conflict() {
+        let db = open_db().await;
+        insert_account(&db, "acct-cf").await;
+        insert(&db, sample_order("order-cf", "acct-cf"))
+            .await
+            .unwrap();
+        update_status(&db, "order-cf", "ready", None, 1_700_000_000)
+            .await
+            .unwrap();
+        set_certificate(&db, "order-cf", "cert-1", 1_700_000_001)
+            .await
+            .unwrap();
+        let err = set_certificate(&db, "order-cf", "cert-2", 1_700_000_002)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::error::AcmeError::Conflict(_)));
+    }
+
+    #[tokio::test]
+    async fn set_delegation_round_trip() {
+        let db = open_db().await;
+        insert_account(&db, "acct-sd").await;
+        // need a delegation row for FK
+        crate::db::delegations::insert(
+            &db,
+            crate::db::schema::DelegationRow {
+                id: "dlg-sd".to_string(),
+                account_id: "acct-sd".to_string(),
+                csr_template: "{}".to_string(),
+                cname_map: None,
+                created: 1_700_000_000,
+                updated: 1_700_000_000,
+            },
+        )
+        .await
+        .unwrap();
+        insert(&db, sample_order("order-sd", "acct-sd"))
+            .await
+            .unwrap();
+        set_delegation(&db, "order-sd", "dlg-sd", 1, 1_700_000_001)
+            .await
+            .unwrap();
+        let row = get_by_id(&db, "order-sd").await.unwrap().unwrap();
+        assert_eq!(row.delegation_id.as_deref(), Some("dlg-sd"));
+        assert_eq!(row.allow_cert_get, 1);
+    }
+
+    #[tokio::test]
+    async fn set_delegation_nonexistent_order_returns_not_found() {
+        let db = open_db().await;
+        let err = set_delegation(&db, "no-such-order", "dlg-x", 0, 0)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::error::AcmeError::NotFound));
+    }
+
+    #[tokio::test]
+    async fn set_upstream_order_url_round_trip() {
+        let db = open_db().await;
+        insert_account(&db, "acct-uu").await;
+        insert(&db, sample_order("order-uu", "acct-uu"))
+            .await
+            .unwrap();
+        set_upstream_order_url(
+            &db,
+            "order-uu",
+            "https://ca.example/order/42",
+            1_700_000_001,
+        )
+        .await
+        .unwrap();
+        let row = get_by_id(&db, "order-uu").await.unwrap().unwrap();
+        assert_eq!(
+            row.upstream_order_url.as_deref(),
+            Some("https://ca.example/order/42")
+        );
+    }
+
+    #[tokio::test]
+    async fn set_upstream_order_url_nonexistent_returns_not_found() {
+        let db = open_db().await;
+        let err = set_upstream_order_url(&db, "no-such", "https://ca.example/order/1", 0)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::error::AcmeError::NotFound));
+    }
+
+    #[tokio::test]
+    async fn set_upstream_cert_url_round_trip() {
+        let db = open_db().await;
+        insert_account(&db, "acct-cu").await;
+        insert(&db, sample_order("order-cu", "acct-cu"))
+            .await
+            .unwrap();
+        set_upstream_cert_url(&db, "order-cu", "https://ca.example/cert/99", 1_700_000_001)
+            .await
+            .unwrap();
+        let row = get_by_id(&db, "order-cu").await.unwrap().unwrap();
+        assert_eq!(
+            row.upstream_cert_url.as_deref(),
+            Some("https://ca.example/cert/99")
+        );
+    }
+
+    #[tokio::test]
+    async fn set_upstream_cert_url_nonexistent_returns_not_found() {
+        let db = open_db().await;
+        let err = set_upstream_cert_url(&db, "no-such", "https://ca.example/cert/1", 0)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::error::AcmeError::NotFound));
+    }
+
+    #[tokio::test]
+    async fn list_pending_delegation_orders_filters_correctly() {
+        let db = open_db().await;
+        insert_account(&db, "acct-pd").await;
+        crate::db::delegations::insert(
+            &db,
+            crate::db::schema::DelegationRow {
+                id: "dlg-pd".to_string(),
+                account_id: "acct-pd".to_string(),
+                csr_template: "{}".to_string(),
+                cname_map: None,
+                created: 1_700_000_000,
+                updated: 1_700_000_000,
+            },
+        )
+        .await
+        .unwrap();
+
+        // Order in 'processing' with delegation and no cert URL — should appear.
+        let mut o1 = sample_order("ord-pd-1", "acct-pd");
+        o1.status = "processing".to_string();
+        o1.delegation_id = Some("dlg-pd".to_string());
+        insert(&db, o1).await.unwrap();
+
+        // Order in 'processing' with delegation and upstream_order_url but no cert URL — should appear.
+        let mut o2 = sample_order("ord-pd-2", "acct-pd");
+        o2.status = "processing".to_string();
+        o2.delegation_id = Some("dlg-pd".to_string());
+        insert(&db, o2).await.unwrap();
+        set_upstream_order_url(&db, "ord-pd-2", "https://ca.example/order/2", 1_700_000_001)
+            .await
+            .unwrap();
+
+        // Order in 'processing' with cert URL set — should NOT appear.
+        let mut o3 = sample_order("ord-pd-3", "acct-pd");
+        o3.status = "processing".to_string();
+        o3.delegation_id = Some("dlg-pd".to_string());
+        insert(&db, o3).await.unwrap();
+        set_upstream_cert_url(&db, "ord-pd-3", "https://ca.example/cert/3", 1_700_000_001)
+            .await
+            .unwrap();
+
+        // Non-delegation order in 'processing' — should NOT appear.
+        let mut o4 = sample_order("ord-pd-4", "acct-pd");
+        o4.status = "processing".to_string();
+        insert(&db, o4).await.unwrap();
+
+        // Delegation order in 'valid' — should NOT appear.
+        let mut o5 = sample_order("ord-pd-5", "acct-pd");
+        o5.status = "valid".to_string();
+        o5.delegation_id = Some("dlg-pd".to_string());
+        insert(&db, o5).await.unwrap();
+
+        let pending = list_pending_delegation_orders(&db).await.unwrap();
+        let ids: Vec<&str> = pending.iter().map(|r| r.id.as_str()).collect();
+        assert!(
+            ids.contains(&"ord-pd-1"),
+            "processing+delegation+no cert url should appear"
+        );
+        assert!(
+            ids.contains(&"ord-pd-2"),
+            "mid-flight (has upstream_order_url but no cert url) should appear"
+        );
+        assert!(
+            !ids.contains(&"ord-pd-3"),
+            "order with cert url set should not appear"
+        );
+        assert!(
+            !ids.contains(&"ord-pd-4"),
+            "non-delegation order should not appear"
+        );
+        assert!(
+            !ids.contains(&"ord-pd-5"),
+            "valid delegation order should not appear"
+        );
     }
 
     #[tokio::test]

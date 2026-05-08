@@ -43,12 +43,20 @@ pub struct OrderRow {
     pub star_lifetime_adjust_secs: i64, // NOT NULL DEFAULT 0 in schema
     pub star_allow_cert_get: i64,       // 0=false, 1=true
     pub star_canceled_at: Option<i64>,
-    pub star_csr_der: Option<Vec<u8>>, // stored CSR DER for reissuance
+    /// Stored CSR DER for STAR reissuance and delegation upstream finalization.
+    /// For delegation orders with an upstream CA this field is set atomically with
+    /// `status='processing'` in `set_processing_with_csr_der`.
+    pub star_csr_der: Option<Vec<u8>>,
     // draft-aaron-acme-profiles-01
     pub profile: Option<String>,
     /// CA that will issue / issued the certificate for this order.
     /// Defaults to `'default'` for rows created before the multi-CA migration.
     pub ca_id: String,
+    // RFC 9115 delegation fields
+    pub delegation_id: Option<String>,
+    pub allow_cert_get: i64, // 0/1; non-STAR top-level allow-certificate-get
+    pub upstream_order_url: Option<String>,
+    pub upstream_cert_url: Option<String>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -175,4 +183,15 @@ pub struct CrlEntry {
     pub serial_number: String,
     pub revoked_at: Option<i64>,
     pub revocation_reason: Option<i64>,
+}
+
+/// RFC 9115 delegation configuration object (NDC-facing).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct DelegationRow {
+    pub id: String,
+    pub account_id: String,
+    pub csr_template: String,      // JSON per RFC 9115 §4
+    pub cname_map: Option<String>, // JSON {fqdn: fqdn}, nullable
+    pub created: i64,
+    pub updated: i64,
 }

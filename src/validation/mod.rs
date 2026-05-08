@@ -539,6 +539,7 @@ mod tests {
             profiles: Default::default(),
             admin: None,
             email_challenge: None,
+            delegation_upstream: None,
         });
 
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
@@ -617,6 +618,7 @@ mod tests {
             audit_policy: Arc::new(crate::audit::AuditPolicy::default()),
             admin_sessions: None,
             admin_auth_limiter: None,
+            eab_session_nonces: None,
             startup_time: std::time::Instant::now(),
         })
     }
@@ -696,7 +698,7 @@ mod tests {
     async fn on_invalid_with_missing_authz_does_not_panic() {
         let state = make_state().await;
         // on_invalid with a non-existent challenge/authz should not panic
-        on_invalid(
+        let _ = on_invalid(
             &state,
             "nonexistent-challenge",
             "nonexistent-authz",
@@ -710,7 +712,7 @@ mod tests {
     async fn on_valid_with_missing_challenge_does_not_panic() {
         let state = make_state().await;
         // on_valid with a non-existent challenge should not panic
-        on_valid(
+        let _ = on_valid(
             &state,
             "nonexistent-challenge",
             "nonexistent-authz",
@@ -797,6 +799,10 @@ mod tests {
                 star_csr_der: None,
                 profile: None,
                 ca_id: "default".to_string(),
+                delegation_id: None,
+                allow_cert_get: 0,
+                upstream_order_url: None,
+                upstream_cert_url: None,
             },
         )
         .await
@@ -841,7 +847,9 @@ mod tests {
         .unwrap();
 
         // Call on_valid — should update challenge, authz, and order status.
-        on_valid(&state, &chall_id, &authz_id, &order_id, now).await;
+        on_valid(&state, &chall_id, &authz_id, &order_id, now)
+            .await
+            .unwrap();
 
         let chall = db::challenges::get_by_id(&state.db, &chall_id)
             .await
@@ -917,6 +925,10 @@ mod tests {
                 star_csr_der: None,
                 profile: None,
                 ca_id: "default".to_string(),
+                delegation_id: None,
+                allow_cert_get: 0,
+                upstream_order_url: None,
+                upstream_cert_url: None,
             },
         )
         .await
@@ -968,7 +980,8 @@ mod tests {
             AcmeError::Connection("test failure".into()),
             now,
         )
-        .await;
+        .await
+        .unwrap();
 
         let chall = db::challenges::get_by_id(&state.db, &chall_id)
             .await
@@ -1064,6 +1077,7 @@ mod tests {
             profiles: Default::default(),
             admin: None,
             email_challenge: None,
+            delegation_upstream: None,
         });
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
         db::install_drivers();
@@ -1140,6 +1154,7 @@ mod tests {
             audit_policy: Arc::new(crate::audit::AuditPolicy::default()),
             admin_sessions: None,
             admin_auth_limiter: None,
+            eab_session_nonces: None,
             startup_time: std::time::Instant::now(),
         });
 
@@ -1192,6 +1207,10 @@ mod tests {
                 star_csr_der: None,
                 profile: None,
                 ca_id: "default".to_string(),
+                delegation_id: None,
+                allow_cert_get: 0,
+                upstream_order_url: None,
+                upstream_cert_url: None,
             },
         )
         .await
@@ -1284,7 +1303,7 @@ mod tests {
         let state = make_state_with_db(raw_db).await;
         // on_valid tries to begin a transaction and execute UPDATE on challenges;
         // fails on no-table DB → warns and returns.
-        on_valid(&state, "fake-chall", "fake-authz", "fake-order", unix_now()).await;
+        let _ = on_valid(&state, "fake-chall", "fake-authz", "fake-order", unix_now()).await;
     }
 
     /// Call on_invalid with a raw (no-schema) DB so set_invalid fails immediately.
@@ -1295,7 +1314,7 @@ mod tests {
         let state = make_state_with_db(raw_db).await;
         // on_invalid tries to begin a transaction and execute UPDATE on challenges;
         // fails on no-table DB → warns.
-        on_invalid(
+        let _ = on_invalid(
             &state,
             "fake-chall",
             "fake-authz",
@@ -1345,7 +1364,7 @@ mod tests {
         // Transaction begins, challenge update succeeds, then authz update fails
         // (no authorizations table) — the whole transaction is rolled back and
         // the error is logged as a warning.
-        on_valid(
+        let _ = on_valid(
             &state,
             "chall-partial",
             "authz-partial",
@@ -1402,6 +1421,7 @@ mod tests {
             profiles: Default::default(),
             admin: None,
             email_challenge: None,
+            delegation_upstream: None,
         });
         let (ca_key, ca_cert_der) = crate::ca::init::load_or_generate(config.default_ca()).unwrap();
         let ca = Arc::new(CaState {
@@ -1476,6 +1496,7 @@ mod tests {
             audit_policy: Arc::new(crate::audit::AuditPolicy::default()),
             admin_sessions: None,
             admin_auth_limiter: None,
+            eab_session_nonces: None,
             startup_time: std::time::Instant::now(),
         })
     }
@@ -1531,6 +1552,10 @@ mod tests {
                 star_csr_der: None,
                 profile: None,
                 ca_id: "default".to_string(),
+                delegation_id: None,
+                allow_cert_get: 0,
+                upstream_order_url: None,
+                upstream_cert_url: None,
             },
         )
         .await
@@ -1598,7 +1623,7 @@ mod tests {
         let state = make_state_with_db(db_conn).await;
         // on_valid: transaction tries UPDATE orders SET status = 'ready' → fails
         // (no orders table) → transaction rolled back → error logged as warning.
-        on_valid(&state, "chall-ov", "authz-ov", "ord-ov", unix_now()).await;
+        let _ = on_valid(&state, "chall-ov", "authz-ov", "ord-ov", unix_now()).await;
     }
 
     /// on_invalid where all updates succeed but the orders update fails because
@@ -1625,7 +1650,7 @@ mod tests {
         let state = make_state_with_db(db_conn).await;
         // on_invalid: transaction tries UPDATE orders → fails (no orders table) →
         // rolled back → error logged as warning.
-        on_invalid(
+        let _ = on_invalid(
             &state,
             "chall-oi",
             "authz-oi",

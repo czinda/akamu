@@ -69,13 +69,12 @@ pub async fn send_challenge_email(
         .from_address
         .split_once('@')
         .map(|(_, d)| d)
-        .unwrap_or_else(|| {
-            tracing::warn!(
-                from_address = %ec.from_address,
-                "email_challenge.from_address has no '@'; Message-ID will use 'localhost'"
-            );
-            "localhost"
-        });
+        .ok_or_else(|| {
+            AcmeError::Internal(format!(
+                "email_challenge.from_address '{}' is not a valid email address (no '@')",
+                ec.from_address
+            ))
+        })?;
     let message_id = format!("<{}@{}>", uuid::Uuid::new_v4(), from_domain);
 
     // Write token-part1 and Message-ID to the DB before invoking the script.
@@ -693,6 +692,7 @@ mod tests {
             profiles: Default::default(),
             admin: None,
             email_challenge: None,
+            delegation_upstream: None,
         });
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
         db::install_drivers();
@@ -764,6 +764,10 @@ mod tests {
                 star_csr_der: None,
                 profile: None,
                 ca_id: "default".to_string(),
+                delegation_id: None,
+                allow_cert_get: 0,
+                upstream_order_url: None,
+                upstream_cert_url: None,
             },
         )
         .await
@@ -867,6 +871,7 @@ mod tests {
             audit_policy: Arc::new(crate::audit::AuditPolicy::default()),
             admin_sessions: None,
             admin_auth_limiter: None,
+            eab_session_nonces: None,
             startup_time: std::time::Instant::now(),
         });
 

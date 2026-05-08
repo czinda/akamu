@@ -267,6 +267,10 @@ mod tests {
                 star_csr_der: None,
                 profile: None,
                 ca_id: "default".to_string(),
+                delegation_id: None,
+                allow_cert_get: 0,
+                upstream_order_url: None,
+                upstream_cert_url: None,
             },
         )
         .await
