@@ -892,6 +892,68 @@ pub struct ServerConfig {
     ///
     /// Generate with: `openssl rand -base64 32 | tr '+/' '-_' | tr -d '='`
     pub eab_master_secret: Option<String>,
+    /// Management web UI configuration.
+    ///
+    /// When present, Akamu starts a second HTTP/HTTPS listener that serves the
+    /// built PatternFly web UI and reverse-proxies `/api/*` requests to the
+    /// admin API.  The listener uses server-only TLS (no client certificate
+    /// required), allowing browser access.
+    ///
+    /// Example:
+    /// ```toml
+    /// [server.webui]
+    /// listen_addr   = "0.0.0.0:8080"
+    /// admin_api_url = "https://127.0.0.1:8444"
+    /// static_dir    = "/usr/share/akamu/webui"
+    ///
+    /// [server.webui.tls]
+    /// enabled   = true
+    /// cert_file = "/etc/akamu/webui.crt"
+    /// key_file  = "/etc/akamu/webui.key"
+    /// ```
+    pub webui: Option<WebUiConfig>,
+}
+
+/// Management web UI listener configuration (`[server.webui]`).
+///
+/// The webui listener serves the compiled PatternFly React application over
+/// plain HTTPS (no mTLS) and transparently proxies `/api/*` requests to the
+/// admin API, allowing a single browser origin to reach both static assets and
+/// the full admin REST API.
+#[derive(Debug, Deserialize, Clone)]
+pub struct WebUiConfig {
+    /// TCP address the webui listener binds to.  Default: `"0.0.0.0:8080"`.
+    #[serde(default = "default_webui_listen_addr")]
+    pub listen_addr: String,
+    /// TLS configuration for the webui listener (server certificate only;
+    /// no client certificate).  When absent the listener uses plain HTTP.
+    pub tls: Option<TlsConfig>,
+    /// Directory containing the built `webui/dist/` output to serve.
+    /// When absent the server falls back to the binary-embedded UI (if
+    /// compiled with the `embed-webui` feature).
+    pub static_dir: Option<String>,
+    /// Base URL of the admin API to proxy `/api/*` requests to.
+    /// The webui listener strips the `/api` prefix before forwarding.
+    /// Default: `"https://127.0.0.1:8444"`.
+    #[serde(default = "default_webui_admin_api_url")]
+    pub admin_api_url: String,
+    /// PEM file with the client certificate the proxy uses when connecting to
+    /// the mTLS admin API.  When absent the proxy connects without a client
+    /// certificate (only works if the admin API does not require mTLS).
+    pub proxy_client_cert: Option<String>,
+    /// PEM file with the client private key matching `proxy_client_cert`.
+    pub proxy_client_key: Option<String>,
+    /// PEM file(s) with trusted CA certificates for validating the admin API's
+    /// server certificate.  When absent the system root store is used.
+    pub proxy_ca_cert: Option<String>,
+}
+
+fn default_webui_listen_addr() -> String {
+    "127.0.0.1:8080".into()
+}
+
+fn default_webui_admin_api_url() -> String {
+    "https://127.0.0.1:8444".into()
 }
 
 /// Upstream CA configuration for the IdO→CA leg of RFC 9115 delegation.
@@ -957,7 +1019,7 @@ fn default_gssapi_service() -> String {
 }
 
 /// Server-side TLS configuration.  Absent or `enabled = false` → plain HTTP (no change).
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, Clone)]
 pub struct TlsConfig {
     /// Whether to listen with TLS.  Default: false (plain HTTP).
     #[serde(default)]
@@ -1132,6 +1194,7 @@ impl Default for ServerConfig {
             trusted_proxies: vec![],
             gssapi: None,
             eab_master_secret: None,
+            webui: None,
         }
     }
 }
@@ -1418,6 +1481,84 @@ impl Config {
                 return Err("[delegation_upstream].challenge_deploy_script is required \
                      when challenge_solver = \"dns-01\""
                     .into());
+            }
+            if let Some(ref script) = du.challenge_deploy_script {
+                if !std::path::Path::new(script).is_absolute() {
+                    return Err(format!(
+                        "[delegation_upstream].challenge_deploy_script {script:?} must be an absolute path"
+                    ));
+                }
+            }
+            if let Some(ref script) = du.challenge_cleanup_script {
+                if !std::path::Path::new(script).is_absolute() {
+                    return Err(format!(
+                        "[delegation_upstream].challenge_cleanup_script {script:?} must be an absolute path"
+                    ));
+                }
+            }
+        }
+
+        if let Some(wu) = &self.server.webui {
+            wu.listen_addr
+                .parse::<std::net::SocketAddr>()
+                .map_err(|e| {
+                    format!(
+                        "[server.webui].listen_addr {:?} is not a valid socket address: {e}",
+                        wu.listen_addr
+                    )
+                })?;
+            if wu.admin_api_url.is_empty() {
+                return Err("[server.webui].admin_api_url must not be empty".into());
+            }
+            if !wu.admin_api_url.starts_with("https://") {
+                return Err(format!(
+                    "[server.webui].admin_api_url {:?} must use https://",
+                    wu.admin_api_url
+                ));
+            }
+            match (&wu.proxy_client_cert, &wu.proxy_client_key) {
+                (Some(cert), None) => {
+                    return Err(format!(
+                        "[server.webui].proxy_client_key must be set when proxy_client_cert {cert:?} is configured"
+                    ));
+                }
+                (None, Some(key)) => {
+                    return Err(format!(
+                        "[server.webui].proxy_client_cert must be set when proxy_client_key {key:?} is configured"
+                    ));
+                }
+                (Some(cert), Some(key)) => {
+                    if !std::path::Path::new(cert).is_absolute() {
+                        return Err(format!(
+                            "[server.webui].proxy_client_cert {cert:?} must be an absolute path"
+                        ));
+                    }
+                    if !std::path::Path::new(key).is_absolute() {
+                        return Err(format!(
+                            "[server.webui].proxy_client_key {key:?} must be an absolute path"
+                        ));
+                    }
+                }
+                (None, None) => {}
+            }
+            if let Some(ref ca_cert) = wu.proxy_ca_cert {
+                if ca_cert.is_empty() {
+                    return Err("[server.webui].proxy_ca_cert must not be empty when set \
+                         (omit the field to use the system root store)"
+                        .into());
+                }
+                if !std::path::Path::new(ca_cert).is_absolute() {
+                    return Err(format!(
+                        "[server.webui].proxy_ca_cert {ca_cert:?} must be an absolute path"
+                    ));
+                }
+            }
+            if let Some(ref dir) = wu.static_dir {
+                if !std::path::Path::new(dir).is_absolute() {
+                    return Err(format!(
+                        "[server.webui].static_dir {dir:?} must be an absolute path"
+                    ));
+                }
             }
         }
 
