@@ -57,6 +57,7 @@ For a detailed breakdown of RFC and draft coverage — including which sections 
 - [Let's Encrypt dns-persist-01](https://letsencrypt.org/2026/02/18/dns-persist-01) — Persistent DNS challenge type
 - [draft-aaron-acme-profiles-01](https://www.ietf.org/archive/id/draft-aaron-acme-profiles-01.html) — ACME certificate profiles
 - [draft-ietf-lamps-pq-composite-sigs](https://datatracker.ietf.org/doc/draft-ietf-lamps-pq-composite-sigs/) — ML-DSA composite TLS signature schemes (provisional code points)
+- [draft-ietf-plants-merkle-tree-certs-03](https://davidben.github.io/merkle-tree-certs/) — Merkle Tree Certificates (MTC), transparency-log-backed certificate format (experimental OIDs, pre-IANA)
 
 ## Quick navigation
 

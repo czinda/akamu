@@ -452,6 +452,18 @@ When `true`, each issued certificate is appended as a leaf to the MTC transparen
 enabled = false
 ```
 
+### MTC standalone certificate format
+
+When `issue_as = "mtc"` is set in a profile, the server builds a standalone certificate for each issued certificate. The standalone certificate is a standard X.509 v3 `Certificate` where:
+
+- `signatureAlgorithm` is `id-alg-mtcProof` (experimental OID `1.3.6.1.4.1.44363.47.0` from the Cloudflare PEN arc)
+- `signatureValue` carries a TLS-encoded `MTCProof` (inclusion proof + cosignature records)
+- `serialNumber` encodes the log entry index per draft §6.1
+
+The `GET /acme/mtc/cert/{cert_id}/standalone` and `GET /acme/mtc/landmarks/{seq}/cert` endpoints return the DER-encoded certificate with `Content-Type: application/pkix-cert` and the `X-MTC-Version: draft-03` response header.
+
+> **OID stability note:** The OIDs are experimental and pre-IANA. They will change when draft-ietf-plants-merkle-tree-certs is published as an RFC, requiring a coordinated update of the `synta-mtc` library and relying implementations.
+
 ### `checkpoint_interval_secs`
 
 **Optional. Default: `3600` (1 hour).**
@@ -510,7 +522,9 @@ Key algorithm for auto-generation. Accepts the same values as `[ca].key_type`. P
 
 **Optional. Default: `"sha256"`.**
 
-Hash algorithm used for ECDSA/RSA signing: `"sha256"`, `"sha384"`, `"sha512"`. Ignored for EdDSA and ML-DSA.
+Hash algorithm used for ECDSA/RSA signing of MTC checkpoints and cosignatures: `"sha256"`, `"sha384"`, `"sha512"`. Ignored for EdDSA and ML-DSA signing key types.
+
+This field controls the *signing* hash only and is unrelated to the Merkle tree leaf-hash algorithm, which is fixed at SHA-256 for the current release.
 
 ```toml
 [mtc.signing_key]
@@ -1457,7 +1471,7 @@ Beyond the core extension fields, each `builtin` profile supports four groups of
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `issue_as` | absent / `"x509"` | Set to `"mtc"` to issue a Merkle Tree Certificate `StandaloneCertificate` instead of a PEM chain. Requires `[mtc]` to be enabled. |
+| `issue_as` | absent / `"x509"` | Set to `"mtc"` to issue a Merkle Tree Certificate standalone certificate instead of a PEM chain. Requires `[mtc]` to be enabled. The standalone certificate is a standard X.509 v3 `Certificate` where `signatureAlgorithm` is `id-alg-mtcProof` (OID `1.3.6.1.4.1.44363.47.0`, experimental pre-IANA) and `signatureValue` carries a TLS-encoded `MTCProof`. The OID will change when the draft is published as an RFC. |
 
 *Per-profile authorization*
 
