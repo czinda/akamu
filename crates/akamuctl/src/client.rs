@@ -252,14 +252,15 @@ impl AdminClient {
         Ok(token)
     }
 
-    /// Make a bearer-authenticated request, retrying once on 401.
+    /// Make a bearer-authenticated request, retrying once on 401 or 423.
     ///
     /// A 401 means the server rejected the cached session token (e.g. the
     /// server restarted and its in-memory session store was cleared, or the
     /// server-side sliding-window TTL elapsed before the client-side
-    /// `expires_at` timestamp).  On 401 we clear the local cache and
-    /// reauthenticate transparently so the caller does not need to remove
-    /// `session.json` by hand.
+    /// `expires_at` timestamp).  A 423 means the session was locked due to
+    /// inactivity (FTA_SSL_EXT.1) and requires re-authentication.  In both
+    /// cases we clear the local cache and reauthenticate transparently so the
+    /// caller does not need to remove `session.json` by hand.
     async fn authed(
         &self,
         method: Method,
@@ -270,10 +271,10 @@ impl AdminClient {
         let resp = self
             .raw_request(method.clone(), path, Some(&token), body, None)
             .await?;
-        if resp.status != StatusCode::UNAUTHORIZED {
+        if resp.status != StatusCode::UNAUTHORIZED && resp.status != StatusCode::LOCKED {
             return Ok(resp);
         }
-        // Cached token rejected — evict it and reauthenticate once.
+        // Cached token rejected or locked — evict it and reauthenticate once.
         self.clear_session();
         let token = self.session_token().await?;
         self.raw_request(method, path, Some(&token), body, None)
