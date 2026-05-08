@@ -106,6 +106,11 @@ field controls the address; the default in the configuration example is
 | `POST` | `/admin/ca/{id}/cross-sign` | Y | Y | | |
 | `GET` | `/admin/cross-certs` | Y | Y | Y | Y |
 | `GET` | `/admin/cross-certs/{id}` | Y | Y | Y | Y |
+| `GET` | `/admin/delegations` | Y | Y | | |
+| `POST` | `/admin/delegations` | Y | | | |
+| `GET` | `/admin/delegations/{id}` | Y | Y | | |
+| `PUT` | `/admin/delegations/{id}` | Y | | | |
+| `DELETE` | `/admin/delegations/{id}` | Y | | | |
 
 ### `POST /admin/session`
 
@@ -871,6 +876,112 @@ Show a single cross-certificate by UUID, including its PEM.
 ```
 
 Returns `404 Not Found` when the cross-cert ID does not exist.
+
+## Delegation management endpoints
+
+These endpoints are active only when `server.delegation_enabled = true` is set in the configuration. Delegations represent pre-configured RFC 9115 IdO-to-NDC delegation policies: a CSR template and an optional CNAME map. The `administrator` role is required for write operations; `ca_operations` may read.
+
+### `GET /admin/delegations`
+
+List all delegation objects. Optionally filter by account.
+
+Query parameters:
+
+| Parameter | Description |
+|-----------|-------------|
+| `account_id` | Filter by ACME account UUID. |
+| `limit` | 1–1000, default 100. |
+| `offset` | Default 0. |
+
+**Response `200 OK`:**
+
+```json
+{
+  "delegations": [
+    {
+      "id": "b1c2d3e4-…",
+      "account_id": "d290f1ee-…",
+      "csr_template": "{…}",
+      "cname_map": null,
+      "created": 1746154800,
+      "updated": 1746154800
+    }
+  ],
+  "limit": 100,
+  "offset": 0
+}
+```
+
+### `POST /admin/delegations`
+
+Create a new delegation object. The `csr_template` field is validated against the RFC 9115 §4 schema at write time; a malformed template is rejected with `400 Bad Request`.
+
+**Request body:**
+
+```json
+{
+  "account_id": "d290f1ee-…",
+  "csr_template": {
+    "keyTypes": [{"type": "EC", "curve": "P-256"}],
+    "subject": {"commonName": {}, "organization": "ExampleCorp"},
+    "extensions": {
+      "subjectAltName": {},
+      "keyUsage": ["digitalSignature"],
+      "extendedKeyUsage": ["1.3.6.1.5.5.7.3.1"]
+    }
+  },
+  "cname_map": null
+}
+```
+
+`cname_map` is optional. When present it is a JSON object mapping source FQDNs to target FQDNs (e.g. `{"cdn.example.com": "cdn.provider.example"}`).
+
+**Response `201 Created`:**
+
+```json
+{ "id": "b1c2d3e4-…", "created": 1746154800 }
+```
+
+### `GET /admin/delegations/{id}`
+
+Fetch a single delegation object by UUID.
+
+**Response `200 OK`:**
+
+```json
+{
+  "id": "b1c2d3e4-…",
+  "account_id": "d290f1ee-…",
+  "csr_template": "{…}",
+  "cname_map": null,
+  "created": 1746154800,
+  "updated": 1746154800
+}
+```
+
+Returns `404 Not Found` when the ID does not exist.
+
+### `PUT /admin/delegations/{id}`
+
+Replace the `csr_template` and/or `cname_map` of an existing delegation. The `csr_template` is re-validated at write time. Only `csr_template` and `cname_map` may be updated; `account_id` is immutable.
+
+**Request body:**
+
+```json
+{
+  "csr_template": {…},
+  "cname_map": {"cdn.example.com": "cdn.provider.example"}
+}
+```
+
+**Response: `204 No Content`** on success, `404 Not Found` when the ID does not exist.
+
+### `DELETE /admin/delegations/{id}`
+
+Delete a delegation object. Returns `409 Conflict` when one or more orders still reference this delegation (the orders must be finalized or deleted first).
+
+**Response: `204 No Content`**, `404 Not Found` when the ID does not exist, `409 Conflict` when orders reference it.
+
 
 ## Audit trail
 
