@@ -181,6 +181,17 @@ validate_dnssec = true
 # star_max_duration_secs  = 31536000   # maximum STAR order duration (1 year)
 # star_allow_certificate_get = true    # allow unauthenticated GET of STAR certs
 
+# Enable RFC 9115 delegated certificates API surface.
+# When true, the directory advertises delegation support and the /acme/delegations/*
+# and /acme/delegation/* endpoints become active.  Delegations are managed via
+# /admin/delegations.  Default: false.
+# delegation_enabled = false
+
+# Advertise and allow unauthenticated GET of delegation order certificates (RFC 9115 §2.3.5).
+# Distinct from star_allow_certificate_get which covers STAR orders only.
+# Default: false.
+# allow_certificate_get = false
+
 # Enable Tor network connectivity for .onion identifiers (RFC 9799 §4).
 # Set to true only when the server can reach the Tor network outbound.
 # tor_connectivity_enabled = false
@@ -283,6 +294,24 @@ validate_dnssec = true
 # [admin.gssapi]
 # keytab_file  = "/etc/akamu/http.keytab"
 # service_name = "HTTP"
+
+# ── RFC 9115 delegation upstream CA ──────────────────────────────────────────
+# When present, akamu acts as an ACME client toward an upstream CA to obtain
+# certificates for delegation orders.  A background task polls processing
+# delegation orders and drives the full upstream ACME flow automatically.
+# When absent, akamu serves the delegation API but does not drive an upstream CA.
+# [delegation_upstream]
+# directory_url            = "https://upstream-ca.example.com/acme/directory"
+# account_key_file         = "/etc/akamu/upstream-acme.key.pem"  # auto-generated if absent
+# contacts                 = ["mailto:admin@example.com"]
+# challenge_solver         = "dns-01"    # only "dns-01" is currently supported
+# challenge_deploy_script  = "/etc/akamu/upstream-dns-deploy.sh"
+#   # Script receives: CERTBOT_DOMAIN, CERTBOT_VALIDATION (env_clear applied)
+#   # Exit 0 = success.  Called after akamu triggers the upstream challenge.
+# challenge_cleanup_script = "/etc/akamu/upstream-dns-cleanup.sh"
+#   # Optional.  Called after the upstream authz transitions to valid.
+#   # Also receives CERTBOT_AUTH_OUTPUT="" in addition to the deploy vars.
+# poll_interval_secs       = 10    # how often to poll the upstream CA (seconds)
 
 # ── Certificate profiles ──────────────────────────────────────────────────────
 # When absent, the deprecated [server].profiles map governs directory advertisement
