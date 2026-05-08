@@ -684,6 +684,134 @@ async fn tlog_cosignature_endpoint_structure() {
     );
 }
 
+// ── Standalone certificate format conformance ─────────────────────────────────
+
+/// Verify that `MtcX509CertificateBuilder` produces a spec-compliant standalone
+/// certificate that parses as a standard X.509 `Certificate` with
+/// `signatureAlgorithm = id-alg-mtcProof` and a decodable `MtcProof`.
+#[test]
+fn standalone_cert_format_conforms_to_draft03() {
+    use synta::types::string::BitStringRef;
+    use synta::{GeneralizedTime, Integer, ObjectIdentifier};
+    use synta_certificate::owned::{
+        AlgorithmIdentifier as OwnedAlgId, Certificate as OwnedCert, SubjectPublicKeyInfo,
+        TBSCertificate, Time, Validity,
+    };
+    use synta_certificate::{
+        AlgorithmIdentifier as BAlgId, SubjectPublicKeyInfo as BSPki,
+    };
+    use synta_mtc::builder::x509cert::MtcX509CertificateBuilder;
+    use synta_mtc::crypto::mtcproof::{MtcProof, MtcSignature};
+    use synta_mtc::types::constants::{ID_ALG_MTC_PROOF_EXP, ID_RDNA_TRUST_ANCHOR_ID_EXP, ID_SHA256};
+    use synta_mtc::types::LogID;
+
+    // Build a minimal TBSCertificate to act as the original cert.
+    let spki = SubjectPublicKeyInfo {
+        algorithm: OwnedAlgId {
+            algorithm: ObjectIdentifier::new(&[1u32, 2, 840, 10045, 2, 1]).unwrap(),
+            parameters: None,
+        },
+        subject_public_key: synta::BitString::new(vec![0u8; 33], 0).unwrap(),
+    };
+    let tbs = TBSCertificate {
+        version: Some(Integer::from(2u64)),
+        serial_number: Integer::from(1u64),
+        signature: OwnedAlgId {
+            algorithm: ObjectIdentifier::new(&[1u32, 2, 840, 113549, 1, 1, 11]).unwrap(),
+            parameters: None,
+        },
+        issuer: synta_certificate::owned::Name::RdnSequence(vec![]),
+        validity: Validity {
+            not_before: Time::GeneralTime(
+                GeneralizedTime::new(2024, 1, 1, 0, 0, 0, None).unwrap(),
+            ),
+            not_after: Time::GeneralTime(
+                GeneralizedTime::new(2025, 1, 1, 0, 0, 0, None).unwrap(),
+            ),
+        },
+        subject: synta_certificate::owned::Name::RdnSequence(vec![]),
+        subject_public_key_info: spki,
+        issuer_unique_id: None,
+        subject_unique_id: None,
+        extensions: None,
+    };
+    let tbs_der = tbs.to_der().unwrap();
+
+    // Build a minimal LogID using SHA-256 and a dummy SPKI.
+    static DUMMY_KEY: &[u8] = &[0x04u8; 33];
+    let log_id = LogID {
+        hash_algorithm: BAlgId {
+            algorithm: ObjectIdentifier::new(ID_SHA256).unwrap(),
+            parameters: None,
+        },
+        public_key: BSPki {
+            algorithm: BAlgId {
+                algorithm: ObjectIdentifier::new(&[1u32, 2, 840, 10045, 2, 1]).unwrap(),
+                parameters: None,
+            },
+            subject_public_key: BitStringRef::new(DUMMY_KEY, 0).unwrap(),
+        },
+    };
+
+    // Build a minimal MtcProof with one fake cosignature.
+    let proof = MtcProof {
+        start: 0,
+        end: 4,
+        inclusion_proof: vec![0xABu8; 64], // two 32-byte sibling hashes
+        signatures: vec![MtcSignature {
+            cosigner_id: vec![0x30, 0x01, 0x00],
+            signature_value: vec![0xFFu8; 32],
+        }],
+    };
+
+    // Build the standalone cert DER.
+    let cert_der = MtcX509CertificateBuilder::new()
+        .original_tbs_der(&tbs_der)
+        .log_id(log_id)
+        .log_entry_index(3)
+        .mtc_proof(proof.clone())
+        .build()
+        .expect("MtcX509CertificateBuilder::build()");
+
+    // Parse as a standard X.509 Certificate.
+    let parsed = OwnedCert::from_der(&cert_der).expect("parse as X.509 Certificate");
+
+    // signatureAlgorithm must be id-alg-mtcProof (experimental Cloudflare PEN arc OID).
+    assert_eq!(
+        parsed.signature_algorithm.algorithm.components(),
+        ID_ALG_MTC_PROOF_EXP,
+        "outer signatureAlgorithm must be id-alg-mtcProof"
+    );
+    assert_eq!(
+        parsed.tbs_certificate.signature.algorithm.components(),
+        ID_ALG_MTC_PROOF_EXP,
+        "TBS signatureAlgorithm must be id-alg-mtcProof"
+    );
+
+    // serialNumber must equal the log entry index.
+    assert_eq!(
+        parsed.tbs_certificate.serial_number.as_u64().unwrap(),
+        3,
+        "serialNumber must equal the log entry index"
+    );
+
+    // issuer must use id-rdna-trustAnchorID attribute type.
+    let synta_certificate::owned::Name::RdnSequence(rdns) = &parsed.tbs_certificate.issuer;
+    assert_eq!(rdns.len(), 1, "issuer must have exactly one RDN");
+    let atvs = rdns[0].elements();
+    assert_eq!(atvs.len(), 1);
+    assert_eq!(
+        atvs[0].r#type.components(),
+        ID_RDNA_TRUST_ANCHOR_ID_EXP,
+        "issuer attribute type must be id-rdna-trustAnchorID"
+    );
+
+    // signatureValue decodes as a valid TLS-encoded MtcProof.
+    let sig_bytes = parsed.signature_value.as_bytes();
+    let decoded = MtcProof::decode(sig_bytes).expect("decode MtcProof from signatureValue");
+    assert_eq!(decoded, proof, "decoded MtcProof must equal the original");
+}
+
 // ── DigiCert MTC playground integration test ──────────────────────────────────
 
 /// Verify wire compatibility with the DigiCert ca-extension-mtc-playground

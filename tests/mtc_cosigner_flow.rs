@@ -12,9 +12,12 @@
 //!     the cosignature from the inline cosigner.
 //!  5. Download the standalone MTC certificate via
 //!     `GET /acme/mtc/cert/{id}/standalone`.
-//!  6. Parse the X.509 standalone certificate and verify:
-//!     - the embedded MTCProof contains at least one cosignature,
-//!     - the inclusion proof is valid against the server's current root.
+//!  6. Parse the standalone cert as a standard X.509 `Certificate` and verify:
+//!     - `signatureAlgorithm` == `id-alg-mtcProof`,
+//!     - `serialNumber` > 0 (the log entry index),
+//!     - `signatureValue` decodes as a valid TLS-encoded `MtcProof`,
+//!     - the `MtcProof` contains at least one cosignature from the inline cosigner,
+//!     - the embedded inclusion proof verifies against the server's current root.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -30,14 +33,15 @@ use synta::traits::Encode;
 use synta::types::primitive::Integer;
 use synta::types::string::OctetString;
 use synta::{BitString, Decoder, Encoder, Encoding};
-use synta_certificate::owned::Certificate as OwnedCertificate;
 use synta_certificate::{
     encode_key_usage, BackendPrivateKey, CertificateBuilder, CertificateSigner as _, NameBuilder,
     PrivateKey as _, SubjectAlternativeNameBuilder, KEY_USAGE_DIGITAL_SIGNATURE,
 };
 use synta_certificate::{AlgorithmIdentifier, SubjectPublicKeyInfo};
+use synta_certificate::owned::Certificate as OwnedCert;
 use synta_mtc::crypto::mtcproof::MtcProof;
 use synta_mtc::crypto::{hash_log_entry, verify_inclusion_proof, HashAlgorithm};
+use synta_mtc::types::constants::ID_ALG_MTC_PROOF_EXP;
 use synta_mtc::types::CosignerID;
 use synta_mtc::types::{Checkpoint, MerkleTreeCertEntry, Subtree, SubtreeSignature};
 use tokio::net::TcpListener;
@@ -394,7 +398,6 @@ async fn build_akamu_state(
         profiles: Default::default(),
         admin: None,
         email_challenge: None,
-        delegation_upstream: None,
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
@@ -486,7 +489,6 @@ async fn build_akamu_state(
         audit_policy: std::sync::Arc::new(akamu::audit::AuditPolicy::default()),
         admin_sessions: None,
         admin_auth_limiter: None,
-        eab_session_nonces: None,
         admin_gss_cred: None,
         startup_time: std::time::Instant::now(),
         gss_cred: None,
@@ -516,7 +518,7 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
     // ── Phase 4: build and start akamu ───────────────────────────────────────
     let base_url = format!("http://127.0.0.1:{akamu_port}");
     let state = build_akamu_state(dir.path(), &base_url, http01_port, &cosigner_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state));
 
     let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], akamu_port)))
         .await
@@ -678,91 +680,81 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
         "standalone cert DER must be non-empty"
     );
 
-    // ── Phase 9: parse and verify the X.509 standalone MTC certificate ──────
-    let standalone_cert = OwnedCertificate::from_der(&standalone_der)
-        .expect("parse standalone X.509 Certificate DER");
+    // ── Phase 9: parse and verify the X.509 MTC standalone certificate ──────────
 
-    // Extract the TLS-encoded MTCProof from the X.509 signatureValue BitString.
-    let mtc_proof = MtcProof::decode(standalone_cert.signature_value.as_bytes())
-        .expect("decode MTCProof from signatureValue");
+    // 9a. Parse as a standard X.509 Certificate (spec §5 format).
+    let cert = OwnedCert::from_der(&standalone_der)
+        .expect("parse standalone cert as X.509 Certificate (id-alg-mtcProof format)");
 
-    // 9b. Verify that the cosigner's signature is present.
-    //
-    // produce_checkpoint() contacts the cosigner via HTTP and embeds any
-    // returned cosignatures into the standalone cert.  We check that at least
-    // one cosignature was collected.
-    assert!(
-        !mtc_proof.signatures.is_empty(),
-        "standalone cert must contain at least one cosignature from the inline cosigner"
+    // 9b. Both signatureAlgorithm fields must be id-alg-mtcProof.
+    assert_eq!(
+        cert.signature_algorithm.algorithm.components(),
+        ID_ALG_MTC_PROOF_EXP,
+        "outer signatureAlgorithm must be id-alg-mtcProof"
+    );
+    assert_eq!(
+        cert.tbs_certificate.signature.algorithm.components(),
+        ID_ALG_MTC_PROOF_EXP,
+        "TBS signatureAlgorithm must be id-alg-mtcProof"
     );
 
-    // 9c. Fetch current root from the server for inclusion proof verification.
+    // 9c. serialNumber encodes the log entry index; must be non-zero (entry 0 is null_entry).
+    let leaf_index = cert
+        .tbs_certificate
+        .serial_number
+        .as_u64()
+        .expect("serialNumber as u64");
+    assert!(leaf_index > 0, "serialNumber (log entry index) must be non-zero");
+
+    // 9d. signatureValue is a TLS-encoded MtcProof (not a cryptographic signature).
+    let proof_bytes = cert.signature_value.as_bytes();
+    let mtc_proof = MtcProof::decode(proof_bytes)
+        .expect("decode MtcProof from signatureValue");
+
+    // 9e. produce_checkpoint() contacts the cosigner and embeds the result as an
+    // MtcSignature in the proof.  Verify at least one cosignature is present.
+    assert!(
+        !mtc_proof.signatures.is_empty(),
+        "MtcProof must contain at least one cosignature from the inline cosigner"
+    );
+    assert!(
+        !mtc_proof.signatures[0].cosigner_id.is_empty(),
+        "cosigner_id must be non-empty DER"
+    );
+    assert!(
+        !mtc_proof.signatures[0].signature_value.is_empty(),
+        "cosignature signature_value must be non-empty"
+    );
+
+    // 9f. For a full-tree proof: start == 0, end == tree_size (> 0).
+    assert_eq!(mtc_proof.start, 0, "MtcProof start must be 0 for full-tree proof");
+    assert!(mtc_proof.end > 0, "MtcProof end must be positive");
+
+    // 9g. Fetch the current Merkle root from the server.
     let root_resp = http_client
         .get(format!("{base_url}/acme/mtc/root").parse().unwrap())
         .await
         .expect("GET /acme/mtc/root");
-    assert_eq!(
-        root_resp.status(),
-        StatusCode::OK,
-        "/acme/mtc/root must return 200"
-    );
-    let root_bytes_body = http_body_util::BodyExt::collect(root_resp.into_body())
+    assert_eq!(root_resp.status(), StatusCode::OK, "/acme/mtc/root must return 200");
+    let root_body = http_body_util::BodyExt::collect(root_resp.into_body())
         .await
         .unwrap()
         .to_bytes();
-    let root_json: serde_json::Value =
-        serde_json::from_slice(&root_bytes_body).expect("parse root JSON");
-    let server_root_hex = root_json["rootHash"]
-        .as_str()
-        .expect("rootHash field in JSON");
+    let root_json: serde_json::Value = serde_json::from_slice(&root_body).expect("parse root JSON");
+    let server_root_hex = root_json["rootHash"].as_str().expect("rootHash field in JSON");
     let server_root: Vec<u8> = (0..server_root_hex.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&server_root_hex[i..i + 2], 16).unwrap())
         .collect();
 
-    // 9d. Fetch and verify the inclusion proof for the certificate.
-    let proof_resp = http_client
-        .get(
-            format!("{base_url}/acme/mtc/inclusion-proof/{cert_id}")
-                .parse()
-                .unwrap(),
-        )
-        .await
-        .expect("GET inclusion-proof");
-    assert_eq!(
-        proof_resp.status(),
-        StatusCode::OK,
-        "inclusion-proof endpoint must return 200"
-    );
-    let proof_bytes = http_body_util::BodyExt::collect(proof_resp.into_body())
-        .await
-        .unwrap()
-        .to_bytes();
-    let proof_json: serde_json::Value =
-        serde_json::from_slice(&proof_bytes).expect("parse inclusion-proof JSON");
-
-    let leaf_index = proof_json["leafIndex"].as_u64().expect("leafIndex");
-    let tree_size_proof = proof_json["treeSize"].as_u64().expect("treeSize");
-    let proof_hashes: Vec<Vec<u8>> = proof_json["proof"]
-        .as_array()
-        .expect("proof array")
-        .iter()
-        .map(|entry| {
-            let hex = entry["hash"].as_str().unwrap_or("");
-            (0..hex.len())
-                .step_by(2)
-                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
-                .collect()
-        })
-        .collect();
-
-    // Compute the leaf hash from the certificate DER (MTC uses SHA-256 of the TBS cert).
-    // akamu stores the DER leaf in the mtc log; the hash_leaf function handles the prefix.
-    // For a single-leaf tree the proof is empty and the leaf hash IS the root.
-    if proof_hashes.is_empty() && tree_size_proof == 1 {
-        // Single-certificate tree: root == leaf hash, already verified above.
-    } else if !proof_hashes.is_empty() {
-        // Fetch the certificate DER to compute its leaf hash.
+    // 9h. Verify the inclusion proof embedded in the MtcProof against the server root.
+    //
+    // MtcProof.inclusion_proof is a flat concatenation of 32-byte sibling hashes
+    // (SHA-256).  An empty proof means the tree has exactly one leaf: the cert IS the root.
+    if mtc_proof.inclusion_proof.is_empty() && mtc_proof.end == 1 {
+        // Single-certificate tree: root == leaf hash — consistent by construction.
+    } else if !mtc_proof.inclusion_proof.is_empty() {
+        // Fetch the issued certificate PEM chain to reconstruct the leaf hash.
         let cert_der_resp = http_client
             .get(format!("{base_url}/acme/cert/{cert_id}").parse().unwrap())
             .await
@@ -772,28 +764,34 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
             .unwrap()
             .to_bytes();
 
-        // Parse the PEM chain and get the first (leaf) cert DER.
         let cert_ders = synta_certificate::pem_to_der(&cert_der_bytes);
         if let Some(leaf_cert_der) = cert_ders.first() {
-            // Reproduce the same leaf hash that append_cert_to_log produces:
-            // TLS wire-encoded MerkleTreeCertEntry via hash_log_entry (spec §4.2).
-            let cert: synta_certificate::Certificate<'_> =
+            let leaf_cert: synta_certificate::Certificate<'_> =
                 Decoder::new(leaf_cert_der, Encoding::Der)
                     .decode()
                     .expect("parse leaf cert DER");
             let log_entry = synta_mtc::integration::tbs_certificate_to_log_entry(
-                &cert.tbs_certificate,
+                &leaf_cert.tbs_certificate,
                 HashAlgorithm::Sha256,
             )
             .expect("build log entry from TBS cert");
             let entry = MerkleTreeCertEntry::TbsCertEntry(log_entry);
-            let leaf_hash = hash_log_entry(HashAlgorithm::Sha256, &entry).expect("hash_log_entry");
+            let leaf_hash =
+                hash_log_entry(HashAlgorithm::Sha256, &entry).expect("hash_log_entry");
+
+            // Split the flat byte string into individual 32-byte sibling hashes.
+            let sibling_hashes: Vec<Vec<u8>> = mtc_proof
+                .inclusion_proof
+                .chunks(32)
+                .map(|c| c.to_vec())
+                .collect();
+
             verify_inclusion_proof(
                 HashAlgorithm::Sha256,
                 leaf_index,
-                tree_size_proof,
+                mtc_proof.end,
                 &leaf_hash,
-                &proof_hashes,
+                &sibling_hashes,
                 &server_root,
             )
             .expect("Merkle inclusion proof must verify against the server root");

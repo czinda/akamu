@@ -6,8 +6,10 @@
 
 use synta::traits::Encode;
 use synta::{Decoder, Element, Encoder, Encoding, Null, ObjectIdentifier};
-use synta_certificate::oids::{ID_SHA256, ID_SHA384, ID_SHA3_256, ID_SHA3_384, ID_SHA3_512, ID_SHA512};
-use synta_certificate::{AlgorithmIdentifier, SubjectPublicKeyInfo};
+use synta_certificate::oids::{
+    ID_SHA256, ID_SHA384, ID_SHA3_256, ID_SHA3_384, ID_SHA3_512, ID_SHA512,
+};
+use synta_certificate::{AlgorithmIdentifier, Certificate, SubjectPublicKeyInfo};
 use synta_mtc::builder::x509cert::MtcX509CertificateBuilder;
 use synta_mtc::crypto::hash::HashAlgorithm;
 use synta_mtc::crypto::mtcproof::{MtcProof, MtcSignature};
@@ -78,8 +80,21 @@ pub fn build_standalone_der(p: StandaloneParams<'_>) -> Result<Vec<u8>, AcmeErro
         signatures,
     };
 
+    // cert_der from the DB is the full Certificate DER; extract only the TBSCertificate.
+    let full_cert: Certificate<'_> = Decoder::new(cert_der, Encoding::Der)
+        .decode()
+        .map_err(|e| AcmeError::Mtc(format!("parse cert DER for TBS extraction: {e}")))?;
+    let mut tbs_enc = Encoder::new(Encoding::Der);
+    full_cert
+        .tbs_certificate
+        .encode(&mut tbs_enc)
+        .map_err(|e| AcmeError::Mtc(format!("encode TBSCertificate for standalone: {e}")))?;
+    let tbs_der = tbs_enc
+        .finish()
+        .map_err(|e| AcmeError::Mtc(format!("finish TBSCertificate DER for standalone: {e}")))?;
+
     MtcX509CertificateBuilder::new()
-        .original_tbs_der(cert_der)
+        .original_tbs_der(&tbs_der)
         .log_id(log_id)
         .log_entry_index(leaf_index)
         .mtc_proof(mtc_proof)
