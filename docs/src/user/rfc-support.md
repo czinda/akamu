@@ -11,24 +11,25 @@ This page documents every RFC that is relevant to `Akāmu`, explaining what each
 | [draft-aaron-acme-profiles-01](#draft-aaron-acme-profiles-01) | ACME Certificate Profiles | Full |
 | [draft-ietf-cose-dilithium-11](#draft-ietf-cose-dilithium-11) | ML-DSA (Dilithium) for JOSE (JWK + JWS) | Full |
 | [draft-ietf-lamps-pq-composite-sigs](#draft-ietf-lamps-pq-composite-sigs) | ML-DSA Composite TLS Signature Schemes | Partial (provisional code points) |
-| [RFC 8555](#rfc-8555-core-acme) | Automatic Certificate Management Environment (ACME) | Full |
-| [RFC 8659](#rfc-8659-caa-dns-resource-record) | DNS Certification Authority Authorization (CAA) | Full |
-| [RFC 8657](#rfc-8657-caa-accounturi-and-validationmethods) | CAA Extensions: accounturi and validationmethods | Full |
-| [RFC 8737](#rfc-8737-tls-alpn-01-challenge) | ACME TLS-ALPN-01 Challenge Extension | Full |
-| [RFC 8738](#rfc-8738-ip-identifier-validation) | ACME IP Identifier Validation | Full |
-| [RFC 8739](#rfc-8739-acme-star) | ACME Short-Term, Automatically Renewed (STAR) Certificates | Full |
-| [RFC 8823](#rfc-8823-smime-certificates) | ACME Extensions for S/MIME Certificates | Full |
-| [RFC 9444](#rfc-9444-acme-for-subdomains) | ACME for Subdomains | Full |
-| [RFC 9773](#rfc-9773-acme-renewal-information-ari) | ACME Renewal Information (ARI) | Full |
-| [RFC 9799](#rfc-9799-acme-for-onion-domains) | ACME Extensions for .onion Special-Use Domain Names | Full |
-| [RFC 5280](#rfc-5280-x509-certificate-profile) | X.509 Certificate and CRL Profile | Full |
-| [RFC 6960](#rfc-6960-ocsp-responder) | Online Certificate Status Protocol (OCSP) | Full |
-| [RFC 9115](#rfc-9115-acme-profile-for-delegated-certificates) | ACME Profile for Delegated Certificates | Not implemented |
-| [RFC 9345](#rfc-9345-delegated-credentials-for-tls) | Delegated Credentials for TLS | Not implemented |
-| [RFC 9447](#rfc-9447-acme-authority-token-challenge) | ACME Challenges Using an Authority Token | Not implemented |
-| [RFC 9448](#rfc-9448-acme-tnauthlist-authority-token) | ACME TNAuthList Authority Token | Not implemented |
-| [RFC 9538](#rfc-9538-cdni-delegation-metadata) | ACME Delegation Metadata for CDNI | Not implemented |
-| [RFC 9891](#rfc-9891-acme-dtn-node-id-experimental) | ACME DTN Node ID Validation (Experimental) | Not implemented |
+| [RFC 7807](#rfc-7807--problem-details-for-http-apis) | Problem Details for HTTP APIs | Full |
+| [RFC 8555](#rfc-8555--core-acme) | Automatic Certificate Management Environment (ACME) | Full |
+| [RFC 8659](#rfc-8659--caa-dns-resource-record) | DNS Certification Authority Authorization (CAA) | Full |
+| [RFC 8657](#rfc-8657--caa-accounturi-and-validationmethods) | CAA Extensions: accounturi and validationmethods | Full |
+| [RFC 8737](#rfc-8737--tls-alpn-01-challenge) | ACME TLS-ALPN-01 Challenge Extension | Full |
+| [RFC 8738](#rfc-8738--ip-identifier-validation) | ACME IP Identifier Validation | Full |
+| [RFC 8739](#rfc-8739--acme-star) | ACME Short-Term, Automatically Renewed (STAR) Certificates | Full |
+| [RFC 8823](#rfc-8823--smime-certificates) | ACME Extensions for S/MIME Certificates | Full |
+| [RFC 9444](#rfc-9444--acme-for-subdomains) | ACME for Subdomains | Full |
+| [RFC 9773](#rfc-9773--acme-renewal-information-ari) | ACME Renewal Information (ARI) | Full |
+| [RFC 9799](#rfc-9799--acme-for-onion-domains) | ACME Extensions for .onion Special-Use Domain Names | Full |
+| [RFC 5280](#rfc-5280--x509-certificate-profile) | X.509 Certificate and CRL Profile | Full |
+| [RFC 6960](#rfc-6960--ocsp-responder) | Online Certificate Status Protocol (OCSP) | Full |
+| [RFC 9115](#rfc-9115--acme-profile-for-delegated-certificates) | ACME Profile for Delegated Certificates | Not implemented |
+| [RFC 9345](#rfc-9345--delegated-credentials-for-tls) | Delegated Credentials for TLS | Not implemented |
+| [RFC 9447](#rfc-9447--acme-challenges-using-an-authority-token) | ACME Challenges Using an Authority Token | Not implemented |
+| [RFC 9448](#rfc-9448--acme-tnauthlist-authority-token) | ACME TNAuthList Authority Token | Not implemented |
+| [RFC 9538](#rfc-9538--acme-delegation-metadata-for-cdni) | ACME Delegation Metadata for CDNI | Not implemented |
+| [RFC 9891](#rfc-9891--acme-dtn-node-id-validation-experimental) | ACME DTN Node ID Validation (Experimental) | Not implemented |
 
 ---
 
@@ -233,7 +234,7 @@ IPv4 values use dotted-decimal notation. IPv6 values use the compressed text rep
 
 STAR is designed for scenarios where certificate revocation is unreliable. Instead of revoking a compromised certificate, the operator simply cancels the STAR order; the attacker's window is limited to the remaining validity of the current short-lived certificate.
 
-Another key use case is CDN delegation (see [RFC 9115](#rfc-9115-acme-profile-for-delegated-certificates)): the domain owner holds the STAR order and can revoke the CDN's access at any time by canceling it.
+Another key use case is CDN delegation (see [RFC 9115](#rfc-9115--acme-profile-for-delegated-certificates)): the domain owner holds the STAR order and can revoke the CDN's access at any time by canceling it.
 
 ### Creating a STAR order
 
