@@ -60,7 +60,13 @@ pub async fn download_cert_post(
         .await?
         .ok_or(AcmeError::NotFound)?;
 
-    if cert.account_id != account_id {
+    // RFC 9115 §2.3.5: when the order's allow_cert_get flag is set, any
+    // authenticated account may download the certificate (not just the owner).
+    let allow_cert_get = db::orders::get_by_id(&state.db_ro, &cert.order_id)
+        .await?
+        .is_some_and(|o| o.allow_cert_get != 0);
+
+    if !allow_cert_get && cert.account_id != account_id {
         return Err(AcmeError::Unauthorized(
             "certificate belongs to a different account".into(),
         ));
