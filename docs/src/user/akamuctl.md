@@ -588,6 +588,115 @@ akamuctl cross-cert download <cross-cert-uuid> --format pem -o cross.pem
 
 Requires any authenticated role.
 
+## Delegation management
+
+RFC 9115 delegation objects associate a CSR template (and optional CNAME map) with an ACME
+account, allowing NDC (Name Delegation Consumer) clients to obtain certificates without
+running a challenge responder.  These commands require `delegation_enabled = true` in the
+server configuration.
+
+Read operations (`delegation list`, `delegation show`) are available to all authenticated
+roles.  Write operations (`delegation add`, `delegation update`, `delegation remove`)
+require the `administrator` or `ca_operations` role.
+
+### `delegation list`
+
+List all delegation objects, optionally filtered to a single account:
+
+```bash
+akamuctl delegation list
+akamuctl delegation list --account-id <account-uuid>
+```
+
+Returns each delegation's UUID, account ID, CSR template, CNAME map, creation timestamp,
+and last-updated timestamp.
+
+### `delegation show`
+
+Show a single delegation object by its UUID:
+
+```bash
+akamuctl delegation show <delegation-uuid>
+```
+
+### `delegation add`
+
+Create a delegation for an account.  The CSR template is a JSON file following RFC 9115 §4.
+The CNAME map is an optional JSON object mapping source FQDNs to target FQDNs.
+
+```bash
+akamuctl delegation add \
+    --account-id <account-uuid> \
+    --csr-template /path/to/template.json
+
+akamuctl delegation add \
+    --account-id <account-uuid> \
+    --csr-template /path/to/template.json \
+    --cname-map /path/to/cname-map.json
+```
+
+Minimal CSR template example (`template.json`):
+
+```json
+{
+  "keyTypes": [{"type": "EC", "curve": "P-256"}],
+  "subject": {
+    "commonName": {},
+    "organization": "ExampleCorp"
+  },
+  "extensions": {
+    "subjectAltName": {},
+    "keyUsage": ["digitalSignature"],
+    "extendedKeyUsage": ["1.3.6.1.5.5.7.3.1"]
+  }
+}
+```
+
+CNAME map example (`cname-map.json`):
+
+```json
+{
+  "cdn.example.com": "cdn.provider.example"
+}
+```
+
+The CSR template is validated against the RFC 9115 §4 schema at write time.  A malformed
+template is rejected before it is stored.
+
+### `delegation update`
+
+Replace the CSR template and optionally the CNAME map for an existing delegation.  The
+`account_id` is immutable and cannot be changed.
+
+```bash
+# Replace template, keep existing CNAME map unchanged
+akamuctl delegation update <delegation-uuid> \
+    --csr-template /path/to/new-template.json
+
+# Replace template and CNAME map
+akamuctl delegation update <delegation-uuid> \
+    --csr-template /path/to/new-template.json \
+    --cname-map /path/to/new-cname-map.json
+
+# Replace template and remove the CNAME map
+akamuctl delegation update <delegation-uuid> \
+    --csr-template /path/to/new-template.json \
+    --clear-cname-map
+```
+
+`--cname-map` and `--clear-cname-map` are mutually exclusive.
+
+### `delegation remove`
+
+Delete a delegation object.  Returns an error if one or more active orders still reference
+this delegation (the orders must be finalized or expired first).
+
+```bash
+akamuctl delegation remove <delegation-uuid>
+```
+
+Returns a `409 Conflict` error when active orders reference the delegation.
+
 ## Profile management
 
 ### `profile list`
@@ -751,6 +860,9 @@ Requires the `administrator` or `auditor` role.
 | `admin.login` | Operator authenticated to the admin API. |
 | `admin.logout` | Operator session invalidated. |
 | `admin.action` | Administrative action performed (operator CRUD, EAB management, etc.). |
+| `delegation.create` | RFC 9115 delegation object created. |
+| `delegation.update` | RFC 9115 delegation object updated. |
+| `delegation.delete` | RFC 9115 delegation object deleted. |
 | `security.violation` | Security anomaly detected. |
 
 ## Cosigner administration

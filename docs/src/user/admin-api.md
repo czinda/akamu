@@ -106,11 +106,11 @@ field controls the address; the default in the configuration example is
 | `POST` | `/admin/ca/{id}/cross-sign` | Y | Y | | |
 | `GET` | `/admin/cross-certs` | Y | Y | Y | Y |
 | `GET` | `/admin/cross-certs/{id}` | Y | Y | Y | Y |
-| `GET` | `/admin/delegations` | Y | Y | | |
-| `POST` | `/admin/delegations` | Y | | | |
-| `GET` | `/admin/delegations/{id}` | Y | Y | | |
-| `PUT` | `/admin/delegations/{id}` | Y | | | |
-| `DELETE` | `/admin/delegations/{id}` | Y | | | |
+| `GET` | `/admin/delegations` | Y | Y | Y | Y |
+| `POST` | `/admin/delegations` | Y | Y | | |
+| `GET` | `/admin/delegations/{id}` | Y | Y | Y | Y |
+| `PUT` | `/admin/delegations/{id}` | Y | Y | | |
+| `DELETE` | `/admin/delegations/{id}` | Y | Y | | |
 
 ### `POST /admin/session`
 
@@ -879,7 +879,7 @@ Returns `404 Not Found` when the cross-cert ID does not exist.
 
 ## Delegation management endpoints
 
-These endpoints are active only when `server.delegation_enabled = true` is set in the configuration. Delegations represent pre-configured RFC 9115 IdO-to-NDC delegation policies: a CSR template and an optional CNAME map. The `administrator` role is required for write operations; `ca_operations` may read.
+These endpoints are active only when `server.delegation_enabled = true` is set in the configuration. Delegations represent pre-configured RFC 9115 IdO-to-NDC delegation policies: a CSR template and an optional CNAME map. Read operations (`GET`) are available to all authenticated roles; write operations (`POST`, `PUT`, `DELETE`) require the `administrator` or `ca_operations` role.
 
 ### `GET /admin/delegations`
 
@@ -981,6 +981,24 @@ Replace the `csr_template` and/or `cname_map` of an existing delegation. The `cs
 Delete a delegation object. Returns `409 Conflict` when one or more orders still reference this delegation (the orders must be finalized or deleted first).
 
 **Response: `204 No Content`**, `404 Not Found` when the ID does not exist, `409 Conflict` when orders reference it.
+
+### Audit events
+
+Every write operation emits a structured audit event persisted to the `audit_events` table:
+
+| Operation | Event type |
+|-----------|------------|
+| `POST /admin/delegations` | `delegation.create` |
+| `PUT /admin/delegations/{id}` | `delegation.update` |
+| `DELETE /admin/delegations/{id}` | `delegation.delete` |
+
+Query these events with `GET /admin/audit?type=delegation.create` or `akamuctl audit --type delegation.create`.
+
+### CLI
+
+All delegation management endpoints are wrapped by `akamuctl delegation`.  See
+[akamuctl — Admin CLI](akamuctl.md#delegation-management) for the full command
+reference including flags and examples.
 
 
 ## Audit trail

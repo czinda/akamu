@@ -1003,6 +1003,10 @@ Delegations are managed through the Admin API. The `delegation_enabled` config f
 
 The CSR template syntax is validated at write time (`POST` and `PUT`). A malformed template is rejected with `400 Bad Request` before it reaches the database.
 
+Every write operation emits a structured audit event: `delegation.create` (POST), `delegation.update` (PUT), or `delegation.delete` (DELETE).  These events are queryable via `GET /admin/audit` and the `akamuctl audit --type delegation.*` filter.
+
+Delegation management is also available through `akamuctl delegation` — see [akamuctl — Admin CLI](akamuctl.md#delegation-management) for the full command reference.
+
 ### Delegation order lifecycle
 
 ```mermaid
@@ -1021,12 +1025,6 @@ Delegation orders skip the `pending` state and the challenge/authorization flow 
 ---
 
 ## Not implemented
-
-### RFC 9115 — ACME Profile for Delegated Certificates
-
-Enables a three-party delegation model: a domain owner (IdO) authorizes a third party (e.g., a CDN) to obtain certificates for the IdO's domain, where the certificate's public key belongs to the third party rather than the domain owner. The CA acts as a proxy between the two parties and enforces a JSON CSR template that restricts what the delegate may request.
-
-**Not implemented.** This requires a dedicated API surface for IdOs to manage delegation policies, plus proxy routing between the NDC and IdO accounts. It is primarily useful for large-scale CDN deployments.
 
 ### RFC 9447 — ACME Challenges Using an Authority Token
 

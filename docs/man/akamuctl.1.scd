@@ -399,6 +399,61 @@ Session tokens obtained after *login* are cached in
 	*-o*, *--output* _FILE_
 		Write to file instead of standard output.
 
+## Delegation management (RFC 9115)
+
+Delegation objects associate an RFC 9115 CSR template and optional CNAME map
+with an ACME account so that NDC clients can obtain certificates without running
+a challenge responder.  Requires *server.delegation_enabled = true* in the
+server configuration.
+
+Read operations are available to all authenticated roles.  Write operations
+(*add*, *update*, *remove*) require the *administrator* or *ca_operations* role.
+
+*delegation list* [*--account-id* _ACCOUNT_ID_]
+	List all delegation objects.
+
+	*--account-id* _ACCOUNT_ID_
+		Restrict the listing to delegations owned by the given ACME
+		account UUID.
+
+*delegation show* _DELEGATION_ID_
+	Show the details of a single delegation object by its UUID,
+	including the CSR template and CNAME map.
+
+*delegation add* --account-id _ACCOUNT_ID_ --csr-template _FILE_ [OPTIONS]
+	Create a delegation for an account.
+
+	*--account-id* _ACCOUNT_ID_
+		UUID of the ACME account that will own the delegation.
+
+	*--csr-template* _FILE_
+		JSON file containing the CSR template (RFC 9115 §4).  The
+		template is validated at write time; a malformed template is
+		rejected with HTTP 400.
+
+	*--cname-map* _FILE_
+		Optional JSON file containing a CNAME map: a JSON object
+		mapping source FQDNs to target FQDNs.
+
+*delegation update* _DELEGATION_ID_ --csr-template _FILE_ [OPTIONS]
+	Replace the CSR template and optionally the CNAME map for a
+	delegation.  The *account_id* is immutable.
+
+	*--csr-template* _FILE_
+		Path to the replacement CSR template (JSON, RFC 9115 §4).
+
+	*--cname-map* _FILE_
+		Path to the replacement CNAME map (JSON object).
+		Mutually exclusive with *--clear-cname-map*.
+
+	*--clear-cname-map*
+		Remove the existing CNAME map (set it to null).
+		Mutually exclusive with *--cname-map*.
+
+*delegation remove* _DELEGATION_ID_
+	Delete a delegation object.  Returns HTTP 409 Conflict when
+	one or more active orders still reference the delegation.
+
 ## Server configuration
 
 *server-config*
