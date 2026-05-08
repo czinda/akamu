@@ -79,7 +79,7 @@ pub async fn finalize_order(
 
     // RFC 9115 §4: validate the CSR against the delegation template when present.
     if let Some(ref dlg_id) = order.delegation_id {
-        let dlg = db::delegations::get_by_id(&state.db, dlg_id)
+        let dlg = db::delegations::get_by_id(&state.db_ro, dlg_id)
             .await?
             .ok_or_else(|| AcmeError::Internal(format!("delegation {dlg_id} not found")))?;
         let template: ca::csr_template::CsrTemplate = serde_json::from_str(&dlg.csr_template)
