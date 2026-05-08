@@ -50,6 +50,12 @@ pub async fn get_directory(State(state): State<Arc<AppState>>, ca_id: CaId) -> i
         }
         meta["auto-renewal"] = auto_renewal;
     }
+    if state.config.server.delegation_enabled {
+        meta["delegation-enabled"] = json!(true);
+    }
+    if state.config.server.allow_certificate_get {
+        meta["allow-certificate-get"] = json!(true);
+    }
     let loaded_profiles = state.profiles.profiles_for_ca(&ca_id.0);
     if !loaded_profiles.is_empty() {
         meta["profiles"] = json!(loaded_profiles);
