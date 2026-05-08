@@ -287,6 +287,10 @@ pub fn build_admin_router(state: Arc<AppState>) -> Router {
             post(crate::admin::auth::post_session).delete(crate::admin::auth::delete_session),
         )
         .route(
+            "/admin/session/eab",
+            post(crate::admin::auth::post_session_eab),
+        )
+        .route(
             "/admin/operators",
             axum::routing::get(admin::get_operators).post(admin::post_operators),
         )

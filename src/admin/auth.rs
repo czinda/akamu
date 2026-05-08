@@ -30,6 +30,7 @@ use axum::response::{IntoResponse, Response};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use serde_json::json;
+use synta_certificate::HmacProvider as _;
 
 use crate::audit::{AuditEvent, AuditEventType};
 use crate::db;
@@ -649,6 +650,7 @@ pub async fn post_session(
         axum::Json(json!({
             "session_token": token,
             "role": operator.role.as_str(),
+            "operator": operator.name,
             "expires_at": expires_at,
         })),
     )
@@ -659,6 +661,236 @@ pub async fn post_session(
         if let Ok(hv) = axum::http::HeaderValue::from_str(&negotiate) {
             resp.headers_mut().insert("WWW-Authenticate", hv);
         }
+    }
+
+    // Set an HttpOnly session cookie so browser-side code can also use it.
+    let cookie = format!(
+        "session={token}; Path=/api; Secure; HttpOnly; SameSite=Strict; Max-Age={ttl_secs}"
+    );
+    if let Ok(hv) = axum::http::HeaderValue::from_str(&cookie) {
+        resp.headers_mut().insert("Set-Cookie", hv);
+    }
+    resp
+}
+
+/// `POST /admin/session/eab`
+///
+/// Authenticate using an EAB kid + HMAC-SHA256 signature (web UI secondary login).
+///
+/// Request body:
+/// ```json
+/// {"kid": "…", "timestamp": 1234567890, "signature": "<base64url(HMAC-SHA256(kid.timestamp))>"}
+/// ```
+///
+/// The message authenticated is `kid + "." + timestamp_as_decimal_string`.
+/// Replay window: ±60 seconds.  The EAB key must have been provisioned via the
+/// admin API (so that `created_by_operator_id` is known); config-file keys are
+/// rejected with 403.
+pub async fn post_session_eab(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Json(payload): axum::extract::Json<serde_json::Value>,
+) -> axum::response::Response {
+    use synta_certificate::default_hmac_provider;
+
+    let kid = match payload.get("kid").and_then(|v| v.as_str()) {
+        Some(k) if !k.is_empty() => k.to_owned(),
+        _ => {
+            return (StatusCode::BAD_REQUEST, "kid is required").into_response();
+        }
+    };
+    let timestamp = match payload.get("timestamp").and_then(|v| v.as_i64()) {
+        Some(t) => t,
+        None => {
+            return (StatusCode::BAD_REQUEST, "timestamp (integer) is required").into_response();
+        }
+    };
+    let signature_b64 = match payload.get("signature").and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => s.to_owned(),
+        _ => {
+            return (StatusCode::BAD_REQUEST, "signature is required").into_response();
+        }
+    };
+
+    // Replay window: ±60 seconds.
+    let now = crate::util::unix_now();
+    if (now - timestamp).abs() > 60 {
+        return (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(json!({
+                "error": "timestamp_out_of_window",
+                "message": "timestamp must be within 60 seconds of server time"
+            })),
+        )
+            .into_response();
+    }
+
+    // Look up the EAB key.
+    let eab_row = match db::eab::get_by_kid(&state.db, &kid).await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            state
+                .record_audit(
+                    AuditEvent::failure(AuditEventType::AdminLogin)
+                        .with_detail("{\"method\":\"eab\",\"reason\":\"kid not found\"}"),
+                )
+                .await;
+            return (
+                StatusCode::UNAUTHORIZED,
+                "EAB key not found or not authorized for web UI login",
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "post_session_eab: EAB key lookup failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    // Only keys provisioned via the admin API (with an operator owner) may be
+    // used for web UI login.
+    let operator_id = match eab_row.created_by_operator_id {
+        Some(id) => id,
+        None => {
+            state
+                .record_audit(
+                    AuditEvent::failure(AuditEventType::AdminLogin)
+                        .with_detail("{\"method\":\"eab\",\"reason\":\"no operator owner\"}"),
+                )
+                .await;
+            return (
+                StatusCode::FORBIDDEN,
+                "EAB key was provisioned from config and cannot be used for web UI login",
+            )
+                .into_response();
+        }
+    };
+
+    // Decode the HMAC key and the provided signature.
+    let hmac_key = match URL_SAFE_NO_PAD.decode(&eab_row.hmac_key_b64u) {
+        Ok(k) => k,
+        Err(_) => {
+            tracing::error!(kid = %kid, "EAB key: base64url decode failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let sig_bytes = match URL_SAFE_NO_PAD
+        .decode(&signature_b64)
+        .or_else(|_| base64::engine::general_purpose::STANDARD.decode(&signature_b64))
+    {
+        Ok(b) => b,
+        Err(_) => {
+            return (StatusCode::BAD_REQUEST, "signature is not valid base64url").into_response();
+        }
+    };
+
+    // Message: "kid.timestamp"
+    let message = format!("{kid}.{timestamp}");
+    if default_hmac_provider()
+        .hmac_verify("SHA2-256", &hmac_key, message.as_bytes(), &sig_bytes)
+        .is_err()
+    {
+        state
+            .record_audit(
+                AuditEvent::failure(AuditEventType::AdminLogin)
+                    .with_detail("{\"method\":\"eab\",\"reason\":\"hmac verify failed\"}"),
+            )
+            .await;
+        return (
+            StatusCode::UNAUTHORIZED,
+            "HMAC signature verification failed",
+        )
+            .into_response();
+    }
+
+    // Look up the owning operator.
+    let op = match db::operators::get_by_id(&state.db, operator_id).await {
+        Ok(Some(op)) => op,
+        Ok(None) => {
+            tracing::warn!(
+                kid = %kid,
+                operator_id = operator_id,
+                "EAB key owner operator no longer exists"
+            );
+            return (StatusCode::FORBIDDEN, "EAB key owner operator not found").into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "post_session_eab: operator lookup failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    if op.active == 0 {
+        return (StatusCode::FORBIDDEN, "operator account is not active").into_response();
+    }
+    if let Err(resp) = check_lockout(&op) {
+        return resp;
+    }
+
+    let role = match op.role.parse::<OperatorRole>() {
+        Ok(r) => r,
+        Err(_) => {
+            tracing::error!(role = %op.role, "EAB operator has unknown role");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let token = match create_session(
+        &state,
+        op.id,
+        op.name.clone(),
+        role,
+        op.ca_id.clone(),
+        AdminAuthMethod::Eab,
+    )
+    .await
+    {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!(error = %e, "EAB session creation failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let ts_str = crate::util::rfc3339_now();
+    if let Err(e) = db::operators::update_last_seen(&state.db, op.id, &ts_str).await {
+        tracing::warn!(error = %e, operator_id = op.id, "failed to update last_seen_at");
+    }
+    let session_prefix = token.get(..8).unwrap_or(&token);
+    state
+        .record_audit(
+            AuditEvent::success(AuditEventType::AdminLogin)
+                .with_principal(&op.name)
+                .with_detail(
+                    serde_json::json!({
+                        "method": "eab",
+                        "kid": kid,
+                        "session_prefix": session_prefix,
+                    })
+                    .to_string(),
+                ),
+        )
+        .await;
+
+    let admin = state.config.admin.as_ref();
+    let ttl_secs = admin.map(|a| a.session_ttl_secs).unwrap_or(3600);
+    let expires_unix = crate::util::unix_now() + ttl_secs as i64;
+    let expires_at = crate::util::unix_to_rfc3339(expires_unix);
+
+    let cookie = format!(
+        "session={token}; Path=/api; Secure; HttpOnly; SameSite=Strict; Max-Age={ttl_secs}"
+    );
+    let mut resp = (
+        StatusCode::OK,
+        axum::Json(json!({
+            "session_token": token,
+            "role": role.as_str(),
+            "operator": op.name,
+            "expires_at": expires_at,
+        })),
+    )
+        .into_response();
+    if let Ok(hv) = axum::http::HeaderValue::from_str(&cookie) {
+        resp.headers_mut().insert("Set-Cookie", hv);
     }
     resp
 }

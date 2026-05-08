@@ -401,6 +401,8 @@ pub enum AdminAuthMethod {
     Cert,
     /// Authenticated via GSSAPI/SPNEGO (Kerberos).
     Gssapi,
+    /// Authenticated via EAB kid + HMAC-SHA256 signature (web UI secondary login).
+    Eab,
 }
 
 /// An active admin operator session stored in `AppState::admin_sessions`.

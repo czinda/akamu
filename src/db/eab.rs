@@ -17,6 +17,9 @@ pub struct EabKeyRow {
     /// JSON array of profile IDs that the account created with this key will
     /// inherit.  `None` = no restriction.
     pub profile_grants: Option<String>,
+    /// Operator who provisioned this key via the admin API.
+    /// `None` = key was provisioned from the config file or before migration 0018.
+    pub created_by_operator_id: Option<i64>,
 }
 
 /// Seed a key from the config file.
@@ -68,7 +71,7 @@ pub async fn get_by_kid(
     kid: &str,
 ) -> Result<Option<EabKeyRow>, AcmeError> {
     let row = super::query_as::<EabKeyRow>(
-        "SELECT kid, hmac_key_b64u, created, used_at, profile_grants \
+        "SELECT kid, hmac_key_b64u, created, used_at, profile_grants, created_by_operator_id \
          FROM eab_keys WHERE kid = ?",
     )
     .bind(kid)
@@ -80,22 +83,27 @@ pub async fn get_by_kid(
 /// Provision a new EAB key with optional profile grants (for the admin endpoint).
 ///
 /// `profile_grants` is a JSON-serialised array of permitted profile IDs, or
-/// `None` for no restriction.  Returns a `Conflict` error if the `kid` already
-/// exists.
+/// `None` for no restriction.  `created_by_operator_id` links the key to the
+/// operator who provisioned it, enabling EAB-based web UI login.
+/// Returns a `Conflict` error if the `kid` already exists.
 pub async fn insert_with_grants(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     kid: &str,
     hmac_key_b64u: &str,
     profile_grants: Option<&str>,
+    created_by_operator_id: Option<i64>,
     now: i64,
 ) -> Result<(), AcmeError> {
     super::query(
-        "INSERT INTO eab_keys (kid, hmac_key_b64u, created, profile_grants) VALUES (?, ?, ?, ?)",
+        "INSERT INTO eab_keys \
+         (kid, hmac_key_b64u, created, profile_grants, created_by_operator_id) \
+         VALUES (?, ?, ?, ?, ?)",
     )
     .bind(kid)
     .bind(hmac_key_b64u)
     .bind(now)
     .bind(profile_grants)
+    .bind(created_by_operator_id)
     .execute(executor)
     .await?;
     Ok(())
@@ -137,7 +145,8 @@ pub async fn list(
     offset: i64,
 ) -> Result<Vec<EabKeyRow>, AcmeError> {
     let mut qb = super::DynQueryBuilder::new(
-        "SELECT kid, hmac_key_b64u, created, used_at, profile_grants FROM eab_keys WHERE 1=1",
+        "SELECT kid, hmac_key_b64u, created, used_at, profile_grants, created_by_operator_id \
+         FROM eab_keys WHERE 1=1",
     );
     match used_filter {
         Some(true) => qb.push(" AND used_at IS NOT NULL"),
@@ -236,7 +245,7 @@ mod tests {
     #[tokio::test]
     async fn insert_with_grants_stores_grants() {
         let db = open_db().await;
-        insert_with_grants(&db, "kid6", "key", Some("[\"p1\"]"), 1_000)
+        insert_with_grants(&db, "kid6", "key", Some("[\"p1\"]"), None, 1_000)
             .await
             .unwrap();
         let row = get_by_kid(&db, "kid6").await.unwrap().unwrap();
@@ -246,7 +255,7 @@ mod tests {
     #[tokio::test]
     async fn insert_with_grants_null_grants() {
         let db = open_db().await;
-        insert_with_grants(&db, "kid7", "key", None, 1_000)
+        insert_with_grants(&db, "kid7", "key", None, None, 1_000)
             .await
             .unwrap();
         let row = get_by_kid(&db, "kid7").await.unwrap().unwrap();
