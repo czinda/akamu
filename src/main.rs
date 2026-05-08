@@ -262,7 +262,11 @@ async fn run() -> Result<(), String> {
     }
 
     // ── MTC transparency log ──────────────────────────────────────────────────
-    let mtc_algorithm = synta_mtc::crypto::HashAlgorithm::Sha256;
+    let mtc_algorithm: synta_mtc::crypto::HashAlgorithm = config
+        .mtc
+        .hash_alg
+        .parse()
+        .map_err(|e| format!("invalid mtc.hash_alg: {e}"))?;
 
     // Load or generate the MTC signing key (distinct from the CA key per §5.5).
     let (mtc_signing_key, mtc_signing_hash_alg) = if let Some(ref sk_cfg) = config.mtc.signing_key {
@@ -295,6 +299,14 @@ async fn run() -> Result<(), String> {
             mtc::log::acquire_log_lock(&config.mtc.log_path).map_err(|e| format!("{e}"))?;
         let log = mtc::log::open_or_create(&config.mtc.log_path, mtc_algorithm)
             .map_err(|e| format!("MTC log init: {e}"))?;
+        let file_alg = log.algorithm();
+        if file_alg != mtc_algorithm {
+            return Err(format!(
+                "MTC log file at '{}' was created with {} but config specifies {}; \
+                 delete the log file to recreate with the new algorithm",
+                config.mtc.log_path, file_alg, mtc_algorithm,
+            ));
+        }
         let shared = Arc::new(tokio::sync::Mutex::new(log));
         Arc::new(MtcState {
             log: Some(shared),

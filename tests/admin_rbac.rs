@@ -64,6 +64,7 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
             landmark_interval_secs: 86400,
             max_active_landmarks: 100,
             checkpoint_retention_count: 1000,
+            hash_alg: "sha256".into(),
         },
         server: ServerConfig::default(),
         tls: Default::default(),

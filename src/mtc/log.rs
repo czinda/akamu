@@ -113,6 +113,11 @@ impl CachedLog {
             .read_all_hashes()
             .map_err(|e| AcmeError::Mtc(format!("read_all_hashes: {e}")))
     }
+
+    /// The hash algorithm recorded in this log file's header.
+    pub fn algorithm(&self) -> HashAlgorithm {
+        self.log.algorithm()
+    }
 }
 
 /// Shared handle to the disk-backed MTC log.

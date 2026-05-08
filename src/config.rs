@@ -688,6 +688,13 @@ pub struct MtcConfig {
     /// checkpoint is produced.  Default: 1000.
     #[serde(default = "default_checkpoint_retention_count")]
     pub checkpoint_retention_count: u32,
+    /// Hash algorithm used for Merkle tree leaf hashing.  Default: `"sha256"`.
+    /// Valid values: `sha256`, `sha384`, `sha512`, `sha3-256`, `sha3-384`, `sha3-512`.
+    ///
+    /// WARNING: changing this for an existing log requires deleting the log file
+    /// and recreating it; the algorithm is stored in the log's file header.
+    #[serde(default = "default_hash_alg")]
+    pub hash_alg: String,
 }
 
 fn default_checkpoint_interval_secs() -> u64 {
@@ -1495,6 +1502,14 @@ impl Config {
             }
         }
 
+        if let Err(e) = self
+            .mtc
+            .hash_alg
+            .parse::<synta_mtc::crypto::HashAlgorithm>()
+        {
+            return Err(format!("[mtc].hash_alg: {e}"));
+        }
+
         Ok(())
     }
 
@@ -2257,5 +2272,42 @@ enabled = false
         let cfg: Config = toml::from_str(toml).unwrap();
         assert_eq!(cfg.cas[0].caa_identities, vec!["rsa.example.com"]);
         assert!(cfg.cas[1].caa_identities.is_empty());
+    }
+
+    fn minimal_toml_with_mtc(hash_alg: &str) -> String {
+        format!(
+            r#"
+listen_addr = "127.0.0.1:8080"
+base_url = "https://acme.example.com"
+[database]
+url = "sqlite:///tmp/test.db"
+[ca]
+key_file = "/tmp/ca.key"
+cert_file = "/tmp/ca.crt"
+[mtc]
+log_path = "/tmp/mtc.log"
+enabled = false
+hash_alg = "{hash_alg}"
+"#
+        )
+    }
+
+    #[test]
+    fn mtc_hash_alg_invalid_fails_validate() {
+        let cfg: Config = toml::from_str(&minimal_toml_with_mtc("md5")).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("hash_alg"), "err: {err}");
+        assert!(err.contains("md5"), "err: {err}");
+    }
+
+    #[test]
+    fn mtc_hash_alg_valid_passes_validate() {
+        for alg in [
+            "sha256", "sha384", "sha512", "sha3-256", "sha3-384", "sha3-512",
+        ] {
+            let cfg: Config = toml::from_str(&minimal_toml_with_mtc(alg)).unwrap();
+            cfg.validate()
+                .unwrap_or_else(|e| panic!("hash_alg={alg} rejected: {e}"));
+        }
     }
 }

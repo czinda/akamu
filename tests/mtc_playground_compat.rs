@@ -98,6 +98,7 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
             landmark_interval_secs: 86400,
             max_active_landmarks: 100,
             checkpoint_retention_count: 1000,
+            hash_alg: "sha256".into(),
         },
         server: ServerConfig::default(),
         tls: Default::default(),
@@ -697,12 +698,12 @@ fn standalone_cert_format_conforms_to_draft03() {
         AlgorithmIdentifier as OwnedAlgId, Certificate as OwnedCert, SubjectPublicKeyInfo,
         TBSCertificate, Time, Validity,
     };
-    use synta_certificate::{
-        AlgorithmIdentifier as BAlgId, SubjectPublicKeyInfo as BSPki,
-    };
+    use synta_certificate::{AlgorithmIdentifier as BAlgId, SubjectPublicKeyInfo as BSPki};
     use synta_mtc::builder::x509cert::MtcX509CertificateBuilder;
     use synta_mtc::crypto::mtcproof::{MtcProof, MtcSignature};
-    use synta_mtc::types::constants::{ID_ALG_MTC_PROOF_EXP, ID_RDNA_TRUST_ANCHOR_ID_EXP, ID_SHA256};
+    use synta_mtc::types::constants::{
+        ID_ALG_MTC_PROOF_EXP, ID_RDNA_TRUST_ANCHOR_ID_EXP, ID_SHA256,
+    };
     use synta_mtc::types::LogID;
 
     // Build a minimal TBSCertificate to act as the original cert.
@@ -722,12 +723,8 @@ fn standalone_cert_format_conforms_to_draft03() {
         },
         issuer: synta_certificate::owned::Name::RdnSequence(vec![]),
         validity: Validity {
-            not_before: Time::GeneralTime(
-                GeneralizedTime::new(2024, 1, 1, 0, 0, 0, None).unwrap(),
-            ),
-            not_after: Time::GeneralTime(
-                GeneralizedTime::new(2025, 1, 1, 0, 0, 0, None).unwrap(),
-            ),
+            not_before: Time::GeneralTime(GeneralizedTime::new(2024, 1, 1, 0, 0, 0, None).unwrap()),
+            not_after: Time::GeneralTime(GeneralizedTime::new(2025, 1, 1, 0, 0, 0, None).unwrap()),
         },
         subject: synta_certificate::owned::Name::RdnSequence(vec![]),
         subject_public_key_info: spki,

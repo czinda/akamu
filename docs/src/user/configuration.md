@@ -504,6 +504,28 @@ Maximum number of landmark rows to retain in the `mtc_landmarks` table. After ea
 max_active_landmarks = 100
 ```
 
+### `hash_alg`
+
+**Optional. Default: `"sha256"`.**
+
+Hash algorithm used for Merkle tree leaf hashing. Valid values:
+
+| Value | Algorithm |
+|-------|-----------|
+| `"sha256"` | SHA-256 (32-byte leaf hashes) |
+| `"sha384"` | SHA-384 (48-byte leaf hashes) |
+| `"sha512"` | SHA-512 (64-byte leaf hashes) |
+| `"sha3-256"` | SHA3-256 (32-byte leaf hashes) |
+| `"sha3-384"` | SHA3-384 (48-byte leaf hashes) |
+| `"sha3-512"` | SHA3-512 (64-byte leaf hashes) |
+
+The algorithm is stored in the log file's header at creation time and cannot be changed for an existing log. If you change `hash_alg` after the log file already exists, Akāmu will refuse to start with an error identifying the mismatch. To switch algorithms you must delete the log file (and its lock file, if any) and let the server recreate it from scratch.
+
+```toml
+[mtc]
+hash_alg = "sha256"
+```
+
 ### `[mtc.signing_key]`
 
 Optional subsection. When present, enables checkpoint production and standalone/landmark certificate construction. The signing key **must** be distinct from the X.509 CA key (§5.5 of draft-ietf-plants-merkle-tree-certs).
@@ -524,7 +546,7 @@ Key algorithm for auto-generation. Accepts the same values as `[ca].key_type`. P
 
 Hash algorithm used for ECDSA/RSA signing of MTC checkpoints and cosignatures: `"sha256"`, `"sha384"`, `"sha512"`. Ignored for EdDSA and ML-DSA signing key types.
 
-This field controls the *signing* hash only and is unrelated to the Merkle tree leaf-hash algorithm, which is fixed at SHA-256 for the current release.
+This field controls the *signing* hash only and is unrelated to the Merkle tree leaf-hash algorithm, which is configured separately via `[mtc].hash_alg`.
 
 ```toml
 [mtc.signing_key]

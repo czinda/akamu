@@ -33,12 +33,12 @@ use synta::traits::Encode;
 use synta::types::primitive::Integer;
 use synta::types::string::OctetString;
 use synta::{BitString, Decoder, Encoder, Encoding};
+use synta_certificate::owned::Certificate as OwnedCert;
 use synta_certificate::{
     encode_key_usage, BackendPrivateKey, CertificateBuilder, CertificateSigner as _, NameBuilder,
     PrivateKey as _, SubjectAlternativeNameBuilder, KEY_USAGE_DIGITAL_SIGNATURE,
 };
 use synta_certificate::{AlgorithmIdentifier, SubjectPublicKeyInfo};
-use synta_certificate::owned::Certificate as OwnedCert;
 use synta_mtc::crypto::mtcproof::MtcProof;
 use synta_mtc::crypto::{hash_log_entry, verify_inclusion_proof, HashAlgorithm};
 use synta_mtc::types::constants::ID_ALG_MTC_PROOF_EXP;
@@ -387,6 +387,7 @@ async fn build_akamu_state(
             landmark_interval_secs: 86400,
             max_active_landmarks: 100,
             checkpoint_retention_count: 1000,
+            hash_alg: "sha256".into(),
         },
         server: {
             let mut s = ServerConfig::default();
@@ -669,6 +670,22 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
         StatusCode::OK,
         "standalone cert endpoint must return 200"
     );
+    assert_eq!(
+        resp.headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or(""),
+        "application/pkix-cert",
+        "standalone endpoint must return Content-Type: application/pkix-cert"
+    );
+    assert_eq!(
+        resp.headers()
+            .get("x-mtc-version")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or(""),
+        "draft-03",
+        "standalone endpoint must return X-MTC-Version: draft-03"
+    );
 
     let body_bytes = http_body_util::BodyExt::collect(resp.into_body())
         .await
@@ -704,12 +721,14 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
         .serial_number
         .as_u64()
         .expect("serialNumber as u64");
-    assert!(leaf_index > 0, "serialNumber (log entry index) must be non-zero");
+    assert!(
+        leaf_index > 0,
+        "serialNumber (log entry index) must be non-zero"
+    );
 
     // 9d. signatureValue is a TLS-encoded MtcProof (not a cryptographic signature).
     let proof_bytes = cert.signature_value.as_bytes();
-    let mtc_proof = MtcProof::decode(proof_bytes)
-        .expect("decode MtcProof from signatureValue");
+    let mtc_proof = MtcProof::decode(proof_bytes).expect("decode MtcProof from signatureValue");
 
     // 9e. produce_checkpoint() contacts the cosigner and embeds the result as an
     // MtcSignature in the proof.  Verify at least one cosignature is present.
@@ -727,7 +746,10 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
     );
 
     // 9f. For a full-tree proof: start == 0, end == tree_size (> 0).
-    assert_eq!(mtc_proof.start, 0, "MtcProof start must be 0 for full-tree proof");
+    assert_eq!(
+        mtc_proof.start, 0,
+        "MtcProof start must be 0 for full-tree proof"
+    );
     assert!(mtc_proof.end > 0, "MtcProof end must be positive");
 
     // 9g. Fetch the current Merkle root from the server.
@@ -735,13 +757,19 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
         .get(format!("{base_url}/acme/mtc/root").parse().unwrap())
         .await
         .expect("GET /acme/mtc/root");
-    assert_eq!(root_resp.status(), StatusCode::OK, "/acme/mtc/root must return 200");
+    assert_eq!(
+        root_resp.status(),
+        StatusCode::OK,
+        "/acme/mtc/root must return 200"
+    );
     let root_body = http_body_util::BodyExt::collect(root_resp.into_body())
         .await
         .unwrap()
         .to_bytes();
     let root_json: serde_json::Value = serde_json::from_slice(&root_body).expect("parse root JSON");
-    let server_root_hex = root_json["rootHash"].as_str().expect("rootHash field in JSON");
+    let server_root_hex = root_json["rootHash"]
+        .as_str()
+        .expect("rootHash field in JSON");
     let server_root: Vec<u8> = (0..server_root_hex.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&server_root_hex[i..i + 2], 16).unwrap())
@@ -776,8 +804,7 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
             )
             .expect("build log entry from TBS cert");
             let entry = MerkleTreeCertEntry::TbsCertEntry(log_entry);
-            let leaf_hash =
-                hash_log_entry(HashAlgorithm::Sha256, &entry).expect("hash_log_entry");
+            let leaf_hash = hash_log_entry(HashAlgorithm::Sha256, &entry).expect("hash_log_entry");
 
             // Split the flat byte string into individual 32-byte sibling hashes.
             let sibling_hashes: Vec<Vec<u8>> = mtc_proof

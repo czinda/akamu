@@ -100,6 +100,7 @@ pub async fn start(
             landmark_interval_secs: 86400,
             max_active_landmarks: 100,
             checkpoint_retention_count: 1000,
+            hash_alg: "sha256".to_string(),
         },
         server: ServerConfig {
             http_validation_port: challenge_port,
