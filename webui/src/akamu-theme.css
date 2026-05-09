@@ -1,0 +1,59 @@
+/**
+ * Akamu brand theme for PatternFly v6.
+ *
+ * Colours extracted from the official Akamu logo:
+ *   Navy  #1B3054  — shield body / chrome (masthead, sidebar)
+ *   Gold  #CF8E1A  — arrow / brand accent / interactive elements
+ *   Steel #3D7AB5  — wave swirl / secondary / info accents
+ *
+ * Enable at build time: VITE_AKAMU_THEME=true npm run build
+ * Enable at dev time:   VITE_AKAMU_THEME=true npm run dev
+ */
+
+/* ── Brand colour scale (replaces PatternFly's default blue) ─ */
+:root {
+  --pf-t--global--color--brand--100: #f5e4b4;  /* pale gold tint   */
+  --pf-t--global--color--brand--200: #cf8e1a;  /* primary gold     */
+  --pf-t--global--color--brand--300: #b57a17;  /* hover gold       */
+  --pf-t--global--color--brand--400: #9a6613;  /* pressed gold     */
+  --pf-t--global--color--brand--500: #7b5210;  /* dark gold        */
+
+  /* Text/icon ON a gold surface — navy passes AA (4.8:1 vs gold) */
+  --pf-t--global--text--color--on-brand--default: #1b3054;
+  --pf-t--global--text--color--on-brand--hover:   #1b3054;
+  --pf-t--global--text--color--on-brand--clicked: #1b3054;
+  --pf-t--global--icon--color--on-brand--default: #1b3054;
+  --pf-t--global--icon--color--on-brand--hover:   #1b3054;
+  --pf-t--global--icon--color--on-brand--clicked: #1b3054;
+}
+
+/* ── Masthead (top bar) ─────────────────────────────────────── */
+.pf-v6-c-masthead {
+  --pf-v6-c-masthead--BackgroundColor: #1b3054;
+  --pf-v6-c-masthead--BorderColor:     rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+}
+
+/* ── Page sidebar ───────────────────────────────────────────── */
+.pf-v6-c-page__sidebar {
+  --pf-v6-c-page__sidebar--BackgroundColor: #1b3054;
+}
+
+/* ── Nav links on the dark sidebar ─────────────────────────── */
+.pf-v6-c-page__sidebar .pf-v6-c-nav {
+  --pf-v6-c-nav__link--Color:               rgba(255, 255, 255, 0.78);
+  --pf-v6-c-nav__link--hover--Color:        #ffffff;
+  --pf-v6-c-nav__section-title--Color:      rgba(255, 255, 255, 0.45);
+
+  /* Override hover background directly at component level.
+   * The global token --action--plain--alt--hover resolves to white in light
+   * mode; overriding it here keeps the change scoped to the nav only. */
+  --pf-v6-c-nav__link--hover--BackgroundColor: rgba(255, 255, 255, 0.10);
+  --pf-t--global--background--color--action--plain--alt--hover:   rgba(255, 255, 255, 0.10);
+  --pf-t--global--background--color--action--plain--alt--clicked: rgba(255, 255, 255, 0.16);
+
+  /* Current / active nav item — gold pill with navy text */
+  --pf-v6-c-nav__link--m-current--BackgroundColor: #cf8e1a;
+  --pf-v6-c-nav__link--m-current--Color:           #1b3054;
+}
+
