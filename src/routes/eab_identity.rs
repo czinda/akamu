@@ -83,8 +83,15 @@ pub async fn get_eab_identity(
     };
 
     // Store if not present, binding the GSSAPI principal for web UI EAB login.
-    if let Err(e) =
-        db::eab::insert_if_absent(&state.db, &kid, &hmac_key, unix_now(), Some(&principal)).await
+    if let Err(e) = db::eab::insert_if_absent(
+        &state.db,
+        &kid,
+        &hmac_key,
+        unix_now(),
+        Some(&principal),
+        "sha256",
+    )
+    .await
     {
         return e.into_response();
     }

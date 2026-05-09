@@ -86,6 +86,12 @@ struct NewEabPayload {
     hmac_key_b64u: String,
     #[serde(default)]
     profile_grants: Option<Vec<String>>,
+    #[serde(default = "default_eab_alg")]
+    alg: String,
+}
+
+fn default_eab_alg() -> String {
+    "sha256".to_owned()
 }
 
 #[derive(Deserialize)]
@@ -752,6 +758,7 @@ pub async fn get_eab(
                         "created": r.created,
                         "used_at": r.used_at,
                         "profile_grants": r.profile_grants,
+                        "alg": r.alg,
                     })
                 })
                 .collect();
@@ -796,6 +803,14 @@ pub async fn post_eab(
             .into_response();
     }
 
+    if !matches!(payload.alg.as_str(), "sha256" | "sha384" | "sha512") {
+        return (
+            StatusCode::BAD_REQUEST,
+            "alg must be one of: sha256, sha384, sha512",
+        )
+            .into_response();
+    }
+
     let now = unix_now();
     let grants_str = match grants_to_json(payload.profile_grants) {
         Ok(s) => s,
@@ -814,6 +829,7 @@ pub async fn post_eab(
         &payload.hmac_key_b64u,
         grants_str.as_deref(),
         Some(operator.operator_id),
+        &payload.alg,
         now,
     )
     .await
@@ -829,7 +845,7 @@ pub async fn post_eab(
                 .await;
             (
                 StatusCode::CREATED,
-                Json(json!({"kid": payload.kid, "created": now})),
+                Json(json!({"kid": payload.kid, "created": now, "alg": payload.alg})),
             )
                 .into_response()
         }
@@ -1907,6 +1923,7 @@ pub async fn get_eab_key(
                 "created": r.created,
                 "used_at": r.used_at,
                 "profile_grants": r.profile_grants,
+                "alg": r.alg,
             })),
         )
             .into_response(),

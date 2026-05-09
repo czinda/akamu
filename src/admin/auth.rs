@@ -752,7 +752,10 @@ pub async fn post_session_eab(
         ById(i64),
         ByPrincipal(String),
     }
-    let op_source = match (eab_row.created_by_operator_id, eab_row.bound_principal.clone()) {
+    let op_source = match (
+        eab_row.created_by_operator_id,
+        eab_row.bound_principal.clone(),
+    ) {
         (Some(id), _) => OperatorSource::ById(id),
         (None, Some(principal)) => OperatorSource::ByPrincipal(principal),
         (None, None) => {
@@ -791,7 +794,7 @@ pub async fn post_session_eab(
     // Message: "kid.timestamp"
     let message = format!("{kid}.{timestamp}");
     if default_hmac_provider()
-        .hmac_verify("sha256", &hmac_key, message.as_bytes(), &sig_bytes)
+        .hmac_verify(&eab_row.alg, &hmac_key, message.as_bytes(), &sig_bytes)
         .is_err()
     {
         state

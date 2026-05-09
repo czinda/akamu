@@ -24,6 +24,8 @@ pub struct EabKeyRow {
     /// `None` for config-file keys and admin-provisioned keys.
     /// Used to resolve the owning operator for web UI EAB login.
     pub bound_principal: Option<String>,
+    /// HMAC algorithm used with this key: `"sha256"`, `"sha384"`, or `"sha512"`.
+    pub alg: String,
 }
 
 /// Seed a key, optionally binding it to a Kerberos principal.
@@ -41,16 +43,18 @@ pub async fn insert_if_absent(
     hmac_key_b64u: &str,
     now: i64,
     bound_principal: Option<&str>,
+    alg: &str,
 ) -> Result<(), AcmeError> {
     super::query(
-        "INSERT INTO eab_keys (kid, hmac_key_b64u, created, bound_principal) \
-         SELECT ?, ?, ?, ? \
+        "INSERT INTO eab_keys (kid, hmac_key_b64u, created, bound_principal, alg) \
+         SELECT ?, ?, ?, ?, ? \
          WHERE NOT EXISTS (SELECT 1 FROM eab_keys WHERE kid = ?)",
     )
     .bind(kid)
     .bind(hmac_key_b64u)
     .bind(now)
     .bind(bound_principal)
+    .bind(alg)
     .bind(kid)
     .execute(executor)
     .await?;
@@ -82,7 +86,7 @@ pub async fn get_by_kid(
 ) -> Result<Option<EabKeyRow>, AcmeError> {
     let row = super::query_as::<EabKeyRow>(
         "SELECT kid, hmac_key_b64u, created, used_at, profile_grants, created_by_operator_id, \
-         bound_principal FROM eab_keys WHERE kid = ?",
+         bound_principal, alg FROM eab_keys WHERE kid = ?",
     )
     .bind(kid)
     .fetch_optional(executor)
@@ -102,18 +106,20 @@ pub async fn insert_with_grants(
     hmac_key_b64u: &str,
     profile_grants: Option<&str>,
     created_by_operator_id: Option<i64>,
+    alg: &str,
     now: i64,
 ) -> Result<(), AcmeError> {
     super::query(
         "INSERT INTO eab_keys \
-         (kid, hmac_key_b64u, created, profile_grants, created_by_operator_id) \
-         VALUES (?, ?, ?, ?, ?)",
+         (kid, hmac_key_b64u, created, profile_grants, created_by_operator_id, alg) \
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(kid)
     .bind(hmac_key_b64u)
     .bind(now)
     .bind(profile_grants)
     .bind(created_by_operator_id)
+    .bind(alg)
     .execute(executor)
     .await?;
     Ok(())
@@ -156,7 +162,7 @@ pub async fn list(
 ) -> Result<Vec<EabKeyRow>, AcmeError> {
     let mut qb = super::DynQueryBuilder::new(
         "SELECT kid, hmac_key_b64u, created, used_at, profile_grants, created_by_operator_id, \
-         bound_principal FROM eab_keys WHERE 1=1",
+         bound_principal, alg FROM eab_keys WHERE 1=1",
     );
     match used_filter {
         Some(true) => qb.push(" AND used_at IS NOT NULL"),
@@ -219,7 +225,7 @@ mod tests {
     async fn insert_if_absent_does_not_overwrite() {
         let db = open_db().await;
         insert(&db, "kid2", "original", 1_000).await.unwrap();
-        insert_if_absent(&db, "kid2", "replacement", 2_000, None)
+        insert_if_absent(&db, "kid2", "replacement", 2_000, None, "sha256")
             .await
             .unwrap();
         let row = get_by_kid(&db, "kid2").await.unwrap().unwrap();
@@ -255,7 +261,7 @@ mod tests {
     #[tokio::test]
     async fn insert_with_grants_stores_grants() {
         let db = open_db().await;
-        insert_with_grants(&db, "kid6", "key", Some("[\"p1\"]"), None, 1_000)
+        insert_with_grants(&db, "kid6", "key", Some("[\"p1\"]"), None, "sha256", 1_000)
             .await
             .unwrap();
         let row = get_by_kid(&db, "kid6").await.unwrap().unwrap();
@@ -265,7 +271,7 @@ mod tests {
     #[tokio::test]
     async fn insert_with_grants_null_grants() {
         let db = open_db().await;
-        insert_with_grants(&db, "kid7", "key", None, None, 1_000)
+        insert_with_grants(&db, "kid7", "key", None, None, "sha256", 1_000)
             .await
             .unwrap();
         let row = get_by_kid(&db, "kid7").await.unwrap().unwrap();

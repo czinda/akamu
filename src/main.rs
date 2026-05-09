@@ -148,7 +148,9 @@ async fn run() -> Result<(), String> {
         .unwrap_or_default()
         .as_secs() as i64;
     for (kid, hmac_key_b64u) in &config.server.eab_keys {
-        if let Err(e) = db::eab::insert_if_absent(&db, kid, hmac_key_b64u, now_ts, None).await {
+        if let Err(e) =
+            db::eab::insert_if_absent(&db, kid, hmac_key_b64u, now_ts, None, "sha256").await
+        {
             tracing::warn!("failed to seed EAB key '{kid}': {e}");
         }
     }
