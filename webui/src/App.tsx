@@ -51,6 +51,12 @@ function RequireRole({ minRole, children }: { minRole: Role; children: React.Rea
   return children;
 }
 
+function RequireAnyRole({ roles, children }: { roles: Role[]; children: React.ReactElement }) {
+  const { role } = useAuth();
+  if (!role || !roles.includes(role)) return <Navigate to="/" replace />;
+  return children;
+}
+
 function AppHeader({ onLogout }: { onLogout: () => void }) {
   const { role, operatorName } = useAuth();
 
@@ -74,7 +80,10 @@ function AppHeader({ onLogout }: { onLogout: () => void }) {
 
 function AppSidebar({ role }: { role: Role | null }) {
   const isAtLeastCaRa = hasRole(role, 'ca_ra');
+  const isAtLeastCaOps = hasRole(role, 'ca_operations');
   const isAdmin = hasRole(role, 'administrator');
+  const canSeeAudit = role === 'administrator' || role === 'auditor';
+  const canSeeCrossCerts = role === 'administrator' || role === 'ca_operations' || role === 'auditor';
 
   return (
     <PageSidebar>
@@ -85,16 +94,16 @@ function AppSidebar({ role }: { role: Role | null }) {
             <NavItem><NavLink to="/certs">Certificates</NavLink></NavItem>
             <NavItem><NavLink to="/orders">Orders</NavLink></NavItem>
             <NavItem><NavLink to="/accounts">Accounts</NavLink></NavItem>
-            <NavItem><NavLink to="/audit">Audit Log</NavLink></NavItem>
+            {canSeeAudit && <NavItem><NavLink to="/audit">Audit Log</NavLink></NavItem>}
             {isAtLeastCaRa && (
               <>
                 <NavItem><NavLink to="/eab">EAB Keys</NavLink></NavItem>
                 <NavItem><NavLink to="/delegations">Delegations</NavLink></NavItem>
                 <NavItem><NavLink to="/profiles">Profiles</NavLink></NavItem>
-                <NavItem><NavLink to="/cas">CAs</NavLink></NavItem>
-                <NavItem><NavLink to="/cross-certs">Cross-Certs</NavLink></NavItem>
               </>
             )}
+            {isAtLeastCaOps && <NavItem><NavLink to="/cas">CAs</NavLink></NavItem>}
+            {canSeeCrossCerts && <NavItem><NavLink to="/cross-certs">Cross-Certs</NavLink></NavItem>}
             {isAdmin && (
               <>
                 <NavItem><NavLink to="/operators">Operators</NavLink></NavItem>
@@ -141,7 +150,9 @@ export default function App() {
         <Route path="/certs" element={<Certificates />} />
         <Route path="/orders" element={<Orders />} />
         <Route path="/accounts" element={<Accounts />} />
-        <Route path="/audit" element={<AuditLog />} />
+        <Route path="/audit" element={
+          <RequireAnyRole roles={['administrator', 'auditor']}><AuditLog /></RequireAnyRole>
+        } />
         <Route path="/eab" element={
           <RequireRole minRole="ca_ra"><EabKeys /></RequireRole>
         } />
@@ -152,10 +163,10 @@ export default function App() {
           <RequireRole minRole="ca_ra"><Profiles /></RequireRole>
         } />
         <Route path="/cas" element={
-          <RequireRole minRole="ca_ra"><CAs /></RequireRole>
+          <RequireRole minRole="ca_operations"><CAs /></RequireRole>
         } />
         <Route path="/cross-certs" element={
-          <RequireRole minRole="ca_ra"><CrossCerts /></RequireRole>
+          <RequireAnyRole roles={['administrator', 'ca_operations', 'auditor']}><CrossCerts /></RequireAnyRole>
         } />
         <Route path="/operators" element={
           <RequireRole minRole="administrator"><Operators /></RequireRole>
@@ -171,8 +182,8 @@ export default function App() {
         <Route path="/profiles/:id/edit" element={<RequireRole minRole="administrator"><ProfileEdit /></RequireRole>} />
         <Route path="/profiles/new" element={<RequireRole minRole="administrator"><ProfileEdit createMode /></RequireRole>} />
         <Route path="/delegations/:id" element={<RequireRole minRole="ca_ra"><DelegationDetail /></RequireRole>} />
-        <Route path="/cas/:id" element={<RequireRole minRole="ca_ra"><CADetail /></RequireRole>} />
-        <Route path="/cross-certs/:id" element={<RequireRole minRole="ca_ra"><CrossCertDetail /></RequireRole>} />
+        <Route path="/cas/:id" element={<RequireRole minRole="ca_operations"><CADetail /></RequireRole>} />
+        <Route path="/cross-certs/:id" element={<RequireAnyRole roles={['administrator', 'ca_operations', 'auditor']}><CrossCertDetail /></RequireAnyRole>} />
         <Route path="/operators/:id" element={<RequireRole minRole="administrator"><OperatorDetail /></RequireRole>} />
         <Route path="/operators/:id/edit" element={<RequireRole minRole="administrator"><OperatorEdit /></RequireRole>} />
         <Route path="/operators/new" element={<RequireRole minRole="administrator"><OperatorEdit createMode /></RequireRole>} />

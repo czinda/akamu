@@ -30,11 +30,14 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { listEab, createEab, deleteEab, EabKeyRow } from '../../api/eab';
 import { fmtTs } from '../../utils';
+import { useAuth, hasRole } from '../../auth/AuthContext';
 
 const PAGE_SIZE = 20;
 
 export default function EabKeys() {
   const navigate = useNavigate();
+  const { role } = useAuth();
+  const canWrite = hasRole(role, 'ca_operations');
   const [keys, setKeys] = useState<EabKeyRow[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -106,13 +109,15 @@ export default function EabKeys() {
       </PageSection>
       <PageSection>
         {error && <Alert variant="danger" title={error} isInline style={{ marginBottom: '1rem' }} />}
-        <Toolbar>
-          <ToolbarContent>
-            <ToolbarItem>
-              <Button variant="primary" onClick={() => setCreateOpen(true)}>Create EAB Key</Button>
-            </ToolbarItem>
-          </ToolbarContent>
-        </Toolbar>
+        {canWrite && (
+          <Toolbar>
+            <ToolbarContent>
+              <ToolbarItem>
+                <Button variant="primary" onClick={() => setCreateOpen(true)}>Create EAB Key</Button>
+              </ToolbarItem>
+            </ToolbarContent>
+          </Toolbar>
+        )}
         {loading && <Spinner />}
         {!loading && keys.length === 0 && (
           <EmptyState><EmptyStateBody>No EAB keys found.</EmptyStateBody></EmptyState>
@@ -138,7 +143,7 @@ export default function EabKeys() {
                   <Td>{fmtTs(k.used_at)}</Td>
                   <Td>{k.profile_grants?.join(', ') ?? '—'}</Td>
                   <Td>
-                    <Button variant="danger" size="sm" onClick={() => setDeleteKid(k.kid)}>Delete</Button>{' '}
+                    {canWrite && <><Button variant="danger" size="sm" onClick={() => setDeleteKid(k.kid)}>Delete</Button>{' '}</>}
                     <Button variant="plain" size="sm" onClick={() => navigate(`/eab/${k.kid}`)}>View</Button>
                   </Td>
                 </Tr>
