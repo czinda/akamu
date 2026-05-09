@@ -48,69 +48,16 @@ Token comparisons use constant-time equality to prevent timing side-channels.
 
 ## Roles
 
-Each operator has exactly one role.  The role determines which admin endpoints
-the operator may call.
-
-| Role | Description |
-|------|-------------|
-| `administrator` | Full access to all admin endpoints. |
-| `ca_operations` | Certificate, EAB, CRL, and revocation operations. Cannot manage operators. |
-| `ca_ra` | Registration-authority operations: issue EAB keys, revoke certificates, read profile grants. A `ca_ra` operator must have a `ca_id` assigned; it may only revoke and view certificates issued by that CA. An unscoped `ca_ra` is rejected at all restricted endpoints. |
-| `auditor` | Read-only access: audit log, certificates, EAB keys, stats. |
+Each operator has exactly one role that determines which admin endpoints they
+may call.  For a full description of each role, its capabilities, restrictions,
+and the complete route-by-role permission matrix, see
+[Operator Roles](operator-roles.md).
 
 ## Endpoint reference
 
 All paths are relative to the admin listener base URL.  The `[admin].listen_addr`
 field controls the address; the default in the configuration example is
 `https://127.0.0.1:9443`.
-
-### Route and role matrix
-
-| Method | Path | administrator | ca_operations | ca_ra | auditor |
-|--------|------|:---:|:---:|:---:|:---:|
-| `POST` | `/admin/session` | Y | Y | Y | Y |
-| `DELETE` | `/admin/session` | Y | Y | Y | Y |
-| `GET` | `/admin/operators` | Y | | | |
-| `POST` | `/admin/operators` | Y | | | |
-| `GET` | `/admin/operators/{id}` | Y | | | |
-| `PUT` | `/admin/operators/{id}` | Y | | | |
-| `PATCH` | `/admin/operators/{id}` | Y | | | |
-| `POST` | `/admin/operators/{id}/unlock` | Y | | | |
-| `GET` | `/admin/audit` | Y | | | Y |
-| `GET` | `/admin/profiles` | Y | Y | Y | Y |
-| `POST` | `/admin/profiles` | Y | | | |
-| `PUT` | `/admin/profiles/{id}` | Y | | | |
-| `DELETE` | `/admin/profiles/{id}` | Y | | | |
-| `GET` | `/admin/accounts` | Y | Y | Y | Y |
-| `GET` | `/admin/account/{id}` | Y | Y | Y | Y |
-| `POST` | `/admin/account/{id}/deactivate` | Y | | | |
-| `GET` | `/admin/account/{id}/profile-grants` | Y | Y | Y | Y |
-| `PUT` | `/admin/account/{id}/profile-grants` | Y | Y | | |
-| `DELETE` | `/admin/account/{id}/profile-grants` | Y | | | |
-| `GET` | `/admin/certs` | Y | Y | | Y |
-| `GET` | `/admin/certs/{id}` | Y | Y | | Y |
-| `GET` | `/admin/certs/{id}/download` | Y | Y | | |
-| `POST` | `/admin/eab` | Y | Y | Y | |
-| `GET` | `/admin/eab/{kid}` | Y | Y | Y | Y |
-| `DELETE` | `/admin/eab/{kid}` | Y | Y | | |
-| `GET` | `/admin/eab` | Y | Y | Y | Y |
-| `GET` | `/admin/orders` | Y | Y | Y | Y |
-| `GET` | `/admin/orders/{id}` | Y | Y | Y | Y |
-| `GET` | `/admin/config` | Y | | | |
-| `POST` | `/admin/crl/force` | Y | Y | | |
-| `POST` | `/admin/revoke` | Y | Y | Y | |
-| `GET` | `/admin/stats` | Y | Y | Y | Y |
-| `GET` | `/admin/cas` | Y | Y | Y | Y |
-| `GET` | `/admin/cas/{id}` | Y | Y | Y | Y |
-| `POST` | `/admin/ca/{id}/crl/force` | Y | Y | | |
-| `POST` | `/admin/ca/{id}/cross-sign` | Y | Y | | |
-| `GET` | `/admin/cross-certs` | Y | Y | Y | Y |
-| `GET` | `/admin/cross-certs/{id}` | Y | Y | Y | Y |
-| `GET` | `/admin/delegations` | Y | Y | Y | Y |
-| `POST` | `/admin/delegations` | Y | Y | | |
-| `GET` | `/admin/delegations/{id}` | Y | Y | Y | Y |
-| `PUT` | `/admin/delegations/{id}` | Y | Y | | |
-| `DELETE` | `/admin/delegations/{id}` | Y | Y | | |
 
 ### `POST /admin/session`
 

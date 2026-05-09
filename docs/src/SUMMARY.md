@@ -10,6 +10,7 @@
 
 # User Guide
 
+- [Operator Roles](user/operator-roles.md)
 - [Configuration Reference](user/configuration.md)
 - [Account Management](user/accounts.md)
 - [Orders](user/orders.md)
