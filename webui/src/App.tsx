@@ -32,6 +32,18 @@ import CrossCerts from './pages/CrossCerts';
 import Operators from './pages/Operators';
 import AuditLog from './pages/AuditLog';
 import ServerConfig from './pages/ServerConfig';
+import CertDetail from './pages/Certificates/Detail';
+import OrderDetail from './pages/Orders/Detail';
+import AccountDetail from './pages/Accounts/Detail';
+import EabKeyDetail from './pages/EabKeys/Detail';
+import ProfileDetail from './pages/Profiles/Detail';
+import ProfileEdit from './pages/Profiles/Edit';
+import OperatorEdit from './pages/Operators/Edit';
+import DelegationEdit from './pages/Delegations/Edit';
+import DelegationDetail from './pages/Delegations/Detail';
+import CADetail from './pages/CAs/Detail';
+import CrossCertDetail from './pages/CrossCerts/Detail';
+import OperatorDetail from './pages/Operators/Detail';
 
 function RequireRole({ minRole, children }: { minRole: Role; children: React.ReactElement }) {
   const { role } = useAuth();
@@ -151,6 +163,21 @@ export default function App() {
         <Route path="/config" element={
           <RequireRole minRole="administrator"><ServerConfig /></RequireRole>
         } />
+        <Route path="/certs/:id" element={<CertDetail />} />
+        <Route path="/orders/:id" element={<OrderDetail />} />
+        <Route path="/accounts/:id" element={<AccountDetail />} />
+        <Route path="/eab/:kid" element={<RequireRole minRole="ca_ra"><EabKeyDetail /></RequireRole>} />
+        <Route path="/profiles/:id" element={<RequireRole minRole="ca_ra"><ProfileDetail /></RequireRole>} />
+        <Route path="/profiles/:id/edit" element={<RequireRole minRole="administrator"><ProfileEdit /></RequireRole>} />
+        <Route path="/profiles/new" element={<RequireRole minRole="administrator"><ProfileEdit createMode /></RequireRole>} />
+        <Route path="/delegations/:id" element={<RequireRole minRole="ca_ra"><DelegationDetail /></RequireRole>} />
+        <Route path="/cas/:id" element={<RequireRole minRole="ca_ra"><CADetail /></RequireRole>} />
+        <Route path="/cross-certs/:id" element={<RequireRole minRole="ca_ra"><CrossCertDetail /></RequireRole>} />
+        <Route path="/operators/:id" element={<RequireRole minRole="administrator"><OperatorDetail /></RequireRole>} />
+        <Route path="/operators/:id/edit" element={<RequireRole minRole="administrator"><OperatorEdit /></RequireRole>} />
+        <Route path="/operators/new" element={<RequireRole minRole="administrator"><OperatorEdit createMode /></RequireRole>} />
+        <Route path="/delegations/:id/edit" element={<RequireRole minRole="ca_operations"><DelegationEdit /></RequireRole>} />
+        <Route path="/delegations/new" element={<RequireRole minRole="ca_operations"><DelegationEdit createMode /></RequireRole>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
