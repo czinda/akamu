@@ -1,8 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   PageSection,
-  PageSectionVariants,
   Title,
   Spinner,
   Alert,
@@ -60,7 +59,7 @@ export default function ProfileDetail() {
 
   return (
     <>
-      <PageSection variant={PageSectionVariants.light}>
+      <PageSection>
         <Link to="/profiles" style={{ fontSize: '0.875rem' }}>← Back to Profiles</Link>
         <Flex style={{ marginTop: '0.5rem' }} alignItems={{ default: 'alignItemsCenter' }}>
           <FlexItem>

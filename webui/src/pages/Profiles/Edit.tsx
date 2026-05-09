@@ -1,8 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   PageSection,
-  PageSectionVariants,
   Title,
   Spinner,
   Alert,
@@ -254,7 +253,7 @@ export default function ProfileEdit({ createMode }: Props) {
 
   return (
     <>
-      <PageSection variant={PageSectionVariants.light}>
+      <PageSection>
         <Link to={backPath} style={{ fontSize: '0.875rem' }}>← {createMode ? 'Back to Profiles' : `Back to ${id}`}</Link>
         <Title headingLevel="h1" style={{ marginTop: '0.5rem' }}>{pageTitle}</Title>
       </PageSection>
@@ -287,18 +286,15 @@ export default function ProfileEdit({ createMode }: Props) {
                   <TextInput id="pf-validity" type="number" value={String(form.validity_days)}
                     onChange={(_e, v) => set('validity_days', parseInt(v, 10) || 90)} isRequired style={{ maxWidth: '12rem' }} />
                 </FormGroup>
-                <FormGroup label="Hash Algorithm" isRequired fieldId="pf-hash"
-                  helperText={onlyPqcTypes
-                    ? 'Not used for ML-DSA key types — post-quantum signatures embed the hash internally. This value is stored but ignored when signing with ML-DSA keys.'
-                    : undefined}>
+                <FormGroup label="Hash Algorithm" isRequired fieldId="pf-hash">
                   <select id="pf-hash" value={form.hash_alg} onChange={e => set('hash_alg', e.target.value)}
                     style={{ padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: 'inherit', width: '12rem',
                       opacity: onlyPqcTypes ? 0.5 : 1 }}>
                     {HASH_ALGS.map(h => <option key={h} value={h}>{h}</option>)}
                   </select>
+                  {onlyPqcTypes && <p style={{ fontSize: '0.75rem', color: '#6a6e73', marginTop: '0.25rem' }}>Not used for ML-DSA key types — post-quantum signatures embed the hash internally. This value is stored but ignored when signing with ML-DSA keys.</p>}
                 </FormGroup>
-                <FormGroup label="Key Usage" fieldId="pf-ku"
-                  helperText="Zero bits selected = KeyUsage extension omitted from issued certificates.">
+                <FormGroup label="Key Usage" fieldId="pf-ku">
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.25rem 1rem' }}>
                     {KEY_USAGE_BITS.map(({ bit, label }) => (
                       <Checkbox key={bit} id={`ku-${bit}`} label={label}
@@ -306,18 +302,19 @@ export default function ProfileEdit({ createMode }: Props) {
                         onChange={(_e, checked) => toggleKeyUsageBit(bit, checked)} />
                     ))}
                   </div>
+                  <p style={{ fontSize: '0.75rem', color: '#6a6e73', marginTop: '0.25rem' }}>Zero bits selected = KeyUsage extension omitted from issued certificates.</p>
                 </FormGroup>
-                <FormGroup label="Extended Key Usages" fieldId="pf-eku"
-                  helperText='Short names (e.g. "server_auth") or raw OIDs.'>
+                <FormGroup label="Extended Key Usages" fieldId="pf-eku">
                   <StringList label="Extended Key Usages" values={form.extended_key_usages}
                     suggestions={COMMON_EKUS} placeholder="server_auth or 1.3.6.1.5.5.7.3.1"
                     onChange={v => set('extended_key_usages', v)} />
+                  <p style={{ fontSize: '0.75rem', color: '#6a6e73', marginTop: '0.25rem' }}>{'Short names (e.g. "server_auth") or raw OIDs.'}</p>
                 </FormGroup>
-                <FormGroup label="Allowed Key Types" fieldId="pf-kt"
-                  helperText='Empty = any key type accepted. Format: "ec:P-256", "rsa:2048", "ed25519", "ml-dsa-44", etc. ML-DSA requires allow_post_quantum = true in server config.'>
+                <FormGroup label="Allowed Key Types" fieldId="pf-kt">
                   <StringList label="Allowed Key Types" values={form.allowed_key_types}
                     suggestions={COMMON_KEY_TYPES} placeholder="ec:P-256"
                     onChange={v => set('allowed_key_types', v)} />
+                  <p style={{ fontSize: '0.75rem', color: '#6a6e73', marginTop: '0.25rem' }}>{'Empty = any key type accepted. Format: "ec:P-256", "rsa:2048", "ed25519", "ml-dsa-44", etc. ML-DSA requires allow_post_quantum = true in server config.'}</p>
                 </FormGroup>
               </FormSection>
             </CardBody>
@@ -327,17 +324,17 @@ export default function ProfileEdit({ createMode }: Props) {
           <Card>
             <CardBody>
               <FormSection title="Extensions">
-                <FormGroup label="CRL Distribution Point URL" fieldId="pf-crl"
-                  helperText="Empty = CRLDistributionPoints extension omitted.">
+                <FormGroup label="CRL Distribution Point URL" fieldId="pf-crl">
                   <TextInput id="pf-crl" value={form.crl_url ?? ''}
                     onChange={(_e, v) => set('crl_url', v || null)}
                     placeholder="http://crl.example.com/ca.crl" style={{ maxWidth: '480px' }} />
+                  <p style={{ fontSize: '0.75rem', color: '#6a6e73', marginTop: '0.25rem' }}>Empty = CRLDistributionPoints extension omitted.</p>
                 </FormGroup>
-                <FormGroup label="OCSP Responder URL" fieldId="pf-ocsp"
-                  helperText="Empty = AuthorityInfoAccess extension omitted.">
+                <FormGroup label="OCSP Responder URL" fieldId="pf-ocsp">
                   <TextInput id="pf-ocsp" value={form.ocsp_url ?? ''}
                     onChange={(_e, v) => set('ocsp_url', v || null)}
                     placeholder="http://ocsp.example.com" style={{ maxWidth: '480px' }} />
+                  <p style={{ fontSize: '0.75rem', color: '#6a6e73', marginTop: '0.25rem' }}>Empty = AuthorityInfoAccess extension omitted.</p>
                 </FormGroup>
                 <FormGroup label="Certificate Policies" fieldId="pf-cp">
                   <PolicyList policies={form.certificate_policies}
@@ -351,11 +348,11 @@ export default function ProfileEdit({ createMode }: Props) {
           <Card>
             <CardBody>
               <FormSection title="Identifier Constraints">
-                <FormGroup label="Allowed Identifier Patterns" fieldId="pf-ident"
-                  helperText='Regex patterns matched against "type:value" (e.g. "dns:.*\.example\.com"). Empty = no restriction.'>
+                <FormGroup label="Allowed Identifier Patterns" fieldId="pf-ident">
                   <StringList label="Identifier patterns" values={form.allowed_identifier_patterns}
                     placeholder="dns:.*\.example\.com"
                     onChange={v => set('allowed_identifier_patterns', v)} />
+                  <p style={{ fontSize: '0.75rem', color: '#6a6e73', marginTop: '0.25rem' }}>{'Regex patterns matched against "type:value" (e.g. "dns:.*\\.example\\.com"). Empty = no restriction.'}</p>
                 </FormGroup>
                 {form.allowed_identifier_patterns.length > 0 && (
                   <FormGroup label="Match mode" fieldId="pf-match-mode">
@@ -381,11 +378,11 @@ export default function ProfileEdit({ createMode }: Props) {
                     onChange={(_e, checked) => set('require_account_grant', checked)}
                     description="Account must have this profile in its profile_grants list to place orders." />
                 </FormGroup>
-                <FormGroup label="Auth Hook" fieldId="pf-hook"
-                  helperText="Path to an external script that receives order details on stdin and exits 0 to allow.">
+                <FormGroup label="Auth Hook" fieldId="pf-hook">
                   <TextInput id="pf-hook" value={form.auth_hook ?? ''}
                     onChange={(_e, v) => set('auth_hook', v || null)}
                     placeholder="/usr/local/lib/akamu/hooks/authorize.sh" style={{ maxWidth: '480px' }} />
+                  <p style={{ fontSize: '0.75rem', color: '#6a6e73', marginTop: '0.25rem' }}>Path to an external script that receives order details on stdin and exits 0 to allow.</p>
                 </FormGroup>
                 {form.auth_hook && (
                   <FormGroup label="Hook Timeout (seconds)" fieldId="pf-hook-timeout">
@@ -402,8 +399,7 @@ export default function ProfileEdit({ createMode }: Props) {
           <Card>
             <CardBody>
               <FormSection title="CA Restriction">
-                <FormGroup label="Allowed CAs" fieldId="pf-ca-ids"
-                  helperText="Restrict this profile to specific CAs. Empty = available on all CAs.">
+                <FormGroup label="Allowed CAs" fieldId="pf-ca-ids">
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', marginBottom: '0.5rem' }}>
                     {cas.map(ca => (
                       <Checkbox key={ca.id} id={`ca-${ca.id}`} label={ca.id}
@@ -417,6 +413,7 @@ export default function ProfileEdit({ createMode }: Props) {
                         placeholder="ca-id" onChange={v => set('ca_ids', v)} />
                     )}
                   </div>
+                  <p style={{ fontSize: '0.75rem', color: '#6a6e73', marginTop: '0.25rem' }}>Restrict this profile to specific CAs. Empty = available on all CAs.</p>
                 </FormGroup>
               </FormSection>
             </CardBody>

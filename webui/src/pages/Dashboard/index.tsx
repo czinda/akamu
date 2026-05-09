@@ -1,7 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   PageSection,
-  PageSectionVariants,
   Title,
   Card,
   CardBody,
@@ -55,7 +54,7 @@ export default function Dashboard() {
 
   return (
     <>
-      <PageSection variant={PageSectionVariants.light}>
+      <PageSection>
         <Title headingLevel="h1">Dashboard</Title>
       </PageSection>
       <PageSection>

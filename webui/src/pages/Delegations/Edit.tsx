@@ -1,8 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   PageSection,
-  PageSectionVariants,
   Title,
   Spinner,
   Alert,
@@ -118,7 +117,7 @@ export default function DelegationEdit({ createMode }: Props) {
 
   return (
     <>
-      <PageSection variant={PageSectionVariants.light}>
+      <PageSection>
         <Link to={backPath} style={{ fontSize: '0.875rem' }}>← {createMode ? 'Back to Delegations' : 'Back to delegation'}</Link>
         <Title headingLevel="h1" style={{ marginTop: '0.5rem' }}>{pageTitle}</Title>
       </PageSection>
@@ -147,10 +146,7 @@ export default function DelegationEdit({ createMode }: Props) {
           <Card>
             <CardBody>
               <FormSection title="CSR Template">
-                <FormGroup label="CSR Template (JSON)" isRequired fieldId="del-csr"
-                  helperText="JSON document specifying allowed/required CSR fields."
-                  validated={csrError ? 'error' : 'default'}
-                  helperTextInvalid={csrError ?? undefined}>
+                <FormGroup label="CSR Template (JSON)" isRequired fieldId="del-csr">
                   <textarea
                     id="del-csr"
                     value={csrTemplate}
@@ -159,6 +155,9 @@ export default function DelegationEdit({ createMode }: Props) {
                     style={{ ...taStyle, borderColor: csrError ? '#c9190b' : '#ccc' }}
                     spellCheck={false}
                   />
+                  {csrError
+                    ? <p style={{ fontSize: '0.75rem', color: '#c9190b', marginTop: '0.25rem' }}>{csrError}</p>
+                    : <p style={{ fontSize: '0.75rem', color: '#6a6e73', marginTop: '0.25rem' }}>JSON document specifying allowed/required CSR fields.</p>}
                 </FormGroup>
               </FormSection>
             </CardBody>
@@ -167,10 +166,7 @@ export default function DelegationEdit({ createMode }: Props) {
           <Card>
             <CardBody>
               <FormSection title="CNAME Map">
-                <FormGroup label="CNAME Map (JSON, optional)" fieldId="del-cname"
-                  helperText='Maps DNS names to CNAME targets. Example: {"_acme-challenge.example.com": "_acme.validation.example.com"}'
-                  validated={cnameError ? 'error' : 'default'}
-                  helperTextInvalid={cnameError ?? undefined}>
+                <FormGroup label="CNAME Map (JSON, optional)" fieldId="del-cname">
                   <textarea
                     id="del-cname"
                     value={cnameMap}
@@ -180,6 +176,9 @@ export default function DelegationEdit({ createMode }: Props) {
                     spellCheck={false}
                     placeholder="{}"
                   />
+                  {cnameError
+                    ? <p style={{ fontSize: '0.75rem', color: '#c9190b', marginTop: '0.25rem' }}>{cnameError}</p>
+                    : <p style={{ fontSize: '0.75rem', color: '#6a6e73', marginTop: '0.25rem' }}>{'Maps DNS names to CNAME targets. Example: {"_acme-challenge.example.com": "_acme.validation.example.com"}'}</p>}
                 </FormGroup>
               </FormSection>
             </CardBody>

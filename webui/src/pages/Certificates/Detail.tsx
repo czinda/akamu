@@ -1,8 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   PageSection,
-  PageSectionVariants,
   Title,
   Spinner,
   Alert,
@@ -68,7 +67,7 @@ export default function CertDetail() {
 
   return (
     <>
-      <PageSection variant={PageSectionVariants.light}>
+      <PageSection>
         <Link to="/certs" style={{ fontSize: '0.875rem' }}>← Back to Certificates</Link>
         <Title headingLevel="h1" style={{ marginTop: '0.5rem' }}>Certificate: {id}</Title>
       </PageSection>

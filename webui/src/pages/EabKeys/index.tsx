@@ -1,7 +1,6 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import {
   PageSection,
-  PageSectionVariants,
   Title,
   Toolbar,
   ToolbarContent,
@@ -102,7 +101,7 @@ export default function EabKeys() {
 
   return (
     <>
-      <PageSection variant={PageSectionVariants.light}>
+      <PageSection>
         <Title headingLevel="h1">EAB Keys</Title>
       </PageSection>
       <PageSection>
@@ -172,10 +171,10 @@ export default function EabKeys() {
                 <option value="sha512">sha512</option>
               </select>
             </FormGroup>
-            <FormGroup label="Profile Grants (comma-separated, optional)" fieldId="eab-new-grants"
-              helperText="Restrict this key to specific profiles. Leave empty for unrestricted access.">
+            <FormGroup label="Profile Grants (comma-separated, optional)" fieldId="eab-new-grants">
               <TextInput id="eab-new-grants" value={newGrants} onChange={(_e, v) => setNewGrants(v)}
                 placeholder="profile-a, profile-b" />
+              <p style={{ fontSize: '0.75rem', color: '#6a6e73', marginTop: '0.25rem' }}>Restrict this key to specific profiles. Leave empty for unrestricted access.</p>
             </FormGroup>
           </Form>
         </ModalBody>

@@ -1,8 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   PageSection,
-  PageSectionVariants,
   Title,
   Spinner,
   Alert,
@@ -32,7 +31,7 @@ export default function CrossCertDetail() {
 
   return (
     <>
-      <PageSection variant={PageSectionVariants.light}>
+      <PageSection>
         <Link to="/cross-certs" style={{ fontSize: '0.875rem' }}>← Back to Cross-Certs</Link>
         <Title headingLevel="h1" style={{ marginTop: '0.5rem' }}>Cross-Certificate: {id}</Title>
       </PageSection>

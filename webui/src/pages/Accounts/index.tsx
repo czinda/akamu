@@ -1,7 +1,6 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import {
   PageSection,
-  PageSectionVariants,
   Title,
   Toolbar,
   ToolbarContent,
@@ -85,7 +84,7 @@ export default function Accounts() {
 
   return (
     <>
-      <PageSection variant={PageSectionVariants.light}>
+      <PageSection>
         <Title headingLevel="h1">Accounts</Title>
       </PageSection>
       <PageSection>

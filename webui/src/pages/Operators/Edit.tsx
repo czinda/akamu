@@ -1,8 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   PageSection,
-  PageSectionVariants,
   Title,
   Spinner,
   Alert,
@@ -106,7 +105,7 @@ export default function OperatorEdit({ createMode }: Props) {
 
   return (
     <>
-      <PageSection variant={PageSectionVariants.light}>
+      <PageSection>
         <Link to={backPath} style={{ fontSize: '0.875rem' }}>← {createMode ? 'Back to Operators' : `Back to ${name || id}`}</Link>
         <Title headingLevel="h1" style={{ marginTop: '0.5rem' }}>{pageTitle}</Title>
       </PageSection>
@@ -125,8 +124,7 @@ export default function OperatorEdit({ createMode }: Props) {
                   </select>
                 </FormGroup>
                 {role === 'ca_ra' && (
-                  <FormGroup label="CA Scope" isRequired fieldId="op-ca-id"
-                    helperText="ca_ra operators must be scoped to a single CA.">
+                  <FormGroup label="CA Scope" isRequired fieldId="op-ca-id">
                     {cas.length > 0
                       ? (
                         <select id="op-ca-id" value={caId} onChange={e => setCaId(e.target.value)} style={selectStyle} required>
@@ -137,6 +135,7 @@ export default function OperatorEdit({ createMode }: Props) {
                       : (
                         <TextInput id="op-ca-id" value={caId} onChange={(_e, v) => setCaId(v)} isRequired placeholder="CA ID" />
                       )}
+                    <p style={{ fontSize: '0.75rem', color: '#6a6e73', marginTop: '0.25rem' }}>ca_ra operators must be scoped to a single CA.</p>
                   </FormGroup>
                 )}
               </FormSection>
@@ -149,15 +148,15 @@ export default function OperatorEdit({ createMode }: Props) {
                 <HelperText style={{ marginBottom: '0.75rem' }}>
                   <HelperTextItem>At least one of certificate fingerprint or GSSAPI principal is required.</HelperTextItem>
                 </HelperText>
-                <FormGroup label="Certificate Fingerprint (SHA-256)" fieldId="op-cert-fp"
-                  helperText="Hex-encoded SHA-256 fingerprint of the client certificate used for mTLS auth.">
+                <FormGroup label="Certificate Fingerprint (SHA-256)" fieldId="op-cert-fp">
                   <TextInput id="op-cert-fp" value={certFingerprint} onChange={(_e, v) => setCertFingerprint(v)}
                     placeholder="aa:bb:cc:..." style={{ fontFamily: 'monospace' }} />
+                  <p style={{ fontSize: '0.75rem', color: '#6a6e73', marginTop: '0.25rem' }}>Hex-encoded SHA-256 fingerprint of the client certificate used for mTLS auth.</p>
                 </FormGroup>
-                <FormGroup label="GSSAPI Principal" fieldId="op-gssapi"
-                  helperText="Kerberos principal, e.g. alice@EXAMPLE.COM">
+                <FormGroup label="GSSAPI Principal" fieldId="op-gssapi">
                   <TextInput id="op-gssapi" value={gssapiPrincipal} onChange={(_e, v) => setGssapiPrincipal(v)}
                     placeholder="alice@EXAMPLE.COM" />
+                  <p style={{ fontSize: '0.75rem', color: '#6a6e73', marginTop: '0.25rem' }}>Kerberos principal, e.g. alice@EXAMPLE.COM</p>
                 </FormGroup>
               </FormSection>
             </CardBody>

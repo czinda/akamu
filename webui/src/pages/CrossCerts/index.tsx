@@ -1,7 +1,6 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import {
   PageSection,
-  PageSectionVariants,
   Title,
   Button,
   Spinner,
@@ -21,6 +20,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { listCrossCerts, downloadCrossCert, CrossCertRow } from '../../api/crosscerts';
 import { fmtTs } from '../../utils';
+import { ObjLink } from '../../components/ObjLink';
 
 const PAGE_SIZE = 20;
 
@@ -65,7 +65,7 @@ export default function CrossCerts() {
 
   return (
     <>
-      <PageSection variant={PageSectionVariants.light}>
+      <PageSection>
         <Title headingLevel="h1">Cross-Certificates</Title>
       </PageSection>
       <PageSection>
@@ -90,7 +90,7 @@ export default function CrossCerts() {
               {certs.map(c => (
                 <Tr key={c.id}>
                   <Td>{c.id}</Td>
-                  <Td>{c.issuer_ca_id}</Td>
+                  <Td><ObjLink type="ca" id={c.issuer_ca_id} /></Td>
                   <Td>{c.subject_dn}</Td>
                   <Td>{fmtTs(c.not_before)}</Td>
                   <Td>{fmtTs(c.not_after)}</Td>

@@ -1,7 +1,6 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import {
   PageSection,
-  PageSectionVariants,
   Title,
   Toolbar,
   ToolbarContent,
@@ -67,7 +66,7 @@ export default function Operators() {
 
   return (
     <>
-      <PageSection variant={PageSectionVariants.light}>
+      <PageSection>
         <Title headingLevel="h1">Operators</Title>
       </PageSection>
       <PageSection>
@@ -106,7 +105,7 @@ export default function Operators() {
                   <Td>
                     <Label color={op.active ? 'green' : 'red'}>{op.active ? 'active' : 'inactive'}</Label>
                     {op.locked && <>{' '}<Label color="orange">locked</Label></>}
-                    {op.failed_attempts > 0 && !op.locked && <>{' '}<Label color="gold">{op.failed_attempts} failed</Label></>}
+                    {op.failed_attempts > 0 && !op.locked && <>{' '}<Label color="yellow">{op.failed_attempts} failed</Label></>}
                   </Td>
                   <Td>{fmtIso(op.last_seen_at)}</Td>
                   <Td>

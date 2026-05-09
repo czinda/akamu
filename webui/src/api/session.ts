@@ -28,7 +28,7 @@ export async function loginEab(kid: string, hmacKey: string): Promise<SessionRes
   const message = `${kid}.${timestamp}`;
 
   // Compute HMAC-SHA256 using the Web Crypto API.
-  const keyBytes = base64urlDecode(hmacKey);
+  const keyBytes = base64urlDecode(hmacKey) as Uint8Array<ArrayBuffer>;
   const cryptoKey = await crypto.subtle.importKey(
     'raw',
     keyBytes,
@@ -38,7 +38,7 @@ export async function loginEab(kid: string, hmacKey: string): Promise<SessionRes
   );
   const msgBytes = new TextEncoder().encode(message);
   const sig = await crypto.subtle.sign('HMAC', cryptoKey, msgBytes);
-  const signature = base64urlEncode(new Uint8Array(sig));
+  const signature = base64urlEncode(new Uint8Array(sig as ArrayBuffer));
 
   const resp = await fetch('/admin/session/eab', {
     method: 'POST',

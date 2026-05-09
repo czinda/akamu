@@ -1,8 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   PageSection,
-  PageSectionVariants,
   Title,
   Spinner,
   Alert,
@@ -31,7 +30,7 @@ export default function DelegationDetail() {
 
   return (
     <>
-      <PageSection variant={PageSectionVariants.light}>
+      <PageSection>
         <Link to="/delegations" style={{ fontSize: '0.875rem' }}>← Back to Delegations</Link>
         <Title headingLevel="h1" style={{ marginTop: '0.5rem' }}>Delegation: {id}</Title>
       </PageSection>
