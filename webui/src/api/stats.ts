@@ -3,6 +3,7 @@ import { apiJson } from './client';
 export interface ServerStats {
   server_version: string;
   uptime_secs: number;
+  ca_scope: string | null;
   accounts: {
     total: number;
     active: number;

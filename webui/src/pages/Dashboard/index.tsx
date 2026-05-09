@@ -14,8 +14,10 @@ import {
   DescriptionListGroup,
   DescriptionListTerm,
   DescriptionListDescription,
+  Label,
 } from '@patternfly/react-core';
 import { getStats, ServerStats } from '../../api/stats';
+import { useAuth } from '../../auth/AuthContext';
 
 function StatRow({ label, value }: { label: string; value: number | string }) {
   return (
@@ -40,6 +42,8 @@ function fmtUptime(secs: number): string {
 }
 
 export default function Dashboard() {
+  const { role } = useAuth();
+  const canSeeAudit = role === 'administrator' || role === 'auditor';
   const [stats, setStats] = useState<ServerStats | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -61,7 +65,14 @@ export default function Dashboard() {
           <Grid hasGutter>
             <GridItem span={4}>
               <Card>
-                <CardTitle>Certificates</CardTitle>
+                <CardTitle>
+                  Certificates
+                  {stats.ca_scope && (
+                    <Label color="blue" isCompact style={{ marginLeft: '0.5rem' }}>
+                      CA: {stats.ca_scope}
+                    </Label>
+                  )}
+                </CardTitle>
                 <CardBody>
                   <DescriptionList isHorizontal columnModifier={{ default: '1Col' }}>
                     <StatRow label="Total" value={stats.certs.total} />
@@ -96,16 +107,18 @@ export default function Dashboard() {
                 </CardBody>
               </Card>
             </GridItem>
-            <GridItem span={4}>
-              <Card>
-                <CardTitle>Audit Events</CardTitle>
-                <CardBody>
-                  <DescriptionList isHorizontal columnModifier={{ default: '1Col' }}>
-                    <StatRow label="Total" value={stats.audit_events.total} />
-                  </DescriptionList>
-                </CardBody>
-              </Card>
-            </GridItem>
+            {canSeeAudit && (
+              <GridItem span={4}>
+                <Card>
+                  <CardTitle>Audit Events</CardTitle>
+                  <CardBody>
+                    <DescriptionList isHorizontal columnModifier={{ default: '1Col' }}>
+                      <StatRow label="Total" value={stats.audit_events.total} />
+                    </DescriptionList>
+                  </CardBody>
+                </Card>
+              </GridItem>
+            )}
             <GridItem span={4}>
               <Card>
                 <CardTitle>Server</CardTitle>
