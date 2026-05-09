@@ -1,3 +1,21 @@
+/**
+ * Format ACME identifiers JSON (stored as "[{type,value},…]") into a
+ * readable comma-separated list, e.g. "dns:example.com, ip:192.0.2.1".
+ * Falls back to the raw string on parse failure.
+ */
+export function fmtIdentifiers(raw: string | null | undefined): string {
+  if (!raw) return '—';
+  try {
+    const arr = JSON.parse(raw) as Array<{ type?: string; value?: string }>;
+    if (Array.isArray(arr)) {
+      return arr.map(id => `${id.type ?? '?'}:${id.value ?? '?'}`).join(', ') || '—';
+    }
+  } catch {
+    // not valid JSON — return as-is
+  }
+  return raw;
+}
+
 /** Format a Unix epoch (seconds) as a local date-time string, or '—' if null/undefined. */
 export function fmtTs(ts: number | null | undefined): string {
   if (ts == null) return '—';

@@ -22,7 +22,7 @@ import {
 } from '@patternfly/react-table';
 import { useNavigate } from 'react-router-dom';
 import { listOrders, OrderRow, OrderListParams } from '../../api/orders';
-import { fmtTs } from '../../utils';
+import { fmtTs, fmtIdentifiers } from '../../utils';
 
 const PAGE_SIZE = 20;
 
@@ -101,7 +101,7 @@ export default function Orders() {
                   <Td>{order.id}</Td>
                   <Td>{order.account_id}</Td>
                   <Td>{order.status}</Td>
-                  <Td>{Array.isArray(order.identifiers) ? order.identifiers.join(', ') : order.identifiers}</Td>
+                  <Td>{fmtIdentifiers(order.identifiers)}</Td>
                   <Td>{fmtTs(order.created)}</Td>
                   <Td>{fmtTs(order.expires)}</Td>
                   <Td><Button variant="plain" size="sm" onClick={() => navigate(`/orders/${order.id}`)}>View</Button></Td>

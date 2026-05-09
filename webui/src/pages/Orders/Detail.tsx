@@ -11,7 +11,7 @@ import {
   DescriptionListDescription,
 } from '@patternfly/react-core';
 import { getOrder, OrderRow } from '../../api/orders';
-import { fmtTs } from '../../utils';
+import { fmtTs, fmtIdentifiers } from '../../utils';
 import { ObjLink } from '../../components/ObjLink';
 
 export default function OrderDetail() {
@@ -55,7 +55,7 @@ export default function OrderDetail() {
               <DescriptionListTerm>Identifiers</DescriptionListTerm>
               <DescriptionListDescription>
                 <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>
-                  {typeof data.identifiers === 'string' ? data.identifiers : JSON.stringify(data.identifiers, null, 2)}
+                  {fmtIdentifiers(data.identifiers)}
                 </pre>
               </DescriptionListDescription>
             </DescriptionListGroup>
