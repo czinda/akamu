@@ -1,5 +1,5 @@
 import React from 'react';
-import { Routes, Route, Navigate, NavLink, useNavigate } from 'react-router-dom';
+import { Routes, Route, Navigate, NavLink, Outlet, useNavigate } from 'react-router-dom';
 import {
   Page,
   Masthead,
@@ -17,7 +17,7 @@ import {
   FlexItem,
   Spinner,
 } from '@patternfly/react-core';
-import { useAuth, hasRole } from './auth/AuthContext';
+import { useAuth, hasRole, Role } from './auth/AuthContext';
 import { logout as apiLogout } from './api/session';
 import LoginPage from './auth/LoginPage';
 import Dashboard from './pages/Dashboard';
@@ -33,21 +33,14 @@ import Operators from './pages/Operators';
 import AuditLog from './pages/AuditLog';
 import ServerConfig from './pages/ServerConfig';
 
-function RequireAuth({ children }: { children: React.ReactElement }) {
-  const { token } = useAuth();
-  if (!token) return <Navigate to="/login" replace />;
+function RequireRole({ minRole, children }: { minRole: Role; children: React.ReactElement }) {
+  const { role } = useAuth();
+  if (!hasRole(role, minRole)) return <Navigate to="/" replace />;
   return children;
 }
 
-function AppHeader() {
-  const { role, operatorName, clearAuth } = useAuth();
-  const navigate = useNavigate();
-
-  async function handleLogout() {
-    await apiLogout();
-    clearAuth();
-    navigate('/login');
-  }
+function AppHeader({ onLogout }: { onLogout: () => void }) {
+  const { role, operatorName } = useAuth();
 
   return (
     <Masthead>
@@ -59,7 +52,7 @@ function AppHeader() {
           {role && <FlexItem><Label color="blue">{role}</Label></FlexItem>}
           {operatorName && <FlexItem>{operatorName}</FlexItem>}
           <FlexItem>
-            <Button variant="link" onClick={handleLogout}>Logout</Button>
+            <Button variant="link" onClick={onLogout}>Logout</Button>
           </FlexItem>
         </Flex>
       </MastheadContent>
@@ -67,9 +60,9 @@ function AppHeader() {
   );
 }
 
-function AppSidebar({ role }: { role: string | null }) {
-  const isAtLeastCaRa = hasRole(role as Parameters<typeof hasRole>[0], 'ca_ra');
-  const isAdmin = hasRole(role as Parameters<typeof hasRole>[0], 'administrator');
+function AppSidebar({ role }: { role: Role | null }) {
+  const isAtLeastCaRa = hasRole(role, 'ca_ra');
+  const isAdmin = hasRole(role, 'administrator');
 
   return (
     <PageSidebar>
@@ -104,36 +97,25 @@ function AppSidebar({ role }: { role: string | null }) {
 }
 
 function AuthenticatedLayout() {
-  const { token, role } = useAuth();
+  const { token, role, clearAuth } = useAuth();
+  const navigate = useNavigate();
 
   if (!token) return <Navigate to="/login" replace />;
   if (!role) return <Spinner />;
 
+  async function handleLogout() {
+    await apiLogout();
+    clearAuth();
+    navigate('/login');
+  }
+
   return (
-    <Page masthead={<AppHeader />} sidebar={<AppSidebar role={role} />} isManagedSidebar>
-      <Routes>
-        <Route path="/" element={<Dashboard />} />
-        <Route path="/certs" element={<Certificates />} />
-        <Route path="/orders" element={<Orders />} />
-        <Route path="/accounts" element={<Accounts />} />
-        <Route path="/audit" element={<AuditLog />} />
-        {hasRole(role, 'ca_ra') && (
-          <>
-            <Route path="/eab" element={<EabKeys />} />
-            <Route path="/delegations" element={<Delegations />} />
-            <Route path="/profiles" element={<Profiles />} />
-            <Route path="/cas" element={<CAs />} />
-            <Route path="/cross-certs" element={<CrossCerts />} />
-          </>
-        )}
-        {hasRole(role, 'administrator') && (
-          <>
-            <Route path="/operators" element={<Operators />} />
-            <Route path="/config" element={<ServerConfig />} />
-          </>
-        )}
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+    <Page
+      masthead={<AppHeader onLogout={handleLogout} />}
+      sidebar={<AppSidebar role={role} />}
+      isManagedSidebar
+    >
+      <Outlet />
     </Page>
   );
 }
@@ -142,14 +124,35 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
-      <Route
-        path="/*"
-        element={
-          <RequireAuth>
-            <AuthenticatedLayout />
-          </RequireAuth>
-        }
-      />
+      <Route element={<AuthenticatedLayout />}>
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/certs" element={<Certificates />} />
+        <Route path="/orders" element={<Orders />} />
+        <Route path="/accounts" element={<Accounts />} />
+        <Route path="/audit" element={<AuditLog />} />
+        <Route path="/eab" element={
+          <RequireRole minRole="ca_ra"><EabKeys /></RequireRole>
+        } />
+        <Route path="/delegations" element={
+          <RequireRole minRole="ca_ra"><Delegations /></RequireRole>
+        } />
+        <Route path="/profiles" element={
+          <RequireRole minRole="ca_ra"><Profiles /></RequireRole>
+        } />
+        <Route path="/cas" element={
+          <RequireRole minRole="ca_ra"><CAs /></RequireRole>
+        } />
+        <Route path="/cross-certs" element={
+          <RequireRole minRole="ca_ra"><CrossCerts /></RequireRole>
+        } />
+        <Route path="/operators" element={
+          <RequireRole minRole="administrator"><Operators /></RequireRole>
+        } />
+        <Route path="/config" element={
+          <RequireRole minRole="administrator"><ServerConfig /></RequireRole>
+        } />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Route>
     </Routes>
   );
 }

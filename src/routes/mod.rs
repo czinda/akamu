@@ -13,7 +13,7 @@ use axum::routing::{get, head, post};
 use axum::{Json, Router};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 use crate::db;
@@ -363,9 +363,10 @@ pub fn build_router(state: Arc<AppState>, static_dir: Option<&std::path::Path>) 
         .merge(admin_router);
 
     if let Some(dir) = static_dir {
+        let index = ServeFile::new(dir.join("index.html"));
         let serve = ServeDir::new(dir)
             .append_index_html_on_directories(true)
-            .fallback(ServeDir::new(dir).append_index_html_on_directories(true));
+            .fallback(index);
         router = router
             .nest_service("/ui", serve)
             .route("/", get(|| async { Redirect::permanent("/ui/") }));
