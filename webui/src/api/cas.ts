@@ -1,4 +1,5 @@
 import { apiJson, apiFetch, ApiError } from './client';
+import { apiPath, apiActionPath, apiListPath } from './paths';
 
 export interface CaInfo {
   id: string;
@@ -10,32 +11,43 @@ export interface CaInfo {
 }
 
 export async function listCas(): Promise<{ cas: CaInfo[] }> {
-  return apiJson('/admin/cas');
+  return apiJson(apiListPath('ca'));
 }
 
 export async function getCa(id: string): Promise<CaInfo> {
-  return apiJson(`/admin/cas/${id}`);
+  return apiJson(apiPath('ca', id));
 }
 
 export async function downloadCaCert(id: string): Promise<string> {
-  const resp = await apiFetch(`/admin/cas/${id}/cert`);
+  const resp = await apiFetch(`${apiPath('ca', id)}/cert`);
   if (!resp.ok) throw new ApiError(resp.status, resp.statusText);
   return resp.text();
 }
 
 export async function forceCrl(caId?: string): Promise<void> {
-  const path = caId ? `/admin/cas/${caId}/crl` : '/admin/crl';
+  const path = caId ? apiActionPath('ca', caId, 'crl/force') : '/admin/crl/force';
   const resp = await apiFetch(path, { method: 'POST' });
   if (!resp.ok) throw new ApiError(resp.status, resp.statusText);
 }
 
-export interface CrossSignOptions {
-  cert_pem: string;
-  ca_id?: string;
+export interface CrossSignResult {
+  id: string;
+  issuer_ca_id: string;
+  subject_ca_id: string | null;
+  subject_dn: string;
+  serial_number: string;
+  not_before: number;
+  not_after: number;
+  cross_cert_pem: string;
+  created: number;
 }
 
-export async function crossSign(caId: string, opts: CrossSignOptions): Promise<{ id: string }> {
-  return apiJson(`/admin/cas/${caId}/cross-sign`, {
+export type CrossSignOptions =
+  | { subject_ca_id: string; validity_years?: number }
+  | { subject_cert_pem: string; validity_years?: number };
+
+export async function crossSign(caId: string, opts: CrossSignOptions): Promise<CrossSignResult> {
+  return apiJson(apiActionPath('ca', caId, 'cross-sign'), {
     method: 'POST',
     body: JSON.stringify(opts),
   });
