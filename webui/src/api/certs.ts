@@ -24,7 +24,7 @@ export interface CertRow {
 export interface CertListParams {
   ca_id?: string;
   account_id?: string;
-  revoked?: boolean;
+  status?: string;
   limit?: number;
   offset?: number;
 }
@@ -33,7 +33,7 @@ export async function listCerts(params: CertListParams = {}): Promise<{ certs: C
   const qs = new URLSearchParams();
   if (params.ca_id) qs.set('ca_id', params.ca_id);
   if (params.account_id) qs.set('account_id', params.account_id);
-  if (params.revoked !== undefined) qs.set('revoked', String(params.revoked));
+  if (params.status) qs.set('status', params.status);
   if (params.limit) qs.set('limit', String(params.limit));
   if (params.offset) qs.set('offset', String(params.offset));
   return apiJson(`${apiListPath('cert')}?${qs}`);

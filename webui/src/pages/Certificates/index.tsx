@@ -55,8 +55,7 @@ export default function Certificates() {
         limit: PAGE_SIZE,
         offset: (page - 1) * PAGE_SIZE,
       };
-      if (revokedFilter === 'revoked') params.revoked = true;
-      if (revokedFilter === 'valid') params.revoked = false;
+      if (revokedFilter) params.status = revokedFilter;
       const result = await listCerts(params);
       setCerts(result.certs);
       setTotal(result.total ?? result.certs.length);
