@@ -22,7 +22,7 @@ at the repository root.
 | [eab-hkdf.toml](eab-hkdf.toml) | Dynamic EAB keys derived at runtime | `eab_master_secret` |
 | [kerberos-standalone.toml](kerberos-standalone.toml) | Akāmu handles SPNEGO directly | `[server.gssapi]` |
 | [kerberos-proxy.toml](kerberos-proxy.toml) | Kerberos via reverse proxy | `trusted_proxies` |
-| [admin-mtls.toml](admin-mtls.toml) | Admin API with operator client certs | `[admin]` + `ca_certs` |
+| [admin-mtls.toml](admin-mtls.toml) | Admin API with operator client certs | `[tls.client_auth]` + `ca_files` |
 | [admin-kerberos.toml](admin-kerberos.toml) | Admin API with Kerberos auth | `[admin.gssapi]` |
 | [admin-audit.toml](admin-audit.toml) | Strict audit logging and alarms | `audit_overflow`, `audit_alarm_*` |
 | [profiles-builtin.toml](profiles-builtin.toml) | Inline certificate profiles | `[profiles.providers.local]` |

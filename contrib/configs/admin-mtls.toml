@@ -1,12 +1,13 @@
 # admin-mtls.toml — Admin API secured with mutual TLS client certificates.
 #
 # Use when operators authenticate to the Admin API using certificates issued
-# by a dedicated operator CA (not Kerberos).  The admin listener is bound to
-# a separate address from the ACME listener.
+# by a dedicated operator CA (not Kerberos).  The admin endpoints are served
+# on the same listener as the ACME endpoints; mTLS peer certs are extracted
+# from the main TLS handshake.
 # On first run with an empty operators table, the bootstrap operator cert is
 # registered automatically as an Administrator.
 
-listen_addr = "0.0.0.0:8080"
+listen_addr = "0.0.0.0:443"
 base_url    = "https://acme.example.com"
 
 [database]
@@ -16,15 +17,19 @@ url = "sqlite:///var/lib/akamu/acme.db"
 key_file  = "/etc/akamu/certs/ca.key.pem"
 cert_file = "/etc/akamu/certs/ca.cert.pem"
 
-[admin]
-# Dedicated listener for admin endpoints; keeps operator traffic off port 8080.
-listen_addr = "127.0.0.1:9443"
-# Server TLS certificate presented to operator clients.
-cert_file   = "/etc/akamu/admin-tls.pem"
-key_file    = "/etc/akamu/admin-tls-key.pem"
-# CA that signed operator client certificates; may differ from the ACME CA.
-ca_certs    = ["/etc/akamu/operator-ca.pem"]
+[tls]
+enabled   = true
+cert_file = "/etc/akamu/server.pem"
+key_file  = "/etc/akamu/server-key.pem"
 
+[tls.client_auth]
+# CA that signed operator client certificates; may differ from the ACME CA.
+ca_files = ["/etc/akamu/operator-ca.pem"]
+# required = false means ACME clients without certs are still accepted;
+# admin endpoints enforce authentication per-route via the OperatorContext extractor.
+required = false
+
+[admin]
 # Bootstrap: register this certificate as the first Administrator on first run.
 # The operator then uses akamuctl to provision additional operators.
 bootstrap_operator_cert_file = "/etc/akamu/bootstrap-admin.pem"

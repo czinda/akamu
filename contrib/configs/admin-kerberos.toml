@@ -4,7 +4,7 @@
 # and prefer not to manage separate operator TLS certificates.  On first run
 # the bootstrap principal is registered as an Administrator automatically.
 
-listen_addr = "0.0.0.0:8080"
+listen_addr = "0.0.0.0:443"
 base_url    = "https://acme.example.com"
 
 [database]
@@ -14,10 +14,12 @@ url = "sqlite:///var/lib/akamu/acme.db"
 key_file  = "/etc/akamu/certs/ca.key.pem"
 cert_file = "/etc/akamu/certs/ca.cert.pem"
 
+[tls]
+enabled   = true
+cert_file = "/etc/akamu/server.pem"
+key_file  = "/etc/akamu/server-key.pem"
+
 [admin]
-listen_addr = "127.0.0.1:9443"
-cert_file   = "/etc/akamu/admin-tls.pem"
-key_file    = "/etc/akamu/admin-tls-key.pem"
 # Bootstrap: first operator registered is the Kerberos principal below.
 bootstrap_operator_name             = "admin"
 bootstrap_operator_gssapi_principal = "admin@EXAMPLE.COM"

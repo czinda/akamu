@@ -515,10 +515,10 @@ Use *akamuctl config generate* to produce an annotated template.
 
 ```
 [server]
-# Base URL of the akamu admin API.
-url      = "https://akamu.example.com:9443"
+# Base URL of the akamu server (admin API is on the main listener).
+url      = "https://akamu.example.com"
 
-# CA certificate used to verify the admin TLS endpoint.
+# CA certificate used to verify the server TLS certificate.
 # Omit to use system trust anchors.
 # ca_cert = "/etc/akamu/certs/ca.cert.pem"
 

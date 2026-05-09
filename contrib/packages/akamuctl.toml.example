@@ -6,11 +6,11 @@
 
 # ── Server admin API ──────────────────────────────────────────────────────────
 [server]
-# Base URL of the akamu admin API listener.
-# Corresponds to [admin].listen_addr in the akamu server configuration.
-url = "https://akamu.example.com:9443"
+# Base URL of the akamu server.  The admin API is served on the same listener
+# as the ACME endpoints; no separate admin port is needed.
+url = "https://akamu.example.com"
 
-# CA certificate used to verify the admin TLS endpoint.
+# CA certificate used to verify the server TLS certificate.
 # Omit to rely on the system trust store.
 # ca_cert = "/etc/akamu/certs/ca.cert.pem"
 

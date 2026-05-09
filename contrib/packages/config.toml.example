@@ -215,6 +215,12 @@ validate_dnssec = true
 # keytab_file  = "/etc/akamu/http.keytab"
 # service_name = "HTTP"   # MIT Kerberos appends @<hostname> automatically
 
+# Web UI static file serving.
+# When static_dir is set, GET /ui/* serves files from that directory and
+# GET / redirects to /ui/.  When absent, the /ui/ routes are not registered.
+# [server.webui]
+# static_dir = "/usr/share/akamu/webui"
+
 # ── Server-side TLS ───────────────────────────────────────────────────────────
 # When absent or enabled = false, the server speaks plain HTTP.
 # Typical production setup: TLS termination upstream (nginx, haproxy).
@@ -228,10 +234,15 @@ validate_dnssec = true
 # server_name        = "acme.example.com"
 # bootstrap_key_type = "ec:P-256"
 #
-# Mutual TLS client certificate authentication:
+# Mutual TLS client certificate authentication.
+# This section serves two purposes:
+#   1. Restricting ACME access to clients with valid certs (set required = true).
+#   2. Supplying CA certs for admin operator mTLS authentication (required = false
+#      lets ACME clients without certs connect while admin routes still check the
+#      peer cert via the OperatorContext extractor).
 # [tls.client_auth]
 # required             = false
-# ca_files             = ["/etc/akamu/client-ca.pem"]
+# ca_files             = ["/etc/akamu/operator-ca.pem"]
 # profile              = "webpki"   # "webpki" or "rfc5280"
 # allow_post_quantum   = false      # accept ML-DSA / hybrid composite keys
 # max_chain_depth      = 8
@@ -239,12 +250,11 @@ validate_dnssec = true
 
 # ── Admin API ─────────────────────────────────────────────────────────────────
 # When absent, all /admin/* endpoints return 404.
-# At least one of ca_certs or [admin.gssapi] must be configured.
+# Admin endpoints are served on the same listener as the ACME and webui routes.
+# Operator authentication is enforced per-route by the OperatorContext extractor.
+# Use [tls.client_auth] to supply CA certs for mTLS operator authentication;
+# use [admin.gssapi] for Kerberos/SPNEGO authentication.
 # [admin]
-# listen_addr = "127.0.0.1:9443"
-# cert_file   = "/etc/akamu/admin-tls.pem"
-# key_file    = "/etc/akamu/admin-tls-key.pem"
-# ca_certs    = ["/etc/akamu/operator-ca.pem"]   # omit when using GSSAPI-only auth
 #
 # Inactive session expiry (seconds). Default: 3600 (1 hour).
 # session_ttl_secs = 3600
@@ -276,10 +286,6 @@ validate_dnssec = true
 # audit_alarm_threshold = 10
 # audit_alarm_action    = "syslog"   # "syslog" or "halt"
 #
-# Auto-generated admin TLS certificate (testing only; omit cert_file/key_file):
-# server_name        = "localhost"
-# bootstrap_key_type = "ec:P-256"
-#
 # Bootstrap an initial Administrator operator on first run (optional).
 # The operator is registered only when the operators table is empty.
 # bootstrap_operator_cert_file = "/etc/akamu/bootstrap-admin.pem"
@@ -292,7 +298,7 @@ validate_dnssec = true
 #
 # GSSAPI/Kerberos authentication for admin operators.
 # [admin.gssapi]
-# keytab_file  = "/etc/akamu/http.keytab"
+# keytab_file  = "/etc/akamu/admin-http.keytab"
 # service_name = "HTTP"
 
 # ── RFC 9115 delegation upstream CA ──────────────────────────────────────────

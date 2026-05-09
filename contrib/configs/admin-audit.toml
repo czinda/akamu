@@ -4,7 +4,7 @@
 # (FAU_STG.4, FAU_ARP.1, FIA_AFL.1).  The server halts rather than silently
 # dropping audit events, and raises a syslog alarm on repeated security violations.
 
-listen_addr = "0.0.0.0:8080"
+listen_addr = "0.0.0.0:443"
 base_url    = "https://acme.example.com"
 
 [database]
@@ -14,12 +14,16 @@ url = "sqlite:///var/lib/akamu/acme.db"
 key_file  = "/etc/akamu/certs/ca.key.pem"
 cert_file = "/etc/akamu/certs/ca.cert.pem"
 
-[admin]
-listen_addr = "127.0.0.1:9443"
-cert_file   = "/etc/akamu/admin-tls.pem"
-key_file    = "/etc/akamu/admin-tls-key.pem"
-ca_certs    = ["/etc/akamu/operator-ca.pem"]
+[tls]
+enabled   = true
+cert_file = "/etc/akamu/server.pem"
+key_file  = "/etc/akamu/server-key.pem"
 
+[tls.client_auth]
+ca_files = ["/etc/akamu/operator-ca.pem"]
+required = false
+
+[admin]
 # ── Session controls (FTA_SSL_EXT.1, FIA_AFL.1) ───────────────────────────────
 
 # Sessions expire after 1 hour of total lifetime.
