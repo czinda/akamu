@@ -44,7 +44,7 @@ export default function Certificates() {
   const [revokedFilter, setRevokedFilter] = useState<string>('');
 
   const [revokeId, setRevokeId] = useState<string | null>(null);
-  const [revokeReason, setRevokeReason] = useState('unspecified');
+  const [revokeReason, setRevokeReason] = useState(0);
   const [revoking, setRevoking] = useState(false);
 
   const load = useCallback(async () => {
@@ -162,14 +162,14 @@ export default function Certificates() {
           <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>Reason</label>
           <select
             value={revokeReason}
-            onChange={e => setRevokeReason(e.target.value)}
+            onChange={e => setRevokeReason(parseInt(e.target.value, 10))}
             style={{ padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: 'inherit', width: '100%' }}
           >
-            <option value="unspecified">unspecified</option>
-            <option value="keyCompromise">keyCompromise</option>
-            <option value="affiliationChanged">affiliationChanged</option>
-            <option value="superseded">superseded</option>
-            <option value="cessationOfOperation">cessationOfOperation</option>
+            <option value={0}>unspecified</option>
+            <option value={1}>keyCompromise</option>
+            <option value={3}>affiliationChanged</option>
+            <option value={4}>superseded</option>
+            <option value={5}>cessationOfOperation</option>
           </select>
         </ModalBody>
         <ModalFooter>

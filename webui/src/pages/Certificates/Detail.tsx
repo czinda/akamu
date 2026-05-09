@@ -56,7 +56,7 @@ export default function CertDetail() {
     if (!id || !data) return;
     setRevoking(true);
     try {
-      await revokeCert(id, 'unspecified');
+      await revokeCert(id, 0);
       setData({ ...data, status: 'revoked' });
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Revoke failed');

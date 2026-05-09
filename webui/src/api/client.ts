@@ -40,7 +40,7 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
   return resp;
 }
 
-function extractErrorMessage(status: number, text: string, statusText: string): string {
+export function extractErrorMessage(status: number, text: string, statusText: string): string {
   if (text) {
     try {
       const body = JSON.parse(text) as Record<string, unknown>;

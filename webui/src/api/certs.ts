@@ -1,4 +1,4 @@
-import { apiJson, apiFetch, ApiError } from './client';
+import { apiJson, apiFetch, ApiError, extractErrorMessage } from './client';
 import { apiPath, apiListPath } from './paths';
 
 export interface CertRow {
@@ -49,10 +49,13 @@ export async function downloadCert(id: string): Promise<string> {
   return resp.text();
 }
 
-export async function revokeCert(id: string, reason: string): Promise<void> {
-  const resp = await apiFetch(`${apiPath('cert', id)}/revoke`, {
+export async function revokeCert(id: string, reason: number = 0): Promise<void> {
+  const resp = await apiFetch('/admin/revoke', {
     method: 'POST',
-    body: JSON.stringify({ reason }),
+    body: JSON.stringify({ cert_id: id, reason }),
   });
-  if (!resp.ok) throw new ApiError(resp.status, resp.statusText);
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new ApiError(resp.status, extractErrorMessage(resp.status, text, resp.statusText));
+  }
 }
