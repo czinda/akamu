@@ -2267,6 +2267,7 @@ pub async fn get_ca(
             "ocsp_url": ca.ocsp_url,
             "caa_identities": ca.caa_identities,
             "cert_pem": cert_pem,
+            "cert_text": describe_cert_der(&ca.cert_der),
         })),
     )
         .into_response()
@@ -2647,6 +2648,7 @@ pub async fn get_cross_cert(
             "not_before": row.not_before,
             "not_after": row.not_after,
             "cross_cert_pem": row.cross_cert_pem,
+            "cert_text": describe_cert_der(&row.cross_cert_der),
             "created": row.created,
         })),
     )
