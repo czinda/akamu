@@ -166,9 +166,17 @@ $(VENDOR_TARBALL):
 	    -exec python3 -c "import json,sys;[open(p,'w').write(json.dumps(dict(d,files={k:v for k,v in d['files'].items() if not k.endswith('.profraw')}),separators=(',',':'))) for p in sys.argv[1:] for d in [json.load(open(p))]]" {} +
 	@# synta-codegen's build script resolves ASN.1 schemas via ../asn1 relative to
 	@# each crate's CARGO_MANIFEST_DIR.  In the vendored layout that path resolves
-	@# to vendor/asn1/, but the schemas live inside vendor/synta-0.1.6/asn1/.
-	@# Copy them to the expected sibling location so the build script finds them.
-	cp -a "$(REPOROOT)/vendor/synta-$(SYNTA_VERSION)/asn1" "$(REPOROOT)/vendor/asn1"
+	@# to vendor/asn1/, but the schemas live inside vendor/synta-{ver}/asn1/.
+	@# When synta is a local path dependency (developer workspace) cargo vendor
+	@# does not copy it into vendor/, so fall back to the sibling synta repo.
+	@if [ -d "$(REPOROOT)/vendor/synta-$(SYNTA_VERSION)/asn1" ]; then \
+	    cp -a "$(REPOROOT)/vendor/synta-$(SYNTA_VERSION)/asn1" "$(REPOROOT)/vendor/asn1"; \
+	elif [ -d "$(REPOROOT)/../synta/asn1" ]; then \
+	    cp -a "$(REPOROOT)/../synta/asn1" "$(REPOROOT)/vendor/asn1"; \
+	else \
+	    echo "ERROR: cannot find synta asn1 schemas in vendor/synta-$(SYNTA_VERSION)/asn1 or ../synta/asn1" >&2; \
+	    exit 1; \
+	fi
 	@# Archive vendor/ and Cargo.lock (pinned versions for reproducible builds).
 	tar -czf "$(CURDIR)/$@" \
 	    -C "$(REPOROOT)" vendor/ Cargo.lock
