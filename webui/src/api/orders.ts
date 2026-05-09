@@ -1,13 +1,16 @@
 import { apiJson } from './client';
+import { apiPath, apiListPath } from './paths';
 
 export interface OrderRow {
   id: string;
   account_id: string;
   status: string;
   identifiers: string;
-  created_at: string;
-  expires_at: string | null;
-  cert_id: string | null;
+  created: number;
+  updated: number;
+  expires: number | null;
+  certificate_id: string | null;
+  profile: string | null;
   ca_id: string;
 }
 
@@ -26,9 +29,9 @@ export async function listOrders(params: OrderListParams = {}): Promise<{ orders
   if (params.ca_id) qs.set('ca_id', params.ca_id);
   if (params.limit) qs.set('limit', String(params.limit));
   if (params.offset) qs.set('offset', String(params.offset));
-  return apiJson(`/admin/orders?${qs}`);
+  return apiJson(`${apiListPath('order')}?${qs}`);
 }
 
 export async function getOrder(id: string): Promise<OrderRow> {
-  return apiJson(`/admin/orders/${id}`);
+  return apiJson(apiPath('order', id));
 }

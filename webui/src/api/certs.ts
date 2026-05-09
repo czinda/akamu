@@ -1,15 +1,24 @@
 import { apiJson, apiFetch, ApiError } from './client';
+import { apiPath, apiListPath } from './paths';
 
 export interface CertRow {
   id: string;
-  serial: string;
-  subject_dn: string;
-  issuer_ca_id: string;
+  order_id: string | null;
   account_id: string;
-  not_before: string;
-  not_after: string;
-  revoked_at: string | null;
+  ca_id: string;
+  serial_number: string;
+  subject_dn: string;
+  status: string;
+  not_before: number | null;
+  not_after: number | null;
+  revoked_at: number | null;
   revocation_reason: string | null;
+  mtc_log_index: number | null;
+  created: number;
+  suggested_window_start: number | null;
+  suggested_window_end: number | null;
+  replaced_by: string | null;
+  cert_text: string | null;
 }
 
 export interface CertListParams {
@@ -27,21 +36,21 @@ export async function listCerts(params: CertListParams = {}): Promise<{ certs: C
   if (params.revoked !== undefined) qs.set('revoked', String(params.revoked));
   if (params.limit) qs.set('limit', String(params.limit));
   if (params.offset) qs.set('offset', String(params.offset));
-  return apiJson(`/admin/certs?${qs}`);
+  return apiJson(`${apiListPath('cert')}?${qs}`);
 }
 
 export async function getCert(id: string): Promise<CertRow> {
-  return apiJson(`/admin/certs/${id}`);
+  return apiJson(apiPath('cert', id));
 }
 
 export async function downloadCert(id: string): Promise<string> {
-  const resp = await apiFetch(`/admin/certs/${id}/pem`);
+  const resp = await apiFetch(`${apiPath('cert', id)}/download`);
   if (!resp.ok) throw new ApiError(resp.status, resp.statusText);
   return resp.text();
 }
 
 export async function revokeCert(id: string, reason: string): Promise<void> {
-  const resp = await apiFetch(`/admin/certs/${id}/revoke`, {
+  const resp = await apiFetch(`${apiPath('cert', id)}/revoke`, {
     method: 'POST',
     body: JSON.stringify({ reason }),
   });

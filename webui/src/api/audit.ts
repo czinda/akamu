@@ -20,7 +20,7 @@ export interface AuditQueryParams {
   offset?: number;
 }
 
-export async function queryAudit(params: AuditQueryParams = {}): Promise<{ events: AuditEntry[]; limit: number; offset: number }> {
+export async function queryAudit(params: AuditQueryParams = {}): Promise<{ events: AuditEntry[]; total: number; limit: number; offset: number }> {
   const qs = new URLSearchParams();
   if (params.type) qs.set('type', params.type);
   if (params.subject) qs.set('subject', params.subject);

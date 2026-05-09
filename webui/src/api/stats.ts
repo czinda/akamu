@@ -1,18 +1,26 @@
 import { apiJson } from './client';
 
 export interface ServerStats {
-  certificates_total: number;
-  certificates_valid: number;
-  certificates_revoked: number;
-  certificates_expired: number;
-  orders_pending: number;
-  orders_ready: number;
-  orders_processing: number;
-  orders_valid: number;
-  orders_invalid: number;
-  accounts_active: number;
-  accounts_deactivated: number;
-  accounts_revoked: number;
+  server_version: string;
+  uptime_secs: number;
+  accounts: {
+    total: number;
+    active: number;
+  };
+  certs: {
+    total: number;
+    active: number;
+    revoked: number;
+  };
+  eab_keys: {
+    total: number;
+    used: number;
+    bound: number;
+    free: number;
+  };
+  audit_events: {
+    total: number;
+  };
 }
 
 export interface ServerConfig {

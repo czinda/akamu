@@ -1,10 +1,14 @@
 import { apiJson, apiFetch, ApiError } from './client';
+import { apiPath, apiListPath } from './paths';
 
 export interface EabKeyRow {
   kid: string;
+  alg: string;
   created: number;
   used_at: number | null;
   profile_grants: string[] | null;
+  bound_principal: string | null;
+  created_by_operator_id: string | null;
 }
 
 export interface EabListParams {
@@ -13,32 +17,33 @@ export interface EabListParams {
   offset?: number;
 }
 
-export async function listEab(params: EabListParams = {}): Promise<{ eab_keys: EabKeyRow[] }> {
+export async function listEab(params: EabListParams = {}): Promise<{ eab_keys: EabKeyRow[]; total: number; limit: number; offset: number }> {
   const qs = new URLSearchParams();
   if (params.used !== undefined) qs.set('used', String(params.used));
   if (params.limit) qs.set('limit', String(params.limit));
   if (params.offset) qs.set('offset', String(params.offset));
-  return apiJson(`/admin/eab?${qs}`);
+  return apiJson(`${apiListPath('eab')}?${qs}`);
 }
 
 export async function getEab(kid: string): Promise<EabKeyRow> {
-  return apiJson(`/admin/eab/${kid}`);
+  return apiJson(apiPath('eab', kid));
 }
 
 export interface CreateEabOptions {
   kid: string;
   hmac_key_b64u: string;
+  alg?: string;
   profile_grants?: string[];
 }
 
 export async function createEab(opts: CreateEabOptions): Promise<{ kid: string; created: number }> {
-  return apiJson('/admin/eab', {
+  return apiJson(apiListPath('eab'), {
     method: 'POST',
     body: JSON.stringify(opts),
   });
 }
 
 export async function deleteEab(kid: string): Promise<void> {
-  const resp = await apiFetch(`/admin/eab/${kid}`, { method: 'DELETE' });
+  const resp = await apiFetch(apiPath('eab', kid), { method: 'DELETE' });
   if (!resp.ok) throw new ApiError(resp.status, resp.statusText);
 }
