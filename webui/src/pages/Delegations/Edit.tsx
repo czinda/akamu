@@ -19,6 +19,7 @@ import {
   createDelegation,
   updateDelegation,
 } from '../../api/delegations';
+import { useAuth, hasRole } from '../../auth/AuthContext';
 
 const taStyle: React.CSSProperties = {
   width: '100%',
@@ -48,6 +49,15 @@ interface Props {
 export default function DelegationEdit({ createMode }: Props) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { role } = useAuth();
+
+  if (!hasRole(role, 'ca_operations')) {
+    return (
+      <PageSection>
+        <Alert variant="danger" title="Access denied: creating or editing delegations requires ca_operations or administrator role." isInline />
+      </PageSection>
+    );
+  }
 
   const [accountId, setAccountId] = useState('');
   const [csrTemplate, setCsrTemplate] = useState('{\n  \n}');

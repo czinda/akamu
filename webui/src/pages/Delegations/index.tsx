@@ -28,6 +28,7 @@ import { useNavigate } from 'react-router-dom';
 import { listDelegations, deleteDelegation, DelegationRow } from '../../api/delegations';
 import { fmtTs } from '../../utils';
 import { ObjLink } from '../../components/ObjLink';
+import { useAuth, hasRole } from '../../auth/AuthContext';
 
 const PAGE_SIZE = 20;
 
@@ -40,6 +41,8 @@ function csrSummary(tmpl: unknown): string {
 
 export default function Delegations() {
   const navigate = useNavigate();
+  const { role } = useAuth();
+  const canWrite = hasRole(role, 'ca_operations');
   const [delegations, setDelegations] = useState<DelegationRow[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -87,9 +90,11 @@ export default function Delegations() {
         {error && <Alert variant="danger" title={error} isInline style={{ marginBottom: '1rem' }} />}
         <Toolbar>
           <ToolbarContent>
-            <ToolbarItem>
-              <Button variant="primary" onClick={() => navigate('/delegations/new')}>Create Delegation</Button>
-            </ToolbarItem>
+            {canWrite && (
+              <ToolbarItem>
+                <Button variant="primary" onClick={() => navigate('/delegations/new')}>Create Delegation</Button>
+              </ToolbarItem>
+            )}
           </ToolbarContent>
         </Toolbar>
         {loading && <Spinner />}
@@ -116,10 +121,8 @@ export default function Delegations() {
                   <Td>{fmtTs(d.created)}</Td>
                   <Td>
                     <Button variant="plain" size="sm" onClick={() => navigate(`/delegations/${d.id}`)}>View</Button>
-                    {' '}
-                    <Button variant="secondary" size="sm" onClick={() => navigate(`/delegations/${d.id}/edit`)}>Edit</Button>
-                    {' '}
-                    <Button variant="danger" size="sm" onClick={() => setDeleteId(d.id)}>Delete</Button>
+                    {canWrite && <>{' '}<Button variant="secondary" size="sm" onClick={() => navigate(`/delegations/${d.id}/edit`)}>Edit</Button></>}
+                    {canWrite && <>{' '}<Button variant="danger" size="sm" onClick={() => setDeleteId(d.id)}>Delete</Button></>}
                   </Td>
                 </Tr>
               ))}
