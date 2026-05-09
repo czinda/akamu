@@ -8,6 +8,7 @@ export interface CaInfo {
   validity_days: number;
   is_default: boolean;
   cert_pem: string;
+  cert_text: string | null;
 }
 
 export async function listCas(): Promise<{ cas: CaInfo[] }> {

@@ -11,6 +11,7 @@ export interface CrossCertRow {
   not_after: number;
   created: number;
   cross_cert_pem?: string;
+  cert_text: string | null;
 }
 
 export interface CrossCertListParams {

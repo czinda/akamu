@@ -10,8 +10,10 @@ import {
   DescriptionListGroup,
   DescriptionListTerm,
   DescriptionListDescription,
+  Label,
 } from '@patternfly/react-core';
 import { getCa, CaInfo } from '../../api/cas';
+import { CertTextBlock } from '../../components/CertTextBlock';
 
 export default function CADetail() {
   const { id } = useParams<{ id: string }>();
@@ -37,36 +39,37 @@ export default function CADetail() {
         {loading && <Spinner />}
         {error && <Alert variant="danger" title={error} isInline />}
         {data && (
-          <DescriptionList isHorizontal columnModifier={{ default: '1Col' }}>
-            <DescriptionListGroup>
-              <DescriptionListTerm>ID</DescriptionListTerm>
-              <DescriptionListDescription>{data.id ?? '—'}</DescriptionListDescription>
-            </DescriptionListGroup>
-            <DescriptionListGroup>
-              <DescriptionListTerm>Key Type</DescriptionListTerm>
-              <DescriptionListDescription>{data.key_type ?? '—'}</DescriptionListDescription>
-            </DescriptionListGroup>
-            <DescriptionListGroup>
-              <DescriptionListTerm>Hash Algorithm</DescriptionListTerm>
-              <DescriptionListDescription>{data.hash_alg ?? '—'}</DescriptionListDescription>
-            </DescriptionListGroup>
-            <DescriptionListGroup>
-              <DescriptionListTerm>Validity Days</DescriptionListTerm>
-              <DescriptionListDescription>{data.validity_days ?? '—'}</DescriptionListDescription>
-            </DescriptionListGroup>
-            <DescriptionListGroup>
-              <DescriptionListTerm>Default</DescriptionListTerm>
-              <DescriptionListDescription>{data.is_default ? 'Yes' : 'No'}</DescriptionListDescription>
-            </DescriptionListGroup>
-            <DescriptionListGroup>
-              <DescriptionListTerm>Certificate PEM</DescriptionListTerm>
-              <DescriptionListDescription>
-                <pre style={{ maxHeight: '300px', overflow: 'auto', whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>
-                  {data.cert_pem}
-                </pre>
-              </DescriptionListDescription>
-            </DescriptionListGroup>
-          </DescriptionList>
+          <>
+            <DescriptionList isHorizontal columnModifier={{ default: '1Col' }} style={{ maxWidth: '640px' }}>
+              <DescriptionListGroup>
+                <DescriptionListTerm>ID</DescriptionListTerm>
+                <DescriptionListDescription>{data.id ?? '—'}</DescriptionListDescription>
+              </DescriptionListGroup>
+              <DescriptionListGroup>
+                <DescriptionListTerm>Key Type</DescriptionListTerm>
+                <DescriptionListDescription>{data.key_type ?? '—'}</DescriptionListDescription>
+              </DescriptionListGroup>
+              <DescriptionListGroup>
+                <DescriptionListTerm>Hash Algorithm</DescriptionListTerm>
+                <DescriptionListDescription>{data.hash_alg ?? '—'}</DescriptionListDescription>
+              </DescriptionListGroup>
+              <DescriptionListGroup>
+                <DescriptionListTerm>Validity Days</DescriptionListTerm>
+                <DescriptionListDescription>{data.validity_days ?? '—'}</DescriptionListDescription>
+              </DescriptionListGroup>
+              <DescriptionListGroup>
+                <DescriptionListTerm>Default</DescriptionListTerm>
+                <DescriptionListDescription>
+                  {data.is_default ? <Label color="green">default</Label> : 'No'}
+                </DescriptionListDescription>
+              </DescriptionListGroup>
+            </DescriptionList>
+            <CertTextBlock
+              pem={data.cert_pem}
+              certText={data.cert_text}
+              downloadFilename={`ca-${id}.pem`}
+            />
+          </>
         )}
       </PageSection>
     </>

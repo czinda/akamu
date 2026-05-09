@@ -6,15 +6,15 @@ import {
   Title,
   Spinner,
   Alert,
-  Button,
   DescriptionList,
   DescriptionListGroup,
   DescriptionListTerm,
   DescriptionListDescription,
 } from '@patternfly/react-core';
-import { getCrossCert, downloadCrossCert, CrossCertRow } from '../../api/crosscerts';
+import { getCrossCert, CrossCertRow } from '../../api/crosscerts';
 import { fmtTs } from '../../utils';
 import { ObjLink } from '../../components/ObjLink';
+import { CertTextBlock } from '../../components/CertTextBlock';
 
 export default function CrossCertDetail() {
   const { id } = useParams<{ id: string }>();
@@ -30,22 +30,6 @@ export default function CrossCertDetail() {
       .finally(() => setLoading(false));
   }, [id]);
 
-  async function handleDownload() {
-    if (!id) return;
-    try {
-      const pem = await downloadCrossCert(id);
-      const blob = new Blob([pem], { type: 'application/x-pem-file' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `cross-cert-${id}.pem`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Download failed');
-    }
-  }
-
   return (
     <>
       <PageSection variant={PageSectionVariants.light}>
@@ -57,7 +41,7 @@ export default function CrossCertDetail() {
         {error && <Alert variant="danger" title={error} isInline />}
         {data && (
           <>
-            <DescriptionList isHorizontal columnModifier={{ default: '1Col' }}>
+            <DescriptionList isHorizontal columnModifier={{ default: '1Col' }} style={{ maxWidth: '640px' }}>
               <DescriptionListGroup>
                 <DescriptionListTerm>ID</DescriptionListTerm>
                 <DescriptionListDescription>{data.id}</DescriptionListDescription>
@@ -76,7 +60,9 @@ export default function CrossCertDetail() {
               </DescriptionListGroup>
               <DescriptionListGroup>
                 <DescriptionListTerm>Serial Number</DescriptionListTerm>
-                <DescriptionListDescription>{data.serial_number ?? '—'}</DescriptionListDescription>
+                <DescriptionListDescription>
+                  <code style={{ fontSize: '0.875rem' }}>{data.serial_number ?? '—'}</code>
+                </DescriptionListDescription>
               </DescriptionListGroup>
               <DescriptionListGroup>
                 <DescriptionListTerm>Not Before</DescriptionListTerm>
@@ -91,9 +77,12 @@ export default function CrossCertDetail() {
                 <DescriptionListDescription>{fmtTs(data.created)}</DescriptionListDescription>
               </DescriptionListGroup>
             </DescriptionList>
-            <div style={{ marginTop: '1rem' }}>
-              <Button variant="secondary" onClick={handleDownload}>Download PEM</Button>
-            </div>
+            <CertTextBlock
+              pemLabel="Cross-Certificate PEM"
+              pem={data.cross_cert_pem}
+              certText={data.cert_text}
+              downloadFilename={`cross-cert-${id}.pem`}
+            />
           </>
         )}
       </PageSection>
