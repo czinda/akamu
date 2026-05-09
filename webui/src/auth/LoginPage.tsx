@@ -57,6 +57,7 @@ export default function LoginPage() {
   return (
     <PFLoginPage
       loginTitle="Sign in to Akamu PKI"
+      brandImgSrc="/ui/akamu-logo.png"
       brandImgAlt="Akamu PKI"
     >
       {error && <Alert variant="danger" title={error} isInline style={{ marginBottom: '1rem' }} />}
