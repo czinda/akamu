@@ -809,6 +809,7 @@ async fn start_server(args: &Args) -> BenchServer {
         crl_caches,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),
+        eab_session_nonces: None,
         link_headers,
         validation_client: {
             let https = hyper_rustls::HttpsConnectorBuilder::new()
@@ -830,7 +831,7 @@ async fn start_server(args: &Args) -> BenchServer {
         startup_time: std::time::Instant::now(),
     });
 
-    let router = routes::build_router(state);
+    let router = routes::build_router(state, None);
     let tokio_listener = tokio::net::TcpListener::from_std(listener).unwrap();
     tokio::spawn(async move {
         axum::serve(tokio_listener, router).await.ok();
