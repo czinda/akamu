@@ -25,6 +25,8 @@ export interface CertListParams {
   ca_id?: string;
   account_id?: string;
   status?: string;
+  serial?: string;
+  subject?: string;
   limit?: number;
   offset?: number;
 }
@@ -34,6 +36,8 @@ export async function listCerts(params: CertListParams = {}): Promise<{ certs: C
   if (params.ca_id) qs.set('ca_id', params.ca_id);
   if (params.account_id) qs.set('account_id', params.account_id);
   if (params.status) qs.set('status', params.status);
+  if (params.serial) qs.set('serial', params.serial);
+  if (params.subject) qs.set('subject', params.subject);
   if (params.limit) qs.set('limit', String(params.limit));
   if (params.offset) qs.set('offset', String(params.offset));
   return apiJson(`${apiListPath('cert')}?${qs}`);
