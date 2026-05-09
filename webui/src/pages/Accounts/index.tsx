@@ -31,13 +31,16 @@ import {
   AccountRow,
   AccountListParams,
 } from '../../api/accounts';
+import { useNavigate } from 'react-router-dom';
 import { useAuth, hasRole } from '../../auth/AuthContext';
+import { fmtTs } from '../../utils';
 
 const PAGE_SIZE = 20;
 
 export default function Accounts() {
   const { role } = useAuth();
   const canWrite = hasRole(role, 'ca_ra');
+  const navigate = useNavigate();
 
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -115,8 +118,8 @@ export default function Accounts() {
                 <Th>Status</Th>
                 <Th>CA</Th>
                 <Th>Created</Th>
-                <Th>Last Seen</Th>
-                {canWrite && <Th>Actions</Th>}
+                <Th>Updated</Th>
+                <Th>Actions</Th>
               </Tr>
             </Thead>
             <Tbody>
@@ -125,17 +128,16 @@ export default function Accounts() {
                   <Td>{acct.id}</Td>
                   <Td>{acct.status}</Td>
                   <Td>{acct.ca_id}</Td>
-                  <Td>{acct.created_at}</Td>
-                  <Td>{acct.last_seen_at ?? '—'}</Td>
-                  {canWrite && (
-                    <Td>
-                      {acct.status === 'valid' && (
-                        <Button variant="danger" size="sm" onClick={() => setDeactivateId(acct.id)}>
-                          Deactivate
-                        </Button>
-                      )}
-                    </Td>
-                  )}
+                  <Td>{fmtTs(acct.created)}</Td>
+                  <Td>{fmtTs(acct.updated)}</Td>
+                  <Td>
+                    {canWrite && acct.status === 'valid' && (
+                      <Button variant="danger" size="sm" onClick={() => setDeactivateId(acct.id)}>
+                        Deactivate
+                      </Button>
+                    )}{' '}
+                    <Button variant="plain" size="sm" onClick={() => navigate(`/accounts/${acct.id}`)}>View</Button>
+                  </Td>
                 </Tr>
               ))}
             </Tbody>

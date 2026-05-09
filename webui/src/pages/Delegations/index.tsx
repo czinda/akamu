@@ -15,9 +15,6 @@ import {
   ModalHeader,
   ModalBody,
   ModalFooter,
-  Form,
-  FormGroup,
-  TextInput,
   Pagination,
 } from '@patternfly/react-core';
 import {
@@ -28,30 +25,29 @@ import {
   Th,
   Td,
 } from '@patternfly/react-table';
-import {
-  listDelegations,
-  createDelegation,
-  updateDelegation,
-  deleteDelegation,
-  DelegationRow,
-  DelegationOptions,
-} from '../../api/delegations';
+import { useNavigate } from 'react-router-dom';
+import { listDelegations, deleteDelegation, DelegationRow } from '../../api/delegations';
+import { fmtTs } from '../../utils';
+import { ObjLink } from '../../components/ObjLink';
 
 const PAGE_SIZE = 20;
 
+function csrSummary(tmpl: unknown): string {
+  if (!tmpl) return '—';
+  if (typeof tmpl === 'string') return tmpl.slice(0, 60);
+  const s = JSON.stringify(tmpl);
+  return s.length > 60 ? s.slice(0, 57) + '…' : s;
+}
+
 export default function Delegations() {
+  const navigate = useNavigate();
   const [delegations, setDelegations] = useState<DelegationRow[]>([]);
+  const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [createOpen, setCreateOpen] = useState(false);
-  const [editRow, setEditRow] = useState<DelegationRow | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-
-  const [formAccountId, setFormAccountId] = useState('');
-  const [formTemplate, setFormTemplate] = useState('');
-  const [formCnameMap, setFormCnameMap] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -59,6 +55,7 @@ export default function Delegations() {
     try {
       const result = await listDelegations({ limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE });
       setDelegations(result.delegations);
+      setTotal(result.total);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to load delegations');
     } finally {
@@ -67,57 +64,6 @@ export default function Delegations() {
   }, [page]);
 
   useEffect(() => { load(); }, [load]);
-
-  function openCreate() {
-    setFormAccountId('');
-    setFormTemplate('');
-    setFormCnameMap('');
-    setCreateOpen(true);
-  }
-
-  function openEdit(row: DelegationRow) {
-    setEditRow(row);
-    setFormAccountId(row.account_id);
-    setFormTemplate(row.csr_template);
-    setFormCnameMap(row.cname_map ?? '');
-  }
-
-  function buildOpts(): DelegationOptions {
-    const opts: DelegationOptions = { account_id: formAccountId, csr_template: formTemplate };
-    if (formCnameMap) {
-      try { opts.cname_map = JSON.parse(formCnameMap); } catch { /* ignore */ }
-    }
-    return opts;
-  }
-
-  async function handleCreate(e: React.FormEvent) {
-    e.preventDefault();
-    setSaving(true);
-    try {
-      await createDelegation(buildOpts());
-      setCreateOpen(false);
-      load();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Create failed');
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function handleUpdate(e: React.FormEvent) {
-    e.preventDefault();
-    if (!editRow) return;
-    setSaving(true);
-    try {
-      await updateDelegation(editRow.id, buildOpts());
-      setEditRow(null);
-      load();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Update failed');
-    } finally {
-      setSaving(false);
-    }
-  }
 
   async function handleDelete() {
     if (!deleteId) return;
@@ -133,20 +79,6 @@ export default function Delegations() {
     }
   }
 
-  const formFields = (
-    <>
-      <FormGroup label="Account ID" isRequired fieldId="del-account-id">
-        <TextInput id="del-account-id" value={formAccountId} onChange={(_e, v) => setFormAccountId(v)} isRequired />
-      </FormGroup>
-      <FormGroup label="CSR Template" isRequired fieldId="del-template">
-        <TextInput id="del-template" value={formTemplate} onChange={(_e, v) => setFormTemplate(v)} isRequired />
-      </FormGroup>
-      <FormGroup label="CNAME Map (JSON, optional)" fieldId="del-cname">
-        <TextInput id="del-cname" value={formCnameMap} onChange={(_e, v) => setFormCnameMap(v)} />
-      </FormGroup>
-    </>
-  );
-
   return (
     <>
       <PageSection variant={PageSectionVariants.light}>
@@ -157,7 +89,7 @@ export default function Delegations() {
         <Toolbar>
           <ToolbarContent>
             <ToolbarItem>
-              <Button variant="primary" onClick={openCreate}>Create Delegation</Button>
+              <Button variant="primary" onClick={() => navigate('/delegations/new')}>Create Delegation</Button>
             </ToolbarItem>
           </ToolbarContent>
         </Toolbar>
@@ -180,11 +112,14 @@ export default function Delegations() {
               {delegations.map(d => (
                 <Tr key={d.id}>
                   <Td>{d.id}</Td>
-                  <Td>{d.account_id}</Td>
-                  <Td>{d.csr_template}</Td>
-                  <Td>{d.created_at}</Td>
+                  <Td><ObjLink type="account" id={d.account_id} /></Td>
+                  <Td style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: '#555' }}>{csrSummary(d.csr_template)}</Td>
+                  <Td>{fmtTs(d.created)}</Td>
                   <Td>
-                    <Button variant="secondary" size="sm" onClick={() => openEdit(d)}>Edit</Button>{' '}
+                    <Button variant="plain" size="sm" onClick={() => navigate(`/delegations/${d.id}`)}>View</Button>
+                    {' '}
+                    <Button variant="secondary" size="sm" onClick={() => navigate(`/delegations/${d.id}/edit`)}>Edit</Button>
+                    {' '}
                     <Button variant="danger" size="sm" onClick={() => setDeleteId(d.id)}>Delete</Button>
                   </Td>
                 </Tr>
@@ -192,32 +127,12 @@ export default function Delegations() {
             </Tbody>
           </Table>
         )}
-        <Pagination itemCount={delegations.length} perPage={PAGE_SIZE} page={page} onSetPage={(_e, p) => setPage(p)} />
+        <Pagination itemCount={total} perPage={PAGE_SIZE} page={page} onSetPage={(_e, p) => setPage(p)} />
       </PageSection>
-      <Modal variant="medium" isOpen={createOpen} onClose={() => setCreateOpen(false)}>
-        <ModalHeader title="Create Delegation" />
-        <ModalBody>
-          <Form id="del-create-form" onSubmit={handleCreate}>{formFields}</Form>
-        </ModalBody>
-        <ModalFooter>
-          <Button form="del-create-form" type="submit" variant="primary" isLoading={saving} isDisabled={saving}>Create</Button>
-          <Button variant="link" onClick={() => setCreateOpen(false)}>Cancel</Button>
-        </ModalFooter>
-      </Modal>
-      <Modal variant="medium" isOpen={!!editRow} onClose={() => setEditRow(null)}>
-        <ModalHeader title={`Edit Delegation ${editRow?.id}`} />
-        <ModalBody>
-          <Form id="del-edit-form" onSubmit={handleUpdate}>{formFields}</Form>
-        </ModalBody>
-        <ModalFooter>
-          <Button form="del-edit-form" type="submit" variant="primary" isLoading={saving} isDisabled={saving}>Save</Button>
-          <Button variant="link" onClick={() => setEditRow(null)}>Cancel</Button>
-        </ModalFooter>
-      </Modal>
       <Modal variant="small" isOpen={!!deleteId} onClose={() => setDeleteId(null)}>
         <ModalHeader title="Delete Delegation" />
         <ModalBody>
-          <p>Delete delegation <strong>{deleteId}</strong>?</p>
+          <p>Delete delegation <strong>{deleteId}</strong>? This cannot be undone.</p>
         </ModalBody>
         <ModalFooter>
           <Button variant="danger" onClick={handleDelete} isLoading={saving} isDisabled={saving}>Delete</Button>

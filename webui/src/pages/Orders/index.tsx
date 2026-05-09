@@ -6,6 +6,7 @@ import {
   Toolbar,
   ToolbarContent,
   ToolbarItem,
+  Button,
   Spinner,
   Alert,
   EmptyState,
@@ -20,11 +21,14 @@ import {
   Th,
   Td,
 } from '@patternfly/react-table';
+import { useNavigate } from 'react-router-dom';
 import { listOrders, OrderRow, OrderListParams } from '../../api/orders';
+import { fmtTs } from '../../utils';
 
 const PAGE_SIZE = 20;
 
 export default function Orders() {
+  const navigate = useNavigate();
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -89,6 +93,7 @@ export default function Orders() {
                 <Th>Identifiers</Th>
                 <Th>Created</Th>
                 <Th>Expires</Th>
+                <Th>Details</Th>
               </Tr>
             </Thead>
             <Tbody>
@@ -98,8 +103,9 @@ export default function Orders() {
                   <Td>{order.account_id}</Td>
                   <Td>{order.status}</Td>
                   <Td>{Array.isArray(order.identifiers) ? order.identifiers.join(', ') : order.identifiers}</Td>
-                  <Td>{order.created_at}</Td>
-                  <Td>{order.expires_at ?? '—'}</Td>
+                  <Td>{fmtTs(order.created)}</Td>
+                  <Td>{fmtTs(order.expires)}</Td>
+                  <Td><Button variant="plain" size="sm" onClick={() => navigate(`/orders/${order.id}`)}>View</Button></Td>
                 </Tr>
               ))}
             </Tbody>

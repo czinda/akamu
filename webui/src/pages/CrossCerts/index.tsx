@@ -18,12 +18,16 @@ import {
   Th,
   Td,
 } from '@patternfly/react-table';
+import { useNavigate } from 'react-router-dom';
 import { listCrossCerts, downloadCrossCert, CrossCertRow } from '../../api/crosscerts';
+import { fmtTs } from '../../utils';
 
 const PAGE_SIZE = 20;
 
 export default function CrossCerts() {
+  const navigate = useNavigate();
   const [certs, setCerts] = useState<CrossCertRow[]>([]);
+  const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -34,6 +38,7 @@ export default function CrossCerts() {
     try {
       const result = await listCrossCerts({ limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE });
       setCerts(result.cross_certs);
+      setTotal(result.total);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to load cross-certs');
     } finally {
@@ -74,8 +79,8 @@ export default function CrossCerts() {
             <Thead>
               <Tr>
                 <Th>ID</Th>
-                <Th>CA</Th>
-                <Th>Subject CN</Th>
+                <Th>Issuer CA</Th>
+                <Th>Subject DN</Th>
                 <Th>Not Before</Th>
                 <Th>Not After</Th>
                 <Th>Actions</Th>
@@ -85,19 +90,20 @@ export default function CrossCerts() {
               {certs.map(c => (
                 <Tr key={c.id}>
                   <Td>{c.id}</Td>
-                  <Td>{c.ca_id}</Td>
-                  <Td>{c.subject_cn}</Td>
-                  <Td>{c.not_before}</Td>
-                  <Td>{c.not_after}</Td>
+                  <Td>{c.issuer_ca_id}</Td>
+                  <Td>{c.subject_dn}</Td>
+                  <Td>{fmtTs(c.not_before)}</Td>
+                  <Td>{fmtTs(c.not_after)}</Td>
                   <Td>
-                    <Button variant="secondary" size="sm" onClick={() => handleDownload(c.id)}>Download PEM</Button>
+                    <Button variant="secondary" size="sm" onClick={() => handleDownload(c.id)}>Download PEM</Button>{' '}
+                    <Button variant="plain" size="sm" onClick={() => navigate(`/cross-certs/${c.id}`)}>View</Button>
                   </Td>
                 </Tr>
               ))}
             </Tbody>
           </Table>
         )}
-        <Pagination itemCount={certs.length} perPage={PAGE_SIZE} page={page} onSetPage={(_e, p) => setPage(p)} />
+        <Pagination itemCount={total} perPage={PAGE_SIZE} page={page} onSetPage={(_e, p) => setPage(p)} />
       </PageSection>
     </>
   );

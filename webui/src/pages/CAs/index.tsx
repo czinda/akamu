@@ -19,6 +19,9 @@ import {
   Form,
   FormGroup,
   TextArea,
+  TextInput,
+  Radio,
+  ClipboardCopy,
 } from '@patternfly/react-core';
 import {
   Table,
@@ -28,20 +31,31 @@ import {
   Th,
   Td,
 } from '@patternfly/react-table';
-import { listCas, forceCrl, crossSign, CaInfo } from '../../api/cas';
+import { useNavigate } from 'react-router-dom';
+import { listCas, forceCrl, crossSign, CrossSignResult, CaInfo } from '../../api/cas';
 import { useAuth, hasRole } from '../../auth/AuthContext';
+import { fmtTs } from '../../utils';
 
 export default function CAs() {
   const { role } = useAuth();
   const canWrite = hasRole(role, 'ca_operations');
+  const navigate = useNavigate();
 
   const [cas, setCas] = useState<CaInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [crlCaId, setCrlCaId] = useState<string | null>(null);
-  const [crossSignCaId, setCrossSignCaId] = useState<string | null>(null);
-  const [crossSignPem, setCrossSignPem] = useState('');
   const [saving, setSaving] = useState(false);
+
+  // Force-CRL state
+  const [crlCaId, setCrlCaId] = useState<string | null>(null);
+
+  // Cross-sign state
+  const [crossSignIssuerId, setCrossSignIssuerId] = useState<string | null>(null);
+  const [crossSignMode, setCrossSignMode] = useState<'local' | 'external'>('local');
+  const [crossSignSubjectId, setCrossSignSubjectId] = useState('');
+  const [crossSignPem, setCrossSignPem] = useState('');
+  const [crossSignYears, setCrossSignYears] = useState(5);
+  const [crossSignResult, setCrossSignResult] = useState<CrossSignResult | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -58,6 +72,20 @@ export default function CAs() {
 
   useEffect(() => { load(); }, [load]);
 
+  function openCrossSign(caId: string) {
+    setCrossSignIssuerId(caId);
+    setCrossSignMode('local');
+    setCrossSignSubjectId('');
+    setCrossSignPem('');
+    setCrossSignYears(5);
+    setCrossSignResult(null);
+  }
+
+  function closeCrossSign() {
+    setCrossSignIssuerId(null);
+    setCrossSignResult(null);
+  }
+
   async function handleForceCrl() {
     if (crlCaId === null) return;
     setSaving(true);
@@ -73,18 +101,26 @@ export default function CAs() {
 
   async function handleCrossSign(e: React.FormEvent) {
     e.preventDefault();
-    if (!crossSignCaId) return;
+    if (!crossSignIssuerId) return;
     setSaving(true);
+    setError(null);
     try {
-      await crossSign(crossSignCaId, { cert_pem: crossSignPem });
-      setCrossSignCaId(null);
-      setCrossSignPem('');
+      const opts = crossSignMode === 'local'
+        ? { subject_ca_id: crossSignSubjectId, validity_years: crossSignYears }
+        : { subject_cert_pem: crossSignPem, validity_years: crossSignYears };
+      const result = await crossSign(crossSignIssuerId, opts);
+      setCrossSignResult(result);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Cross-sign failed');
     } finally {
       setSaving(false);
     }
   }
+
+  const localSubjectCas = cas.filter(c => c.id !== crossSignIssuerId);
+  const crossSignValid = crossSignMode === 'local'
+    ? !!crossSignSubjectId
+    : crossSignPem.trim().length > 0;
 
   return (
     <>
@@ -115,7 +151,7 @@ export default function CAs() {
                 <Th>Hash Alg</Th>
                 <Th>Validity Days</Th>
                 <Th>Default</Th>
-                {canWrite && <Th>Actions</Th>}
+                <Th>Actions</Th>
               </Tr>
             </Thead>
             <Tbody>
@@ -126,18 +162,23 @@ export default function CAs() {
                   <Td>{ca.hash_alg}</Td>
                   <Td>{ca.validity_days}</Td>
                   <Td>{ca.is_default ? <Label color="green">default</Label> : null}</Td>
-                  {canWrite && (
-                    <Td>
-                      <Button variant="secondary" size="sm" onClick={() => setCrlCaId(ca.id)}>Force CRL</Button>{' '}
-                      <Button variant="secondary" size="sm" onClick={() => setCrossSignCaId(ca.id)}>Cross-Sign</Button>
-                    </Td>
-                  )}
+                  <Td>
+                    {canWrite && (
+                      <>
+                        <Button variant="secondary" size="sm" onClick={() => setCrlCaId(ca.id)}>Force CRL</Button>{' '}
+                        <Button variant="secondary" size="sm" onClick={() => openCrossSign(ca.id)}>Cross-Sign</Button>{' '}
+                      </>
+                    )}
+                    <Button variant="plain" size="sm" onClick={() => navigate(`/cas/${ca.id}`)}>View</Button>
+                  </Td>
                 </Tr>
               ))}
             </Tbody>
           </Table>
         )}
       </PageSection>
+
+      {/* Force CRL modal */}
       <Modal variant="small" isOpen={crlCaId !== null} onClose={() => setCrlCaId(null)}>
         <ModalHeader title="Force CRL" />
         <ModalBody>
@@ -148,18 +189,97 @@ export default function CAs() {
           <Button variant="link" onClick={() => setCrlCaId(null)}>Cancel</Button>
         </ModalFooter>
       </Modal>
-      <Modal variant="medium" isOpen={!!crossSignCaId} onClose={() => setCrossSignCaId(null)}>
-        <ModalHeader title={`Cross-Sign with CA ${crossSignCaId}`} />
+
+      {/* Cross-sign modal */}
+      <Modal variant="medium" isOpen={!!crossSignIssuerId} onClose={closeCrossSign}>
+        <ModalHeader title={`Issue Cross-Certificate — Issuer: ${crossSignIssuerId}`} />
         <ModalBody>
-          <Form id="cross-sign-form" onSubmit={handleCrossSign}>
-            <FormGroup label="Certificate PEM" isRequired fieldId="cross-sign-pem">
-              <TextArea id="cross-sign-pem" value={crossSignPem} onChange={(_e, v) => setCrossSignPem(v)} rows={12} isRequired />
-            </FormGroup>
-          </Form>
+          {crossSignResult ? (
+            /* ── Success view ─────────────────────────────── */
+            <div>
+              <Alert variant="success" isInline title="Cross-certificate issued" style={{ marginBottom: '1rem' }}>
+                Subject: <strong>{crossSignResult.subject_dn}</strong><br />
+                Serial: <code>{crossSignResult.serial_number}</code><br />
+                Valid until: {fmtTs(crossSignResult.not_after)}
+              </Alert>
+              <FormGroup label="Certificate PEM" fieldId="xsign-result-pem">
+                <ClipboardCopy isReadOnly isCode hoverTip="Copy" clickTip="Copied" variant="expansion">
+                  {crossSignResult.cross_cert_pem}
+                </ClipboardCopy>
+              </FormGroup>
+            </div>
+          ) : (
+            /* ── Input form ───────────────────────────────── */
+            <Form id="cross-sign-form" onSubmit={handleCrossSign}>
+              <FormGroup label="Subject" isRequired fieldId="xsign-mode">
+                <div style={{ display: 'flex', gap: '2rem', marginBottom: '0.75rem' }}>
+                  <Radio id="xsign-local" name="xsign-mode" label="CA on this server"
+                    isChecked={crossSignMode === 'local'}
+                    onChange={() => { setCrossSignMode('local'); setCrossSignSubjectId(''); }} />
+                  <Radio id="xsign-external" name="xsign-mode" label="External CA (paste PEM)"
+                    isChecked={crossSignMode === 'external'}
+                    onChange={() => { setCrossSignMode('external'); setCrossSignPem(''); }} />
+                </div>
+                {crossSignMode === 'local' ? (
+                  localSubjectCas.length > 0 ? (
+                    <select
+                      id="xsign-subject-id"
+                      value={crossSignSubjectId}
+                      onChange={e => setCrossSignSubjectId(e.target.value)}
+                      style={{ padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px',
+                        fontSize: 'inherit', width: '100%' }}
+                    >
+                      <option value="">— select subject CA —</option>
+                      {localSubjectCas.map(c => (
+                        <option key={c.id} value={c.id}>{c.id} ({c.key_type})</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <Alert variant="warning" isInline title="No other CAs available on this server" />
+                  )
+                ) : (
+                  <TextArea
+                    id="xsign-pem"
+                    value={crossSignPem}
+                    onChange={(_e, v) => setCrossSignPem(v)}
+                    rows={10}
+                    placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                    style={{ fontFamily: 'monospace', fontSize: '0.8rem' }}
+                    isRequired
+                  />
+                )}
+              </FormGroup>
+              <FormGroup label="Validity (years)" isRequired fieldId="xsign-years">
+                <TextInput
+                  id="xsign-years"
+                  type="number"
+                  value={String(crossSignYears)}
+                  onChange={(_e, v) => setCrossSignYears(Math.max(1, Math.min(50, parseInt(v, 10) || 5)))}
+                  style={{ maxWidth: '8rem' }}
+                />
+                <p style={{ marginTop: '0.25rem', fontSize: '0.8rem', color: '#6a6e73' }}>1–50 years. Default is 5.</p>
+              </FormGroup>
+            </Form>
+          )}
         </ModalBody>
         <ModalFooter>
-          <Button form="cross-sign-form" type="submit" variant="primary" isLoading={saving} isDisabled={saving}>Cross-Sign</Button>
-          <Button variant="link" onClick={() => setCrossSignCaId(null)}>Cancel</Button>
+          {crossSignResult ? (
+            <>
+              <Button variant="primary" component="a"
+                onClick={() => navigate(`/cross-certs`)}>
+                View in Cross-Certs
+              </Button>
+              <Button variant="link" onClick={closeCrossSign}>Close</Button>
+            </>
+          ) : (
+            <>
+              <Button form="cross-sign-form" type="submit" variant="primary"
+                isLoading={saving} isDisabled={saving || !crossSignValid}>
+                Issue Cross-Certificate
+              </Button>
+              <Button variant="link" onClick={closeCrossSign} isDisabled={saving}>Cancel</Button>
+            </>
+          )}
         </ModalFooter>
       </Modal>
     </>

@@ -25,14 +25,17 @@ import {
   Th,
   Td,
 } from '@patternfly/react-table';
+import { useNavigate } from 'react-router-dom';
 import { listCerts, revokeCert, CertRow, CertListParams } from '../../api/certs';
 import { useAuth, hasRole } from '../../auth/AuthContext';
+import { fmtTs } from '../../utils';
 
 const PAGE_SIZE = 20;
 
 export default function Certificates() {
   const { role } = useAuth();
   const canRevoke = hasRole(role, 'ca_operations');
+  const navigate = useNavigate();
 
   const [certs, setCerts] = useState<CertRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -119,7 +122,7 @@ export default function Certificates() {
                 <Th>Not Before</Th>
                 <Th>Not After</Th>
                 <Th>Revoked</Th>
-                {canRevoke && <Th>Actions</Th>}
+                <Th>Actions</Th>
               </Tr>
             </Thead>
             <Tbody>
@@ -127,19 +130,18 @@ export default function Certificates() {
                 <Tr key={cert.id}>
                   <Td>{cert.id}</Td>
                   <Td>{cert.subject_dn}</Td>
-                  <Td>{cert.serial}</Td>
-                  <Td>{cert.not_before}</Td>
-                  <Td>{cert.not_after}</Td>
+                  <Td>{cert.serial_number}</Td>
+                  <Td>{fmtTs(cert.not_before)}</Td>
+                  <Td>{fmtTs(cert.not_after)}</Td>
                   <Td>{cert.revoked_at ? cert.revocation_reason ?? 'yes' : '—'}</Td>
-                  {canRevoke && (
-                    <Td>
-                      {!cert.revoked_at && (
-                        <Button variant="danger" size="sm" onClick={() => setRevokeId(cert.id)}>
-                          Revoke
-                        </Button>
-                      )}
-                    </Td>
-                  )}
+                  <Td>
+                    {canRevoke && !cert.revoked_at && (
+                      <Button variant="danger" size="sm" onClick={() => setRevokeId(cert.id)}>
+                        Revoke
+                      </Button>
+                    )}{' '}
+                    <Button variant="plain" size="sm" onClick={() => navigate(`/certs/${cert.id}`)}>View</Button>
+                  </Td>
                 </Tr>
               ))}
             </Tbody>

@@ -11,13 +11,6 @@ import {
   Alert,
   EmptyState,
   EmptyStateBody,
-  Modal,
-  ModalHeader,
-  ModalBody,
-  ModalFooter,
-  Form,
-  FormGroup,
-  TextInput,
   Label,
 } from '@patternfly/react-core';
 import {
@@ -28,34 +21,22 @@ import {
   Th,
   Td,
 } from '@patternfly/react-table';
+import { useNavigate } from 'react-router-dom';
 import {
   listOperators,
-  createOperator,
-  updateOperator,
   activateOperator,
   deactivateOperator,
   unlockOperator,
   OperatorRow,
 } from '../../api/operators';
-
-const selectStyle: React.CSSProperties = {
-  padding: '6px 8px',
-  border: '1px solid #ccc',
-  borderRadius: '4px',
-  fontSize: 'inherit',
-  width: '100%',
-};
+import { fmtIso } from '../../utils';
 
 export default function Operators() {
+  const navigate = useNavigate();
   const [operators, setOperators] = useState<OperatorRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [createOpen, setCreateOpen] = useState(false);
-  const [editRow, setEditRow] = useState<OperatorRow | null>(null);
   const [saving, setSaving] = useState(false);
-
-  const [formName, setFormName] = useState('');
-  const [formRole, setFormRole] = useState('auditor');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -72,46 +53,6 @@ export default function Operators() {
 
   useEffect(() => { load(); }, [load]);
 
-  function openCreate() {
-    setFormName('');
-    setFormRole('auditor');
-    setCreateOpen(true);
-  }
-
-  function openEdit(op: OperatorRow) {
-    setEditRow(op);
-    setFormRole(op.role);
-  }
-
-  async function handleCreate(e: React.FormEvent) {
-    e.preventDefault();
-    setSaving(true);
-    try {
-      await createOperator({ name: formName, role: formRole });
-      setCreateOpen(false);
-      load();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Create failed');
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function handleUpdate(e: React.FormEvent) {
-    e.preventDefault();
-    if (!editRow) return;
-    setSaving(true);
-    try {
-      await updateOperator(editRow.id, { role: formRole });
-      setEditRow(null);
-      load();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Update failed');
-    } finally {
-      setSaving(false);
-    }
-  }
-
   async function handleAction(action: () => Promise<void>) {
     setSaving(true);
     try {
@@ -124,22 +65,6 @@ export default function Operators() {
     }
   }
 
-  const roleField = (
-    <FormGroup label="Role" isRequired fieldId="op-role">
-      <select
-        id="op-role"
-        value={formRole}
-        onChange={e => setFormRole(e.target.value)}
-        style={selectStyle}
-      >
-        <option value="administrator">administrator</option>
-        <option value="ca_operations">ca_operations</option>
-        <option value="ca_ra">ca_ra</option>
-        <option value="auditor">auditor</option>
-      </select>
-    </FormGroup>
-  );
-
   return (
     <>
       <PageSection variant={PageSectionVariants.light}>
@@ -150,7 +75,7 @@ export default function Operators() {
         <Toolbar>
           <ToolbarContent>
             <ToolbarItem>
-              <Button variant="primary" onClick={openCreate}>Create Operator</Button>
+              <Button variant="primary" onClick={() => navigate('/operators/new')}>Create Operator</Button>
             </ToolbarItem>
           </ToolbarContent>
         </Toolbar>
@@ -164,8 +89,8 @@ export default function Operators() {
               <Tr>
                 <Th>Name</Th>
                 <Th>Role</Th>
+                <Th>Auth</Th>
                 <Th>Status</Th>
-                <Th>Locked</Th>
                 <Th>Last Seen</Th>
                 <Th>Actions</Th>
               </Tr>
@@ -174,20 +99,27 @@ export default function Operators() {
               {operators.map(op => (
                 <Tr key={op.id}>
                   <Td>{op.name}</Td>
-                  <Td>{op.role}</Td>
+                  <Td>{op.role}{op.ca_id ? ` / ${op.ca_id}` : ''}</Td>
+                  <Td style={{ fontSize: '0.8rem', color: '#666' }}>
+                    {[op.gssapi_principal && 'GSSAPI', op.cert_fingerprint && 'mTLS'].filter(Boolean).join(', ') || '—'}
+                  </Td>
                   <Td>
                     <Label color={op.active ? 'green' : 'red'}>{op.active ? 'active' : 'inactive'}</Label>
+                    {op.locked && <>{' '}<Label color="orange">locked</Label></>}
+                    {op.failed_attempts > 0 && !op.locked && <>{' '}<Label color="gold">{op.failed_attempts} failed</Label></>}
                   </Td>
-                  <Td>{op.locked ? <Label color="orange">locked</Label> : '—'}</Td>
-                  <Td>{op.last_seen_at ?? '—'}</Td>
+                  <Td>{fmtIso(op.last_seen_at)}</Td>
                   <Td>
-                    <Button variant="secondary" size="sm" onClick={() => openEdit(op)}>Edit</Button>{' '}
+                    <Button variant="plain" size="sm" onClick={() => navigate(`/operators/${op.id}`)}>View</Button>
+                    {' '}
+                    <Button variant="secondary" size="sm" onClick={() => navigate(`/operators/${op.id}/edit`)}>Edit</Button>
+                    {' '}
                     {op.active
                       ? <Button variant="warning" size="sm" isDisabled={saving} onClick={() => handleAction(() => deactivateOperator(op.id))}>Deactivate</Button>
                       : <Button variant="secondary" size="sm" isDisabled={saving} onClick={() => handleAction(() => activateOperator(op.id))}>Activate</Button>
-                    }{' '}
+                    }
                     {op.locked && (
-                      <Button variant="secondary" size="sm" isDisabled={saving} onClick={() => handleAction(() => unlockOperator(op.id))}>Unlock</Button>
+                      <>{' '}<Button variant="secondary" size="sm" isDisabled={saving} onClick={() => handleAction(() => unlockOperator(op.id))}>Unlock</Button></>
                     )}
                   </Td>
                 </Tr>
@@ -196,33 +128,6 @@ export default function Operators() {
           </Table>
         )}
       </PageSection>
-      <Modal variant="medium" isOpen={createOpen} onClose={() => setCreateOpen(false)}>
-        <ModalHeader title="Create Operator" />
-        <ModalBody>
-          <Form id="op-create-form" onSubmit={handleCreate}>
-            <FormGroup label="Name" isRequired fieldId="op-name">
-              <TextInput id="op-name" value={formName} onChange={(_e, v) => setFormName(v)} isRequired />
-            </FormGroup>
-            {roleField}
-          </Form>
-        </ModalBody>
-        <ModalFooter>
-          <Button form="op-create-form" type="submit" variant="primary" isLoading={saving} isDisabled={saving}>Create</Button>
-          <Button variant="link" onClick={() => setCreateOpen(false)}>Cancel</Button>
-        </ModalFooter>
-      </Modal>
-      <Modal variant="medium" isOpen={!!editRow} onClose={() => setEditRow(null)}>
-        <ModalHeader title={`Edit Operator: ${editRow?.name}`} />
-        <ModalBody>
-          <Form id="op-edit-form" onSubmit={handleUpdate}>
-            {roleField}
-          </Form>
-        </ModalBody>
-        <ModalFooter>
-          <Button form="op-edit-form" type="submit" variant="primary" isLoading={saving} isDisabled={saving}>Save</Button>
-          <Button variant="link" onClick={() => setEditRow(null)}>Cancel</Button>
-        </ModalFooter>
-      </Modal>
     </>
   );
 }

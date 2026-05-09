@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import {
   PageSection,
   PageSectionVariants,
@@ -6,12 +7,21 @@ import {
   Toolbar,
   ToolbarContent,
   ToolbarItem,
+  Button,
   Spinner,
   Alert,
   EmptyState,
   EmptyStateBody,
   TextInput,
   Pagination,
+  Modal,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
+  DescriptionList,
+  DescriptionListGroup,
+  DescriptionListTerm,
+  DescriptionListDescription,
 } from '@patternfly/react-core';
 import {
   Table,
@@ -22,15 +32,25 @@ import {
   Td,
 } from '@patternfly/react-table';
 import { queryAudit, AuditEntry, AuditQueryParams } from '../../api/audit';
+import { fmtIso, auditSubjectPath } from '../../utils';
 
 const PAGE_SIZE = 50;
 
+function AuditSubject({ eventType, subject }: { eventType: string; subject: string | null | undefined }) {
+  if (!subject) return <>—</>;
+  const path = auditSubjectPath(eventType, subject);
+  if (path) return <Link to={path}>{subject}</Link>;
+  return <>{subject}</>;
+}
+
 export default function AuditLog() {
   const [entries, setEntries] = useState<AuditEntry[]>([]);
+  const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [viewRow, setViewRow] = useState<AuditEntry | null>(null);
   const [typeFilter, setTypeFilter] = useState('');
   const [outcomeFilter, setOutcomeFilter] = useState('');
   const [fromFilter, setFromFilter] = useState('');
@@ -47,6 +67,7 @@ export default function AuditLog() {
       if (untilFilter) params.until = untilFilter;
       const result = await queryAudit(params);
       setEntries(result.events);
+      setTotal(result.total);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to load audit log');
     } finally {
@@ -101,25 +122,65 @@ export default function AuditLog() {
                 <Th>Event Type</Th>
                 <Th>Subject</Th>
                 <Th>Outcome</Th>
-                <Th>Detail</Th>
+                <Th>Actions</Th>
               </Tr>
             </Thead>
             <Tbody>
               {entries.map(e => (
                 <Tr key={e.id}>
-                  <Td>{e.occurred_at}</Td>
+                  <Td>{fmtIso(e.occurred_at)}</Td>
                   <Td>{e.principal ?? '—'}</Td>
                   <Td>{e.event_type}</Td>
-                  <Td>{e.subject ?? '—'}</Td>
+                  <Td><AuditSubject eventType={e.event_type} subject={e.subject} /></Td>
                   <Td>{e.outcome}</Td>
-                  <Td>{e.detail ?? '—'}</Td>
+                  <Td><Button variant="plain" size="sm" onClick={() => setViewRow(e)}>View</Button></Td>
                 </Tr>
               ))}
             </Tbody>
           </Table>
         )}
-        <Pagination itemCount={entries.length} perPage={PAGE_SIZE} page={page} onSetPage={(_e, p) => setPage(p)} />
+        <Pagination itemCount={total} perPage={PAGE_SIZE} page={page} onSetPage={(_e, p) => setPage(p)} />
       </PageSection>
+      <Modal variant="large" isOpen={!!viewRow} onClose={() => setViewRow(null)}>
+        <ModalHeader title="Audit Event Details" />
+        <ModalBody>
+          <DescriptionList isHorizontal columnModifier={{ default: '1Col' }}>
+            <DescriptionListGroup>
+              <DescriptionListTerm>ID</DescriptionListTerm>
+              <DescriptionListDescription>{viewRow?.id ?? '—'}</DescriptionListDescription>
+            </DescriptionListGroup>
+            <DescriptionListGroup>
+              <DescriptionListTerm>Occurred At</DescriptionListTerm>
+              <DescriptionListDescription>{viewRow?.occurred_at != null ? fmtIso(viewRow.occurred_at) : '—'}</DescriptionListDescription>
+            </DescriptionListGroup>
+            <DescriptionListGroup>
+              <DescriptionListTerm>Event Type</DescriptionListTerm>
+              <DescriptionListDescription>{viewRow?.event_type ?? '—'}</DescriptionListDescription>
+            </DescriptionListGroup>
+            <DescriptionListGroup>
+              <DescriptionListTerm>Subject</DescriptionListTerm>
+              <DescriptionListDescription>
+                <AuditSubject eventType={viewRow?.event_type ?? ''} subject={viewRow?.subject} />
+              </DescriptionListDescription>
+            </DescriptionListGroup>
+            <DescriptionListGroup>
+              <DescriptionListTerm>Principal</DescriptionListTerm>
+              <DescriptionListDescription>{viewRow?.principal ?? '—'}</DescriptionListDescription>
+            </DescriptionListGroup>
+            <DescriptionListGroup>
+              <DescriptionListTerm>Outcome</DescriptionListTerm>
+              <DescriptionListDescription>{viewRow?.outcome ?? '—'}</DescriptionListDescription>
+            </DescriptionListGroup>
+            <DescriptionListGroup>
+              <DescriptionListTerm>Detail</DescriptionListTerm>
+              <DescriptionListDescription>{viewRow?.detail ?? '—'}</DescriptionListDescription>
+            </DescriptionListGroup>
+          </DescriptionList>
+        </ModalBody>
+        <ModalFooter>
+          <Button variant="link" onClick={() => setViewRow(null)}>Close</Button>
+        </ModalFooter>
+      </Modal>
     </>
   );
 }

@@ -28,12 +28,16 @@ import {
   Th,
   Td,
 } from '@patternfly/react-table';
+import { useNavigate } from 'react-router-dom';
 import { listEab, createEab, deleteEab, EabKeyRow } from '../../api/eab';
+import { fmtTs } from '../../utils';
 
 const PAGE_SIZE = 20;
 
 export default function EabKeys() {
+  const navigate = useNavigate();
   const [keys, setKeys] = useState<EabKeyRow[]>([]);
+  const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -41,6 +45,8 @@ export default function EabKeys() {
   const [deleteKid, setDeleteKid] = useState<string | null>(null);
   const [newKid, setNewKid] = useState('');
   const [newKey, setNewKey] = useState('');
+  const [newAlg, setNewAlg] = useState('sha256');
+  const [newGrants, setNewGrants] = useState('');
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
@@ -49,6 +55,7 @@ export default function EabKeys() {
     try {
       const result = await listEab({ limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE });
       setKeys(result.eab_keys);
+      setTotal(result.total);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to load EAB keys');
     } finally {
@@ -62,10 +69,15 @@ export default function EabKeys() {
     e.preventDefault();
     setSaving(true);
     try {
-      await createEab({ kid: newKid, hmac_key_b64u: newKey });
+      const grants = newGrants.trim()
+        ? newGrants.split(/[\s,]+/).map(s => s.trim()).filter(Boolean)
+        : undefined;
+      await createEab({ kid: newKid, hmac_key_b64u: newKey, alg: newAlg, profile_grants: grants });
       setCreateOpen(false);
       setNewKid('');
       setNewKey('');
+      setNewAlg('sha256');
+      setNewGrants('');
       load();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Create failed');
@@ -112,6 +124,7 @@ export default function EabKeys() {
               <Tr>
                 <Th>KID</Th>
                 <Th>Created</Th>
+                <Th>Bound To</Th>
                 <Th>Used At</Th>
                 <Th>Profile Grants</Th>
                 <Th>Actions</Th>
@@ -121,11 +134,13 @@ export default function EabKeys() {
               {keys.map(k => (
                 <Tr key={k.kid}>
                   <Td>{k.kid}</Td>
-                  <Td>{new Date(k.created * 1000).toISOString()}</Td>
-                  <Td>{k.used_at ? new Date(k.used_at * 1000).toISOString() : '—'}</Td>
+                  <Td>{fmtTs(k.created)}</Td>
+                  <Td>{k.bound_principal ?? '—'}</Td>
+                  <Td>{fmtTs(k.used_at)}</Td>
                   <Td>{k.profile_grants?.join(', ') ?? '—'}</Td>
                   <Td>
-                    <Button variant="danger" size="sm" onClick={() => setDeleteKid(k.kid)}>Delete</Button>
+                    <Button variant="danger" size="sm" onClick={() => setDeleteKid(k.kid)}>Delete</Button>{' '}
+                    <Button variant="plain" size="sm" onClick={() => navigate(`/eab/${k.kid}`)}>View</Button>
                   </Td>
                 </Tr>
               ))}
@@ -133,7 +148,7 @@ export default function EabKeys() {
           </Table>
         )}
         <Pagination
-          itemCount={keys.length}
+          itemCount={total}
           perPage={PAGE_SIZE}
           page={page}
           onSetPage={(_e, p) => setPage(p)}
@@ -148,6 +163,19 @@ export default function EabKeys() {
             </FormGroup>
             <FormGroup label="HMAC Key (base64url)" isRequired fieldId="eab-new-key">
               <TextInput id="eab-new-key" value={newKey} onChange={(_e, v) => setNewKey(v)} isRequired />
+            </FormGroup>
+            <FormGroup label="HMAC Algorithm" isRequired fieldId="eab-new-alg">
+              <select id="eab-new-alg" value={newAlg} onChange={e => setNewAlg(e.target.value)}
+                style={{ padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: 'inherit', width: '100%' }}>
+                <option value="sha256">sha256</option>
+                <option value="sha384">sha384</option>
+                <option value="sha512">sha512</option>
+              </select>
+            </FormGroup>
+            <FormGroup label="Profile Grants (comma-separated, optional)" fieldId="eab-new-grants"
+              helperText="Restrict this key to specific profiles. Leave empty for unrestricted access.">
+              <TextInput id="eab-new-grants" value={newGrants} onChange={(_e, v) => setNewGrants(v)}
+                placeholder="profile-a, profile-b" />
             </FormGroup>
           </Form>
         </ModalBody>
