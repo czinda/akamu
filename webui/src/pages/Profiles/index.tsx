@@ -18,7 +18,6 @@ import {
   Form,
   FormGroup,
   TextInput,
-  TextArea,
 } from '@patternfly/react-core';
 import {
   Table,
@@ -28,10 +27,8 @@ import {
   Th,
   Td,
 } from '@patternfly/react-table';
-import { listProfiles, createProfile, updateProfile, deleteProfile } from '../../api/profiles';
+import { listProfiles, createProfile, updateProfile, deleteProfile, ProfileEntry } from '../../api/profiles';
 import { useAuth, hasRole } from '../../auth/AuthContext';
-
-interface ProfileEntry { id: string; config: Record<string, unknown> }
 
 export default function Profiles() {
   const { role } = useAuth();
@@ -44,7 +41,9 @@ export default function Profiles() {
   const [editEntry, setEditEntry] = useState<ProfileEntry | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [formId, setFormId] = useState('');
-  const [formConfig, setFormConfig] = useState('{}');
+  const [formDescription, setFormDescription] = useState('');
+  const [formValidityDays, setFormValidityDays] = useState('365');
+  const [formHashAlg, setFormHashAlg] = useState('sha256');
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
@@ -52,11 +51,7 @@ export default function Profiles() {
     setError(null);
     try {
       const result = await listProfiles();
-      const entries: ProfileEntry[] = Object.entries(result.providers).map(([id, config]) => ({
-        id,
-        config: config as Record<string, unknown>,
-      }));
-      setProfiles(entries);
+      setProfiles(result.profiles);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to load profiles');
     } finally {
@@ -68,21 +63,28 @@ export default function Profiles() {
 
   function openCreate() {
     setFormId('');
-    setFormConfig('{}');
+    setFormDescription('');
+    setFormValidityDays('365');
+    setFormHashAlg('sha256');
     setCreateOpen(true);
   }
 
   function openEdit(p: ProfileEntry) {
     setEditEntry(p);
-    setFormConfig(JSON.stringify(p.config, null, 2));
+    setFormDescription(p.description);
+    setFormValidityDays(String(p.validity_days ?? 365));
+    setFormHashAlg(p.hash_alg ?? 'sha256');
   }
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
     try {
-      const parsed = JSON.parse(formConfig);
-      await createProfile(formId, parsed);
+      await createProfile(formId, {
+        description: formDescription,
+        validity_days: parseInt(formValidityDays, 10),
+        hash_alg: formHashAlg,
+      });
       setCreateOpen(false);
       load();
     } catch (err: unknown) {
@@ -97,8 +99,11 @@ export default function Profiles() {
     if (!editEntry) return;
     setSaving(true);
     try {
-      const parsed = JSON.parse(formConfig);
-      await updateProfile(editEntry.id, parsed);
+      await updateProfile(editEntry.id, {
+        description: formDescription,
+        validity_days: parseInt(formValidityDays, 10),
+        hash_alg: formHashAlg,
+      });
       setEditEntry(null);
       load();
     } catch (err: unknown) {
@@ -147,7 +152,9 @@ export default function Profiles() {
             <Thead>
               <Tr>
                 <Th>ID</Th>
-                <Th>Config</Th>
+                <Th>Description</Th>
+                <Th>Validity (days)</Th>
+                <Th>Hash Alg</Th>
                 {isAdmin && <Th>Actions</Th>}
               </Tr>
             </Thead>
@@ -155,7 +162,9 @@ export default function Profiles() {
               {profiles.map(p => (
                 <Tr key={p.id}>
                   <Td>{p.id}</Td>
-                  <Td><code>{JSON.stringify(p.config)}</code></Td>
+                  <Td>{p.description || '—'}</Td>
+                  <Td>{p.validity_days ?? '—'}</Td>
+                  <Td>{p.hash_alg ?? '—'}</Td>
                   {isAdmin && (
                     <Td>
                       <Button variant="secondary" size="sm" onClick={() => openEdit(p)}>Edit</Button>{' '}
@@ -175,8 +184,19 @@ export default function Profiles() {
             <FormGroup label="Profile ID" isRequired fieldId="profile-id">
               <TextInput id="profile-id" value={formId} onChange={(_e, v) => setFormId(v)} isRequired />
             </FormGroup>
-            <FormGroup label="Config (JSON)" isRequired fieldId="profile-config">
-              <TextArea id="profile-config" value={formConfig} onChange={(_e, v) => setFormConfig(v)} rows={10} isRequired />
+            <FormGroup label="Description" fieldId="profile-desc">
+              <TextInput id="profile-desc" value={formDescription} onChange={(_e, v) => setFormDescription(v)} />
+            </FormGroup>
+            <FormGroup label="Validity (days)" isRequired fieldId="profile-validity">
+              <TextInput id="profile-validity" type="number" value={formValidityDays} onChange={(_e, v) => setFormValidityDays(v)} isRequired />
+            </FormGroup>
+            <FormGroup label="Hash Algorithm" isRequired fieldId="profile-hash">
+              <select id="profile-hash" value={formHashAlg} onChange={e => setFormHashAlg(e.target.value)}
+                style={{ padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: 'inherit', width: '100%' }}>
+                <option value="sha256">sha256</option>
+                <option value="sha384">sha384</option>
+                <option value="sha512">sha512</option>
+              </select>
             </FormGroup>
           </Form>
         </ModalBody>
@@ -189,8 +209,19 @@ export default function Profiles() {
         <ModalHeader title={`Edit Profile: ${editEntry?.id}`} />
         <ModalBody>
           <Form id="profile-edit-form" onSubmit={handleUpdate}>
-            <FormGroup label="Config (JSON)" isRequired fieldId="profile-edit-config">
-              <TextArea id="profile-edit-config" value={formConfig} onChange={(_e, v) => setFormConfig(v)} rows={10} isRequired />
+            <FormGroup label="Description" fieldId="profile-edit-desc">
+              <TextInput id="profile-edit-desc" value={formDescription} onChange={(_e, v) => setFormDescription(v)} />
+            </FormGroup>
+            <FormGroup label="Validity (days)" isRequired fieldId="profile-edit-validity">
+              <TextInput id="profile-edit-validity" type="number" value={formValidityDays} onChange={(_e, v) => setFormValidityDays(v)} isRequired />
+            </FormGroup>
+            <FormGroup label="Hash Algorithm" isRequired fieldId="profile-edit-hash">
+              <select id="profile-edit-hash" value={formHashAlg} onChange={e => setFormHashAlg(e.target.value)}
+                style={{ padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: 'inherit', width: '100%' }}>
+                <option value="sha256">sha256</option>
+                <option value="sha384">sha384</option>
+                <option value="sha512">sha512</option>
+              </select>
             </FormGroup>
           </Form>
         </ModalBody>

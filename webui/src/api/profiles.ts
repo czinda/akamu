@@ -1,19 +1,18 @@
 import { apiJson, apiFetch, ApiError } from './client';
 
-export interface ProfileConfig {
-  [key: string]: unknown;
-}
-
 export interface ProfileEntry {
   id: string;
-  config: ProfileConfig;
+  description: string;
+  validity_days?: number;
+  hash_alg?: string;
+  extended_key_usages?: string[];
 }
 
-export async function listProfiles(): Promise<{ providers: Record<string, unknown> }> {
+export async function listProfiles(): Promise<{ profiles: ProfileEntry[] }> {
   return apiJson('/admin/profiles');
 }
 
-export async function createProfile(id: string, params: ProfileConfig): Promise<void> {
+export async function createProfile(id: string, params: Record<string, unknown>): Promise<void> {
   const resp = await apiFetch('/admin/profiles', {
     method: 'POST',
     body: JSON.stringify({ id, ...params }),
@@ -21,7 +20,7 @@ export async function createProfile(id: string, params: ProfileConfig): Promise<
   if (!resp.ok) throw new ApiError(resp.status, resp.statusText);
 }
 
-export async function updateProfile(id: string, params: ProfileConfig): Promise<void> {
+export async function updateProfile(id: string, params: Record<string, unknown>): Promise<void> {
   const resp = await apiFetch(`/admin/profiles/${id}`, {
     method: 'PUT',
     body: JSON.stringify(params),

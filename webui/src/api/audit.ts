@@ -2,37 +2,31 @@ import { apiJson } from './client';
 
 export interface AuditEntry {
   id: string;
-  ts: string;
-  operator_id: string | null;
-  operator_name: string | null;
-  action: string;
-  target_type: string | null;
-  target_id: string | null;
-  detail: string | null;
+  occurred_at: string;
+  event_type: string;
+  subject: string | null;
+  principal: string | null;
   outcome: string;
+  detail: string | null;
 }
 
 export interface AuditQueryParams {
-  operator_id?: string;
-  action?: string;
-  target_type?: string;
-  target_id?: string;
+  type?: string;
+  subject?: string;
   outcome?: string;
   from?: string;
-  to?: string;
+  until?: string;
   limit?: number;
   offset?: number;
 }
 
-export async function queryAudit(params: AuditQueryParams = {}): Promise<{ entries: AuditEntry[]; total: number }> {
+export async function queryAudit(params: AuditQueryParams = {}): Promise<{ events: AuditEntry[]; limit: number; offset: number }> {
   const qs = new URLSearchParams();
-  if (params.operator_id) qs.set('operator_id', params.operator_id);
-  if (params.action) qs.set('action', params.action);
-  if (params.target_type) qs.set('target_type', params.target_type);
-  if (params.target_id) qs.set('target_id', params.target_id);
+  if (params.type) qs.set('type', params.type);
+  if (params.subject) qs.set('subject', params.subject);
   if (params.outcome) qs.set('outcome', params.outcome);
   if (params.from) qs.set('from', params.from);
-  if (params.to) qs.set('to', params.to);
+  if (params.until) qs.set('until', params.until);
   if (params.limit) qs.set('limit', String(params.limit));
   if (params.offset) qs.set('offset', String(params.offset));
   return apiJson(`/admin/audit?${qs}`);

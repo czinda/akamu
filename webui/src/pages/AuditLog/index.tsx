@@ -27,34 +27,32 @@ const PAGE_SIZE = 50;
 
 export default function AuditLog() {
   const [entries, setEntries] = useState<AuditEntry[]>([]);
-  const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [actionFilter, setActionFilter] = useState('');
+  const [typeFilter, setTypeFilter] = useState('');
   const [outcomeFilter, setOutcomeFilter] = useState('');
   const [fromFilter, setFromFilter] = useState('');
-  const [toFilter, setToFilter] = useState('');
+  const [untilFilter, setUntilFilter] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const params: AuditQueryParams = { limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE };
-      if (actionFilter) params.action = actionFilter;
+      if (typeFilter) params.type = typeFilter;
       if (outcomeFilter) params.outcome = outcomeFilter;
       if (fromFilter) params.from = fromFilter;
-      if (toFilter) params.to = toFilter;
+      if (untilFilter) params.until = untilFilter;
       const result = await queryAudit(params);
-      setEntries(result.entries);
-      setTotal(result.total ?? result.entries.length);
+      setEntries(result.events);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to load audit log');
     } finally {
       setLoading(false);
     }
-  }, [page, actionFilter, outcomeFilter, fromFilter, toFilter]);
+  }, [page, typeFilter, outcomeFilter, fromFilter, untilFilter]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -68,7 +66,7 @@ export default function AuditLog() {
         <Toolbar>
           <ToolbarContent>
             <ToolbarItem>
-              <TextInput placeholder="Filter action" value={actionFilter} onChange={(_e, v) => { setActionFilter(v); setPage(1); }} />
+              <TextInput placeholder="Filter event type" value={typeFilter} onChange={(_e, v) => { setTypeFilter(v); setPage(1); }} />
             </ToolbarItem>
             <ToolbarItem>
               <select
@@ -86,7 +84,7 @@ export default function AuditLog() {
               <TextInput placeholder="From (ISO date)" value={fromFilter} onChange={(_e, v) => { setFromFilter(v); setPage(1); }} />
             </ToolbarItem>
             <ToolbarItem>
-              <TextInput placeholder="To (ISO date)" value={toFilter} onChange={(_e, v) => { setToFilter(v); setPage(1); }} />
+              <TextInput placeholder="Until (ISO date)" value={untilFilter} onChange={(_e, v) => { setUntilFilter(v); setPage(1); }} />
             </ToolbarItem>
           </ToolbarContent>
         </Toolbar>
@@ -99,9 +97,9 @@ export default function AuditLog() {
             <Thead>
               <Tr>
                 <Th>Timestamp</Th>
-                <Th>Operator</Th>
-                <Th>Action</Th>
-                <Th>Target</Th>
+                <Th>Principal</Th>
+                <Th>Event Type</Th>
+                <Th>Subject</Th>
                 <Th>Outcome</Th>
                 <Th>Detail</Th>
               </Tr>
@@ -109,10 +107,10 @@ export default function AuditLog() {
             <Tbody>
               {entries.map(e => (
                 <Tr key={e.id}>
-                  <Td>{e.ts}</Td>
-                  <Td>{e.operator_name ?? e.operator_id ?? '—'}</Td>
-                  <Td>{e.action}</Td>
-                  <Td>{e.target_type ? `${e.target_type}/${e.target_id}` : '—'}</Td>
+                  <Td>{e.occurred_at}</Td>
+                  <Td>{e.principal ?? '—'}</Td>
+                  <Td>{e.event_type}</Td>
+                  <Td>{e.subject ?? '—'}</Td>
                   <Td>{e.outcome}</Td>
                   <Td>{e.detail ?? '—'}</Td>
                 </Tr>
@@ -120,7 +118,7 @@ export default function AuditLog() {
             </Tbody>
           </Table>
         )}
-        <Pagination itemCount={total} perPage={PAGE_SIZE} page={page} onSetPage={(_e, p) => setPage(p)} />
+        <Pagination itemCount={entries.length} perPage={PAGE_SIZE} page={page} onSetPage={(_e, p) => setPage(p)} />
       </PageSection>
     </>
   );
