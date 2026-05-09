@@ -132,16 +132,11 @@ async fn build_state(
         tls: Default::default(),
         profiles: Default::default(),
         admin: Some(AdminConfig {
-            listen_addr: "127.0.0.1:0".into(),
-            cert_file: "dummy.crt".into(),
-            key_file: "dummy.key".into(),
-            server_name: "localhost".into(),
             bootstrap_key_type: "ec:P-256".into(),
             bootstrap_operator_cert_file: None,
             bootstrap_operator_key_file: None,
             bootstrap_operator_name: "admin".into(),
             bootstrap_operator_gssapi_principal: None,
-            ca_certs: vec![],
             gssapi: None,
             session_ttl_secs,
             session_lock_secs: 900,
@@ -239,6 +234,7 @@ async fn build_state(
         admin_auth_limiter: Some(Arc::new(tokio::sync::Mutex::new(
             std::collections::HashMap::new(),
         ))),
+        eab_session_nonces: None,
         startup_time: Instant::now(),
         gss_cred: None,
         admin_gss_cred: None,
@@ -265,7 +261,7 @@ async fn get_stats_bearer(router: &axum::Router, token: &str) -> axum::response:
 #[tokio::test]
 async fn bearer_token_grants_access() {
     let (state, sessions, _dir) = build_state(3600, 20).await;
-    let router = routes::build_admin_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     sessions.lock().await.insert(
         "test-bearer-token".to_string(),
@@ -296,7 +292,7 @@ async fn bearer_token_grants_access() {
 #[tokio::test]
 async fn mtls_cert_issues_session_token_usable_as_bearer() {
     let (state, _sessions, _dir) = build_state(3600, 20).await;
-    let router = routes::build_admin_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     // Generate a cert and derive its fingerprint.
     let op_key = BackendPrivateKey::generate_ec("P-256").unwrap();
@@ -354,7 +350,7 @@ async fn mtls_cert_issues_session_token_usable_as_bearer() {
 #[tokio::test]
 async fn expired_token_returns_401() {
     let (state, sessions, _dir) = build_state(1, 20).await;
-    let router = routes::build_admin_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     // Insert a session whose last_active_at is 2 seconds in the past
     // so it is already beyond the 1-second TTL on the very first lookup.
@@ -385,7 +381,7 @@ async fn expired_token_returns_401() {
 #[tokio::test]
 async fn operator_deactivation_purges_sessions() {
     let (state, sessions, _dir) = build_state(3600, 20).await;
-    let router = routes::build_admin_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     // Seed an administrator session for the operator who performs the PATCH.
     sessions.lock().await.insert(
@@ -472,7 +468,7 @@ async fn operator_deactivation_purges_sessions() {
 #[tokio::test]
 async fn audit_event_visible_via_admin_api() {
     let (state, sessions, _dir) = build_state(3600, 20).await;
-    let router = routes::build_admin_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     // Seed an auditor session (GET /admin/audit is allowed for auditor role).
     sessions.lock().await.insert(
@@ -551,7 +547,7 @@ async fn audit_event_visible_via_admin_api() {
 async fn create_session_sweeps_expired_entries() {
     // TTL of 1 second; sessions seeded 2 s in the past are already expired.
     let (state, sessions, _dir) = build_state(1, 20).await;
-    let router = routes::build_admin_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     let stale = Instant::now() - Duration::from_secs(2);
 
@@ -620,7 +616,7 @@ async fn create_session_sweeps_expired_entries() {
 #[tokio::test]
 async fn bearer_lookup_refreshes_last_active_at() {
     let (state, sessions, _dir) = build_state(3600, 20).await;
-    let router = routes::build_admin_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     let before = Instant::now();
     sessions.lock().await.insert(
@@ -662,7 +658,7 @@ async fn bearer_lookup_refreshes_last_active_at() {
 #[tokio::test]
 async fn login_via_handler_emits_audit_event() {
     let (state, sessions, _dir) = build_state(3600, 20).await;
-    let router = routes::build_admin_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     // Seed an auditor session to call GET /admin/audit.
     sessions.lock().await.insert(
@@ -750,7 +746,7 @@ async fn auth_rate_limit_returns_429_after_limit_exceeded() {
 
     // Use a very low rate limit (2 per 5 minutes) so we can trigger it easily.
     let (state, _sessions, _dir) = build_state(3600, 2).await;
-    let router = routes::build_admin_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     // A fake source IP that will be tracked by the rate limiter.
     let peer: SocketAddr = SocketAddr::new(Ipv4Addr::new(10, 0, 0, 1).into(), 55000);

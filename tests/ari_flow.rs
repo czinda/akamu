@@ -250,6 +250,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         audit_policy: std::sync::Arc::new(akamu::audit::AuditPolicy::default()),
         admin_sessions: None,
         admin_auth_limiter: None,
+        eab_session_nonces: None,
         startup_time: std::time::Instant::now(),
         gss_cred: None,
         admin_gss_cred: None,
@@ -463,7 +464,7 @@ async fn issue_cert(
 async fn test_directory_includes_renewal_info() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     let (status, body, _) = get(&router, "/acme/directory").await;
     assert_eq!(status, StatusCode::OK);
@@ -480,7 +481,7 @@ async fn test_renewal_info_response_format() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
     let db = state.db.clone();
-    let router = routes::build_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     let key = TestKey::generate();
     let (_, _, cert_id) = issue_cert(
@@ -621,12 +622,13 @@ async fn test_renewal_info_explanation_url() {
         audit_policy: std::sync::Arc::new(akamu::audit::AuditPolicy::default()),
         admin_sessions: None,
         admin_auth_limiter: None,
+        eab_session_nonces: None,
         startup_time: std::time::Instant::now(),
         gss_cred: None,
         admin_gss_cred: None,
         eab_master_secret: None,
     });
-    let router = routes::build_router(Arc::clone(&state2));
+    let router = routes::build_router(Arc::clone(&state2), None);
 
     let key = TestKey::generate();
     let (_, _, cert_id) = issue_cert(
@@ -654,7 +656,7 @@ async fn test_new_order_with_replaces_field() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
     let db = state.db.clone();
-    let router = routes::build_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     let key = TestKey::generate();
     let (account_url, _, cert_id) = issue_cert(
@@ -697,7 +699,7 @@ async fn test_finalize_marks_predecessor_replaced() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
     let db = state.db.clone();
-    let router = routes::build_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     let key = TestKey::generate();
     let (account_url, _, cert_id) = issue_cert(
@@ -774,7 +776,7 @@ async fn test_new_order_already_replaced() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
     let db = state.db.clone();
-    let router = routes::build_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     let key = TestKey::generate();
     let (account_url, _, cert_id) = issue_cert(
@@ -817,7 +819,7 @@ async fn test_new_order_replaces_wrong_account() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
     let db = state.db.clone();
-    let router = routes::build_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     // Account A issues a cert.
     let key_a = TestKey::generate();
@@ -865,7 +867,7 @@ async fn test_new_order_replaces_wrong_account() {
 async fn test_new_order_replaces_unknown_cert() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;

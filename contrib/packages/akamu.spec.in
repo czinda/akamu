@@ -42,7 +42,7 @@
 %bcond backend_postgres 1
 %bcond backend_mariadb  1
 # Optional management web UI built from webui/ using npm.
-# Requires Source10 (akamu-%{version}-webui-node_modules.tar.gz, see 'make webui-vendor').
+# Requires Source10 (akamu-%%{version}-webui-node_modules.tar.gz, see 'make webui-vendor').
 # Disable with: rpmbuild --without webui
 %bcond webui 1
 
@@ -129,7 +129,7 @@ BuildRequires:  rust-synta-mtc-devel
 BuildRequires:  scdoc
 # Systemd scriptlet support
 BuildRequires:  systemd-rpm-macros
-# Management web UI (Node.js/npm); only needed when %{with webui} is set.
+# Management web UI (Node.js/npm); only needed when %%{with webui} is set.
 %if %{with webui}
 BuildRequires:  npm
 %endif

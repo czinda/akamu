@@ -1,82 +1,23 @@
-//! Admin listener bootstrap.
+//! Admin bootstrap.
 //!
-//! Two independent auto-provisioning steps run at startup when `[admin]` is
-//! configured:
-//!
-//! 1. **Server certificate** — if `cert_file`/`key_file` are absent, generates
-//!    a TLS server certificate for the admin listener, signed by the Akāmu CA
-//!    and written as PEM.  Analogous to `tls::init::load_or_generate`.
-//!
-//! 2. **Bootstrap operator** — if `bootstrap_operator_cert_file`/
-//!    `bootstrap_operator_key_file` are configured and the files are absent,
-//!    *and* the operators table is currently empty, generates a client
-//!    certificate signed by the Akāmu CA, writes both PEM files to disk, and
-//!    inserts an Administrator row into the database.  On every subsequent
-//!    startup the files exist and the row exists, so this becomes a no-op.
+//! Runs at startup when `[admin]` is configured: if
+//! `bootstrap_operator_cert_file`/`bootstrap_operator_key_file` are configured
+//! and the files are absent, *and* the operators table is currently empty,
+//! generates a client certificate signed by the Akāmu CA, writes both PEM
+//! files to disk, and inserts an Administrator row into the database.  On
+//! every subsequent startup the files exist and the row exists — no-op.
 
 use std::io::Write as _;
 
 use synta_certificate::der_to_pem;
 
 use crate::ca::init::{generate_backend_key, unix_to_generalized_time};
-use crate::ca::issue::{sign_admin_cert, sign_server_cert};
+use crate::ca::issue::sign_admin_cert;
 use crate::config::AdminConfig;
 use crate::db::Db;
 use crate::error::AcmeError;
 use crate::state::CaState;
 use crate::util::{sha256_hex, unix_now};
-
-/// Ensure the admin listener TLS cert and key files exist, generating them from
-/// the Akāmu CA if absent.
-pub fn load_or_generate_server_cert(cfg: &AdminConfig, ca: &CaState) -> Result<(), AcmeError> {
-    let cert_exists = std::path::Path::new(&cfg.cert_file).exists();
-    let key_exists = std::path::Path::new(&cfg.key_file).exists();
-
-    if cert_exists && key_exists {
-        return Ok(());
-    }
-    if cert_exists != key_exists {
-        return Err(AcmeError::Config(format!(
-            "admin cert and key must both be present or both absent; \
-             cert='{}' exists={cert_exists}, key='{}' exists={key_exists}",
-            cfg.cert_file, cfg.key_file
-        )));
-    }
-
-    tracing::info!(
-        "admin server cert/key absent — generating certificate signed by Akāmu CA \
-         (cert='{}', key='{}', server_name='{}', key_type='{}')",
-        cfg.cert_file,
-        cfg.key_file,
-        cfg.server_name,
-        cfg.bootstrap_key_type,
-    );
-
-    let key = generate_backend_key(&cfg.bootstrap_key_type).map_err(|e| {
-        AcmeError::Config(format!(
-            "generate admin server key (type '{}'): {e}",
-            cfg.bootstrap_key_type
-        ))
-    })?;
-
-    let cert_der = sign_server_cert(&cfg.server_name, &key, ca)
-        .map_err(|e| AcmeError::Config(format!("sign admin server cert: {e}")))?;
-
-    let key_pem = key
-        .to_pem(None)
-        .map_err(|e| AcmeError::Config(format!("admin server key to PEM: {e}")))?;
-    write_secret_file(&cfg.key_file, &key_pem)
-        .map_err(|e| AcmeError::Config(format!("write admin key '{}': {e}", cfg.key_file)))?;
-
-    // Chain: leaf + CA cert so clients can build a complete chain.
-    let mut chain = der_to_pem("CERTIFICATE", &cert_der);
-    chain.extend_from_slice(&der_to_pem("CERTIFICATE", &ca.cert_der));
-    std::fs::write(&cfg.cert_file, &chain)
-        .map_err(|e| AcmeError::Config(format!("write admin cert '{}': {e}", cfg.cert_file)))?;
-
-    tracing::info!("admin server certificate generated successfully");
-    Ok(())
-}
 
 /// Generate and register the initial Administrator operator if the operators
 /// table is empty.

@@ -300,16 +300,11 @@ async fn build_delegation_state() -> (
         tls: Default::default(),
         profiles: Default::default(),
         admin: Some(AdminConfig {
-            listen_addr: "127.0.0.1:0".into(),
-            cert_file: "dummy.crt".into(),
-            key_file: "dummy.key".into(),
-            server_name: "localhost".into(),
             bootstrap_key_type: "ec:P-256".into(),
             bootstrap_operator_cert_file: None,
             bootstrap_operator_key_file: None,
             bootstrap_operator_name: "admin".into(),
             bootstrap_operator_gssapi_principal: None,
-            ca_certs: vec![],
             gssapi: None,
             session_ttl_secs: 3600,
             session_lock_secs: 900,
@@ -416,14 +411,15 @@ async fn build_delegation_state() -> (
         admin_auth_limiter: Some(Arc::new(tokio::sync::Mutex::new(
             std::collections::HashMap::new(),
         ))),
+        eab_session_nonces: None,
         startup_time: Instant::now(),
         gss_cred: None,
         admin_gss_cred: None,
         eab_master_secret: None,
     });
 
-    let acme_router = routes::build_router(Arc::clone(&state));
-    let admin_router = routes::build_admin_router(Arc::clone(&state));
+    let acme_router = routes::build_router(Arc::clone(&state), None);
+    let admin_router = routes::build_router(Arc::clone(&state), None);
 
     (state, admin_router, acme_router, admin_token, dir)
 }

@@ -249,13 +249,11 @@ async fn run() -> Result<(), String> {
             .map_err(|e| format!("TLS init: {e}"))?;
     }
 
-    // ── Admin bootstrap (auto-generate server cert and bootstrap operator) ───
+    // ── Admin bootstrap ───────────────────────────────────────────────────────
     if let Some(ref admin_cfg) = config.admin {
         admin_cfg
             .validate()
             .map_err(|e| format!("admin config: {e}"))?;
-        akamu::admin::init::load_or_generate_server_cert(admin_cfg, &ca)
-            .map_err(|e| format!("admin TLS init: {e}"))?;
         akamu::admin::init::bootstrap_operator_if_needed(admin_cfg, &ca, &db)
             .await
             .map_err(|e| format!("admin operator bootstrap: {e}"))?;
@@ -510,115 +508,14 @@ async fn run() -> Result<(), String> {
     // ── RFC 9115 IdO→CA upstream delegation task ──────────────────────────────
     let _delegation_task = delegation_upstream::spawn(Arc::clone(&state));
 
-    // ── Management web UI listener ────────────────────────────────────────────
-    let _webui_task = if let Some(webui_cfg) = config.server.webui.clone() {
-        let handle = tokio::spawn(async move {
-            if let Err(e) = akamu::webui::run(webui_cfg).await {
-                tracing::error!("webui listener failed: {e}");
-            }
-        });
-        Some(handle)
-    } else {
-        None
-    };
-
-    // ── Dedicated admin listener ──────────────────────────────────────────────
-    if let Some(ref admin_cfg) = config.admin {
-        let mut admin_server_cfg = akamu::tls::build_admin_rustls_server_config(admin_cfg)
-            .map_err(|e| format!("admin TLS config: {e}"))?;
-        admin_server_cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
-        let admin_acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(admin_server_cfg));
-
-        // Channel binding for admin cert (RFC 5929 §4), injected per-connection
-        // so GSSAPI can perform mutual auth with the admin server endpoint.
-        let admin_channel_binding: Option<Arc<Vec<u8>>> =
-            match akamu::tls::loader::load_server_cert_chain(&admin_cfg.cert_file)
-                .ok()
-                .and_then(|chain| chain.into_iter().next())
-                .map(|c| c.to_vec())
-            {
-                Some(der) => {
-                    akamu::tls::channel_binding::tls_server_endpoint_binding(&der).map(Arc::new)
-                }
-                None => None,
-            };
-
-        let admin_addr: std::net::SocketAddr = admin_cfg
-            .listen_addr
-            .parse()
-            .map_err(|e| format!("parse admin listen addr '{}': {e}", admin_cfg.listen_addr))?;
-        let admin_listener = tokio::net::TcpListener::bind(admin_addr)
-            .await
-            .map_err(|e| format!("bind admin '{}': {e}", admin_cfg.listen_addr))?;
-        tracing::info!("admin listener on {}", admin_cfg.listen_addr);
-
-        let admin_router = routes::build_admin_router(Arc::clone(&state));
-        tokio::spawn(async move {
-            loop {
-                let Ok((stream, peer_addr)) = admin_listener.accept().await else {
-                    tracing::warn!("admin listener accept error; retrying");
-                    continue;
-                };
-                let acceptor = admin_acceptor.clone();
-                let router = admin_router.clone();
-                let channel_binding = admin_channel_binding.clone();
-                tokio::spawn(async move {
-                    let tls = match acceptor.accept(stream).await {
-                        Ok(s) => s,
-                        Err(e) => {
-                            tracing::warn!("admin TLS handshake failed: {e}");
-                            return;
-                        }
-                    };
-                    // Extract peer certificate DER from the completed TLS session.
-                    // Must be read before `tls` is moved into `TokioIo::new`.
-                    let peer_cert: Option<Vec<u8>> = tls
-                        .get_ref()
-                        .1
-                        .peer_certificates()
-                        .and_then(|certs| certs.first())
-                        .map(|c| c.as_ref().to_vec());
-                    let io = hyper_util::rt::TokioIo::new(tls);
-                    use tower::ServiceExt as _;
-                    let svc = hyper::service::service_fn(
-                        move |mut req: hyper::Request<hyper::body::Incoming>| {
-                            req.extensions_mut()
-                                .insert(axum::extract::ConnectInfo(peer_addr));
-                            if let Some(ref der) = peer_cert {
-                                req.extensions_mut()
-                                    .insert(akamu::admin::auth::PeerClientCert(der.clone()));
-                            }
-                            if let Some(ref binding) = channel_binding {
-                                req.extensions_mut().insert(
-                                    akamu::tls::channel_binding::TlsServerEndpointBinding(
-                                        binding.as_ref().clone(),
-                                    ),
-                                );
-                            }
-                            let router = router.clone();
-                            async move {
-                                let req = req.map(axum::body::Body::new);
-                                Ok::<_, std::convert::Infallible>(
-                                    router.oneshot(req).await.unwrap(),
-                                )
-                            }
-                        },
-                    );
-                    if let Err(e) = hyper_util::server::conn::auto::Builder::new(
-                        hyper_util::rt::TokioExecutor::new(),
-                    )
-                    .serve_connection(io, svc)
-                    .await
-                    {
-                        tracing::warn!("admin connection error: {e}");
-                    }
-                });
-            }
-        });
-    }
-
-    // ── HTTP / TLS server ─────────────────────────────────────────────────────
-    let router = routes::build_router(Arc::clone(&state));
+    // ── HTTP / TLS server (serves ACME, admin API, and web UI) ──────────────
+    let static_dir = config
+        .server
+        .webui
+        .as_ref()
+        .and_then(|w| w.static_dir.as_deref())
+        .map(std::path::PathBuf::from);
+    let router = routes::build_router(Arc::clone(&state), static_dir.as_deref());
 
     if config.tls.enabled {
         let mut server_cfg = akamu::tls::build_rustls_server_config(&config.tls)
@@ -681,12 +578,24 @@ async fn run() -> Result<(), String> {
                                 return;
                             }
                         };
+                        // Extract peer cert before moving tls into TokioIo.
+                        let peer_cert: Option<Vec<u8>> = tls
+                            .get_ref()
+                            .1
+                            .peer_certificates()
+                            .and_then(|c| c.first())
+                            .map(|c| c.as_ref().to_vec());
                         let io = hyper_util::rt::TokioIo::new(tls);
                         use tower::ServiceExt as _;
                         let svc = hyper::service::service_fn(
                             move |mut req: hyper::Request<hyper::body::Incoming>| {
                                 req.extensions_mut()
                                     .insert(axum::extract::ConnectInfo(peer_addr));
+                                if let Some(ref der) = peer_cert {
+                                    req.extensions_mut().insert(
+                                        akamu::admin::auth::PeerClientCert(der.clone()),
+                                    );
+                                }
                                 if let Some(ref binding) = tls_channel_binding {
                                     req.extensions_mut().insert(
                                         akamu::tls::channel_binding::TlsServerEndpointBinding(

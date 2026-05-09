@@ -8,11 +8,12 @@ use axum::extract::{FromRef, FromRequestParts, Path, Request};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, head, post};
 use axum::{Json, Router};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
 use crate::db;
@@ -106,8 +107,12 @@ async fn halt_check(
     next.run(req).await
 }
 
-/// Build the main axum router with all ACME endpoints.
-pub fn build_router(state: Arc<AppState>) -> Router {
+/// Build the unified axum router: ACME, admin API, and optional web UI.
+///
+/// When `static_dir` is `Some`, serves the PatternFly SPA from `/ui/*` and
+/// redirects `GET /` to `/ui/`.  Admin routes intentionally bypass `halt_check`
+/// so operators can query status even when the ACME listener is halted.
+pub fn build_router(state: Arc<AppState>, static_dir: Option<&std::path::Path>) -> Router {
     // max_body_bytes = 0 means "use the 2 MiB default".
     // Never disable the limit entirely — that would allow unbounded request bodies.
     let max_body = state.config.server.max_body_bytes;
@@ -259,29 +264,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/ca/{ca_id}/ocsp/{request}", get(ocsp::get_ocsp))
         .route("/ca/{ca_id}/cross-certs", get(crl::get_cross_certs));
 
-    Router::new()
-        .merge(acme_router)
-        .merge(per_ca_acme_router)
-        .merge(other_router)
-        .layer(axum::extract::DefaultBodyLimit::max(if max_body > 0 {
-            max_body
-        } else {
-            2 * 1024 * 1024
-        }))
-        .layer(TraceLayer::new_for_http().on_request(()).on_eos(()))
-        .with_state(state)
-}
-
-/// Build the admin-only axum router served on the dedicated admin listener.
-///
-/// Admin routes intentionally bypass `halt_check` so operators can query status
-/// and resolve audit-overflow conditions even when the ACME listener is halted.
-/// Full operator authentication (mTLS cert + session token + GSSAPI) is enforced
-/// by the `OperatorContext` extractor in `crate::admin::auth`.
-pub fn build_admin_router(state: Arc<AppState>) -> Router {
-    let max_body = state.config.server.max_body_bytes;
-
-    Router::new()
+    // Admin routes: bypass halt_check; auth enforced per-handler via OperatorContext.
+    let admin_router = Router::new()
         .route(
             "/admin/session",
             post(crate::admin::auth::post_session).delete(crate::admin::auth::delete_session),
@@ -370,7 +354,24 @@ pub fn build_admin_router(state: Arc<AppState>) -> Router {
         .route(
             "/admin/cross-certs/{id}",
             axum::routing::get(admin::get_cross_cert),
-        )
+        );
+
+    let mut router = Router::new()
+        .merge(acme_router)
+        .merge(per_ca_acme_router)
+        .merge(other_router)
+        .merge(admin_router);
+
+    if let Some(dir) = static_dir {
+        let serve = ServeDir::new(dir)
+            .append_index_html_on_directories(true)
+            .fallback(ServeDir::new(dir).append_index_html_on_directories(true));
+        router = router
+            .nest_service("/ui", serve)
+            .route("/", get(|| async { Redirect::permanent("/ui/") }));
+    }
+
+    router
         .layer(axum::extract::DefaultBodyLimit::max(if max_body > 0 {
             max_body
         } else {

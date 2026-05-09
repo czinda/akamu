@@ -37,17 +37,14 @@ pub struct Config {
 
 /// Admin API configuration (PP CA v2.1 FMT + FTA_SSL).
 ///
-/// When present, the server exposes admin endpoints on a dedicated listener.
-/// Operator authentication uses mTLS client certificates (`ca_certs`),
-/// GSSAPI/Kerberos (`[admin.gssapi]`), or both.  At least one of these must
-/// be configured.  The old shared `bearer_token` field has been removed.
+/// Admin interface configuration.  Admin endpoints (`/admin/*`) are served on
+/// the same listener as the ACME API.  Operator authentication uses mTLS client
+/// certificates (configure via `[tls.client_auth]` with `required = false`),
+/// GSSAPI/Kerberos (`[admin.gssapi]`), or session tokens (EAB kid+HMAC login).
+/// At least one of mTLS (`[tls.client_auth]`) or GSSAPI must be reachable.
 ///
 /// ```toml
 /// [admin]
-/// listen_addr    = "127.0.0.1:9443"
-/// cert_file      = "/etc/akamu/admin-tls.pem"
-/// key_file       = "/etc/akamu/admin-tls-key.pem"
-/// ca_certs       = ["/etc/akamu/operator-ca.pem"]   # empty when GSSAPI-only
 /// session_ttl_secs = 3600
 ///
 /// [admin.gssapi]
@@ -56,18 +53,8 @@ pub struct Config {
 /// ```
 #[derive(Debug, Deserialize, Clone)]
 pub struct AdminConfig {
-    /// Address for the dedicated admin listener, e.g. `"127.0.0.1:9443"`.
-    pub listen_addr: String,
-    /// PEM file with the admin listener's server TLS certificate chain (leaf first).
-    pub cert_file: String,
-    /// PEM file with the admin listener's server TLS private key.
-    pub key_file: String,
-    /// PEM CA certificate files whose issued client certs are accepted as operator
-    /// credentials.  May be empty when `gssapi` is the sole auth method.
-    #[serde(default)]
-    pub ca_certs: Vec<String>,
     /// GSSAPI/Kerberos authentication for operators.  When absent, only mTLS
-    /// client certificates are accepted; at least one `ca_certs` entry must be set.
+    /// client certificates (via `[tls.client_auth]`) are accepted.
     pub gssapi: Option<AdminGssapiConfig>,
     /// Inactive session expiry (FTA_SSL.3/4/EXT.1).  Default: 3600 s (1 h).
     #[serde(default = "default_admin_session_ttl_secs")]
@@ -110,12 +97,7 @@ pub struct AdminConfig {
     /// `"syslog"` — log CRIT.  `"halt"` — halt the server.  Default: `"syslog"`.
     #[serde(default = "default_audit_alarm_action")]
     pub audit_alarm_action: String,
-    /// Hostname placed in CN and SAN of the auto-generated admin server certificate.
-    /// Only used when `cert_file`/`key_file` are absent. Default: `"localhost"`.
-    #[serde(default = "default_admin_server_name")]
-    pub server_name: String,
-    /// Key algorithm for the auto-generated admin server certificate.
-    /// Only used when `cert_file`/`key_file` are absent.
+    /// Key algorithm for the auto-generated bootstrap operator certificate.
     /// Same syntax as `ca.key_type`. Default: `"ec:P-256"`.
     #[serde(default = "default_admin_bootstrap_key_type")]
     pub bootstrap_key_type: String,
@@ -163,9 +145,6 @@ fn default_audit_alarm_threshold() -> u32 {
 fn default_audit_alarm_action() -> String {
     "syslog".to_owned()
 }
-fn default_admin_server_name() -> String {
-    "localhost".to_owned()
-}
 fn default_admin_bootstrap_key_type() -> String {
     "ec:P-256".to_owned()
 }
@@ -176,11 +155,6 @@ fn default_admin_bootstrap_operator_name() -> String {
 impl AdminConfig {
     /// Validate the config and return a human-readable error if invalid.
     pub fn validate(&self) -> Result<(), String> {
-        if self.ca_certs.is_empty() && self.gssapi.is_none() {
-            return Err(
-                "[admin] must configure at least one of `ca_certs` or `[admin.gssapi]`".into(),
-            );
-        }
         match self.audit_overflow.as_str() {
             "halt" | "drop_oldest" => {}
             other => {
@@ -894,66 +868,26 @@ pub struct ServerConfig {
     pub eab_master_secret: Option<String>,
     /// Management web UI configuration.
     ///
-    /// When present, Akamu starts a second HTTP/HTTPS listener that serves the
-    /// built PatternFly web UI and reverse-proxies `/api/*` requests to the
-    /// admin API.  The listener uses server-only TLS (no client certificate
-    /// required), allowing browser access.
+    /// When present, the server serves the built PatternFly web UI at `/ui/*`
+    /// on the same listener as the ACME and admin APIs.
     ///
-    /// Example:
     /// ```toml
     /// [server.webui]
-    /// listen_addr   = "0.0.0.0:8080"
-    /// admin_api_url = "https://127.0.0.1:8444"
-    /// static_dir    = "/usr/share/akamu/webui"
-    ///
-    /// [server.webui.tls]
-    /// enabled   = true
-    /// cert_file = "/etc/akamu/webui.crt"
-    /// key_file  = "/etc/akamu/webui.key"
+    /// static_dir = "/usr/share/akamu/webui"
     /// ```
     pub webui: Option<WebUiConfig>,
 }
 
-/// Management web UI listener configuration (`[server.webui]`).
+/// Web UI configuration (`[server.webui]`).
 ///
-/// The webui listener serves the compiled PatternFly React application over
-/// plain HTTPS (no mTLS) and transparently proxies `/api/*` requests to the
-/// admin API, allowing a single browser origin to reach both static assets and
-/// the full admin REST API.
+/// The web UI is served at `/ui/*` on the main ACME/admin listener.
+/// Admin API calls from the browser go to `/admin/*` directly — no proxy.
 #[derive(Debug, Deserialize, Clone)]
 pub struct WebUiConfig {
-    /// TCP address the webui listener binds to.  Default: `"0.0.0.0:8080"`.
-    #[serde(default = "default_webui_listen_addr")]
-    pub listen_addr: String,
-    /// TLS configuration for the webui listener (server certificate only;
-    /// no client certificate).  When absent the listener uses plain HTTP.
-    pub tls: Option<TlsConfig>,
     /// Directory containing the built `webui/dist/` output to serve.
     /// When absent the server falls back to the binary-embedded UI (if
     /// compiled with the `embed-webui` feature).
     pub static_dir: Option<String>,
-    /// Base URL of the admin API to proxy `/api/*` requests to.
-    /// The webui listener strips the `/api` prefix before forwarding.
-    /// Default: `"https://127.0.0.1:8444"`.
-    #[serde(default = "default_webui_admin_api_url")]
-    pub admin_api_url: String,
-    /// PEM file with the client certificate the proxy uses when connecting to
-    /// the mTLS admin API.  When absent the proxy connects without a client
-    /// certificate (only works if the admin API does not require mTLS).
-    pub proxy_client_cert: Option<String>,
-    /// PEM file with the client private key matching `proxy_client_cert`.
-    pub proxy_client_key: Option<String>,
-    /// PEM file(s) with trusted CA certificates for validating the admin API's
-    /// server certificate.  When absent the system root store is used.
-    pub proxy_ca_cert: Option<String>,
-}
-
-fn default_webui_listen_addr() -> String {
-    "127.0.0.1:8080".into()
-}
-
-fn default_webui_admin_api_url() -> String {
-    "https://127.0.0.1:8444".into()
 }
 
 /// Upstream CA configuration for the IdO→CA leg of RFC 9115 delegation.
@@ -1499,60 +1433,6 @@ impl Config {
         }
 
         if let Some(wu) = &self.server.webui {
-            wu.listen_addr
-                .parse::<std::net::SocketAddr>()
-                .map_err(|e| {
-                    format!(
-                        "[server.webui].listen_addr {:?} is not a valid socket address: {e}",
-                        wu.listen_addr
-                    )
-                })?;
-            if wu.admin_api_url.is_empty() {
-                return Err("[server.webui].admin_api_url must not be empty".into());
-            }
-            if !wu.admin_api_url.starts_with("https://") {
-                return Err(format!(
-                    "[server.webui].admin_api_url {:?} must use https://",
-                    wu.admin_api_url
-                ));
-            }
-            match (&wu.proxy_client_cert, &wu.proxy_client_key) {
-                (Some(cert), None) => {
-                    return Err(format!(
-                        "[server.webui].proxy_client_key must be set when proxy_client_cert {cert:?} is configured"
-                    ));
-                }
-                (None, Some(key)) => {
-                    return Err(format!(
-                        "[server.webui].proxy_client_cert must be set when proxy_client_key {key:?} is configured"
-                    ));
-                }
-                (Some(cert), Some(key)) => {
-                    if !std::path::Path::new(cert).is_absolute() {
-                        return Err(format!(
-                            "[server.webui].proxy_client_cert {cert:?} must be an absolute path"
-                        ));
-                    }
-                    if !std::path::Path::new(key).is_absolute() {
-                        return Err(format!(
-                            "[server.webui].proxy_client_key {key:?} must be an absolute path"
-                        ));
-                    }
-                }
-                (None, None) => {}
-            }
-            if let Some(ref ca_cert) = wu.proxy_ca_cert {
-                if ca_cert.is_empty() {
-                    return Err("[server.webui].proxy_ca_cert must not be empty when set \
-                         (omit the field to use the system root store)"
-                        .into());
-                }
-                if !std::path::Path::new(ca_cert).is_absolute() {
-                    return Err(format!(
-                        "[server.webui].proxy_ca_cert {ca_cert:?} must be an absolute path"
-                    ));
-                }
-            }
             if let Some(ref dir) = wu.static_dir {
                 if !std::path::Path::new(dir).is_absolute() {
                     return Err(format!(
@@ -1999,25 +1879,19 @@ max_body_bytes = 131072
 
     // ── AdminConfig tests ──────────────────────────────────────────────────────
 
-    fn admin_toml_cert_only() -> String {
+    fn admin_toml_base() -> String {
         format!(
             r#"{}
 [admin]
-listen_addr = "127.0.0.1:9443"
-cert_file   = "/etc/akamu/admin.pem"
-key_file    = "/etc/akamu/admin-key.pem"
-ca_certs    = ["/etc/akamu/operator-ca.pem"]
 "#,
             minimal_toml()
         )
     }
 
     #[test]
-    fn admin_config_cert_only_parses() {
-        let cfg: Config = toml::from_str(&admin_toml_cert_only()).unwrap();
+    fn admin_config_defaults_parse() {
+        let cfg: Config = toml::from_str(&admin_toml_base()).unwrap();
         let admin = cfg.admin.expect("admin should be Some");
-        assert_eq!(admin.listen_addr, "127.0.0.1:9443");
-        assert_eq!(admin.ca_certs, vec!["/etc/akamu/operator-ca.pem"]);
         assert!(admin.gssapi.is_none());
         assert_eq!(admin.session_ttl_secs, 3600);
         assert_eq!(admin.audit_overflow, "drop_oldest");
@@ -2027,19 +1901,10 @@ ca_certs    = ["/etc/akamu/operator-ca.pem"]
     }
 
     #[test]
-    fn admin_config_validate_ok_with_ca_certs() {
-        let cfg: Config = toml::from_str(&admin_toml_cert_only()).unwrap();
-        assert!(cfg.admin.unwrap().validate().is_ok());
-    }
-
-    #[test]
-    fn admin_config_validate_ok_with_gssapi_only() {
+    fn admin_config_validate_ok_with_gssapi() {
         let toml = format!(
             r#"{}
 [admin]
-listen_addr = "127.0.0.1:9443"
-cert_file   = "/etc/akamu/admin.pem"
-key_file    = "/etc/akamu/admin-key.pem"
 
 [admin.gssapi]
 keytab_file  = "/etc/akamu/http.keytab"
@@ -2052,22 +1917,9 @@ service_name = "HTTP"
     }
 
     #[test]
-    fn admin_config_validate_fails_no_auth() {
-        let toml = format!(
-            r#"{}
-[admin]
-listen_addr = "127.0.0.1:9443"
-cert_file   = "/etc/akamu/admin.pem"
-key_file    = "/etc/akamu/admin-key.pem"
-"#,
-            minimal_toml()
-        );
-        let cfg: Config = toml::from_str(&toml).unwrap();
-        let err = cfg.admin.unwrap().validate().unwrap_err();
-        assert!(
-            err.contains("ca_certs"),
-            "error should mention ca_certs: {err}"
-        );
+    fn admin_config_validate_ok_minimal() {
+        let cfg: Config = toml::from_str(&admin_toml_base()).unwrap();
+        assert!(cfg.admin.unwrap().validate().is_ok());
     }
 
     #[test]
@@ -2075,10 +1927,6 @@ key_file    = "/etc/akamu/admin-key.pem"
         let toml = format!(
             r#"{}
 [admin]
-listen_addr    = "127.0.0.1:9443"
-cert_file      = "/etc/akamu/admin.pem"
-key_file       = "/etc/akamu/admin-key.pem"
-ca_certs       = ["/etc/akamu/operator-ca.pem"]
 audit_overflow = "delete"
 "#,
             minimal_toml()
@@ -2090,7 +1938,7 @@ audit_overflow = "delete"
 
     #[test]
     fn admin_config_audit_policy_drop_oldest() {
-        let cfg: Config = toml::from_str(&admin_toml_cert_only()).unwrap();
+        let cfg: Config = toml::from_str(&admin_toml_base()).unwrap();
         let policy = crate::audit::AuditPolicy::from_admin_config(&cfg.admin.unwrap());
         assert!(policy.max_rows.is_none());
         assert_eq!(policy.overflow, crate::audit::OverflowPolicy::DropOldest);
@@ -2103,10 +1951,6 @@ audit_overflow = "delete"
         let toml = format!(
             r#"{}
 [admin]
-listen_addr           = "127.0.0.1:9443"
-cert_file             = "/etc/akamu/admin.pem"
-key_file              = "/etc/akamu/admin-key.pem"
-ca_certs              = ["/etc/akamu/operator-ca.pem"]
 audit_max_rows        = 500000
 audit_overflow        = "halt"
 audit_alarm_threshold = 5

@@ -8,10 +8,10 @@ import {
   CodeBlock,
   CodeBlockCode,
 } from '@patternfly/react-core';
-import { getConfig, ServerConfig } from '../../api/stats';
+import { getConfig, ServerConfig as ServerConfigData } from '../../api/stats';
 
 export default function ServerConfig() {
-  const [config, setConfig] = useState<ServerConfig | null>(null);
+  const [config, setConfig] = useState<ServerConfigData | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {

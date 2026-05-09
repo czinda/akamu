@@ -203,6 +203,7 @@ async fn build_two_ca_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir
         audit_policy: Arc::new(akamu::audit::AuditPolicy::default()),
         admin_sessions: None,
         admin_auth_limiter: None,
+        eab_session_nonces: None,
         startup_time: std::time::Instant::now(),
         gss_cred: None,
         admin_gss_cred: None,
@@ -248,7 +249,7 @@ async fn get_bytes(router: &axum::Router, path: &str) -> (StatusCode, Vec<u8>) {
 #[tokio::test]
 async fn per_ca_directory_endpoints_return_200() {
     let (state, _dir) = build_two_ca_state("https://acme.test").await;
-    let router = routes::build_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     let (status, _) = get_json(&router, "/acme/rsa/directory").await;
     assert_eq!(status, StatusCode::OK, "/acme/rsa/directory");
@@ -261,7 +262,7 @@ async fn per_ca_directory_endpoints_return_200() {
 #[tokio::test]
 async fn legacy_directory_path_serves_default_ca() {
     let (state, _dir) = build_two_ca_state("https://acme.test").await;
-    let router = routes::build_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     let (status, legacy) = get_json(&router, "/acme/directory").await;
     assert_eq!(status, StatusCode::OK, "/acme/directory");
@@ -280,7 +281,7 @@ async fn legacy_directory_path_serves_default_ca() {
 #[tokio::test]
 async fn unknown_ca_id_returns_404() {
     let (state, _dir) = build_two_ca_state("https://acme.test").await;
-    let router = routes::build_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     let (status, _) = get_json(&router, "/acme/nonexistent/directory").await;
     assert_eq!(
@@ -294,7 +295,7 @@ async fn unknown_ca_id_returns_404() {
 #[tokio::test]
 async fn per_ca_directory_urls_contain_ca_id() {
     let (state, _dir) = build_two_ca_state("https://acme.test").await;
-    let router = routes::build_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     let (_, ec_dir) = get_json(&router, "/acme/ec/directory").await;
     let new_order = ec_dir["newOrder"].as_str().unwrap_or("");
@@ -316,7 +317,7 @@ async fn per_ca_directory_urls_contain_ca_id() {
 #[tokio::test]
 async fn per_ca_crl_endpoints_return_200() {
     let (state, _dir) = build_two_ca_state("https://acme.test").await;
-    let router = routes::build_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     let (status, body) = get_bytes(&router, "/ca/rsa/crl").await;
     assert_eq!(status, StatusCode::OK, "/ca/rsa/crl status");
@@ -331,7 +332,7 @@ async fn per_ca_crl_endpoints_return_200() {
 #[tokio::test]
 async fn legacy_crl_matches_default_ca_crl() {
     let (state, _dir) = build_two_ca_state("https://acme.test").await;
-    let router = routes::build_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     let (_, legacy_crl) = get_bytes(&router, "/ca/crl").await;
     let (_, rsa_crl) = get_bytes(&router, "/ca/rsa/crl").await;
@@ -346,7 +347,7 @@ async fn legacy_crl_matches_default_ca_crl() {
 #[tokio::test]
 async fn unknown_ca_crl_returns_404() {
     let (state, _dir) = build_two_ca_state("https://acme.test").await;
-    let router = routes::build_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     let (status, _) = get_bytes(&router, "/ca/nonexistent/crl").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -356,7 +357,7 @@ async fn unknown_ca_crl_returns_404() {
 #[tokio::test]
 async fn crl_isolation_revocation_only_affects_issuing_ca() {
     let (state, _dir) = build_two_ca_state("https://acme.test").await;
-    let router = routes::build_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     // Grab baseline CRL sizes (before any revocations).
     let (_, rsa_crl_before) = get_bytes(&router, "/ca/rsa/crl").await;
@@ -441,7 +442,7 @@ async fn crl_isolation_revocation_only_affects_issuing_ca() {
 #[tokio::test]
 async fn order_ca_isolation_wrong_prefix_returns_not_found() {
     let (state, _dir) = build_two_ca_state("https://acme.test").await;
-    let router = routes::build_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     // Insert an account and an order that belongs to CA "rsa".
     let now = std::time::SystemTime::now()
@@ -567,16 +568,11 @@ async fn admin_cas_list_returns_both_cas() {
         tls: Default::default(),
         profiles: Default::default(),
         admin: Some(AdminConfig {
-            listen_addr: "127.0.0.1:0".into(),
-            cert_file: "dummy.crt".into(),
-            key_file: "dummy.key".into(),
-            server_name: "localhost".into(),
             bootstrap_key_type: "ec:P-256".into(),
             bootstrap_operator_cert_file: None,
             bootstrap_operator_key_file: None,
             bootstrap_operator_name: "admin".into(),
             bootstrap_operator_gssapi_principal: None,
-            ca_certs: vec![],
             gssapi: None,
             session_ttl_secs: 3600,
             session_lock_secs: 900,
@@ -708,13 +704,14 @@ async fn admin_cas_list_returns_both_cas() {
         audit_policy: Arc::new(akamu::audit::AuditPolicy::default()),
         admin_sessions: Some(Arc::new(tokio::sync::Mutex::new(sessions))),
         admin_auth_limiter: None,
+        eab_session_nonces: None,
         startup_time: std::time::Instant::now(),
         gss_cred: None,
         admin_gss_cred: None,
         eab_master_secret: None,
     });
 
-    let admin_router = routes::build_admin_router(Arc::clone(&state));
+    let admin_router = routes::build_router(Arc::clone(&state), None);
 
     let req = Request::builder()
         .method(Method::GET)
@@ -753,7 +750,7 @@ async fn admin_cas_list_returns_both_cas() {
 #[tokio::test]
 async fn new_nonce_available_for_all_ca_paths() {
     let (state, _dir) = build_two_ca_state("https://acme.test").await;
-    let router = routes::build_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     for path in &[
         "/acme/new-nonce",
