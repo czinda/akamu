@@ -164,19 +164,18 @@ $(VENDOR_TARBALL):
 	@find "$(REPOROOT)/vendor" -name '*.profraw' -delete
 	@find "$(REPOROOT)/vendor" -name '.cargo-checksum.json' \
 	    -exec python3 -c "import json,sys;[open(p,'w').write(json.dumps(dict(d,files={k:v for k,v in d['files'].items() if not k.endswith('.profraw')}),separators=(',',':'))) for p in sys.argv[1:] for d in [json.load(open(p))]]" {} +
-	@# synta-codegen's build script resolves ASN.1 schemas via ../asn1 relative to
-	@# each crate's CARGO_MANIFEST_DIR.  In the vendored layout that path resolves
-	@# to vendor/asn1/, but the schemas live inside vendor/synta-{ver}/asn1/.
-	@# When synta is a local path dependency (developer workspace) cargo vendor
-	@# does not copy it into vendor/, so fall back to the sibling synta repo.
-	@if [ -d "$(REPOROOT)/vendor/synta-$(SYNTA_VERSION)/asn1" ]; then \
-	    cp -a "$(REPOROOT)/vendor/synta-$(SYNTA_VERSION)/asn1" "$(REPOROOT)/vendor/asn1"; \
-	elif [ -d "$(REPOROOT)/../synta/asn1" ]; then \
-	    cp -a "$(REPOROOT)/../synta/asn1" "$(REPOROOT)/vendor/asn1"; \
-	else \
-	    echo "ERROR: cannot find synta asn1 schemas in vendor/synta-$(SYNTA_VERSION)/asn1 or ../synta/asn1" >&2; \
-	    exit 1; \
-	fi
+	@# synta crates are local path dependencies; cargo vendor skips them.
+	@# Vendor them manually from the sibling synta repo so the RPM build's
+	@# vendor directory is fully self-contained without network access.
+	@echo "==> Vendoring synta crates from $(REPOROOT)/../synta"
+	python3 "$(CURDIR)/vendor-local-crates.py" \
+	    "$(REPOROOT)" \
+	    "$(REPOROOT)/../synta" \
+	    "$(REPOROOT)/vendor"
+	@# synta-codegen's build script looks for ASN.1 schemas at ../asn1 relative
+	@# to its CARGO_MANIFEST_DIR.  In the vendor layout that resolves to
+	@# vendor/asn1/; copy from vendor/synta-{ver}/asn1/ (vendored above).
+	cp -a "$(REPOROOT)/vendor/synta-$(SYNTA_VERSION)/asn1" "$(REPOROOT)/vendor/asn1"
 	@# Archive vendor/ and Cargo.lock (pinned versions for reproducible builds).
 	tar -czf "$(CURDIR)/$@" \
 	    -C "$(REPOROOT)" vendor/ Cargo.lock
