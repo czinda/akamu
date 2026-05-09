@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-const AKAMU_ADMIN_URL = process.env.AKAMU_ADMIN_URL ?? 'https://localhost:8444';
+const AKAMU_SERVER_URL = process.env.AKAMU_SERVER_URL ?? 'https://localhost:443';
 
 export default defineConfig({
   plugins: [react()],
@@ -9,10 +9,13 @@ export default defineConfig({
   server: {
     port: 9000,
     proxy: {
-      '/api': {
-        target: AKAMU_ADMIN_URL,
+      '/admin': {
+        target: AKAMU_SERVER_URL,
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ''),
+      },
+      '/acme': {
+        target: AKAMU_SERVER_URL,
+        changeOrigin: true,
       },
     },
   },

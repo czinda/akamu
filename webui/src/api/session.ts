@@ -12,7 +12,7 @@ export async function loginGssapi(): Promise<SessionResponse> {
   // Step 1: send unauthenticated POST → server returns 401 + WWW-Authenticate: Negotiate
   // Step 2: browser retries automatically with Kerberos ticket (in supported browsers)
   // We just POST with no credentials and rely on the browser's SPNEGO support.
-  const resp = await fetch('/api/admin/session', {
+  const resp = await fetch('/admin/session', {
     method: 'POST',
     credentials: 'include',
   });
@@ -40,7 +40,7 @@ export async function loginEab(kid: string, hmacKey: string): Promise<SessionRes
   const sig = await crypto.subtle.sign('HMAC', cryptoKey, msgBytes);
   const signature = base64urlEncode(new Uint8Array(sig));
 
-  const resp = await fetch('/api/admin/session/eab', {
+  const resp = await fetch('/admin/session/eab', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ kid, timestamp, signature }),

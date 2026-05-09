@@ -1,4 +1,4 @@
-const BASE = '/api';
+const BASE = '';
 
 function getToken(): string | null {
   try {
