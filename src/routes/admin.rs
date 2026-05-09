@@ -653,6 +653,34 @@ pub async fn put_account_profile_grants(
         Err(e) => return (StatusCode::BAD_REQUEST, format!("JSON: {e}")).into_response(),
     };
 
+    if let Some(scope) = operator.ca_scope() {
+        match db::accounts::get_by_id(&state.db, &id).await {
+            Ok(Some(acct)) if !acct.ca_id.is_empty() && acct.ca_id != scope => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"status": 404, "detail": "account not found"})),
+                )
+                    .into_response();
+            }
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"status": 404, "detail": "account not found"})),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "put_account_profile_grants: scope check db error");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"status": 500, "detail": "database error"})),
+                )
+                    .into_response();
+            }
+            Ok(Some(_)) => {}
+        }
+    }
+
     let now = unix_now();
     let grants_str = match grants_to_json(payload.profile_grants) {
         Ok(s) => s,
@@ -780,7 +808,11 @@ pub async fn get_eab(
                     })
                 })
                 .collect();
-            (StatusCode::OK, Json(json!({"eab_keys": keys, "total": total, "limit": limit, "offset": offset}))).into_response()
+            (
+                StatusCode::OK,
+                Json(json!({"eab_keys": keys, "total": total, "limit": limit, "offset": offset})),
+            )
+                .into_response()
         }
         Err(e) => {
             tracing::error!(error = %e, "get_eab: db error");
@@ -938,12 +970,17 @@ pub async fn post_crl_force(
 ) -> Response {
     require_role!(operator, state, Administrator | CaOperations);
 
-    // Drop all CRL caches; the next GET /ca/crl (per CA) will regenerate each.
-    for cache in state.crl_caches.values() {
-        *cache.lock().unwrap_or_else(|e| {
-            tracing::error!("CRL cache mutex poisoned — recovering and invalidating");
-            e.into_inner()
-        }) = None;
+    // Drop CRL caches for the operator's scope (or all CAs for server-wide operators).
+    // The next GET /ca/{id}/crl will regenerate each invalidated cache.
+    if let Some(scope) = operator.ca_scope() {
+        state.invalidate_crl_cache(scope);
+    } else {
+        for cache in state.crl_caches.values() {
+            *cache.lock().unwrap_or_else(|e| {
+                tracing::error!("CRL cache mutex poisoned — recovering and invalidating");
+                e.into_inner()
+            }) = None;
+        }
     }
 
     state
@@ -1409,7 +1446,9 @@ pub async fn get_accounts(
                 .collect();
             (
                 StatusCode::OK,
-                Json(json!({"accounts": accounts, "total": total, "limit": limit, "offset": offset})),
+                Json(
+                    json!({"accounts": accounts, "total": total, "limit": limit, "offset": offset}),
+                ),
             )
                 .into_response()
         }
@@ -1520,26 +1559,45 @@ fn describe_cert_der(der: &[u8]) -> Option<String> {
 
     fn fmt_time(t: &Time) -> String {
         const M: [&str; 12] = [
-            "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
         ];
         match t {
             Time::UtcTime(u) => format!(
                 "{} {:2} {:02}:{:02}:{:02} {} GMT",
                 M.get((u.month - 1) as usize).unwrap_or(&"???"),
-                u.day, u.hour, u.minute, u.second, u.year,
+                u.day,
+                u.hour,
+                u.minute,
+                u.second,
+                u.year,
             ),
             Time::GeneralTime(g) => format!(
                 "{} {:2} {:02}:{:02}:{:02} {} GMT",
                 M.get((g.month - 1) as usize).unwrap_or(&"???"),
-                g.day, g.hour, g.minute, g.second, g.year,
+                g.day,
+                g.hour,
+                g.minute,
+                g.second,
+                g.year,
             ),
         }
     }
 
-    let _ = writeln!(out, "            Not Before: {}", fmt_time(&tbs.validity.not_before));
-    let _ = writeln!(out, "            Not After : {}", fmt_time(&tbs.validity.not_after));
-    let _ = writeln!(out, "        Subject: {}", format_dn(tbs.subject.as_bytes()));
+    let _ = writeln!(
+        out,
+        "            Not Before: {}",
+        fmt_time(&tbs.validity.not_before)
+    );
+    let _ = writeln!(
+        out,
+        "            Not After : {}",
+        fmt_time(&tbs.validity.not_after)
+    );
+    let _ = writeln!(
+        out,
+        "        Subject: {}",
+        format_dn(tbs.subject.as_bytes())
+    );
 
     let spki = &tbs.subject_public_key_info;
     let pub_alg = identify_public_key_algorithm(&spki.algorithm.algorithm).unwrap_or("unknown");
@@ -1552,10 +1610,14 @@ fn describe_cert_der(der: &[u8]) -> Option<String> {
         for (i, chunk) in chunks.iter().enumerate() {
             let _ = write!(out, "{}", pad);
             for (j, b) in chunk.iter().enumerate() {
-                if j > 0 { let _ = write!(out, ":"); }
+                if j > 0 {
+                    let _ = write!(out, ":");
+                }
                 let _ = write!(out, "{:02x}", b);
             }
-            if i < chunks.len() - 1 { let _ = write!(out, ":"); }
+            if i < chunks.len() - 1 {
+                let _ = write!(out, ":");
+            }
             let _ = writeln!(out);
         }
     }
@@ -1566,13 +1628,27 @@ fn describe_cert_der(der: &[u8]) -> Option<String> {
         spki.subject_public_key.as_bytes(),
         spki.subject_public_key.bit_len(),
     ) {
-        PublicKeyInfo::Rsa { modulus, exponent, bit_count } => {
+        PublicKeyInfo::Rsa {
+            modulus,
+            exponent,
+            bit_count,
+        } => {
             let _ = writeln!(out, "                Public-Key: ({} bit)", bit_count);
             let _ = writeln!(out, "                Modulus:");
             write_hex(&mut out, &modulus, 15, 20);
-            let _ = writeln!(out, "                Exponent: {} (0x{:x})", exponent, exponent);
+            let _ = writeln!(
+                out,
+                "                Exponent: {} (0x{:x})",
+                exponent, exponent
+            );
         }
-        PublicKeyInfo::Ec { key_bytes, bit_count, curve_short_name, curve_nist_name, curve_oid_str } => {
+        PublicKeyInfo::Ec {
+            key_bytes,
+            bit_count,
+            curve_short_name,
+            curve_nist_name,
+            curve_oid_str,
+        } => {
             let _ = writeln!(out, "                Public-Key: ({} bit)", bit_count);
             let _ = writeln!(out, "                pub:");
             write_hex(&mut out, &key_bytes, 15, 20);
@@ -1582,7 +1658,11 @@ fn describe_cert_der(der: &[u8]) -> Option<String> {
                 let _ = writeln!(out, "                NIST CURVE: {}", nist);
             }
         }
-        PublicKeyInfo::Unknown { key_bytes, bit_count, .. } => {
+        PublicKeyInfo::Unknown {
+            key_bytes,
+            bit_count,
+            ..
+        } => {
             let _ = writeln!(out, "                Public-Key: ({} bit)", bit_count);
             let _ = writeln!(out, "                pub:");
             write_hex(&mut out, &key_bytes, 15, 20);
@@ -2669,7 +2749,13 @@ pub async fn get_stats(operator: OperatorContext, State(state): State<Arc<AppSta
 
     let uptime_secs = state.startup_time.elapsed().as_secs();
 
-    let counts = match db::stats::summary(&state.db).await {
+    let ca_scope = if operator.role == OperatorRole::CaRa && !operator.ca_id.is_empty() {
+        Some(operator.ca_id.as_str())
+    } else {
+        None
+    };
+
+    let counts = match db::stats::summary(&state.db, ca_scope).await {
         Ok(c) => c,
         Err(e) => {
             tracing::error!(error = %e, "stats DB query failed");
@@ -2684,6 +2770,7 @@ pub async fn get_stats(operator: OperatorContext, State(state): State<Arc<AppSta
         Json(json!({
             "server_version": server_version,
             "uptime_secs": uptime_secs,
+            "ca_scope": ca_scope,
             "accounts": {
                 "total": counts.account_total,
                 "active": counts.account_active,
