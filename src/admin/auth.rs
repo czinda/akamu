@@ -746,11 +746,16 @@ pub async fn post_session_eab(
         }
     };
 
-    // Only keys provisioned via the admin API (with an operator owner) may be
-    // used for web UI login.
-    let operator_id = match eab_row.created_by_operator_id {
-        Some(id) => id,
-        None => {
+    // Resolve the owning operator: either via created_by_operator_id (admin-provisioned)
+    // or via bound_principal (GSSAPI-derived via /acme/eab).
+    enum OperatorSource {
+        ById(i64),
+        ByPrincipal(String),
+    }
+    let op_source = match (eab_row.created_by_operator_id, eab_row.bound_principal.clone()) {
+        (Some(id), _) => OperatorSource::ById(id),
+        (None, Some(principal)) => OperatorSource::ByPrincipal(principal),
+        (None, None) => {
             state
                 .record_audit(
                     AuditEvent::failure(AuditEventType::AdminLogin)
@@ -759,7 +764,7 @@ pub async fn post_session_eab(
                 .await;
             return (
                 StatusCode::FORBIDDEN,
-                "EAB key was provisioned from config and cannot be used for web UI login",
+                "EAB key has no operator association and cannot be used for web UI login",
             )
                 .into_response();
         }
@@ -802,20 +807,42 @@ pub async fn post_session_eab(
             .into_response();
     }
 
-    // Look up the owning operator.
-    let op = match db::operators::get_by_id(&state.db, operator_id).await {
-        Ok(Some(op)) => op,
-        Ok(None) => {
-            tracing::warn!(
-                kid = %kid,
-                operator_id = operator_id,
-                "EAB key owner operator no longer exists"
-            );
-            return (StatusCode::FORBIDDEN, "EAB key owner operator not found").into_response();
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "post_session_eab: operator lookup failed");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    // Look up the owning operator by ID or GSSAPI principal.
+    let op = match op_source {
+        OperatorSource::ById(id) => match db::operators::get_by_id(&state.db, id).await {
+            Ok(Some(op)) => op,
+            Ok(None) => {
+                tracing::warn!(kid = %kid, operator_id = id, "EAB key owner operator not found");
+                return (StatusCode::FORBIDDEN, "EAB key owner operator not found").into_response();
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "post_session_eab: operator lookup by id failed");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        },
+        OperatorSource::ByPrincipal(ref principal) => {
+            match db::operators::get_by_principal(&state.db, principal).await {
+                Ok(Some(op)) => op,
+                Ok(None) => {
+                    tracing::warn!(
+                        kid = %kid,
+                        principal = %principal,
+                        "EAB key bound principal has no matching operator"
+                    );
+                    return (
+                        StatusCode::FORBIDDEN,
+                        "EAB key principal is not registered as an operator",
+                    )
+                        .into_response();
+                }
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        "post_session_eab: operator lookup by principal failed"
+                    );
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
+            }
         }
     };
 

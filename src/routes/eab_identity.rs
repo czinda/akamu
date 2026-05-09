@@ -82,8 +82,10 @@ pub async fn get_eab_identity(
         Err(e) => return e.into_response(),
     };
 
-    // Store if not present; silently no-op when called again by the same principal.
-    if let Err(e) = db::eab::insert_if_absent(&state.db, &kid, &hmac_key, unix_now()).await {
+    // Store if not present, binding the GSSAPI principal for web UI EAB login.
+    if let Err(e) =
+        db::eab::insert_if_absent(&state.db, &kid, &hmac_key, unix_now(), Some(&principal)).await
+    {
         return e.into_response();
     }
 

@@ -20,27 +20,37 @@ pub struct EabKeyRow {
     /// Operator who provisioned this key via the admin API.
     /// `None` = key was provisioned from the config file or before migration 0018.
     pub created_by_operator_id: Option<i64>,
+    /// Kerberos principal that derived this key via `GET /acme/eab` (HKDF derivation).
+    /// `None` for config-file keys and admin-provisioned keys.
+    /// Used to resolve the owning operator for web UI EAB login.
+    pub bound_principal: Option<String>,
 }
 
-/// Seed a key from the config file.
+/// Seed a key, optionally binding it to a Kerberos principal.
 ///
 /// Uses a portable `WHERE NOT EXISTS` subquery so that a key that already
 /// exists in the DB (possibly modified or marked used by the admin endpoint)
 /// is left alone.  This replaces `INSERT OR IGNORE` which is SQLite-specific.
+///
+/// Pass `bound_principal = Some(principal)` when the key was derived via
+/// `GET /acme/eab` from a GSSAPI-authenticated principal, so that the
+/// web UI EAB login handler can resolve the owning operator.
 pub async fn insert_if_absent(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     kid: &str,
     hmac_key_b64u: &str,
     now: i64,
+    bound_principal: Option<&str>,
 ) -> Result<(), AcmeError> {
     super::query(
-        "INSERT INTO eab_keys (kid, hmac_key_b64u, created) \
-         SELECT ?, ?, ? \
+        "INSERT INTO eab_keys (kid, hmac_key_b64u, created, bound_principal) \
+         SELECT ?, ?, ?, ? \
          WHERE NOT EXISTS (SELECT 1 FROM eab_keys WHERE kid = ?)",
     )
     .bind(kid)
     .bind(hmac_key_b64u)
     .bind(now)
+    .bind(bound_principal)
     .bind(kid)
     .execute(executor)
     .await?;
@@ -71,8 +81,8 @@ pub async fn get_by_kid(
     kid: &str,
 ) -> Result<Option<EabKeyRow>, AcmeError> {
     let row = super::query_as::<EabKeyRow>(
-        "SELECT kid, hmac_key_b64u, created, used_at, profile_grants, created_by_operator_id \
-         FROM eab_keys WHERE kid = ?",
+        "SELECT kid, hmac_key_b64u, created, used_at, profile_grants, created_by_operator_id, \
+         bound_principal FROM eab_keys WHERE kid = ?",
     )
     .bind(kid)
     .fetch_optional(executor)
@@ -145,8 +155,8 @@ pub async fn list(
     offset: i64,
 ) -> Result<Vec<EabKeyRow>, AcmeError> {
     let mut qb = super::DynQueryBuilder::new(
-        "SELECT kid, hmac_key_b64u, created, used_at, profile_grants, created_by_operator_id \
-         FROM eab_keys WHERE 1=1",
+        "SELECT kid, hmac_key_b64u, created, used_at, profile_grants, created_by_operator_id, \
+         bound_principal FROM eab_keys WHERE 1=1",
     );
     match used_filter {
         Some(true) => qb.push(" AND used_at IS NOT NULL"),
@@ -209,7 +219,7 @@ mod tests {
     async fn insert_if_absent_does_not_overwrite() {
         let db = open_db().await;
         insert(&db, "kid2", "original", 1_000).await.unwrap();
-        insert_if_absent(&db, "kid2", "replacement", 2_000)
+        insert_if_absent(&db, "kid2", "replacement", 2_000, None)
             .await
             .unwrap();
         let row = get_by_kid(&db, "kid2").await.unwrap().unwrap();
