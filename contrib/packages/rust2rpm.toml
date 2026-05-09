@@ -45,6 +45,10 @@ extra-sources = [
     { number = 7, file = "akamu-tmpfiles.conf", comments = ["tmpfiles.d entry that creates /var/lib/akamu at boot."] },
     { number = 8, file = "akamu-cosigner-tmpfiles.conf", comments = ["tmpfiles.d entry that creates /var/lib/akamu-cosigner at boot."] },
     { number = 9, file = "akamuctl.toml.example", comments = ["Example akamuctl configuration; installed as a %doc file."] },
+    # NOTE: The actual filename on disk is akamu-{version}-webui-node_modules.tar.gz;
+    # rust2rpm does not expand {version} in file names, so the spec.in uses the
+    # correct %%{version}-interpolated name directly.  See 'make webui-vendor'.
+    { number = 10, file = "akamu-webui-node_modules.tar.gz", comments = ["Node.js dependency vendor tarball for the management web UI (see 'make webui-vendor')."] },
 ]
 
 # Additional %files entries for the main akamu binary subpackage.
@@ -98,6 +102,10 @@ package-extra = """
 %bcond backend_postgres 1
 %bcond backend_mariadb  1
 
+# Optional management web UI (requires npm at build time).
+# Disable with: rpmbuild --without webui
+%bcond webui 1
+
 # Force --locked for all cargo invocations so that cargo uses Cargo.lock as-is
 # and resolves dependencies from the vendor directory without network access.
 %global __cargo_common_opts %{?_smp_mflags} -Z avoid-dev-deps --locked
@@ -120,6 +128,32 @@ BuildRequires:  libpq-devel
 %if %{with backend_mariadb}
 BuildRequires:  pkgconfig(libmariadb)
 BuildRequires:  mariadb-connector-c-devel
+%endif
+# Optional: management web UI (Node.js/npm)
+%if %{with webui}
+BuildRequires:  npm
+%endif
+
+
+# ── Subpackage: management web UI ─────────────────────────────────────────────
+%if %{with webui}
+%package -n akamu-webui
+Summary:        Management web UI for the akamu ACME server
+License:        GPL-3.0-or-later
+BuildArch:      noarch
+Requires:       akamu = %{version}-%{release}
+
+%description -n akamu-webui
+akamu-webui is a browser-based management interface for the akamu ACME server.
+It provides role-gated access to all administrative operations available through
+akamuctl, including certificate and account management, EAB key provisioning,
+profile and delegation configuration, and audit log browsing.  Authenticates
+via GSSAPI/Kerberos (SPNEGO) or EAB kid+HMAC credentials provisioned through
+the normal ACME flow.
+
+%files -n akamu-webui
+%license LICENSE
+%{_datadir}/akamu/webui/
 %endif
 
 
@@ -305,6 +339,11 @@ post = [
     "scdoc < docs/man/akamu.8.scd          | gzip -9 > akamu.8.gz",
     "scdoc < docs/man/akamu-cosigner.8.scd | gzip -9 > akamu-cosigner.8.gz",
     "scdoc < docs/man/akamuctl.1.scd       | gzip -9 > akamuctl.1.gz",
+    # Build the management web UI static assets.
+    "%if %{with webui}",
+    "tar -xzf %{SOURCE10} -C webui/",
+    "npm --prefix webui run build",
+    "%endif",
 ]
 
 [scripts.install]
@@ -334,6 +373,11 @@ post = [
     "install -Dpm 0644 akamuctl.1.gz       %{buildroot}%{_mandir}/man1/akamuctl.1.gz",
     # Create the cosigner configuration directory
     "install -dm 0755 %{buildroot}%{_sysconfdir}/akamu-cosigner",
+    # Management web UI static assets
+    "%if %{with webui}",
+    "install -dm 0755 %{buildroot}%{_datadir}/akamu/webui",
+    "cp -a webui/dist/. %{buildroot}%{_datadir}/akamu/webui/",
+    "%endif",
 ]
 
 [scripts.genbr]

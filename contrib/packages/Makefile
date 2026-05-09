@@ -54,13 +54,14 @@ VERSION := $(shell python3 -c \
 SYNTA_VERSION := $(shell awk '/^\[\[package\]\]/{p=0} /^name = "synta"$$/{p=1} p && /^version =/{gsub(/[" ]/, "", $$3); print $$3; exit}' "$(REPOROOT)/Cargo.lock")
 $(if $(SYNTA_VERSION),,$(error SYNTA_VERSION: could not extract synta version from $(REPOROOT)/Cargo.lock))
 
-TARBALL        := $(NAME)-$(VERSION).tar.gz
-VENDOR_TARBALL := $(NAME)-$(VERSION)-vendor.tar.gz
+TARBALL              := $(NAME)-$(VERSION).tar.gz
+VENDOR_TARBALL       := $(NAME)-$(VERSION)-vendor.tar.gz
+WEBUI_VENDOR_TARBALL := $(NAME)-$(VERSION)-webui-node_modules.tar.gz
 
 # Absolute path to the crate dependency checker script.
 CHECKDEPS := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))check-crate-deps.sh
 
-ALL_SOURCES := $(TARBALL) $(VENDOR_TARBALL)
+ALL_SOURCES := $(TARBALL) $(VENDOR_TARBALL) $(WEBUI_VENDOR_TARBALL)
 
 # Git ref used for the tarball and snapshot release identifiers.
 # Defaults to HEAD so snapshots reflect the current branch tip.
@@ -85,15 +86,16 @@ MOCK_CONFIG ?= fedora-rawhide-x86_64
 
 # ──────────────────────────────────────────────────────────────────────────────
 
-.PHONY: all sources tarball vendor spec srpm mock lint check-deps clean help copr-build
+.PHONY: all sources tarball vendor webui-vendor spec srpm mock lint check-deps clean help copr-build
 
 all: sources
 
 help:
 	@echo "Targets:"
-	@echo "  sources       prepare all source files (tarball + vendor)"
+	@echo "  sources       prepare all source files (tarball + vendor + webui-vendor)"
 	@echo "  tarball       create $(TARBALL) from GIT_REF=$(GIT_REF)"
 	@echo "  vendor        create $(VENDOR_TARBALL)  [needs network]"
+	@echo "  webui-vendor  create $(WEBUI_VENDOR_TARBALL)  [needs network]"
 	@echo "  spec          validate rust2rpm.toml and generate $(SPEC_OUT)"
 	@echo "  srpm          build SRPM (Release: $(RELEASE)%{?dist})"
 	@echo "  mock          rebuild SRPM in mock chroot (MOCK_CONFIG=$(MOCK_CONFIG))"
@@ -115,7 +117,7 @@ help:
 # SOURCE PREPARATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-sources: tarball vendor
+sources: tarball vendor webui-vendor
 
 # ── tarball ───────────────────────────────────────────────────────────────────
 
@@ -173,6 +175,22 @@ $(VENDOR_TARBALL):
 	rm -rf "$(REPOROOT)/vendor"
 	@echo "==> $@ ready"
 
+# ── webui-vendor ──────────────────────────────────────────────────────────────
+#
+# The webui node_modules tarball vendors all Node.js dependencies for the
+# management web UI so the RPM build can run 'npm run build' without network
+# access inside the mock chroot.  Re-run this target whenever package.json or
+# package-lock.json changes.
+
+webui-vendor: $(WEBUI_VENDOR_TARBALL)
+
+$(WEBUI_VENDOR_TARBALL):
+	@echo "==> Creating $@ (Node.js dependencies for the management web UI)"
+	cd "$(REPOROOT)/webui" && npm install --prefer-offline
+	tar -czf "$(CURDIR)/$@" \
+	    -C "$(REPOROOT)/webui" node_modules/
+	@echo "==> $@ ready"
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SPEC / SRPM / MOCK / LINT
 # ══════════════════════════════════════════════════════════════════════════════
@@ -225,6 +243,7 @@ srpm: sources spec
 	      akamu.service akamu-cosigner.service \
 	      akamu-sysusers.conf akamu-cosigner-sysusers.conf \
 	      akamu-tmpfiles.conf akamu-cosigner-tmpfiles.conf
+	@echo "==> To skip the webui build: rpmbuild -bs --without webui ..."
 
 # ── mock ──────────────────────────────────────────────────────────────────────
 
