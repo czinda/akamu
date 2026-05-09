@@ -305,7 +305,9 @@ pub fn build_router(state: Arc<AppState>, static_dir: Option<&std::path::Path>) 
         )
         .route(
             "/admin/profiles/{id}",
-            axum::routing::put(admin::put_profile).delete(admin::delete_profile),
+            axum::routing::get(admin::get_profile)
+                .put(admin::put_profile)
+                .delete(admin::delete_profile),
         )
         .route("/admin/accounts", axum::routing::get(admin::get_accounts))
         .route(

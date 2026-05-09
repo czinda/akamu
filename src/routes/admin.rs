@@ -454,8 +454,11 @@ pub async fn get_audit(
         offset,
     };
 
-    match db::audit::query(&state.db, &q).await {
-        Ok(rows) => {
+    match tokio::try_join!(
+        db::audit::query(&state.db, &q),
+        db::audit::count_filtered(&state.db, &q),
+    ) {
+        Ok((rows, total)) => {
             let events: Vec<_> = rows
                 .into_iter()
                 .map(|r| {
@@ -472,7 +475,7 @@ pub async fn get_audit(
                 .collect();
             (
                 StatusCode::OK,
-                Json(json!({"events": events, "limit": limit, "offset": offset})),
+                Json(json!({"events": events, "total": total, "limit": limit, "offset": offset})),
             )
                 .into_response()
         }
@@ -530,28 +533,38 @@ pub async fn get_certs(
         params.get("ca_id").map(String::as_str)
     };
 
-    let result = db::certs::search(
-        &state.db,
-        db::certs::CertSearchParams {
-            serial,
-            account_id,
-            status,
-            subject_dn,
-            ca_id,
-            limit,
-            offset,
-        },
-    )
-    .await;
+    let search_params = db::certs::CertSearchParams {
+        serial,
+        account_id,
+        status,
+        subject_dn,
+        ca_id,
+        limit,
+        offset,
+    };
+    let count_params = db::certs::CertSearchParams {
+        serial: search_params.serial,
+        account_id: search_params.account_id,
+        status: search_params.status,
+        subject_dn: search_params.subject_dn,
+        ca_id: search_params.ca_id,
+        limit,
+        offset,
+    };
 
-    match result {
-        Ok(rows) => {
+    match tokio::try_join!(
+        db::certs::search(&state.db, search_params),
+        db::certs::count_search(&state.db, count_params),
+    ) {
+        Ok((rows, total)) => {
             let certs: Vec<_> = rows
                 .into_iter()
                 .map(|r| {
                     json!({
                         "id": r.id,
+                        "order_id": r.order_id,
                         "account_id": r.account_id,
+                        "ca_id": r.ca_id,
                         "serial_number": r.serial_number,
                         "subject_dn": r.subject_dn,
                         "status": r.status,
@@ -564,7 +577,7 @@ pub async fn get_certs(
                 .collect();
             (
                 StatusCode::OK,
-                Json(json!({"certs": certs, "limit": limit, "offset": offset})),
+                Json(json!({"certs": certs, "total": total, "limit": limit, "offset": offset})),
             )
                 .into_response()
         }
@@ -748,8 +761,11 @@ pub async fn get_eab(
         .unwrap_or(0)
         .max(0);
 
-    match db::eab::list(&state.db, used_filter, limit, offset).await {
-        Ok(rows) => {
+    match tokio::try_join!(
+        db::eab::list(&state.db, used_filter, limit, offset),
+        db::eab::count_list(&state.db, used_filter),
+    ) {
+        Ok((rows, total)) => {
             let keys: Vec<_> = rows
                 .into_iter()
                 .map(|r| {
@@ -759,10 +775,12 @@ pub async fn get_eab(
                         "used_at": r.used_at,
                         "profile_grants": r.profile_grants,
                         "alg": r.alg,
+                        "bound_principal": r.bound_principal,
+                        "created_by_operator_id": r.created_by_operator_id,
                     })
                 })
                 .collect();
-            (StatusCode::OK, Json(json!({"eab_keys": keys}))).into_response()
+            (StatusCode::OK, Json(json!({"eab_keys": keys, "total": total, "limit": limit, "offset": offset}))).into_response()
         }
         Err(e) => {
             tracing::error!(error = %e, "get_eab: db error");
@@ -1256,6 +1274,54 @@ pub async fn put_profile(
     }
 }
 
+/// `GET /admin/profiles/{id}`
+///
+/// Return a single certificate profile by ID.
+/// Requires: any role.
+pub async fn get_profile(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    require_role!(
+        operator,
+        state,
+        Administrator | CaOperations | CaRa | Auditor
+    );
+
+    let descriptions = state.profiles.all_profiles();
+    match (descriptions.get(&id), state.profiles.resolve(&id)) {
+        (Some(description), Some(params)) => (
+            StatusCode::OK,
+            Json(json!({
+                "id": id,
+                "description": description,
+                "validity_days": params.validity_days,
+                "hash_alg": params.hash_alg,
+                "key_usage_bits": params.key_usage_bits,
+                "extended_key_usages": params.extended_key_usages,
+                "crl_url": params.crl_url,
+                "ocsp_url": params.ocsp_url,
+                "allowed_key_types": params.allowed_key_types,
+                "certificate_policies": params.certificate_policies,
+                "issue_as_mtc": params.issue_as_mtc,
+                "allowed_identifier_patterns": params.allowed_identifier_patterns,
+                "identifier_match_all": params.identifier_match_all,
+                "auth_hook": params.auth_hook,
+                "auth_hook_timeout_secs": params.auth_hook_timeout_secs,
+                "require_account_grant": params.require_account_grant,
+                "ca_ids": params.ca_ids,
+            })),
+        )
+            .into_response(),
+        _ => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"status": 404, "detail": "profile not found"})),
+        )
+            .into_response(),
+    }
+}
+
 /// `DELETE /admin/profiles/{id}`
 ///
 /// Remove a certificate profile from the runtime cache (FPT_NPE_EXT.1).
@@ -1322,8 +1388,11 @@ pub async fn get_accounts(
         params.get("ca_id").map(String::as_str)
     };
 
-    match db::accounts::list(&state.db, status, ca_id, limit, offset).await {
-        Ok(rows) => {
+    match tokio::try_join!(
+        db::accounts::list(&state.db, status, ca_id, limit, offset),
+        db::accounts::count_list(&state.db, status, ca_id),
+    ) {
+        Ok((rows, total)) => {
             let accounts: Vec<_> = rows
                 .into_iter()
                 .map(|r| {
@@ -1340,7 +1409,7 @@ pub async fn get_accounts(
                 .collect();
             (
                 StatusCode::OK,
-                Json(json!({"accounts": accounts, "limit": limit, "offset": offset})),
+                Json(json!({"accounts": accounts, "total": total, "limit": limit, "offset": offset})),
             )
                 .into_response()
         }
@@ -1402,6 +1471,150 @@ pub async fn get_account(
 
 // ── Certificate detail + download ────────────────────────────────────────
 
+/// Produce an openssl-style text description of a DER-encoded certificate.
+fn describe_cert_der(der: &[u8]) -> Option<String> {
+    use std::fmt::Write as FmtWrite;
+    use synta::{Decoder, Encoding};
+    use synta_certificate::{
+        decode_extensions, decode_public_key_info, extension_oid_name, format_dn,
+        format_extension_value, identify_public_key_algorithm, identify_signature_algorithm,
+        Certificate, PublicKeyInfo, Time,
+    };
+
+    let mut decoder = Decoder::new(der, Encoding::Der);
+    let cert: Certificate = decoder.decode().ok()?;
+    let tbs = &cert.tbs_certificate;
+    let mut out = String::new();
+
+    let version = tbs
+        .version
+        .as_ref()
+        .and_then(|v| v.as_i64().ok())
+        .map(|v| v + 1)
+        .unwrap_or(1);
+
+    let _ = writeln!(out, "Certificate:");
+    let _ = writeln!(out, "    Data:");
+    let _ = writeln!(out, "        Version: {} (0x{:x})", version, version - 1);
+
+    let serial_bytes = tbs.serial_number.as_bytes();
+    if serial_bytes.len() <= 8 {
+        let mut val: u64 = 0;
+        for b in serial_bytes {
+            val = (val << 8) | (*b as u64);
+        }
+        let _ = writeln!(out, "        Serial Number: {} (0x{:x})", val, val);
+    } else {
+        let hex = serial_bytes
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<Vec<_>>()
+            .join(":");
+        let _ = writeln!(out, "        Serial Number: {}", hex);
+    }
+
+    let sig_alg = identify_signature_algorithm(&tbs.signature.algorithm);
+    let _ = writeln!(out, "        Signature Algorithm: {}", sig_alg);
+    let _ = writeln!(out, "        Issuer: {}", format_dn(tbs.issuer.as_bytes()));
+    let _ = writeln!(out, "        Validity");
+
+    fn fmt_time(t: &Time) -> String {
+        const M: [&str; 12] = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ];
+        match t {
+            Time::UtcTime(u) => format!(
+                "{} {:2} {:02}:{:02}:{:02} {} GMT",
+                M.get((u.month - 1) as usize).unwrap_or(&"???"),
+                u.day, u.hour, u.minute, u.second, u.year,
+            ),
+            Time::GeneralTime(g) => format!(
+                "{} {:2} {:02}:{:02}:{:02} {} GMT",
+                M.get((g.month - 1) as usize).unwrap_or(&"???"),
+                g.day, g.hour, g.minute, g.second, g.year,
+            ),
+        }
+    }
+
+    let _ = writeln!(out, "            Not Before: {}", fmt_time(&tbs.validity.not_before));
+    let _ = writeln!(out, "            Not After : {}", fmt_time(&tbs.validity.not_after));
+    let _ = writeln!(out, "        Subject: {}", format_dn(tbs.subject.as_bytes()));
+
+    let spki = &tbs.subject_public_key_info;
+    let pub_alg = identify_public_key_algorithm(&spki.algorithm.algorithm).unwrap_or("unknown");
+    let _ = writeln!(out, "        Subject Public Key Info:");
+    let _ = writeln!(out, "            Public Key Algorithm: {}", pub_alg);
+
+    fn write_hex(out: &mut String, data: &[u8], per_line: usize, indent: usize) {
+        let pad = " ".repeat(indent);
+        let chunks: Vec<_> = data.chunks(per_line).collect();
+        for (i, chunk) in chunks.iter().enumerate() {
+            let _ = write!(out, "{}", pad);
+            for (j, b) in chunk.iter().enumerate() {
+                if j > 0 { let _ = write!(out, ":"); }
+                let _ = write!(out, "{:02x}", b);
+            }
+            if i < chunks.len() - 1 { let _ = write!(out, ":"); }
+            let _ = writeln!(out);
+        }
+    }
+
+    match decode_public_key_info(
+        &spki.algorithm.algorithm,
+        spki.algorithm.parameters.as_ref(),
+        spki.subject_public_key.as_bytes(),
+        spki.subject_public_key.bit_len(),
+    ) {
+        PublicKeyInfo::Rsa { modulus, exponent, bit_count } => {
+            let _ = writeln!(out, "                Public-Key: ({} bit)", bit_count);
+            let _ = writeln!(out, "                Modulus:");
+            write_hex(&mut out, &modulus, 15, 20);
+            let _ = writeln!(out, "                Exponent: {} (0x{:x})", exponent, exponent);
+        }
+        PublicKeyInfo::Ec { key_bytes, bit_count, curve_short_name, curve_nist_name, curve_oid_str } => {
+            let _ = writeln!(out, "                Public-Key: ({} bit)", bit_count);
+            let _ = writeln!(out, "                pub:");
+            write_hex(&mut out, &key_bytes, 15, 20);
+            let name = curve_short_name.map(str::to_owned).unwrap_or(curve_oid_str);
+            let _ = writeln!(out, "                ASN1 OID: {}", name);
+            if let Some(nist) = curve_nist_name {
+                let _ = writeln!(out, "                NIST CURVE: {}", nist);
+            }
+        }
+        PublicKeyInfo::Unknown { key_bytes, bit_count, .. } => {
+            let _ = writeln!(out, "                Public-Key: ({} bit)", bit_count);
+            let _ = writeln!(out, "                pub:");
+            write_hex(&mut out, &key_bytes, 15, 20);
+        }
+    }
+
+    if let Some(exts_raw) = &tbs.extensions {
+        let exts = decode_extensions(exts_raw.as_bytes());
+        if !exts.is_empty() {
+            let _ = writeln!(out, "        X509v3 extensions:");
+            for ext in &exts {
+                let name = extension_oid_name(&ext.extn_id);
+                let critical = ext.critical.map(bool::from).unwrap_or(false);
+                if critical {
+                    let _ = writeln!(out, "            {}: critical", name);
+                } else {
+                    let _ = writeln!(out, "            {}:", name);
+                }
+                if let Some(val) = format_extension_value(ext) {
+                    let _ = writeln!(out, "                {}", val);
+                }
+            }
+        }
+    }
+
+    let _ = writeln!(out, "    Signature Algorithm: {}", sig_alg);
+    let _ = writeln!(out, "    Signature Value:");
+    write_hex(&mut out, cert.signature_value.as_bytes(), 18, 8);
+
+    Some(out)
+}
+
 /// `GET /admin/certs/{id}`
 ///
 /// Show a single certificate's metadata (no PEM/DER blobs).
@@ -1433,7 +1646,9 @@ pub async fn get_cert(
                     "id": r.id,
                     "order_id": r.order_id,
                     "account_id": r.account_id,
+                    "ca_id": r.ca_id,
                     "serial_number": r.serial_number,
+                    "subject_dn": r.subject_dn,
                     "status": r.status,
                     "not_before": r.not_before,
                     "not_after": r.not_after,
@@ -1444,6 +1659,7 @@ pub async fn get_cert(
                     "suggested_window_start": r.suggested_window_start,
                     "suggested_window_end": r.suggested_window_end,
                     "replaced_by": r.replaced_by,
+                    "cert_text": describe_cert_der(&r.der),
                 })),
             )
                 .into_response()
@@ -1774,8 +1990,11 @@ pub async fn get_orders(
         params.get("ca_id").map(String::as_str)
     };
 
-    match db::orders::list(&state.db, account_id, status, ca_id, limit, offset).await {
-        Ok(rows) => {
+    match tokio::try_join!(
+        db::orders::list(&state.db, account_id, status, ca_id, limit, offset),
+        db::orders::count_list(&state.db, account_id, status, ca_id),
+    ) {
+        Ok((rows, total)) => {
             let orders: Vec<_> = rows
                 .into_iter()
                 .map(|r| {
@@ -1794,7 +2013,7 @@ pub async fn get_orders(
                 .collect();
             (
                 StatusCode::OK,
-                Json(json!({"orders": orders, "limit": limit, "offset": offset})),
+                Json(json!({"orders": orders, "total": total, "limit": limit, "offset": offset})),
             )
                 .into_response()
         }
@@ -2354,36 +2573,37 @@ pub async fn get_cross_certs(
     let limit = params.limit.clamp(1, 1000);
     let offset = params.offset.max(0);
 
-    let rows =
-        match db::cross_certs::list(&state.db, issuer_ca_id, subject_ca_id, limit, offset).await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::error!(error = %e, "get_cross_certs DB query failed");
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"status": 500, "detail": "failed to query cross-certificates"})),
-                )
-                    .into_response();
-            }
-        };
-
-    let items: Vec<_> = rows
-        .into_iter()
-        .map(|r| {
-            json!({
-                "id": r.id,
-                "issuer_ca_id": r.issuer_ca_id,
-                "subject_ca_id": r.subject_ca_id,
-                "subject_dn": r.subject_dn,
-                "serial_number": r.serial_number,
-                "not_before": r.not_before,
-                "not_after": r.not_after,
-                "created": r.created,
-            })
-        })
-        .collect();
-
-    (StatusCode::OK, Json(json!({ "cross_certs": items }))).into_response()
+    match tokio::try_join!(
+        db::cross_certs::list(&state.db, issuer_ca_id, subject_ca_id, limit, offset),
+        db::cross_certs::count_list(&state.db, issuer_ca_id, subject_ca_id),
+    ) {
+        Ok((rows, total)) => {
+            let items: Vec<_> = rows
+                .into_iter()
+                .map(|r| {
+                    json!({
+                        "id": r.id,
+                        "issuer_ca_id": r.issuer_ca_id,
+                        "subject_ca_id": r.subject_ca_id,
+                        "subject_dn": r.subject_dn,
+                        "serial_number": r.serial_number,
+                        "not_before": r.not_before,
+                        "not_after": r.not_after,
+                        "created": r.created,
+                    })
+                })
+                .collect();
+            (StatusCode::OK, Json(json!({ "cross_certs": items, "total": total, "limit": limit, "offset": offset }))).into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "get_cross_certs DB query failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": 500, "detail": "failed to query cross-certificates"})),
+            )
+                .into_response()
+        }
+    }
 }
 
 /// `GET /admin/cross-certs/{id}`
@@ -2474,7 +2694,8 @@ pub async fn get_stats(operator: OperatorContext, State(state): State<Arc<AppSta
             "eab_keys": {
                 "total": counts.eab_total,
                 "used": counts.eab_used,
-                "unused": counts.eab_total - counts.eab_used,
+                "bound": counts.eab_bound,
+                "free": counts.eab_total - counts.eab_used - counts.eab_bound,
             },
             "audit_events": {
                 "total": counts.audit_total,
