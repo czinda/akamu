@@ -791,7 +791,7 @@ pub async fn post_session_eab(
     // Message: "kid.timestamp"
     let message = format!("{kid}.{timestamp}");
     if default_hmac_provider()
-        .hmac_verify("SHA2-256", &hmac_key, message.as_bytes(), &sig_bytes)
+        .hmac_verify("sha256", &hmac_key, message.as_bytes(), &sig_bytes)
         .is_err()
     {
         state
