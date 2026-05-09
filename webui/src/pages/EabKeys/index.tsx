@@ -12,7 +12,9 @@ import {
   EmptyState,
   EmptyStateBody,
   Modal,
-  ModalVariant,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
   Form,
   FormGroup,
   TextInput,
@@ -137,40 +139,32 @@ export default function EabKeys() {
           onSetPage={(_e, p) => setPage(p)}
         />
       </PageSection>
-      <Modal
-        variant={ModalVariant.small}
-        title="Create EAB Key"
-        isOpen={createOpen}
-        onClose={() => setCreateOpen(false)}
-        actions={[
-          <Button key="save" variant="primary" form="eab-create-form" type="submit" isLoading={saving} isDisabled={saving}>
-            Create
-          </Button>,
-          <Button key="cancel" variant="link" onClick={() => setCreateOpen(false)}>Cancel</Button>,
-        ]}
-      >
-        <Form id="eab-create-form" onSubmit={handleCreate}>
-          <FormGroup label="Key ID" isRequired fieldId="eab-new-kid">
-            <TextInput id="eab-new-kid" value={newKid} onChange={(_e, v) => setNewKid(v)} isRequired />
-          </FormGroup>
-          <FormGroup label="HMAC Key (base64url)" isRequired fieldId="eab-new-key">
-            <TextInput id="eab-new-key" value={newKey} onChange={(_e, v) => setNewKey(v)} isRequired />
-          </FormGroup>
-        </Form>
+      <Modal variant="small" isOpen={createOpen} onClose={() => setCreateOpen(false)}>
+        <ModalHeader title="Create EAB Key" />
+        <ModalBody>
+          <Form id="eab-create-form" onSubmit={handleCreate}>
+            <FormGroup label="Key ID" isRequired fieldId="eab-new-kid">
+              <TextInput id="eab-new-kid" value={newKid} onChange={(_e, v) => setNewKid(v)} isRequired />
+            </FormGroup>
+            <FormGroup label="HMAC Key (base64url)" isRequired fieldId="eab-new-key">
+              <TextInput id="eab-new-key" value={newKey} onChange={(_e, v) => setNewKey(v)} isRequired />
+            </FormGroup>
+          </Form>
+        </ModalBody>
+        <ModalFooter>
+          <Button variant="primary" form="eab-create-form" type="submit" isLoading={saving} isDisabled={saving}>Create</Button>
+          <Button variant="link" onClick={() => setCreateOpen(false)}>Cancel</Button>
+        </ModalFooter>
       </Modal>
-      <Modal
-        variant={ModalVariant.small}
-        title="Delete EAB Key"
-        isOpen={!!deleteKid}
-        onClose={() => setDeleteKid(null)}
-        actions={[
-          <Button key="confirm" variant="danger" onClick={handleDelete} isLoading={saving} isDisabled={saving}>
-            Delete
-          </Button>,
-          <Button key="cancel" variant="link" onClick={() => setDeleteKid(null)}>Cancel</Button>,
-        ]}
-      >
-        <p>Delete EAB key <strong>{deleteKid}</strong>?</p>
+      <Modal variant="small" isOpen={!!deleteKid} onClose={() => setDeleteKid(null)}>
+        <ModalHeader title="Delete EAB Key" />
+        <ModalBody>
+          <p>Delete EAB key <strong>{deleteKid}</strong>?</p>
+        </ModalBody>
+        <ModalFooter>
+          <Button variant="danger" onClick={handleDelete} isLoading={saving} isDisabled={saving}>Delete</Button>
+          <Button variant="link" onClick={() => setDeleteKid(null)}>Cancel</Button>
+        </ModalFooter>
       </Modal>
     </>
   );

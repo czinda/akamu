@@ -12,8 +12,6 @@ import {
   EmptyStateBody,
   TextInput,
   Pagination,
-  Select,
-  SelectOption,
 } from '@patternfly/react-core';
 import {
   Table,
@@ -36,7 +34,6 @@ export default function AuditLog() {
 
   const [actionFilter, setActionFilter] = useState('');
   const [outcomeFilter, setOutcomeFilter] = useState('');
-  const [outcomeOpen, setOutcomeOpen] = useState(false);
   const [fromFilter, setFromFilter] = useState('');
   const [toFilter, setToFilter] = useState('');
 
@@ -74,18 +71,16 @@ export default function AuditLog() {
               <TextInput placeholder="Filter action" value={actionFilter} onChange={(_e, v) => { setActionFilter(v); setPage(1); }} />
             </ToolbarItem>
             <ToolbarItem>
-              <Select
-                isOpen={outcomeOpen}
-                onToggle={(_e, v) => setOutcomeOpen(v)}
-                onSelect={(_e, v) => { setOutcomeFilter(v as string); setOutcomeOpen(false); setPage(1); }}
-                selections={outcomeFilter || 'All outcomes'}
-                placeholderText="All outcomes"
+              <select
+                value={outcomeFilter}
+                onChange={e => { setOutcomeFilter(e.target.value); setPage(1); }}
+                style={{ padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: 'inherit' }}
               >
-                <SelectOption value="">All outcomes</SelectOption>
-                <SelectOption value="ok">ok</SelectOption>
-                <SelectOption value="denied">denied</SelectOption>
-                <SelectOption value="error">error</SelectOption>
-              </Select>
+                <option value="">All outcomes</option>
+                <option value="ok">ok</option>
+                <option value="denied">denied</option>
+                <option value="error">error</option>
+              </select>
             </ToolbarItem>
             <ToolbarItem>
               <TextInput placeholder="From (ISO date)" value={fromFilter} onChange={(_e, v) => { setFromFilter(v); setPage(1); }} />

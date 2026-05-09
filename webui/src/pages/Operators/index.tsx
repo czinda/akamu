@@ -12,12 +12,12 @@ import {
   EmptyState,
   EmptyStateBody,
   Modal,
-  ModalVariant,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
   Form,
   FormGroup,
   TextInput,
-  Select,
-  SelectOption,
   Label,
 } from '@patternfly/react-core';
 import {
@@ -38,6 +38,14 @@ import {
   OperatorRow,
 } from '../../api/operators';
 
+const selectStyle: React.CSSProperties = {
+  padding: '6px 8px',
+  border: '1px solid #ccc',
+  borderRadius: '4px',
+  fontSize: 'inherit',
+  width: '100%',
+};
+
 export default function Operators() {
   const [operators, setOperators] = useState<OperatorRow[]>([]);
   const [loading, setLoading] = useState(false);
@@ -48,7 +56,6 @@ export default function Operators() {
 
   const [formName, setFormName] = useState('');
   const [formRole, setFormRole] = useState('auditor');
-  const [roleOpen, setRoleOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -117,18 +124,20 @@ export default function Operators() {
     }
   }
 
-  const roleSelect = (
-    <Select
-      isOpen={roleOpen}
-      onToggle={(_e, v) => setRoleOpen(v)}
-      onSelect={(_e, v) => { setFormRole(v as string); setRoleOpen(false); }}
-      selections={formRole}
-    >
-      <SelectOption value="administrator">administrator</SelectOption>
-      <SelectOption value="ca_operations">ca_operations</SelectOption>
-      <SelectOption value="ca_ra">ca_ra</SelectOption>
-      <SelectOption value="auditor">auditor</SelectOption>
-    </Select>
+  const roleField = (
+    <FormGroup label="Role" isRequired fieldId="op-role">
+      <select
+        id="op-role"
+        value={formRole}
+        onChange={e => setFormRole(e.target.value)}
+        style={selectStyle}
+      >
+        <option value="administrator">administrator</option>
+        <option value="ca_operations">ca_operations</option>
+        <option value="ca_ra">ca_ra</option>
+        <option value="auditor">auditor</option>
+      </select>
+    </FormGroup>
   );
 
   return (
@@ -187,32 +196,32 @@ export default function Operators() {
           </Table>
         )}
       </PageSection>
-      <Modal variant={ModalVariant.medium} title="Create Operator" isOpen={createOpen} onClose={() => setCreateOpen(false)}
-        actions={[
-          <Button key="save" form="op-create-form" type="submit" variant="primary" isLoading={saving} isDisabled={saving}>Create</Button>,
-          <Button key="cancel" variant="link" onClick={() => setCreateOpen(false)}>Cancel</Button>,
-        ]}
-      >
-        <Form id="op-create-form" onSubmit={handleCreate}>
-          <FormGroup label="Name" isRequired fieldId="op-name">
-            <TextInput id="op-name" value={formName} onChange={(_e, v) => setFormName(v)} isRequired />
-          </FormGroup>
-          <FormGroup label="Role" isRequired fieldId="op-role">
-            {roleSelect}
-          </FormGroup>
-        </Form>
+      <Modal variant="medium" isOpen={createOpen} onClose={() => setCreateOpen(false)}>
+        <ModalHeader title="Create Operator" />
+        <ModalBody>
+          <Form id="op-create-form" onSubmit={handleCreate}>
+            <FormGroup label="Name" isRequired fieldId="op-name">
+              <TextInput id="op-name" value={formName} onChange={(_e, v) => setFormName(v)} isRequired />
+            </FormGroup>
+            {roleField}
+          </Form>
+        </ModalBody>
+        <ModalFooter>
+          <Button form="op-create-form" type="submit" variant="primary" isLoading={saving} isDisabled={saving}>Create</Button>
+          <Button variant="link" onClick={() => setCreateOpen(false)}>Cancel</Button>
+        </ModalFooter>
       </Modal>
-      <Modal variant={ModalVariant.medium} title={`Edit Operator: ${editRow?.name}`} isOpen={!!editRow} onClose={() => setEditRow(null)}
-        actions={[
-          <Button key="save" form="op-edit-form" type="submit" variant="primary" isLoading={saving} isDisabled={saving}>Save</Button>,
-          <Button key="cancel" variant="link" onClick={() => setEditRow(null)}>Cancel</Button>,
-        ]}
-      >
-        <Form id="op-edit-form" onSubmit={handleUpdate}>
-          <FormGroup label="Role" isRequired fieldId="op-edit-role">
-            {roleSelect}
-          </FormGroup>
-        </Form>
+      <Modal variant="medium" isOpen={!!editRow} onClose={() => setEditRow(null)}>
+        <ModalHeader title={`Edit Operator: ${editRow?.name}`} />
+        <ModalBody>
+          <Form id="op-edit-form" onSubmit={handleUpdate}>
+            {roleField}
+          </Form>
+        </ModalBody>
+        <ModalFooter>
+          <Button form="op-edit-form" type="submit" variant="primary" isLoading={saving} isDisabled={saving}>Save</Button>
+          <Button variant="link" onClick={() => setEditRow(null)}>Cancel</Button>
+        </ModalFooter>
       </Modal>
     </>
   );

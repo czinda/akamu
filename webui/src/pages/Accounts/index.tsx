@@ -12,9 +12,9 @@ import {
   EmptyState,
   EmptyStateBody,
   Modal,
-  ModalVariant,
-  Select,
-  SelectOption,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
   Pagination,
 } from '@patternfly/react-core';
 import {
@@ -45,7 +45,6 @@ export default function Accounts() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState('');
-  const [statusOpen, setStatusOpen] = useState(false);
   const [deactivateId, setDeactivateId] = useState<string | null>(null);
   const [deactivating, setDeactivating] = useState(false);
 
@@ -91,18 +90,16 @@ export default function Accounts() {
         <Toolbar>
           <ToolbarContent>
             <ToolbarItem>
-              <Select
-                isOpen={statusOpen}
-                onToggle={(_e, v) => setStatusOpen(v)}
-                onSelect={(_e, v) => { setStatusFilter(v as string); setStatusOpen(false); setPage(1); }}
-                selections={statusFilter || 'All statuses'}
-                placeholderText="All statuses"
+              <select
+                value={statusFilter}
+                onChange={e => { setStatusFilter(e.target.value); setPage(1); }}
+                style={{ padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: 'inherit' }}
               >
-                <SelectOption value="">All statuses</SelectOption>
-                <SelectOption value="valid">valid</SelectOption>
-                <SelectOption value="deactivated">deactivated</SelectOption>
-                <SelectOption value="revoked">revoked</SelectOption>
-              </Select>
+                <option value="">All statuses</option>
+                <option value="valid">valid</option>
+                <option value="deactivated">deactivated</option>
+                <option value="revoked">revoked</option>
+              </select>
             </ToolbarItem>
           </ToolbarContent>
         </Toolbar>
@@ -151,19 +148,17 @@ export default function Accounts() {
           onSetPage={(_e, p) => setPage(p)}
         />
       </PageSection>
-      <Modal
-        variant={ModalVariant.small}
-        title="Deactivate Account"
-        isOpen={!!deactivateId}
-        onClose={() => setDeactivateId(null)}
-        actions={[
-          <Button key="confirm" variant="danger" onClick={handleDeactivate} isLoading={deactivating} isDisabled={deactivating}>
+      <Modal variant="small" isOpen={!!deactivateId} onClose={() => setDeactivateId(null)}>
+        <ModalHeader title="Deactivate Account" />
+        <ModalBody>
+          <p>Deactivate account <strong>{deactivateId}</strong>?</p>
+        </ModalBody>
+        <ModalFooter>
+          <Button variant="danger" onClick={handleDeactivate} isLoading={deactivating} isDisabled={deactivating}>
             Deactivate
-          </Button>,
-          <Button key="cancel" variant="link" onClick={() => setDeactivateId(null)}>Cancel</Button>,
-        ]}
-      >
-        <p>Deactivate account <strong>{deactivateId}</strong>?</p>
+          </Button>
+          <Button variant="link" onClick={() => setDeactivateId(null)}>Cancel</Button>
+        </ModalFooter>
       </Modal>
     </>
   );

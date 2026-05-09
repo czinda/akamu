@@ -10,8 +10,6 @@ import {
   Alert,
   EmptyState,
   EmptyStateBody,
-  Select,
-  SelectOption,
   Pagination,
 } from '@patternfly/react-core';
 import {
@@ -33,7 +31,6 @@ export default function Orders() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState('');
-  const [statusOpen, setStatusOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -63,20 +60,18 @@ export default function Orders() {
         <Toolbar>
           <ToolbarContent>
             <ToolbarItem>
-              <Select
-                isOpen={statusOpen}
-                onToggle={(_e, v) => setStatusOpen(v)}
-                onSelect={(_e, v) => { setStatusFilter(v as string); setStatusOpen(false); setPage(1); }}
-                selections={statusFilter || 'All statuses'}
-                placeholderText="All statuses"
+              <select
+                value={statusFilter}
+                onChange={e => { setStatusFilter(e.target.value); setPage(1); }}
+                style={{ padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: 'inherit' }}
               >
-                <SelectOption value="">All statuses</SelectOption>
-                <SelectOption value="pending">pending</SelectOption>
-                <SelectOption value="ready">ready</SelectOption>
-                <SelectOption value="processing">processing</SelectOption>
-                <SelectOption value="valid">valid</SelectOption>
-                <SelectOption value="invalid">invalid</SelectOption>
-              </Select>
+                <option value="">All statuses</option>
+                <option value="pending">pending</option>
+                <option value="ready">ready</option>
+                <option value="processing">processing</option>
+                <option value="valid">valid</option>
+                <option value="invalid">invalid</option>
+              </select>
             </ToolbarItem>
           </ToolbarContent>
         </Toolbar>

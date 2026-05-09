@@ -12,7 +12,9 @@ import {
   EmptyState,
   EmptyStateBody,
   Modal,
-  ModalVariant,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
   Form,
   FormGroup,
   TextInput,
@@ -166,52 +168,46 @@ export default function Profiles() {
           </Table>
         )}
       </PageSection>
-      <Modal
-        variant={ModalVariant.medium}
-        title="Create Profile"
-        isOpen={createOpen}
-        onClose={() => setCreateOpen(false)}
-        actions={[
-          <Button key="save" form="profile-create-form" type="submit" variant="primary" isLoading={saving} isDisabled={saving}>Create</Button>,
-          <Button key="cancel" variant="link" onClick={() => setCreateOpen(false)}>Cancel</Button>,
-        ]}
-      >
-        <Form id="profile-create-form" onSubmit={handleCreate}>
-          <FormGroup label="Profile ID" isRequired fieldId="profile-id">
-            <TextInput id="profile-id" value={formId} onChange={(_e, v) => setFormId(v)} isRequired />
-          </FormGroup>
-          <FormGroup label="Config (JSON)" isRequired fieldId="profile-config">
-            <TextArea id="profile-config" value={formConfig} onChange={(_e, v) => setFormConfig(v)} rows={10} isRequired />
-          </FormGroup>
-        </Form>
+      <Modal variant="medium" isOpen={createOpen} onClose={() => setCreateOpen(false)}>
+        <ModalHeader title="Create Profile" />
+        <ModalBody>
+          <Form id="profile-create-form" onSubmit={handleCreate}>
+            <FormGroup label="Profile ID" isRequired fieldId="profile-id">
+              <TextInput id="profile-id" value={formId} onChange={(_e, v) => setFormId(v)} isRequired />
+            </FormGroup>
+            <FormGroup label="Config (JSON)" isRequired fieldId="profile-config">
+              <TextArea id="profile-config" value={formConfig} onChange={(_e, v) => setFormConfig(v)} rows={10} isRequired />
+            </FormGroup>
+          </Form>
+        </ModalBody>
+        <ModalFooter>
+          <Button form="profile-create-form" type="submit" variant="primary" isLoading={saving} isDisabled={saving}>Create</Button>
+          <Button variant="link" onClick={() => setCreateOpen(false)}>Cancel</Button>
+        </ModalFooter>
       </Modal>
-      <Modal
-        variant={ModalVariant.medium}
-        title={`Edit Profile: ${editEntry?.id}`}
-        isOpen={!!editEntry}
-        onClose={() => setEditEntry(null)}
-        actions={[
-          <Button key="save" form="profile-edit-form" type="submit" variant="primary" isLoading={saving} isDisabled={saving}>Save</Button>,
-          <Button key="cancel" variant="link" onClick={() => setEditEntry(null)}>Cancel</Button>,
-        ]}
-      >
-        <Form id="profile-edit-form" onSubmit={handleUpdate}>
-          <FormGroup label="Config (JSON)" isRequired fieldId="profile-edit-config">
-            <TextArea id="profile-edit-config" value={formConfig} onChange={(_e, v) => setFormConfig(v)} rows={10} isRequired />
-          </FormGroup>
-        </Form>
+      <Modal variant="medium" isOpen={!!editEntry} onClose={() => setEditEntry(null)}>
+        <ModalHeader title={`Edit Profile: ${editEntry?.id}`} />
+        <ModalBody>
+          <Form id="profile-edit-form" onSubmit={handleUpdate}>
+            <FormGroup label="Config (JSON)" isRequired fieldId="profile-edit-config">
+              <TextArea id="profile-edit-config" value={formConfig} onChange={(_e, v) => setFormConfig(v)} rows={10} isRequired />
+            </FormGroup>
+          </Form>
+        </ModalBody>
+        <ModalFooter>
+          <Button form="profile-edit-form" type="submit" variant="primary" isLoading={saving} isDisabled={saving}>Save</Button>
+          <Button variant="link" onClick={() => setEditEntry(null)}>Cancel</Button>
+        </ModalFooter>
       </Modal>
-      <Modal
-        variant={ModalVariant.small}
-        title="Delete Profile"
-        isOpen={!!deleteId}
-        onClose={() => setDeleteId(null)}
-        actions={[
-          <Button key="confirm" variant="danger" onClick={handleDelete} isLoading={saving} isDisabled={saving}>Delete</Button>,
-          <Button key="cancel" variant="link" onClick={() => setDeleteId(null)}>Cancel</Button>,
-        ]}
-      >
-        <p>Delete profile <strong>{deleteId}</strong>?</p>
+      <Modal variant="small" isOpen={!!deleteId} onClose={() => setDeleteId(null)}>
+        <ModalHeader title="Delete Profile" />
+        <ModalBody>
+          <p>Delete profile <strong>{deleteId}</strong>?</p>
+        </ModalBody>
+        <ModalFooter>
+          <Button variant="danger" onClick={handleDelete} isLoading={saving} isDisabled={saving}>Delete</Button>
+          <Button variant="link" onClick={() => setDeleteId(null)}>Cancel</Button>
+        </ModalFooter>
       </Modal>
     </>
   );

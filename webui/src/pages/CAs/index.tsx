@@ -12,7 +12,9 @@ import {
   EmptyState,
   EmptyStateBody,
   Modal,
-  ModalVariant,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
   Label,
   Form,
   FormGroup,
@@ -136,33 +138,29 @@ export default function CAs() {
           </Table>
         )}
       </PageSection>
-      <Modal
-        variant={ModalVariant.small}
-        title="Force CRL"
-        isOpen={crlCaId !== null}
-        onClose={() => setCrlCaId(null)}
-        actions={[
-          <Button key="confirm" variant="primary" onClick={handleForceCrl} isLoading={saving} isDisabled={saving}>Force CRL</Button>,
-          <Button key="cancel" variant="link" onClick={() => setCrlCaId(null)}>Cancel</Button>,
-        ]}
-      >
-        <p>{crlCaId ? `Force CRL for CA ${crlCaId}?` : 'Force global CRL for all CAs?'}</p>
+      <Modal variant="small" isOpen={crlCaId !== null} onClose={() => setCrlCaId(null)}>
+        <ModalHeader title="Force CRL" />
+        <ModalBody>
+          <p>{crlCaId ? `Force CRL for CA ${crlCaId}?` : 'Force global CRL for all CAs?'}</p>
+        </ModalBody>
+        <ModalFooter>
+          <Button variant="primary" onClick={handleForceCrl} isLoading={saving} isDisabled={saving}>Force CRL</Button>
+          <Button variant="link" onClick={() => setCrlCaId(null)}>Cancel</Button>
+        </ModalFooter>
       </Modal>
-      <Modal
-        variant={ModalVariant.medium}
-        title={`Cross-Sign with CA ${crossSignCaId}`}
-        isOpen={!!crossSignCaId}
-        onClose={() => setCrossSignCaId(null)}
-        actions={[
-          <Button key="save" form="cross-sign-form" type="submit" variant="primary" isLoading={saving} isDisabled={saving}>Cross-Sign</Button>,
-          <Button key="cancel" variant="link" onClick={() => setCrossSignCaId(null)}>Cancel</Button>,
-        ]}
-      >
-        <Form id="cross-sign-form" onSubmit={handleCrossSign}>
-          <FormGroup label="Certificate PEM" isRequired fieldId="cross-sign-pem">
-            <TextArea id="cross-sign-pem" value={crossSignPem} onChange={(_e, v) => setCrossSignPem(v)} rows={12} isRequired />
-          </FormGroup>
-        </Form>
+      <Modal variant="medium" isOpen={!!crossSignCaId} onClose={() => setCrossSignCaId(null)}>
+        <ModalHeader title={`Cross-Sign with CA ${crossSignCaId}`} />
+        <ModalBody>
+          <Form id="cross-sign-form" onSubmit={handleCrossSign}>
+            <FormGroup label="Certificate PEM" isRequired fieldId="cross-sign-pem">
+              <TextArea id="cross-sign-pem" value={crossSignPem} onChange={(_e, v) => setCrossSignPem(v)} rows={12} isRequired />
+            </FormGroup>
+          </Form>
+        </ModalBody>
+        <ModalFooter>
+          <Button form="cross-sign-form" type="submit" variant="primary" isLoading={saving} isDisabled={saving}>Cross-Sign</Button>
+          <Button variant="link" onClick={() => setCrossSignCaId(null)}>Cancel</Button>
+        </ModalFooter>
       </Modal>
     </>
   );

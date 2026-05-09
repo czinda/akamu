@@ -12,9 +12,9 @@ import {
   EmptyState,
   EmptyStateBody,
   Modal,
-  ModalVariant,
-  Select,
-  SelectOption,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
   Pagination,
 } from '@patternfly/react-core';
 import {
@@ -40,11 +40,9 @@ export default function Certificates() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [revokedFilter, setRevokedFilter] = useState<string>('');
-  const [filterOpen, setFilterOpen] = useState(false);
 
   const [revokeId, setRevokeId] = useState<string | null>(null);
   const [revokeReason, setRevokeReason] = useState('unspecified');
-  const [reasonOpen, setReasonOpen] = useState(false);
   const [revoking, setRevoking] = useState(false);
 
   const load = useCallback(async () => {
@@ -93,17 +91,15 @@ export default function Certificates() {
         <Toolbar>
           <ToolbarContent>
             <ToolbarItem>
-              <Select
-                isOpen={filterOpen}
-                onToggle={(_e, v) => setFilterOpen(v)}
-                onSelect={(_e, v) => { setRevokedFilter(v as string); setFilterOpen(false); setPage(1); }}
-                selections={revokedFilter || 'All'}
-                placeholderText="All"
+              <select
+                value={revokedFilter}
+                onChange={e => { setRevokedFilter(e.target.value); setPage(1); }}
+                style={{ padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: 'inherit' }}
               >
-                <SelectOption value="">All</SelectOption>
-                <SelectOption value="valid">Valid</SelectOption>
-                <SelectOption value="revoked">Revoked</SelectOption>
-              </Select>
+                <option value="">All</option>
+                <option value="valid">Valid</option>
+                <option value="revoked">Revoked</option>
+              </select>
             </ToolbarItem>
           </ToolbarContent>
         </Toolbar>
@@ -156,33 +152,31 @@ export default function Certificates() {
           onSetPage={(_e, p) => setPage(p)}
         />
       </PageSection>
-      <Modal
-        variant={ModalVariant.small}
-        title="Revoke Certificate"
-        isOpen={!!revokeId}
-        onClose={() => setRevokeId(null)}
-        actions={[
-          <Button key="confirm" variant="danger" onClick={handleRevoke} isLoading={revoking} isDisabled={revoking}>
+      <Modal variant="small" isOpen={!!revokeId} onClose={() => setRevokeId(null)}>
+        <ModalHeader title="Revoke Certificate" />
+        <ModalBody>
+          <p style={{ marginBottom: '1rem' }}>
+            Are you sure you want to revoke certificate <strong>{revokeId}</strong>?
+          </p>
+          <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>Reason</label>
+          <select
+            value={revokeReason}
+            onChange={e => setRevokeReason(e.target.value)}
+            style={{ padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: 'inherit', width: '100%' }}
+          >
+            <option value="unspecified">unspecified</option>
+            <option value="keyCompromise">keyCompromise</option>
+            <option value="affiliationChanged">affiliationChanged</option>
+            <option value="superseded">superseded</option>
+            <option value="cessationOfOperation">cessationOfOperation</option>
+          </select>
+        </ModalBody>
+        <ModalFooter>
+          <Button variant="danger" onClick={handleRevoke} isLoading={revoking} isDisabled={revoking}>
             Revoke
-          </Button>,
-          <Button key="cancel" variant="link" onClick={() => setRevokeId(null)}>
-            Cancel
-          </Button>,
-        ]}
-      >
-        <p>Are you sure you want to revoke certificate <strong>{revokeId}</strong>?</p>
-        <Select
-          isOpen={reasonOpen}
-          onToggle={(_e, v) => setReasonOpen(v)}
-          onSelect={(_e, v) => { setRevokeReason(v as string); setReasonOpen(false); }}
-          selections={revokeReason}
-        >
-          <SelectOption value="unspecified">unspecified</SelectOption>
-          <SelectOption value="keyCompromise">keyCompromise</SelectOption>
-          <SelectOption value="affiliationChanged">affiliationChanged</SelectOption>
-          <SelectOption value="superseded">superseded</SelectOption>
-          <SelectOption value="cessationOfOperation">cessationOfOperation</SelectOption>
-        </Select>
+          </Button>
+          <Button variant="link" onClick={() => setRevokeId(null)}>Cancel</Button>
+        </ModalFooter>
       </Modal>
     </>
   );

@@ -12,7 +12,9 @@ import {
   EmptyState,
   EmptyStateBody,
   Modal,
-  ModalVariant,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
   Form,
   FormGroup,
   TextInput,
@@ -192,29 +194,35 @@ export default function Delegations() {
         )}
         <Pagination itemCount={delegations.length} perPage={PAGE_SIZE} page={page} onSetPage={(_e, p) => setPage(p)} />
       </PageSection>
-      <Modal variant={ModalVariant.medium} title="Create Delegation" isOpen={createOpen} onClose={() => setCreateOpen(false)}
-        actions={[
-          <Button key="save" form="del-create-form" type="submit" variant="primary" isLoading={saving} isDisabled={saving}>Create</Button>,
-          <Button key="cancel" variant="link" onClick={() => setCreateOpen(false)}>Cancel</Button>,
-        ]}
-      >
-        <Form id="del-create-form" onSubmit={handleCreate}>{formFields}</Form>
+      <Modal variant="medium" isOpen={createOpen} onClose={() => setCreateOpen(false)}>
+        <ModalHeader title="Create Delegation" />
+        <ModalBody>
+          <Form id="del-create-form" onSubmit={handleCreate}>{formFields}</Form>
+        </ModalBody>
+        <ModalFooter>
+          <Button form="del-create-form" type="submit" variant="primary" isLoading={saving} isDisabled={saving}>Create</Button>
+          <Button variant="link" onClick={() => setCreateOpen(false)}>Cancel</Button>
+        </ModalFooter>
       </Modal>
-      <Modal variant={ModalVariant.medium} title={`Edit Delegation ${editRow?.id}`} isOpen={!!editRow} onClose={() => setEditRow(null)}
-        actions={[
-          <Button key="save" form="del-edit-form" type="submit" variant="primary" isLoading={saving} isDisabled={saving}>Save</Button>,
-          <Button key="cancel" variant="link" onClick={() => setEditRow(null)}>Cancel</Button>,
-        ]}
-      >
-        <Form id="del-edit-form" onSubmit={handleUpdate}>{formFields}</Form>
+      <Modal variant="medium" isOpen={!!editRow} onClose={() => setEditRow(null)}>
+        <ModalHeader title={`Edit Delegation ${editRow?.id}`} />
+        <ModalBody>
+          <Form id="del-edit-form" onSubmit={handleUpdate}>{formFields}</Form>
+        </ModalBody>
+        <ModalFooter>
+          <Button form="del-edit-form" type="submit" variant="primary" isLoading={saving} isDisabled={saving}>Save</Button>
+          <Button variant="link" onClick={() => setEditRow(null)}>Cancel</Button>
+        </ModalFooter>
       </Modal>
-      <Modal variant={ModalVariant.small} title="Delete Delegation" isOpen={!!deleteId} onClose={() => setDeleteId(null)}
-        actions={[
-          <Button key="confirm" variant="danger" onClick={handleDelete} isLoading={saving} isDisabled={saving}>Delete</Button>,
-          <Button key="cancel" variant="link" onClick={() => setDeleteId(null)}>Cancel</Button>,
-        ]}
-      >
-        <p>Delete delegation <strong>{deleteId}</strong>?</p>
+      <Modal variant="small" isOpen={!!deleteId} onClose={() => setDeleteId(null)}>
+        <ModalHeader title="Delete Delegation" />
+        <ModalBody>
+          <p>Delete delegation <strong>{deleteId}</strong>?</p>
+        </ModalBody>
+        <ModalFooter>
+          <Button variant="danger" onClick={handleDelete} isLoading={saving} isDisabled={saving}>Delete</Button>
+          <Button variant="link" onClick={() => setDeleteId(null)}>Cancel</Button>
+        </ModalFooter>
       </Modal>
     </>
   );
