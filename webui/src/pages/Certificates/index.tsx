@@ -5,7 +5,9 @@ import {
   Toolbar,
   ToolbarContent,
   ToolbarItem,
+  ToolbarGroup,
   Button,
+  TextInput,
   Spinner,
   Alert,
   EmptyState,
@@ -31,9 +33,20 @@ import { fmtTs } from '../../utils';
 
 const PAGE_SIZE = 20;
 
+interface FilterDraft {
+  subject: string;
+  serial: string;
+  account_id: string;
+  ca_id: string;
+  status: string;
+}
+
+const EMPTY_DRAFT: FilterDraft = { subject: '', serial: '', account_id: '', ca_id: '', status: '' };
+
 export default function Certificates() {
   const { role } = useAuth();
   const canRevoke = hasRole(role, 'ca_operations');
+  const isCaRa = role === 'ca_ra';
   const navigate = useNavigate();
 
   const [certs, setCerts] = useState<CertRow[]>([]);
@@ -41,7 +54,9 @@ export default function Certificates() {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [revokedFilter, setRevokedFilter] = useState<string>('');
+
+  const [draft, setDraft] = useState<FilterDraft>(EMPTY_DRAFT);
+  const [applied, setApplied] = useState<FilterDraft>(EMPTY_DRAFT);
 
   const [revokeId, setRevokeId] = useState<string | null>(null);
   const [revokeReason, setRevokeReason] = useState(0);
@@ -55,7 +70,11 @@ export default function Certificates() {
         limit: PAGE_SIZE,
         offset: (page - 1) * PAGE_SIZE,
       };
-      if (revokedFilter) params.status = revokedFilter;
+      if (applied.subject)    params.subject    = applied.subject;
+      if (applied.serial)     params.serial     = applied.serial;
+      if (applied.account_id) params.account_id = applied.account_id;
+      if (applied.ca_id)      params.ca_id      = applied.ca_id;
+      if (applied.status)     params.status     = applied.status;
       const result = await listCerts(params);
       setCerts(result.certs);
       setTotal(result.total ?? result.certs.length);
@@ -64,9 +83,24 @@ export default function Certificates() {
     } finally {
       setLoading(false);
     }
-  }, [page, revokedFilter]);
+  }, [page, applied]);
 
   useEffect(() => { load(); }, [load]);
+
+  function handleSearch() {
+    setApplied(draft);
+    setPage(1);
+  }
+
+  function handleClear() {
+    setDraft(EMPTY_DRAFT);
+    setApplied(EMPTY_DRAFT);
+    setPage(1);
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (e.key === 'Enter') handleSearch();
+  }
 
   async function handleRevoke() {
     if (!revokeId) return;
@@ -82,6 +116,8 @@ export default function Certificates() {
     }
   }
 
+  const inputStyle = { width: '160px' };
+
   return (
     <>
       <PageSection>
@@ -91,17 +127,68 @@ export default function Certificates() {
         {error && <Alert variant="danger" title={error} isInline style={{ marginBottom: '1rem' }} />}
         <Toolbar>
           <ToolbarContent>
-            <ToolbarItem>
-              <select
-                value={revokedFilter}
-                onChange={e => { setRevokedFilter(e.target.value); setPage(1); }}
-                style={{ padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: 'inherit' }}
-              >
-                <option value="">All</option>
-                <option value="valid">Valid</option>
-                <option value="revoked">Revoked</option>
-              </select>
-            </ToolbarItem>
+            <ToolbarGroup>
+              <ToolbarItem>
+                <TextInput
+                  placeholder="Subject DN"
+                  value={draft.subject}
+                  onChange={(_e, v) => setDraft(d => ({ ...d, subject: v }))}
+                  onKeyDown={handleKeyDown}
+                  style={inputStyle}
+                  aria-label="Filter by subject DN"
+                />
+              </ToolbarItem>
+              <ToolbarItem>
+                <TextInput
+                  placeholder="Serial"
+                  value={draft.serial}
+                  onChange={(_e, v) => setDraft(d => ({ ...d, serial: v }))}
+                  onKeyDown={handleKeyDown}
+                  style={inputStyle}
+                  aria-label="Filter by serial"
+                />
+              </ToolbarItem>
+              <ToolbarItem>
+                <TextInput
+                  placeholder="Account ID"
+                  value={draft.account_id}
+                  onChange={(_e, v) => setDraft(d => ({ ...d, account_id: v }))}
+                  onKeyDown={handleKeyDown}
+                  style={inputStyle}
+                  aria-label="Filter by account ID"
+                />
+              </ToolbarItem>
+              {!isCaRa && (
+                <ToolbarItem>
+                  <TextInput
+                    placeholder="CA ID"
+                    value={draft.ca_id}
+                    onChange={(_e, v) => setDraft(d => ({ ...d, ca_id: v }))}
+                    onKeyDown={handleKeyDown}
+                    style={inputStyle}
+                    aria-label="Filter by CA ID"
+                  />
+                </ToolbarItem>
+              )}
+              <ToolbarItem>
+                <select
+                  value={draft.status}
+                  onChange={e => setDraft(d => ({ ...d, status: e.target.value }))}
+                  style={{ padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: 'inherit' }}
+                  aria-label="Filter by status"
+                >
+                  <option value="">All statuses</option>
+                  <option value="valid">valid</option>
+                  <option value="revoked">revoked</option>
+                </select>
+              </ToolbarItem>
+              <ToolbarItem>
+                <Button variant="primary" onClick={handleSearch}>Search</Button>
+              </ToolbarItem>
+              <ToolbarItem>
+                <Button variant="link" onClick={handleClear}>Clear</Button>
+              </ToolbarItem>
+            </ToolbarGroup>
           </ToolbarContent>
         </Toolbar>
         {loading && <Spinner />}
@@ -119,7 +206,7 @@ export default function Certificates() {
                 <Th>Serial</Th>
                 <Th>Not Before</Th>
                 <Th>Not After</Th>
-                <Th>Revoked</Th>
+                <Th>Status</Th>
                 <Th>Actions</Th>
               </Tr>
             </Thead>
@@ -131,7 +218,7 @@ export default function Certificates() {
                   <Td>{cert.serial_number}</Td>
                   <Td>{fmtTs(cert.not_before)}</Td>
                   <Td>{fmtTs(cert.not_after)}</Td>
-                  <Td>{cert.revoked_at ? cert.revocation_reason ?? 'yes' : '—'}</Td>
+                  <Td>{cert.revoked_at ? `revoked (${cert.revocation_reason ?? 'unspecified'})` : cert.status}</Td>
                   <Td>
                     {canRevoke && !cert.revoked_at && (
                       <Button variant="danger" size="sm" onClick={() => setRevokeId(cert.id)}>
