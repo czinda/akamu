@@ -813,6 +813,7 @@ pub async fn post_eab(
         &payload.kid,
         &payload.hmac_key_b64u,
         grants_str.as_deref(),
+        Some(operator.operator_id),
         now,
     )
     .await
