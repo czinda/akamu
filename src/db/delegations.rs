@@ -350,3 +350,54 @@ mod tests {
         assert!(delete(&raw, "any").await.is_err());
     }
 }
+
+/// Paginated list with optional account_id and ca_id filters.
+///
+/// When `ca_id` is `Some`, only delegations whose owning account has that
+/// `ca_id` are returned (CA-scoped operator view).
+pub async fn list(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    account_id: Option<&str>,
+    ca_id: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<DelegationRow>, AcmeError> {
+    let mut qb = super::DynQueryBuilder::new(
+        "SELECT d.id, d.account_id, d.csr_template, d.cname_map, d.created, d.updated \
+         FROM delegations d JOIN accounts a ON d.account_id = a.id WHERE 1=1",
+    );
+    if let Some(acct) = account_id {
+        qb.push(" AND d.account_id = ");
+        qb.push_bind(acct);
+    }
+    if let Some(ca) = ca_id {
+        qb.push(" AND a.ca_id = ");
+        qb.push_bind(ca);
+    }
+    qb.push(" ORDER BY d.created DESC LIMIT ");
+    qb.push_bind(limit);
+    qb.push(" OFFSET ");
+    qb.push_bind(offset);
+    qb.fetch_all(executor).await
+}
+
+/// Count delegations matching the optional account_id and ca_id filters.
+pub async fn count_list(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    account_id: Option<&str>,
+    ca_id: Option<&str>,
+) -> Result<i64, AcmeError> {
+    let mut qb = super::DynQueryBuilder::new(
+        "SELECT COUNT(*) FROM delegations d JOIN accounts a ON d.account_id = a.id WHERE 1=1",
+    );
+    if let Some(acct) = account_id {
+        qb.push(" AND d.account_id = ");
+        qb.push_bind(acct);
+    }
+    if let Some(ca) = ca_id {
+        qb.push(" AND a.ca_id = ");
+        qb.push_bind(ca);
+    }
+    let row: (i64,) = qb.fetch_one(executor).await?;
+    Ok(row.0)
+}

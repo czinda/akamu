@@ -134,6 +134,36 @@ pub struct AuditQuery<'a> {
     pub offset: i64,
 }
 
+/// Count audit events matching the same filters as [`query`], without LIMIT/OFFSET.
+pub async fn count_filtered(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    q: &AuditQuery<'_>,
+) -> Result<i64, AcmeError> {
+    let mut qb = super::DynQueryBuilder::new("SELECT COUNT(*) FROM audit_events WHERE 1=1");
+    if let Some(t) = q.event_type {
+        qb.push(" AND event_type = ");
+        qb.push_bind(t);
+    }
+    if let Some(s) = q.subject {
+        qb.push(" AND subject = ");
+        qb.push_bind(s);
+    }
+    if let Some(f) = q.from {
+        qb.push(" AND occurred_at >= ");
+        qb.push_bind(f);
+    }
+    if let Some(u) = q.until {
+        qb.push(" AND occurred_at <= ");
+        qb.push_bind(u);
+    }
+    if let Some(o) = q.outcome {
+        qb.push(" AND outcome = ");
+        qb.push_bind(o);
+    }
+    let row: (i64,) = qb.fetch_one(executor).await?;
+    Ok(row.0)
+}
+
 /// Filtered, paginated query over `audit_events`.
 ///
 /// Uses `sqlx::QueryBuilder` to emit bind parameters only for filters that are

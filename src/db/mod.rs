@@ -114,7 +114,7 @@ pub(crate) fn pg_sql(s: &'static str) -> &'static str {
 }
 
 /// Convenience wrapper: rewrite `?` placeholders for PostgreSQL, then call
-/// [`sqlx::query`].  Use this instead of `sqlx::query` for every SQL string
+/// [`sqlx::query()`].  Use this instead of `sqlx::query` for every SQL string
 /// that contains at least one `?`.
 ///
 /// The lifetime `'q` is left to the caller to infer from the `.bind()` chain,
@@ -122,23 +122,36 @@ pub(crate) fn pg_sql(s: &'static str) -> &'static str {
 /// returns `&'static str` which is a subtype of `&'q str` for any `'q`, so
 /// the coercion in the body is always sound.
 #[inline]
-pub(crate) fn query<'q>(
+pub fn query<'q>(
     sql: &'static str,
 ) -> sqlx::query::Query<'q, sqlx::Any, sqlx::any::AnyArguments<'q>> {
     sqlx::query(pg_sql(sql))
 }
 
 /// Convenience wrapper: rewrite `?` placeholders for PostgreSQL, then call
-/// [`sqlx::query_as`].  Use this instead of `sqlx::query_as` for every SQL
+/// [`sqlx::query_as()`].  Use this instead of `sqlx::query_as` for every SQL
 /// string that contains at least one `?`.
 #[inline]
-pub(crate) fn query_as<'q, O>(
+pub fn query_as<'q, O>(
     sql: &'static str,
 ) -> sqlx::query::QueryAs<'q, sqlx::Any, O, sqlx::any::AnyArguments<'q>>
 where
     O: for<'r> sqlx::FromRow<'r, sqlx::any::AnyRow>,
 {
     sqlx::query_as::<sqlx::Any, O>(pg_sql(sql))
+}
+
+/// Convenience wrapper: rewrite `?` placeholders for PostgreSQL, then call
+/// [`sqlx::query_scalar()`].  Use this instead of `sqlx::query_scalar` for every
+/// SQL string that contains at least one `?`.
+#[inline]
+pub fn query_scalar<'q, O>(
+    sql: &'static str,
+) -> sqlx::query::QueryScalar<'q, sqlx::Any, O, sqlx::any::AnyArguments<'q>>
+where
+    (O,): for<'r> sqlx::FromRow<'r, sqlx::any::AnyRow>,
+{
+    sqlx::query_scalar::<sqlx::Any, O>(pg_sql(sql))
 }
 
 /// Dynamic query builder that emits `$N` placeholders for PostgreSQL and `?`
@@ -227,6 +240,16 @@ impl<'args> DynQueryBuilder<'args> {
     {
         Ok(sqlx::query_with::<sqlx::Any, _>(&self.sql, self.args)
             .execute(executor)
+            .await?)
+    }
+
+    pub async fn fetch_one<'e, E, O>(self, executor: E) -> Result<O, AcmeError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Any>,
+        O: for<'r> sqlx::FromRow<'r, sqlx::any::AnyRow> + Send + Unpin,
+    {
+        Ok(sqlx::query_as_with::<sqlx::Any, O, _>(&self.sql, self.args)
+            .fetch_one(executor)
             .await?)
     }
 
@@ -343,20 +366,30 @@ pub async fn open(url: &str, max_connections: u32, require_tls: bool) -> Result<
     // PostgreSQL/MariaDB and the queries are sent but produce no effect — the
     // Any driver does not filter them, so we guard with a URL prefix check).
     if url.starts_with("sqlite") {
-        for pragma in &[
-            "PRAGMA journal_mode=WAL",
-            "PRAGMA synchronous=NORMAL",
-            "PRAGMA foreign_keys=ON",
-            "PRAGMA mmap_size=134217728",
-            "PRAGMA cache_size=-65536",
+        for (pragma, critical) in &[
+            ("PRAGMA journal_mode=WAL", true),
+            ("PRAGMA synchronous=NORMAL", false),
+            ("PRAGMA foreign_keys=ON", true),
+            ("PRAGMA mmap_size=134217728", false),
+            ("PRAGMA cache_size=-65536", false),
         ] {
-            sqlx::query(pragma).execute(&pool).await.ok();
+            if let Err(e) = sqlx::query(pragma).execute(&pool).await {
+                if *critical {
+                    return Err(AcmeError::Database(format!(
+                        "SQLite PRAGMA failed: {pragma}: {e}"
+                    )));
+                }
+                tracing::warn!(pragma, error = %e, "non-critical SQLite PRAGMA failed");
+            }
         }
     }
 
-    IS_POSTGRES
+    if IS_POSTGRES
         .set(matches!(DbKind::from_url(url), DbKind::Postgres))
-        .ok();
+        .is_err()
+    {
+        tracing::warn!("IS_POSTGRES already set — concurrent database pool opens detected");
+    }
 
     let map_err = |e| AcmeError::Database(format!("migration failed: {e}"));
     match DbKind::from_url(url) {
@@ -411,7 +444,9 @@ pub async fn open_ro(url: &str, max_connections: u32) -> Result<Option<Db>, Acme
         .map_err(|e| AcmeError::Database(format!("open read-only database '{url}': {e}")))?;
 
     for pragma in &["PRAGMA mmap_size=134217728", "PRAGMA cache_size=-65536"] {
-        sqlx::query(pragma).execute(&pool).await.ok();
+        if let Err(e) = sqlx::query(pragma).execute(&pool).await {
+            tracing::warn!(pragma, error = %e, "non-critical SQLite PRAGMA failed on read-only pool");
+        }
     }
 
     Ok(Some(pool))

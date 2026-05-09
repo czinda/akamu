@@ -435,3 +435,25 @@ mod tests {
         );
     }
 }
+
+/// Count accounts matching the same filters as [`list`], without LIMIT/OFFSET.
+pub async fn count_list(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    status: Option<&str>,
+    ca_id: Option<&str>,
+) -> Result<i64, AcmeError> {
+    let mut qb = super::DynQueryBuilder::new("SELECT COUNT(*) FROM accounts WHERE 1=1");
+    if let Some(st) = status {
+        qb.push(" AND status = ");
+        qb.push_bind(st);
+    }
+    if let Some(ca) = ca_id {
+        qb.push(" AND (ca_id = ");
+        qb.push_bind(ca);
+        qb.push(" OR id IN (SELECT DISTINCT account_id FROM orders WHERE ca_id = ");
+        qb.push_bind(ca);
+        qb.push("))");
+    }
+    let row: (i64,) = qb.fetch_one(executor).await?;
+    Ok(row.0)
+}
