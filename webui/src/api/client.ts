@@ -40,11 +40,32 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
   return resp;
 }
 
+function extractErrorMessage(status: number, text: string, statusText: string): string {
+  if (text) {
+    try {
+      const body = JSON.parse(text) as Record<string, unknown>;
+      if (typeof body.detail === 'string' && body.detail) {
+        const prefix =
+          status === 403 ? 'Access denied' :
+          status === 404 ? 'Not found' :
+          status === 409 ? 'Conflict' :
+          status === 400 ? 'Bad request' :
+          status >= 500 ? 'Server error' : null;
+        return prefix ? `${prefix}: ${body.detail}` : body.detail;
+      }
+    } catch {
+      // not JSON — fall through to raw text
+    }
+    return text;
+  }
+  return statusText;
+}
+
 export async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await apiFetch(path, init);
   if (!resp.ok) {
     const text = await resp.text();
-    throw new ApiError(resp.status, text || resp.statusText);
+    throw new ApiError(resp.status, extractErrorMessage(resp.status, text, resp.statusText));
   }
   return resp.json() as Promise<T>;
 }
@@ -53,6 +74,6 @@ export async function apiDelete(path: string): Promise<void> {
   const resp = await apiFetch(path, { method: 'DELETE' });
   if (!resp.ok) {
     const text = await resp.text();
-    throw new ApiError(resp.status, text || resp.statusText);
+    throw new ApiError(resp.status, extractErrorMessage(resp.status, text, resp.statusText));
   }
 }
