@@ -827,8 +827,12 @@ pub async fn get_eab(
 /// Requires: `administrator` or `ca_operations`.
 ///
 /// `ca_ra` is intentionally excluded: EAB keys are server-global and not
-/// bound to any CA, so a CA-scoped operator could otherwise create keys
-/// usable for account creation under any CA.
+/// bound to any CA, so a CA-scoped `ca_ra` operator could otherwise create
+/// keys usable for account creation under any CA.
+///
+/// Scoped `ca_operations` operators are permitted to create EAB keys by
+/// design — they have higher trust than `ca_ra` and need to pre-provision
+/// keys for their CA's accounts.
 pub async fn post_eab(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
