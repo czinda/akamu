@@ -901,13 +901,20 @@ pub async fn post_session_eab(
         }
     };
 
-    // The alg column stores hash-name format ("sha256", "sha384", "sha512") — the same
-    // format expected by hmac_verify.  Validate it is a recognised value to give a clear
-    // error rather than a cryptic hmac_verify failure.
+    // The web UI EAB login always computes HMAC-SHA256 regardless of the key's
+    // configured algorithm; reject non-sha256 keys early with a clear 400 rather
+    // than letting the HMAC verify silently fail.
     let hash_alg = eab_row.alg.as_str();
-    if !matches!(hash_alg, "sha256" | "sha384" | "sha512") {
-        tracing::error!(kid = %kid, alg = %hash_alg, "EAB key has unrecognised algorithm");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    if hash_alg != "sha256" {
+        if !matches!(hash_alg, "sha384" | "sha512") {
+            tracing::error!(kid = %kid, alg = %hash_alg, "EAB key has unrecognised algorithm");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+        return (
+            StatusCode::BAD_REQUEST,
+            "EAB web UI login only supports sha256 keys; this key uses a different algorithm",
+        )
+            .into_response();
     }
 
     // Message: "kid.timestamp"
