@@ -201,6 +201,13 @@ pub struct AppState {
     /// the rolling 5-minute window.  Entries are swept lazily on each check.
     /// `None` when `[admin]` is absent.
     pub admin_auth_limiter: Option<AdminAuthLimiter>,
+    /// Anti-replay cache for EAB session login.
+    ///
+    /// Records recently seen `"kid.timestamp"` keys (Unix epoch, decimal) so
+    /// that a captured request cannot be replayed within the ±60-second window.
+    /// Entries are evicted lazily when they are more than 120 seconds old.
+    /// `None` when `[admin]` is absent.
+    pub eab_session_nonces: Option<Arc<tokio::sync::Mutex<HashMap<String, i64>>>>,
     /// Time the server process started.  Used for uptime reporting in
     /// `GET /admin/stats` and for session-expiry calculations.
     pub startup_time: Instant,

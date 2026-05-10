@@ -461,6 +461,10 @@ async fn run() -> Result<(), String> {
             .admin
             .as_ref()
             .map(|_| Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()))),
+        eab_session_nonces: config
+            .admin
+            .as_ref()
+            .map(|_| Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()))),
         startup_time: std::time::Instant::now(),
     });
 

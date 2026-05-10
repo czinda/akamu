@@ -223,6 +223,7 @@ pub async fn start(
         audit_policy: Arc::new(AuditPolicy::default()),
         admin_sessions: None,
         admin_auth_limiter: None,
+        eab_session_nonces: None,
         admin_gss_cred: None,
         startup_time: Instant::now(),
     });
