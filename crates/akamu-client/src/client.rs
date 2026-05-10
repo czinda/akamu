@@ -56,7 +56,10 @@ pub struct AcmeClient {
 }
 
 impl AcmeClient {
-    /// Construct a client by fetching the ACME directory.
+    /// Construct a client that accepts both HTTP and HTTPS directory URLs.
+    ///
+    /// Use this only for local / test servers (e.g. `http://127.0.0.1:…`).
+    /// For production ACME servers prefer [`AcmeClient::new_https_only`].
     pub async fn new(directory_url: &str) -> Result<Self, ClientError> {
         let https = HttpsConnectorBuilder::new()
             .with_provider_and_native_roots(rustls_native_ossl::default_provider())
@@ -65,6 +68,31 @@ impl AcmeClient {
             .enable_http1()
             .build();
         let http = Client::builder(TokioExecutor::new()).build(https);
+        Self::new_with_client(http, directory_url).await
+    }
+
+    /// Construct a client that only accepts HTTPS directory URLs.
+    ///
+    /// Use this for delegation upstream servers and any production ACME CA.
+    /// Plain-HTTP URLs are rejected by the connector before any data is sent.
+    pub async fn new_https_only(directory_url: &str) -> Result<Self, ClientError> {
+        let https = HttpsConnectorBuilder::new()
+            .with_provider_and_native_roots(rustls_native_ossl::default_provider())
+            .map_err(|e| ClientError::Http(format!("TLS root certs: {e}")))?
+            .https_only()
+            .enable_http1()
+            .build();
+        let http = Client::builder(TokioExecutor::new()).build(https);
+        Self::new_with_client(http, directory_url).await
+    }
+
+    async fn new_with_client(
+        http: Client<
+            hyper_rustls::HttpsConnector<HttpConnector>,
+            http_body_util::Full<Bytes>,
+        >,
+        directory_url: &str,
+    ) -> Result<Self, ClientError> {
         let dir = get_json(&http, directory_url).await?;
 
         let new_nonce_url = dir["newNonce"]

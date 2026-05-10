@@ -79,7 +79,7 @@ async fn init_client_and_account(
         .map_err(|e| format!("read account_key_file {:?}: {e}", du.account_key_file))?;
     let key =
         Arc::new(AccountKey::from_pem(&pem).map_err(|e| format!("parse account key PEM: {e}"))?);
-    let client = AcmeClient::new(&du.directory_url)
+    let client = AcmeClient::new_https_only(&du.directory_url)
         .await
         .map_err(|e| format!("AcmeClient::new({}): {e}", du.directory_url))?;
 
