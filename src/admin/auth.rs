@@ -212,11 +212,25 @@ pub struct OperatorContext {
     pub operator_id: i64,
     pub name: String,
     pub role: OperatorRole,
-    /// CA scope for `ca_ra` operators.  Empty string means server-wide.
+    /// CA scope for `ca_ra` and `ca_operations` operators.  Empty string means server-wide.
     pub ca_id: String,
     pub auth_method: AdminAuthMethod,
     /// The session token for this request (used by DELETE /admin/session).
     pub session_token: Option<String>,
+}
+
+impl OperatorContext {
+    /// Returns `Some(ca_id)` when this operator is scoped to a specific CA,
+    /// `None` when they have server-wide access.
+    ///
+    /// Meaningful for `ca_ra` (always scoped) and `ca_operations` (optionally scoped).
+    pub fn ca_scope(&self) -> Option<&str> {
+        if self.ca_id.is_empty() {
+            None
+        } else {
+            Some(&self.ca_id)
+        }
+    }
 }
 
 impl<S> FromRequestParts<S> for OperatorContext
@@ -664,9 +678,8 @@ pub async fn post_session(
     }
 
     // Set an HttpOnly session cookie so browser-side code can also use it.
-    let cookie = format!(
-        "session={token}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age={ttl_secs}"
-    );
+    let cookie =
+        format!("session={token}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age={ttl_secs}");
     if let Ok(hv) = axum::http::HeaderValue::from_str(&cookie) {
         resp.headers_mut().insert("Set-Cookie", hv);
     }
@@ -950,7 +963,7 @@ pub async fn post_session_eab(
         let mut store = nonce_store.lock().await;
         if store.len() >= EAB_NONCE_CAP {
             let mut pairs: Vec<(String, i64)> = store.drain().collect();
-            pairs.sort_unstable_by(|a, b| b.1.cmp(&a.1)); // newest first
+            pairs.sort_unstable_by_key(|p| std::cmp::Reverse(p.1)); // newest first
             pairs.truncate(EAB_NONCE_CAP / 2);
             *store = pairs.into_iter().collect();
         }
@@ -1010,9 +1023,8 @@ pub async fn post_session_eab(
     let expires_unix = crate::util::unix_now() + ttl_secs as i64;
     let expires_at = crate::util::unix_to_rfc3339(expires_unix);
 
-    let cookie = format!(
-        "session={token}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age={ttl_secs}"
-    );
+    let cookie =
+        format!("session={token}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age={ttl_secs}");
     let mut resp = (
         StatusCode::OK,
         axum::Json(json!({
