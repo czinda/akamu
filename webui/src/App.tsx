@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { Component, type ReactNode } from 'react';
 import { Routes, Route, Navigate, NavLink, Outlet, useNavigate } from 'react-router-dom';
 import {
   Page,
@@ -44,6 +44,30 @@ import DelegationDetail from './pages/Delegations/Detail';
 import CADetail from './pages/CAs/Detail';
 import CrossCertDetail from './pages/CrossCerts/Detail';
 import OperatorDetail from './pages/Operators/Detail';
+
+class PageErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  override render() {
+    if (this.state.error) {
+      return (
+        <div style={{ padding: '2rem' }}>
+          <h2>Something went wrong</h2>
+          <p style={{ color: '#c9190b', fontFamily: 'monospace', whiteSpace: 'pre-wrap' }}>
+            {this.state.error.message}
+          </p>
+          <button onClick={() => this.setState({ error: null })}>Try again</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 function RequireRole({ minRole, children }: { minRole: Role; children: React.ReactElement }) {
   const { role } = useAuth();
@@ -136,7 +160,9 @@ function AuthenticatedLayout() {
       sidebar={<AppSidebar role={role} />}
       isManagedSidebar
     >
-      <Outlet />
+      <PageErrorBoundary>
+        <Outlet />
+      </PageErrorBoundary>
     </Page>
   );
 }
