@@ -412,7 +412,7 @@ async fn crl_isolation_revocation_only_affects_issuing_ca() {
     .unwrap();
 
     // Revoke the certificate (sets status to 'revoked', records revoked_at).
-    db::certs::revoke(&state.db, cert_id, Some(1), now)
+    db::certs::revoke(&state.db, cert_id, Some(1), now, None)
         .await
         .unwrap();
 
@@ -743,6 +743,287 @@ async fn admin_cas_list_returns_both_cas() {
         ec["is_default"],
         json!(false),
         "ec must not be marked default"
+    );
+}
+
+/// Build the two-CA state with admin sessions enabled.
+///
+/// Seeds two tokens:
+///   - `"tok-admin"` — server-wide Administrator
+///   - `"tok-caops-rsa"` — ca_operations scoped to "rsa"
+async fn build_two_ca_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
+    use akamu::config::AdminConfig;
+    use akamu::state::{AdminAuthMethod, AdminSession, OperatorRole};
+    use std::collections::HashMap;
+    use std::time::Instant;
+
+    let dir = tempfile::TempDir::new().unwrap();
+
+    let config = Arc::new(Config {
+        listen_addr: "127.0.0.1:0".into(),
+        base_url: "https://acme.test".into(),
+        database: DatabaseConfig {
+            url: "sqlite::memory:".into(),
+            max_connections: None,
+            require_tls: false,
+        },
+        cas: vec![
+            CaConfig {
+                id: "rsa".to_owned(),
+                is_default: true,
+                caa_identities: vec![],
+                key_file: dir.path().join("ca-rsa.key").to_string_lossy().into_owned(),
+                cert_file: dir.path().join("ca-rsa.crt").to_string_lossy().into_owned(),
+                key_type: "ec:P-256".into(),
+                hash_alg: "sha256".into(),
+                validity_days: 90,
+                crl_url: None,
+                ocsp_url: None,
+                common_name: "Test CA RSA".into(),
+                organization: "Test".into(),
+                ca_validity_years: 10,
+                crl_next_update_secs: 86400,
+                enforce_validity_cap: false,
+                require_encrypted_key: false,
+                key_password_file: None,
+            },
+            CaConfig {
+                id: "ec".to_owned(),
+                is_default: false,
+                caa_identities: vec![],
+                key_file: dir.path().join("ca-ec.key").to_string_lossy().into_owned(),
+                cert_file: dir.path().join("ca-ec.crt").to_string_lossy().into_owned(),
+                key_type: "ec:P-256".into(),
+                hash_alg: "sha256".into(),
+                validity_days: 90,
+                crl_url: None,
+                ocsp_url: None,
+                common_name: "Test CA EC".into(),
+                organization: "Test".into(),
+                ca_validity_years: 10,
+                crl_next_update_secs: 86400,
+                enforce_validity_cap: false,
+                require_encrypted_key: false,
+                key_password_file: None,
+            },
+        ],
+        mtc: MtcConfig {
+            log_path: "/dev/null".into(),
+            enabled: false,
+            signing_key: None,
+            checkpoint_interval_secs: 3600,
+            cosigners: vec![],
+            landmark_interval_secs: 86400,
+            max_active_landmarks: 100,
+            checkpoint_retention_count: 1000,
+        },
+        server: ServerConfig::default(),
+        tls: Default::default(),
+        profiles: Default::default(),
+        admin: Some(AdminConfig {
+            bootstrap_key_type: "ec:P-256".into(),
+            bootstrap_operator_cert_file: None,
+            bootstrap_operator_key_file: None,
+            bootstrap_operator_name: "admin".into(),
+            bootstrap_operator_gssapi_principal: None,
+            gssapi: None,
+            session_ttl_secs: 3600,
+            session_lock_secs: 900,
+            auth_rate_limit: 20,
+            audit_max_rows: None,
+            audit_overflow: "drop_oldest".into(),
+            audit_alarm_threshold: 10,
+            audit_alarm_action: "syslog".into(),
+            max_failed_auth: 5,
+            lockout_duration_secs: 1800,
+        }),
+        email_challenge: None,
+        delegation_upstream: None,
+    });
+
+    db::install_drivers();
+    let db_conn = db::open("sqlite::memory:", 1, false).await.unwrap();
+
+    let rsa_cfg = &config.cas[0];
+    let (rsa_key, rsa_cert_der) = ca::init::load_or_generate(rsa_cfg).unwrap();
+    let rsa_spki = rsa_key.public_key().unwrap().spki_der().to_vec();
+    let rsa_aki = ca::init::compute_aki_from_spki(&rsa_spki).unwrap_or_default();
+
+    let ec_cfg = &config.cas[1];
+    let (ec_key, ec_cert_der) = ca::init::load_or_generate(ec_cfg).unwrap();
+    let ec_spki = ec_key.public_key().unwrap().spki_der().to_vec();
+    let ec_aki = ca::init::compute_aki_from_spki(&ec_spki).unwrap_or_default();
+
+    let ca_rsa = Arc::new(CaState {
+        id: "rsa".into(),
+        key_type: "ec:P-256".into(),
+        crl_next_update_secs: 86400,
+        key: rsa_key,
+        cert_der: rsa_cert_der,
+        hash_alg: "sha256".into(),
+        validity_days: 90,
+        crl_url: None,
+        ocsp_url: None,
+        aki_bytes: rsa_aki,
+        enforce_validity_cap: false,
+        caa_identities: vec![],
+    });
+    let ca_ec = Arc::new(CaState {
+        id: "ec".into(),
+        key_type: "ec:P-256".into(),
+        crl_next_update_secs: 86400,
+        key: ec_key,
+        cert_der: ec_cert_der,
+        hash_alg: "sha256".into(),
+        validity_days: 90,
+        crl_url: None,
+        ocsp_url: None,
+        aki_bytes: ec_aki,
+        enforce_validity_cap: false,
+        caa_identities: vec![],
+    });
+
+    let mut cas_map = indexmap::IndexMap::new();
+    cas_map.insert("rsa".to_string(), ca_rsa.clone());
+    cas_map.insert("ec".to_string(), ca_ec.clone());
+
+    let mut crl_caches = std::collections::HashMap::new();
+    crl_caches.insert("rsa".to_string(), Default::default());
+    crl_caches.insert("ec".to_string(), Default::default());
+
+    let mut link_headers = std::collections::HashMap::new();
+    link_headers.insert(
+        "rsa".to_string(),
+        Arc::new(axum::http::HeaderValue::from_static(
+            "<https://acme.test/acme/directory>;rel=\"index\"",
+        )),
+    );
+    link_headers.insert(
+        "ec".to_string(),
+        Arc::new(axum::http::HeaderValue::from_static(
+            "<https://acme.test/acme/ec/directory>;rel=\"index\"",
+        )),
+    );
+
+    let sessions: HashMap<String, AdminSession> = [
+        (
+            "tok-admin".to_string(),
+            AdminSession {
+                operator_id: 1,
+                name: zeroize::Zeroizing::new("admin".to_string()),
+                role: OperatorRole::Administrator,
+                created_at: Instant::now(),
+                last_active_at: Instant::now(),
+                auth_method: AdminAuthMethod::Cert,
+                ca_id: String::new(),
+            },
+        ),
+        (
+            "tok-caops-rsa".to_string(),
+            AdminSession {
+                operator_id: 2,
+                name: zeroize::Zeroizing::new("caops-rsa".to_string()),
+                role: OperatorRole::CaOperations,
+                created_at: Instant::now(),
+                last_active_at: Instant::now(),
+                auth_method: AdminAuthMethod::Cert,
+                ca_id: "rsa".to_string(),
+            },
+        ),
+    ]
+    .into_iter()
+    .collect();
+
+    let state = Arc::new(AppState {
+        config: Arc::clone(&config),
+        db: db_conn.clone(),
+        db_ro: db_conn.clone(),
+        db_kind: db::DbKind::Sqlite,
+        profiles: akamu::profiles::ProfileRegistry::empty(&ca_rsa),
+        cas: Arc::new(cas_map),
+        default_ca_id: Arc::new("rsa".to_string()),
+        mtc: Arc::new(MtcState {
+            log: None,
+            algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
+            signing_key: None,
+            signing_hash_alg: "sha256".into(),
+            cosigner_clients: vec![],
+            _log_lock: None,
+        }),
+        tls: None,
+        spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        nonces: Arc::new(akamu::state::NonceBucket::new()),
+        link_headers: Arc::new(link_headers),
+        validation_client: {
+            let https = hyper_rustls::HttpsConnectorBuilder::new()
+                .with_native_roots()
+                .expect("native roots")
+                .https_or_http()
+                .enable_http1()
+                .build();
+            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                .build(https)
+        },
+        crl_caches: Arc::new(crl_caches),
+        audit: Arc::new(akamu::audit::AuditState::new()),
+        audit_policy: Arc::new(akamu::audit::AuditPolicy::default()),
+        admin_sessions: Some(Arc::new(tokio::sync::Mutex::new(sessions))),
+        admin_auth_limiter: None,
+        eab_session_nonces: None,
+        startup_time: std::time::Instant::now(),
+        gss_cred: None,
+        admin_gss_cred: None,
+        eab_master_secret: None,
+    });
+
+    (state, dir)
+}
+
+/// A ca_operations operator scoped to "rsa" sees only that CA in GET /admin/cas.
+#[tokio::test]
+async fn ca_operations_scoped_cas_list_shows_only_own_ca() {
+    let (state, _dir) = build_two_ca_admin_state().await;
+    let router = routes::build_router(Arc::clone(&state), None);
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/admin/cas")
+        .header(header::AUTHORIZATION, "Bearer tok-caops-rsa")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let cas = json["cas"].as_array().expect("must have 'cas' array");
+    assert_eq!(cas.len(), 1, "scoped operator must see only 1 CA");
+    assert_eq!(
+        cas[0]["id"].as_str(),
+        Some("rsa"),
+        "the visible CA must be 'rsa'"
+    );
+}
+
+/// A ca_operations operator scoped to "rsa" gets 404 when accessing the "ec" CA.
+#[tokio::test]
+async fn ca_operations_scoped_get_ca_wrong_ca_returns_404() {
+    let (state, _dir) = build_two_ca_admin_state().await;
+    let router = routes::build_router(Arc::clone(&state), None);
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/admin/cas/ec")
+        .header(header::AUTHORIZATION, "Bearer tok-caops-rsa")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "scoped ca_operations must not see a CA outside its scope"
     );
 }
 

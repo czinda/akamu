@@ -1496,7 +1496,7 @@ async fn test_revoke_already_revoked_cert() {
             .unwrap()
             .0;
     // Directly revoke via DB.
-    akamu::db::certs::revoke(&state.db, &cert_id, Some(1), 1_700_000_000)
+    akamu::db::certs::revoke(&state.db, &cert_id, Some(1), 1_700_000_000, None)
         .await
         .unwrap();
 
@@ -3202,7 +3202,7 @@ async fn test_crl_endpoint_contains_revoked_serial() {
     );
 
     // Revoke the certificate via DB (no ACME auth needed for the test).
-    akamu::db::certs::revoke(&state.db, &cert_id, Some(1), 1_700_000_000)
+    akamu::db::certs::revoke(&state.db, &cert_id, Some(1), 1_700_000_000, None)
         .await
         .unwrap();
     // Clear the CRL cache so the next request rebuilds with the new entry.

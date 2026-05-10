@@ -80,8 +80,14 @@ pub async fn revoke_cert(
     }
 
     let now = unix_now();
-    let revoked =
-        db::certs::revoke(&state.db, &cert.id, payload.reason.map(|r| r as i64), now).await?;
+    let revoked = db::certs::revoke(
+        &state.db,
+        &cert.id,
+        payload.reason.map(|r| r as i64),
+        now,
+        None,
+    )
+    .await?;
 
     if !revoked {
         return Err(AcmeError::AlreadyRevoked);

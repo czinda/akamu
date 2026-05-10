@@ -1029,37 +1029,13 @@ pub async fn post_revoke(
             .into_response();
     }
 
-    // CA-scoped operators may only revoke certificates from their own CA.
-    if let Some(scope) = operator.ca_scope() {
-        match db::certs::get_by_id(&state.db, &payload.cert_id).await {
-            Ok(Some(cert)) if cert.ca_id != scope => {
-                return (
-                    StatusCode::FORBIDDEN,
-                    "certificate does not belong to your CA scope",
-                )
-                    .into_response();
-            }
-            Ok(None) => {
-                return (StatusCode::NOT_FOUND, "certificate not found").into_response();
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "post_revoke: CA scope check db error");
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"status": 500, "detail": "database error"})),
-                )
-                    .into_response();
-            }
-            Ok(Some(_)) => {} // cert.ca_id == operator.ca_id — permitted
-        }
-    }
-
     let now = unix_now();
     match db::certs::revoke(
         &state.db,
         &payload.cert_id,
         Some(payload.reason as i64),
         now,
+        operator.ca_scope(),
     )
     .await
     {

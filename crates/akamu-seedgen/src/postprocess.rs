@@ -46,7 +46,7 @@ pub async fn run(
                     // Nothing to do — cert is already in `valid` status in the DB.
                 }
                 TargetState::Revoked { reason } => {
-                    db::certs::revoke(&server.db, &cert.cert_id, Some(*reason as i64), now)
+                    db::certs::revoke(&server.db, &cert.cert_id, Some(*reason as i64), now, None)
                         .await
                         .map_err(|e| format!("revoke cert {}: {e}", cert.cert_id))?;
                     stats.revoked += 1;

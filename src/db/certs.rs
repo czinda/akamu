@@ -121,17 +121,32 @@ pub async fn revoke(
     id: &str,
     reason: Option<i64>,
     now: i64,
+    ca_id: Option<&str>,
 ) -> Result<bool, AcmeError> {
-    let n = super::query(
-        "UPDATE certificates SET status = 'revoked', revoked_at = ?, revocation_reason = ?
-         WHERE id = ? AND status = 'valid'",
-    )
-    .bind(now)
-    .bind(reason)
-    .bind(id)
-    .execute(executor)
-    .await?
-    .rows_affected();
+    let n = if let Some(ca) = ca_id {
+        super::query(
+            "UPDATE certificates SET status = 'revoked', revoked_at = ?, revocation_reason = ?
+             WHERE id = ? AND status = 'valid' AND ca_id = ?",
+        )
+        .bind(now)
+        .bind(reason)
+        .bind(id)
+        .bind(ca)
+        .execute(executor)
+        .await?
+        .rows_affected()
+    } else {
+        super::query(
+            "UPDATE certificates SET status = 'revoked', revoked_at = ?, revocation_reason = ?
+             WHERE id = ? AND status = 'valid'",
+        )
+        .bind(now)
+        .bind(reason)
+        .bind(id)
+        .execute(executor)
+        .await?
+        .rows_affected()
+    };
     Ok(n > 0)
 }
 
@@ -541,7 +556,9 @@ mod tests {
         let db = open_db().await;
         insert_cert(&db, "cert-3", "acct-3", "valid", 1_800_000_000).await;
 
-        let changed = revoke(&db, "cert-3", Some(1), 1_700_500_000).await.unwrap();
+        let changed = revoke(&db, "cert-3", Some(1), 1_700_500_000, None)
+            .await
+            .unwrap();
         assert!(changed, "revoke should return true when cert was valid");
 
         let row = get_by_id(&db, "cert-3").await.unwrap().unwrap();
@@ -556,9 +573,13 @@ mod tests {
         insert_cert(&db, "cert-4", "acct-4", "valid", 1_800_000_000).await;
 
         // First revocation succeeds.
-        revoke(&db, "cert-4", None, 1_700_500_000).await.unwrap();
+        revoke(&db, "cert-4", None, 1_700_500_000, None)
+            .await
+            .unwrap();
         // Second revocation returns false (already revoked, status != 'valid').
-        let changed = revoke(&db, "cert-4", None, 1_700_600_000).await.unwrap();
+        let changed = revoke(&db, "cert-4", None, 1_700_600_000, None)
+            .await
+            .unwrap();
         assert!(
             !changed,
             "revoke should return false when cert is already revoked"
@@ -568,7 +589,7 @@ mod tests {
     #[tokio::test]
     async fn revoke_nonexistent_returns_false() {
         let db = open_db().await;
-        let changed = revoke(&db, "nonexistent-cert", None, 1_700_500_000)
+        let changed = revoke(&db, "nonexistent-cert", None, 1_700_500_000, None)
             .await
             .unwrap();
         assert!(!changed, "revoke should return false for nonexistent cert");
@@ -579,7 +600,9 @@ mod tests {
         let db = open_db().await;
         insert_cert(&db, "cert-5", "acct-5", "valid", 1_800_000_000).await;
 
-        let changed = revoke(&db, "cert-5", None, 1_700_500_000).await.unwrap();
+        let changed = revoke(&db, "cert-5", None, 1_700_500_000, None)
+            .await
+            .unwrap();
         assert!(changed);
 
         let row = get_by_id(&db, "cert-5").await.unwrap().unwrap();
@@ -644,7 +667,9 @@ mod tests {
         insert_cert(&db, "cert-8", "acct-8a", "valid", 1_800_000_000).await;
         insert_cert(&db, "cert-9", "acct-8b", "valid", 1_800_000_000).await;
 
-        revoke(&db, "cert-9", Some(4), 1_700_500_000).await.unwrap();
+        revoke(&db, "cert-9", Some(4), 1_700_500_000, None)
+            .await
+            .unwrap();
 
         let revoked = list_revoked(&db, "default").await.unwrap();
         assert_eq!(revoked.len(), 1);
@@ -678,10 +703,10 @@ mod tests {
         insert(&db, cert_b).await.unwrap();
 
         // Revoke both.
-        revoke(&db, "cert-ca-a", Some(1), 1_700_500_000)
+        revoke(&db, "cert-ca-a", Some(1), 1_700_500_000, None)
             .await
             .unwrap();
-        revoke(&db, "cert-ca-b", Some(2), 1_700_500_001)
+        revoke(&db, "cert-ca-b", Some(2), 1_700_500_001, None)
             .await
             .unwrap();
 
@@ -761,7 +786,7 @@ mod tests {
         let now = 1_700_000_000i64;
 
         insert_cert(&db, "cert-rev", "acct-z", "valid", now + 10_000).await;
-        revoke(&db, "cert-rev", None, now).await.unwrap();
+        revoke(&db, "cert-rev", None, now, None).await.unwrap();
 
         let results = list_valid_for_account(&db, "acct-z", now).await.unwrap();
         assert!(
@@ -802,7 +827,7 @@ mod tests {
         assert!(insert(&raw, row).await.is_err());
         assert!(get_by_id(&raw, "any").await.is_err());
         assert!(get_by_serial(&raw, "any").await.is_err());
-        assert!(revoke(&raw, "any", None, now).await.is_err());
+        assert!(revoke(&raw, "any", None, now, None).await.is_err());
         assert!(set_mtc_log_index(&raw, "any", 0).await.is_err());
         assert!(set_renewal_window(&raw, "any", now, now + 86400)
             .await
