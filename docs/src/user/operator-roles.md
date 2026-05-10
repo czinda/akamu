@@ -98,6 +98,19 @@ operators or read the server configuration.
 - Cannot deactivate ACME accounts.
 - Cannot clear account profile grant lists.
 
+**CA scope (optional):** A `ca_operations` operator can be assigned a `ca_id`
+scope.  When scoped, the operator's visibility is limited to the assigned CA:
+`GET /admin/cas` returns only that CA, CRL/cross-sign operations are restricted
+to the scoped CA, and certificate and order queries are automatically filtered.
+Unlike `ca_ra`, a `ca_id` scope is **optional** for `ca_operations`; an
+unscoped `ca_operations` operator has server-wide access.
+
+**EAB keys and CA scope:** Even a scoped `ca_operations` operator may create
+EAB keys.  EAB keys are not bound to any CA — they are used for ACME account
+registration which is server-global — so this is intentional.  Only an
+`administrator` may set `for_operator_id` when creating an EAB key via
+`POST /admin/eab` to assign it to a different operator for web UI login.
+
 **Typical use case:** A CI/CD pipeline that issues EAB keys for new devices, or
 an operations team member who manages revocation and CRL generation without
 having the ability to create new operators.
@@ -121,7 +134,6 @@ is intentionally narrow: it cannot see data from other CAs and cannot perform
 any CA infrastructure operations.
 
 **Key capabilities:**
-- Issue EAB keys.
 - View EAB keys.
 - List and view certificates issued by the scoped CA only.
 - Download certificates issued by the scoped CA only.
@@ -130,6 +142,7 @@ any CA infrastructure operations.
 - View profiles, delegations, stats.
 
 **Key restrictions:**
+- Cannot create or delete EAB keys (`POST /admin/eab`, `DELETE /admin/eab/{kid}`).
 - Cannot list or view CAs (`GET /admin/cas`, `GET /admin/cas/{id}`).
 - Cannot see cross-certificates.
 - Cannot force CRL regeneration.
@@ -340,7 +353,7 @@ Use this guide to decide which role to assign:
 | Full PKI administrator who bootstraps the system and manages operators | `administrator` |
 | CI/CD pipeline that provisions EAB keys for new devices | `ca_operations` |
 | Automated system that revokes certificates across all CAs | `ca_operations` |
-| Branch RA service that issues EAB keys and revokes certs for one CA | `ca_ra` |
+| Branch RA service that views EAB keys and revokes certs for one CA | `ca_ra` |
 | External ACME client (NDC) that registers via a specific CA | `ca_ra` |
 | Security operations center monitoring tool | `auditor` |
 | Compliance dashboard that tracks issuance counts | `auditor` |
