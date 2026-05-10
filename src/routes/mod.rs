@@ -369,8 +369,12 @@ pub fn build_router(state: Arc<AppState>, static_dir: Option<&std::path::Path>) 
         let serve = ServeDir::new(dir)
             .append_index_html_on_directories(true)
             .fallback(index);
+        // Wrap static file service with security headers.
+        let serve_with_headers = tower::ServiceBuilder::new()
+            .layer(axum::middleware::from_fn(ui_security_headers))
+            .service(serve);
         router = router
-            .nest_service("/ui", serve)
+            .nest_service("/ui", serve_with_headers)
             .route("/", get(|| async { Redirect::permanent("/ui/") }));
     }
 
@@ -382,6 +386,39 @@ pub fn build_router(state: Arc<AppState>, static_dir: Option<&std::path::Path>) 
         }))
         .layer(TraceLayer::new_for_http().on_request(()).on_eos(()))
         .with_state(state)
+}
+
+// ── WebUI security headers ────────────────────────────────────────────────────
+
+/// Middleware that adds security headers to every `/ui/*` response.
+async fn ui_security_headers(req: Request, next: Next) -> Response {
+    let mut resp = next.run(req).await;
+    let headers = resp.headers_mut();
+    headers.insert(
+        HeaderName::from_static("content-security-policy"),
+        HeaderValue::from_static(
+            "default-src 'self'; \
+             script-src 'self' 'unsafe-inline'; \
+             style-src 'self' 'unsafe-inline'; \
+             img-src 'self' data:; \
+             font-src 'self'; \
+             connect-src 'self'; \
+             frame-ancestors 'none'",
+        ),
+    );
+    headers.insert(
+        HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        HeaderName::from_static("x-frame-options"),
+        HeaderValue::from_static("DENY"),
+    );
+    headers.insert(
+        HeaderName::from_static("referrer-policy"),
+        HeaderValue::from_static("strict-origin-when-cross-origin"),
+    );
+    resp
 }
 
 // ── Shared request helpers ────────────────────────────────────────────────────
