@@ -87,10 +87,7 @@ impl AcmeClient {
     }
 
     async fn new_with_client(
-        http: Client<
-            hyper_rustls::HttpsConnector<HttpConnector>,
-            http_body_util::Full<Bytes>,
-        >,
+        http: Client<hyper_rustls::HttpsConnector<HttpConnector>, http_body_util::Full<Bytes>>,
         directory_url: &str,
     ) -> Result<Self, ClientError> {
         let dir = get_json(&http, directory_url).await?;
@@ -165,8 +162,9 @@ impl AcmeClient {
 
         let payload_str = payload.to_string();
 
-        // Retry loop for badNonce.
-        let (status, body, headers) = loop {
+        // Retry loop for badNonce (max 5 attempts).
+        let mut last_result = None;
+        for attempt in 0..5_u8 {
             let nonce = self.fetch_nonce().await?;
             let key_ref = JwsKeyRef::Jwk {
                 jwk: key.public_jwk().clone(),
@@ -183,11 +181,19 @@ impl AcmeClient {
                 .map_err(|e| ClientError::Jose(akamu_jose::JoseError::Json(e)))?;
             let (status, body, headers) = self.post_jws_once(url, &jws_value).await?;
             if body["type"].as_str() == Some("urn:ietf:params:acme:error:badNonce") {
+                if attempt == 4 {
+                    return Err(ClientError::Http(
+                        "badNonce retry limit exceeded".to_string(),
+                    ));
+                }
                 *self.cached_nonce.lock().await = None;
                 continue;
             }
-            break (status, body, headers);
-        };
+            last_result = Some((status, body, headers));
+            break;
+        }
+        let (status, body, headers) =
+            last_result.expect("loop always sets last_result before break");
 
         if status != StatusCode::CREATED {
             return Err(acme_error(&body, status, "new-account"));
@@ -226,7 +232,8 @@ impl AcmeClient {
         let payload = serde_json::json!({ "onlyReturnExisting": true });
         let payload_str = payload.to_string();
 
-        let (status, body, headers) = loop {
+        let mut last_result = None;
+        for attempt in 0..5_u8 {
             let nonce = self.fetch_nonce().await?;
             let key_ref = JwsKeyRef::Jwk {
                 jwk: key.public_jwk().clone(),
@@ -243,11 +250,19 @@ impl AcmeClient {
                 .map_err(|e| ClientError::Jose(akamu_jose::JoseError::Json(e)))?;
             let (status, body, headers) = self.post_jws_once(url, &jws_value).await?;
             if body["type"].as_str() == Some("urn:ietf:params:acme:error:badNonce") {
+                if attempt == 4 {
+                    return Err(ClientError::Http(
+                        "badNonce retry limit exceeded".to_string(),
+                    ));
+                }
                 *self.cached_nonce.lock().await = None;
                 continue;
             }
-            break (status, body, headers);
-        };
+            last_result = Some((status, body, headers));
+            break;
+        }
+        let (status, body, headers) =
+            last_result.expect("loop always sets last_result before break");
 
         if status != StatusCode::OK {
             return Err(acme_error(&body, status, "find-account"));
@@ -388,9 +403,7 @@ impl AcmeClient {
 
         let payload_bytes = serde_json::to_vec(&payload)
             .map_err(|e| ClientError::Http(format!("serialize new-order payload: {e}")))?;
-        let (status, body, headers) = self
-            .post_kid(acct, url, Some(&payload_bytes))
-            .await?;
+        let (status, body, headers) = self.post_kid(acct, url, Some(&payload_bytes)).await?;
         if status != StatusCode::CREATED {
             return Err(acme_error(&body, status, "new-order"));
         }
@@ -473,10 +486,13 @@ impl AcmeClient {
             match body["status"].as_str() {
                 Some("ready") | Some("valid") => return parse_order(&body, order_url.to_owned()),
                 Some("invalid") => {
-                    return Err(ClientError::Http(format!(
-                        "order invalid: {}",
-                        body["error"]
-                    )))
+                    let detail = if body["error"].is_null() {
+                        "challenge validation failed (check challenge errors on the authorization)"
+                            .to_string()
+                    } else {
+                        body["error"].to_string()
+                    };
+                    return Err(ClientError::Http(format!("order invalid: {detail}")));
                 }
                 _ => {}
             }
@@ -812,14 +828,14 @@ impl AcmeClient {
 
     // ── Internal signing helpers ───────────────────────────────────────────────
 
-    /// POST with the account URL as `kid`, with badNonce retry.
+    /// POST with the account URL as `kid`, with badNonce retry (max 5 attempts).
     async fn post_kid(
         &self,
         acct: &Account,
         url: &str,
         payload: Option<&[u8]>,
     ) -> Result<(StatusCode, Value, HeaderMap), ClientError> {
-        loop {
+        for attempt in 0..5_u8 {
             let nonce = self.fetch_nonce().await?;
             let key_ref = JwsKeyRef::Kid {
                 kid: acct.url.clone(),
@@ -836,11 +852,17 @@ impl AcmeClient {
                 .map_err(|e| ClientError::Jose(akamu_jose::JoseError::Json(e)))?;
             let (status, body, headers) = self.post_jws_once(url, &jws_value).await?;
             if body["type"].as_str() == Some("urn:ietf:params:acme:error:badNonce") {
+                if attempt == 4 {
+                    return Err(ClientError::Http(
+                        "badNonce retry limit exceeded".to_string(),
+                    ));
+                }
                 *self.cached_nonce.lock().await = None;
                 continue;
             }
             return Ok((status, body, headers));
         }
+        unreachable!()
     }
 
     /// Like `post_kid` but returns raw bytes instead of JSON (for PEM download).
@@ -850,7 +872,7 @@ impl AcmeClient {
         url: &str,
         payload: Option<&[u8]>,
     ) -> Result<(StatusCode, HeaderMap, Vec<u8>), ClientError> {
-        loop {
+        for attempt in 0..5_u8 {
             let nonce = self.fetch_nonce().await?;
             let key_ref = JwsKeyRef::Kid {
                 kid: acct.url.clone(),
@@ -869,12 +891,18 @@ impl AcmeClient {
             // Check for badNonce in raw response.
             if let Ok(json) = serde_json::from_slice::<Value>(&body_bytes) {
                 if json["type"].as_str() == Some("urn:ietf:params:acme:error:badNonce") {
+                    if attempt == 4 {
+                        return Err(ClientError::Http(
+                            "badNonce retry limit exceeded".to_string(),
+                        ));
+                    }
                     *self.cached_nonce.lock().await = None;
                     continue;
                 }
             }
             return Ok((status, headers, body_bytes));
         }
+        unreachable!()
     }
 
     /// Low-level: POST a pre-serialised JWS body, return (status, parsed JSON, headers).
@@ -887,7 +915,12 @@ impl AcmeClient {
         let body_bytes = serde_json::to_vec(body)
             .map_err(|e| ClientError::Jose(akamu_jose::JoseError::Json(e)))?;
         let (status, headers, raw) = self.http_post_raw(url, body_bytes).await?;
-        let json = serde_json::from_slice(&raw).unwrap_or(Value::Null);
+        let json = if raw.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&raw)
+                .map_err(|e| ClientError::Http(format!("response body is not valid JSON: {e}")))?
+        };
         Ok((status, json, headers))
     }
 
