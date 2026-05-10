@@ -1,13 +1,15 @@
 const BASE = '';
 
 function getToken(): string | null {
+  const raw = sessionStorage.getItem('akamu_auth');
+  if (!raw) return null;
   try {
-    const raw = sessionStorage.getItem('akamu_auth');
-    if (raw) return (JSON.parse(raw) as { token: string | null }).token;
+    return (JSON.parse(raw) as { token: string | null }).token;
   } catch {
-    // ignore
+    console.warn('akamu: corrupt akamu_auth entry in sessionStorage removed');
+    sessionStorage.removeItem('akamu_auth');
+    return null;
   }
-  return null;
 }
 
 export class ApiError extends Error {
