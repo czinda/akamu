@@ -935,9 +935,19 @@ pub async fn post_session_eab(
     }
 
     // Commit the nonce only after HMAC is verified — transient failures above won't
-    // burn the client's retry slot.
+    // burn the client's retry slot.  If the store exceeds 10 000 entries (burst
+    // traffic from many IPs), evict the oldest half before inserting so we never
+    // exhaust server memory.
+    const EAB_NONCE_CAP: usize = 10_000;
     if let Some(ref nonce_store) = state.eab_session_nonces {
-        nonce_store.lock().await.insert(nonce_key, now);
+        let mut store = nonce_store.lock().await;
+        if store.len() >= EAB_NONCE_CAP {
+            let mut pairs: Vec<(String, i64)> = store.drain().collect();
+            pairs.sort_unstable_by(|a, b| b.1.cmp(&a.1)); // newest first
+            pairs.truncate(EAB_NONCE_CAP / 2);
+            *store = pairs.into_iter().collect();
+        }
+        store.insert(nonce_key, now);
     }
 
     let role = match op.role.parse::<OperatorRole>() {
