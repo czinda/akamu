@@ -129,7 +129,7 @@ pub fn register_profiles(state: &Arc<AppState>, profiles: &[ProfileSpec]) {
             .add_profile(p.id.clone(), p.description.clone(), params);
         // spec.rs validate() already rejects duplicate profile IDs; if we reach
         // this branch something has gone wrong in the caller.
-        debug_assert!(added, "profile '{}' already registered — duplicate IDs should have been caught by spec validation", p.id);
+        assert!(added, "profile '{}' already registered — duplicate IDs should have been caught by spec validation", p.id);
         if !added {
             tracing::warn!(id = %p.id, "profile already exists — skipped");
         } else {

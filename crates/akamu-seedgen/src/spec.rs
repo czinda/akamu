@@ -135,6 +135,13 @@ impl SeedSpec {
                     s.name, s.num_accounts
                 ));
             }
+            if s.num_accounts == 0 && s.certs.order_total() > 0 {
+                return Err(format!(
+                    "scenario '{}': num_accounts must be >= 1 when certs/orders are requested (order_total = {})",
+                    s.name,
+                    s.certs.order_total()
+                ));
+            }
         }
 
         Ok(())
