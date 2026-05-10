@@ -141,11 +141,16 @@ pub async fn set_mtc_log_index(
     id: &str,
     index: i64,
 ) -> Result<(), AcmeError> {
-    super::query("UPDATE certificates SET mtc_log_index = ? WHERE id = ?")
+    let result = super::query("UPDATE certificates SET mtc_log_index = ? WHERE id = ?")
         .bind(index)
         .bind(id)
         .execute(executor)
         .await?;
+    if result.rows_affected() == 0 {
+        return Err(AcmeError::Database(format!(
+            "set_mtc_log_index: certificate '{id}' not found"
+        )));
+    }
     Ok(())
 }
 
@@ -163,7 +168,7 @@ pub async fn set_renewal_window(
             "renewal window start ({start}) must be before end ({end})"
         )));
     }
-    super::query(
+    let result = super::query(
         "UPDATE certificates SET suggested_window_start = ?, suggested_window_end = ?
          WHERE id = ?",
     )
@@ -172,6 +177,11 @@ pub async fn set_renewal_window(
     .bind(id)
     .execute(executor)
     .await?;
+    if result.rows_affected() == 0 {
+        return Err(AcmeError::Database(format!(
+            "set_renewal_window: certificate '{id}' not found"
+        )));
+    }
     Ok(())
 }
 
@@ -595,10 +605,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_mtc_log_index_nonexistent_is_ok() {
-        // Should not error even if no row is updated.
+    async fn set_mtc_log_index_nonexistent_is_err() {
         let db = open_db().await;
-        set_mtc_log_index(&db, "nonexistent", 99).await.unwrap();
+        assert!(
+            set_mtc_log_index(&db, "nonexistent", 99).await.is_err(),
+            "set_mtc_log_index on nonexistent cert must return Err"
+        );
     }
 
     #[tokio::test]
@@ -616,11 +628,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_renewal_window_nonexistent_is_ok() {
+    async fn set_renewal_window_nonexistent_is_err() {
         let db = open_db().await;
-        set_renewal_window(&db, "nonexistent", 100, 200)
-            .await
-            .unwrap();
+        assert!(
+            set_renewal_window(&db, "nonexistent", 100, 200)
+                .await
+                .is_err(),
+            "set_renewal_window on nonexistent cert must return Err"
+        );
     }
 
     #[tokio::test]
