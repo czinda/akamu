@@ -224,6 +224,10 @@ impl OperatorContext {
     /// `None` when they have server-wide access.
     ///
     /// Meaningful for `ca_ra` (always scoped) and `ca_operations` (optionally scoped).
+    /// `administrator` and `auditor` always return `None` (they are server-wide by design).
+    ///
+    /// This is the single authoritative point for CA-scope enforcement.  All route
+    /// handlers that restrict visibility to a specific CA MUST call this method.
     pub fn ca_scope(&self) -> Option<&str> {
         if self.ca_id.is_empty() {
             None
@@ -719,7 +723,13 @@ pub async fn post_session_eab(
     let axum::extract::Json(payload) =
         match axum::extract::Json::<serde_json::Value>::from_request(req, &state).await {
             Ok(j) => j,
-            Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    axum::Json(json!({"status": 400, "detail": e.to_string()})),
+                )
+                    .into_response()
+            }
         };
 
     // ── Per-IP rate limiting (FIA_AFL.1 / FAU_ARP.1 self-DoS guard) ──────────
@@ -750,7 +760,7 @@ pub async fn post_session_eab(
                 .await;
             return (
                 StatusCode::TOO_MANY_REQUESTS,
-                "authentication rate limit exceeded; try again later",
+                axum::Json(json!({"status": 429, "detail": "authentication rate limit exceeded; try again later"})),
             )
                 .into_response();
         }
@@ -763,19 +773,31 @@ pub async fn post_session_eab(
     let kid = match payload.get("kid").and_then(|v| v.as_str()) {
         Some(k) if !k.is_empty() => k.to_owned(),
         _ => {
-            return (StatusCode::BAD_REQUEST, "kid is required").into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                axum::Json(json!({"status": 400, "detail": "kid is required"})),
+            )
+                .into_response();
         }
     };
     let timestamp = match payload.get("timestamp").and_then(|v| v.as_i64()) {
         Some(t) => t,
         None => {
-            return (StatusCode::BAD_REQUEST, "timestamp (integer) is required").into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                axum::Json(json!({"status": 400, "detail": "timestamp (integer) is required"})),
+            )
+                .into_response();
         }
     };
     let signature_b64 = match payload.get("signature").and_then(|v| v.as_str()) {
         Some(s) if !s.is_empty() => s.to_owned(),
         _ => {
-            return (StatusCode::BAD_REQUEST, "signature is required").into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                axum::Json(json!({"status": 400, "detail": "signature is required"})),
+            )
+                .into_response();
         }
     };
 
@@ -785,23 +807,37 @@ pub async fn post_session_eab(
         return (
             StatusCode::UNAUTHORIZED,
             axum::Json(json!({
-                "error": "timestamp_out_of_window",
-                "message": "timestamp must be within 60 seconds of server time"
+                "status": 401,
+                "detail": "timestamp must be within 60 seconds of server time"
             })),
         )
             .into_response();
     }
 
-    // Anti-replay: reject if (kid, timestamp) was already seen within the window.
-    // Entries older than 120 s are evicted lazily.  The nonce is NOT committed here
-    // so that a transient DB failure does not permanently burn the client's retry.
+    // Anti-replay: atomically check-and-reserve the (kid, timestamp) slot.
+    // Inserting the sentinel inside the lock prevents a TOCTOU race where two
+    // concurrent requests both pass the contains_key check before either commits.
+    // On HMAC failure the slot is released so the client can retry; on all other
+    // failures the slot remains reserved (those paths are not retryable anyway).
+    const EAB_NONCE_CAP: usize = 10_000;
     let nonce_key = format!("{kid}.{timestamp}");
     if let Some(ref nonce_store) = state.eab_session_nonces {
         let mut store = nonce_store.lock().await;
         store.retain(|_, ts| (now - *ts).abs() <= 120);
         if store.contains_key(&nonce_key) {
-            return (StatusCode::UNAUTHORIZED, "replay detected").into_response();
+            return (
+                StatusCode::UNAUTHORIZED,
+                axum::Json(json!({"status": 401, "detail": "replay detected"})),
+            )
+                .into_response();
         }
+        if store.len() >= EAB_NONCE_CAP {
+            let mut pairs: Vec<(String, i64)> = store.drain().collect();
+            pairs.sort_unstable_by_key(|p| std::cmp::Reverse(p.1)); // newest first
+            pairs.truncate(EAB_NONCE_CAP / 2);
+            *store = pairs.into_iter().collect();
+        }
+        store.insert(nonce_key.clone(), now);
     }
 
     // Look up the EAB key.
@@ -814,7 +850,11 @@ pub async fn post_session_eab(
                         .with_detail("{\"method\":\"eab\",\"reason\":\"kid not found\"}"),
                 )
                 .await;
-            return (StatusCode::UNAUTHORIZED, "authentication failed").into_response();
+            return (
+                StatusCode::UNAUTHORIZED,
+                axum::Json(json!({"status": 401, "detail": "authentication failed"})),
+            )
+                .into_response();
         }
         Err(e) => {
             tracing::error!(error = %e, "post_session_eab: EAB key lookup failed");
@@ -910,7 +950,11 @@ pub async fn post_session_eab(
     {
         Ok(b) => b,
         Err(_) => {
-            return (StatusCode::BAD_REQUEST, "signature is not valid base64url").into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                axum::Json(json!({"status": 400, "detail": "signature is not valid base64url"})),
+            )
+                .into_response();
         }
     };
 
@@ -925,7 +969,7 @@ pub async fn post_session_eab(
         }
         return (
             StatusCode::BAD_REQUEST,
-            "EAB web UI login only supports sha256 keys; this key uses a different algorithm",
+            axum::Json(json!({"status": 400, "detail": "EAB web UI login only supports sha256 keys; this key uses a different algorithm"})),
         )
             .into_response();
     }
@@ -945,29 +989,21 @@ pub async fn post_session_eab(
         {
             tracing::warn!(error = %e, operator_id = op.id, "failed to record failed EAB attempt");
         }
+        // Release the reserved nonce slot so the client can retry with a correct signature.
+        if let Some(ref nonce_store) = state.eab_session_nonces {
+            nonce_store.lock().await.remove(&nonce_key);
+        }
         state
             .record_audit(
                 AuditEvent::failure(AuditEventType::AdminLogin)
                     .with_detail("{\"method\":\"eab\",\"reason\":\"hmac verify failed\"}"),
             )
             .await;
-        return (StatusCode::UNAUTHORIZED, "authentication failed").into_response();
-    }
-
-    // Commit the nonce only after HMAC is verified — transient failures above won't
-    // burn the client's retry slot.  If the store exceeds 10 000 entries (burst
-    // traffic from many IPs), evict the oldest half before inserting so we never
-    // exhaust server memory.
-    const EAB_NONCE_CAP: usize = 10_000;
-    if let Some(ref nonce_store) = state.eab_session_nonces {
-        let mut store = nonce_store.lock().await;
-        if store.len() >= EAB_NONCE_CAP {
-            let mut pairs: Vec<(String, i64)> = store.drain().collect();
-            pairs.sort_unstable_by_key(|p| std::cmp::Reverse(p.1)); // newest first
-            pairs.truncate(EAB_NONCE_CAP / 2);
-            *store = pairs.into_iter().collect();
-        }
-        store.insert(nonce_key, now);
+        return (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(json!({"status": 401, "detail": "authentication failed"})),
+        )
+            .into_response();
     }
 
     let role = match op.role.parse::<OperatorRole>() {
@@ -1060,6 +1096,51 @@ pub async fn delete_session(
 }
 
 // ── Role enforcement macro ────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::AdminAuthMethod;
+
+    fn ctx(role: OperatorRole, ca_id: &str) -> OperatorContext {
+        OperatorContext {
+            operator_id: 1,
+            name: "test".into(),
+            role,
+            ca_id: ca_id.to_string(),
+            auth_method: AdminAuthMethod::Eab,
+            session_token: None,
+        }
+    }
+
+    #[test]
+    fn ca_scope_empty_returns_none() {
+        assert_eq!(ctx(OperatorRole::CaOperations, "").ca_scope(), None);
+    }
+
+    #[test]
+    fn ca_scope_nonempty_returns_some() {
+        assert_eq!(ctx(OperatorRole::CaRa, "rsa").ca_scope(), Some("rsa"));
+    }
+
+    #[test]
+    fn administrator_with_empty_ca_id_returns_none() {
+        assert_eq!(ctx(OperatorRole::Administrator, "").ca_scope(), None);
+    }
+
+    #[test]
+    fn auditor_with_empty_ca_id_returns_none() {
+        assert_eq!(ctx(OperatorRole::Auditor, "").ca_scope(), None);
+    }
+
+    #[test]
+    fn ca_operations_scoped_returns_some() {
+        assert_eq!(
+            ctx(OperatorRole::CaOperations, "primary").ca_scope(),
+            Some("primary")
+        );
+    }
+}
 
 /// Return a 403 response if `$ctx.role` is not one of the listed `OperatorRole`
 /// variants.  Emits an `AdminAction` failure audit event before returning.

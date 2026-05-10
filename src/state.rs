@@ -420,7 +420,8 @@ pub struct AdminSession {
     pub operator_id: i64,
     pub name: zeroize::Zeroizing<String>,
     pub role: OperatorRole,
-    /// CA scope for `ca_ra` operators.  Empty means server-wide.
+    /// CA scope for `ca_ra` (required) and `ca_operations` (optional) operators.
+    /// Empty string means server-wide access (administrator, auditor, unscoped ca_operations).
     pub ca_id: String,
     /// When this session token was issued.
     pub created_at: Instant,
