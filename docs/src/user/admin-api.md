@@ -79,7 +79,9 @@ The token is also returned in the `X-Session-Token` response header.
 ### `DELETE /admin/session`
 
 Invalidate the current session token.  The server removes the token from its
-in-memory store and records an `admin.logout` audit event.
+in-memory store, records an `admin.logout` audit event, and returns a
+`Set-Cookie: session=; Max-Age=0` header that instructs the browser to
+immediately expire the session cookie set at login.
 
 **Response: `204 No Content`.**
 
@@ -531,6 +533,7 @@ Returns `404 Not Found` when the certificate does not exist.
 ### `POST /admin/eab`
 
 Provision a new External Account Binding key.
+Requires the `administrator` or `ca_operations` role.
 
 **Request body:**
 
@@ -538,17 +541,30 @@ Provision a new External Account Binding key.
 {
   "kid": "my-device-001",
   "hmac_key_b64u": "c2VjcmV0LWhtYWMta2V5LWJ1ZmZlcg",
-  "profile_grants": ["tlsserver"]
+  "profile_grants": ["tlsserver"],
+  "alg": "sha256",
+  "for_operator_id": 3
 }
 ```
 
-`profile_grants` is optional; omit it or set it to `null` for an unrestricted
-key.  Returns `409 Conflict` when the `kid` already exists.
+| Field | Required | Description |
+|-------|----------|-------------|
+| `kid` | Yes | Unique key identifier string. |
+| `hmac_key_b64u` | Yes | Base64url-encoded raw HMAC key bytes (no padding). |
+| `profile_grants` | No | Array of profile names the EAB key pre-authorizes. Omit or set to `null` for an unrestricted key. |
+| `alg` | No | HMAC algorithm: `"sha256"` (default), `"sha384"`, or `"sha512"`. |
+| `for_operator_id` | No | **Administrator only.** When set, `created_by_operator_id` on the new key is set to this operator ID instead of the calling operator. This controls which operator the key is associated with for `POST /admin/session/eab` web UI login. |
+
+EAB keys are server-global and are not bound to any CA, even when created by a
+scoped `ca_operations` operator.  Only `administrator` may set `for_operator_id`;
+a `ca_operations` caller that includes it receives `403 Forbidden`.
+
+Returns `409 Conflict` when the `kid` already exists.
 
 **Response `201 Created`:**
 
 ```json
-{ "kid": "my-device-001", "created": 1746154800 }
+{ "kid": "my-device-001", "created": 1746154800, "alg": "sha256" }
 ```
 
 ### `GET /admin/eab/{kid}`
