@@ -2913,8 +2913,8 @@ pub async fn get_delegations(
     let ca_scope = operator.ca_scope();
 
     match tokio::try_join!(
-        db::delegations::list(&state.db_ro, account_id, ca_scope, limit, offset),
-        db::delegations::count_list(&state.db_ro, account_id, ca_scope),
+        db::delegations::list(&state.db, account_id, ca_scope, limit, offset),
+        db::delegations::count_list(&state.db, account_id, ca_scope),
     ) {
         Ok((rows, total)) => {
             let list_result: Result<Vec<serde_json::Value>, String> =
@@ -3069,10 +3069,10 @@ pub async fn get_delegation_admin(
         Administrator | CaOperations | CaRa | Auditor
     );
 
-    match db::delegations::get_by_id(&state.db_ro, &id).await {
+    match db::delegations::get_by_id(&state.db, &id).await {
         Ok(Some(r)) => {
             if let Some(scope) = operator.ca_scope() {
-                match db::accounts::get_by_id(&state.db_ro, &r.account_id).await {
+                match db::accounts::get_by_id(&state.db, &r.account_id).await {
                     Ok(Some(acct)) if !acct.ca_id.is_empty() && acct.ca_id != scope => {
                         return (
                             StatusCode::NOT_FOUND,
