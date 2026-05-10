@@ -694,6 +694,10 @@ pub async fn post_session_eab(
     use axum::extract::FromRequest as _;
     use synta_certificate::default_hmac_provider;
 
+    if state.config.admin.is_none() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
     let peer_ip = req
         .extensions()
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
