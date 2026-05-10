@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/akamu-jose", "crates/akamu-client", "crates/akamu-cli", "crates/akamu-cosigner", "crates/akamu-ldap", "crates/akamu-gssapi", "crates/akamuctl"]
+members = [".", "crates/akamu-jose", "crates/akamu-client", "crates/akamu-cli", "crates/akamu-cosigner", "crates/akamu-ldap", "crates/akamu-gssapi", "crates/akamuctl", "crates/akamu-seedgen"]
 resolver = "2"
 
 [package]

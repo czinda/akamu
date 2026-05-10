@@ -1,0 +1,43 @@
+[package]
+name = "akamu-seedgen"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Seed-data generator for Akamu PKI — populates a SQLite database with realistic PKI objects for webui and admin-tool testing"
+
+[[bin]]
+name = "akamu-seedgen"
+path = "src/main.rs"
+
+[dependencies]
+akamu = { path = "../..", features = ["backend-sqlite"] }
+akamu-client = { path = "../akamu-client" }
+akamu-jose = { path = "../akamu-jose" }
+
+axum = { version = "0.8", features = ["http1", "macros"] }
+tokio = { version = "1", features = ["full"] }
+sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+clap = { version = "4", features = ["derive"] }
+
+base64 = "0.22"
+rand = "0.8"
+rand_chacha = "0.3"
+uuid = { version = "1", features = ["v4"] }
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+indexmap = "2"
+tempfile = "3"
+
+synta-certificate = { version = ">=0.2.0", features = ["std"] }
+synta-mtc = { version = ">=0.2.0", features = ["std"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "rustls-native-certs", "ring"] }
+hyper-util = { version = "0.1", features = ["tokio", "client-legacy"] }
+hyper = { version = "1", features = ["client", "http1"] }
+http-body-util = "0.1"
