@@ -528,7 +528,7 @@ pub struct DatabaseConfig {
     pub require_tls: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct CaConfig {
     /// Unique identifier for this CA (used as the URL prefix `/acme/{id}/...`).
     ///
