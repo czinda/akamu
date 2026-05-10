@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:seed": "bash ../contrib/seedgen/dev.sh",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview"
