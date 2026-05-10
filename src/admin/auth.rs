@@ -1079,11 +1079,11 @@ pub async fn post_session_eab(
 
 /// `DELETE /admin/session`
 ///
-/// Invalidate the current session token.
+/// Invalidate the current session token and clear the session cookie.
 pub async fn delete_session(
     operator: OperatorContext,
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
-) -> impl axum::response::IntoResponse {
+) -> axum::response::Response {
     if let Some(token) = &operator.session_token {
         invalidate_session(&state, token).await;
     }
@@ -1092,7 +1092,16 @@ pub async fn delete_session(
             AuditEvent::success(AuditEventType::AdminLogout).with_principal(&operator.name),
         )
         .await;
-    StatusCode::NO_CONTENT
+    // Expire the session cookie that was set on login so that the browser does
+    // not retain a stale credential after logout.
+    let mut resp = StatusCode::NO_CONTENT.into_response();
+    resp.headers_mut().insert(
+        "Set-Cookie",
+        axum::http::HeaderValue::from_static(
+            "session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
+        ),
+    );
+    resp
 }
 
 // ── Role enforcement macro ────────────────────────────────────────────────────
