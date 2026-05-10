@@ -780,7 +780,8 @@ pub async fn post_session_eab(
     }
 
     // Anti-replay: reject if (kid, timestamp) was already seen within the window.
-    // Entries older than 120 s are evicted lazily.
+    // Entries older than 120 s are evicted lazily.  The nonce is NOT committed here
+    // so that a transient DB failure does not permanently burn the client's retry.
     let nonce_key = format!("{kid}.{timestamp}");
     if let Some(ref nonce_store) = state.eab_session_nonces {
         let mut store = nonce_store.lock().await;
@@ -788,7 +789,6 @@ pub async fn post_session_eab(
         if store.contains_key(&nonce_key) {
             return (StatusCode::UNAUTHORIZED, "replay detected").into_response();
         }
-        store.insert(nonce_key.clone(), now);
     }
 
     // Look up the EAB key.
@@ -932,6 +932,12 @@ pub async fn post_session_eab(
             )
             .await;
         return (StatusCode::UNAUTHORIZED, "authentication failed").into_response();
+    }
+
+    // Commit the nonce only after HMAC is verified — transient failures above won't
+    // burn the client's retry slot.
+    if let Some(ref nonce_store) = state.eab_session_nonces {
+        nonce_store.lock().await.insert(nonce_key, now);
     }
 
     let role = match op.role.parse::<OperatorRole>() {
