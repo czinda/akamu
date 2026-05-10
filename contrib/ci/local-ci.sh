@@ -104,7 +104,7 @@ detect_tools() {
 
     if command -v mdbook-pandoc >/dev/null 2>&1; then
         has_mdbook_pandoc=1
-        echo -e "  ${GREEN}✓${NC} mdbook-pandoc $(mdbook-pandoc --version 2>/dev/null | head -n1 || echo '')"
+        echo -e "  ${GREEN}✓${NC} mdbook-pandoc (found)"
     else
         echo -e "  ${YELLOW}○${NC} mdbook-pandoc (optional, for PDF output — cargo install mdbook-pandoc)"
     fi
