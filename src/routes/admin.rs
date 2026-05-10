@@ -88,6 +88,10 @@ struct NewEabPayload {
     profile_grants: Option<Vec<String>>,
     #[serde(default = "default_eab_alg")]
     alg: String,
+    /// Override the operator that owns this key for web UI EAB login.
+    /// Only `administrator` may set this; omit to default to the calling operator.
+    #[serde(default)]
+    for_operator_id: Option<i64>,
 }
 
 fn default_eab_alg() -> String {
@@ -861,6 +865,34 @@ pub async fn post_eab(
             .into_response();
     }
 
+    // Resolve the owner operator: the caller may delegate to another operator,
+    // but only administrators may do so (prevents ca_operations privilege escalation).
+    let owner_operator_id = if let Some(target_id) = payload.for_operator_id {
+        if operator.role != OperatorRole::Administrator {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({"status": 403, "detail": "only administrators may create EAB keys for other operators"})),
+            )
+                .into_response();
+        }
+        match db::operators::get_by_id(&state.db, target_id).await {
+            Ok(Some(_)) => target_id,
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"status": 404, "detail": "target operator not found"})),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                tracing::error!(error = %e, operator_id = target_id, "post_eab: operator lookup failed");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        }
+    } else {
+        operator.operator_id
+    };
+
     let now = unix_now();
     let grants_str = match grants_to_json(payload.profile_grants) {
         Ok(s) => s,
@@ -878,7 +910,7 @@ pub async fn post_eab(
         &payload.kid,
         &payload.hmac_key_b64u,
         grants_str.as_deref(),
-        Some(operator.operator_id),
+        Some(owner_operator_id),
         &payload.alg,
         now,
     )
