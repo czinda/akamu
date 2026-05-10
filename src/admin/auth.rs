@@ -791,10 +791,18 @@ pub async fn post_session_eab(
         }
     };
 
+    // Translate JWS algorithm name ("HS256") to hash name ("sha256") expected by hmac_verify.
+    let hash_alg = match eab_row.alg.as_str() {
+        "HS256" => "sha256",
+        "HS384" => "sha384",
+        "HS512" => "sha512",
+        other => other,
+    };
+
     // Message: "kid.timestamp"
     let message = format!("{kid}.{timestamp}");
     if default_hmac_provider()
-        .hmac_verify(&eab_row.alg, &hmac_key, message.as_bytes(), &sig_bytes)
+        .hmac_verify(hash_alg, &hmac_key, message.as_bytes(), &sig_bytes)
         .is_err()
     {
         state
