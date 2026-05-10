@@ -176,7 +176,8 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         eab_master_secret: None,
     });
 
-    // Pre-seed one session token per role.
+    // Pre-seed one session token per role (all server-wide) plus one
+    // scoped ca_operations token pinned to the "default" CA.
     {
         let mut map = sessions.lock().await;
         for (token, role) in [
@@ -198,6 +199,19 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
                 },
             );
         }
+        // Scoped ca_operations operator pinned to "default".
+        map.insert(
+            "tok-caops-scoped".to_string(),
+            AdminSession {
+                operator_id: 2,
+                name: zeroize::Zeroizing::new("test-caops-scoped".to_string()),
+                role: OperatorRole::CaOperations,
+                created_at: Instant::now(),
+                last_active_at: Instant::now(),
+                auth_method: AdminAuthMethod::Cert,
+                ca_id: "default".to_string(),
+            },
+        );
     }
 
     (state, dir)
@@ -343,6 +357,94 @@ static RBAC_TABLE: &[RbacRow] = &[
         "/admin/crl/force",
         &[OperatorRole::Administrator, OperatorRole::CaOperations],
     ),
+    (
+        "GET /admin/delegations",
+        Method::GET,
+        "/admin/delegations",
+        &ALL_ROLES,
+    ),
+    (
+        "POST /admin/delegations",
+        Method::POST,
+        "/admin/delegations",
+        &[OperatorRole::Administrator, OperatorRole::CaOperations],
+    ),
+    (
+        "GET /admin/delegations/{id}",
+        Method::GET,
+        "/admin/delegations/nonexistent-id",
+        &ALL_ROLES,
+    ),
+    (
+        "PUT /admin/delegations/{id}",
+        Method::PUT,
+        "/admin/delegations/nonexistent-id",
+        &[OperatorRole::Administrator, OperatorRole::CaOperations],
+    ),
+    (
+        "DELETE /admin/delegations/{id}",
+        Method::DELETE,
+        "/admin/delegations/nonexistent-id",
+        &[OperatorRole::Administrator, OperatorRole::CaOperations],
+    ),
+    (
+        "PUT /admin/operators/{id}",
+        Method::PUT,
+        "/admin/operators/1",
+        &[OperatorRole::Administrator],
+    ),
+    (
+        "GET /admin/accounts",
+        Method::GET,
+        "/admin/accounts",
+        &ALL_ROLES,
+    ),
+    (
+        "GET /admin/orders",
+        Method::GET,
+        "/admin/orders",
+        &ALL_ROLES,
+    ),
+    (
+        "GET /admin/cas",
+        Method::GET,
+        "/admin/cas",
+        &[OperatorRole::Administrator, OperatorRole::CaOperations],
+    ),
+    (
+        "GET /admin/cas/{id}",
+        Method::GET,
+        "/admin/cas/default",
+        &[OperatorRole::Administrator, OperatorRole::CaOperations],
+    ),
+    (
+        "GET /admin/config",
+        Method::GET,
+        "/admin/config",
+        &[OperatorRole::Administrator],
+    ),
+    (
+        "GET /admin/certs/{id}",
+        Method::GET,
+        "/admin/certs/nonexistent-cert-id",
+        &ALL_ROLES,
+    ),
+    (
+        "GET /admin/certs/{id}/download",
+        Method::GET,
+        "/admin/certs/nonexistent-cert-id/download",
+        &[
+            OperatorRole::Administrator,
+            OperatorRole::CaOperations,
+            OperatorRole::CaRa,
+        ],
+    ),
+    (
+        "POST /admin/ca/{id}/crl/force",
+        Method::POST,
+        "/admin/ca/default/crl/force",
+        &[OperatorRole::Administrator, OperatorRole::CaOperations],
+    ),
 ];
 
 // ── Test ──────────────────────────────────────────────────────────────────────
@@ -409,4 +511,135 @@ async fn admin_rbac_table() {
             }
         }
     }
+}
+
+// ── CA-scope guard tests ──────────────────────────────────────────────────────
+
+/// A scoped ca_operations operator can access its own CA.
+#[tokio::test]
+async fn scoped_ca_operations_sees_own_ca_resource() {
+    let (state, _dir) = build_admin_state().await;
+    let router = routes::build_router(Arc::clone(&state), None);
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/admin/cas/default")
+        .header(header::AUTHORIZATION, "Bearer tok-caops-scoped")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "scoped ca_operations must see its own CA"
+    );
+}
+
+// ── PUT /admin/operators/{id} ca_id validation tests ─────────────────────────
+
+/// Setting a non-empty ca_id on an administrator role must return 400.
+#[tokio::test]
+async fn put_operator_ca_id_on_administrator_is_bad_request() {
+    let (state, _dir) = build_admin_state().await;
+    let router = routes::build_router(Arc::clone(&state), None);
+
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri("/admin/operators/1")
+        .header(header::AUTHORIZATION, "Bearer tok-admin")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(r#"{"role":"administrator","ca_id":"default"}"#))
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "setting ca_id on administrator must be 400"
+    );
+}
+
+/// Setting an empty ca_id on a ca_ra role must return 400 (ca_ra requires a scope).
+#[tokio::test]
+async fn put_operator_empty_ca_id_on_ca_ra_is_bad_request() {
+    let (state, _dir) = build_admin_state().await;
+    let router = routes::build_router(Arc::clone(&state), None);
+
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri("/admin/operators/1")
+        .header(header::AUTHORIZATION, "Bearer tok-admin")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(r#"{"role":"ca_ra","ca_id":""}"#))
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "empty ca_id on ca_ra must be 400"
+    );
+}
+
+/// Setting a valid CA ca_id on a ca_operations role must be accepted (not 400/403).
+#[tokio::test]
+async fn put_operator_ca_id_on_ca_operations_is_accepted() {
+    let (state, _dir) = build_admin_state().await;
+
+    // Insert a real operator so the PUT has a row to update.
+    let now = akamu::util::rfc3339_now();
+    db::operators::insert(
+        &state.db,
+        "test-caops-op",
+        "ca_operations",
+        Some("aa:bb:cc:dd"),
+        None,
+        "",
+        &now,
+    )
+    .await
+    .unwrap();
+    let ops = db::operators::list(&state.db, 10, 0).await.unwrap();
+    let op_id = ops[0].id;
+
+    let router = routes::build_router(Arc::clone(&state), None);
+
+    let body = format!(r#"{{"role":"ca_operations","ca_id":"default"}}"#);
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri(format!("/admin/operators/{op_id}"))
+        .header(header::AUTHORIZATION, "Bearer tok-admin")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body))
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    assert_ne!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "valid ca_id on ca_operations must not be 400"
+    );
+    assert_ne!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "valid ca_id on ca_operations must not be 403"
+    );
+}
+
+/// A scoped ca_operations operator gets 404 for a CA outside its scope.
+#[tokio::test]
+async fn scoped_ca_operations_blocked_from_other_ca_resource() {
+    let (state, _dir) = build_admin_state().await;
+    let router = routes::build_router(Arc::clone(&state), None);
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/admin/cas/other-ca")
+        .header(header::AUTHORIZATION, "Bearer tok-caops-scoped")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    // 404 — same camouflage as "CA doesn't exist"; the scope mismatch is hidden.
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "scoped ca_operations must not see CAs outside its scope"
+    );
 }
