@@ -34,6 +34,8 @@ export interface CreateEabOptions {
   hmac_key_b64u: string;
   alg?: string;
   profile_grants?: string[];
+  /** Operator ID this key logs in as (admins only; defaults to the caller). */
+  for_operator_id?: number;
 }
 
 export async function createEab(opts: CreateEabOptions): Promise<{ kid: string; created: number }> {

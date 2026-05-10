@@ -41,6 +41,7 @@ export default function EabKeys() {
   const navigate = useNavigate();
   const { role } = useAuth();
   const canWrite = hasRole(role, 'ca_operations');
+  const isAdmin = role === 'administrator';
   const [keys, setKeys] = useState<EabKeyRow[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -52,6 +53,7 @@ export default function EabKeys() {
   const [newKey, setNewKey] = useState('');
   const [newAlg, setNewAlg] = useState('sha256');
   const [newGrants, setNewGrants] = useState('');
+  const [newForOperatorId, setNewForOperatorId] = useState('');
   const [createSaving, setCreateSaving] = useState(false);
   const [deleteSaving, setDeleteSaving] = useState(false);
 
@@ -78,12 +80,14 @@ export default function EabKeys() {
       const grants = newGrants.trim()
         ? newGrants.split(/[\s,]+/).map(s => s.trim()).filter(Boolean)
         : undefined;
-      await createEab({ kid: newKid, hmac_key_b64u: newKey, alg: newAlg, profile_grants: grants });
+      const forOpId = newForOperatorId.trim() ? parseInt(newForOperatorId.trim(), 10) : undefined;
+      await createEab({ kid: newKid, hmac_key_b64u: newKey, alg: newAlg, profile_grants: grants, for_operator_id: forOpId });
       setCreateOpen(false);
       setNewKid('');
       setNewKey('');
       setNewAlg('sha256');
       setNewGrants('');
+      setNewForOperatorId('');
       await load();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Create failed');
@@ -188,6 +192,14 @@ export default function EabKeys() {
                 placeholder="profile-a, profile-b" />
               <p style={{ fontSize: '0.75rem', color: '#6a6e73', marginTop: '0.25rem' }}>Restrict this key to specific profiles. Leave empty for unrestricted access.</p>
             </FormGroup>
+            {isAdmin && (
+              <FormGroup label="For Operator ID (optional)" fieldId="eab-new-for-op">
+                <TextInput id="eab-new-for-op" value={newForOperatorId}
+                  onChange={(_e, v) => setNewForOperatorId(v)}
+                  placeholder="Leave empty to assign to yourself" />
+                <p style={{ fontSize: '0.75rem', color: '#6a6e73', marginTop: '0.25rem' }}>Numeric operator ID this key will authenticate as. Required when creating a login key for another operator.</p>
+              </FormGroup>
+            )}
           </Form>
         </ModalBody>
         <ModalFooter>
