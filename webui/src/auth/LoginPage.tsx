@@ -45,6 +45,8 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const data = await loginEab(kid, hmacKey);
+      setKid('');
+      setHmacKey('');
       setAuth({ token: data.session_token, role: data.role, operatorName: data.operator, expiresAt: data.expires_at });
       navigate('/');
     } catch (err: unknown) {
