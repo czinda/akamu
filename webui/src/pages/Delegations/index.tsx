@@ -73,7 +73,7 @@ export default function Delegations() {
     try {
       await deleteDelegation(deleteId);
       setDeleteId(null);
-      load();
+      await load();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Delete failed');
     } finally {

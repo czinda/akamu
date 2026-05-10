@@ -108,7 +108,7 @@ export default function Certificates() {
     try {
       await revokeCert(revokeId, revokeReason);
       setRevokeId(null);
-      load();
+      await load();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Revocation failed');
     } finally {

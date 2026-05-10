@@ -56,7 +56,7 @@ export default function Operators() {
     setSaving(true);
     try {
       await action();
-      load();
+      await load();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Action failed');
     } finally {

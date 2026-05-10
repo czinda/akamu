@@ -33,6 +33,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { useAuth, hasRole } from '../../auth/AuthContext';
 import { fmtTs } from '../../utils';
+import { ObjLink } from '../../components/ObjLink';
 
 const PAGE_SIZE = 20;
 
@@ -74,7 +75,7 @@ export default function Accounts() {
     try {
       await deactivateAccount(deactivateId);
       setDeactivateId(null);
-      load();
+      await load();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Deactivation failed');
     } finally {
@@ -126,7 +127,7 @@ export default function Accounts() {
                 <Tr key={acct.id}>
                   <Td>{acct.id}</Td>
                   <Td>{acct.status}</Td>
-                  <Td>{acct.ca_id}</Td>
+                  <Td><ObjLink type="ca" id={acct.ca_id} /></Td>
                   <Td>{fmtTs(acct.created)}</Td>
                   <Td>{fmtTs(acct.updated)}</Td>
                   <Td>

@@ -31,6 +31,7 @@ import { useNavigate } from 'react-router-dom';
 import { listEab, createEab, deleteEab, EabKeyRow } from '../../api/eab';
 import { fmtTs } from '../../utils';
 import { useAuth, hasRole } from '../../auth/AuthContext';
+import { ObjLink } from '../../components/ObjLink';
 
 const PAGE_SIZE = 20;
 
@@ -81,7 +82,7 @@ export default function EabKeys() {
       setNewKey('');
       setNewAlg('sha256');
       setNewGrants('');
-      load();
+      await load();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Create failed');
     } finally {
@@ -95,7 +96,7 @@ export default function EabKeys() {
     try {
       await deleteEab(deleteKid);
       setDeleteKid(null);
-      load();
+      await load();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Delete failed');
     } finally {
@@ -142,7 +143,11 @@ export default function EabKeys() {
                   <Td>{fmtTs(k.created)}</Td>
                   <Td>{k.bound_principal ?? '—'}</Td>
                   <Td>{fmtTs(k.used_at)}</Td>
-                  <Td>{k.profile_grants?.join(', ') ?? '—'}</Td>
+                  <Td>
+                    {k.profile_grants == null ? '—' : k.profile_grants.length === 0 ? '—' : k.profile_grants.map((g, i) => (
+                      <span key={g}>{i > 0 && ', '}<ObjLink type="profile" id={g} /></span>
+                    ))}
+                  </Td>
                   <Td>
                     {canWrite && <><Button variant="danger" size="sm" onClick={() => setDeleteKid(k.kid)}>Delete</Button>{' '}</>}
                     <Button variant="plain" size="sm" onClick={() => navigate(`/eab/${k.kid}`)}>View</Button>
