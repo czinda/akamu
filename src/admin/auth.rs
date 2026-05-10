@@ -729,6 +729,12 @@ pub async fn post_session_eab(
                 limit = rate_limit,
                 "EAB session auth rate limit exceeded"
             );
+            state
+                .record_audit(
+                    AuditEvent::failure(AuditEventType::AdminLogin)
+                        .with_detail("{\"method\":\"eab\",\"reason\":\"rate limit exceeded\"}"),
+                )
+                .await;
             return (
                 StatusCode::TOO_MANY_REQUESTS,
                 "authentication rate limit exceeded; try again later",
