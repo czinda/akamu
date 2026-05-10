@@ -35,7 +35,9 @@ pub struct DevCredentials {
 /// can paste them directly into the web UI login form.
 ///
 /// The HMAC key is derived from `rng`, so it is reproducible given the same
-/// seed.
+/// seed.  The RNG is always advanced by 32 bytes regardless of whether the
+/// operator already exists, so `global_rng` position is stable across resume
+/// runs.
 pub async fn create_dev_admin(
     state: &Arc<AppState>,
     rng: &mut impl RngCore,
@@ -45,31 +47,48 @@ pub async fn create_dev_admin(
     let hmac_key_b64u = URL_SAFE_NO_PAD.encode(key_bytes);
 
     let kid = "seedgen-admin".to_string();
-    let now_unix = akamu::util::unix_now();
-    let now = akamu::util::unix_to_rfc3339(now_unix);
 
-    // Dummy GSSAPI principal satisfies the schema's NOT NULL check; it is
-    // never used for actual authentication (EAB login does not check it).
-    db::operators::insert(
-        &state.db,
-        "seedgen-admin",
-        "administrator",
-        None,
-        Some("seedgen-admin@SEEDGEN.LOCAL"),
-        "",
-        &now,
-    )
-    .await
-    .map_err(|e| format!("create dev admin operator: {e}"))?;
-
-    let op = db::operators::get_by_principal(&state.db, "seedgen-admin@SEEDGEN.LOCAL")
+    // Idempotent: skip DB writes if operator already exists (resume mode).
+    let already_exists = db::operators::get_by_principal(&state.db, "seedgen-admin@SEEDGEN.LOCAL")
         .await
-        .map_err(|e| format!("look up dev admin operator: {e}"))?
-        .ok_or("dev admin operator not found after insert")?;
+        .map_err(|e| format!("check dev admin operator: {e}"))?
+        .is_some();
 
-    db::eab::insert_with_grants(&state.db, &kid, &hmac_key_b64u, None, Some(op.id), "sha256", now_unix)
+    if !already_exists {
+        let now_unix = akamu::util::unix_now();
+        let now = akamu::util::unix_to_rfc3339(now_unix);
+
+        // Dummy GSSAPI principal satisfies the schema's NOT NULL check; it is
+        // never used for actual authentication (EAB login does not check it).
+        db::operators::insert(
+            &state.db,
+            "seedgen-admin",
+            "administrator",
+            None,
+            Some("seedgen-admin@SEEDGEN.LOCAL"),
+            "",
+            &now,
+        )
+        .await
+        .map_err(|e| format!("create dev admin operator: {e}"))?;
+
+        let op = db::operators::get_by_principal(&state.db, "seedgen-admin@SEEDGEN.LOCAL")
+            .await
+            .map_err(|e| format!("look up dev admin operator: {e}"))?
+            .ok_or("dev admin operator not found after insert")?;
+
+        db::eab::insert_with_grants(
+            &state.db,
+            &kid,
+            &hmac_key_b64u,
+            None,
+            Some(op.id),
+            "sha256",
+            now_unix,
+        )
         .await
         .map_err(|e| format!("create dev admin EAB key: {e}"))?;
+    }
 
     Ok(DevCredentials { kid, hmac_key_b64u })
 }
@@ -174,4 +193,3 @@ pub async fn issue_cross_certs(
 
     Ok(count)
 }
-
