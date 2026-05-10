@@ -322,7 +322,10 @@ impl AcmeClient {
         }
 
         let contacts = extract_contacts(&body);
-        let account_status = body["status"].as_str().unwrap_or("valid").to_string();
+        let account_status = body["status"]
+            .as_str()
+            .ok_or_else(|| ClientError::Http("key-change response missing 'status' field".into()))?
+            .to_string();
         Ok(Account::new(
             acct.url.clone(),
             account_status,
@@ -339,11 +342,26 @@ impl AcmeClient {
         acct: &Account,
         ids: &[Identifier],
     ) -> Result<Order, ClientError> {
-        let url = &self.new_order_url;
-        let payload = serde_json::json!({ "identifiers": ids });
+        self.new_order_with_profile(acct, ids, None).await
+    }
 
+    /// Place a new order with an optional profile identifier (draft-aaron-acme-profiles-01).
+    pub async fn new_order_with_profile(
+        &self,
+        acct: &Account,
+        ids: &[Identifier],
+        profile: Option<&str>,
+    ) -> Result<Order, ClientError> {
+        let url = &self.new_order_url;
+        let mut payload = serde_json::json!({ "identifiers": ids });
+        if let Some(p) = profile {
+            payload["profile"] = serde_json::json!(p);
+        }
+
+        let payload_bytes = serde_json::to_vec(&payload)
+            .map_err(|e| ClientError::Http(format!("serialize new-order payload: {e}")))?;
         let (status, body, headers) = self
-            .post_kid(acct, url, Some(payload.to_string().as_bytes()))
+            .post_kid(acct, url, Some(&payload_bytes))
             .await?;
         if status != StatusCode::CREATED {
             return Err(acme_error(&body, status, "new-order"));
