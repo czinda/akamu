@@ -11,9 +11,8 @@
 //! <stem>.sqlite3        ← database (sibling of artifacts_dir)
 //! ```
 //!
-//! The generated config uses relative paths (`../stem.sqlite3`) for the
-//! database and absolute paths for CA key/cert files so that `akamu serve`
-//! can be run from any working directory.
+//! The generated config uses absolute paths for all files (database, CA keys,
+//! CA certs) so that `akamu serve` can be run from any working directory.
 
 use std::path::Path;
 
@@ -93,7 +92,7 @@ fn render(
 
     // CAs — use the absolute paths written by server::start().
     for cfg in ca_configs {
-        render_ca(&mut s, cfg, artifacts_dir);
+        render_ca(&mut s, cfg);
     }
 
     s
@@ -122,7 +121,7 @@ fn render_profile(s: &mut String, p: &ProfileSpec) {
     s.push('\n');
 }
 
-fn render_ca(s: &mut String, cfg: &CaConfig, artifacts_dir: &Path) {
+fn render_ca(s: &mut String, cfg: &CaConfig) {
     s.push_str("[[ca]]\n");
     s.push_str(&format!("id                = {}\n", toml_str(&cfg.id)));
     s.push_str(&format!("is_default        = {}\n", cfg.is_default));
@@ -146,24 +145,28 @@ fn render_ca(s: &mut String, cfg: &CaConfig, artifacts_dir: &Path) {
     ));
 
     // Prefer absolute paths so the config works regardless of working directory.
-    let key_abs = abs_path(artifacts_dir, &cfg.key_file);
-    let cert_abs = abs_path(artifacts_dir, &cfg.cert_file);
+    let key_abs = abs_path(&cfg.key_file);
+    let cert_abs = abs_path(&cfg.cert_file);
     s.push_str(&format!("key_file          = {}\n", toml_str(&key_abs)));
     s.push_str(&format!("cert_file         = {}\n", toml_str(&cert_abs)));
     s.push('\n');
 }
 
 /// Return `path` as an absolute string. If it is already absolute, return it
-/// as-is. If it is relative, resolve it against `base` (the artifacts dir).
-fn abs_path(base: &Path, path: &str) -> String {
+/// as-is. If it is relative, treat it as relative to the process CWD and
+/// canonicalize it. Paths stored in `CaConfig` are relative to CWD (not to
+/// `artifacts_dir`), so joining with `artifacts_dir` would double the prefix.
+fn abs_path(path: &str) -> String {
     let p = std::path::Path::new(path);
     if p.is_absolute() {
         path.to_owned()
     } else {
-        // The path was written relative to the process CWD; resolve via base.
-        base.join(p)
-            .canonicalize()
-            .unwrap_or_else(|_| base.join(p))
+        p.canonicalize()
+            .unwrap_or_else(|_| {
+                std::env::current_dir()
+                    .map(|cwd| cwd.join(p))
+                    .unwrap_or_else(|_| p.to_path_buf())
+            })
             .to_string_lossy()
             .into_owned()
     }
