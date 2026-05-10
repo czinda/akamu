@@ -42,6 +42,7 @@ export default function OperatorDetail() {
       reload();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Action failed');
+    } finally {
       setSaving(false);
     }
   }

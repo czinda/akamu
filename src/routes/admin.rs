@@ -227,12 +227,12 @@ pub async fn post_operators(
         )
             .into_response();
     }
-    // Validate ca_id: only meaningful for ca_ra; must reference an existing CA.
+    // Validate ca_id: only meaningful for ca_ra and ca_operations; must reference an existing CA.
     if !payload.ca_id.is_empty() {
-        if payload.role != "ca_ra" {
+        if payload.role != "ca_ra" && payload.role != "ca_operations" {
             return (
                 StatusCode::BAD_REQUEST,
-                "ca_id is only valid for the ca_ra role",
+                "ca_id is only valid for the ca_ra and ca_operations roles",
             )
                 .into_response();
         }
@@ -494,10 +494,10 @@ pub async fn get_audit(
 
 /// `GET /admin/certs`
 ///
-/// Search the certificate table.  Query params: `serial`, `account_id`,
-/// `after` (RFC 3339), `before` (RFC 3339), `status` (active|revoked),
-/// `limit` (≤1000), `offset`.
-/// Requires: `administrator`, `ca_operations`, or `auditor`.
+/// Search the certificate table.  Query params: `serial`, `subject`,
+/// `account_id`, `after` (RFC 3339), `before` (RFC 3339),
+/// `status` (active|revoked), `ca_id`, `limit` (≤1000), `offset`.
+/// Requires: `administrator`, `ca_operations`, `ca_ra`, or `auditor`.
 pub async fn get_certs(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
@@ -524,14 +524,10 @@ pub async fn get_certs(
     let account_id = params.get("account_id").map(String::as_str);
     let status = params.get("status").map(String::as_str);
     let subject_dn = params.get("subject").map(String::as_str);
-    // ca_ra operators are always scoped to their own CA; override any supplied ca_id.
-    let ca_id_str;
-    let ca_id = if operator.role == OperatorRole::CaRa {
-        ca_id_str = operator.ca_id.clone();
-        Some(ca_id_str.as_str())
-    } else {
-        params.get("ca_id").map(String::as_str)
-    };
+    // Scoped operators are always restricted to their own CA; override any supplied ca_id.
+    let ca_id = operator
+        .ca_scope()
+        .or_else(|| params.get("ca_id").map(String::as_str));
 
     let search_params = db::certs::CertSearchParams {
         serial,
@@ -1031,10 +1027,10 @@ pub async fn post_revoke(
             .into_response();
     }
 
-    // CA-scoped ca_ra operators may only revoke certificates from their own CA.
-    if operator.role == OperatorRole::CaRa {
+    // CA-scoped operators may only revoke certificates from their own CA.
+    if let Some(scope) = operator.ca_scope() {
         match db::certs::get_by_id(&state.db, &payload.cert_id).await {
-            Ok(Some(cert)) if cert.ca_id != operator.ca_id => {
+            Ok(Some(cert)) if cert.ca_id != scope => {
                 return (
                     StatusCode::FORBIDDEN,
                     "certificate does not belong to your CA scope",
@@ -1416,14 +1412,10 @@ pub async fn get_accounts(
         .unwrap_or(0)
         .max(0);
     let status = params.get("status").map(String::as_str);
-    // ca_ra operators are always scoped to their own CA; override any supplied ca_id.
-    let ca_id_str;
-    let ca_id = if operator.role == OperatorRole::CaRa {
-        ca_id_str = operator.ca_id.clone();
-        Some(ca_id_str.as_str())
-    } else {
-        params.get("ca_id").map(String::as_str)
-    };
+    // Scoped operators are always restricted to their own CA; override any supplied ca_id.
+    let ca_id = operator
+        .ca_scope()
+        .or_else(|| params.get("ca_id").map(String::as_str));
 
     match tokio::try_join!(
         db::accounts::list(&state.db, status, ca_id, limit, offset),
@@ -1479,19 +1471,31 @@ pub async fn get_account(
     );
 
     match db::accounts::get_by_id(&state.db, &id).await {
-        Ok(Some(r)) => (
-            StatusCode::OK,
-            Json(json!({
-                "id": r.id,
-                "status": r.status,
-                "contact": r.contact,
-                "jwk_thumbprint": r.jwk_thumbprint,
-                "created": r.created,
-                "updated": r.updated,
-                "profile_grants": r.profile_grants,
-            })),
-        )
-            .into_response(),
+        Ok(Some(r)) => {
+            if operator
+                .ca_scope()
+                .is_some_and(|scope| !r.ca_id.is_empty() && r.ca_id != scope)
+            {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"status": 404, "detail": "account not found"})),
+                )
+                    .into_response();
+            }
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "id": r.id,
+                    "status": r.status,
+                    "contact": r.contact,
+                    "jwk_thumbprint": r.jwk_thumbprint,
+                    "created": r.created,
+                    "updated": r.updated,
+                    "profile_grants": r.profile_grants,
+                })),
+            )
+                .into_response()
+        }
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(json!({"status": 404, "detail": "account not found"})),
@@ -1712,8 +1716,8 @@ pub async fn get_cert(
 
     match db::certs::get_by_id(&state.db, &id).await {
         Ok(Some(r)) => {
-            // ca_ra operators may only view certificates from their own CA.
-            if operator.role == OperatorRole::CaRa && r.ca_id != operator.ca_id {
+            // Scoped operators may only view certificates from their own CA.
+            if operator.ca_scope().is_some_and(|scope| r.ca_id != scope) {
                 return (
                     StatusCode::NOT_FOUND,
                     Json(json!({"status": 404, "detail": "certificate not found"})),
@@ -1777,8 +1781,8 @@ pub async fn get_cert_download(
 
     match db::certs::get_by_id(&state.db, &id).await {
         Ok(Some(r)) => {
-            // ca_ra operators may only download certificates from their own CA.
-            if operator.role == OperatorRole::CaRa && r.ca_id != operator.ca_id {
+            // Scoped operators may only download certificates from their own CA.
+            if operator.ca_scope().is_some_and(|scope| r.ca_id != scope) {
                 return (
                     StatusCode::NOT_FOUND,
                     Json(json!({"status": 404, "detail": "certificate not found"})),
@@ -1882,9 +1886,9 @@ pub async fn put_operator(
         role: Option<String>,
         cert_fingerprint: Option<String>,
         gssapi_principal: Option<String>,
-        /// CA scope for `ca_ra` role.  Empty string clears the scope (server-wide,
-        /// which is rejected for `ca_ra`).  Omitting the field leaves the existing
-        /// value unchanged.  Must be a known CA ID when the effective role is `ca_ra`.
+        /// CA scope for `ca_ra` and `ca_operations` roles.  Empty string clears the
+        /// scope (server-wide; rejected for `ca_ra`, allowed for `ca_operations`).
+        /// Omitting the field leaves the existing value unchanged.
         ca_id: Option<String>,
     }
 
@@ -1921,10 +1925,10 @@ pub async fn put_operator(
                         )
                             .into_response();
                     }
-                    if !cid.is_empty() && op.role != "ca_ra" {
+                    if !cid.is_empty() && op.role != "ca_ra" && op.role != "ca_operations" {
                         return (
                             StatusCode::BAD_REQUEST,
-                            "ca_id is only valid for the ca_ra role",
+                            "ca_id is only valid for the ca_ra and ca_operations roles",
                         )
                             .into_response();
                     }
@@ -1950,10 +1954,10 @@ pub async fn put_operator(
             effective_role.to_string()
         };
 
-        if !cid.is_empty() && target_role != "ca_ra" {
+        if !cid.is_empty() && target_role != "ca_ra" && target_role != "ca_operations" {
             return (
                 StatusCode::BAD_REQUEST,
-                "ca_id is only valid for the ca_ra role",
+                "ca_id is only valid for the ca_ra and ca_operations roles",
             )
                 .into_response();
         }
@@ -1975,13 +1979,12 @@ pub async fn put_operator(
             "ca_id is required when setting role to ca_ra",
         )
             .into_response();
-    } else if matches!(
-        effective_role,
-        "administrator" | "ca_operations" | "auditor"
-    ) {
-        // Role changing away from ca_ra — clear ca_id automatically.
+    } else if matches!(effective_role, "administrator" | "auditor") {
+        // Role changing to a role that never has CA scope — clear ca_id.
         Some("")
     } else {
+        // ca_operations: ca_id is optional — preserve the existing value.
+        // No role change: leave ca_id untouched.
         None
     };
 
@@ -2061,14 +2064,10 @@ pub async fn get_orders(
         .max(0);
     let account_id = params.get("account_id").map(String::as_str);
     let status = params.get("status").map(String::as_str);
-    // ca_ra operators are always scoped to their own CA; override any supplied ca_id.
-    let ca_id_str;
-    let ca_id = if operator.role == OperatorRole::CaRa {
-        ca_id_str = operator.ca_id.clone();
-        Some(ca_id_str.as_str())
-    } else {
-        params.get("ca_id").map(String::as_str)
-    };
+    // Scoped operators are always restricted to their own CA; override any supplied ca_id.
+    let ca_id = operator
+        .ca_scope()
+        .or_else(|| params.get("ca_id").map(String::as_str));
 
     match tokio::try_join!(
         db::orders::list(&state.db, account_id, status, ca_id, limit, offset),
@@ -2124,25 +2123,34 @@ pub async fn get_order(
     );
 
     match db::orders::get_with_authz_ids(&state.db, &id).await {
-        Ok(Some((r, authz_ids))) => (
-            StatusCode::OK,
-            Json(json!({
-                "id": r.id,
-                "account_id": r.account_id,
-                "status": r.status,
-                "identifiers": r.identifiers,
-                "certificate_id": r.certificate_id,
-                "profile": r.profile,
-                "created": r.created,
-                "updated": r.updated,
-                "expires": r.expires,
-                "not_before": r.not_before,
-                "not_after": r.not_after,
-                "replaces": r.replaces,
-                "authorization_ids": authz_ids,
-            })),
-        )
-            .into_response(),
+        Ok(Some((r, authz_ids))) => {
+            if operator.ca_scope().is_some_and(|scope| r.ca_id != scope) {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"status": 404, "detail": "order not found"})),
+                )
+                    .into_response();
+            }
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "id": r.id,
+                    "account_id": r.account_id,
+                    "status": r.status,
+                    "identifiers": r.identifiers,
+                    "certificate_id": r.certificate_id,
+                    "profile": r.profile,
+                    "created": r.created,
+                    "updated": r.updated,
+                    "expires": r.expires,
+                    "not_before": r.not_before,
+                    "not_after": r.not_after,
+                    "replaces": r.replaces,
+                    "authorization_ids": authz_ids,
+                })),
+            )
+                .into_response()
+        }
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(json!({"status": 404, "detail": "order not found"})),
@@ -2287,9 +2295,11 @@ pub async fn get_config(operator: OperatorContext, State(state): State<Arc<AppSt
 pub async fn get_cas(operator: OperatorContext, State(state): State<Arc<AppState>>) -> Response {
     require_role!(operator, state, Administrator | CaOperations);
 
+    let scope = operator.ca_scope();
     let cas: Vec<_> = state
         .cas
         .values()
+        .filter(|ca| scope.is_none_or(|s| ca.id == s))
         .map(|ca| {
             json!({
                 "id": ca.id,
@@ -2315,6 +2325,14 @@ pub async fn get_ca(
     Path(id): Path<String>,
 ) -> Response {
     require_role!(operator, state, Administrator | CaOperations);
+
+    if operator.ca_scope().is_some_and(|scope| id != scope) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"status": 404, "detail": "CA not found"})),
+        )
+            .into_response();
+    }
 
     let Some(ca) = state.get_ca(&id) else {
         return (
@@ -2364,6 +2382,10 @@ pub async fn get_ca_cert(
 ) -> Response {
     require_role!(operator, state, Administrator | CaOperations);
 
+    if operator.ca_scope().is_some_and(|scope| id != scope) {
+        return (StatusCode::NOT_FOUND, "CA not found").into_response();
+    }
+
     let Some(ca) = state.get_ca(&id) else {
         return (StatusCode::NOT_FOUND, "CA not found").into_response();
     };
@@ -2399,6 +2421,14 @@ pub async fn post_ca_crl_force(
     Path(id): Path<String>,
 ) -> Response {
     require_role!(operator, state, Administrator | CaOperations);
+
+    if operator.ca_scope().is_some_and(|scope| id != scope) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"status": 404, "detail": "CA not found"})),
+        )
+            .into_response();
+    }
 
     if state.get_ca(&id).is_none() {
         return (
@@ -2467,6 +2497,14 @@ pub async fn post_ca_cross_sign(
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"status": 400, "detail": "validity_years must be between 1 and 50"})),
+        )
+            .into_response();
+    }
+
+    if operator.ca_scope().is_some_and(|scope| issuer_id != scope) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"status": 404, "detail": "issuer CA not found"})),
         )
             .into_response();
     }
@@ -2649,7 +2687,8 @@ pub async fn get_cross_certs(
 ) -> Response {
     require_role!(operator, state, Administrator | CaOperations | Auditor);
 
-    let issuer_ca_id = params.issuer_ca_id.as_deref();
+    // Scoped operators may only see cross-certs they issued.
+    let issuer_ca_id = operator.ca_scope().or(params.issuer_ca_id.as_deref());
     let subject_ca_id = params.subject_ca_id.as_deref();
     let limit = params.limit.clamp(1, 1000);
     let offset = params.offset.max(0);
@@ -2717,6 +2756,18 @@ pub async fn get_cross_cert(
         }
     };
 
+    // Scoped operators may only see cross-certs issued by their CA.
+    if operator
+        .ca_scope()
+        .is_some_and(|scope| row.issuer_ca_id != scope)
+    {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"status": 404, "detail": "cross-cert not found"})),
+        )
+            .into_response();
+    }
+
     (
         StatusCode::OK,
         Json(json!({
@@ -2749,11 +2800,7 @@ pub async fn get_stats(operator: OperatorContext, State(state): State<Arc<AppSta
 
     let uptime_secs = state.startup_time.elapsed().as_secs();
 
-    let ca_scope = if operator.role == OperatorRole::CaRa && !operator.ca_id.is_empty() {
-        Some(operator.ca_id.as_str())
-    } else {
-        None
-    };
+    let ca_scope = operator.ca_scope();
 
     let counts = match db::stats::summary(&state.db, ca_scope).await {
         Ok(c) => c,
