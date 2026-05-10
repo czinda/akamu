@@ -217,6 +217,7 @@ filter — the operator only sees data belonging to its assigned CA.
 | `POST` | `/admin/operators/{id}/unlock` | Y | | | |
 | `GET` | `/admin/audit` | Y | | | Y |
 | `GET` | `/admin/profiles` | Y | Y | Y | Y |
+| `GET` | `/admin/profiles/{id}` | Y | Y | Y | Y |
 | `POST` | `/admin/profiles` | Y | | | |
 | `PUT` | `/admin/profiles/{id}` | Y | | | |
 | `DELETE` | `/admin/profiles/{id}` | Y | | | |

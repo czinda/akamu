@@ -279,6 +279,38 @@ List all loaded certificate profiles with their parameters.
 }
 ```
 
+### `GET /admin/profiles/{id}`
+
+Return a single certificate profile by ID.
+
+**Response `200 OK`:**
+
+```json
+{
+  "id": "codesigning",
+  "description": "Code signing certificate",
+  "validity_days": 365,
+  "hash_alg": "SHA256",
+  "key_usage_bits": null,
+  "extended_key_usages": ["code_signing"],
+  "crl_url": null,
+  "ocsp_url": null,
+  "allowed_key_types": null,
+  "certificate_policies": null,
+  "issue_as_mtc": false,
+  "allowed_identifier_patterns": null,
+  "identifier_match_all": false,
+  "auth_hook": null,
+  "auth_hook_timeout_secs": null,
+  "require_account_grant": true,
+  "ca_ids": null
+}
+```
+
+Returns `404 Not Found` when no profile with the given ID is loaded.
+
+Requires any authenticated role.
+
 ### `POST /admin/profiles`
 
 Add a new certificate profile to the runtime cache (FPT_NPE_EXT.1).

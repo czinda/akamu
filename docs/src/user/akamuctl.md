@@ -577,6 +577,19 @@ akamuctl cross-cert list --subject-ca ec
 | `--limit N` | Maximum results (default 100). |
 | `--offset N` | Pagination offset (default 0). |
 
+### `cross-cert show`
+
+Show the metadata for a single cross-certificate by UUID:
+
+```bash
+akamuctl cross-cert show <cross-cert-uuid>
+```
+
+Returns the cross-certificate UUID, issuer CA ID, subject CA ID (or `null` for
+an external subject), creation timestamp, and the full PEM-encoded certificate.
+
+Requires any authenticated role.
+
 ### `cross-cert download`
 
 Download a cross-certificate by UUID:
@@ -711,6 +724,24 @@ Returns the profile ID, description, validity period (days), hash algorithm,
 extended key usages, and whether MTC issuance is enabled.
 
 All authenticated roles may list profiles.
+
+### `profile show`
+
+Show the full parameters for a single certificate profile by ID:
+
+```bash
+akamuctl profile show codesigning
+```
+
+Returns all profile fields: ID, description, validity period, hash algorithm,
+key usage bits, extended key usages, CRL and OCSP URLs, allowed key types,
+certificate policies, MTC issuance flag, allowed identifier patterns,
+`identifier_match_all`, auth hook configuration, `require_account_grant`, and
+the list of CA IDs the profile is restricted to (if any).
+
+Returns `404 Not Found` when no profile with the given ID is loaded.
+
+All authenticated roles may show a profile.
 
 ### `profile add`
 
