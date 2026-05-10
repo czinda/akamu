@@ -88,7 +88,8 @@ export default function OperatorEdit({ createMode }: Props) {
         const opts: UpdateOperatorOptions = { name, role };
         if (certFingerprint !== '') opts.cert_fingerprint = certFingerprint;
         if (gssapiPrincipal !== '') opts.gssapi_principal = gssapiPrincipal;
-        opts.ca_id = caId;
+        if (role === 'ca_ra' || role === 'ca_operations') opts.ca_id = caId;
+        else opts.ca_id = '';
         await updateOperator(id!, opts);
         navigate(`/operators/${id}`);
       }
@@ -119,23 +120,29 @@ export default function OperatorEdit({ createMode }: Props) {
                   <TextInput id="op-name" value={name} onChange={(_e, v) => setName(v)} isRequired />
                 </FormGroup>
                 <FormGroup label="Role" isRequired fieldId="op-role">
-                  <select id="op-role" value={role} onChange={e => setRole(e.target.value)} style={selectStyle}>
+                  <select id="op-role" value={role} onChange={e => {
+                    const r = e.target.value;
+                    setRole(r);
+                    if (r === 'administrator' || r === 'auditor') setCaId('');
+                  }} style={selectStyle}>
                     {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
                   </select>
                 </FormGroup>
-                {role === 'ca_ra' && (
-                  <FormGroup label="CA Scope" isRequired fieldId="op-ca-id">
+                {(role === 'ca_ra' || role === 'ca_operations') && (
+                  <FormGroup label="CA Scope" isRequired={role === 'ca_ra'} fieldId="op-ca-id">
                     {cas.length > 0
                       ? (
-                        <select id="op-ca-id" value={caId} onChange={e => setCaId(e.target.value)} style={selectStyle} required>
+                        <select id="op-ca-id" value={caId} onChange={e => setCaId(e.target.value)} style={selectStyle} required={role === 'ca_ra'}>
                           <option value="">— select a CA —</option>
                           {cas.map(ca => <option key={ca.id} value={ca.id}>{ca.id}</option>)}
                         </select>
                       )
                       : (
-                        <TextInput id="op-ca-id" value={caId} onChange={(_e, v) => setCaId(v)} isRequired placeholder="CA ID" />
+                        <TextInput id="op-ca-id" value={caId} onChange={(_e, v) => setCaId(v)} isRequired={role === 'ca_ra'} placeholder="CA ID" />
                       )}
-                    <p style={{ fontSize: '0.75rem', color: '#6a6e73', marginTop: '0.25rem' }}>ca_ra operators must be scoped to a single CA.</p>
+                    <p style={{ fontSize: '0.75rem', color: '#6a6e73', marginTop: '0.25rem' }}>
+                      {role === 'ca_ra' ? 'ca_ra operators must be scoped to a single CA.' : 'ca_operations operators may optionally be scoped to a single CA.'}
+                    </p>
                   </FormGroup>
                 )}
               </FormSection>
