@@ -1,4 +1,4 @@
-import { apiJson, apiFetch, ApiError } from './client';
+import { apiJson, apiVoid, apiFetch, ApiError, extractErrorMessage } from './client';
 import { apiPath, apiActionPath, apiListPath } from './paths';
 
 export interface CaInfo {
@@ -21,14 +21,16 @@ export async function getCa(id: string): Promise<CaInfo> {
 
 export async function downloadCaCert(id: string): Promise<string> {
   const resp = await apiFetch(`${apiPath('ca', id)}/cert`);
-  if (!resp.ok) throw new ApiError(resp.status, resp.statusText);
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new ApiError(resp.status, extractErrorMessage(resp.status, text, resp.statusText));
+  }
   return resp.text();
 }
 
 export async function forceCrl(caId?: string): Promise<void> {
   const path = caId ? apiActionPath('ca', caId, 'crl/force') : '/admin/crl/force';
-  const resp = await apiFetch(path, { method: 'POST' });
-  if (!resp.ok) throw new ApiError(resp.status, resp.statusText);
+  return apiVoid(path, { method: 'POST' });
 }
 
 export interface CrossSignResult {

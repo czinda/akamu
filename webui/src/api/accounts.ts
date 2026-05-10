@@ -1,4 +1,4 @@
-import { apiJson, apiFetch, ApiError } from './client';
+import { apiJson, apiVoid, apiDelete } from './client';
 import { apiPath, apiActionPath, apiListPath } from './paths';
 
 export interface AccountRow {
@@ -33,8 +33,7 @@ export async function getAccount(id: string): Promise<AccountRow> {
 }
 
 export async function deactivateAccount(id: string): Promise<void> {
-  const resp = await apiFetch(apiActionPath('account', id, 'deactivate'), { method: 'POST' });
-  if (!resp.ok) throw new ApiError(resp.status, resp.statusText);
+  return apiVoid(apiActionPath('account', id, 'deactivate'), { method: 'POST' });
 }
 
 export async function getGrants(id: string): Promise<{ profile_grants: string[] | null }> {
@@ -42,14 +41,12 @@ export async function getGrants(id: string): Promise<{ profile_grants: string[] 
 }
 
 export async function setGrants(id: string, grants: string[]): Promise<void> {
-  const resp = await apiFetch(apiActionPath('account', id, 'profile-grants'), {
+  return apiVoid(apiActionPath('account', id, 'profile-grants'), {
     method: 'PUT',
     body: JSON.stringify({ profile_grants: grants }),
   });
-  if (!resp.ok) throw new ApiError(resp.status, resp.statusText);
 }
 
 export async function clearGrants(id: string): Promise<void> {
-  const resp = await apiFetch(apiActionPath('account', id, 'profile-grants'), { method: 'DELETE' });
-  if (!resp.ok) throw new ApiError(resp.status, resp.statusText);
+  return apiDelete(apiActionPath('account', id, 'profile-grants'));
 }

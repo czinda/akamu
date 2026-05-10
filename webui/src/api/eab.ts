@@ -1,4 +1,4 @@
-import { apiJson, apiFetch, ApiError } from './client';
+import { apiJson, apiDelete } from './client';
 import { apiPath, apiListPath } from './paths';
 
 export interface EabKeyRow {
@@ -44,6 +44,5 @@ export async function createEab(opts: CreateEabOptions): Promise<{ kid: string; 
 }
 
 export async function deleteEab(kid: string): Promise<void> {
-  const resp = await apiFetch(apiPath('eab', kid), { method: 'DELETE' });
-  if (!resp.ok) throw new ApiError(resp.status, resp.statusText);
+  return apiDelete(apiPath('eab', kid));
 }

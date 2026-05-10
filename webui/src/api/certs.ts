@@ -49,7 +49,10 @@ export async function getCert(id: string): Promise<CertRow> {
 
 export async function downloadCert(id: string): Promise<string> {
   const resp = await apiFetch(`${apiPath('cert', id)}/download`);
-  if (!resp.ok) throw new ApiError(resp.status, resp.statusText);
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new ApiError(resp.status, extractErrorMessage(resp.status, text, resp.statusText));
+  }
   return resp.text();
 }
 

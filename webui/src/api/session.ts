@@ -1,4 +1,4 @@
-import { apiFetch, ApiError } from './client';
+import { apiFetch, apiJson, ApiError } from './client';
 import type { Role } from '../auth/AuthContext';
 
 export interface SessionResponse {
@@ -61,9 +61,7 @@ export async function logout(): Promise<void> {
 }
 
 export async function whoami(): Promise<SessionResponse> {
-  const resp = await apiFetch('/admin/session', { method: 'POST' });
-  if (!resp.ok) throw new ApiError(resp.status, resp.statusText);
-  return resp.json() as Promise<SessionResponse>;
+  return apiJson<SessionResponse>('/admin/session', { method: 'POST' });
 }
 
 function base64urlDecode(s: string): Uint8Array {

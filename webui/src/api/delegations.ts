@@ -1,4 +1,4 @@
-import { apiJson, apiFetch, ApiError } from './client';
+import { apiJson, apiVoid, apiDelete } from './client';
 import { apiPath, apiListPath } from './paths';
 
 export interface DelegationRow {
@@ -47,14 +47,9 @@ export async function createDelegation(payload: DelegationCreatePayload): Promis
 }
 
 export async function updateDelegation(id: string, payload: DelegationUpdatePayload): Promise<void> {
-  const resp = await apiFetch(apiPath('delegation', id), {
-    method: 'PUT',
-    body: JSON.stringify(payload),
-  });
-  if (!resp.ok) throw new ApiError(resp.status, resp.statusText);
+  return apiVoid(apiPath('delegation', id), { method: 'PUT', body: JSON.stringify(payload) });
 }
 
 export async function deleteDelegation(id: string): Promise<void> {
-  const resp = await apiFetch(apiPath('delegation', id), { method: 'DELETE' });
-  if (!resp.ok) throw new ApiError(resp.status, resp.statusText);
+  return apiDelete(apiPath('delegation', id));
 }

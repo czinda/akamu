@@ -79,3 +79,11 @@ export async function apiDelete(path: string): Promise<void> {
     throw new ApiError(resp.status, extractErrorMessage(resp.status, text, resp.statusText));
   }
 }
+
+export async function apiVoid(path: string, init?: RequestInit): Promise<void> {
+  const resp = await apiFetch(path, init);
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new ApiError(resp.status, extractErrorMessage(resp.status, text, resp.statusText));
+  }
+}

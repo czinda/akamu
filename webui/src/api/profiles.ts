@@ -1,4 +1,4 @@
-import { apiJson, apiFetch, ApiError } from './client';
+import { apiJson, apiVoid, apiDelete } from './client';
 import { apiPath, apiListPath } from './paths';
 
 export interface CertificatePolicy {
@@ -54,22 +54,13 @@ export interface ProfilePayload {
 }
 
 export async function createProfile(id: string, payload: ProfilePayload): Promise<void> {
-  const resp = await apiFetch(apiListPath('profile'), {
-    method: 'POST',
-    body: JSON.stringify({ id, ...payload }),
-  });
-  if (!resp.ok) throw new ApiError(resp.status, resp.statusText);
+  return apiVoid(apiListPath('profile'), { method: 'POST', body: JSON.stringify({ id, ...payload }) });
 }
 
 export async function updateProfile(id: string, payload: ProfilePayload): Promise<void> {
-  const resp = await apiFetch(apiPath('profile', id), {
-    method: 'PUT',
-    body: JSON.stringify(payload),
-  });
-  if (!resp.ok) throw new ApiError(resp.status, resp.statusText);
+  return apiVoid(apiPath('profile', id), { method: 'PUT', body: JSON.stringify(payload) });
 }
 
 export async function deleteProfile(id: string): Promise<void> {
-  const resp = await apiFetch(apiPath('profile', id), { method: 'DELETE' });
-  if (!resp.ok) throw new ApiError(resp.status, resp.statusText);
+  return apiDelete(apiPath('profile', id));
 }

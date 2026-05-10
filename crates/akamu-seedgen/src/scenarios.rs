@@ -402,7 +402,18 @@ async fn create_delegation_order(
 
     // accounts.id is the UUID from the account URL's last path segment,
     // not the full URL that the ACME client stores in Account::url.
-    let account_db_id = account.url.rsplit('/').next().unwrap_or("").to_string();
+    let account_db_id = account
+        .url
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            akamu::error::AcmeError::Internal(format!(
+                "account URL has no path segment: {}",
+                account.url
+            ))
+        })?
+        .to_string();
 
     let delegation_id = Uuid::new_v4().to_string();
     db::delegations::insert(

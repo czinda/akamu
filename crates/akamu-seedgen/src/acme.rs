@@ -160,7 +160,12 @@ pub async fn issue_cert(
 
         let cert_pem = client.download_certificate(account, &cert_url).await?;
 
-        let cert_id = cert_url.rsplit('/').next().unwrap_or("").to_string();
+        let cert_id = cert_url
+            .rsplit('/')
+            .next()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| ClientError::Http(format!("cert URL has no path segment: {cert_url}")))?
+            .to_string();
         Ok(IssuedCert {
             account_url: account.url.clone(),
             order_url: order_url.clone(),

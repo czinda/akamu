@@ -1,4 +1,4 @@
-import { apiJson, apiFetch, ApiError } from './client';
+import { apiJson, apiVoid } from './client';
 import { apiPath, apiActionPath, apiListPath } from './paths';
 
 export interface OperatorRow {
@@ -48,30 +48,17 @@ export async function createOperator(opts: CreateOperatorOptions): Promise<{ id:
 }
 
 export async function updateOperator(id: string, opts: UpdateOperatorOptions): Promise<void> {
-  const resp = await apiFetch(apiPath('operator', id), {
-    method: 'PUT',
-    body: JSON.stringify(opts),
-  });
-  if (!resp.ok) throw new ApiError(resp.status, resp.statusText);
+  return apiVoid(apiPath('operator', id), { method: 'PUT', body: JSON.stringify(opts) });
 }
 
 export async function activateOperator(id: string): Promise<void> {
-  const resp = await apiFetch(apiPath('operator', id), {
-    method: 'PATCH',
-    body: JSON.stringify({ active: true }),
-  });
-  if (!resp.ok) throw new ApiError(resp.status, resp.statusText);
+  return apiVoid(apiPath('operator', id), { method: 'PATCH', body: JSON.stringify({ active: true }) });
 }
 
 export async function deactivateOperator(id: string): Promise<void> {
-  const resp = await apiFetch(apiPath('operator', id), {
-    method: 'PATCH',
-    body: JSON.stringify({ active: false }),
-  });
-  if (!resp.ok) throw new ApiError(resp.status, resp.statusText);
+  return apiVoid(apiPath('operator', id), { method: 'PATCH', body: JSON.stringify({ active: false }) });
 }
 
 export async function unlockOperator(id: string): Promise<void> {
-  const resp = await apiFetch(apiActionPath('operator', id, 'unlock'), { method: 'POST' });
-  if (!resp.ok) throw new ApiError(resp.status, resp.statusText);
+  return apiVoid(apiActionPath('operator', id, 'unlock'), { method: 'POST' });
 }
