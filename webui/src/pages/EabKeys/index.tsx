@@ -49,7 +49,8 @@ export default function EabKeys() {
   const [newKey, setNewKey] = useState('');
   const [newAlg, setNewAlg] = useState('sha256');
   const [newGrants, setNewGrants] = useState('');
-  const [saving, setSaving] = useState(false);
+  const [createSaving, setCreateSaving] = useState(false);
+  const [deleteSaving, setDeleteSaving] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -69,7 +70,7 @@ export default function EabKeys() {
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
-    setSaving(true);
+    setCreateSaving(true);
     try {
       const grants = newGrants.trim()
         ? newGrants.split(/[\s,]+/).map(s => s.trim()).filter(Boolean)
@@ -84,13 +85,13 @@ export default function EabKeys() {
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Create failed');
     } finally {
-      setSaving(false);
+      setCreateSaving(false);
     }
   }
 
   async function handleDelete() {
     if (!deleteKid) return;
-    setSaving(true);
+    setDeleteSaving(true);
     try {
       await deleteEab(deleteKid);
       setDeleteKid(null);
@@ -98,7 +99,7 @@ export default function EabKeys() {
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Delete failed');
     } finally {
-      setSaving(false);
+      setDeleteSaving(false);
     }
   }
 
@@ -184,7 +185,7 @@ export default function EabKeys() {
           </Form>
         </ModalBody>
         <ModalFooter>
-          <Button variant="primary" form="eab-create-form" type="submit" isLoading={saving} isDisabled={saving}>Create</Button>
+          <Button variant="primary" form="eab-create-form" type="submit" isLoading={createSaving} isDisabled={createSaving}>Create</Button>
           <Button variant="link" onClick={() => setCreateOpen(false)}>Cancel</Button>
         </ModalFooter>
       </Modal>
@@ -194,7 +195,7 @@ export default function EabKeys() {
           <p>Delete EAB key <strong>{deleteKid}</strong>?</p>
         </ModalBody>
         <ModalFooter>
-          <Button variant="danger" onClick={handleDelete} isLoading={saving} isDisabled={saving}>Delete</Button>
+          <Button variant="danger" onClick={handleDelete} isLoading={deleteSaving} isDisabled={deleteSaving}>Delete</Button>
           <Button variant="link" onClick={() => setDeleteKid(null)}>Cancel</Button>
         </ModalFooter>
       </Modal>
