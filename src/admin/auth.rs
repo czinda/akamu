@@ -683,14 +683,59 @@ pub async fn post_session(
 /// ```
 ///
 /// The message authenticated is `kid + "." + timestamp_as_decimal_string`.
-/// Replay window: ±60 seconds.  The EAB key must have been provisioned via the
-/// admin API (so that `created_by_operator_id` is known); config-file keys are
-/// rejected with 403.
+/// Replay window: ±60 seconds; duplicate `(kid, timestamp)` pairs within that
+/// window are rejected by an in-memory nonce cache.  The EAB key must have been
+/// provisioned via the admin API (so that `created_by_operator_id` is known);
+/// config-file keys are rejected with 403.
 pub async fn post_session_eab(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
-    axum::extract::Json(payload): axum::extract::Json<serde_json::Value>,
+    req: axum::extract::Request,
 ) -> axum::response::Response {
+    use axum::extract::FromRequest as _;
     use synta_certificate::default_hmac_provider;
+
+    let peer_ip = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|c| c.0.ip());
+
+    let axum::extract::Json(payload) =
+        match axum::extract::Json::<serde_json::Value>::from_request(req, &state).await {
+            Ok(j) => j,
+            Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        };
+
+    // ── Per-IP rate limiting (FIA_AFL.1 / FAU_ARP.1 self-DoS guard) ──────────
+    if let (Some(ip_addr), Some(limiter)) = (peer_ip, state.admin_auth_limiter.as_ref()) {
+        let rate_limit = state
+            .config
+            .admin
+            .as_ref()
+            .map(|a| a.auth_rate_limit)
+            .unwrap_or(20);
+        let now_i = Instant::now();
+        let cutoff = now_i - Duration::from_secs(300);
+        let mut map = limiter.lock().await;
+        let times = map.entry(ip_addr).or_default();
+        times.retain(|&t| t >= cutoff);
+        if times.len() as u32 >= rate_limit {
+            tracing::warn!(
+                ip = %ip_addr,
+                attempts = times.len(),
+                limit = rate_limit,
+                "EAB session auth rate limit exceeded"
+            );
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                "authentication rate limit exceeded; try again later",
+            )
+                .into_response();
+        }
+        times.push_back(now_i);
+        if map.len() > 500 {
+            map.retain(|_, v| !v.is_empty());
+        }
+    }
 
     let kid = match payload.get("kid").and_then(|v| v.as_str()) {
         Some(k) if !k.is_empty() => k.to_owned(),
@@ -724,6 +769,18 @@ pub async fn post_session_eab(
             .into_response();
     }
 
+    // Anti-replay: reject if (kid, timestamp) was already seen within the window.
+    // Entries older than 120 s are evicted lazily.
+    let nonce_key = format!("{kid}.{timestamp}");
+    if let Some(ref nonce_store) = state.eab_session_nonces {
+        let mut store = nonce_store.lock().await;
+        store.retain(|_, ts| (now - *ts).abs() <= 120);
+        if store.contains_key(&nonce_key) {
+            return (StatusCode::UNAUTHORIZED, "replay detected").into_response();
+        }
+        store.insert(nonce_key.clone(), now);
+    }
+
     // Look up the EAB key.
     let eab_row = match db::eab::get_by_kid(&state.db, &kid).await {
         Ok(Some(r)) => r,
@@ -746,8 +803,7 @@ pub async fn post_session_eab(
         }
     };
 
-    // Resolve the owning operator: either via created_by_operator_id (admin-provisioned)
-    // or via bound_principal (GSSAPI-derived via /acme/eab).
+    // Resolve operator before HMAC verify so failures can be counted toward lockout.
     enum OperatorSource {
         ById(i64),
         ByPrincipal(String),
@@ -773,52 +829,7 @@ pub async fn post_session_eab(
         }
     };
 
-    // Decode the HMAC key and the provided signature.
-    let hmac_key = match URL_SAFE_NO_PAD.decode(&eab_row.hmac_key_b64u) {
-        Ok(k) => k,
-        Err(_) => {
-            tracing::error!(kid = %kid, "EAB key: base64url decode failed");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    };
-    let sig_bytes = match URL_SAFE_NO_PAD
-        .decode(&signature_b64)
-        .or_else(|_| base64::engine::general_purpose::STANDARD.decode(&signature_b64))
-    {
-        Ok(b) => b,
-        Err(_) => {
-            return (StatusCode::BAD_REQUEST, "signature is not valid base64url").into_response();
-        }
-    };
-
-    // Translate JWS algorithm name ("HS256") to hash name ("sha256") expected by hmac_verify.
-    let hash_alg = match eab_row.alg.as_str() {
-        "HS256" => "sha256",
-        "HS384" => "sha384",
-        "HS512" => "sha512",
-        other => other,
-    };
-
-    // Message: "kid.timestamp"
-    let message = format!("{kid}.{timestamp}");
-    if default_hmac_provider()
-        .hmac_verify(hash_alg, &hmac_key, message.as_bytes(), &sig_bytes)
-        .is_err()
-    {
-        state
-            .record_audit(
-                AuditEvent::failure(AuditEventType::AdminLogin)
-                    .with_detail("{\"method\":\"eab\",\"reason\":\"hmac verify failed\"}"),
-            )
-            .await;
-        return (
-            StatusCode::UNAUTHORIZED,
-            "HMAC signature verification failed",
-        )
-            .into_response();
-    }
-
-    // Look up the owning operator by ID or GSSAPI principal.
+    // Look up the owning operator before HMAC verify so failures count toward lockout.
     let op = match op_source {
         OperatorSource::ById(id) => match db::operators::get_by_id(&state.db, id).await {
             Ok(Some(op)) => op,
@@ -857,6 +868,63 @@ pub async fn post_session_eab(
         }
     };
 
+    // Decode the HMAC key and the provided signature.
+    let hmac_key = match URL_SAFE_NO_PAD.decode(&eab_row.hmac_key_b64u) {
+        Ok(k) => k,
+        Err(_) => {
+            tracing::error!(kid = %kid, "EAB key: base64url decode failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let sig_bytes = match URL_SAFE_NO_PAD
+        .decode(&signature_b64)
+        .or_else(|_| base64::engine::general_purpose::STANDARD.decode(&signature_b64))
+    {
+        Ok(b) => b,
+        Err(_) => {
+            return (StatusCode::BAD_REQUEST, "signature is not valid base64url").into_response();
+        }
+    };
+
+    // Translate JWS algorithm name ("HS256") to hash name ("sha256") expected by hmac_verify.
+    let hash_alg = match eab_row.alg.as_str() {
+        "HS256" => "sha256",
+        "HS384" => "sha384",
+        "HS512" => "sha512",
+        other => {
+            tracing::error!(kid = %kid, alg = %other, "EAB key has unrecognised algorithm");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    // Message: "kid.timestamp"
+    let message = format!("{kid}.{timestamp}");
+    if default_hmac_provider()
+        .hmac_verify(hash_alg, &hmac_key, message.as_bytes(), &sig_bytes)
+        .is_err()
+    {
+        let admin_cfg = state.config.admin.as_ref();
+        let max_attempts = admin_cfg.map(|a| a.max_failed_auth).unwrap_or(5);
+        let lock_secs = admin_cfg.map(|a| a.lockout_duration_secs).unwrap_or(900) as i64;
+        let lock_until = crate::util::unix_to_rfc3339(crate::util::unix_now() + lock_secs);
+        if let Err(e) =
+            db::operators::increment_failed(&state.db, op.id, max_attempts, &lock_until).await
+        {
+            tracing::warn!(error = %e, operator_id = op.id, "failed to record failed EAB attempt");
+        }
+        state
+            .record_audit(
+                AuditEvent::failure(AuditEventType::AdminLogin)
+                    .with_detail("{\"method\":\"eab\",\"reason\":\"hmac verify failed\"}"),
+            )
+            .await;
+        return (
+            StatusCode::UNAUTHORIZED,
+            "HMAC signature verification failed",
+        )
+            .into_response();
+    }
+
     if op.active == 0 {
         return (StatusCode::FORBIDDEN, "operator account is not active").into_response();
     }
@@ -890,6 +958,9 @@ pub async fn post_session_eab(
     };
 
     let ts_str = crate::util::rfc3339_now();
+    if let Err(e) = db::operators::reset_failed(&state.db, op.id).await {
+        tracing::warn!(error = %e, operator_id = op.id, "failed to reset failed_attempts after EAB login");
+    }
     if let Err(e) = db::operators::update_last_seen(&state.db, op.id, &ts_str).await {
         tracing::warn!(error = %e, operator_id = op.id, "failed to update last_seen_at");
     }
