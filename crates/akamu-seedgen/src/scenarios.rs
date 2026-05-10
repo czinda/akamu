@@ -26,12 +26,17 @@ const REVOKE_REASONS: &[u8] = &[0, 1, 3, 4, 5];
 #[derive(Debug, Clone)]
 pub enum TargetState {
     Valid,
-    Revoked { reason: u8 },
+    Revoked {
+        reason: u8,
+    },
     Expired,
     NearExpiry,
     /// ARI replacement chain.  `chain_index` identifies the chain;
     /// `position` is 0 (oldest), 1 (middle), 2 (newest in a 3-cert chain).
-    AriChain { chain_index: usize, position: usize },
+    AriChain {
+        chain_index: usize,
+        position: usize,
+    },
 }
 
 /// All data returned from one scenario run, consumed by postprocess.rs.
@@ -98,7 +103,14 @@ pub async fn run_scenario(
     }
 
     let n = accounts.len();
-    let ctx = IssueCtx { responder, spec, n, accounts: &accounts, key_types: &key_types, verbose };
+    let ctx = IssueCtx {
+        responder,
+        spec,
+        n,
+        accounts: &accounts,
+        key_types: &key_types,
+        verbose,
+    };
 
     // ── 2. Valid certs ────────────────────────────────────────────────────────
 
@@ -135,9 +147,13 @@ pub async fn run_scenario(
     for chain_idx in 0..spec.certs.ari_chains {
         for pos in 0..3 {
             let cert = issue_one(&ctx, rng).await?;
-            outcome
-                .issued
-                .push((cert, TargetState::AriChain { chain_index: chain_idx, position: pos }));
+            outcome.issued.push((
+                cert,
+                TargetState::AriChain {
+                    chain_index: chain_idx,
+                    position: pos,
+                },
+            ));
         }
     }
 
@@ -213,7 +229,11 @@ pub async fn run_scenario(
 
     // ── 11. Deactivate accounts ───────────────────────────────────────────────
 
-    for (client, account) in accounts.iter().take(spec.accounts.deactivated).map(|(c, a)| (c, a)) {
+    for (client, account) in accounts
+        .iter()
+        .take(spec.accounts.deactivated)
+        .map(|(c, a)| (c, a))
+    {
         client
             .deactivate_account(account)
             .await
@@ -238,29 +258,62 @@ struct IssueCtx<'a> {
     verbose: bool,
 }
 
-/// Issue a single cert via the full ACME HTTP-01 flow.
+/// Issue a single cert via the full ACME HTTP-01 flow, with retry on transient
+/// challenge-validation failures (e.g. momentary connection errors to the
+/// challenge responder that cause the order to go invalid).
 async fn issue_one(ctx: &IssueCtx<'_>, rng: &mut impl Rng) -> Result<IssuedCert, String> {
+    const MAX_ATTEMPTS: u32 = 4;
+    const RETRY_DELAYS_MS: &[u64] = &[2_000, 5_000, 10_000];
+
     let acct_idx = rng.gen_range(0..ctx.n);
     let (client, account) = (&ctx.accounts[acct_idx].0, &ctx.accounts[acct_idx].1);
     let key_type = names::pick_key_type(rng, ctx.key_types);
     let domains = names::next_domains(rng, &ctx.spec.name, 1);
 
-    let cert = acme::issue_cert(
-        client,
-        account,
-        ctx.responder,
-        &domains,
-        &key_type,
-        ctx.spec.profile_id.as_deref(),
-        &ctx.spec.ca_id,
-    )
-    .await
-    .map_err(|e| format!("[{}] issue cert: {e}", ctx.spec.name))?;
+    let mut last_err = String::new();
+    for attempt in 0..MAX_ATTEMPTS {
+        if attempt > 0 {
+            let delay_ms = RETRY_DELAYS_MS[(attempt as usize - 1).min(RETRY_DELAYS_MS.len() - 1)];
+            tracing::warn!(
+                scenario = %ctx.spec.name,
+                attempt,
+                delay_ms,
+                "retrying cert issuance after transient challenge failure"
+            );
+            tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+        }
 
-    if ctx.verbose {
-        tracing::info!(scenario = %ctx.spec.name, order = %cert.order_url, "cert issued");
+        match acme::issue_cert(
+            client,
+            account,
+            ctx.responder,
+            &domains,
+            &key_type,
+            ctx.spec.profile_id.as_deref(),
+            &ctx.spec.ca_id,
+        )
+        .await
+        {
+            Ok(cert) => {
+                if ctx.verbose {
+                    tracing::info!(scenario = %ctx.spec.name, order = %cert.order_url, "cert issued");
+                }
+                return Ok(cert);
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                // Only retry on order-invalid errors caused by challenge validation
+                // failures (connection errors, timeouts). Any other error is fatal.
+                if msg.contains("order invalid") || msg.contains("connection error") {
+                    last_err = format!("[{}] issue cert: {msg}", ctx.spec.name);
+                    continue;
+                }
+                return Err(format!("[{}] issue cert: {msg}", ctx.spec.name));
+            }
+        }
     }
-    Ok(cert)
+
+    Err(last_err)
 }
 
 /// Drive the full ACME flow for a STAR order; return the order URL.
@@ -311,7 +364,9 @@ async fn run_star_order(
     let mut tokens: Vec<String> = Vec::new();
     let result: Result<Order, String> = async {
         for authz_url in &pseudo_order.authorizations {
-            let authz = client.get_authorization(account, authz_url).await
+            let authz = client
+                .get_authorization(account, authz_url)
+                .await
                 .map_err(|e| format!("[{}] star get_authorization: {e}", spec.name))?;
             if authz.status == "valid" {
                 continue;
@@ -327,7 +382,9 @@ async fn run_star_order(
             let key_auth = account.key_authorization(token);
             responder.present(token, &key_auth).await;
             tokens.push(token.to_string());
-            client.trigger_challenge(account, &challenge).await
+            client
+                .trigger_challenge(account, &challenge)
+                .await
                 .map_err(|e| format!("[{}] star trigger_challenge: {e}", spec.name))?;
         }
 
@@ -430,12 +487,17 @@ async fn create_delegation_order(
     .await?;
 
     // Throwaway P-256 key + CSR for the stored `star_csr_der`.
-    let throwaway_key = tokio::task::spawn_blocking(|| {
-        synta_certificate::BackendPrivateKey::generate_ec("P-256")
-    })
-    .await
-    .map_err(|e| akamu::error::AcmeError::Internal(format!("delegation CSR key gen (task panic): {e}")))?
-    .map_err(|e| akamu::error::AcmeError::Internal(format!("delegation CSR key gen: {e}")))?;
+    let throwaway_key =
+        tokio::task::spawn_blocking(|| synta_certificate::BackendPrivateKey::generate_ec("P-256"))
+            .await
+            .map_err(|e| {
+                akamu::error::AcmeError::Internal(format!(
+                    "delegation CSR key gen (task panic): {e}"
+                ))
+            })?
+            .map_err(|e| {
+                akamu::error::AcmeError::Internal(format!("delegation CSR key gen: {e}"))
+            })?;
 
     let domain_strs: Vec<&str> = domains.iter().map(String::as_str).collect();
     let csr_der = build_csr(&domain_strs, &throwaway_key)
@@ -448,9 +510,10 @@ async fn create_delegation_order(
         Uuid::new_v4()
     );
 
-    let identifiers_json = serde_json::json!(
-        domains.iter().map(|d| serde_json::json!({"type":"dns","value":d})).collect::<Vec<_>>()
-    )
+    let identifiers_json = serde_json::json!(domains
+        .iter()
+        .map(|d| serde_json::json!({"type":"dns","value":d}))
+        .collect::<Vec<_>>())
     .to_string();
 
     db::orders::insert(
