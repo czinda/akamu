@@ -992,12 +992,12 @@ Delegations are managed through the Admin API. The `delegation_enabled` config f
 
 | Method | Path | Role required |
 |--------|------|---------------|
-| `GET` | `/admin/delegations` | `ca_operations`, `administrator` |
-| `GET` | `/admin/delegations?account_id={id}` | `ca_operations`, `administrator` |
-| `POST` | `/admin/delegations` | `administrator` |
-| `GET` | `/admin/delegations/{id}` | `ca_operations`, `administrator` |
-| `PUT` | `/admin/delegations/{id}` | `administrator` |
-| `DELETE` | `/admin/delegations/{id}` | `administrator` |
+| `GET` | `/admin/delegations` | any authenticated role |
+| `GET` | `/admin/delegations?account_id={id}` | any authenticated role |
+| `POST` | `/admin/delegations` | `ca_operations`, `administrator` |
+| `GET` | `/admin/delegations/{id}` | any authenticated role |
+| `PUT` | `/admin/delegations/{id}` | `ca_operations`, `administrator` |
+| `DELETE` | `/admin/delegations/{id}` | `ca_operations`, `administrator` |
 
 `DELETE` returns `409 Conflict` when one or more orders still reference the delegation.
 
