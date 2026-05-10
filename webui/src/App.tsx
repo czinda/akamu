@@ -1,5 +1,5 @@
 import React, { Component, type ReactNode } from 'react';
-import { Routes, Route, Navigate, NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { Routes, Route, Navigate, NavLink, Outlet } from 'react-router-dom';
 import {
   Page,
   Masthead,
@@ -143,7 +143,6 @@ function AppSidebar({ role }: { role: Role | null }) {
 
 function AuthenticatedLayout() {
   const { token, role, clearAuth } = useAuth();
-  const navigate = useNavigate();
 
   if (!token) return <Navigate to="/login" replace />;
   if (!role) return <Spinner />;
@@ -151,7 +150,9 @@ function AuthenticatedLayout() {
   async function handleLogout() {
     await apiLogout();
     clearAuth();
-    navigate('/login');
+    // Hard redirect so the React app re-initialises from a clean slate.
+    // A client-side navigate() keeps stale in-memory state alive.
+    window.location.href = '/ui/login';
   }
 
   return (
