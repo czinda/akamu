@@ -665,7 +665,7 @@ pub async fn post_session(
 
     // Set an HttpOnly session cookie so browser-side code can also use it.
     let cookie = format!(
-        "session={token}; Path=/api; Secure; HttpOnly; SameSite=Strict; Max-Age={ttl_secs}"
+        "session={token}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age={ttl_secs}"
     );
     if let Ok(hv) = axum::http::HeaderValue::from_str(&cookie) {
         resp.headers_mut().insert("Set-Cookie", hv);
@@ -1011,7 +1011,7 @@ pub async fn post_session_eab(
     let expires_at = crate::util::unix_to_rfc3339(expires_unix);
 
     let cookie = format!(
-        "session={token}; Path=/api; Secure; HttpOnly; SameSite=Strict; Max-Age={ttl_secs}"
+        "session={token}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age={ttl_secs}"
     );
     let mut resp = (
         StatusCode::OK,
