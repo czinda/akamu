@@ -67,7 +67,7 @@ pub async fn create_dev_admin(
         .map_err(|e| format!("look up dev admin operator: {e}"))?
         .ok_or("dev admin operator not found after insert")?;
 
-    db::eab::insert_with_grants(&state.db, &kid, &hmac_key_b64u, None, Some(op.id), "HS256", now_unix)
+    db::eab::insert_with_grants(&state.db, &kid, &hmac_key_b64u, None, Some(op.id), "sha256", now_unix)
         .await
         .map_err(|e| format!("create dev admin EAB key: {e}"))?;
 

@@ -886,16 +886,14 @@ pub async fn post_session_eab(
         }
     };
 
-    // Translate JWS algorithm name ("HS256") to hash name ("sha256") expected by hmac_verify.
-    let hash_alg = match eab_row.alg.as_str() {
-        "HS256" => "sha256",
-        "HS384" => "sha384",
-        "HS512" => "sha512",
-        other => {
-            tracing::error!(kid = %kid, alg = %other, "EAB key has unrecognised algorithm");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    };
+    // The alg column stores hash-name format ("sha256", "sha384", "sha512") — the same
+    // format expected by hmac_verify.  Validate it is a recognised value to give a clear
+    // error rather than a cryptic hmac_verify failure.
+    let hash_alg = eab_row.alg.as_str();
+    if !matches!(hash_alg, "sha256" | "sha384" | "sha512") {
+        tracing::error!(kid = %kid, alg = %hash_alg, "EAB key has unrecognised algorithm");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
 
     // Message: "kid.timestamp"
     let message = format!("{kid}.{timestamp}");
