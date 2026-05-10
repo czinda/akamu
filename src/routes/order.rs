@@ -26,7 +26,7 @@ struct NewOrderIdentifier {
 
 /// RFC 8739 §3.1.1 — auto-renewal parameters in newOrder
 #[derive(Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 struct AutoRenewalRequest {
     #[serde(default)]
     start_date: Option<String>, // RFC 3339
