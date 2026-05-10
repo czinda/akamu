@@ -1,0 +1,210 @@
+# akamu-seedgen spec: medium-pqc
+# 4 CAs  |  ~10 000 certs  |  100 accounts
+# CAs: EC P-256, RSA-2048 (classical) + ML-DSA-44, ML-DSA-65 (post-quantum)
+# Mutual classical↔PQC cross-signs establish hybrid trust paths
+# Runtime: 10–20 min
+
+[global]
+seed   = 3103
+output = "medium-pqc.sqlite3"
+
+# ── CAs ───────────────────────────────────────────────────────────────────────
+
+[[ca]]
+id               = "ec-p256"
+is_default       = true
+key_type         = "ec:P-256"
+hash_alg         = "sha256"
+validity_days    = 90
+common_name      = "EC P-256 Test CA"
+organization     = "Akamu Test PKI"
+ca_validity_years = 10
+
+[[ca]]
+id               = "rsa-2048"
+is_default       = false
+key_type         = "rsa:2048"
+hash_alg         = "sha256"
+validity_days    = 365
+common_name      = "RSA-2048 Test CA"
+organization     = "Akamu Test PKI"
+ca_validity_years = 10
+
+[[ca]]
+id               = "ml-dsa-44"
+is_default       = false
+key_type         = "ml-dsa-44"
+hash_alg         = "sha256"
+validity_days    = 90
+common_name      = "ML-DSA-44 Test CA"
+organization     = "Akamu Test PKI"
+ca_validity_years = 10
+
+[[ca]]
+id               = "ml-dsa-65"
+is_default       = false
+key_type         = "ml-dsa-65"
+hash_alg         = "sha256"
+validity_days    = 90
+common_name      = "ML-DSA-65 Test CA"
+organization     = "Akamu Test PKI"
+ca_validity_years = 10
+
+# ── Cross-signs ───────────────────────────────────────────────────────────────
+# Classical CAs certify PQC CAs; ML-DSA-44 back-certifies EC P-256
+# to exercise both directions of the hybrid trust model
+
+[[cross_sign]]
+issuer         = "ec-p256"
+subject        = "ml-dsa-44"
+validity_years = 5
+
+[[cross_sign]]
+issuer         = "rsa-2048"
+subject        = "ml-dsa-65"
+validity_years = 5
+
+[[cross_sign]]
+issuer         = "ml-dsa-44"
+subject        = "ec-p256"
+validity_years = 5
+
+# ── Profiles ──────────────────────────────────────────────────────────────────
+
+[[profile]]
+id            = "tls-server"
+description   = "Standard TLS server certificate"
+eku           = ["server_auth"]
+key_usage     = ["digital_signature"]
+validity_days = 90
+
+[[profile]]
+id                 = "client-auth"
+description        = "Client authentication certificate"
+eku                = ["client_auth"]
+key_usage          = ["digital_signature"]
+validity_days      = 365
+allowed_key_types  = ["ec:P-256", "ec:P-384", "ed25519"]
+
+[[profile]]
+id            = "code-signing"
+description   = "Code signing certificate"
+eku           = ["code_signing"]
+key_usage     = ["digital_signature"]
+validity_days = 730
+
+[[profile]]
+id                = "pqc-tls"
+description       = "TLS server certificate with PQC leaf key"
+eku               = ["server_auth"]
+key_usage         = ["digital_signature"]
+validity_days     = 90
+allowed_key_types = ["ml-dsa-44", "ml-dsa-65", "ml-dsa-87"]
+
+# ── Scenarios ─────────────────────────────────────────────────────────────────
+# 4 scenarios × ~2 432 certs each ≈ 10 000 total
+
+[[scenario]]
+name         = "ec-p256-tls"
+ca_id        = "ec-p256"
+profile_id   = "tls-server"
+num_accounts = 25
+
+[scenario.certs]
+valid          = 1500
+revoked        = 375
+expired        = 300
+near_expiry    = 125
+ari_chains     = 40
+star_active    = 40
+star_canceled  = 20
+delegation     = 8
+pending_orders = 12
+invalid_orders = 12
+
+[scenario.certs.key_types]
+"ec:P-256" = 6
+"ec:P-384" = 2
+"rsa:2048" = 1
+"ed25519"  = 1
+
+[scenario.accounts]
+deactivated = 2
+
+[[scenario]]
+name         = "rsa-2048-client"
+ca_id        = "rsa-2048"
+profile_id   = "client-auth"
+num_accounts = 25
+
+[scenario.certs]
+valid          = 1500
+revoked        = 375
+expired        = 300
+near_expiry    = 125
+ari_chains     = 40
+star_active    = 40
+star_canceled  = 20
+delegation     = 8
+pending_orders = 12
+invalid_orders = 12
+
+[scenario.certs.key_types]
+"ec:P-256" = 5
+"ec:P-384" = 3
+"ed25519"  = 2
+
+[scenario.accounts]
+deactivated = 2
+
+[[scenario]]
+name         = "ml-dsa-44-pqc"
+ca_id        = "ml-dsa-44"
+profile_id   = "pqc-tls"
+num_accounts = 25
+
+[scenario.certs]
+valid          = 1500
+revoked        = 375
+expired        = 300
+near_expiry    = 125
+ari_chains     = 40
+star_active    = 40
+star_canceled  = 20
+delegation     = 8
+pending_orders = 12
+invalid_orders = 12
+
+[scenario.certs.key_types]
+"ml-dsa-44" = 5
+"ml-dsa-65" = 3
+"ml-dsa-87" = 2
+
+[scenario.accounts]
+deactivated = 2
+
+[[scenario]]
+name         = "ml-dsa-65-pqc"
+ca_id        = "ml-dsa-65"
+profile_id   = "pqc-tls"
+num_accounts = 25
+
+[scenario.certs]
+valid          = 1500
+revoked        = 375
+expired        = 300
+near_expiry    = 125
+ari_chains     = 40
+star_active    = 40
+star_canceled  = 20
+delegation     = 8
+pending_orders = 12
+invalid_orders = 12
+
+[scenario.certs.key_types]
+"ml-dsa-65" = 5
+"ml-dsa-44" = 3
+"ml-dsa-87" = 2
+
+[scenario.accounts]
+deactivated = 2

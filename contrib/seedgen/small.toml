@@ -1,0 +1,122 @@
+# akamu-seedgen spec: small
+# 2 CAs  |  ~1 000 certs  |  50 accounts
+# CAs: EC P-256 (default) + RSA-2048; mutual cross-sign
+# Runtime: 2–5 min
+
+[global]
+seed   = 2002
+output = "small.sqlite3"
+
+# ── CAs ───────────────────────────────────────────────────────────────────────
+
+[[ca]]
+id               = "ec-p256"
+is_default       = true
+key_type         = "ec:P-256"
+hash_alg         = "sha256"
+validity_days    = 90
+common_name      = "EC P-256 Test CA"
+organization     = "Akamu Test PKI"
+ca_validity_years = 10
+
+[[ca]]
+id               = "rsa-2048"
+is_default       = false
+key_type         = "rsa:2048"
+hash_alg         = "sha256"
+validity_days    = 365
+common_name      = "RSA-2048 Test CA"
+organization     = "Akamu Test PKI"
+ca_validity_years = 10
+
+# ── Cross-signs ───────────────────────────────────────────────────────────────
+
+[[cross_sign]]
+issuer         = "ec-p256"
+subject        = "rsa-2048"
+validity_years = 5
+
+[[cross_sign]]
+issuer         = "rsa-2048"
+subject        = "ec-p256"
+validity_years = 5
+
+# ── Profiles ──────────────────────────────────────────────────────────────────
+
+[[profile]]
+id            = "tls-server"
+description   = "Standard TLS server certificate"
+eku           = ["server_auth"]
+key_usage     = ["digital_signature"]
+validity_days = 90
+
+[[profile]]
+id            = "client-auth"
+description   = "Client authentication certificate (EC-only CA)"
+eku           = ["client_auth"]
+key_usage     = ["digital_signature"]
+validity_days = 365
+ca_ids        = ["ec-p256"]
+
+[[profile]]
+id            = "code-signing"
+description   = "Code signing certificate"
+eku           = ["code_signing"]
+key_usage     = ["digital_signature"]
+validity_days = 730
+
+# ── Scenarios ─────────────────────────────────────────────────────────────────
+
+[[scenario]]
+name         = "ec-tls"
+ca_id        = "ec-p256"
+profile_id   = "tls-server"
+num_accounts = 25
+
+[scenario.certs]
+valid          = 300
+revoked        = 75
+expired        = 60
+near_expiry    = 25
+ari_chains     = 8
+star_active    = 8
+star_canceled  = 4
+delegation     = 2
+pending_orders = 3
+invalid_orders = 3
+
+[scenario.certs.key_types]
+"ec:P-256" = 5
+"ec:P-384" = 2
+"rsa:2048" = 2
+"ed25519"  = 1
+
+[scenario.accounts]
+deactivated = 2
+
+[[scenario]]
+name         = "rsa-tls"
+ca_id        = "rsa-2048"
+profile_id   = "tls-server"
+num_accounts = 25
+
+[scenario.certs]
+valid          = 300
+revoked        = 75
+expired        = 60
+near_expiry    = 25
+ari_chains     = 8
+star_active    = 8
+star_canceled  = 4
+delegation     = 2
+pending_orders = 3
+invalid_orders = 3
+
+[scenario.certs.key_types]
+"rsa:2048" = 5
+"rsa:4096" = 2
+"ec:P-256" = 2
+"ed25519"  = 1
+
+[scenario.accounts]
+deactivated = 2

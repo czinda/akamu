@@ -1,0 +1,71 @@
+# akamu-seedgen spec: tiny
+# 1 CA  |  ~100 certs  |  10 accounts
+# Runtime: < 30 s
+
+[global]
+seed   = 1001
+output = "tiny.sqlite3"
+
+# ── CAs ───────────────────────────────────────────────────────────────────────
+
+[[ca]]
+id               = "primary"
+is_default       = true
+key_type         = "ec:P-256"
+hash_alg         = "sha256"
+validity_days    = 90
+common_name      = "EC P-256 Test CA"
+organization     = "Akamu Test PKI"
+ca_validity_years = 10
+
+# ── Profiles ──────────────────────────────────────────────────────────────────
+
+[[profile]]
+id            = "tls-server"
+description   = "Standard TLS server certificate"
+eku           = ["server_auth"]
+key_usage     = ["digital_signature"]
+validity_days = 90
+
+[[profile]]
+id            = "client-auth"
+description   = "Client authentication certificate"
+eku           = ["client_auth"]
+key_usage     = ["digital_signature"]
+validity_days = 365
+
+[[profile]]
+id            = "code-signing"
+description   = "Code signing certificate"
+eku           = ["code_signing"]
+key_usage     = ["digital_signature"]
+validity_days = 730
+
+# ── Scenarios ─────────────────────────────────────────────────────────────────
+
+[[scenario]]
+name         = "primary-tls"
+ca_id        = "primary"
+profile_id   = "tls-server"
+num_accounts = 10
+
+[scenario.certs]
+valid          = 60
+revoked        = 15
+expired        = 12
+near_expiry    = 5
+ari_chains     = 1
+star_active    = 2
+star_canceled  = 1
+delegation     = 1
+pending_orders = 2
+invalid_orders = 2
+
+[scenario.certs.key_types]
+"ec:P-256" = 5
+"ec:P-384" = 2
+"rsa:2048" = 2
+"ed25519"  = 1
+
+[scenario.accounts]
+deactivated = 1

@@ -1,0 +1,691 @@
+# akamu-seedgen spec: xlarge
+# 16 CAs  |  ~50 000 certs  |  10 000 accounts
+# CAs: EC P-256/384/521, RSA-2048/3072/4096, Ed25519, Ed448,
+#       ML-DSA-44/65/87, + SHA-384/512 variants of EC and RSA
+# Runtime: 3–6 h
+
+[global]
+seed   = 5005
+output = "xlarge.sqlite3"
+
+# ── CAs ───────────────────────────────────────────────────────────────────────
+
+[[ca]]
+id               = "ec-p256"
+is_default       = true
+key_type         = "ec:P-256"
+hash_alg         = "sha256"
+validity_days    = 90
+common_name      = "EC P-256 Test CA"
+organization     = "Akamu Test PKI"
+ca_validity_years = 10
+
+[[ca]]
+id               = "ec-p384"
+is_default       = false
+key_type         = "ec:P-384"
+hash_alg         = "sha384"
+validity_days    = 180
+common_name      = "EC P-384 Test CA"
+organization     = "Akamu Test PKI"
+ca_validity_years = 10
+
+[[ca]]
+id               = "ec-p521"
+is_default       = false
+key_type         = "ec:P-521"
+hash_alg         = "sha512"
+validity_days    = 180
+common_name      = "EC P-521 Test CA"
+organization     = "Akamu Test PKI"
+ca_validity_years = 10
+
+[[ca]]
+id               = "rsa-2048"
+is_default       = false
+key_type         = "rsa:2048"
+hash_alg         = "sha256"
+validity_days    = 365
+common_name      = "RSA-2048 Test CA"
+organization     = "Akamu Test PKI"
+ca_validity_years = 10
+
+[[ca]]
+id               = "rsa-3072"
+is_default       = false
+key_type         = "rsa:3072"
+hash_alg         = "sha256"
+validity_days    = 365
+common_name      = "RSA-3072 Test CA"
+organization     = "Akamu Test PKI"
+ca_validity_years = 10
+
+[[ca]]
+id               = "rsa-4096"
+is_default       = false
+key_type         = "rsa:4096"
+hash_alg         = "sha384"
+validity_days    = 730
+common_name      = "RSA-4096 Test CA"
+organization     = "Akamu Test PKI"
+ca_validity_years = 10
+
+[[ca]]
+id               = "ed25519"
+is_default       = false
+key_type         = "ed25519"
+hash_alg         = "sha256"
+validity_days    = 90
+common_name      = "Ed25519 Test CA"
+organization     = "Akamu Test PKI"
+ca_validity_years = 10
+
+[[ca]]
+id               = "ed448"
+is_default       = false
+key_type         = "ed448"
+hash_alg         = "sha512"
+validity_days    = 90
+common_name      = "Ed448 Test CA"
+organization     = "Akamu Test PKI"
+ca_validity_years = 10
+
+[[ca]]
+id               = "ml-dsa-44"
+is_default       = false
+key_type         = "ml-dsa-44"
+hash_alg         = "sha256"
+validity_days    = 90
+common_name      = "ML-DSA-44 Test CA"
+organization     = "Akamu Test PKI"
+ca_validity_years = 10
+
+[[ca]]
+id               = "ml-dsa-65"
+is_default       = false
+key_type         = "ml-dsa-65"
+hash_alg         = "sha256"
+validity_days    = 90
+common_name      = "ML-DSA-65 Test CA"
+organization     = "Akamu Test PKI"
+ca_validity_years = 10
+
+[[ca]]
+id               = "ml-dsa-87"
+is_default       = false
+key_type         = "ml-dsa-87"
+hash_alg         = "sha256"
+validity_days    = 90
+common_name      = "ML-DSA-87 Test CA"
+organization     = "Akamu Test PKI"
+ca_validity_years = 10
+
+[[ca]]
+id               = "rsa-2048-sha384"
+is_default       = false
+key_type         = "rsa:2048"
+hash_alg         = "sha384"
+validity_days    = 365
+common_name      = "RSA-2048/SHA-384 Test CA"
+organization     = "Akamu Test PKI"
+ca_validity_years = 10
+
+[[ca]]
+id               = "rsa-4096-sha512"
+is_default       = false
+key_type         = "rsa:4096"
+hash_alg         = "sha512"
+validity_days    = 730
+common_name      = "RSA-4096/SHA-512 Test CA"
+organization     = "Akamu Test PKI"
+ca_validity_years = 10
+
+[[ca]]
+id               = "ec-p256-sha384"
+is_default       = false
+key_type         = "ec:P-256"
+hash_alg         = "sha384"
+validity_days    = 90
+common_name      = "EC P-256/SHA-384 Test CA"
+organization     = "Akamu Test PKI"
+ca_validity_years = 10
+
+[[ca]]
+id               = "ec-p384-sha512"
+is_default       = false
+key_type         = "ec:P-384"
+hash_alg         = "sha512"
+validity_days    = 180
+common_name      = "EC P-384/SHA-512 Test CA"
+organization     = "Akamu Test PKI"
+ca_validity_years = 10
+
+[[ca]]
+id               = "ed25519-short"
+is_default       = false
+key_type         = "ed25519"
+hash_alg         = "sha256"
+validity_days    = 30
+common_name      = "Ed25519 Short-Lived Test CA"
+organization     = "Akamu Test PKI"
+ca_validity_years = 10
+
+# ── Cross-signs ───────────────────────────────────────────────────────────────
+
+[[cross_sign]]
+issuer         = "ec-p256"
+subject        = "ec-p384"
+validity_years = 5
+
+[[cross_sign]]
+issuer         = "ec-p384"
+subject        = "ec-p256"
+validity_years = 5
+
+[[cross_sign]]
+issuer         = "rsa-2048"
+subject        = "rsa-4096"
+validity_years = 5
+
+[[cross_sign]]
+issuer         = "rsa-4096"
+subject        = "rsa-2048"
+validity_years = 5
+
+[[cross_sign]]
+issuer         = "ed25519"
+subject        = "ec-p256"
+validity_years = 5
+
+[[cross_sign]]
+issuer         = "ec-p521"
+subject        = "rsa-4096"
+validity_years = 5
+
+[[cross_sign]]
+issuer         = "rsa-3072"
+subject        = "ec-p384"
+validity_years = 5
+
+[[cross_sign]]
+issuer         = "ed448"
+subject        = "rsa-2048"
+validity_years = 5
+
+[[cross_sign]]
+issuer         = "ml-dsa-44"
+subject        = "ec-p256"
+validity_years = 5
+
+[[cross_sign]]
+issuer         = "ml-dsa-65"
+subject        = "rsa-2048"
+validity_years = 5
+
+[[cross_sign]]
+issuer         = "ml-dsa-87"
+subject        = "ed25519"
+validity_years = 5
+
+[[cross_sign]]
+issuer         = "rsa-2048-sha384"
+subject        = "ec-p256-sha384"
+validity_years = 5
+
+# ── Profiles ──────────────────────────────────────────────────────────────────
+
+[[profile]]
+id            = "tls-server"
+description   = "Standard TLS server certificate"
+eku           = ["server_auth"]
+key_usage     = ["digital_signature"]
+validity_days = 90
+
+[[profile]]
+id                = "client-auth"
+description       = "Client authentication certificate"
+eku               = ["client_auth"]
+key_usage         = ["digital_signature"]
+validity_days     = 365
+allowed_key_types = ["ec:P-256", "ec:P-384", "ed25519", "ed448"]
+
+[[profile]]
+id                = "code-signing"
+description       = "Code signing certificate"
+eku               = ["code_signing"]
+key_usage         = ["digital_signature"]
+validity_days     = 730
+allowed_key_types = ["ec:P-256", "ec:P-384", "rsa:2048", "rsa:3072", "rsa:4096"]
+
+[[profile]]
+id                = "pqc-tls"
+description       = "TLS server certificate with PQC leaf key"
+eku               = ["server_auth"]
+key_usage         = ["digital_signature"]
+validity_days     = 90
+allowed_key_types = ["ml-dsa-44", "ml-dsa-65", "ml-dsa-87"]
+
+# ── Scenarios ─────────────────────────────────────────────────────────────────
+# 16 scenarios × ~3 100 certs each ≈ 50 000 total
+
+[[scenario]]
+name         = "ec-p256-tls"
+ca_id        = "ec-p256"
+profile_id   = "tls-server"
+num_accounts = 625
+
+[scenario.certs]
+valid          = 1875
+revoked        = 469
+expired        = 375
+near_expiry    = 156
+ari_chains     = 50
+star_active    = 50
+star_canceled  = 25
+delegation     = 10
+pending_orders = 15
+invalid_orders = 15
+
+[scenario.certs.key_types]
+"ec:P-256" = 6
+"ec:P-384" = 2
+"rsa:2048" = 1
+"ed25519"  = 1
+
+[scenario.accounts]
+deactivated = 50
+
+[[scenario]]
+name         = "ec-p384-tls"
+ca_id        = "ec-p384"
+profile_id   = "tls-server"
+num_accounts = 625
+
+[scenario.certs]
+valid          = 1875
+revoked        = 469
+expired        = 375
+near_expiry    = 156
+ari_chains     = 50
+star_active    = 50
+star_canceled  = 25
+delegation     = 10
+pending_orders = 15
+invalid_orders = 15
+
+[scenario.certs.key_types]
+"ec:P-384" = 5
+"ec:P-256" = 3
+"ec:P-521" = 1
+"ed25519"  = 1
+
+[scenario.accounts]
+deactivated = 50
+
+[[scenario]]
+name         = "ec-p521-tls"
+ca_id        = "ec-p521"
+profile_id   = "tls-server"
+num_accounts = 625
+
+[scenario.certs]
+valid          = 1875
+revoked        = 469
+expired        = 375
+near_expiry    = 156
+ari_chains     = 50
+star_active    = 50
+star_canceled  = 25
+delegation     = 10
+pending_orders = 15
+invalid_orders = 15
+
+[scenario.certs.key_types]
+"ec:P-521" = 6
+"ec:P-384" = 3
+"ec:P-256" = 1
+
+[scenario.accounts]
+deactivated = 50
+
+[[scenario]]
+name         = "rsa-2048-tls"
+ca_id        = "rsa-2048"
+profile_id   = "tls-server"
+num_accounts = 625
+
+[scenario.certs]
+valid          = 1875
+revoked        = 469
+expired        = 375
+near_expiry    = 156
+ari_chains     = 50
+star_active    = 50
+star_canceled  = 25
+delegation     = 10
+pending_orders = 15
+invalid_orders = 15
+
+[scenario.certs.key_types]
+"rsa:2048" = 5
+"rsa:3072" = 2
+"rsa:4096" = 2
+"ec:P-256" = 1
+
+[scenario.accounts]
+deactivated = 50
+
+[[scenario]]
+name         = "rsa-3072-client"
+ca_id        = "rsa-3072"
+profile_id   = "client-auth"
+num_accounts = 625
+
+[scenario.certs]
+valid          = 1875
+revoked        = 469
+expired        = 375
+near_expiry    = 156
+ari_chains     = 50
+star_active    = 50
+star_canceled  = 25
+delegation     = 10
+pending_orders = 15
+invalid_orders = 15
+
+[scenario.certs.key_types]
+"ec:P-256" = 4
+"ec:P-384" = 3
+"ed25519"  = 2
+"ed448"    = 1
+
+[scenario.accounts]
+deactivated = 50
+
+[[scenario]]
+name         = "rsa-4096-code"
+ca_id        = "rsa-4096"
+profile_id   = "code-signing"
+num_accounts = 625
+
+[scenario.certs]
+valid          = 1875
+revoked        = 469
+expired        = 375
+near_expiry    = 156
+ari_chains     = 50
+star_active    = 50
+star_canceled  = 25
+delegation     = 10
+pending_orders = 15
+invalid_orders = 15
+
+[scenario.certs.key_types]
+"rsa:2048" = 3
+"rsa:3072" = 3
+"rsa:4096" = 2
+"ec:P-256" = 2
+
+[scenario.accounts]
+deactivated = 50
+
+[[scenario]]
+name         = "ed25519-client"
+ca_id        = "ed25519"
+profile_id   = "client-auth"
+num_accounts = 625
+
+[scenario.certs]
+valid          = 1875
+revoked        = 469
+expired        = 375
+near_expiry    = 156
+ari_chains     = 50
+star_active    = 50
+star_canceled  = 25
+delegation     = 10
+pending_orders = 15
+invalid_orders = 15
+
+[scenario.certs.key_types]
+"ed25519"  = 6
+"ed448"    = 2
+"ec:P-256" = 2
+
+[scenario.accounts]
+deactivated = 50
+
+[[scenario]]
+name         = "ed448-tls"
+ca_id        = "ed448"
+profile_id   = "tls-server"
+num_accounts = 625
+
+[scenario.certs]
+valid          = 1875
+revoked        = 469
+expired        = 375
+near_expiry    = 156
+ari_chains     = 50
+star_active    = 50
+star_canceled  = 25
+delegation     = 10
+pending_orders = 15
+invalid_orders = 15
+
+[scenario.certs.key_types]
+"ed448"    = 5
+"ed25519"  = 3
+"ec:P-384" = 2
+
+[scenario.accounts]
+deactivated = 50
+
+[[scenario]]
+name         = "ml-dsa-44-pqc"
+ca_id        = "ml-dsa-44"
+profile_id   = "pqc-tls"
+num_accounts = 625
+
+[scenario.certs]
+valid          = 1875
+revoked        = 469
+expired        = 375
+near_expiry    = 156
+ari_chains     = 50
+star_active    = 50
+star_canceled  = 25
+delegation     = 10
+pending_orders = 15
+invalid_orders = 15
+
+[scenario.certs.key_types]
+"ml-dsa-44" = 5
+"ml-dsa-65" = 3
+"ml-dsa-87" = 2
+
+[scenario.accounts]
+deactivated = 50
+
+[[scenario]]
+name         = "ml-dsa-65-pqc"
+ca_id        = "ml-dsa-65"
+profile_id   = "pqc-tls"
+num_accounts = 625
+
+[scenario.certs]
+valid          = 1875
+revoked        = 469
+expired        = 375
+near_expiry    = 156
+ari_chains     = 50
+star_active    = 50
+star_canceled  = 25
+delegation     = 10
+pending_orders = 15
+invalid_orders = 15
+
+[scenario.certs.key_types]
+"ml-dsa-65" = 5
+"ml-dsa-44" = 3
+"ml-dsa-87" = 2
+
+[scenario.accounts]
+deactivated = 50
+
+[[scenario]]
+name         = "ml-dsa-87-pqc"
+ca_id        = "ml-dsa-87"
+profile_id   = "pqc-tls"
+num_accounts = 625
+
+[scenario.certs]
+valid          = 1875
+revoked        = 469
+expired        = 375
+near_expiry    = 156
+ari_chains     = 50
+star_active    = 50
+star_canceled  = 25
+delegation     = 10
+pending_orders = 15
+invalid_orders = 15
+
+[scenario.certs.key_types]
+"ml-dsa-87" = 5
+"ml-dsa-65" = 3
+"ml-dsa-44" = 2
+
+[scenario.accounts]
+deactivated = 50
+
+[[scenario]]
+name         = "rsa-2048-sha384-tls"
+ca_id        = "rsa-2048-sha384"
+profile_id   = "tls-server"
+num_accounts = 625
+
+[scenario.certs]
+valid          = 1875
+revoked        = 469
+expired        = 375
+near_expiry    = 156
+ari_chains     = 50
+star_active    = 50
+star_canceled  = 25
+delegation     = 10
+pending_orders = 15
+invalid_orders = 15
+
+[scenario.certs.key_types]
+"rsa:2048" = 4
+"rsa:4096" = 3
+"ec:P-256" = 2
+"ed25519"  = 1
+
+[scenario.accounts]
+deactivated = 50
+
+[[scenario]]
+name         = "rsa-4096-sha512-code"
+ca_id        = "rsa-4096-sha512"
+profile_id   = "code-signing"
+num_accounts = 625
+
+[scenario.certs]
+valid          = 1875
+revoked        = 469
+expired        = 375
+near_expiry    = 156
+ari_chains     = 50
+star_active    = 50
+star_canceled  = 25
+delegation     = 10
+pending_orders = 15
+invalid_orders = 15
+
+[scenario.certs.key_types]
+"rsa:4096" = 5
+"rsa:3072" = 3
+"rsa:2048" = 2
+
+[scenario.accounts]
+deactivated = 50
+
+[[scenario]]
+name         = "ec-p256-sha384-tls"
+ca_id        = "ec-p256-sha384"
+profile_id   = "tls-server"
+num_accounts = 625
+
+[scenario.certs]
+valid          = 1875
+revoked        = 469
+expired        = 375
+near_expiry    = 156
+ari_chains     = 50
+star_active    = 50
+star_canceled  = 25
+delegation     = 10
+pending_orders = 15
+invalid_orders = 15
+
+[scenario.certs.key_types]
+"ec:P-256" = 5
+"ec:P-384" = 3
+"rsa:2048" = 2
+
+[scenario.accounts]
+deactivated = 50
+
+[[scenario]]
+name         = "ec-p384-sha512-tls"
+ca_id        = "ec-p384-sha512"
+profile_id   = "tls-server"
+num_accounts = 625
+
+[scenario.certs]
+valid          = 1875
+revoked        = 469
+expired        = 375
+near_expiry    = 156
+ari_chains     = 50
+star_active    = 50
+star_canceled  = 25
+delegation     = 10
+pending_orders = 15
+invalid_orders = 15
+
+[scenario.certs.key_types]
+"ec:P-384" = 5
+"ec:P-521" = 3
+"ec:P-256" = 2
+
+[scenario.accounts]
+deactivated = 50
+
+[[scenario]]
+name         = "ed25519-short-tls"
+ca_id        = "ed25519-short"
+profile_id   = "tls-server"
+num_accounts = 625
+
+[scenario.certs]
+valid          = 1875
+revoked        = 469
+expired        = 375
+near_expiry    = 156
+ari_chains     = 50
+star_active    = 50
+star_canceled  = 25
+delegation     = 10
+pending_orders = 15
+invalid_orders = 15
+
+[scenario.certs.key_types]
+"ed25519"  = 7
+"ec:P-256" = 2
+"ed448"    = 1
+
+[scenario.accounts]
+deactivated = 50
