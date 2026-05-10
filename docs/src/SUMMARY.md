@@ -44,6 +44,7 @@
 - [MTC Implementation](developer/mtc.md)
 - [Error Handling](developer/error-handling.md)
 - [Testing](developer/testing.md)
+- [Test Data Generation](developer/seedgen.md)
 - [Local CI](developer/ci.md)
 - [Contributing](developer/contributing.md)
 - [TLS Layer](developer/tls.md)
