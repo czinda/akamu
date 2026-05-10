@@ -868,6 +868,15 @@ pub async fn post_session_eab(
         }
     };
 
+    // Check account status before HMAC computation so a locked-out operator cannot
+    // probe HMAC key validity by observing response-code differences (timing oracle).
+    if op.active == 0 {
+        return (StatusCode::FORBIDDEN, "operator account is not active").into_response();
+    }
+    if let Err(resp) = check_lockout(&op) {
+        return resp;
+    }
+
     // Decode the HMAC key and the provided signature.
     let hmac_key = match URL_SAFE_NO_PAD.decode(&eab_row.hmac_key_b64u) {
         Ok(k) => k,
@@ -921,13 +930,6 @@ pub async fn post_session_eab(
             "HMAC signature verification failed",
         )
             .into_response();
-    }
-
-    if op.active == 0 {
-        return (StatusCode::FORBIDDEN, "operator account is not active").into_response();
-    }
-    if let Err(resp) = check_lockout(&op) {
-        return resp;
     }
 
     let role = match op.role.parse::<OperatorRole>() {
