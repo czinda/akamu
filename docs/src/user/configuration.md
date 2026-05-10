@@ -1758,17 +1758,18 @@ service_name = "HTTP"
 | `POST` | `/admin/crl/force` | Y | Y | | |
 | `POST` | `/admin/revoke` | Y | Y | Y | |
 | `GET` | `/admin/stats` | Y | Y | Y | Y |
-| `GET` | `/admin/cas` | Y | Y | Y | Y |
-| `GET` | `/admin/cas/{id}` | Y | Y | Y | Y |
+| `GET` | `/admin/cas` | Y | Y | | |
+| `GET` | `/admin/cas/{id}` | Y | Y | | |
+| `GET` | `/admin/cas/{id}/cert` | Y | Y | | |
 | `POST` | `/admin/ca/{id}/crl/force` | Y | Y | | |
 | `POST` | `/admin/ca/{id}/cross-sign` | Y | Y | | |
-| `GET` | `/admin/cross-certs` | Y | Y | Y | Y |
-| `GET` | `/admin/cross-certs/{id}` | Y | Y | Y | Y |
-| `GET` | `/admin/delegations` | Y | Y | | |
-| `POST` | `/admin/delegations` | Y | | | |
-| `GET` | `/admin/delegations/{id}` | Y | Y | | |
-| `PUT` | `/admin/delegations/{id}` | Y | | | |
-| `DELETE` | `/admin/delegations/{id}` | Y | | | |
+| `GET` | `/admin/cross-certs` | Y | Y | | Y |
+| `GET` | `/admin/cross-certs/{id}` | Y | Y | | Y |
+| `GET` | `/admin/delegations` | Y | Y | Y | Y |
+| `POST` | `/admin/delegations` | Y | Y | | |
+| `GET` | `/admin/delegations/{id}` | Y | Y | Y | Y |
+| `PUT` | `/admin/delegations/{id}` | Y | Y | | |
+| `DELETE` | `/admin/delegations/{id}` | Y | Y | | |
 
 See [Admin API and Operator Management](admin-api.md) for the full request/response format of each endpoint.
 
