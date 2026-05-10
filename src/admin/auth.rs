@@ -801,11 +801,7 @@ pub async fn post_session_eab(
                         .with_detail("{\"method\":\"eab\",\"reason\":\"kid not found\"}"),
                 )
                 .await;
-            return (
-                StatusCode::UNAUTHORIZED,
-                "EAB key not found or not authorized for web UI login",
-            )
-                .into_response();
+            return (StatusCode::UNAUTHORIZED, "authentication failed").into_response();
         }
         Err(e) => {
             tracing::error!(error = %e, "post_session_eab: EAB key lookup failed");
@@ -935,11 +931,7 @@ pub async fn post_session_eab(
                     .with_detail("{\"method\":\"eab\",\"reason\":\"hmac verify failed\"}"),
             )
             .await;
-        return (
-            StatusCode::UNAUTHORIZED,
-            "HMAC signature verification failed",
-        )
-            .into_response();
+        return (StatusCode::UNAUTHORIZED, "authentication failed").into_response();
     }
 
     let role = match op.role.parse::<OperatorRole>() {
