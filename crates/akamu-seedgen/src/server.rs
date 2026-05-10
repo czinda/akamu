@@ -32,6 +32,8 @@ pub struct SeedServer {
     pub db: akamu::db::Db,
     /// Shared application state (exposes profile registry, cas, etc.).
     pub state: Arc<AppState>,
+    /// Handle to the Axum serve task; kept alive so panics are not silently dropped.
+    pub server_task: tokio::task::JoinHandle<()>,
 }
 
 /// Start an in-process Akamu server from the given CA specs.
@@ -113,23 +115,21 @@ pub async fn start(
 
     // Open the database.
     db::install_drivers();
-    let pool = db::open(db_url, 1, false)
-        .await
-        .expect("open database");
+    let pool = db::open(db_url, 1, false).await.expect("open database");
 
     // Initialise CAs: generate key + self-signed cert for each.
     let mut cas_map: IndexMap<String, Arc<CaState>> = IndexMap::new();
     let mut default_ca_id = String::new();
 
     for (cfg, spec) in ca_configs.iter().zip(ca_specs.iter()) {
-        let (key, cert_der) = tokio::task::block_in_place(|| {
-            load_or_generate(cfg).unwrap_or_else(|e| panic!("CA init '{}': {e}", spec.id))
-        });
-        let spki_der = key
-            .public_key()
-            .expect("CA public key")
-            .spki_der()
-            .to_vec();
+        let cfg_clone = cfg.clone();
+        let spec_id = spec.id.clone();
+        let (key, cert_der) = tokio::task::spawn_blocking(move || {
+            load_or_generate(&cfg_clone).unwrap_or_else(|e| panic!("CA init '{spec_id}': {e}"))
+        })
+        .await
+        .unwrap_or_else(|e| panic!("CA init task panicked: {e}"));
+        let spki_der = key.public_key().expect("CA public key").spki_der().to_vec();
         let aki_bytes = compute_aki_from_spki(&spki_der)
             .unwrap_or_else(|| panic!("CA '{}': failed to compute AKI from SPKI", spec.id));
 
@@ -178,9 +178,7 @@ pub async fn start(
     );
 
     // Build the profile registry from the default CA (profiles are added later via setup.rs).
-    let default_ca = cas
-        .get(&default_ca_id)
-        .expect("default CA in cas map");
+    let default_ca = cas.get(&default_ca_id).expect("default CA in cas map");
     let profiles = ProfileRegistry::empty(default_ca);
 
     // Build the HTTPS validation client for http-01.
@@ -231,20 +229,29 @@ pub async fn start(
     let router = routes::build_router(Arc::clone(&state), None);
     let tokio_listener = tokio::net::TcpListener::from_std(listener).expect("tokio listener");
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
-    tokio::spawn(async move {
-        // Signal readiness before entering the accept loop.
+    // Store the JoinHandle so panics inside the server task propagate rather than
+    // being silently discarded when the handle is dropped.
+    let server_task = tokio::spawn(async move {
+        // The TcpListener is already bound and in the OS backlog, so connections
+        // queued between this signal and the first axum::serve accept() are buffered.
+        // Signal BEFORE axum::serve so ready_rx.await can complete — axum::serve
+        // only returns after graceful shutdown.
         let _ = ready_tx.send(());
         if let Err(e) = axum::serve(tokio_listener, router).await {
             tracing::error!("in-process ACME server exited with error: {e}");
         }
     });
-    // Wait until the server task has started.
-    let _ = ready_rx.await;
+    // Wait until the server task has started and signalled readiness.
+    // If the task exits before signalling, this returns Err — treat it as a fatal startup failure.
+    ready_rx
+        .await
+        .expect("ACME server task exited before signalling readiness");
 
     SeedServer {
         base_url,
         challenge_port,
         db: pool,
         state,
+        server_task,
     }
 }

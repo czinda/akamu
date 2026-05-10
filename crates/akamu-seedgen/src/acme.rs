@@ -137,9 +137,11 @@ pub async fn issue_cert(
         let order = client.poll_order(account, &order_url).await?;
 
         // Generate the leaf key; RSA/ML-DSA generation is CPU-intensive so run it
-        // off the async executor via block_in_place.
+        // off the async executor via spawn_blocking (compatible with current_thread runtimes).
         let key_type_owned = cert_key_type.to_string();
-        let cert_key = tokio::task::block_in_place(|| generate_leaf_key(&key_type_owned))?;
+        let cert_key = tokio::task::spawn_blocking(move || generate_leaf_key(&key_type_owned))
+            .await
+            .map_err(|e| ClientError::Crypto(format!("leaf key task panicked: {e}")))??;
 
         let domain_refs: Vec<&str> = domains.iter().map(String::as_str).collect();
         let csr_der = build_csr(&domain_refs, &cert_key)?;

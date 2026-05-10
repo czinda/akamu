@@ -21,6 +21,7 @@ pub type TokenMap = Arc<RwLock<HashMap<String, String>>>;
 pub struct ChallengeResponder {
     port: u16,
     store: TokenMap,
+    _task: tokio::task::JoinHandle<()>,
 }
 
 impl ChallengeResponder {
@@ -47,12 +48,12 @@ impl ChallengeResponder {
             .local_addr()
             .expect("HTTP-01 challenge responder local address")
             .port();
-        tokio::spawn(async move {
+        let _task = tokio::spawn(async move {
             if let Err(e) = axum::serve(listener, router).await {
                 tracing::error!("HTTP-01 challenge responder exited with error: {e}");
             }
         });
-        ChallengeResponder { port, store }
+        ChallengeResponder { port, store, _task }
     }
 
     /// TCP port the responder is listening on.

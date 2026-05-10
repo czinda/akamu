@@ -343,10 +343,14 @@ async fn run_star_order(
     }
     let ready_order = result?;
 
-    // Generate key and CSR off the async executor.
+    // Generate key and CSR off the async executor (spawn_blocking is compatible with
+    // current_thread runtimes unlike block_in_place).
     let key_type_owned = key_type.to_string();
-    let cert_key = tokio::task::block_in_place(|| generate_leaf_key(&key_type_owned))
-        .map_err(|e| format!("[{}] star key gen: {e}", spec.name))?;
+    let scenario_name = spec.name.clone();
+    let cert_key = tokio::task::spawn_blocking(move || generate_leaf_key(&key_type_owned))
+        .await
+        .map_err(|e| format!("[{scenario_name}] star key gen task panicked: {e}"))?
+        .map_err(|e| format!("[{scenario_name}] star key gen: {e}"))?;
 
     let domain_strs: Vec<&str> = ids
         .iter()
@@ -415,9 +419,11 @@ async fn create_delegation_order(
     .await?;
 
     // Throwaway P-256 key + CSR for the stored `star_csr_der`.
-    let throwaway_key = tokio::task::block_in_place(|| {
+    let throwaway_key = tokio::task::spawn_blocking(|| {
         synta_certificate::BackendPrivateKey::generate_ec("P-256")
     })
+    .await
+    .map_err(|e| akamu::error::AcmeError::Internal(format!("delegation CSR key gen (task panic): {e}")))?
     .map_err(|e| akamu::error::AcmeError::Internal(format!("delegation CSR key gen: {e}")))?;
 
     let domain_strs: Vec<&str> = domains.iter().map(String::as_str).collect();
