@@ -17,9 +17,11 @@ use super::{acme_prefix, fmt_time, json_response, parse_jws, unix_now, CaId};
 pub async fn respond_challenge(
     State(state): State<Arc<AppState>>,
     ca_id: CaId,
-    Path((authz_id, chall_type)): Path<(String, String)>,
+    Path(params): Path<std::collections::HashMap<String, String>>,
     body: Bytes,
 ) -> Result<Response, AcmeError> {
+    let authz_id = params.get("authz_id").cloned().ok_or(AcmeError::NotFound)?;
+    let chall_type = params.get("type").cloned().ok_or(AcmeError::NotFound)?;
     let pfx = acme_prefix(&state.config.base_url, &ca_id.0, &state.default_ca_id);
     let url = format!("{pfx}/chall/{authz_id}/{chall_type}");
     let ctx = parse_jws(&state, body, &url).await?;

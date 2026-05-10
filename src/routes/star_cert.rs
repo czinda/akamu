@@ -20,8 +20,9 @@ use super::{acme_prefix, parse_jws, unix_now, CaId};
 pub async fn star_cert_get(
     State(state): State<Arc<AppState>>,
     ca_id: CaId,
-    Path(order_id): Path<String>,
+    Path(params): Path<std::collections::HashMap<String, String>>,
 ) -> Result<Response, AcmeError> {
+    let order_id = params.get("order_id").cloned().ok_or(AcmeError::NotFound)?;
     // Server-level capability gate (RFC 8739 §3.1.3): reject if operator has
     // disabled unauthenticated certificate GET globally.
     if !state.config.server.star_allow_certificate_get {
@@ -50,9 +51,10 @@ pub async fn star_cert_get(
 pub async fn star_cert_post(
     State(state): State<Arc<AppState>>,
     ca_id: CaId,
-    Path(order_id): Path<String>,
+    Path(params): Path<std::collections::HashMap<String, String>>,
     body: Bytes,
 ) -> Result<Response, AcmeError> {
+    let order_id = params.get("order_id").cloned().ok_or(AcmeError::NotFound)?;
     let pfx = acme_prefix(&state.config.base_url, &ca_id.0, &state.default_ca_id);
     let url = format!("{pfx}/cert/star/{order_id}");
     let ctx = parse_jws(&state, body, &url).await?;

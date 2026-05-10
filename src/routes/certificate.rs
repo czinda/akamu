@@ -37,9 +37,10 @@ pub async fn download_cert(
 pub async fn download_cert_post(
     State(state): State<Arc<AppState>>,
     ca_id: CaId,
-    Path(id): Path<String>,
+    Path(params): Path<std::collections::HashMap<String, String>>,
     body: Bytes,
 ) -> Result<Response, AcmeError> {
+    let id = params.get("id").cloned().ok_or(AcmeError::NotFound)?;
     let pfx = acme_prefix(&state.config.base_url, &ca_id.0, &state.default_ca_id);
     let url = format!("{pfx}/cert/{id}");
     let ctx = parse_jws(&state, body, &url).await?;
