@@ -51,14 +51,6 @@ export default function DelegationEdit({ createMode }: Props) {
   const navigate = useNavigate();
   const { role } = useAuth();
 
-  if (!hasRole(role, 'ca_operations')) {
-    return (
-      <PageSection>
-        <Alert variant="danger" title="Access denied: creating or editing delegations requires ca_operations or administrator role." isInline />
-      </PageSection>
-    );
-  }
-
   const [accountId, setAccountId] = useState('');
   const [csrTemplate, setCsrTemplate] = useState('{\n  \n}');
   const [cnameMap, setCnameMap] = useState('');
@@ -70,6 +62,7 @@ export default function DelegationEdit({ createMode }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!hasRole(role, 'ca_operations')) { setLoading(false); return; }
     if (createMode || !id) { setLoading(false); return; }
     getDelegation(id)
       .then(d => {
@@ -118,6 +111,14 @@ export default function DelegationEdit({ createMode }: Props) {
       setError(err instanceof Error ? err.message : 'Save failed');
       setSaving(false);
     }
+  }
+
+  if (!hasRole(role, 'ca_operations')) {
+    return (
+      <PageSection>
+        <Alert variant="danger" title="Access denied: creating or editing delegations requires ca_operations or administrator role." isInline />
+      </PageSection>
+    );
   }
 
   const backPath = createMode ? '/delegations' : `/delegations/${id}`;
