@@ -48,18 +48,6 @@ pub async fn list_for_account(
     Ok(rows)
 }
 
-pub async fn list_all(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
-) -> Result<Vec<DelegationRow>, AcmeError> {
-    let rows = super::query_as::<DelegationRow>(
-        "SELECT id, account_id, csr_template, cname_map, created, updated
-         FROM delegations ORDER BY created DESC LIMIT 1000",
-    )
-    .fetch_all(executor)
-    .await?;
-    Ok(rows)
-}
-
 /// Update the CSR template and CNAME map for a delegation.
 ///
 /// Returns `true` if the delegation was found and updated.

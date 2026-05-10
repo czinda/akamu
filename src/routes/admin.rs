@@ -30,7 +30,7 @@
 //! | `GET /admin/account/{id}/profile-grants` | ✓ | ✓ | ✓ | ✓ |
 //! | `PUT /admin/account/{id}/profile-grants` | ✓ | ✓ | | |
 //! | `DELETE /admin/account/{id}/profile-grants` | ✓ | | | |
-//! | `POST /admin/eab` | ✓ | ✓ | ✓ | |
+//! | `POST /admin/eab` | ✓ | ✓ | | |
 //! | `GET /admin/eab/{kid}` | ✓ | ✓ | ✓ | ✓ |
 //! | `DELETE /admin/eab/{kid}` | ✓ | ✓ | | |
 //! | `GET /admin/eab` | ✓ | ✓ | ✓ | ✓ |
@@ -1019,6 +1019,8 @@ pub async fn post_revoke(
 
     // ca_ra operators must always have a CA scope — an empty ca_id is a
     // misconfiguration that would grant server-wide revocation authority.
+    // We check the role explicitly: ca_scope().is_none() would also match
+    // administrator/auditor, who are legitimately server-wide.
     if operator.role == OperatorRole::CaRa && operator.ca_id.is_empty() {
         return (
             StatusCode::FORBIDDEN,
@@ -1063,8 +1065,12 @@ pub async fn post_revoke(
     {
         Ok(true) => {
             // Look up the cert's CA and invalidate only that CA's CRL cache.
-            if let Ok(Some(cert)) = db::certs::get_by_id(&state.db, &payload.cert_id).await {
+            let cert_ca_id = if let Ok(Some(cert)) =
+                db::certs::get_by_id(&state.db, &payload.cert_id).await
+            {
+                let ca_id = cert.ca_id.clone();
                 state.invalidate_crl_cache(&cert.ca_id);
+                ca_id
             } else {
                 // Cert row missing (shouldn't happen after a successful revoke) —
                 // fall back to invalidating all caches.
@@ -1074,14 +1080,16 @@ pub async fn post_revoke(
                         e.into_inner()
                     }) = None;
                 }
-            }
+                String::new()
+            };
             state
                 .record_audit(
                     AuditEvent::success(AuditEventType::CertRevoke)
                         .with_principal(&operator.name)
                         .with_subject(&payload.cert_id)
                         .with_detail(
-                            json!({"action": "admin.revoke", "reason": payload.reason}).to_string(),
+                            json!({"action": "admin.revoke", "reason": payload.reason, "ca_id": cert_ca_id})
+                                .to_string(),
                         ),
                 )
                 .await;
@@ -2858,18 +2866,14 @@ struct DelegationUpdatePayload {
     cname_map: Option<serde_json::Value>,
 }
 
-fn delegation_row_to_json(r: &crate::db::schema::DelegationRow) -> serde_json::Value {
-    let csr_template = match serde_json::from_str::<serde_json::Value>(&r.csr_template) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::error!(
-                delegation_id = %r.id,
-                "delegation csr_template is corrupt JSON: {e}"
-            );
-            serde_json::Value::Null
-        }
-    };
-    json!({
+fn delegation_row_to_json(
+    r: &crate::db::schema::DelegationRow,
+) -> Result<serde_json::Value, String> {
+    let csr_template = serde_json::from_str::<serde_json::Value>(&r.csr_template).map_err(|e| {
+        tracing::error!(delegation_id = %r.id, "delegation csr_template is corrupt JSON: {e}");
+        format!("corrupt csr_template for delegation '{}'", r.id)
+    })?;
+    Ok(json!({
         "id": r.id,
         "account_id": r.account_id,
         "csr_template": csr_template,
@@ -2877,7 +2881,7 @@ fn delegation_row_to_json(r: &crate::db::schema::DelegationRow) -> serde_json::V
             .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()),
         "created": r.created,
         "updated": r.updated,
-    })
+    }))
 }
 
 /// `GET /admin/delegations`
@@ -2913,14 +2917,23 @@ pub async fn get_delegations(
         db::delegations::count_list(&state.db_ro, account_id, ca_scope),
     ) {
         Ok((rows, total)) => {
-            let list: Vec<serde_json::Value> = rows.iter().map(delegation_row_to_json).collect();
-            (
-                StatusCode::OK,
-                Json(
-                    json!({"delegations": list, "total": total, "limit": limit, "offset": offset}),
-                ),
-            )
-                .into_response()
+            let list_result: Result<Vec<serde_json::Value>, String> =
+                rows.iter().map(delegation_row_to_json).collect();
+            match list_result {
+                Err(e) => {
+                    tracing::error!(error = %e, "get_delegations: corrupt delegation row");
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"status": 500, "detail": "database contains corrupt delegation data"})),
+                    )
+                        .into_response()
+                }
+                Ok(list) => (
+                    StatusCode::OK,
+                    Json(json!({"delegations": list, "total": total, "limit": limit, "offset": offset})),
+                )
+                    .into_response(),
+            }
         }
         Err(e) => {
             tracing::error!(error = %e, "get_delegations: db error");
@@ -3078,7 +3091,17 @@ pub async fn get_delegation_admin(
                     _ => {}
                 }
             }
-            (StatusCode::OK, Json(delegation_row_to_json(&r))).into_response()
+            match delegation_row_to_json(&r) {
+                Err(e) => {
+                    tracing::error!(error = %e, delegation_id = %r.id, "get_delegation_admin: corrupt row");
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"status": 500, "detail": "database contains corrupt delegation data"})),
+                    )
+                        .into_response()
+                }
+                Ok(body) => (StatusCode::OK, Json(body)).into_response(),
+            }
         }
         Ok(None) => (
             StatusCode::NOT_FOUND,
@@ -3267,9 +3290,7 @@ pub async fn delete_delegation(
         )
             .into_response(),
         Err(crate::error::AcmeError::Database(ref msg))
-            if msg.contains("FOREIGN KEY")
-                || msg.contains("foreign key")
-                || msg.contains("constraint") =>
+            if msg.contains("FOREIGN KEY") || msg.contains("foreign key") =>
         {
             (
                 StatusCode::CONFLICT,
