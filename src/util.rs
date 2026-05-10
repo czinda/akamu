@@ -6,7 +6,7 @@ use synta_certificate::Certificate;
 use crate::error::AcmeError;
 
 /// Current Unix timestamp in whole seconds.
-pub(crate) fn unix_now() -> i64 {
+pub fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -14,7 +14,7 @@ pub(crate) fn unix_now() -> i64 {
 }
 
 /// RFC 3339 timestamp for a Unix epoch value (seconds precision, UTC, Z suffix).
-pub(crate) fn unix_to_rfc3339(unix: i64) -> String {
+pub fn unix_to_rfc3339(unix: i64) -> String {
     let gt = synta::GeneralizedTime::from_unix(unix).unwrap_or_else(|| {
         tracing::warn!("unix timestamp {unix} out of GeneralizedTime range; falling back to epoch");
         synta::GeneralizedTime::from_unix(0).unwrap()
@@ -26,7 +26,7 @@ pub(crate) fn unix_to_rfc3339(unix: i64) -> String {
 }
 
 /// RFC 3339 timestamp for the current moment (seconds precision, UTC, Z suffix).
-pub(crate) fn rfc3339_now() -> String {
+pub fn rfc3339_now() -> String {
     unix_to_rfc3339(unix_now())
 }
 
