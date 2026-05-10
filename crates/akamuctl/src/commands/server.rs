@@ -28,6 +28,15 @@ pub async fn profile_list(client: &AdminClient, fmt: &Format) -> Result<(), CtlE
     Ok(())
 }
 
+/// Show a single certificate profile by ID.
+pub async fn profile_show(client: &AdminClient, fmt: &Format, id: &str) -> Result<(), CtlError> {
+    let resp = client
+        .get(&format!("/admin/profiles/{}", urlenc(id)))
+        .await?;
+    print(fmt, &resp);
+    Ok(())
+}
+
 /// Add a new certificate profile to the server's runtime registry.
 pub async fn profile_add(
     client: &AdminClient,
