@@ -62,7 +62,6 @@ export default function DelegationEdit({ createMode }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!hasRole(role, 'ca_operations')) { setLoading(false); return; }
     if (createMode || !id) { setLoading(false); return; }
     getDelegation(id)
       .then(d => {
@@ -74,20 +73,22 @@ export default function DelegationEdit({ createMode }: Props) {
       .finally(() => setLoading(false));
   }, [id, createMode]);
 
-  function validateJson(value: string): unknown | null {
+  type JsonResult = { ok: true; value: unknown } | { ok: false };
+
+  function validateJson(value: string): JsonResult | null {
     if (!value.trim()) return null;
-    try { return JSON.parse(value); } catch { return undefined; }
+    try { return { ok: true, value: JSON.parse(value) }; } catch { return { ok: false }; }
   }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
 
-    const parsedCsr = validateJson(csrTemplate);
-    if (parsedCsr === undefined) { setCsrError('Invalid JSON'); return; }
+    const csrResult = validateJson(csrTemplate);
+    if (csrResult !== null && !csrResult.ok) { setCsrError('Invalid JSON'); return; }
     setCsrError(null);
 
-    const parsedCname = validateJson(cnameMap);
-    if (parsedCname === undefined) { setCnameError('Invalid JSON'); return; }
+    const cnameResult = validateJson(cnameMap);
+    if (cnameResult !== null && !cnameResult.ok) { setCnameError('Invalid JSON'); return; }
     setCnameError(null);
 
     setSaving(true);
@@ -96,14 +97,14 @@ export default function DelegationEdit({ createMode }: Props) {
       if (createMode) {
         const { id: newId } = await createDelegation({
           account_id: accountId,
-          csr_template: parsedCsr,
-          ...(parsedCname != null && { cname_map: parsedCname }),
+          csr_template: csrResult?.value ?? null,
+          ...(cnameResult !== null && { cname_map: cnameResult.value }),
         });
         navigate(`/delegations/${newId}`);
       } else {
         await updateDelegation(id!, {
-          csr_template: parsedCsr,
-          ...(parsedCname != null && { cname_map: parsedCname }),
+          csr_template: csrResult?.value ?? null,
+          ...(cnameResult !== null && { cname_map: cnameResult.value }),
         });
         navigate(`/delegations/${id}`);
       }

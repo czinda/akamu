@@ -15,6 +15,8 @@ import {
   ModalBody,
   ModalFooter,
   Pagination,
+  FormSelect,
+  FormSelectOption,
 } from '@patternfly/react-core';
 import {
   Table,
@@ -93,16 +95,16 @@ export default function Accounts() {
         <Toolbar>
           <ToolbarContent>
             <ToolbarItem>
-              <select
+              <FormSelect
                 value={statusFilter}
-                onChange={e => { setStatusFilter(e.target.value); setPage(1); }}
-                style={{ padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: 'inherit' }}
+                onChange={(_e, v) => { setStatusFilter(v); setPage(1); }}
+                aria-label="Filter by status"
               >
-                <option value="">All statuses</option>
-                <option value="valid">valid</option>
-                <option value="deactivated">deactivated</option>
-                <option value="revoked">revoked</option>
-              </select>
+                <FormSelectOption value="" label="All statuses" />
+                <FormSelectOption value="valid" label="valid" />
+                <FormSelectOption value="deactivated" label="deactivated" />
+                <FormSelectOption value="revoked" label="revoked" />
+              </FormSelect>
             </ToolbarItem>
           </ToolbarContent>
         </Toolbar>

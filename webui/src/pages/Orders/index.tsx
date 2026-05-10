@@ -13,6 +13,8 @@ import {
   EmptyState,
   EmptyStateBody,
   Pagination,
+  FormSelect,
+  FormSelectOption,
 } from '@patternfly/react-core';
 import {
   Table,
@@ -122,19 +124,18 @@ export default function Orders() {
                 </ToolbarItem>
               )}
               <ToolbarItem>
-                <select
+                <FormSelect
                   value={draft.status}
-                  onChange={e => setDraft(d => ({ ...d, status: e.target.value }))}
-                  style={{ padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: 'inherit' }}
+                  onChange={(_e, v) => setDraft(d => ({ ...d, status: v }))}
                   aria-label="Filter by status"
                 >
-                  <option value="">All statuses</option>
-                  <option value="pending">pending</option>
-                  <option value="ready">ready</option>
-                  <option value="processing">processing</option>
-                  <option value="valid">valid</option>
-                  <option value="invalid">invalid</option>
-                </select>
+                  <FormSelectOption value="" label="All statuses" />
+                  <FormSelectOption value="pending" label="pending" />
+                  <FormSelectOption value="ready" label="ready" />
+                  <FormSelectOption value="processing" label="processing" />
+                  <FormSelectOption value="valid" label="valid" />
+                  <FormSelectOption value="invalid" label="invalid" />
+                </FormSelect>
               </ToolbarItem>
               <ToolbarItem>
                 <Button variant="primary" onClick={handleSearch}>Search</Button>

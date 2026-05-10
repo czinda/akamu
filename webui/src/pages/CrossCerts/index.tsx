@@ -56,7 +56,9 @@ export default function CrossCerts() {
       const a = document.createElement('a');
       a.href = url;
       a.download = `cross-cert-${id}.pem`;
+      document.body.appendChild(a);
       a.click();
+      document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Download failed');

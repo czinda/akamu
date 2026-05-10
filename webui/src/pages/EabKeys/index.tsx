@@ -18,6 +18,8 @@ import {
   FormGroup,
   TextInput,
   Pagination,
+  FormSelect,
+  FormSelectOption,
 } from '@patternfly/react-core';
 import {
   Table,
@@ -175,12 +177,11 @@ export default function EabKeys() {
               <TextInput id="eab-new-key" value={newKey} onChange={(_e, v) => setNewKey(v)} isRequired />
             </FormGroup>
             <FormGroup label="HMAC Algorithm" isRequired fieldId="eab-new-alg">
-              <select id="eab-new-alg" value={newAlg} onChange={e => setNewAlg(e.target.value)}
-                style={{ padding: '6px 8px', border: '1px solid #ccc', borderRadius: '4px', fontSize: 'inherit', width: '100%' }}>
-                <option value="sha256">sha256</option>
-                <option value="sha384">sha384</option>
-                <option value="sha512">sha512</option>
-              </select>
+              <FormSelect id="eab-new-alg" value={newAlg} onChange={(_e, v) => setNewAlg(v)}>
+                <FormSelectOption value="sha256" label="sha256" />
+                <FormSelectOption value="sha384" label="sha384" />
+                <FormSelectOption value="sha512" label="sha512" />
+              </FormSelect>
             </FormGroup>
             <FormGroup label="Profile Grants (comma-separated, optional)" fieldId="eab-new-grants">
               <TextInput id="eab-new-grants" value={newGrants} onChange={(_e, v) => setNewGrants(v)}

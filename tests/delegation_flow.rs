@@ -1252,3 +1252,158 @@ async fn directory_advertises_delegation_enabled() {
 
     drop(state);
 }
+
+/// Delegation endpoints return 404 when `delegation_enabled` is false.
+#[tokio::test]
+async fn delegation_disabled_returns_404() {
+    let server = ServerConfig {
+        delegation_enabled: false,
+        ..Default::default()
+    };
+    let dir = tempfile::TempDir::new().unwrap();
+    let config = Arc::new(Config {
+        listen_addr: "127.0.0.1:0".into(),
+        base_url: BASE_URL.into(),
+        database: DatabaseConfig {
+            url: "sqlite::memory:".into(),
+            max_connections: None,
+            require_tls: false,
+        },
+        cas: vec![CaConfig {
+            id: "default".to_owned(),
+            is_default: true,
+            caa_identities: vec![],
+            key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
+            cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
+            key_type: "ec:P-256".into(),
+            hash_alg: "sha256".into(),
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            common_name: "Test CA".into(),
+            organization: "Test".into(),
+            ca_validity_years: 10,
+            crl_next_update_secs: 86400,
+            enforce_validity_cap: false,
+            require_encrypted_key: false,
+            key_password_file: None,
+        }],
+        mtc: MtcConfig {
+            log_path: "/dev/null".into(),
+            enabled: false,
+            signing_key: None,
+            checkpoint_interval_secs: 3600,
+            cosigners: vec![],
+            landmark_interval_secs: 86400,
+            max_active_landmarks: 100,
+            checkpoint_retention_count: 1000,
+        },
+        server,
+        tls: Default::default(),
+        profiles: Default::default(),
+        admin: None,
+        email_challenge: None,
+        delegation_upstream: None,
+    });
+
+    let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
+    let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();
+    let ca_aki_bytes = ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
+    db::install_drivers();
+    let db_conn = db::open("sqlite::memory:", 1, false).await.unwrap();
+
+    let ca = Arc::new(CaState {
+        id: "default".into(),
+        key_type: "ec:P-256".into(),
+        crl_next_update_secs: 86400,
+        key: ca_key,
+        cert_der: ca_cert_der,
+        hash_alg: "sha256".into(),
+        validity_days: 90,
+        crl_url: None,
+        ocsp_url: None,
+        aki_bytes: ca_aki_bytes,
+        enforce_validity_cap: false,
+        caa_identities: vec![],
+    });
+
+    let state = Arc::new(AppState {
+        config: Arc::clone(&config),
+        db: db_conn.clone(),
+        db_ro: db_conn.clone(),
+        db_kind: db::DbKind::Sqlite,
+        profiles: akamu::profiles::ProfileRegistry::empty(&ca),
+        cas: {
+            let mut m = indexmap::IndexMap::new();
+            m.insert("default".to_string(), ca);
+            Arc::new(m)
+        },
+        default_ca_id: Arc::new("default".to_string()),
+        mtc: Arc::new(MtcState {
+            log: None,
+            algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
+            signing_key: None,
+            signing_hash_alg: "sha256".into(),
+            cosigner_clients: vec![],
+            _log_lock: None,
+        }),
+        tls: None,
+        spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        nonces: Arc::new(NonceBucket::new()),
+        link_headers: Arc::new(std::collections::HashMap::new()),
+        validation_client: {
+            let https = hyper_rustls::HttpsConnectorBuilder::new()
+                .with_native_roots()
+                .expect("native roots")
+                .https_or_http()
+                .enable_http1()
+                .build();
+            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                .build(https)
+        },
+        crl_caches: Arc::new({
+            let mut m = std::collections::HashMap::new();
+            m.insert("default".to_string(), Default::default());
+            m
+        }),
+        audit: Arc::new(akamu::audit::AuditState::new()),
+        audit_policy: Arc::new(akamu::audit::AuditPolicy::default()),
+        admin_sessions: None,
+        admin_auth_limiter: None,
+        eab_session_nonces: None,
+        startup_time: Instant::now(),
+        gss_cred: None,
+        admin_gss_cred: None,
+        eab_master_secret: None,
+    });
+
+    let acme = routes::build_router(Arc::clone(&state), None);
+
+    // delegation_enabled = false: POST-as-GET for delegation list must return 404.
+    let (status, _, _) = post_acme(
+        &acme,
+        "/acme/delegations/some-account-id",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "delegation list endpoint must return 404 when delegation_enabled=false"
+    );
+
+    // Single delegation fetch must also return 404.
+    let (status, _, _) = post_acme(
+        &acme,
+        "/acme/delegation/some-delegation-id",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "delegation get endpoint must return 404 when delegation_enabled=false"
+    );
+
+    drop(state);
+}
