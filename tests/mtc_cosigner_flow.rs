@@ -399,6 +399,7 @@ async fn build_akamu_state(
         profiles: Default::default(),
         admin: None,
         email_challenge: None,
+        delegation_upstream: None,
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
@@ -490,6 +491,7 @@ async fn build_akamu_state(
         audit_policy: std::sync::Arc::new(akamu::audit::AuditPolicy::default()),
         admin_sessions: None,
         admin_auth_limiter: None,
+        eab_session_nonces: None,
         admin_gss_cred: None,
         startup_time: std::time::Instant::now(),
         gss_cred: None,
@@ -519,7 +521,7 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
     // ── Phase 4: build and start akamu ───────────────────────────────────────
     let base_url = format!("http://127.0.0.1:{akamu_port}");
     let state = build_akamu_state(dir.path(), &base_url, http01_port, &cosigner_url).await;
-    let router = routes::build_router(Arc::clone(&state));
+    let router = routes::build_router(Arc::clone(&state), None);
 
     let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], akamu_port)))
         .await

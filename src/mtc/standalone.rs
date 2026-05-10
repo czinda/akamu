@@ -102,7 +102,10 @@ pub fn build_standalone_der(p: StandaloneParams<'_>) -> Result<Vec<u8>, AcmeErro
         .map_err(|e| AcmeError::Mtc(format!("build MtcX509 standalone cert: {e}")))
 }
 
-fn build_log_id(spki_der: &[u8], log_algorithm: HashAlgorithm) -> Result<LogID<'_>, AcmeError> {
+pub(crate) fn build_log_id(
+    spki_der: &[u8],
+    log_algorithm: HashAlgorithm,
+) -> Result<LogID<'_>, AcmeError> {
     let spki: SubjectPublicKeyInfo = Decoder::new(spki_der, Encoding::Der)
         .decode()
         .map_err(|e| AcmeError::Mtc(format!("decode MTC signing key SPKI for LogID: {e}")))?;

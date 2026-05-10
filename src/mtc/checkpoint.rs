@@ -219,28 +219,11 @@ fn build_checkpoint_der(
     log_algorithm: HashAlgorithm,
 ) -> Result<Vec<u8>, AcmeError> {
     use synta::traits::Encode;
-    use synta::types::constructed::Element;
-    use synta::types::primitive::Null;
     use synta::types::string::OctetString;
-    use synta::{Decoder, Encoder, Encoding, Integer};
-    use synta_certificate::{AlgorithmIdentifier, SubjectPublicKeyInfo};
-    use synta_mtc::types::{Checkpoint, LogID};
+    use synta::{Encoder, Encoding, Integer};
+    use synta_mtc::types::Checkpoint;
 
-    // Decode the MTC signing key's SPKI from DER.
-    let mut dec = Decoder::new(spki_der, Encoding::Der);
-    let spki: SubjectPublicKeyInfo = dec
-        .decode()
-        .map_err(|e| AcmeError::Mtc(format!("decode MTC signing key SPKI: {e}")))?;
-
-    let hash_oid = crate::mtc::hash_algorithm_to_oid(log_algorithm)?;
-
-    let log_id = LogID {
-        hash_algorithm: AlgorithmIdentifier {
-            algorithm: hash_oid,
-            parameters: Some(Element::Null(Null)),
-        },
-        public_key: spki,
-    };
+    let log_id = crate::mtc::standalone::build_log_id(spki_der, log_algorithm)?;
 
     let timestamp = synta::GeneralizedTime::from_unix(now_unix).ok_or_else(|| {
         AcmeError::Mtc("checkpoint timestamp out of GeneralizedTime range".into())
