@@ -15,8 +15,13 @@ use crate::error::AcmeError;
 
 /// Map a `HashAlgorithm` variant to the corresponding ASN.1 `ObjectIdentifier`.
 ///
+/// Covers all six variants: SHA-256/384/512 and SHA3-256/384/512.
 /// Uses named OID constants from `synta_certificate::oids` to avoid raw-integer
-/// maintenance hazards across the three modules that need this mapping.
+/// maintenance hazards; callers in `standalone` and `landmark` use this instead
+/// of duplicating the match.
+///
+/// The `Result` is a formality: `ObjectIdentifier::new` only fails for malformed
+/// arc sequences, which cannot happen with the compile-time constants used here.
 pub(super) fn hash_algorithm_to_oid(alg: HashAlgorithm) -> Result<ObjectIdentifier, AcmeError> {
     match alg {
         HashAlgorithm::Sha256 => ObjectIdentifier::new(ID_SHA256),

@@ -21,10 +21,11 @@ use crate::error::AcmeError;
 /// and pass the tree_size atomically; see `produce_checkpoint` which does both
 /// under the same `blocking_lock` guard).
 ///
-/// `cosignature_ders` is a slice of DER-encoded `SubtreeSignature` values
-/// collected from external cosigners.  An empty slice produces a standalone
-/// cert without any cosignatures; decoding failures for individual entries are
-/// logged and skipped.
+/// `cosignature_ders` is a slice of `(cosigner_url, DER)` pairs where each DER
+/// is an encoded `SubtreeSignature` collected from an external cosigner.  The URL
+/// is used only for diagnostic logging on decode failure.  An empty slice produces
+/// a standalone cert without any cosignatures; decoding failures for individual
+/// entries are logged and skipped.
 ///
 /// `spki_der` is the DER-encoded `SubjectPublicKeyInfo` of the MTC log's
 /// signing key.  It is used to build the `LogID` that becomes the issuer DN.
@@ -105,6 +106,11 @@ pub fn build_standalone_der(p: StandaloneParams<'_>) -> Result<Vec<u8>, AcmeErro
         .map_err(|e| AcmeError::Mtc(format!("build MtcX509 standalone cert: {e}")))
 }
 
+/// Construct a `LogID` from a DER-encoded SPKI and a hash algorithm.
+///
+/// Called by both `build_standalone_der` (in this module) and
+/// `checkpoint::build_checkpoint_der`; kept `pub(crate)` so those callers
+/// do not duplicate the SPKI-decode + OID-lookup logic.
 pub(crate) fn build_log_id(
     spki_der: &[u8],
     log_algorithm: HashAlgorithm,

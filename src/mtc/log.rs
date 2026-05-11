@@ -266,8 +266,11 @@ pub async fn proof_and_tree_size(
 
 /// Return the current number of leaves in the log.
 ///
-/// Uses `spawn_blocking` + `blocking_lock` because `DiskBackedLog::tree_size`
-/// calls `fstat` (a blocking syscall) under the hood.
+/// `DiskBackedLog::tree_size` calls `fstat`, a blocking syscall.  Holding the
+/// async `Mutex` guard while calling it would block a Tokio runtime thread;
+/// this helper moves the call onto a blocking thread via `spawn_blocking`.
+/// Prefer this over open-coding `log.lock().await; guard.tree_size()` to
+/// keep the async executor thread available for other tasks.
 pub async fn tree_size(log: &SharedLog) -> Result<u64, AcmeError> {
     let log_clone = Arc::clone(log);
     tokio::task::spawn_blocking(move || log_clone.blocking_lock().tree_size())

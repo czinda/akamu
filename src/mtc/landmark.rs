@@ -22,12 +22,16 @@ use crate::state::AppState;
 
 /// Attempt to allocate a new landmark and build its `LandmarkCertificate`.
 ///
-/// A landmark is allocated when the current tree size exceeds the latest
-/// landmark's tree size.  No-op when the tree has not grown or is empty.
+/// Returns `Ok(())` immediately (no-op) in any of three cases:
+/// 1. The log is empty (`tree_size == 0`).
+/// 2. The latest stored landmark already covers the current tree size.
+/// 3. No representative certificate exists for this tree size yet — inserting
+///    a landmark row with `cert_der = NULL` would leave it permanently
+///    uncertified because there is no retry path for NULL rows.
 ///
-/// The `get_latest` → `insert` → `get_latest` sequence is wrapped in a write
-/// transaction so that concurrent callers (in theory, though the landmark task
-/// is single-threaded) cannot race on `sequence_no` assignment.
+/// When all three guards pass, the landmark row is inserted and its certificate
+/// built inside a write transaction so that `sequence_no` assignment is
+/// serialised even under concurrent access.
 pub async fn maybe_allocate_landmark(
     log: &SharedLog,
     signing_key: &BackendPrivateKey,
