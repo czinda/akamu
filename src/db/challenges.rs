@@ -183,6 +183,19 @@ pub async fn get_by_email_message_id(
     Ok(row)
 }
 
+/// Fetch the current status of a single challenge by ID.  Returns `None` if the
+/// challenge does not exist.
+pub async fn get_status(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    id: &str,
+) -> Result<Option<String>, AcmeError> {
+    let row: Option<(String,)> = super::query_as("SELECT status FROM challenges WHERE id = ?")
+        .bind(id)
+        .fetch_optional(executor)
+        .await?;
+    Ok(row.map(|(s,)| s))
+}
+
 /// Batch-insert new challenges for a single authorization in one SQL round-trip.
 ///
 /// `challenges` is a slice of `(id, type)` pairs; all rows share the same

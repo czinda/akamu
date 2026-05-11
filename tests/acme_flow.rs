@@ -3758,6 +3758,13 @@ async fn test_smime_email_reply_00_full_flow() {
         "ACME_TOKEN_PART2 must match challenge token"
     );
     // Confirm the challenge is still 'processing' (send_script exited 0).
+    // Under load the background task's child.wait() may not have been processed
+    // yet when the output files first appear; yield explicitly so the task can
+    // run its final transition (on_invalid_with_order if the script failed, or
+    // no-op on success) before we read the status.
+    for _ in 0..5 {
+        tokio::task::yield_now().await;
+    }
     let chall_status_pre: String = sqlx::query_scalar(
         "SELECT status FROM challenges WHERE authz_id = ? AND type = 'email-reply-00'",
     )

@@ -577,13 +577,44 @@ pub(crate) async fn verify_response(
     }
 
     // 11. Mark challenge + authz + order valid.
-    if let Err(e) = on_valid(state, &chall.id, &chall.authz_id, order_id, now).await {
-        tracing::error!(
-            challenge_id = %chall.id,
-            authz_id = %chall.authz_id,
-            "email-reply-00: on_valid DB transaction failed: {e}; challenge remains in 'processing'"
-        );
-        return VerifyOutcome::Invalid("internal error — challenge state update failed".into());
+    match on_valid(state, &chall.id, &chall.authz_id, order_id, now).await {
+        Err(e) => {
+            tracing::error!(
+                challenge_id = %chall.id,
+                authz_id = %chall.authz_id,
+                "email-reply-00: on_valid DB transaction failed: {e}; challenge remains in 'processing'"
+            );
+            return VerifyOutcome::Invalid("internal error — challenge state update failed".into());
+        }
+        Ok(false) => {
+            // Another concurrent transition (on_invalid or a duplicate webhook delivery)
+            // already moved the challenge out of 'processing'.  Distinguish the two cases
+            // so the caller gets an accurate outcome rather than always reporting Valid.
+            let current_status: Option<String> = db::challenges::get_status(&state.db, &chall.id)
+                .await
+                .unwrap_or(None);
+            return match current_status.as_deref() {
+                Some("valid") => {
+                    tracing::debug!(
+                        challenge_id = chall.id,
+                        "email-reply-00: concurrent webhook delivery already marked challenge valid"
+                    );
+                    VerifyOutcome::Valid
+                }
+                other => {
+                    tracing::warn!(
+                        challenge_id = chall.id,
+                        status = ?other,
+                        "email-reply-00: challenge was concurrently invalidated before webhook could mark it valid"
+                    );
+                    VerifyOutcome::Invalid(format!(
+                        "challenge transitioned to '{:?}' by concurrent operation",
+                        other
+                    ))
+                }
+            };
+        }
+        Ok(true) => {}
     }
 
     tracing::info!(
