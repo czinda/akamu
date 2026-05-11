@@ -147,7 +147,10 @@ pub async fn produce_checkpoint(
     } else {
         crate::mtc::cosign::gather_cosignatures(&checkpoint_der, cosigners).await
     };
-    let cosig_ders: Vec<Vec<u8>> = cosig_results.iter().map(|(_, d)| d.clone()).collect();
+    let cosig_ders: Vec<(String, Vec<u8>)> = cosig_results
+        .iter()
+        .map(|(u, d)| (u.clone(), d.clone()))
+        .collect();
 
     // Compute SPKI DER once for LogID construction inside build_standalone_der.
     let spki_der: Vec<u8> = signing_key

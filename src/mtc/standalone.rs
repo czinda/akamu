@@ -35,7 +35,9 @@ pub struct StandaloneParams<'a> {
     pub tree_size: u64,
     pub spki_der: &'a [u8],
     pub log_algorithm: HashAlgorithm,
-    pub cosignature_ders: &'a [Vec<u8>],
+    /// `(cosigner_url, DER)` pairs.  The URL is used only for diagnostic logging
+    /// on decode failure; an empty string is acceptable when no URL is available.
+    pub cosignature_ders: &'a [(String, Vec<u8>)],
 }
 
 /// Build and DER-encode an X.509 standalone MTC certificate.
@@ -61,10 +63,14 @@ pub fn build_standalone_der(p: StandaloneParams<'_>) -> Result<Vec<u8>, AcmeErro
     let log_id = build_log_id(spki_der, log_algorithm)?;
 
     let mut signatures: Vec<MtcSignature> = Vec::new();
-    for (i, der) in cosignature_ders.iter().enumerate() {
+    for (i, (url, der)) in cosignature_ders.iter().enumerate() {
         match extract_mtc_signature(der) {
             Ok(sig) => signatures.push(sig),
-            Err(e) => tracing::warn!(index = i, "extract MtcSignature from cosignature DER: {e}"),
+            Err(e) => tracing::warn!(
+                index = i,
+                cosigner_url = %url,
+                "extract MtcSignature from cosignature DER: {e}"
+            ),
         }
     }
 
