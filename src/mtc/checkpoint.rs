@@ -35,11 +35,7 @@ pub async fn produce_checkpoint(
     db: &Db,
     cosigners: &[CosignerClient],
 ) -> Result<(), AcmeError> {
-    // Get current tree size (O(1) file stat — very fast, OK in async context).
-    let tree_size = {
-        let mut guard = log.lock().await;
-        guard.tree_size()?
-    };
+    let tree_size = crate::mtc::log::tree_size(log).await?;
 
     if tree_size == 0 {
         return Ok(());
