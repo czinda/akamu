@@ -769,6 +769,13 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
         .unwrap()
         .to_bytes();
     let root_json: serde_json::Value = serde_json::from_slice(&root_body).expect("parse root JSON");
+    let server_tree_size = root_json["treeSize"]
+        .as_u64()
+        .expect("treeSize field in JSON");
+    assert_eq!(
+        mtc_proof.end, server_tree_size,
+        "MtcProof.end must equal the server's current tree size"
+    );
     let server_root_hex = root_json["rootHash"]
         .as_str()
         .expect("rootHash field in JSON");
