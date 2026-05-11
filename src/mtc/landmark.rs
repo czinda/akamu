@@ -52,6 +52,18 @@ pub async fn maybe_allocate_landmark(
         }
     }
 
+    // Fetch a representative certificate before writing the landmark row.
+    // If no cert exists yet, skip: inserting a landmark row with cert_der = NULL
+    // would leave it permanently uncertified (nothing retries NULL rows).
+    let Some(cert_row) = db::certs::get_representative_for_landmark(db, tree_size as i64).await?
+    else {
+        tracing::debug!(
+            tree_size,
+            "no certificates to use as landmark representative; skipping cert build"
+        );
+        return Ok(());
+    };
+
     let now_unix = crate::util::unix_now();
 
     // Atomically insert the landmark row inside a write transaction so that
@@ -69,16 +81,6 @@ pub async fn maybe_allocate_landmark(
             .await
             .map_err(|e| AcmeError::Database(format!("commit landmark tx: {e}")))?;
         lm
-    };
-
-    // Fetch a representative certificate (any cert with leaf_index < tree_size).
-    let Some(cert_row) = db::certs::get_representative_for_landmark(db, tree_size as i64).await?
-    else {
-        tracing::debug!(
-            tree_size,
-            "no certificates to use as landmark representative; skipping cert build"
-        );
-        return Ok(());
     };
 
     let key = signing_key.clone();
