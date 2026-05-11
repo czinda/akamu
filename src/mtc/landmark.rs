@@ -172,7 +172,7 @@ fn build_landmark_cert_der(
     use synta::types::constructed::Element;
     use synta::types::primitive::Null;
     use synta::types::string::BitString;
-    use synta::{Encoder, Integer, ObjectIdentifier};
+    use synta::{Encoder, Integer};
     use synta_certificate::{AlgorithmIdentifier, Certificate, SubjectPublicKeyInfo};
 
     // Parse the representative certificate's TBSCertificate.
@@ -205,15 +205,7 @@ fn build_landmark_cert_der(
     let spki: SubjectPublicKeyInfo<'_> = Decoder::new(spki_der, Encoding::Der)
         .decode()
         .map_err(|e| AcmeError::Mtc(format!("decode SPKI for landmark: {e}")))?;
-    let hash_oid = match log_algorithm {
-        HashAlgorithm::Sha256 => ObjectIdentifier::new(&[2u32, 16, 840, 1, 101, 3, 4, 2, 1]),
-        HashAlgorithm::Sha384 => ObjectIdentifier::new(&[2u32, 16, 840, 1, 101, 3, 4, 2, 2]),
-        HashAlgorithm::Sha512 => ObjectIdentifier::new(&[2u32, 16, 840, 1, 101, 3, 4, 2, 3]),
-        HashAlgorithm::Sha3_256 => ObjectIdentifier::new(&[2u32, 16, 840, 1, 101, 3, 4, 2, 8]),
-        HashAlgorithm::Sha3_384 => ObjectIdentifier::new(&[2u32, 16, 840, 1, 101, 3, 4, 2, 9]),
-        HashAlgorithm::Sha3_512 => ObjectIdentifier::new(&[2u32, 16, 840, 1, 101, 3, 4, 2, 10]),
-    }
-    .map_err(|e| AcmeError::Mtc(format!("hash algorithm OID for landmark: {e}")))?;
+    let hash_oid = crate::mtc::hash_algorithm_to_oid(log_algorithm)?;
     let log_id = synta_mtc::types::LogID {
         hash_algorithm: AlgorithmIdentifier {
             algorithm: hash_oid,

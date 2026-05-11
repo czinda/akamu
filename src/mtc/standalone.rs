@@ -5,10 +5,7 @@
 //! `MTCProof` (inclusion proof + cosignatures), per draft §5.
 
 use synta::traits::Encode;
-use synta::{Decoder, Element, Encoder, Encoding, Null, ObjectIdentifier};
-use synta_certificate::oids::{
-    ID_SHA256, ID_SHA384, ID_SHA3_256, ID_SHA3_384, ID_SHA3_512, ID_SHA512,
-};
+use synta::{Decoder, Element, Encoder, Encoding, Null};
 use synta_certificate::{AlgorithmIdentifier, Certificate, SubjectPublicKeyInfo};
 use synta_mtc::builder::x509cert::MtcX509CertificateBuilder;
 use synta_mtc::crypto::hash::HashAlgorithm;
@@ -110,15 +107,7 @@ pub(crate) fn build_log_id(
         .decode()
         .map_err(|e| AcmeError::Mtc(format!("decode MTC signing key SPKI for LogID: {e}")))?;
 
-    let hash_oid = match log_algorithm {
-        HashAlgorithm::Sha256 => ObjectIdentifier::new(ID_SHA256),
-        HashAlgorithm::Sha384 => ObjectIdentifier::new(ID_SHA384),
-        HashAlgorithm::Sha512 => ObjectIdentifier::new(ID_SHA512),
-        HashAlgorithm::Sha3_256 => ObjectIdentifier::new(ID_SHA3_256),
-        HashAlgorithm::Sha3_384 => ObjectIdentifier::new(ID_SHA3_384),
-        HashAlgorithm::Sha3_512 => ObjectIdentifier::new(ID_SHA3_512),
-    }
-    .map_err(|e| AcmeError::Mtc(format!("hash algorithm OID for LogID: {e}")))?;
+    let hash_oid = super::hash_algorithm_to_oid(log_algorithm)?;
 
     Ok(LogID {
         hash_algorithm: AlgorithmIdentifier {
