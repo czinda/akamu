@@ -175,7 +175,7 @@ pub async fn produce_checkpoint(
                 },
             ) {
                 Ok(der) => out.push((entry.cert_id, der)),
-                Err(e) => tracing::warn!(cert_id = %entry.cert_id, "build standalone cert: {e}"),
+                Err(e) => tracing::error!(cert_id = %entry.cert_id, "build standalone cert: {e}"),
             }
         }
         out
