@@ -219,6 +219,18 @@ pub struct AppState {
     /// (base64url-nopad of the first 16 bytes of SHA-256(SPKI-DER)).
     /// Used as the `node_id` in all CRDT writes on this node.
     pub node_id: Arc<String>,
+    /// ML-KEM-768 private key as PKCS8 DER.  Used by the gossip handler to
+    /// decapsulate the per-message session key from inbound CMS EnvelopedData.
+    pub node_kem_priv: Arc<Vec<u8>>,
+    /// ECDSA P-256 gossip signing private key as PEM bytes.  Used to sign
+    /// outbound CMS SignedData so peers can authenticate this node's pushes.
+    pub node_gossip_signing_priv: Arc<Vec<u8>>,
+    /// DER-encoded self-signed certificate for the gossip signing key.
+    /// Embedded in outbound CMS SignedData so peers can pin-verify the sender.
+    pub node_gossip_signing_cert: Arc<Vec<u8>>,
+    /// Shared HTTP client for outbound gossip pushes.
+    /// Plain HTTP is used; CMS SignedData + EnvelopedData provides auth + confidentiality.
+    pub gossip_client: Arc<reqwest::Client>,
 }
 
 impl AppState {

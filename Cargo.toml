@@ -123,16 +123,25 @@ synta-mtc = { version = ">=0.2.0", features = ["std"] }
 # Native Rust bindings to system OpenSSL (composite ML-DSA TLS verify)
 native-ossl = "0.1.8"
 
+# zstd compression for gossip CRDT payloads
+zstd = "0.13"
+
+# HTTP client for outbound gossip pushes (plain HTTP; CMS provides auth+confidentiality)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 tempfile = "3"
-reqwest = { version = "0.12", default-features = false }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 akamu-client = { path = "crates/akamu-client" }
 # (instant-acme 0.4 removed: it pulled hyper 0.14 as a transitive dependency,
 # which is not available in RHEL 10 / EPEL 10.  The acme_client_compat
 # integration test that used it has been removed along with this dependency.)
 # CLI argument parsing for the acme-bench standalone benchmark binary.
 clap = { version = "4", features = ["derive"] }
+# Native Rust OpenSSL bindings — used by gossip_bootstrap integration test
+# to generate ML-KEM-768 and ECDSA P-256 node keys without the full server binary.
+native-ossl = "0.1.8"
 
 [[bench]]
 name = "acme_bench"

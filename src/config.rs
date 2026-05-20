@@ -36,6 +36,9 @@ pub struct Config {
     /// When absent, delegation orders are issued directly by Akamu's own CA.
     #[serde(default)]
     pub delegation_upstream: Option<DelegationUpstreamConfig>,
+    /// CRDT gossip replication. Absent → single-node mode; no gossip is performed.
+    #[serde(default)]
+    pub gossip: Option<GossipConfig>,
 }
 
 /// Admin API configuration (PP CA v2.1 FMT + FTA_SSL).
@@ -1296,6 +1299,46 @@ impl std::fmt::Debug for EmailChallengeConfig {
             .field("webhook_hmac_secret", &"[REDACTED]")
             .finish()
     }
+}
+
+/// CRDT gossip replication configuration.
+///
+/// When this section is present, Akamu gossips CRDT deltas to the listed peers.
+/// When absent, the node runs in single-node mode (no replication).
+///
+/// ```toml
+/// [gossip]
+/// peers = ["https://node2.acme.internal:8081"]
+/// interval_secs = 15
+/// tombstone_ttl_secs = 604800
+/// ownership_ttl_secs = 150
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct GossipConfig {
+    /// Peer gossip URLs to push CRDT state to.
+    #[serde(default)]
+    pub peers: Vec<String>,
+    /// Gossip round interval in seconds. Default: 15.
+    #[serde(default = "default_gossip_interval_secs")]
+    pub interval_secs: u64,
+    /// Tombstone TTL in seconds. Default: 604800 (7 days).
+    #[serde(default = "default_gossip_tombstone_ttl_secs")]
+    pub tombstone_ttl_secs: u64,
+    /// Order/MTC writer ownership TTL in seconds. Default: 150.
+    #[serde(default = "default_gossip_ownership_ttl_secs")]
+    pub ownership_ttl_secs: u64,
+}
+
+fn default_gossip_interval_secs() -> u64 {
+    15
+}
+
+fn default_gossip_tombstone_ttl_secs() -> u64 {
+    604_800 // 7 days
+}
+
+fn default_gossip_ownership_ttl_secs() -> u64 {
+    150
 }
 
 impl Config {

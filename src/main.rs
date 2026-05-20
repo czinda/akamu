@@ -14,6 +14,7 @@ use akamu::state::{AppState, CaState, CrlCache, MtcState, NonceBucket, TlsState}
 use akamu::{ca, db, delegation_upstream, mtc, routes, star};
 use indexmap::IndexMap;
 
+use akamu::gossip;
 use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
@@ -158,21 +159,121 @@ async fn run() -> Result<(), String> {
     // Tell the CRDT DB layer which SQL placeholder style to use.
     akamu_crdt::db::init_db_kind(matches!(db_kind, db::DbKind::Postgres));
 
-    // Load or generate the node's gossip signing key.  The private key is
-    // stored as PEM bytes in the `node_keys` table; we derive a stable
-    // `node_id` from the SPKI DER of the public key so the identity survives
-    // restarts without storing a separate UUID.
-    let node_id: String = {
-        const LOCAL_KEY: &str = "local";
+    // Load or generate the node's gossip key material.
+    //
+    // The signing private key is stored as PEM bytes (BackendPrivateKey serialisation).
+    // The KEM private key is stored as PKCS8 DER (native_ossl format).
+    // The signing certificate is a minimal self-signed X.509 v3 DER for CMS embedding.
+    //
+    // A stable `node_id` is derived from the signing public key SPKI DER so the
+    // identity survives restarts without storing a separate UUID.
+    const LOCAL_KEY: &str = "local";
+
+    struct NodeGossipKeys {
+        node_id: String,
+        kem_priv_pkcs8: Vec<u8>,
+        sign_priv_pem: Vec<u8>,
+        sign_cert_der: Vec<u8>,
+    }
+
+    let node_keys: NodeGossipKeys = {
         let maybe_row = akamu_crdt::db::load_node_keys(&db, LOCAL_KEY)
             .await
             .map_err(|e| format!("load node keys: {e}"))?;
 
+        // Helper: build a minimal self-signed cert for a PEM-encoded signing key.
+        let build_sign_cert = |sign_priv_pem: &[u8], nid: &str| -> Result<Vec<u8>, String> {
+            let sign_key =
+                native_ossl::pkey::Pkey::<native_ossl::pkey::Private>::from_pem(sign_priv_pem)
+                    .map_err(|e| format!("load signing key from PEM: {e}"))?;
+            let mut name =
+                native_ossl::x509::X509NameOwned::new().map_err(|e| format!("X509Name: {e}"))?;
+            name.add_entry_by_txt(c"CN", nid.as_bytes())
+                .map_err(|e| format!("X509Name add CN: {e}"))?;
+            let cert = native_ossl::x509::X509Builder::new()
+                .map_err(|e| format!("X509Builder: {e}"))?
+                .set_version(2)
+                .map_err(|e| format!("X509Builder version: {e}"))?
+                .set_serial_number(1)
+                .map_err(|e| format!("X509Builder serial: {e}"))?
+                .set_not_before_offset(0)
+                .map_err(|e| format!("X509Builder not_before: {e}"))?
+                .set_not_after_offset(20 * 365 * 86400)
+                .map_err(|e| format!("X509Builder not_after: {e}"))?
+                .set_subject_name(&name)
+                .map_err(|e| format!("X509Builder subject: {e}"))?
+                .set_issuer_name(&name)
+                .map_err(|e| format!("X509Builder issuer: {e}"))?
+                .set_public_key(&sign_key)
+                .map_err(|e| format!("X509Builder pubkey: {e}"))?
+                .sign(&sign_key, None)
+                .map_err(|e| format!("X509Builder sign: {e}"))?
+                .build()
+                .to_der()
+                .map_err(|e| format!("X509 to_der: {e}"))?;
+            Ok(cert)
+        };
+
         if let Some(row) = maybe_row {
-            derive_node_id(&row.signing_public_key_der)
-                .ok_or_else(|| "could not derive node_id from stored signing key".to_string())?
+            let nid = derive_node_id(&row.signing_public_key_der)
+                .ok_or_else(|| "could not derive node_id from stored signing key".to_string())?;
+
+            // Upgrade nodes that were bootstrapped before Phase 4: a real KEM key
+            // is >100 bytes; the old placeholder was 32 random bytes.
+            let (kem_priv, kem_pub) = if row.kem_private_key_der.len() > 100 {
+                (
+                    row.kem_private_key_der.clone(),
+                    row.kem_public_key_der.clone(),
+                )
+            } else {
+                tracing::info!("upgrading node KEM key to ML-KEM-768");
+                let kem_key = native_ossl::pkey::KeygenCtx::new(c"ML-KEM-768")
+                    .map_err(|e| format!("ML-KEM-768 keygen ctx: {e}"))?
+                    .generate()
+                    .map_err(|e| format!("ML-KEM-768 keygen: {e}"))?;
+                let priv_der = kem_key
+                    .to_pkcs8_der()
+                    .map_err(|e| format!("ML-KEM-768 pkcs8: {e}"))?;
+                let pub_spki = kem_key
+                    .public_key_to_der()
+                    .map_err(|e| format!("ML-KEM-768 spki: {e}"))?;
+                (priv_der, pub_spki)
+            };
+
+            let sign_cert = if row.signing_certificate_der.is_empty() {
+                tracing::info!("generating self-signed gossip signing certificate");
+                build_sign_cert(&row.signing_private_key_der, &nid)?
+            } else {
+                row.signing_certificate_der.clone()
+            };
+
+            // Persist upgrade if anything changed.
+            if kem_priv != row.kem_private_key_der || sign_cert != row.signing_certificate_der {
+                akamu_crdt::db::save_node_keys(
+                    &db,
+                    &akamu_crdt::db::NodeKeysRow {
+                        node_id: LOCAL_KEY.to_string(),
+                        kem_private_key_der: kem_priv.clone(),
+                        kem_public_key_der: kem_pub.clone(),
+                        signing_private_key_der: row.signing_private_key_der.clone(),
+                        signing_public_key_der: row.signing_public_key_der.clone(),
+                        signing_certificate_der: sign_cert.clone(),
+                        created_at: row.created_at,
+                    },
+                )
+                .await
+                .map_err(|e| format!("upgrade node keys: {e}"))?;
+            }
+
+            NodeGossipKeys {
+                node_id: nid,
+                kem_priv_pkcs8: kem_priv,
+                sign_priv_pem: row.signing_private_key_der,
+                sign_cert_der: sign_cert,
+            }
         } else {
-            tracing::info!("generating new node gossip signing key (ec:P-256)");
+            tracing::info!("generating new node gossip keys (ec:P-256 + ML-KEM-768)");
+
             let sign_key = ca::init::generate_backend_key("ec:P-256")
                 .map_err(|e| format!("node signing key gen: {e}"))?;
             let sign_pub = sign_key
@@ -187,30 +288,45 @@ async fn run() -> Result<(), String> {
                 .ok_or_else(|| "could not derive node_id from new signing key".to_string())?;
             tracing::info!(node_id = %nid, "new node identity assigned");
 
-            // Use placeholder bytes for the KEM key fields (Phase 4 will
-            // generate a real ML-KEM-768 key pair for gossip encryption).
-            let mut kem_placeholder = vec![0u8; 32];
-            getrandom::getrandom(&mut kem_placeholder)
-                .map_err(|e| format!("getrandom for KEM placeholder: {e}"))?;
+            let kem_key = native_ossl::pkey::KeygenCtx::new(c"ML-KEM-768")
+                .map_err(|e| format!("ML-KEM-768 keygen ctx: {e}"))?
+                .generate()
+                .map_err(|e| format!("ML-KEM-768 keygen: {e}"))?;
+            let kem_priv_pkcs8 = kem_key
+                .to_pkcs8_der()
+                .map_err(|e| format!("ML-KEM-768 pkcs8: {e}"))?;
+            let kem_pub_spki = kem_key
+                .public_key_to_der()
+                .map_err(|e| format!("ML-KEM-768 spki: {e}"))?;
+
+            let sign_cert_der = build_sign_cert(&sign_priv_pem, &nid)?;
+
+            let created_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
 
             akamu_crdt::db::save_node_keys(
                 &db,
                 &akamu_crdt::db::NodeKeysRow {
                     node_id: LOCAL_KEY.to_string(),
-                    kem_private_key_der: kem_placeholder.clone(),
-                    kem_public_key_der: kem_placeholder,
-                    signing_private_key_der: sign_priv_pem,
-                    signing_public_key_der: sign_pub_der,
-                    signing_certificate_der: vec![],
-                    created_at: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs() as i64,
+                    kem_private_key_der: kem_priv_pkcs8.clone(),
+                    kem_public_key_der: kem_pub_spki.clone(),
+                    signing_private_key_der: sign_priv_pem.clone(),
+                    signing_public_key_der: sign_pub_der.clone(),
+                    signing_certificate_der: sign_cert_der.clone(),
+                    created_at,
                 },
             )
             .await
             .map_err(|e| format!("save node keys: {e}"))?;
-            nid
+
+            NodeGossipKeys {
+                node_id: nid,
+                kem_priv_pkcs8,
+                sign_priv_pem,
+                sign_cert_der,
+            }
         }
     };
 
@@ -220,7 +336,7 @@ async fn run() -> Result<(), String> {
         .await
         .map_err(|e| format!("CRDT load from DB: {e}"))?;
     let crdt = std::sync::Arc::new(tokio::sync::RwLock::new(crdt_initial));
-    let node_id = std::sync::Arc::new(node_id);
+    let node_id = std::sync::Arc::new(node_keys.node_id.clone());
     tracing::info!(node_id = %node_id, "CRDT state loaded from DB");
 
     // Seed EAB keys from config into the DB (INSERT OR IGNORE — never overwrites
@@ -562,6 +678,10 @@ async fn run() -> Result<(), String> {
         startup_time: std::time::Instant::now(),
         crdt,
         node_id,
+        node_kem_priv: Arc::new(node_keys.kem_priv_pkcs8),
+        node_gossip_signing_priv: Arc::new(node_keys.sign_priv_pem),
+        node_gossip_signing_cert: Arc::new(node_keys.sign_cert_der),
+        gossip_client: Arc::new(reqwest::Client::new()),
     });
 
     // ── Seed audit row counter ────────────────────────────────────────────────
@@ -609,6 +729,11 @@ async fn run() -> Result<(), String> {
 
     // ── RFC 9115 IdO→CA upstream delegation task ──────────────────────────────
     let _delegation_task = delegation_upstream::spawn(Arc::clone(&state));
+
+    // ── Gossip background loop (disabled when [gossip] section is absent) ─────
+    if state.config.gossip.is_some() {
+        tokio::spawn(gossip::r#loop::run(Arc::clone(&state)));
+    }
 
     // ── HTTP / TLS server (serves ACME, admin API, and web UI) ──────────────
     let static_dir = config

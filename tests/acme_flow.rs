@@ -236,6 +236,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         admin: None,
         email_challenge: None,
         delegation_upstream: None,
+        gossip: None,
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
@@ -318,6 +319,10 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         startup_time: std::time::Instant::now(),
         crdt: Arc::new(tokio::sync::RwLock::new(akamu_crdt::AkaCrdt::default())),
         node_id: Arc::new("test".to_string()),
+        node_kem_priv: Arc::new(vec![]),
+        node_gossip_signing_priv: Arc::new(vec![]),
+        node_gossip_signing_cert: Arc::new(vec![]),
+        gossip_client: Arc::new(reqwest::Client::new()),
         gss_cred: None,
         admin_gss_cred: None,
         eab_master_secret: None,
@@ -2285,6 +2290,7 @@ async fn test_directory_with_optional_fields() {
         admin: None,
         email_challenge: None,
         delegation_upstream: None,
+        gossip: None,
     });
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
     db::install_drivers();
@@ -2363,6 +2369,10 @@ async fn test_directory_with_optional_fields() {
         startup_time: std::time::Instant::now(),
         crdt: Arc::new(tokio::sync::RwLock::new(akamu_crdt::AkaCrdt::default())),
         node_id: Arc::new("test".to_string()),
+        node_kem_priv: Arc::new(vec![]),
+        node_gossip_signing_priv: Arc::new(vec![]),
+        node_gossip_signing_cert: Arc::new(vec![]),
+        gossip_client: Arc::new(reqwest::Client::new()),
         gss_cred: None,
         admin_gss_cred: None,
         eab_master_secret: None,
@@ -2698,6 +2708,7 @@ async fn test_finalize_with_mtc_enabled() {
         admin: None,
         email_challenge: None,
         delegation_upstream: None,
+        gossip: None,
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
@@ -2781,6 +2792,10 @@ async fn test_finalize_with_mtc_enabled() {
         startup_time: std::time::Instant::now(),
         crdt: Arc::new(tokio::sync::RwLock::new(akamu_crdt::AkaCrdt::default())),
         node_id: Arc::new("test".to_string()),
+        node_kem_priv: Arc::new(vec![]),
+        node_gossip_signing_priv: Arc::new(vec![]),
+        node_gossip_signing_cert: Arc::new(vec![]),
+        gossip_client: Arc::new(reqwest::Client::new()),
         gss_cred: None,
         admin_gss_cred: None,
         eab_master_secret: None,
@@ -2999,6 +3014,7 @@ async fn test_finalize_with_aia_and_cdp() {
         admin: None,
         email_challenge: None,
         delegation_upstream: None,
+        gossip: None,
     });
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
     db::install_drivers();
@@ -3077,6 +3093,10 @@ async fn test_finalize_with_aia_and_cdp() {
         startup_time: std::time::Instant::now(),
         crdt: Arc::new(tokio::sync::RwLock::new(akamu_crdt::AkaCrdt::default())),
         node_id: Arc::new("test".to_string()),
+        node_kem_priv: Arc::new(vec![]),
+        node_gossip_signing_priv: Arc::new(vec![]),
+        node_gossip_signing_cert: Arc::new(vec![]),
+        gossip_client: Arc::new(reqwest::Client::new()),
         gss_cred: None,
         admin_gss_cred: None,
         eab_master_secret: None,
@@ -3543,6 +3563,7 @@ async fn test_smime_email_reply_00_full_flow() {
             webhook_hmac_secret: hmac_secret.into(),
         }),
         delegation_upstream: None,
+        gossip: None,
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
@@ -3639,6 +3660,10 @@ async fn test_smime_email_reply_00_full_flow() {
         startup_time: std::time::Instant::now(),
         crdt: Arc::new(tokio::sync::RwLock::new(akamu_crdt::AkaCrdt::default())),
         node_id: Arc::new("test".to_string()),
+        node_kem_priv: Arc::new(vec![]),
+        node_gossip_signing_priv: Arc::new(vec![]),
+        node_gossip_signing_cert: Arc::new(vec![]),
+        gossip_client: Arc::new(reqwest::Client::new()),
         gss_cred: None,
         admin_gss_cred: None,
         eab_master_secret: None,

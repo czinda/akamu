@@ -356,6 +356,14 @@ pub fn build_router(state: Arc<AppState>, static_dir: Option<&std::path::Path>) 
         .route(
             "/admin/cross-certs/{id}",
             axum::routing::get(admin::get_cross_cert),
+        )
+        .route(
+            "/admin/gossip/sync",
+            post(crate::gossip::handlers::gossip_sync),
+        )
+        .route(
+            "/admin/gossip/status",
+            axum::routing::get(crate::gossip::handlers::gossip_status),
         );
 
     let mut router = Router::new()

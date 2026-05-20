@@ -113,6 +113,7 @@ pub async fn start(
         admin: None,
         email_challenge: None,
         delegation_upstream: None,
+        gossip: None,
     });
 
     // Open the database.
@@ -228,6 +229,10 @@ pub async fn start(
         startup_time: Instant::now(),
         crdt: Arc::new(tokio::sync::RwLock::new(AkaCrdt::default())),
         node_id: Arc::new("seedgen".to_string()),
+        node_kem_priv: Arc::new(vec![]),
+        node_gossip_signing_priv: Arc::new(vec![]),
+        node_gossip_signing_cert: Arc::new(vec![]),
+        gossip_client: Arc::new(reqwest::Client::new()),
     });
 
     let router = routes::build_router(Arc::clone(&state), None);

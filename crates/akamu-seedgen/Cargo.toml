@@ -38,6 +38,7 @@ tempfile = "3"
 
 synta-certificate = { version = ">=0.2.0", features = ["std"] }
 synta-mtc = { version = ">=0.2.0", features = ["std"] }
+reqwest = { version = "0.12", default-features = false }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "rustls-native-certs", "ring"] }
 hyper-util = { version = "0.1", features = ["tokio", "client-legacy"] }
 hyper = { version = "1", features = ["client", "http1"] }

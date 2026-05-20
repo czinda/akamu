@@ -541,6 +541,7 @@ mod tests {
             admin: None,
             email_challenge: None,
             delegation_upstream: None,
+            gossip: None,
         });
 
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
@@ -623,6 +624,10 @@ mod tests {
             startup_time: std::time::Instant::now(),
             crdt: Arc::new(tokio::sync::RwLock::new(akamu_crdt::AkaCrdt::default())),
             node_id: Arc::new("test".to_string()),
+            node_kem_priv: Arc::new(vec![]),
+            node_gossip_signing_priv: Arc::new(vec![]),
+            node_gossip_signing_cert: Arc::new(vec![]),
+            gossip_client: Arc::new(reqwest::Client::new()),
         })
     }
 
@@ -1082,6 +1087,7 @@ mod tests {
             admin: None,
             email_challenge: None,
             delegation_upstream: None,
+            gossip: None,
         });
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
         db::install_drivers();
@@ -1162,6 +1168,10 @@ mod tests {
             startup_time: std::time::Instant::now(),
             crdt: Arc::new(tokio::sync::RwLock::new(akamu_crdt::AkaCrdt::default())),
             node_id: Arc::new("test".to_string()),
+            node_kem_priv: Arc::new(vec![]),
+            node_gossip_signing_priv: Arc::new(vec![]),
+            node_gossip_signing_cert: Arc::new(vec![]),
+            gossip_client: Arc::new(reqwest::Client::new()),
         });
 
         // The identifier is just the IP address — no port embedded.
@@ -1429,6 +1439,7 @@ mod tests {
             admin: None,
             email_challenge: None,
             delegation_upstream: None,
+            gossip: None,
         });
         let (ca_key, ca_cert_der) = crate::ca::init::load_or_generate(config.default_ca()).unwrap();
         let ca = Arc::new(CaState {
@@ -1507,6 +1518,10 @@ mod tests {
             startup_time: std::time::Instant::now(),
             crdt: Arc::new(tokio::sync::RwLock::new(akamu_crdt::AkaCrdt::default())),
             node_id: Arc::new("test".to_string()),
+            node_kem_priv: Arc::new(vec![]),
+            node_gossip_signing_priv: Arc::new(vec![]),
+            node_gossip_signing_cert: Arc::new(vec![]),
+            gossip_client: Arc::new(reqwest::Client::new()),
         })
     }
 
