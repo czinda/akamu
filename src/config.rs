@@ -4,7 +4,10 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
-    /// Address to listen on, e.g. "0.0.0.0:8080"
+    /// Address to listen on.  Accepts `host:port` for TCP (e.g. `"0.0.0.0:8080"`)
+    /// or `unix:/path/to/socket` / `/path/to/socket` for a Unix domain socket.
+    /// The `AKAMU_LISTEN` environment variable overrides this field.
+    /// Unix domain sockets cannot be combined with `[tls]`.
     pub listen_addr: String,
     /// Public base URL of this ACME server, e.g. `https://acme.example.com`
     pub base_url: String,
@@ -1508,6 +1511,11 @@ impl Config {
             .parse::<synta_mtc::crypto::HashAlgorithm>()
         {
             return Err(format!("[mtc].hash_alg: {e}"));
+        }
+
+        let is_unix = self.listen_addr.starts_with("unix:") || self.listen_addr.starts_with('/');
+        if self.tls.enabled && is_unix {
+            return Err("TLS cannot be used with a Unix domain socket listener".to_owned());
         }
 
         Ok(())

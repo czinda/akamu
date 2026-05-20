@@ -14,6 +14,7 @@ pub mod eab_derivation;
 pub mod error;
 pub mod extract;
 pub mod jose;
+pub mod listen;
 pub mod mtc;
 pub mod profiles;
 pub mod routes;
