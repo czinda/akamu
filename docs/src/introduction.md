@@ -59,6 +59,22 @@ For a detailed breakdown of RFC and draft coverage — including which sections 
 - [draft-ietf-lamps-pq-composite-sigs](https://datatracker.ietf.org/doc/draft-ietf-lamps-pq-composite-sigs/) — ML-DSA composite TLS signature schemes (provisional code points)
 - [draft-ietf-plants-merkle-tree-certs-03](https://davidben.github.io/merkle-tree-certs/) — Merkle Tree Certificates (MTC), transparency-log-backed certificate format (experimental OIDs, pre-IANA)
 
+## Reading guide
+
+The documentation is split into three sections targeting distinct audiences:
+
+| Section | Who it is for | What it covers |
+|---|---|---|
+| **Operator Guide** | System administrators deploying and running Akāmu | Installation, configuration, account policies, certificate issuance, revocation, TLS, backup |
+| **API Reference** | Developers consuming Akāmu's HTTP APIs or using the Rust client libraries | Admin REST API, ACME protocol details (algorithms, challenge types, error codes, wire formats), `akamu-jose` / `akamu-client` / `akamu-cli` |
+| **Implementation Guide** | Contributors working on the Akāmu source code | Architecture, database schema, CA internals, challenge validation, EAB and account internals, testing |
+
 ## Quick navigation
 
-New to Akāmu? Start with the [Quick Start](quickstart/install.md) guide. If you want to understand every configuration key, see the [Configuration Reference](user/configuration.md). Developers should read the [Architecture](developer/architecture.md) chapter first — it includes a full system architecture diagram covering all subsystems and their interactions.
+**New to Akāmu?** Start with the [Quick Start](quickstart/install.md) guide.
+
+**Deploying or configuring the server?** See the [Configuration Reference](user/configuration.md) for every configuration key, or [Operator Roles](user/operator-roles.md) for RBAC setup.
+
+**Building an ACME client or integrating via the API?** Start with [ACME Protocol Reference](client/protocol.md) for the wire-level details, [Admin API](user/admin-api.md) for the management REST API, or [akamu-client](client/client-library.md) for the Rust library.
+
+**Contributing to Akāmu?** Read the [Architecture](developer/architecture.md) chapter first — it includes a full system diagram covering all subsystems and their interactions.
