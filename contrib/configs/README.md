@@ -16,6 +16,7 @@ at the repository root.
 | [minimal.toml](minimal.toml) | Quick-start, bare minimum | SQLite, auto-generated CA |
 | [development.toml](development.toml) | Local integration testing | Private IPs allowed, DNSSEC off, short validity |
 | [production-postgres.toml](production-postgres.toml) | Hardened public CA | PostgreSQL, encrypted key, validity cap, CAA |
+| [unix-socket.toml](unix-socket.toml) | Unix domain socket behind a reverse proxy | `listen_addr = "unix:/…"`, no `[tls]` |
 | [tls-native.toml](tls-native.toml) | Akāmu terminates TLS | `[tls]` with external cert/key |
 | [tls-mutual.toml](tls-mutual.toml) | ACME clients need a client cert | `[tls.client_auth]` required |
 | [eab-static.toml](eab-static.toml) | Fixed set of pre-provisioned EAB keys | `[server.eab_keys]` table |

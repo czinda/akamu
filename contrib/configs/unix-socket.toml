@@ -1,0 +1,57 @@
+# unix-socket.toml — Akāmu listening on a Unix domain socket.
+#
+# Use this configuration when a reverse proxy (nginx, Apache, haproxy) runs on
+# the same host and should forward HTTPS traffic to Akāmu over a socket rather
+# than a TCP port.  The proxy terminates TLS; Akāmu speaks plain HTTP internally.
+#
+# Steps:
+#   1. Start the server: akamu /etc/akamu/config.toml
+#      (or enable socket activation: systemctl enable --now akamu.socket akamu.service)
+#   2. Ensure the reverse proxy process is in group "akamu" so it can connect.
+#   3. Point the proxy to the socket path (see nginx/Apache examples below).
+#
+# The AKAMU_LISTEN environment variable overrides listen_addr without changing this file:
+#   AKAMU_LISTEN=unix:/run/akamu/akamu.sock akamu /etc/akamu/config.toml
+#
+# TLS note: [tls] must be absent or disabled when listen_addr is a Unix path.
+# The server will refuse to start if both are set.
+
+listen_addr = "unix:/run/akamu/akamu.sock"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "sqlite:///var/lib/akamu/acme.db"
+
+[ca]
+# Both files are auto-generated on first run if they do not exist.
+key_file  = "/etc/akamu/certs/ca.key.pem"
+cert_file = "/etc/akamu/certs/ca.cert.pem"
+
+[mtc]
+log_path = "/var/lib/akamu/mtc.log"
+enabled  = false
+
+# [server]
+# If you use a Kerberos reverse proxy that sets X-Remote-User, list the proxy's
+# IP so akamu trusts that header.  Unix socket connections skip the CIDR check
+# (they are inherently local) but still require the header to be present.
+# trusted_proxies = ["127.0.0.1/32"]
+
+# ── nginx example ──────────────────────────────────────────────────────────────
+# server {
+#     listen 443 ssl;
+#     server_name acme.example.com;
+#
+#     ssl_certificate     /etc/nginx/ssl/acme.example.com.crt;
+#     ssl_certificate_key /etc/nginx/ssl/acme.example.com.key;
+#
+#     location / {
+#         proxy_pass http://unix:/run/akamu/akamu.sock;
+#         proxy_set_header Host $host;
+#         proxy_set_header X-Real-IP $remote_addr;
+#     }
+# }
+
+# ── Apache example ─────────────────────────────────────────────────────────────
+# ProxyPass        / unix:/run/akamu/akamu.sock|http://localhost/
+# ProxyPassReverse / unix:/run/akamu/akamu.sock|http://localhost/

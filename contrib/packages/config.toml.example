@@ -1,6 +1,10 @@
 # ACME server configuration — copy to config.toml and adjust as needed.
 
-# Address and port to listen on.
+# Address to listen on.
+#   TCP:              "host:port"        e.g. "0.0.0.0:8080" or "127.0.0.1:8080"
+#   Unix domain socket: "unix:/path"    e.g. "unix:/run/akamu/akamu.sock"
+# The AKAMU_LISTEN environment variable overrides this field.
+# Unix domain sockets cannot be combined with [tls] (TLS must be terminated upstream).
 listen_addr = "0.0.0.0:8080"
 
 # Public base URL of the ACME server, used in all URLs returned to clients.

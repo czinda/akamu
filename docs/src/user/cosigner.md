@@ -64,12 +64,30 @@ key_file      = "/var/lib/akamu/cosigner-tls.key"
 
 **Optional. Default: `"0.0.0.0:8080"`.**
 
-TCP address and port the daemon binds to.
+Address the daemon binds to. Two forms are accepted:
+
+| Form | Example | Description |
+|------|---------|-------------|
+| `"host:port"` | `"0.0.0.0:8080"` | TCP socket |
+| `"unix:/path"` or `"/path"` | `"unix:/run/akamu/akamu-cosigner.sock"` | Unix domain socket |
 
 ```toml
 [server]
 listen_addr = "0.0.0.0:8443"
+
+# Or, for a Unix domain socket behind a reverse proxy:
+# listen_addr = "unix:/run/akamu/akamu-cosigner.sock"
 ```
+
+The `AKAMU_COSIGNER_LISTEN` environment variable overrides this field:
+
+```
+AKAMU_COSIGNER_LISTEN=unix:/run/akamu/akamu-cosigner.sock akamu-cosigner /etc/akamu/cosigner.toml
+```
+
+**Constraint:** Unix domain sockets and `[tls]` are mutually exclusive. When `listen_addr` is a Unix path and a `[tls]` section is present (or `[acme_bootstrap]` is configured, which implies TLS), the daemon exits at startup with an error.
+
+**Systemd socket activation:** The provided `akamu-cosigner.socket` unit pre-binds `/run/akamu/akamu-cosigner.sock` (mode `0660`, user/group `akamu-cosigner`). Enable with `systemctl enable --now akamu-cosigner.socket akamu-cosigner.service`. When socket activation is active, `listen_addr` in the config file is ignored — the pre-bound socket is passed via `LISTEN_FDS`.
 
 ### `base_url`
 

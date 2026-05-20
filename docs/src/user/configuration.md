@@ -107,13 +107,33 @@ eku           = ["server_auth"]
 
 ### `listen_addr`
 
-**Required.** The TCP address and port the server binds to.
+**Required.** The address the server binds to. Two forms are accepted:
+
+| Form | Example | Description |
+|------|---------|-------------|
+| `"host:port"` | `"0.0.0.0:8080"` | TCP socket — bind on all interfaces, port 8080 |
+| `"unix:/path"` or `"/path"` | `"unix:/run/akamu/akamu.sock"` | Unix domain socket at the given filesystem path |
 
 ```toml
+# TCP (bind on all interfaces)
 listen_addr = "0.0.0.0:8080"
+
+# TCP (localhost only — behind a reverse proxy on the same host)
+listen_addr = "127.0.0.1:8080"
+
+# Unix domain socket (reverse proxy on the same host)
+listen_addr = "unix:/run/akamu/akamu.sock"
 ```
 
-Use `127.0.0.1:8080` if you only want to accept connections from a local reverse proxy. To enable native TLS on this socket, configure the `[tls]` section; otherwise TLS termination must be handled upstream.
+The `AKAMU_LISTEN` environment variable overrides this field without touching the config file — useful for socket-activated deployments or overriding the bind address at start time:
+
+```
+AKAMU_LISTEN=unix:/run/akamu/akamu.sock akamu /etc/akamu/config.toml
+```
+
+**Constraint:** Unix domain sockets and `[tls]` are mutually exclusive. When `listen_addr` is a Unix path and `[tls].enabled = true`, the server exits at startup with an error. TLS termination must be handled by the reverse proxy in front of the socket.
+
+See [Running behind a reverse proxy (Unix socket)](../quickstart/first-run.md#running-behind-a-reverse-proxy-unix-socket) in the quickstart for nginx, Apache, and systemd socket-activation examples.
 
 ### `base_url`
 
