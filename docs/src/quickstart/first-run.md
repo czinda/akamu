@@ -119,3 +119,62 @@ server {
     }
 }
 ```
+
+## Running behind a reverse proxy (Unix socket)
+
+Instead of binding a TCP port, Akāmu can listen on a Unix domain socket. This avoids exposing a TCP port and simplifies firewall rules when the reverse proxy runs on the same host.
+
+Set `listen_addr` to a `unix:` path (TLS must be absent or disabled — the proxy terminates TLS):
+
+```toml
+listen_addr = "unix:/run/akamu/akamu.sock"
+base_url    = "https://acme.example.com"
+# No [tls] section — TLS is terminated at the proxy
+```
+
+The `AKAMU_LISTEN` environment variable overrides `listen_addr` without touching the config file:
+
+```
+AKAMU_LISTEN=unix:/run/akamu/akamu.sock akamu /etc/akamu/config.toml
+```
+
+### nginx
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name acme.example.com;
+
+    ssl_certificate     /etc/nginx/ssl/acme.example.com.crt;
+    ssl_certificate_key /etc/nginx/ssl/acme.example.com.key;
+
+    location / {
+        proxy_pass http://unix:/run/akamu/akamu.sock;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+```
+
+### Apache
+
+```apache
+ProxyPass        / unix:/run/akamu/akamu.sock|http://localhost/
+ProxyPassReverse / unix:/run/akamu/akamu.sock|http://localhost/
+```
+
+### Trusted proxies and X-Remote-User
+
+If you use `server.trusted_proxies` for admin auth via `X-Remote-User`, all connections arriving over a Unix socket are treated as locally trusted (no CIDR check). The header is still required — any connection without it receives a 401.
+
+### systemd socket activation
+
+The provided unit files support socket activation, which lets systemd pre-bind the socket before the service starts:
+
+```
+systemctl enable --now akamu.socket akamu.service
+```
+
+The socket is created at `/run/akamu/akamu.sock` (mode `0660`). The reverse proxy process must be in group `akamu` to connect. When using socket activation, `listen_addr` in the config file is ignored — the pre-bound socket is passed via `LISTEN_FDS`.
+
+Stale socket files are removed automatically on config-based startup. Under socket activation, systemd owns the socket file and no cleanup is needed.
