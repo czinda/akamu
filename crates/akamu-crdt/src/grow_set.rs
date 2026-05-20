@@ -4,8 +4,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::merge::Merge;
 
+impl<T: Eq + std::hash::Hash> Default for GrowSet<T> {
+    fn default() -> Self {
+        Self {
+            entries: HashSet::default(),
+            local_gen: 0,
+        }
+    }
+}
+
 /// Grow-only set. Merge = union. No tombstones; use age-based archival externally.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GrowSet<T: Eq + std::hash::Hash> {
     #[serde(rename = "e")]
     entries: HashSet<T>,
