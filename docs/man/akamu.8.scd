@@ -156,7 +156,43 @@ receives *id="default"* and *is_default=true* automatically.
 	stripped.  Required when *require_encrypted_key* is *true* and
 	*key_file* is a filesystem path (not a PKCS#11 URI).
 
+## listen_addr — main listener
+
+*listen_addr* = _addr_
+	Address the server binds to.  Two forms are accepted:
+
+	_host:port_ (e.g. *0.0.0.0:8080*)
+		TCP listener.  TLS may be enabled via *[tls]*.
+
+	*unix:*_/path/to/socket_ (e.g. *unix:/run/akamu/akamu.sock*)
+		Unix domain socket listener.  Mutually exclusive with *[tls]*;
+		TLS termination must be handled by the reverse proxy.  The socket
+		directory must exist with appropriate permissions.  When running
+		under systemd with *akamu.socket*, the socket is inherited via
+		*LISTEN_FDS* and this field selects the expected socket path for
+		validation.
+
+## [admin] — overview
+
+Admin endpoints (*_/admin/*_) are served on the same listener as the
+main ACME API — there is no separate admin listener.  When this section
+is absent, all admin endpoints return 404.
+
+Operator authentication uses one or both of:
+
+- *mTLS client certificates* — configure *[tls.client_auth]* with
+  *required = false* and the operator CA(s).
+- *GSSAPI/Kerberos* — configure *[admin.gssapi]*.
+
+At least one of *[tls.client_auth]* or *[admin.gssapi]* must be
+configured; the server exits at startup if neither is set.
+
 ## [admin] — session locking and operator lockout
+
+*session_ttl_secs* = _seconds_
+	Inactive session expiry.  Sessions with no activity for this
+	duration are invalidated and require re-authentication.
+	Default: *3600* (1 h).
 
 *session_lock_secs* = _seconds_
 	Inactivity threshold before a session is locked (FTA_SSL_EXT.1).
@@ -164,6 +200,11 @@ receives *id="default"* and *is_default=true* automatically.
 	rather than *401 Unauthorized*.  The operator must re-authenticate
 	to obtain a new token.  Must be less than *session_ttl_secs*.
 	Default: *900* (15 min).
+
+*auth_rate_limit* = _count_
+	Maximum credential presentations (session token, mTLS cert, or
+	GSSAPI token) from a single source IP in a rolling 5-minute window
+	before that source receives *429 Too Many Requests*.  Default: *20*.
 
 *max_failed_auth* = _count_
 	Maximum failed authentication attempts per operator before lockout

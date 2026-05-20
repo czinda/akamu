@@ -66,6 +66,25 @@ Start the cosigner with a non-default configuration file:
 
 	akamu-cosigner /etc/akamu-cosigner/my-cosigner.toml
 
+# CONFIGURATION FILE
+
+The configuration file is a TOML document.  The unit file passes
+*/etc/akamu-cosigner/cosigner.toml*.
+
+## listen_addr
+
+*listen_addr* = _addr_
+	Address the cosigner daemon binds to.  Two forms are accepted:
+
+	_host:port_ (e.g. *127.0.0.1:8444*)
+		TCP listener.
+
+	*unix:*_/path/to/socket_ (e.g. *unix:/run/akamu-cosigner/cosigner.sock*)
+		Unix domain socket listener.  Use this when akamu and
+		akamu-cosigner run on the same host and you want to avoid an
+		exposed TCP port.  When running under systemd with
+		*akamu-cosigner.socket*, the socket is inherited via *LISTEN_FDS*.
+
 # SEE ALSO
 
 *akamu*(8), *akamuctl*(1)
