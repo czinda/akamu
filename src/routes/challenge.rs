@@ -8,7 +8,7 @@ use crate::state::AppState;
 use crate::validation;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::Response;
 use serde::Serialize;
 
@@ -289,5 +289,18 @@ fn challenge_response(
                 .ok()
         }),
     };
-    json_response(state, ca_id, StatusCode::OK, body, nonce)
+    let mut resp = json_response(state, ca_id, StatusCode::OK, body, nonce)?;
+    // RFC 8555 §7.5.1: challenge response MUST include Link rel="up" pointing
+    // to the parent authorization resource so clients can poll for authz status.
+    let authz_url = format!("{acme_pfx}/authz/{}", challenge.authz_id);
+    if let Ok(link_up) = HeaderValue::from_str(&format!("<{authz_url}>;rel=\"up\"")) {
+        resp.headers_mut().append(axum::http::header::LINK, link_up);
+    } else {
+        tracing::warn!(
+            challenge_id = %challenge.id,
+            authz_url,
+            "could not build Link rel=up header for challenge response"
+        );
+    }
+    Ok(resp)
 }
