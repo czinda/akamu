@@ -61,3 +61,5 @@ If you genuinely think a convention is harmful, surface it. Don't fork silently.
 "Tests pass" is wrong if any were skipped.
 Default to surfacing uncertainty, not hiding it.
 
+Finally, if there is a file docs/PROJECT.md, read it to amend the rules above
+with project-specific additions.
