@@ -1,5 +1,7 @@
 # Admin API and Operator Management
 
+> **API Reference** — This page documents the admin REST API for operators and automation tools. For the akamuctl CLI that wraps this API, see [akamuctl — Admin CLI](../user/akamuctl.md) in the Operator Guide.
+
 The akamu admin API is a separate HTTPS listener that exposes management
 endpoints for operators.  It is completely independent of the main ACME
 listener: it binds to a different address, uses its own TLS certificate, and

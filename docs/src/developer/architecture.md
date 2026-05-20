@@ -1,5 +1,7 @@
 # Architecture
 
+> **Implementation Guide** — This section is for contributors working on the Akāmu source code. It covers architecture, internal module design, database schema, CA internals, and testing. If you are deploying or operating the server, see the [Operator Guide](../user/operator-roles.md). If you are building an ACME client or integrating with the API, see the [API Reference](../client/protocol.md).
+
 This chapter describes the overall structure of `Akāmu`, the key modules, and the full request lifecycle from a TCP connection to an HTTP response.
 
 ## System architecture

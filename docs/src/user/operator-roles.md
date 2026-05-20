@@ -1,5 +1,7 @@
 # Operator Roles
 
+> **Operator Guide** — This section is for administrators who deploy and run Akāmu. It covers configuration, account management, certificate issuance policies, and operational concerns. If you are building an ACME client or integrating with the API, see the [API Reference](../client/protocol.md). If you are contributing to Akāmu itself, see the [Implementation Guide](../developer/architecture.md).
+
 Akamu's admin API uses role-based access control to enforce least privilege and
 separation of duties. Every admin request is authenticated, and every operator
 has exactly one role. The role determines which endpoints the operator may call.

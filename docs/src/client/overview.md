@@ -1,5 +1,7 @@
 # Client Libraries Overview
 
+> **API Reference** — This section is for developers consuming Akāmu's HTTP APIs or using the Rust client libraries. It covers the Admin REST API, ACME protocol wire formats, and the `akamu-jose` / `akamu-client` / `akamu-cli` SDK. If you are deploying or operating the server, see the [Operator Guide](../user/operator-roles.md). If you are contributing to Akāmu itself, see the [Implementation Guide](../developer/architecture.md).
+
 The Akāmu repository ships three standalone crates in addition to the server binary. They were extracted from the server so that external Rust applications can speak ACME without pulling in the full server stack.
 
 | Crate | What it provides |
