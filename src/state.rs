@@ -40,8 +40,15 @@ use crate::profiles::ProfileRegistry;
 /// On server restart the in-memory store is empty; any nonces issued before
 /// restart are silently dropped. Clients detect the resulting `badNonce` and
 /// retry with a fresh nonce per RFC 8555 §6.5.
+///
+/// In multi-node deployments, `node_prefix` is set to a stable per-node token
+/// (first 11 characters of the node_id).  Nonces issued by this node carry the
+/// format `"{node_prefix}.{random}"` and are only accepted by this node.
+/// When `node_prefix` is empty (single-node / test mode) the prefix check is
+/// skipped and all nonces are accepted.
 pub struct NonceBucket {
     inner: Mutex<HashMap<String, i64>>,
+    pub node_prefix: String,
 }
 
 impl Default for NonceBucket {
@@ -51,10 +58,31 @@ impl Default for NonceBucket {
 }
 
 impl NonceBucket {
+    /// Create a bucket with no node prefix (single-node / test mode).
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(HashMap::new()),
+            node_prefix: String::new(),
         }
+    }
+
+    /// Create a bucket with a node-specific prefix for multi-node deployments.
+    pub fn with_prefix(prefix: String) -> Self {
+        Self {
+            inner: Mutex::new(HashMap::new()),
+            node_prefix: prefix,
+        }
+    }
+
+    /// Returns `true` when `nonce` was issued by this node.
+    ///
+    /// When `node_prefix` is empty (single-node mode) every nonce is accepted.
+    pub fn has_local_prefix(&self, nonce: &str) -> bool {
+        if self.node_prefix.is_empty() {
+            return true;
+        }
+        let expected = format!("{}.", self.node_prefix);
+        nonce.starts_with(expected.as_str())
     }
 
     /// Store a new nonce with its creation timestamp.

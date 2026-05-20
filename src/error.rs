@@ -1,5 +1,5 @@
 use axum::{
-    http::StatusCode,
+    http::{HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -9,8 +9,9 @@ use serde_json::json;
 #[derive(Debug, thiserror::Error)]
 pub enum AcmeError {
     // ── ACME-specific errors (urn:ietf:params:acme:error:*) ──────────────────
+    /// Bad nonce.  Carries a fresh nonce to return in `Replay-Nonce` per RFC 8555 §6.5.
     #[error("bad nonce")]
-    BadNonce,
+    BadNonce(String),
 
     #[error("bad signature algorithm: {0}")]
     BadSignatureAlgorithm(String),
@@ -156,7 +157,7 @@ impl From<sqlx::Error> for AcmeError {
 impl AcmeError {
     fn acme_type(&self) -> &'static str {
         match self {
-            AcmeError::BadNonce => "urn:ietf:params:acme:error:badNonce",
+            AcmeError::BadNonce(_) => "urn:ietf:params:acme:error:badNonce",
             AcmeError::BadSignatureAlgorithm(_) => {
                 "urn:ietf:params:acme:error:badSignatureAlgorithm"
             }
@@ -199,7 +200,7 @@ impl AcmeError {
 
     fn http_status(&self) -> StatusCode {
         match self {
-            AcmeError::BadNonce => StatusCode::BAD_REQUEST,
+            AcmeError::BadNonce(_) => StatusCode::BAD_REQUEST,
             AcmeError::BadSignatureAlgorithm(_) => StatusCode::BAD_REQUEST,
             AcmeError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             AcmeError::AccountDoesNotExist => StatusCode::BAD_REQUEST,
@@ -240,6 +241,12 @@ impl AcmeError {
 impl IntoResponse for AcmeError {
     fn into_response(self) -> Response {
         let status = self.http_status();
+        // Extract fresh nonce before consuming self for display/type lookups.
+        let fresh_nonce = if let AcmeError::BadNonce(ref n) = self {
+            Some(n.clone())
+        } else {
+            None
+        };
         if status.is_server_error() {
             tracing::error!(error = %self, status = status.as_u16(), "internal server error");
         }
@@ -256,8 +263,17 @@ impl IntoResponse for AcmeError {
         let mut resp = (status, Json(body)).into_response();
         resp.headers_mut().insert(
             axum::http::header::CONTENT_TYPE,
-            axum::http::HeaderValue::from_static("application/problem+json"),
+            HeaderValue::from_static("application/problem+json"),
         );
+        // RFC 8555 §6.5: badNonce responses MUST include a fresh Replay-Nonce.
+        if let Some(nonce) = fresh_nonce {
+            if !nonce.is_empty() {
+                if let Ok(hv) = HeaderValue::from_str(&nonce) {
+                    resp.headers_mut()
+                        .insert(HeaderName::from_static("replay-nonce"), hv);
+                }
+            }
+        }
         resp
     }
 }
@@ -270,7 +286,7 @@ mod tests {
     #[test]
     fn acme_type_strings() {
         assert_eq!(
-            AcmeError::BadNonce.acme_type(),
+            AcmeError::BadNonce(String::new()).acme_type(),
             "urn:ietf:params:acme:error:badNonce"
         );
         assert_eq!(
@@ -390,7 +406,10 @@ mod tests {
 
     #[test]
     fn http_status_codes() {
-        assert_eq!(AcmeError::BadNonce.http_status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            AcmeError::BadNonce(String::new()).http_status(),
+            StatusCode::BAD_REQUEST
+        );
         assert_eq!(
             AcmeError::BadSignatureAlgorithm("x".into()).http_status(),
             StatusCode::BAD_REQUEST
@@ -536,7 +555,7 @@ mod tests {
 
     #[test]
     fn display_messages() {
-        assert_eq!(AcmeError::BadNonce.to_string(), "bad nonce");
+        assert_eq!(AcmeError::BadNonce(String::new()).to_string(), "bad nonce");
         assert_eq!(AcmeError::NotFound.to_string(), "not found");
         assert_eq!(
             AcmeError::BadCsr("malformed".into()).to_string(),
@@ -557,7 +576,7 @@ mod tests {
 
     #[test]
     fn into_response_has_problem_json_content_type() {
-        let resp = AcmeError::BadNonce.into_response();
+        let resp = AcmeError::BadNonce(String::new()).into_response();
         assert_eq!(
             resp.headers()
                 .get(axum::http::header::CONTENT_TYPE)
@@ -565,5 +584,16 @@ mod tests {
             "application/problem+json"
         );
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn bad_nonce_with_fresh_nonce_sets_replay_nonce_header() {
+        let resp = AcmeError::BadNonce("abc123.xyz".to_string()).into_response();
+        assert_eq!(
+            resp.headers()
+                .get("replay-nonce")
+                .and_then(|v| v.to_str().ok()),
+            Some("abc123.xyz")
+        );
     }
 }

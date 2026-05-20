@@ -473,12 +473,14 @@ pub(crate) async fn parse_jws(
     // Generate the response nonce and consume the incoming nonce atomically.
     // Uses the in-memory NonceBucket to avoid 4 DB round-trips per JWS call
     // (BEGIN IMMEDIATE + DELETE + INSERT + COMMIT).
-    let mut nonce_bytes = [0u8; 16];
-    getrandom::getrandom(&mut nonce_bytes)
-        .map_err(|e| AcmeError::Internal(format!("nonce rng: {e}")))?;
-    let next_nonce = URL_SAFE_NO_PAD.encode(nonce_bytes);
-    if !state.nonces.consume_and_insert(&header.nonce, &next_nonce) {
-        return Err(AcmeError::BadNonce);
+    let next_nonce = gen_nonce(&state.nonces.node_prefix)?;
+    // Reject nonces not issued by this node (wrong prefix) or unknown (replay).
+    // In both cases, insert next_nonce so the client can retry on this node.
+    let ok = state.nonces.has_local_prefix(&header.nonce)
+        && state.nonces.consume_and_insert(&header.nonce, &next_nonce);
+    if !ok {
+        state.nonces.insert(next_nonce.clone());
+        return Err(AcmeError::BadNonce(next_nonce));
     }
 
     // Resolve the signing key and account ID.
@@ -582,11 +584,23 @@ pub(crate) fn acme_prefix(base_url: &str, ca_id: &str, default_ca_id: &str) -> S
 
 /// Generate a fresh anti-replay nonce, store it in the in-memory bucket, and return it.
 pub(crate) fn new_nonce(state: &AppState) -> Result<String, AcmeError> {
-    let mut bytes = [0u8; 16];
-    getrandom::getrandom(&mut bytes).map_err(|e| AcmeError::Internal(format!("nonce rng: {e}")))?;
-    let nonce = URL_SAFE_NO_PAD.encode(bytes);
+    let nonce = gen_nonce(&state.nonces.node_prefix)?;
     state.nonces.insert(nonce.clone());
     Ok(nonce)
+}
+
+/// Generate a random nonce, optionally prefixed with `"{prefix}."`.
+///
+/// When `prefix` is empty (single-node mode) the returned nonce is plain base64url.
+fn gen_nonce(prefix: &str) -> Result<String, AcmeError> {
+    let mut bytes = [0u8; 16];
+    getrandom::getrandom(&mut bytes).map_err(|e| AcmeError::Internal(format!("nonce rng: {e}")))?;
+    let random = URL_SAFE_NO_PAD.encode(bytes);
+    if prefix.is_empty() {
+        Ok(random)
+    } else {
+        Ok(format!("{prefix}.{random}"))
+    }
 }
 
 /// Build standard ACME response headers using a pre-generated nonce.

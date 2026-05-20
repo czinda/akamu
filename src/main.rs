@@ -628,7 +628,10 @@ async fn run() -> Result<(), String> {
         .collect();
 
     // ── Application state ─────────────────────────────────────────────────────
-    let nonces = Arc::new(NonceBucket::new());
+    // Use the first 11 chars of node_id as the nonce prefix (~64 bits of unique
+    // node identity) so that nonces are node-scoped and rejected by other nodes.
+    let nonce_prefix = node_id.get(..11).unwrap_or(&node_id).to_string();
+    let nonces = Arc::new(NonceBucket::with_prefix(nonce_prefix));
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db.clone(),
