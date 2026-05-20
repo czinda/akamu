@@ -27,6 +27,10 @@
 - [Backup and Restore](user/backup-restore.md)
 - [akamuctl — Admin CLI](user/akamuctl.md)
 
+# Cluster Operations
+
+- [Cluster Setup and Gossip](admin/cluster.md)
+
 # API Reference
 
 - [Admin API](user/admin-api.md)
