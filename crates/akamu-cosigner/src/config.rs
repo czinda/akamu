@@ -79,6 +79,10 @@ pub struct OperatorConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct ServerConfig {
+    /// Address to listen on.  Accepts `host:port` for TCP (e.g. `"0.0.0.0:8080"`)
+    /// or `unix:/path/to/socket` / `/path/to/socket` for a Unix domain socket.
+    /// The `AKAMU_COSIGNER_LISTEN` environment variable overrides this field.
+    /// Unix domain sockets cannot be combined with `[tls]`.
     #[serde(default = "default_listen_addr")]
     pub listen_addr: String,
     pub base_url: String,
@@ -189,8 +193,16 @@ impl Config {
     pub fn from_file(path: &str) -> Result<Self, CosignerError> {
         let toml_str = std::fs::read_to_string(path)
             .map_err(|e| CosignerError::Config(format!("read config '{}': {e}", path)))?;
-        toml::from_str(&toml_str)
-            .map_err(|e| CosignerError::Config(format!("parse config '{}': {e}", path)))
+        let cfg: Self = toml::from_str(&toml_str)
+            .map_err(|e| CosignerError::Config(format!("parse config '{}': {e}", path)))?;
+        let is_unix =
+            cfg.server.listen_addr.starts_with("unix:") || cfg.server.listen_addr.starts_with('/');
+        if cfg.effective_tls().is_some() && is_unix {
+            return Err(CosignerError::Config(
+                "TLS cannot be used with a Unix domain socket listener".to_owned(),
+            ));
+        }
+        Ok(cfg)
     }
 
     /// Return the TLS config to use for the HTTP server.

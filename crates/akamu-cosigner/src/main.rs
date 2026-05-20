@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use tracing_subscriber::EnvFilter;
 
+use akamu::listen::{parse_listen_target, remove_stale_socket, uds_marker_layer, ListenTarget};
 use akamu_cosigner::config::Config;
 use akamu_cosigner::error::CosignerError;
 use akamu_cosigner::state::AppState;
@@ -116,17 +117,109 @@ async fn run() -> Result<(), CosignerError> {
     let router = routes::build_router(Arc::clone(&state));
 
     // ── Start HTTP or HTTPS server ────────────────────────────────────────────
-    let listen_addr = config.server.listen_addr.clone();
-    if let Some(tls_cfg) = config.effective_tls() {
-        start_tls_server(router, &listen_addr, &tls_cfg).await?;
-    } else {
-        tracing::info!("akamu-cosigner listening on {} (plain HTTP)", listen_addr);
-        let listener = tokio::net::TcpListener::bind(&listen_addr)
-            .await
-            .map_err(|e| CosignerError::Config(format!("bind '{}': {e}", listen_addr)))?;
+    // Try systemd socket activation first (listenfd), then fall back to config.
+    let mut listenfd = listenfd::ListenFd::from_env();
+    if listenfd.len() > 1 {
+        tracing::warn!(
+            count = listenfd.len(),
+            "listenfd: more than one socket FD available; only index 0 (Unix) is consumed"
+        );
+    }
+    if let Some(std_listener) = listenfd.take_unix_listener(0).map_err(|e| {
+        CosignerError::Config(format!(
+            "systemd passed an fd that is not a Unix stream socket ({}); \
+             only Unix socket activation is supported — verify ListenStream= \
+             in your .socket unit points to a filesystem path, not a TCP address",
+            e
+        ))
+    })? {
+        if config.effective_tls().is_some() {
+            return Err(CosignerError::Config(
+                "TLS cannot be used with a Unix domain socket listener".to_owned(),
+            ));
+        }
+        std_listener
+            .set_nonblocking(true)
+            .map_err(|e| CosignerError::Config(format!("set_nonblocking: {e}")))?;
+        let listener = tokio::net::UnixListener::from_std(std_listener)
+            .map_err(|e| CosignerError::Config(format!("tokio UnixListener: {e}")))?;
+        tracing::info!("akamu-cosigner listening on systemd-activated Unix socket");
+        let router = router.layer(axum::middleware::from_fn(uds_marker_layer));
         axum::serve(listener, router)
+            .with_graceful_shutdown(async {
+                let mut sigterm =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                        .expect("failed to install SIGTERM handler");
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {},
+                    _ = sigterm.recv() => {},
+                }
+                tracing::info!("received shutdown signal; stopping akamu-cosigner");
+            })
             .await
             .map_err(|e| CosignerError::Config(format!("server error: {e}")))?;
+    } else {
+        let target = parse_listen_target(&config.server.listen_addr, "AKAMU_COSIGNER_LISTEN")
+            .map_err(CosignerError::Config)?;
+        if let Some(tls_cfg) = config.effective_tls() {
+            let addr = match target {
+                ListenTarget::Tcp(a) => a,
+                ListenTarget::Unix(_) => {
+                    return Err(CosignerError::Config(
+                        "TLS cannot be used with a Unix domain socket listener".to_owned(),
+                    ));
+                }
+            };
+            start_tls_server(router, addr, &tls_cfg).await?;
+        } else {
+            match target {
+                ListenTarget::Tcp(addr) => {
+                    tracing::info!("akamu-cosigner listening on {} (plain HTTP)", addr);
+                    let listener = tokio::net::TcpListener::bind(addr)
+                        .await
+                        .map_err(|e| CosignerError::Config(format!("bind '{}': {e}", addr)))?;
+                    axum::serve(listener, router)
+                        .with_graceful_shutdown(async {
+                            let mut sigterm = tokio::signal::unix::signal(
+                                tokio::signal::unix::SignalKind::terminate(),
+                            )
+                            .expect("failed to install SIGTERM handler");
+                            tokio::select! {
+                                _ = tokio::signal::ctrl_c() => {},
+                                _ = sigterm.recv() => {},
+                            }
+                            tracing::info!("received shutdown signal; stopping akamu-cosigner");
+                        })
+                        .await
+                        .map_err(|e| CosignerError::Config(format!("server error: {e}")))?;
+                }
+                ListenTarget::Unix(path) => {
+                    remove_stale_socket(&path)
+                        .await
+                        .map_err(CosignerError::Config)?;
+                    let listener = tokio::net::UnixListener::bind(&path)
+                        .map_err(|e| CosignerError::Config(format!("bind unix '{}': {e}", path)))?;
+                    tracing::info!(path = %path, "akamu-cosigner listening on Unix socket");
+                    let router = router.layer(axum::middleware::from_fn(uds_marker_layer));
+                    axum::serve(listener, router)
+                        .with_graceful_shutdown(async {
+                            let mut sigterm = tokio::signal::unix::signal(
+                                tokio::signal::unix::SignalKind::terminate(),
+                            )
+                            .expect("failed to install SIGTERM handler");
+                            tokio::select! {
+                                _ = tokio::signal::ctrl_c() => {},
+                                _ = sigterm.recv() => {},
+                            }
+                            tracing::info!("received shutdown signal; stopping akamu-cosigner");
+                        })
+                        .await
+                        .map_err(|e| CosignerError::Config(format!("server error: {e}")))?;
+                    // Best-effort cleanup of the socket file after graceful shutdown.
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
     }
 
     Ok(())
@@ -229,7 +322,7 @@ fn parse_cosigner_id(cert_der: &[u8]) -> Result<(Vec<u8>, Vec<u8>), CosignerErro
 
 async fn start_tls_server(
     router: axum::Router,
-    listen_addr: &str,
+    listen_addr: std::net::SocketAddr,
     tls_cfg: &akamu_cosigner::config::TlsConfig,
 ) -> Result<(), CosignerError> {
     use std::sync::Arc;
@@ -255,43 +348,66 @@ async fn start_tls_server(
 
     tracing::info!("akamu-cosigner listening on {} with TLS", listen_addr);
 
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("failed to install SIGTERM handler");
+
     loop {
-        let (stream, _) = match listener.accept().await {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!("accept error (continuing): {e}");
-                continue;
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("received shutdown signal; stopping akamu-cosigner TLS server");
+                break;
             }
-        };
-        let acceptor = acceptor.clone();
-        let router = router.clone();
-        tokio::spawn(async move {
-            let tls = match acceptor.accept(stream).await {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!("TLS handshake failed: {e}");
-                    return;
-                }
-            };
-            let io = hyper_util::rt::TokioIo::new(tls);
-            use tower::ServiceExt as _;
-            let svc =
-                hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
-                    let router = router.clone();
-                    async move {
-                        let req = req.map(axum::body::Body::new);
-                        Ok::<_, std::convert::Infallible>(router.oneshot(req).await.unwrap())
+            _ = sigterm.recv() => {
+                tracing::info!("received SIGTERM; stopping akamu-cosigner TLS server");
+                break;
+            }
+            result = listener.accept() => {
+                let (stream, _) = match result {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!("accept error (continuing): {e}");
+                        continue;
                     }
-                });
-            if let Err(e) =
-                hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
+                };
+                let acceptor = acceptor.clone();
+                let router = router.clone();
+                tokio::spawn(async move {
+                    let tls = match acceptor.accept(stream).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::warn!("TLS handshake failed: {e}");
+                            return;
+                        }
+                    };
+                    let io = hyper_util::rt::TokioIo::new(tls);
+                    use tower::ServiceExt as _;
+                    let svc = hyper::service::service_fn(
+                        move |req: hyper::Request<hyper::body::Incoming>| {
+                            let router = router.clone();
+                            async move {
+                                let req = req.map(axum::body::Body::new);
+                                Ok::<_, std::convert::Infallible>(
+                                    router
+                                        .oneshot(req)
+                                        .await
+                                        .expect("axum Router is infallible"),
+                                )
+                            }
+                        },
+                    );
+                    if let Err(e) = hyper_util::server::conn::auto::Builder::new(
+                        hyper_util::rt::TokioExecutor::new(),
+                    )
                     .serve_connection(io, svc)
                     .await
-            {
-                tracing::warn!("TLS connection error: {e}");
+                    {
+                        tracing::warn!("TLS connection error: {e}");
+                    }
+                });
             }
-        });
+        }
     }
+    Ok(())
 }
 
 fn extract_hostname(url: &str) -> String {
