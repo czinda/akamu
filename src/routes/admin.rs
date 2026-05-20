@@ -62,6 +62,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
 
+use crate::crdt_hooks;
 use crate::require_role;
 use serde_json::json;
 
@@ -300,6 +301,15 @@ pub async fn post_operators(
                         ),
                 )
                 .await;
+            crdt_hooks::on_operator_upsert(
+                &state,
+                op_id,
+                &payload.name,
+                &payload.role,
+                &payload.ca_id,
+                unix_now(),
+            )
+            .await;
             (
                 StatusCode::CREATED,
                 Json(json!({"id": op_id, "name": payload.name, "created_at": now})),
@@ -369,6 +379,9 @@ pub async fn patch_operator(
                         .with_detail(json!({"action": action, "operator_id": id}).to_string()),
                 )
                 .await;
+            if !payload.active {
+                crdt_hooks::on_operator_tombstone(&state, id, unix_now()).await;
+            }
             StatusCode::NO_CONTENT.into_response()
         }
         Err(e) => {
@@ -925,6 +938,15 @@ pub async fn post_eab(
                         .with_detail("{\"action\":\"eab.create\"}"),
                 )
                 .await;
+            crdt_hooks::on_eab_key_set(
+                &state,
+                &payload.kid,
+                &payload.hmac_key_b64u,
+                now,
+                None,
+                grants_str,
+            )
+            .await;
             (
                 StatusCode::CREATED,
                 Json(json!({"kid": payload.kid, "created": now, "alg": payload.alg})),
@@ -1105,6 +1127,7 @@ pub async fn post_revoke(
                         ),
                 )
                 .await;
+            crdt_hooks::on_cert_tombstone(&state, &payload.cert_id, now).await;
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => (
@@ -2211,6 +2234,7 @@ pub async fn post_account_deactivate(
                         .with_detail("{\"action\":\"account.deactivate\"}"),
                 )
                 .await;
+            crdt_hooks::on_account_tombstone(&state, &id, now).await;
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => (StatusCode::NOT_FOUND, "account not found").into_response(),
@@ -3044,6 +3068,15 @@ pub async fn post_delegations(
                         ),
                 )
                 .await;
+            crdt_hooks::on_delegation_upsert(
+                &state,
+                &id,
+                &payload.account_id,
+                &payload.csr_template.to_string(),
+                now,
+                "",
+            )
+            .await;
             let location = format!("/admin/delegations/{id}");
             let mut resp = (
                 StatusCode::CREATED,
@@ -3294,6 +3327,7 @@ pub async fn delete_delegation(
                         .with_detail("{\"action\":\"delegation.delete\"}"),
                 )
                 .await;
+            crdt_hooks::on_delegation_tombstone(&state, &id, unix_now()).await;
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => (

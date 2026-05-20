@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use crate::crdt_hooks;
 use crate::db;
 use crate::error::AcmeError;
 use crate::state::AppState;
@@ -84,6 +85,21 @@ pub async fn respond_challenge(
         (authz, challenge)
     };
     // challenge.status was "pending" — the DB has now flipped it to "processing".
+    crdt_hooks::on_challenge_set(
+        &state,
+        crdt_hooks::ChallengeSetParams {
+            id: &challenge.id,
+            authz_id: &authz_id,
+            challenge_type: &chall_type,
+            status: "processing",
+            token: &challenge.token,
+            validated: challenge.validated,
+            error: challenge.error.clone(),
+            created: challenge.created,
+            updated: now,
+        },
+    )
+    .await;
 
     // Extract identifier.
     let identifier: serde_json::Value = serde_json::from_str(&authz.identifier).map_err(|e| {

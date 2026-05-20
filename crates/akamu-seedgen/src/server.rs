@@ -19,6 +19,7 @@ use akamu::{
     routes,
     state::{AppState, CaState, MtcState, NonceBucket},
 };
+use akamu_crdt::AkaCrdt;
 
 use crate::spec::CaSpec;
 
@@ -225,6 +226,8 @@ pub async fn start(
         eab_session_nonces: None,
         admin_gss_cred: None,
         startup_time: Instant::now(),
+        crdt: Arc::new(tokio::sync::RwLock::new(AkaCrdt::default())),
+        node_id: Arc::new("seedgen".to_string()),
     });
 
     let router = routes::build_router(Arc::clone(&state), None);

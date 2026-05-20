@@ -14,6 +14,7 @@ use synta::{Decoder, Encoding};
 use synta_certificate::{der_to_pem, format_dn, Certificate};
 
 use crate::ca;
+use crate::crdt_hooks;
 use crate::db;
 use crate::db::schema::CertificateRow;
 use crate::error::AcmeError;
@@ -407,6 +408,42 @@ pub async fn finalize_order(
     updated_order.status = "valid".to_string();
     updated_order.certificate_id = Some(issued.id.clone());
     updated_order.updated = now;
+
+    crdt_hooks::on_cert_upsert(
+        &state,
+        crdt_hooks::CertUpsertParams {
+            id: &cert_id,
+            order_id: &id,
+            account_id: &account_id,
+            serial_number: &issued.serial_hex,
+            status: "valid",
+            not_before: issued.not_before,
+            not_after: issued.not_after,
+            revoked_at: None,
+            revocation_reason: None,
+            created: now,
+            ca_id: &updated_order.ca_id,
+        },
+    )
+    .await;
+    crdt_hooks::on_order_upsert(
+        &state,
+        crdt_hooks::OrderUpsertParams {
+            id: &id,
+            account_id: &updated_order.account_id,
+            status: "valid",
+            expires: updated_order.expires,
+            identifiers: &updated_order.identifiers,
+            not_before: updated_order.not_before,
+            not_after: updated_order.not_after,
+            error: updated_order.error.clone(),
+            certificate_id: Some(cert_id.clone()),
+            created: updated_order.created,
+            updated: now,
+            ca_id: &updated_order.ca_id,
+        },
+    )
+    .await;
 
     let order_pfx = acme_prefix(
         &state.config.base_url,

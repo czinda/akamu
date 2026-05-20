@@ -107,6 +107,7 @@ impl<K: Eq + std::hash::Hash + Clone, V: Clone> LwwMap<K, V> {
 
     /// Insert a register directly from a DB row, preserving the stored `local_gen`.
     /// Used only by `db::load_from_db`; does not advance `CRDT_GENERATION`.
+    #[cfg(feature = "db")]
     pub(crate) fn load_entry(&mut self, key: K, register: LwwRegister<V>) {
         self.entries.insert(key, register);
     }

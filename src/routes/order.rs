@@ -9,6 +9,7 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::crdt_hooks;
 use crate::db;
 use crate::db::schema::{AuthorizationRow, OrderRow};
 use crate::error::AcmeError;
@@ -581,6 +582,60 @@ pub async fn new_order(
                 )),
         )
         .await;
+
+    crdt_hooks::on_order_upsert(
+        &state,
+        crdt_hooks::OrderUpsertParams {
+            id: &order_id,
+            account_id: &account_id,
+            status: initial_status,
+            expires: Some(expiry),
+            identifiers: &identifiers_json,
+            not_before: order_not_before,
+            not_after: order_not_after,
+            error: None,
+            certificate_id: None,
+            created: now,
+            updated: now,
+            ca_id: &ca_id.0,
+        },
+    )
+    .await;
+    for plan in &authz_plans {
+        crdt_hooks::on_authz_upsert(
+            &state,
+            crdt_hooks::AuthzUpsertParams {
+                id: &plan.authz_id,
+                order_id: &order_id,
+                account_id: &account_id,
+                status: "pending",
+                identifier: &plan.identifier_json,
+                expires: Some(authz_expiry),
+                wildcard: plan.wildcard,
+                created: now,
+                updated: now,
+                ca_id: &ca_id.0,
+            },
+        )
+        .await;
+        for (challenge_id, challenge_type) in &plan.challenges {
+            crdt_hooks::on_challenge_set(
+                &state,
+                crdt_hooks::ChallengeSetParams {
+                    id: challenge_id,
+                    authz_id: &plan.authz_id,
+                    challenge_type,
+                    status: "pending",
+                    token: &plan.token,
+                    validated: None,
+                    error: None,
+                    created: now,
+                    updated: now,
+                },
+            )
+            .await;
+        }
+    }
 
     let mut resp = json_response(
         &state,

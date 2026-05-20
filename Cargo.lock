@@ -16,6 +16,7 @@ name = "akamu"
 version = "0.1.0"
 dependencies = [
  "akamu-client",
+ "akamu-crdt",
  "akamu-gssapi",
  "akamu-jose",
  "akamu-ldap",
@@ -177,6 +178,7 @@ version = "0.1.0"
 dependencies = [
  "akamu",
  "akamu-client",
+ "akamu-crdt",
  "akamu-jose",
  "axum",
  "base64",

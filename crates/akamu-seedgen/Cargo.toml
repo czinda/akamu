@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 akamu = { path = "../..", features = ["backend-sqlite"] }
 akamu-client = { path = "../akamu-client" }
+akamu-crdt = { path = "../akamu-crdt" }
 akamu-jose = { path = "../akamu-jose" }
 
 axum = { version = "0.8", features = ["http1", "macros"] }

@@ -33,6 +33,18 @@ async fn main() {
     }
 }
 
+/// Derive a stable node identity string from a signing public key's SPKI DER.
+///
+/// Uses the RFC 7093 Method 1 key identifier (leftmost 20 bytes of SHA-256
+/// of the BIT STRING value) then base64url-encodes the result.  This gives a
+/// stable 28-character string that changes only when the node re-generates its
+/// signing key.
+fn derive_node_id(spki_der: &[u8]) -> Option<String> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    let aki = ca::init::compute_aki_from_spki(spki_der)?;
+    Some(URL_SAFE_NO_PAD.encode(&aki))
+}
+
 /// Load or auto-generate the dedicated MTC signing key.
 ///
 /// Reuses `generate_backend_key` and `BackendPrivateKey::from_pem` from the CA
@@ -141,6 +153,75 @@ async fn run() -> Result<(), String> {
     // Sweep DB nonces older than 24 h at startup (best-effort; handles any
     // nonces written by a previous process that used the DB-backed store).
     let _ = db::nonces::sweep_expired(&db, 86400).await;
+
+    // ── CRDT node identity bootstrap ──────────────────────────────────────────
+    // Tell the CRDT DB layer which SQL placeholder style to use.
+    akamu_crdt::db::init_db_kind(matches!(db_kind, db::DbKind::Postgres));
+
+    // Load or generate the node's gossip signing key.  The private key is
+    // stored as PEM bytes in the `node_keys` table; we derive a stable
+    // `node_id` from the SPKI DER of the public key so the identity survives
+    // restarts without storing a separate UUID.
+    let node_id: String = {
+        const LOCAL_KEY: &str = "local";
+        let maybe_row = akamu_crdt::db::load_node_keys(&db, LOCAL_KEY)
+            .await
+            .map_err(|e| format!("load node keys: {e}"))?;
+
+        if let Some(row) = maybe_row {
+            derive_node_id(&row.signing_public_key_der)
+                .ok_or_else(|| "could not derive node_id from stored signing key".to_string())?
+        } else {
+            tracing::info!("generating new node gossip signing key (ec:P-256)");
+            let sign_key = ca::init::generate_backend_key("ec:P-256")
+                .map_err(|e| format!("node signing key gen: {e}"))?;
+            let sign_pub = sign_key
+                .public_key()
+                .map_err(|e| format!("node signing pub key: {e}"))?;
+            let sign_pub_der = sign_pub.spki_der().to_vec();
+            let sign_priv_pem = sign_key
+                .to_pem(None)
+                .map_err(|e| format!("node signing key to PEM: {e}"))?;
+
+            let nid = derive_node_id(&sign_pub_der)
+                .ok_or_else(|| "could not derive node_id from new signing key".to_string())?;
+            tracing::info!(node_id = %nid, "new node identity assigned");
+
+            // Use placeholder bytes for the KEM key fields (Phase 4 will
+            // generate a real ML-KEM-768 key pair for gossip encryption).
+            let mut kem_placeholder = vec![0u8; 32];
+            getrandom::getrandom(&mut kem_placeholder)
+                .map_err(|e| format!("getrandom for KEM placeholder: {e}"))?;
+
+            akamu_crdt::db::save_node_keys(
+                &db,
+                &akamu_crdt::db::NodeKeysRow {
+                    node_id: LOCAL_KEY.to_string(),
+                    kem_private_key_der: kem_placeholder.clone(),
+                    kem_public_key_der: kem_placeholder,
+                    signing_private_key_der: sign_priv_pem,
+                    signing_public_key_der: sign_pub_der,
+                    signing_certificate_der: vec![],
+                    created_at: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64,
+                },
+            )
+            .await
+            .map_err(|e| format!("save node keys: {e}"))?;
+            nid
+        }
+    };
+
+    // Load CRDT state from the local DB, then insert/refresh this node's own
+    // entry so delta gossip can identify which entries originated here.
+    let crdt_initial = akamu_crdt::db::load_from_db(&db)
+        .await
+        .map_err(|e| format!("CRDT load from DB: {e}"))?;
+    let crdt = std::sync::Arc::new(tokio::sync::RwLock::new(crdt_initial));
+    let node_id = std::sync::Arc::new(node_id);
+    tracing::info!(node_id = %node_id, "CRDT state loaded from DB");
 
     // Seed EAB keys from config into the DB (INSERT OR IGNORE — never overwrites
     // keys that were provisioned or consumed by the runtime admin endpoint).
@@ -479,6 +560,8 @@ async fn run() -> Result<(), String> {
             .as_ref()
             .map(|_| Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()))),
         startup_time: std::time::Instant::now(),
+        crdt,
+        node_id,
     });
 
     // ── Seed audit row counter ────────────────────────────────────────────────

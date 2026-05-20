@@ -45,16 +45,6 @@ impl<T: Eq + std::hash::Hash + Clone> GrowSet<T> {
         self.entries.is_empty()
     }
 
-    /// Set `local_gen` directly (used by `db::load_from_db` to restore persisted gen).
-    pub(crate) fn set_local_gen(&mut self, gen: u64) {
-        self.local_gen = gen;
-    }
-
-    /// Insert a value directly from a DB row without advancing `CRDT_GENERATION`.
-    pub(crate) fn load_entry(&mut self, value: T) {
-        self.entries.insert(value);
-    }
-
     /// Returns `Some(clone of self)` if written after `gen`, else `None`.
     pub fn delta_since(&self, gen: u64) -> Option<Self> {
         if self.local_gen > gen {

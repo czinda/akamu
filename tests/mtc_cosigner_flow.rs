@@ -494,6 +494,8 @@ async fn build_akamu_state(
         eab_session_nonces: None,
         admin_gss_cred: None,
         startup_time: std::time::Instant::now(),
+        crdt: Arc::new(tokio::sync::RwLock::new(akamu_crdt::AkaCrdt::default())),
+        node_id: Arc::new("test".to_string()),
         gss_cred: None,
         eab_master_secret: None,
     })

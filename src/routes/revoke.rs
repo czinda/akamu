@@ -10,6 +10,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde::Deserialize;
 
+use crate::crdt_hooks;
 use crate::db;
 use crate::error::AcmeError;
 use crate::state::AppState;
@@ -103,6 +104,7 @@ pub async fn revoke_cert(
                 )),
         )
         .await;
+    crdt_hooks::on_cert_tombstone(&state, &cert.id, now).await;
 
     // Invalidate the CRL cache for the revoked certificate's CA.
     state.invalidate_crl_cache(&cert.ca_id);

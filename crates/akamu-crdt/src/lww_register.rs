@@ -31,6 +31,7 @@ impl<T> Default for LwwRegister<T> {
 impl<T: Clone> LwwRegister<T> {
     /// Construct directly from a DB row, preserving the stored `local_gen`.
     /// Used only by `db::load_from_db`; does not advance `CRDT_GENERATION`.
+    #[cfg(feature = "db")]
     pub(crate) fn load(
         value: Option<T>,
         timestamp: i64,
@@ -87,6 +88,7 @@ impl<T: Clone> LwwRegister<T> {
         self.value.is_none() && self.timestamp > 0
     }
 
+    #[cfg(feature = "db")]
     pub(crate) const fn local_gen(&self) -> u64 {
         self.local_gen
     }

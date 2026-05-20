@@ -7,6 +7,7 @@ pub mod admin;
 pub mod audit;
 pub mod ca;
 pub mod config;
+pub mod crdt_hooks;
 pub mod db;
 pub mod delegation_upstream;
 pub mod dns;

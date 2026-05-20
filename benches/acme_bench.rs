@@ -734,6 +734,7 @@ async fn start_server(args: &Args) -> BenchServer {
         admin: None,
         email_challenge: None,
         delegation_upstream: None,
+        gossip: None,
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.cas[0]).unwrap();
@@ -830,6 +831,12 @@ async fn start_server(args: &Args) -> BenchServer {
         admin_auth_limiter: None,
         admin_gss_cred: None,
         startup_time: std::time::Instant::now(),
+        crdt: Arc::new(tokio::sync::RwLock::new(akamu_crdt::AkaCrdt::default())),
+        node_id: Arc::new(String::new()),
+        node_kem_priv: Arc::new(vec![]),
+        node_gossip_signing_priv: Arc::new(vec![]),
+        node_gossip_signing_cert: Arc::new(vec![]),
+        gossip_client: Arc::new(reqwest::Client::new()),
     });
 
     let router = routes::build_router(state, None);

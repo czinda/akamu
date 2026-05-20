@@ -103,6 +103,9 @@ libc = "0.2"
 # JWK/JWS primitives (extracted from server; no axum/rusqlite dependency)
 akamu-jose = { path = "crates/akamu-jose" }
 
+# CRDT primitives for cluster state replication
+akamu-crdt = { path = "crates/akamu-crdt", features = ["db"] }
+
 # ACME client library (used by the IdO→CA upstream delegation flow, Step 13)
 akamu-client = { path = "crates/akamu-client" }
 

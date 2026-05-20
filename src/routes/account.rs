@@ -10,6 +10,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::crdt_hooks;
 use crate::db;
 use crate::db::schema::AccountRow;
 use crate::error::AcmeError;
@@ -191,6 +192,11 @@ pub async fn new_account(
     // Profile grants inherited from the EAB key (None when no EAB was used).
     let eab_profile_grants = verified_eab.as_ref().and_then(|(_, g)| g.clone());
 
+    // Capture copies before moves into AccountRow below.
+    let spki_for_crdt = ctx.spki_der.clone();
+    let tp_for_crdt = thumbprint.clone();
+    let grants_for_crdt = eab_profile_grants.clone();
+
     // Insert the new account — atomically consume the EAB key if one was verified.
     // Both paths use a transaction so the insert is atomic with any EAB mark.
     {
@@ -214,6 +220,21 @@ pub async fn new_account(
             db::eab::mark_used(&mut *tx, &eab_kid, now).await?;
         }
         tx.commit().await.map_err(AcmeError::from)?;
+        crdt_hooks::on_account_upsert(
+            &state,
+            crdt_hooks::AccountUpsertParams {
+                id: &id,
+                status: "valid",
+                contact: contact_json.clone(),
+                public_key_der: spki_for_crdt,
+                jwk_thumbprint: tp_for_crdt,
+                created: now,
+                updated: now,
+                profile_grants: grants_for_crdt,
+                ca_id: "",
+            },
+        )
+        .await;
         state
             .record_audit(
                 crate::audit::AuditEvent::success(crate::audit::AuditEventType::AccountCreate)
@@ -323,6 +344,7 @@ pub async fn update_account(
                     .with_subject(&id),
             )
             .await;
+        crdt_hooks::on_account_tombstone(&state, &id, unix_now()).await;
         let mut deactivated = account.clone();
         deactivated.status = "deactivated".into();
         let contacts = parse_contacts(&deactivated.contact);
@@ -351,6 +373,21 @@ pub async fn update_account(
     let updated = db::accounts::get_by_id(&state.db, &id)
         .await?
         .ok_or(AcmeError::AccountDoesNotExist)?;
+    crdt_hooks::on_account_upsert(
+        &state,
+        crdt_hooks::AccountUpsertParams {
+            id: &updated.id,
+            status: &updated.status,
+            contact: updated.contact.clone(),
+            public_key_der: updated.public_key.clone(),
+            jwk_thumbprint: updated.jwk_thumbprint.clone(),
+            created: updated.created,
+            updated: updated.updated,
+            profile_grants: updated.profile_grants.clone(),
+            ca_id: &updated.ca_id,
+        },
+    )
+    .await;
     let contacts = parse_contacts(&updated.contact);
     json_response(
         &state,

@@ -905,6 +905,8 @@ mod tests {
             admin_auth_limiter: None,
             eab_session_nonces: None,
             startup_time: std::time::Instant::now(),
+            crdt: Arc::new(tokio::sync::RwLock::new(akamu_crdt::AkaCrdt::default())),
+            node_id: Arc::new("test".to_string()),
         });
 
         (

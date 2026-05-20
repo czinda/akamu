@@ -211,6 +211,14 @@ pub struct AppState {
     /// Time the server process started.  Used for uptime reporting in
     /// `GET /admin/stats` and for session-expiry calculations.
     pub startup_time: Instant,
+    /// In-memory CRDT replica.  Authoritative for cluster state; the local DB
+    /// is a persistence cache.  Guarded by a tokio RwLock so read-heavy
+    /// handlers can hold read locks concurrently while gossip merges write.
+    pub crdt: Arc<tokio::sync::RwLock<akamu_crdt::AkaCrdt>>,
+    /// Stable node identity derived from the node's signing public key
+    /// (base64url-nopad of the first 16 bytes of SHA-256(SPKI-DER)).
+    /// Used as the `node_id` in all CRDT writes on this node.
+    pub node_id: Arc<String>,
 }
 
 impl AppState {
@@ -260,6 +268,11 @@ impl AppState {
         ev2: crate::audit::AuditEvent,
     ) {
         crate::audit::record_or_log_pair(&self.db, &self.audit, &self.audit_policy, ev1, ev2).await;
+    }
+
+    /// Return a point-in-time snapshot of the CRDT (cheap clone under read lock).
+    pub async fn crdt_snapshot(&self) -> akamu_crdt::AkaCrdt {
+        self.crdt.read().await.clone()
     }
 }
 

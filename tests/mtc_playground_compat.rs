@@ -198,6 +198,8 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
         admin_auth_limiter: None,
         eab_session_nonces: None,
         startup_time: std::time::Instant::now(),
+        crdt: Arc::new(tokio::sync::RwLock::new(akamu_crdt::AkaCrdt::default())),
+        node_id: Arc::new("test".to_string()),
         gss_cred: None,
         admin_gss_cred: None,
         eab_master_secret: None,

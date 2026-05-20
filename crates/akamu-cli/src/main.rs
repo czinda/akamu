@@ -1353,7 +1353,7 @@ async fn cmd_ca_list(args: CaListArgs) -> Result<(), String> {
         .await
         .map_err(|e| format!("could not fetch directory at {dir_url}: {e}"))?;
 
-    println!("{:<20} {:<8} {}", "ID", "DEFAULT", "DIRECTORY");
+    println!("{:<20} {:<8} DIRECTORY", "ID", "DEFAULT");
     println!("{:<20} {:<8} {}", "default", "yes", dir_url);
     println!();
     println!("Use 'akamuctl ca list' for a full CA list when multiple CAs are configured.");
