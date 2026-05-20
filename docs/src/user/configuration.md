@@ -67,11 +67,12 @@ allow_certificate_get       = false
 keytab_file  = "/etc/akamu/http.keytab"
 service_name = "HTTP"
 
+[tls.client_auth]
+ca_certs = ["/etc/akamu/operator-ca.pem"]
+required = false
+
 [admin]
-listen_addr = "127.0.0.1:9443"
-cert_file   = "/etc/akamu/admin-tls.pem"
-key_file    = "/etc/akamu/admin-tls-key.pem"
-ca_certs    = ["/etc/akamu/operator-ca.pem"]
+session_ttl_secs = 3600
 
 [email_challenge]
 enabled             = true
@@ -1531,21 +1532,23 @@ See [Certificate Profiles](profiles.md) for detailed descriptions with examples.
 
 ## `[admin]`
 
-The `[admin]` section enables the server-side Admin API on a dedicated listener with mutual TLS and/or GSSAPI/Kerberos authentication. When this section is absent, all admin endpoints return 404 and are effectively invisible. This is the default; no admin access is possible without explicit configuration.
+The `[admin]` section enables the server-side Admin API. Admin endpoints (`/admin/*`) are served on the same listener as the main ACME API — there is no separate admin listener. When this section is absent, all admin endpoints return 404. This is the default; no admin access is possible without explicit configuration.
 
-Operator identity is verified by one or both of:
+Operator authentication uses one or both of:
 
-- **mTLS client certificates** — the connecting client presents a certificate signed by one of the CAs listed in `ca_certs`.
-- **GSSAPI/Kerberos** — clients authenticate via a Kerberos session established through `[admin.gssapi]`.
+- **mTLS client certificates** — configure `[tls.client_auth]` with `required = false` and the operator CA(s); the connecting client presents a certificate signed by one of those CAs.
+- **GSSAPI/Kerberos** — configure `[admin.gssapi]`; clients authenticate via a Kerberos service ticket without requiring a client certificate.
 
-At least one of `ca_certs` (non-empty) or `[admin.gssapi]` must be configured; the server exits at startup if neither is set.
+At least one of `[tls.client_auth]` or `[admin.gssapi]` must be configured; the server exits at startup if neither is set.
 
 ```toml
+# mTLS client authentication — operator CA(s) accepted for /admin/* requests.
+[tls.client_auth]
+ca_certs = ["/etc/akamu/operator-ca.pem"]
+required = false   # allow GSSAPI-only clients that carry no cert
+
 [admin]
-listen_addr = "127.0.0.1:9443"
-cert_file   = "/etc/akamu/admin-tls.pem"       # auto-generated on first run if absent
-key_file    = "/etc/akamu/admin-tls-key.pem"   # auto-generated on first run if absent
-ca_certs    = ["/etc/akamu/ca.pem"]
+session_ttl_secs = 3600
 
 # Bootstrap operator (mTLS) — generated and registered on first run when operators table is empty.
 # bootstrap_operator_cert_file = "/etc/akamu/admin-bootstrap.pem"
@@ -1561,45 +1564,11 @@ keytab_file  = "/etc/akamu/http.keytab"
 service_name = "HTTP"
 ```
 
-### `listen_addr`
-
-**Required within `[admin]`.** The TCP address and port the dedicated admin listener binds to. Keep this separate from the main ACME listener and scope it to localhost or an internal management network.
-
-```toml
-listen_addr = "127.0.0.1:9443"
-```
-
-### `cert_file`
-
-**Required within `[admin]`.** PEM file containing the admin listener's TLS server certificate chain (leaf certificate first). When both `cert_file` and `key_file` are absent on disk, Akāmu generates a server certificate signed by the Akāmu CA on first run, using `server_name` and `bootstrap_key_type`.
-
-```toml
-cert_file = "/etc/akamu/admin-tls.pem"
-```
-
-### `key_file`
-
-**Required within `[admin]`.** PEM file containing the admin listener's TLS private key (PKCS#8 or SEC1, unencrypted). Auto-generated alongside `cert_file` when both are absent.
-
-```toml
-key_file = "/etc/akamu/admin-tls-key.pem"
-```
-
-### `server_name`
-
-**Optional. Default: `"localhost"`.**
-
-Hostname placed in the CN and SAN of the auto-generated admin server certificate. Only used when `cert_file`/`key_file` are absent on first run.
-
-```toml
-server_name = "admin.akamu.internal"
-```
-
 ### `bootstrap_key_type`
 
 **Optional. Default: `"ec:P-256"`.**
 
-Key algorithm used when auto-generating the admin server certificate and the bootstrap operator certificate. Same syntax as `ca.key_type`.
+Key algorithm used when auto-generating the bootstrap operator certificate. Same syntax as `ca.key_type`.
 
 ```toml
 bootstrap_key_type = "ec:P-256"
@@ -1645,14 +1614,14 @@ Kerberos principal for the GSSAPI bootstrap Administrator operator (e.g. `"admin
 bootstrap_operator_gssapi_principal = "admin@EXAMPLE.COM"
 ```
 
-### `ca_certs`
+### `auth_rate_limit`
 
-**Optional. Default: `[]`.**
+**Optional. Default: `20`.**
 
-List of PEM CA certificate files whose issued client certificates are accepted as operator credentials. When set, clients connecting to the admin listener must present a client certificate signed by one of these CAs. May be empty when `[admin.gssapi]` is the sole authentication method, but at least one of `ca_certs` or `[admin.gssapi]` must be configured.
+Maximum credential presentations (Bearer session token, mTLS client certificate, or GSSAPI token) accepted from a single source IP in a rolling 5-minute window before that source receives `429 Too Many Requests`. This limits audit-log floods that could otherwise trigger the `audit_alarm_action` or, when `audit_overflow = "halt"`, refuse all new requests.
 
 ```toml
-ca_certs = ["/etc/akamu/operator-ca.pem"]
+auth_rate_limit = 20
 ```
 
 ### `session_ttl_secs`
