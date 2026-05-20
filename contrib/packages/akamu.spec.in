@@ -75,14 +75,18 @@ Source0:        akamu-%{version}.tar.gz
 # Contains all Cargo dependencies, including the openssl pqc-prs fork and
 # several crates not yet available in Fedora.
 Source1:        akamu-%{version}-vendor.tar.gz
-# Systemd service units and sysusers/tmpfiles configs (from contrib/systemd/ in
-# the source tree; copied into _sourcedir by the 'make srpm' target).
+# Systemd service and socket units, sysusers/tmpfiles configs (from
+# contrib/systemd/ in the source tree; copied into _sourcedir by 'make srpm').
 Source2:        akamu.service
 Source4:        akamu-cosigner.service
 Source5:        akamu-sysusers.conf
 Source6:        akamu-cosigner-sysusers.conf
 Source7:        akamu-tmpfiles.conf
 Source8:        akamu-cosigner-tmpfiles.conf
+# systemd socket activation units — allow the socket to be pre-created by
+# systemd before the daemon starts (socket activation).
+Source11:       akamu.socket
+Source12:       akamu-cosigner.socket
 # Example configuration file; installed as %%{_sysconfdir}/akamu/config.toml.example
 Source3:        config.toml.example
 # Example akamuctl configuration file; installed as a doc file.
@@ -150,6 +154,7 @@ compressed certificate delivery.
 %license cargo-vendor.txt
 %{_bindir}/akamu
 %{_unitdir}/akamu.service
+%{_unitdir}/akamu.socket
 %{_sysusersdir}/akamu.conf
 %{_tmpfilesdir}/akamu.conf
 %dir %{_sysconfdir}/akamu
@@ -179,6 +184,7 @@ identity certificate at first run.
 %license cargo-vendor.txt
 %{_bindir}/akamu-cosigner
 %{_unitdir}/akamu-cosigner.service
+%{_unitdir}/akamu-cosigner.socket
 %{_sysusersdir}/akamu-cosigner.conf
 %{_tmpfilesdir}/akamu-cosigner.conf
 %dir %{_sysconfdir}/akamu-cosigner
@@ -348,9 +354,11 @@ install -Dpm 0755 target/rpm/akamu-cli       %{buildroot}%{_bindir}/akamu-cli
 install -Dpm 0755 target/rpm/akamu-cosigner  %{buildroot}%{_bindir}/akamu-cosigner
 install -Dpm 0755 target/rpm/akamuctl        %{buildroot}%{_bindir}/akamuctl
 
-# Systemd service units
-install -Dpm 0644 %{SOURCE2} %{buildroot}%{_unitdir}/akamu.service
-install -Dpm 0644 %{SOURCE4} %{buildroot}%{_unitdir}/akamu-cosigner.service
+# Systemd service and socket units
+install -Dpm 0644 %{SOURCE2}  %{buildroot}%{_unitdir}/akamu.service
+install -Dpm 0644 %{SOURCE4}  %{buildroot}%{_unitdir}/akamu-cosigner.service
+install -Dpm 0644 %{SOURCE11} %{buildroot}%{_unitdir}/akamu.socket
+install -Dpm 0644 %{SOURCE12} %{buildroot}%{_unitdir}/akamu-cosigner.socket
 
 # sysusers.d — system user/group definitions
 install -Dpm 0644 %{SOURCE5} %{buildroot}%{_sysusersdir}/akamu.conf
@@ -394,28 +402,28 @@ cp -a webui/dist/. %{buildroot}%{_datadir}/akamu/webui/
 %sysusers_create_compat %{SOURCE5}
 
 %post
-%systemd_post akamu.service
+%systemd_post akamu.socket akamu.service
 %tmpfiles_create %{_tmpfilesdir}/akamu.conf
 
 %preun
-%systemd_preun akamu.service
+%systemd_preun akamu.socket akamu.service
 
 %postun
-%systemd_postun_with_restart akamu.service
+%systemd_postun_with_restart akamu.socket akamu.service
 
 
 %pre -n akamu-cosigner
 %sysusers_create_compat %{SOURCE6}
 
 %post -n akamu-cosigner
-%systemd_post akamu-cosigner.service
+%systemd_post akamu-cosigner.socket akamu-cosigner.service
 %tmpfiles_create %{_tmpfilesdir}/akamu-cosigner.conf
 
 %preun -n akamu-cosigner
-%systemd_preun akamu-cosigner.service
+%systemd_preun akamu-cosigner.socket akamu-cosigner.service
 
 %postun -n akamu-cosigner
-%systemd_postun_with_restart akamu-cosigner.service
+%systemd_postun_with_restart akamu-cosigner.socket akamu-cosigner.service
 
 
 %changelog

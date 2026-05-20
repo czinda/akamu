@@ -2,3 +2,8 @@
 d /var/lib/akamu   0750 akamu akamu -
 # Certificate store: auto-generated CA key/cert and TLS server key/cert.
 d /etc/akamu/certs 0750 akamu akamu -
+# Runtime socket directory — created automatically by RuntimeDirectory=akamu in the
+# service unit, but listed here as a fallback for non-socket-activated deployments.
+# Mode 0710 matches RuntimeDirectoryMode= in akamu.service: group can traverse
+# (required to connect to the socket) but non-group users cannot list the directory.
+d /run/akamu       0710 akamu akamu -

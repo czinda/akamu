@@ -1,7 +1,9 @@
 [Unit]
 Description=akamu ACME certificate authority server
-Documentation=https://codeberg.org/abbra/akamu
-After=network-online.target
+Documentation=https://akamu.dev/doc/
+# After= without Requires= is intentional: the service starts even when the
+# socket unit is absent (e.g. TCP-only or env-var-based deployments).
+After=network-online.target akamu.socket
 Wants=network-online.target
 
 [Service]
@@ -18,6 +20,11 @@ WorkingDirectory=/var/lib/akamu
 StateDirectory=akamu
 LogsDirectory=akamu
 ConfigurationDirectory=akamu
+# Creates and owns /run/akamu/ for the Unix domain socket.
+# Mode 0710: group members can traverse (required to connect to the socket)
+# but non-group users cannot list the directory, limiting information leakage.
+RuntimeDirectory=akamu
+RuntimeDirectoryMode=0710
 
 # Allow writes to /etc/akamu for first-run key/cert generation under ProtectSystem=strict
 ReadWritePaths=/etc/akamu
@@ -25,7 +32,12 @@ ReadWritePaths=/etc/akamu
 # Environment
 Environment=RUST_LOG=info
 
-# Restrict capabilities — the server may listen on privileged ports
+# Set file creation mask so the Unix socket is created with mode 0660
+# (group-readable for the reverse proxy process).
+UMask=0117
+
+# Restrict capabilities — only needed when binding privileged TCP ports directly.
+# When using the Unix domain socket (akamu.socket), these can be removed.
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 

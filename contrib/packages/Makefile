@@ -237,6 +237,8 @@ srpm: sources spec
 	@echo "==> Building SRPM ($(NAME)-$(VERSION)-$(RELEASE))"
 	cp "$(REPOROOT)/contrib/systemd/akamu.service" .
 	cp "$(REPOROOT)/contrib/systemd/akamu-cosigner.service" .
+	cp "$(REPOROOT)/contrib/systemd/akamu.socket" .
+	cp "$(REPOROOT)/contrib/systemd/akamu-cosigner.socket" .
 	cp "$(REPOROOT)/contrib/systemd/akamu-sysusers.conf.in"          akamu-sysusers.conf
 	cp "$(REPOROOT)/contrib/systemd/akamu-cosigner-sysusers.conf.in" akamu-cosigner-sysusers.conf
 	cp "$(REPOROOT)/contrib/systemd/akamu-tmpfiles.conf.in"          akamu-tmpfiles.conf
@@ -248,6 +250,7 @@ srpm: sources spec
 	    "$(SPEC_OUT)"
 	rm -f "$(SPEC_OUT)" \
 	      akamu.service akamu-cosigner.service \
+	      akamu.socket akamu-cosigner.socket \
 	      akamu-sysusers.conf akamu-cosigner-sysusers.conf \
 	      akamu-tmpfiles.conf akamu-cosigner-tmpfiles.conf
 	@echo "==> To skip the webui build: rpmbuild -bs --without webui ..."

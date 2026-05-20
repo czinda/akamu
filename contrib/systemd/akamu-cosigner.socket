@@ -1,0 +1,13 @@
+[Unit]
+Description=akamu cosigner socket
+Documentation=https://akamu.dev/doc/
+
+[Socket]
+ListenStream=/run/akamu/akamu-cosigner.sock
+SocketUser=akamu-cosigner
+SocketGroup=akamu-cosigner
+SocketMode=0660
+Accept=no
+
+[Install]
+WantedBy=sockets.target

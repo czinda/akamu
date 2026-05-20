@@ -1,0 +1,13 @@
+[Unit]
+Description=akamu ACME server socket
+Documentation=https://akamu.dev/doc/
+
+[Socket]
+ListenStream=/run/akamu/akamu.sock
+SocketUser=akamu
+SocketGroup=akamu
+SocketMode=0660
+Accept=no
+
+[Install]
+WantedBy=sockets.target
