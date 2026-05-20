@@ -1,10 +1,10 @@
 # Client Library Internals
 
 This page documents the internal design of `akamu-client` and the `akamu-cli`
-command-line tool.  It covers the `DnsHookSolver`, the `RenewalConfig` type
-contract, the `AccountKey::from_jwk_private` implementation, the certbot
-migration flow, and the multi-CA `--ca` flag that is available on all
-subcommands.
+command-line tool: the `DnsHookSolver`, the `RenewalConfig` type contract,
+`AccountKey::from_jwk_private`, and the certbot migration internals.
+
+For the user-facing command reference, see [akamu-cli — Command Reference](../client/cli.md).
 
 ## Source layout
 
@@ -20,47 +20,6 @@ subcommands.
 | `crates/akamu-client/src/onion.rs` | `build_onion_csr` — DER-encoded CSR for onion-csr-01 challenges (RFC 9799) |
 | `crates/akamu-client/src/types.rs` | `Identifier`, `Order`, `Authorization`, `Challenge`, `RenewalConfig`, `AccountOptions`, `EabOptions`, `StarOrderParams`, `StarOrder`, `RenewalInfo` |
 | `crates/akamu-cli/src/import/certbot.rs` | `discover_accounts`, `discover_renewals`, `jwk_to_account_key`, `map_challenge_type`, `build_renewal_config`, `live_cert_paths` |
-
----
-
-## `akamu-cli` subcommands
-
-`akamu-cli` is the end-user ACME client.  All subcommands that contact an
-ACME server accept `--server <URL>` and `--ca <CA_ID>`.  When `--ca` is
-provided and `--server` does not already end in `/directory`, the directory
-URL is derived as `{server}/acme/{ca}/directory`.
-
-```text
-akamu-cli account register   [--server <URL>] [--ca <CA_ID>] --account-key <FILE> ...
-akamu-cli account deregister [--server <URL>] [--ca <CA_ID>] --account-key <FILE>
-akamu-cli account show       [--server <URL>] [--ca <CA_ID>] --account-key <FILE>
-akamu-cli account update     [--server <URL>] [--ca <CA_ID>] --account-key <FILE> [--contact <URI>...]
-akamu-cli account key-change [--server <URL>] [--ca <CA_ID>] --account-key <FILE> --new-key <FILE>
-akamu-cli issue              [--server <URL>] [--ca <CA_ID>] --domain <DOMAIN> ... --out <FILE>
-akamu-cli renew              [--server <URL>] [--ca <CA_ID>] --domain <DOMAIN> ... --out <FILE> [--cert <FILE>] [--force]
-akamu-cli revoke             [--server <URL>] [--ca <CA_ID>] --account-key <FILE> --cert <FILE>
-akamu-cli import certbot     [--certbot-dir <DIR>] --account-key <FILE> ...
-akamu-cli ca list            [--server <URL>]
-akamu-cli ca show            [--server <URL>] --ca <CA_ID>
-```
-
-### EAB flags (shared by `account register` and `issue`)
-
-| Flag | Description |
-|------|-------------|
-| `--eab-kid <KID>` | EAB key identifier |
-| `--eab-key <KEY>` | EAB HMAC key (base64url, no padding) |
-| `--eab-alg <ALG>` | HMAC algorithm: `HS256` \| `HS384` \| `HS512` (default `HS256`) |
-| `--gssapi-keytab <PATH>` | Kerberos keytab for GSSAPI-authenticated EAB fetch; mutually exclusive with `--eab-kid`/`--eab-key` |
-
-### `ca list` and `ca show`
-
-`akamu-cli ca list` contacts the server's default ACME directory to confirm
-connectivity and prints a one-line entry.  Use `akamuctl ca list` for a full
-multi-CA listing via the admin API.
-
-`akamu-cli ca show --ca <CA_ID>` fetches the per-CA directory at
-`{server}/acme/{CA_ID}/directory` and prints the CA identifier and URL.
 
 ---
 
