@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/akamu-jose", "crates/akamu-client", "crates/akamu-cli", "crates/akamu-cosigner", "crates/akamu-ldap", "crates/akamu-gssapi", "crates/akamuctl", "crates/akamu-seedgen"]
+members = [".", "crates/akamu-jose", "crates/akamu-client", "crates/akamu-cli", "crates/akamu-cosigner", "crates/akamu-ldap", "crates/akamu-gssapi", "crates/akamuctl", "crates/akamu-seedgen", "crates/akamu-crdt"]
 resolver = "2"
 
 [package]
@@ -40,6 +40,7 @@ sqlx = { version = "0.8", default-features = false, features = ["any", "runtime-
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+ciborium = "0.2"
 
 # Configuration
 toml = "0.8"

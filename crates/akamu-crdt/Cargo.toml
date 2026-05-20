@@ -1,0 +1,13 @@
+[package]
+name = "akamu-crdt"
+version = "0.1.0"
+edition = "2021"
+description = "CRDT primitives for Akamu cluster state replication"
+
+[features]
+db = ["dep:sqlx"]
+
+[dependencies]
+serde      = { version = "1", features = ["derive"] }
+ciborium   = "0.2"
+sqlx       = { version = "0.8", default-features = false, features = ["any", "runtime-tokio", "macros", "derive"], optional = true }
