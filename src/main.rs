@@ -9,6 +9,7 @@ use tracing_subscriber::EnvFilter;
 
 use akamu::audit::AuditState;
 use akamu::config::{Config, MtcSigningKeyConfig};
+use akamu::listen::{parse_listen_target, remove_stale_socket, uds_marker_layer, ListenTarget};
 use akamu::state::{AppState, CaState, CrlCache, MtcState, NonceBucket, TlsState};
 use akamu::{ca, db, delegation_upstream, mtc, routes, star};
 use indexmap::IndexMap;
@@ -535,7 +536,49 @@ async fn run() -> Result<(), String> {
         .map(std::path::PathBuf::from);
     let router = routes::build_router(Arc::clone(&state), static_dir.as_deref());
 
-    if config.tls.enabled {
+    // ── Systemd socket activation (try listenfd before config-based bind) ─────
+    let mut listenfd = listenfd::ListenFd::from_env();
+    if listenfd.len() > 1 {
+        tracing::warn!(
+            count = listenfd.len(),
+            "listenfd: more than one socket FD available; only index 0 (Unix) is consumed"
+        );
+    }
+    if let Some(std_listener) = listenfd.take_unix_listener(0).map_err(|e| {
+        format!(
+            "systemd passed an fd that is not a Unix stream socket ({}); \
+             only Unix socket activation is supported — verify ListenStream= \
+             in your .socket unit points to a filesystem path, not a TCP address",
+            e
+        )
+    })? {
+        if config.tls.enabled {
+            return Err("TLS cannot be used with a Unix domain socket listener".to_owned());
+        }
+        std_listener
+            .set_nonblocking(true)
+            .map_err(|e| format!("set_nonblocking: {e}"))?;
+        let listener = tokio::net::UnixListener::from_std(std_listener)
+            .map_err(|e| format!("tokio UnixListener: {e}"))?;
+        tracing::info!(
+            base_url = %config.base_url,
+            "ACME server on systemd-activated Unix socket"
+        );
+        let router = router.layer(axum::middleware::from_fn(uds_marker_layer));
+        axum::serve(listener, router.into_make_service())
+            .with_graceful_shutdown(async {
+                let mut sigterm =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                        .expect("failed to install SIGTERM handler");
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {},
+                    _ = sigterm.recv() => {},
+                }
+                tracing::info!("received shutdown signal; stopping server");
+            })
+            .await
+            .map_err(|e| format!("server error: {e}"))?;
+    } else if config.tls.enabled {
         let mut server_cfg = akamu::tls::build_rustls_server_config(&config.tls)
             .map_err(|e| format!("TLS config: {e}"))?;
         server_cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
@@ -563,17 +606,19 @@ async fn run() -> Result<(), String> {
             }
         };
 
-        let addr: std::net::SocketAddr = config
-            .listen_addr
-            .parse()
-            .map_err(|e| format!("parse listen addr '{}': {e}", config.listen_addr))?;
+        let addr = match parse_listen_target(&config.listen_addr, "AKAMU_LISTEN")? {
+            ListenTarget::Tcp(a) => a,
+            ListenTarget::Unix(_) => {
+                return Err("TLS cannot be used with a Unix domain socket listener".to_owned());
+            }
+        };
         let listener = tokio::net::TcpListener::bind(addr)
             .await
-            .map_err(|e| format!("bind '{}': {e}", config.listen_addr))?;
+            .map_err(|e| format!("bind '{}': {e}", addr))?;
         tracing::info!(
-            "ACME server listening on {} with TLS (base_url={})",
-            config.listen_addr,
-            config.base_url
+            listen_addr = %addr,
+            base_url = %config.base_url,
+            "ACME server listening with TLS"
         );
         let shutdown = tokio::signal::ctrl_c();
         tokio::pin!(shutdown);
@@ -625,7 +670,7 @@ async fn run() -> Result<(), String> {
                                 async move {
                                     let req = req.map(axum::body::Body::new);
                                     Ok::<_, std::convert::Infallible>(
-                                        router.oneshot(req).await.unwrap(),
+                                        router.oneshot(req).await.expect("axum Router is infallible"),
                                     )
                                 }
                             },
@@ -643,24 +688,55 @@ async fn run() -> Result<(), String> {
             }
         }
     } else {
-        let listener = tokio::net::TcpListener::bind(&config.listen_addr)
-            .await
-            .map_err(|e| format!("bind '{}': {e}", config.listen_addr))?;
-        tracing::info!(
-            "ACME server listening on {} (base_url={})",
-            config.listen_addr,
-            config.base_url
-        );
-        axum::serve(
-            listener,
-            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-        )
-        .with_graceful_shutdown(async {
-            tokio::signal::ctrl_c().await.ok();
-            tracing::info!("received shutdown signal; stopping server");
-        })
-        .await
-        .map_err(|e| format!("server error: {e}"))?;
+        match parse_listen_target(&config.listen_addr, "AKAMU_LISTEN")? {
+            ListenTarget::Tcp(addr) => {
+                let listener = tokio::net::TcpListener::bind(addr)
+                    .await
+                    .map_err(|e| format!("bind '{}': {e}", addr))?;
+                tracing::info!(
+                    "ACME server listening on {} (base_url={})",
+                    addr,
+                    config.base_url
+                );
+                axum::serve(
+                    listener,
+                    router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                )
+                .with_graceful_shutdown(async {
+                    tokio::signal::ctrl_c().await.ok();
+                    tracing::info!("received shutdown signal; stopping server");
+                })
+                .await
+                .map_err(|e| format!("server error: {e}"))?;
+            }
+            ListenTarget::Unix(path) => {
+                remove_stale_socket(&path).await?;
+                let listener = tokio::net::UnixListener::bind(&path)
+                    .map_err(|e| format!("bind unix '{}': {e}", path))?;
+                tracing::info!(
+                    path = %path,
+                    base_url = %config.base_url,
+                    "ACME server listening on Unix socket"
+                );
+                let router = router.layer(axum::middleware::from_fn(uds_marker_layer));
+                axum::serve(listener, router.into_make_service())
+                    .with_graceful_shutdown(async {
+                        let mut sigterm = tokio::signal::unix::signal(
+                            tokio::signal::unix::SignalKind::terminate(),
+                        )
+                        .expect("failed to install SIGTERM handler");
+                        tokio::select! {
+                            _ = tokio::signal::ctrl_c() => {},
+                            _ = sigterm.recv() => {},
+                        }
+                        tracing::info!("received shutdown signal; stopping server");
+                    })
+                    .await
+                    .map_err(|e| format!("server error: {e}"))?;
+                // Best-effort cleanup of the socket file after graceful shutdown.
+                let _ = std::fs::remove_file(&path);
+            }
+        }
     }
 
     state

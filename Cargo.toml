@@ -31,6 +31,9 @@ akamu-gssapi = { path = "crates/akamu-gssapi" }
 # IP network / CIDR matching (for trusted_proxies)
 ipnet = { version = "2", features = ["serde"] }
 
+# Systemd socket activation (TCP or Unix)
+listenfd = "1"
+
 # Database (sqlx with runtime-dispatch Any backend; concrete drivers enabled via features)
 sqlx = { version = "0.8", default-features = false, features = ["any", "runtime-tokio", "migrate", "macros", "derive", "tls-native-tls"] }
 

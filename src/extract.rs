@@ -35,6 +35,7 @@ use crate::state::AppState;
 ///
 /// | Condition | Status | Body |
 /// |-----------|--------|------|
+/// | UDS connection, header present but non-UTF-8 or invalid | 401 | `X-Remote-User header required` |
 /// | Trusted proxy, header absent or empty | 401 | `X-Remote-User header required` |
 /// | GSSAPI configured, no `Authorization` header | 401 | `WWW-Authenticate: Negotiate` challenge |
 /// | GSSAPI token exceeds 128 KiB | 400 | `Negotiate token exceeds size limit` |
@@ -55,7 +56,46 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Response> {
         let app = Arc::<AppState>::from_ref(state);
 
-        // ── Proxy path ────────────────────────────────────────────────────────
+        // ── UDS fast path ─────────────────────────────────────────────────────
+        // Unix-socket connections are inherently local — skip the CIDR check and
+        // accept X-Remote-User directly.  If the header is absent we fall through
+        // to GSSAPI rather than returning a 401, so UDS-only deployments without
+        // a reverse proxy still work with Kerberos.
+        if parts
+            .extensions
+            .get::<crate::listen::UdsConnection>()
+            .is_some()
+        {
+            let user_hdr = parts.headers.get("x-remote-user");
+            if let Some(hdr_val) = user_hdr {
+                return match hdr_val.to_str() {
+                    Err(_) => {
+                        tracing::warn!(
+                            "X-Remote-User header present on UDS connection \
+                             but contains non-UTF-8 bytes; rejecting"
+                        );
+                        Err(unauthorized("X-Remote-User header required"))
+                    }
+                    Ok(s) => {
+                        let s = s.trim();
+                        if s.is_empty() {
+                            Err(unauthorized("X-Remote-User header required"))
+                        } else if s.len() > 256 || s.chars().any(|c| c.is_ascii_control()) {
+                            tracing::warn!(
+                                "X-Remote-User header value on UDS connection \
+                                 contains invalid characters or exceeds length limit; rejecting"
+                            );
+                            Err(unauthorized("X-Remote-User header required"))
+                        } else {
+                            Ok(RemoteUser(s.to_owned()))
+                        }
+                    }
+                };
+            }
+            // Header absent on UDS connection: fall through to GSSAPI.
+        }
+
+        // ── TCP trusted-proxy path ────────────────────────────────────────────
         if !app.config.server.trusted_proxies.is_empty() {
             let Some(ConnectInfo(peer)) = parts.extensions.get::<ConnectInfo<SocketAddr>>() else {
                 tracing::warn!(
@@ -86,15 +126,26 @@ where
                     .iter()
                     .any(|net| net.contains(&peer_ip));
                 if trusted {
-                    return match parts
-                        .headers
-                        .get("x-remote-user")
-                        .and_then(|v| v.to_str().ok())
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                    {
-                        Some(user) => Ok(RemoteUser(user.to_owned())),
+                    let user_hdr = parts.headers.get("x-remote-user");
+                    return match user_hdr {
                         None => Err(unauthorized("X-Remote-User header required")),
+                        Some(hdr_val) => match hdr_val.to_str() {
+                            Err(_) => {
+                                tracing::warn!(
+                                    "X-Remote-User header present on TCP trusted-proxy \
+                                     connection but contains non-UTF-8 bytes; rejecting"
+                                );
+                                Err(unauthorized("X-Remote-User header required"))
+                            }
+                            Ok(s) => {
+                                let s = s.trim();
+                                if s.is_empty() {
+                                    Err(unauthorized("X-Remote-User header required"))
+                                } else {
+                                    Ok(RemoteUser(s.to_owned()))
+                                }
+                            }
+                        },
                     };
                 }
             }
