@@ -23,8 +23,22 @@ migration 0007 onward:
 | —      | 0015               | hot_indexes (Postgres-only) |
 | 0017   | 0016               | delegation (RFC 9115)   |
 
+| 0017   | 0016               | delegation (RFC 9115)   |
+| 0018   | 0017               | eab_operator_owner      |
+| 0019   | —/0018             | email_message_id_index  |
+| 0020   | 0019/0019          | eab_bound_principal     |
+| 0021   | 0020/0020          | eab_alg                 |
+| —      | 0021/—             | eab_type_fixes (Postgres-only) |
+| —      | 0022/—             | delegation_indexes (Postgres-only) |
+| —      | 0023/0021          | eab_type_fixes / eab_alg (backend-specific) |
+| —      | —/0022             | hot_indexes (MariaDB-only) |
+| 0022   | 0024/0023          | node_keys               |
+| 0023   | 0025/0024          | local_gen (CRDT delta gossip) |
+| 0024   | 0026/0025          | crdt_cluster_nodes, crdt_order_owners, crdt_mtc_writer |
+
 **Rule for future migrations:**
-- SQLite: use the next number in `migrations/sqlite/` (currently `0018_…`)
-- Postgres and MariaDB: use the next number in their directories (currently `0017_…`)
+- SQLite: use the next number in `migrations/sqlite/` (currently `0025_…`)
+- Postgres: use the next number in `migrations/postgres/` (currently `0027_…`)
+- MariaDB: use the next number in `migrations/mariadb/` (currently `0026_…`)
 
 The divergence is intentional and permanent.  Do not attempt to renumber.

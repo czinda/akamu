@@ -1,4 +1,6 @@
 pub mod crdt;
+#[cfg(feature = "db")]
+pub mod db;
 pub mod generation;
 pub mod grow_set;
 pub mod lww_map;

@@ -29,6 +29,22 @@ impl<T> Default for LwwRegister<T> {
 }
 
 impl<T: Clone> LwwRegister<T> {
+    /// Construct directly from a DB row, preserving the stored `local_gen`.
+    /// Used only by `db::load_from_db`; does not advance `CRDT_GENERATION`.
+    pub(crate) fn load(
+        value: Option<T>,
+        timestamp: i64,
+        node_id: impl Into<String>,
+        local_gen: u64,
+    ) -> Self {
+        Self {
+            value,
+            timestamp,
+            node_id: node_id.into(),
+            local_gen,
+        }
+    }
+
     pub fn set(&mut self, value: T, timestamp: i64, node_id: &str) {
         if timestamp > self.timestamp
             || (timestamp == self.timestamp && node_id > self.node_id.as_str())
@@ -69,6 +85,10 @@ impl<T: Clone> LwwRegister<T> {
     /// (explicitly removed, not merely default-unset).
     pub const fn is_tombstone(&self) -> bool {
         self.value.is_none() && self.timestamp > 0
+    }
+
+    pub(crate) const fn local_gen(&self) -> u64 {
+        self.local_gen
     }
 
     /// Returns `Some(self)` if this register was written after `gen`, else `None`.

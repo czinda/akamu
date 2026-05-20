@@ -106,6 +106,29 @@ impl<K: Eq + std::hash::Hash + Clone, V: Clone> OrMap<K, V> {
         );
     }
 
+    /// Insert an entry directly from a DB row, preserving the stored `local_gen`.
+    /// Used only by `db::load_from_db`; does not advance `CRDT_GENERATION`.
+    pub(crate) fn load_entry(
+        &mut self,
+        key: K,
+        value: V,
+        added_at: i64,
+        tombstone: bool,
+        tombstone_at: Option<i64>,
+        local_gen: u64,
+    ) {
+        self.entries.insert(
+            key,
+            OrMapEntry {
+                value,
+                added_at,
+                tombstone,
+                tombstone_at,
+                local_gen,
+            },
+        );
+    }
+
     pub fn live_values(&self) -> impl Iterator<Item = (&K, &V)> {
         self.entries
             .iter()

@@ -5,9 +5,10 @@ edition = "2021"
 description = "CRDT primitives for Akamu cluster state replication"
 
 [features]
-db = ["dep:sqlx"]
+db = ["dep:sqlx", "dep:serde_json"]
 
 [dependencies]
 serde      = { version = "1", features = ["derive"] }
 ciborium   = "0.2"
+serde_json = { version = "1", optional = true }
 sqlx       = { version = "0.8", default-features = false, features = ["any", "runtime-tokio", "macros", "derive"], optional = true }

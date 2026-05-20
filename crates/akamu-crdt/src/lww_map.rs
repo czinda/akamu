@@ -105,6 +105,12 @@ impl<K: Eq + std::hash::Hash + Clone, V: Clone> LwwMap<K, V> {
         }
     }
 
+    /// Insert a register directly from a DB row, preserving the stored `local_gen`.
+    /// Used only by `db::load_from_db`; does not advance `CRDT_GENERATION`.
+    pub(crate) fn load_entry(&mut self, key: K, register: LwwRegister<V>) {
+        self.entries.insert(key, register);
+    }
+
     /// Remove tombstoned entries whose deletion timestamp is older than `cutoff`.
     pub fn purge_old_tombstones(&mut self, cutoff: i64) {
         self.entries
