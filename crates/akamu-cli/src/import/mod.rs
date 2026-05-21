@@ -2,7 +2,10 @@
 
 pub mod certbot;
 
-use std::{fs, path::{Path, PathBuf}};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use crate::write_private_file;
 
@@ -13,8 +16,8 @@ fn copy_private_file(src: &Path, dst: &Path) -> Result<(), String> {
 }
 
 use certbot::{
-    build_renewal_config, discover_accounts, discover_renewals, jwk_to_account_key, live_cert_paths,
-    pem_key_type,
+    build_renewal_config, discover_accounts, discover_renewals, jwk_to_account_key,
+    live_cert_paths, pem_key_type,
 };
 
 // ── clap args ─────────────────────────────────────────────────────────────────
@@ -282,6 +285,20 @@ pub async fn cmd_import_certbot(args: CertbotImportArgs) -> Result<(), String> {
 
         if let Some(warn) = warning {
             eprintln!("Note for {}: {warn}", domain);
+        }
+
+        // Warn when a DNS challenge type is selected but no hook script was provided.
+        // The renewal will block interactively without a hook.
+        if !args.dry_run
+            && (renewal_cfg.challenge_type == "dns-01"
+                || renewal_cfg.challenge_type == "dns-persist-01")
+            && renewal_cfg.dns_hook.is_none()
+        {
+            eprintln!(
+                "Warning for {domain}: challenge type '{}' requires a DNS hook script. \
+                 Re-import with --dns-hook <CMD> or add dns_hook to the renewal config before renewing.",
+                renewal_cfg.challenge_type
+            );
         }
 
         let toml_str = toml::to_string_pretty(&renewal_cfg)
