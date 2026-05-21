@@ -340,7 +340,8 @@ async fn on_valid(
         Ok((true, order_advanced)) => {
             // Update in-memory CRDT so gossip propagates the validated state to
             // other cluster nodes without waiting for a full DB reload.
-            {
+            // Skip entirely when gossip is not configured (single-node mode).
+            if state.config.gossip.is_some() {
                 use akamu_crdt::{AuthzEntry, ChallengeEntry, OrderEntry};
                 let (ch_gen, authz_gen, ord_gen) = {
                     let mut crdt = state.crdt.write().await;
@@ -419,7 +420,7 @@ async fn on_valid(
                         .execute(&state.db)
                         .await;
                 }
-            }
+            } // end gossip-enabled block
             if order_advanced {
                 tracing::info!("order {order_id} is now ready");
                 state

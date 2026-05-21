@@ -79,9 +79,21 @@ pub struct CertUpsertParams<'a> {
     pub ca_id: &'a str,
 }
 
+// ── Gossip gate ───────────────────────────────────────────────────────────────
+// In single-node deployments (no gossip configured) there are no peers to
+// replicate to, so maintaining the in-memory CRDT and persisting local_gen
+// would be pure overhead.  Every public hook returns early when gossip is off.
+#[inline(always)]
+fn gossip_enabled(state: &AppState) -> bool {
+    state.config.gossip.is_some()
+}
+
 // ── Accounts ──────────────────────────────────────────────────────────────────
 
 pub async fn on_account_upsert(state: &AppState, p: AccountUpsertParams<'_>) {
+    if !gossip_enabled(state) {
+        return;
+    }
     let entry = AccountEntry {
         account_id: p.id.to_string(),
         status: p.status.to_string(),
@@ -108,6 +120,9 @@ pub async fn on_account_upsert(state: &AppState, p: AccountUpsertParams<'_>) {
 }
 
 pub async fn on_account_tombstone(state: &AppState, id: &str, now: i64) {
+    if !gossip_enabled(state) {
+        return;
+    }
     let local_gen = {
         let mut crdt = state.crdt.write().await;
         crdt.accounts.remove(&id.to_string(), now)
@@ -125,6 +140,9 @@ pub async fn on_account_tombstone(state: &AppState, id: &str, now: i64) {
 // ── Orders ────────────────────────────────────────────────────────────────────
 
 pub async fn on_order_upsert(state: &AppState, p: OrderUpsertParams<'_>) {
+    if !gossip_enabled(state) {
+        return;
+    }
     let entry = OrderEntry {
         order_id: p.id.to_string(),
         account_id: p.account_id.to_string(),
@@ -156,6 +174,9 @@ pub async fn on_order_upsert(state: &AppState, p: OrderUpsertParams<'_>) {
 }
 
 pub async fn on_order_tombstone(state: &AppState, id: &str, now: i64) {
+    if !gossip_enabled(state) {
+        return;
+    }
     let local_gen = {
         let mut crdt = state.crdt.write().await;
         crdt.orders.remove(&id.to_string(), now)
@@ -173,6 +194,9 @@ pub async fn on_order_tombstone(state: &AppState, id: &str, now: i64) {
 // ── Authorizations ────────────────────────────────────────────────────────────
 
 pub async fn on_authz_upsert(state: &AppState, p: AuthzUpsertParams<'_>) {
+    if !gossip_enabled(state) {
+        return;
+    }
     let entry = AuthzEntry {
         authz_id: p.id.to_string(),
         order_id: p.order_id.to_string(),
@@ -201,6 +225,9 @@ pub async fn on_authz_upsert(state: &AppState, p: AuthzUpsertParams<'_>) {
 }
 
 pub async fn on_authz_tombstone(state: &AppState, id: &str, now: i64) {
+    if !gossip_enabled(state) {
+        return;
+    }
     let local_gen = {
         let mut crdt = state.crdt.write().await;
         crdt.authorizations.remove(&id.to_string(), now)
@@ -218,6 +245,9 @@ pub async fn on_authz_tombstone(state: &AppState, id: &str, now: i64) {
 // ── Challenges ────────────────────────────────────────────────────────────────
 
 pub async fn on_challenge_set(state: &AppState, p: ChallengeSetParams<'_>) {
+    if !gossip_enabled(state) {
+        return;
+    }
     let entry = ChallengeEntry {
         challenge_id: p.id.to_string(),
         authz_id: p.authz_id.to_string(),
@@ -247,6 +277,9 @@ pub async fn on_challenge_set(state: &AppState, p: ChallengeSetParams<'_>) {
 // ── Certificates ──────────────────────────────────────────────────────────────
 
 pub async fn on_cert_upsert(state: &AppState, p: CertUpsertParams<'_>) {
+    if !gossip_enabled(state) {
+        return;
+    }
     let entry = CertEntry {
         cert_id: p.id.to_string(),
         order_id: p.order_id.to_string(),
@@ -275,6 +308,9 @@ pub async fn on_cert_upsert(state: &AppState, p: CertUpsertParams<'_>) {
 }
 
 pub async fn on_cert_tombstone(state: &AppState, id: &str, now: i64) {
+    if !gossip_enabled(state) {
+        return;
+    }
     let local_gen = {
         let mut crdt = state.crdt.write().await;
         crdt.certificates.remove(&id.to_string(), now)
@@ -299,6 +335,9 @@ pub async fn on_eab_key_set(
     used_at: Option<i64>,
     profile_grants: Option<String>,
 ) {
+    if !gossip_enabled(state) {
+        return;
+    }
     let entry = EabKeyEntry {
         kid: kid.to_string(),
         hmac_key_b64u: hmac_key_b64u.to_string(),
@@ -332,6 +371,9 @@ pub async fn on_operator_upsert(
     ca_id: &str,
     created: i64,
 ) {
+    if !gossip_enabled(state) {
+        return;
+    }
     let entry = OperatorEntry {
         operator_id: id,
         name: name.to_string(),
@@ -354,6 +396,9 @@ pub async fn on_operator_upsert(
 }
 
 pub async fn on_operator_tombstone(state: &AppState, id: i64, now: i64) {
+    if !gossip_enabled(state) {
+        return;
+    }
     let local_gen = {
         let mut crdt = state.crdt.write().await;
         crdt.operators.remove(&id.to_string(), now)
@@ -378,6 +423,9 @@ pub async fn on_delegation_upsert(
     created: i64,
     ca_id: &str,
 ) {
+    if !gossip_enabled(state) {
+        return;
+    }
     let entry = DelegationEntry {
         delegation_id: id.to_string(),
         account_id: account_id.to_string(),
@@ -400,6 +448,9 @@ pub async fn on_delegation_upsert(
 }
 
 pub async fn on_delegation_tombstone(state: &AppState, id: &str, now: i64) {
+    if !gossip_enabled(state) {
+        return;
+    }
     let local_gen = {
         let mut crdt = state.crdt.write().await;
         crdt.delegations.remove(&id.to_string(), now)
