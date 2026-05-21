@@ -307,7 +307,7 @@ async fn spawn_node(params: SpawnParams) -> NodeHandle {
     });
 
     if state.config.gossip.is_some() {
-        tokio::spawn(akamu::gossip::r#loop::run(Arc::clone(&state)));
+        tokio::spawn(akamu::gossip::gossip_loop::run(Arc::clone(&state)));
     }
 
     let router: Router = routes::build_router(Arc::clone(&state), None);

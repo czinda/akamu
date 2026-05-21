@@ -766,7 +766,7 @@ async fn run() -> Result<(), String> {
         .config
         .gossip
         .is_some()
-        .then(|| tokio::spawn(gossip::r#loop::run(Arc::clone(&state))));
+        .then(|| tokio::spawn(gossip::gossip_loop::run(Arc::clone(&state))));
 
     // ── HTTP / TLS server (serves ACME, admin API, and web UI) ──────────────
     let static_dir = config
