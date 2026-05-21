@@ -256,7 +256,8 @@ pub async fn new_order(
         None
     };
 
-    // draft-ietf-acme-profiles-01: validate profile if specified.
+    // draft-ietf-acme-profiles-01: validate profile if specified; if omitted,
+    // auto-select "default" when one is configured (RECOMMENDED by the draft).
     // resolve_for_ca() enforces ca_ids so a profile scoped to one CA is
     // rejected when the order targets a different CA.
     let order_profile: Option<String> = if let Some(ref p) = payload.profile {
@@ -267,6 +268,10 @@ pub async fn new_order(
             )));
         }
         Some(p.clone())
+    } else if !state.profiles.is_empty()
+        && state.profiles.resolve_for_ca("default", &ca_id.0).is_some()
+    {
+        Some("default".to_string())
     } else {
         None
     };
@@ -385,7 +390,7 @@ pub async fn new_order(
             .map(|id| json!({"type": id.r#type, "value": id.value}))
             .collect::<Vec<_>>(),
     )
-    .unwrap();
+    .map_err(|e| AcmeError::Internal(format!("serialize identifiers: {e}")))?;
 
     // Build all the rows before entering the DB call so we don't need to
     // cross an await boundary inside the transaction closure.
@@ -433,7 +438,8 @@ pub async fn new_order(
         }
 
         let identifier_json =
-            serde_json::to_string(&json!({"type": authz_type, "value": authz_value})).unwrap();
+            serde_json::to_string(&json!({"type": authz_type, "value": authz_value}))
+                .map_err(|e| AcmeError::Internal(format!("serialize identifier: {e}")))?;
         let token = gen_token()?;
         // dns-persist-01 is offered only when the operator has explicitly configured
         // an issuer domain — without it the challenge cannot be validated.
