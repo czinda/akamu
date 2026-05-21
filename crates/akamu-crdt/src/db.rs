@@ -23,12 +23,14 @@ use crate::types::{
 // ── PostgreSQL placeholder rewriting ──────────────────────────────────────────
 
 static IS_POSTGRES: OnceLock<bool> = OnceLock::new();
+static IS_MARIADB: OnceLock<bool> = OnceLock::new();
 
-/// Tell the DB module whether the pool is backed by PostgreSQL.
+/// Tell the DB module which backend the pool is backed by.
 ///
 /// Must be called once at startup, before any other function in this module.
-pub fn init_db_kind(is_postgres: bool) {
+pub fn init_db_kind(is_postgres: bool, is_mariadb: bool) {
     let _ = IS_POSTGRES.set(is_postgres);
+    let _ = IS_MARIADB.set(is_mariadb);
 }
 
 fn pg_sql(s: &'static str) -> &'static str {
@@ -40,7 +42,7 @@ fn pg_sql(s: &'static str) -> &'static str {
     let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
     let key = s.as_ptr() as usize;
     {
-        let guard = cache.lock().unwrap();
+        let guard = cache.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(&cached) = guard.get(&key) {
             return cached;
         }
@@ -57,12 +59,34 @@ fn pg_sql(s: &'static str) -> &'static str {
         }
     }
     let leaked: &'static str = Box::leak(out.into_boxed_str());
-    cache.lock().unwrap().insert(key, leaked);
+    cache
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(key, leaked);
     leaked
 }
 
 fn q<'q>(sql: &'static str) -> sqlx::query::Query<'q, sqlx::Any, sqlx::any::AnyArguments<'q>> {
     sqlx::query(pg_sql(sql))
+}
+
+/// Build an upsert query using the dialect appropriate for the configured DB.
+///
+/// `sqlite_sql` uses `?` placeholders and `INSERT OR REPLACE`.
+/// `mariadb_sql` uses `?` placeholders and `REPLACE INTO` (MariaDB/MySQL).
+/// `pg_sql_str` uses `$N` placeholders and `INSERT ... ON CONFLICT DO UPDATE`.
+fn q_upsert<'q>(
+    sqlite_sql: &'static str,
+    mariadb_sql: &'static str,
+    pg_sql_str: &'static str,
+) -> sqlx::query::Query<'q, sqlx::Any, sqlx::any::AnyArguments<'q>> {
+    if IS_POSTGRES.get().copied().unwrap_or(false) {
+        sqlx::query(pg_sql_str)
+    } else if IS_MARIADB.get().copied().unwrap_or(false) {
+        sqlx::query(mariadb_sql)
+    } else {
+        sqlx::query(sqlite_sql)
+    }
 }
 
 fn qa<'q, O>(
@@ -256,7 +280,7 @@ struct NodeKeysLoad {
 /// `audit_events` and `mtc_cosignatures` GrowSets are intentionally not loaded:
 /// the DB schema stores them with integer PKs incompatible with the CRDT entry
 /// types.  They are repopulated via gossip on first sync after restart.
-pub async fn load_from_db(pool: &AnyPool) -> Result<AkaCrdt, sqlx::Error> {
+pub async fn load_from_db(pool: &AnyPool, node_id: &str) -> Result<AkaCrdt, sqlx::Error> {
     let mut crdt = AkaCrdt::default();
     let mut max_gen: u64 = 0;
 
@@ -387,8 +411,10 @@ pub async fn load_from_db(pool: &AnyPool) -> Result<AkaCrdt, sqlx::Error> {
             created: row.created,
             updated: row.updated,
         };
-        crdt.challenges
-            .load_entry(row.id, LwwRegister::load(Some(entry), row.created, "", gen));
+        crdt.challenges.load_entry(
+            row.id,
+            LwwRegister::load(Some(entry), row.updated, node_id, gen),
+        );
     }
 
     // ── Certificates ──────────────────────────────────────────────────────────
@@ -437,7 +463,7 @@ pub async fn load_from_db(pool: &AnyPool) -> Result<AkaCrdt, sqlx::Error> {
         };
         crdt.eab_keys.load_entry(
             row.kid,
-            LwwRegister::load(Some(entry), row.created, "", gen),
+            LwwRegister::load(Some(entry), row.created, node_id, gen),
         );
     }
 
@@ -500,7 +526,7 @@ pub async fn load_from_db(pool: &AnyPool) -> Result<AkaCrdt, sqlx::Error> {
         };
         crdt.mtc_checkpoints.load_entry(
             tree_size,
-            LwwRegister::load(Some(entry), row.created, "", gen),
+            LwwRegister::load(Some(entry), row.created, node_id, gen),
         );
     }
 
@@ -516,7 +542,15 @@ pub async fn load_from_db(pool: &AnyPool) -> Result<AkaCrdt, sqlx::Error> {
         let gen = row.local_gen as u64;
         max_gen = max_gen.max(gen);
         let tombstone = row.tombstone != 0;
-        let ca_ids: Vec<String> = serde_json::from_str(&row.ca_ids).unwrap_or_default();
+        let ca_ids: Vec<String> = serde_json::from_str(&row.ca_ids).unwrap_or_else(|e| {
+            tracing::error!(
+                node_id = %row.node_id,
+                raw = %row.ca_ids,
+                err = %e,
+                "crdt load: malformed ca_ids JSON — defaulting to empty list"
+            );
+            Vec::new()
+        });
         let entry = AkaNodeEntry {
             node_id: row.node_id.clone(),
             gossip_url: row.gossip_url,
@@ -573,7 +607,7 @@ pub async fn load_from_db(pool: &AnyPool) -> Result<AkaCrdt, sqlx::Error> {
     // Advance CRDT_GENERATION beyond all loaded entries so new mutations receive
     // strictly higher generation numbers than anything already synced to peers.
     if max_gen > 0 {
-        crate::generation::CRDT_GENERATION.fetch_max(max_gen, Ordering::Relaxed);
+        crate::generation::CRDT_GENERATION.fetch_max(max_gen, Ordering::AcqRel);
     }
 
     Ok(crdt)
@@ -588,10 +622,15 @@ pub async fn load_from_db(pool: &AnyPool) -> Result<AkaCrdt, sqlx::Error> {
 ///   in the local DB are skipped — they will be re-gossiped after restart.
 ///   Inserts for locally-created entries happen via write-path hooks (Phase 3).
 pub async fn persist_crdt(pool: &AnyPool, crdt: &AkaCrdt) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
     // ── CRDT cluster nodes (full replace) ─────────────────────────────────────
-    q("DELETE FROM crdt_cluster_nodes").execute(pool).await?;
+    q("DELETE FROM crdt_cluster_nodes")
+        .execute(&mut *tx)
+        .await?;
     for (node_id, entry) in crdt.cluster_nodes.all_entries() {
-        let ca_ids_json = serde_json::to_string(&entry.value.ca_ids).unwrap_or_default();
+        let ca_ids_json =
+            serde_json::to_string(&entry.value.ca_ids).unwrap_or_else(|_| "[]".to_string());
         q("INSERT INTO crdt_cluster_nodes \
            (node_id, gossip_url, kem_public_key_der, signing_public_key_der, \
             signing_certificate_der, ca_ids, registered_at, tombstone, tombstone_at, local_gen) \
@@ -606,12 +645,12 @@ pub async fn persist_crdt(pool: &AnyPool, crdt: &AkaCrdt) -> Result<(), sqlx::Er
         .bind(entry.tombstone as i64)
         .bind(entry.tombstone_at)
         .bind(entry.local_gen as i64)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
     }
 
     // ── CRDT order owners (full replace) ──────────────────────────────────────
-    q("DELETE FROM crdt_order_owners").execute(pool).await?;
+    q("DELETE FROM crdt_order_owners").execute(&mut *tx).await?;
     for (order_id, register) in crdt.order_owners.all_entries() {
         if let Some(owner) = register.get() {
             q(
@@ -622,13 +661,13 @@ pub async fn persist_crdt(pool: &AnyPool, crdt: &AkaCrdt) -> Result<(), sqlx::Er
             .bind(&owner.node_id)
             .bind(owner.claimed_at)
             .bind(register.local_gen() as i64)
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
         }
     }
 
     // ── CRDT MTC writer (full replace) ────────────────────────────────────────
-    q("DELETE FROM crdt_mtc_writer").execute(pool).await?;
+    q("DELETE FROM crdt_mtc_writer").execute(&mut *tx).await?;
     if let Some(writer) = crdt.mtc_writer.get() {
         q(
             "INSERT INTO crdt_mtc_writer (id, node_id, claimed_at, local_gen) \
@@ -637,7 +676,7 @@ pub async fn persist_crdt(pool: &AnyPool, crdt: &AkaCrdt) -> Result<(), sqlx::Er
         .bind(&writer.node_id)
         .bind(writer.claimed_at)
         .bind(crdt.mtc_writer.local_gen() as i64)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
     }
 
@@ -648,7 +687,7 @@ pub async fn persist_crdt(pool: &AnyPool, crdt: &AkaCrdt) -> Result<(), sqlx::Er
             .bind(&entry.value.status)
             .bind(entry.local_gen as i64)
             .bind(id.as_str())
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
     }
 
@@ -663,7 +702,7 @@ pub async fn persist_crdt(pool: &AnyPool, crdt: &AkaCrdt) -> Result<(), sqlx::Er
         .bind(entry.value.updated)
         .bind(entry.local_gen as i64)
         .bind(id.as_str())
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
     }
 
@@ -673,7 +712,7 @@ pub async fn persist_crdt(pool: &AnyPool, crdt: &AkaCrdt) -> Result<(), sqlx::Er
             .bind(entry.value.updated)
             .bind(entry.local_gen as i64)
             .bind(id.as_str())
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
     }
 
@@ -689,7 +728,7 @@ pub async fn persist_crdt(pool: &AnyPool, crdt: &AkaCrdt) -> Result<(), sqlx::Er
             .bind(ch.updated)
             .bind(register.local_gen() as i64)
             .bind(id.as_str())
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
         }
     }
@@ -704,7 +743,7 @@ pub async fn persist_crdt(pool: &AnyPool, crdt: &AkaCrdt) -> Result<(), sqlx::Er
         .bind(entry.value.revocation_reason)
         .bind(entry.local_gen as i64)
         .bind(id.as_str())
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
     }
 
@@ -714,7 +753,7 @@ pub async fn persist_crdt(pool: &AnyPool, crdt: &AkaCrdt) -> Result<(), sqlx::Er
                 .bind(k.used_at)
                 .bind(register.local_gen() as i64)
                 .bind(kid.as_str())
-                .execute(pool)
+                .execute(&mut *tx)
                 .await?;
         }
     }
@@ -725,7 +764,7 @@ pub async fn persist_crdt(pool: &AnyPool, crdt: &AkaCrdt) -> Result<(), sqlx::Er
                 .bind(if entry.tombstone { 0i64 } else { 1i64 })
                 .bind(entry.local_gen as i64)
                 .bind(id)
-                .execute(pool)
+                .execute(&mut *tx)
                 .await?;
         }
     }
@@ -734,7 +773,7 @@ pub async fn persist_crdt(pool: &AnyPool, crdt: &AkaCrdt) -> Result<(), sqlx::Er
         q("UPDATE delegations SET local_gen = ? WHERE id = ?")
             .bind(entry.local_gen as i64)
             .bind(id.as_str())
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
     }
 
@@ -742,10 +781,11 @@ pub async fn persist_crdt(pool: &AnyPool, crdt: &AkaCrdt) -> Result<(), sqlx::Er
         q("UPDATE mtc_checkpoints SET local_gen = ? WHERE tree_size = ?")
             .bind(register.local_gen() as i64)
             .bind(*tree_size as i64)
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
     }
 
+    tx.commit().await?;
     Ok(())
 }
 
@@ -759,30 +799,23 @@ pub async fn persist_order_owner(
     owner: &OrderOwner,
     local_gen: u64,
 ) -> Result<(), sqlx::Error> {
-    let updated = q(
-        "UPDATE crdt_order_owners SET node_id = ?, claimed_at = ?, local_gen = ? \
-         WHERE order_id = ?",
+    q_upsert(
+        "INSERT OR REPLACE INTO crdt_order_owners \
+         (order_id, node_id, claimed_at, local_gen) VALUES (?, ?, ?, ?)",
+        "REPLACE INTO crdt_order_owners \
+         (order_id, node_id, claimed_at, local_gen) VALUES (?, ?, ?, ?)",
+        "INSERT INTO crdt_order_owners (order_id, node_id, claimed_at, local_gen) \
+         VALUES ($1, $2, $3, $4) \
+         ON CONFLICT (order_id) DO UPDATE SET \
+         node_id = EXCLUDED.node_id, claimed_at = EXCLUDED.claimed_at, \
+         local_gen = EXCLUDED.local_gen",
     )
+    .bind(order_id)
     .bind(&owner.node_id)
     .bind(owner.claimed_at)
     .bind(local_gen as i64)
-    .bind(order_id)
     .execute(pool)
     .await?;
-
-    if updated.rows_affected() == 0 {
-        q(
-            "INSERT INTO crdt_order_owners (order_id, node_id, claimed_at, local_gen) \
-           VALUES (?, ?, ?, ?)",
-        )
-        .bind(order_id)
-        .bind(&owner.node_id)
-        .bind(owner.claimed_at)
-        .bind(local_gen as i64)
-        .execute(pool)
-        .await?;
-    }
-
     Ok(())
 }
 
@@ -792,28 +825,22 @@ pub async fn persist_mtc_writer(
     writer: &MtcWriter,
     local_gen: u64,
 ) -> Result<(), sqlx::Error> {
-    let updated = q(
-        "UPDATE crdt_mtc_writer SET node_id = ?, claimed_at = ?, local_gen = ? \
-         WHERE id = 'singleton'",
+    q_upsert(
+        "INSERT OR REPLACE INTO crdt_mtc_writer (id, node_id, claimed_at, local_gen) \
+         VALUES ('singleton', ?, ?, ?)",
+        "REPLACE INTO crdt_mtc_writer (id, node_id, claimed_at, local_gen) \
+         VALUES ('singleton', ?, ?, ?)",
+        "INSERT INTO crdt_mtc_writer (id, node_id, claimed_at, local_gen) \
+         VALUES ('singleton', $1, $2, $3) \
+         ON CONFLICT (id) DO UPDATE SET \
+         node_id = EXCLUDED.node_id, claimed_at = EXCLUDED.claimed_at, \
+         local_gen = EXCLUDED.local_gen",
     )
     .bind(&writer.node_id)
     .bind(writer.claimed_at)
     .bind(local_gen as i64)
     .execute(pool)
     .await?;
-
-    if updated.rows_affected() == 0 {
-        q(
-            "INSERT INTO crdt_mtc_writer (id, node_id, claimed_at, local_gen) \
-           VALUES ('singleton', ?, ?, ?)",
-        )
-        .bind(&writer.node_id)
-        .bind(writer.claimed_at)
-        .bind(local_gen as i64)
-        .execute(pool)
-        .await?;
-    }
-
     Ok(())
 }
 
@@ -847,37 +874,39 @@ pub async fn load_node_keys(
 ///
 /// Safe to call on both first startup (INSERT) and key rotation (UPDATE).
 pub async fn save_node_keys(pool: &AnyPool, row: &NodeKeysRow) -> Result<(), sqlx::Error> {
-    let updated = q(
-        "UPDATE node_keys SET kem_private_key_der = ?, kem_public_key_der = ?, \
-         signing_private_key_der = ?, signing_public_key_der = ?, \
-         signing_certificate_der = ?, created_at = ? WHERE node_id = ?",
+    q_upsert(
+        "INSERT OR REPLACE INTO node_keys \
+         (node_id, kem_private_key_der, kem_public_key_der, \
+          signing_private_key_der, signing_public_key_der, \
+          signing_certificate_der, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "REPLACE INTO node_keys \
+         (node_id, kem_private_key_der, kem_public_key_der, \
+          signing_private_key_der, signing_public_key_der, \
+          signing_certificate_der, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO node_keys \
+         (node_id, kem_private_key_der, kem_public_key_der, \
+          signing_private_key_der, signing_public_key_der, \
+          signing_certificate_der, created_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) \
+         ON CONFLICT (node_id) DO UPDATE SET \
+         kem_private_key_der = EXCLUDED.kem_private_key_der, \
+         kem_public_key_der = EXCLUDED.kem_public_key_der, \
+         signing_private_key_der = EXCLUDED.signing_private_key_der, \
+         signing_public_key_der = EXCLUDED.signing_public_key_der, \
+         signing_certificate_der = EXCLUDED.signing_certificate_der, \
+         created_at = EXCLUDED.created_at",
     )
+    .bind(&row.node_id)
     .bind(&row.kem_private_key_der)
     .bind(&row.kem_public_key_der)
     .bind(&row.signing_private_key_der)
     .bind(&row.signing_public_key_der)
     .bind(&row.signing_certificate_der)
     .bind(row.created_at)
-    .bind(&row.node_id)
     .execute(pool)
     .await?;
-
-    if updated.rows_affected() == 0 {
-        q("INSERT INTO node_keys \
-           (node_id, kem_private_key_der, kem_public_key_der, \
-            signing_private_key_der, signing_public_key_der, \
-            signing_certificate_der, created_at) \
-           VALUES (?, ?, ?, ?, ?, ?, ?)")
-        .bind(&row.node_id)
-        .bind(&row.kem_private_key_der)
-        .bind(&row.kem_public_key_der)
-        .bind(&row.signing_private_key_der)
-        .bind(&row.signing_public_key_der)
-        .bind(&row.signing_certificate_der)
-        .bind(row.created_at)
-        .execute(pool)
-        .await?;
-    }
 
     Ok(())
 }

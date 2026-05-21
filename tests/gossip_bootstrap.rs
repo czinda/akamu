@@ -10,6 +10,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use getrandom;
+
 use axum::Router;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
@@ -56,11 +58,16 @@ fn generate_node_identity() -> NodeIdentity {
     let mut name = native_ossl::x509::X509NameOwned::new().expect("X509Name");
     name.add_entry_by_txt(c"CN", node_id.as_bytes())
         .expect("CN");
+    let serial: i64 = {
+        let mut buf = [0u8; 7];
+        getrandom::getrandom(&mut buf).expect("getrandom for cert serial");
+        buf.iter().fold(0i64, |acc, &b| (acc << 8) | i64::from(b))
+    };
     let sign_cert_der = native_ossl::x509::X509Builder::new()
         .expect("X509Builder")
         .set_version(2)
         .expect("version")
-        .set_serial_number(1)
+        .set_serial_number(serial)
         .expect("serial")
         .set_not_before_offset(0)
         .expect("not_before")
@@ -128,6 +135,8 @@ async fn spawn_node(params: SpawnParams) -> NodeHandle {
             interval_secs: 2,
             tombstone_ttl_secs: 604_800,
             ownership_ttl_secs: 150,
+            gossip_envelope_max_age_secs: 300,
+            clock_skew_tolerance_secs: 30,
         })
     };
 
@@ -184,7 +193,7 @@ async fn spawn_node(params: SpawnParams) -> NodeHandle {
 
     db::install_drivers();
     let db_conn = db::open(&db_path, 4, false).await.unwrap();
-    akamu_crdt::db::init_db_kind(false);
+    akamu_crdt::db::init_db_kind(false, false);
 
     let ca = Arc::new(CaState {
         id: "default".into(),
@@ -291,6 +300,7 @@ async fn spawn_node(params: SpawnParams) -> NodeHandle {
         node_gossip_signing_priv: Arc::new(identity.sign_priv_pem),
         node_gossip_signing_cert: Arc::new(identity.sign_cert_der),
         gossip_client: Arc::new(reqwest::Client::new()),
+        gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         gss_cred: None,
         admin_gss_cred: None,
         eab_master_secret: None,

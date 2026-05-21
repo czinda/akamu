@@ -9,11 +9,15 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 
-use akamu_crdt::CRDT_GENERATION;
+use akamu_crdt::{AkaNodeEntry, CRDT_GENERATION};
 
-use crate::gossip::crypto::{sign_and_seal, verify_and_open, SealRecipient};
+use crate::admin::auth::OperatorContext;
+use crate::gossip::crypto::{random_nonce, sign_and_seal, verify_and_open, SealRecipient};
 use crate::gossip::envelope::GossipEnvelope;
+use crate::require_role;
 use crate::state::AppState;
 use crate::util::unix_now;
 
@@ -33,24 +37,29 @@ pub async fn gossip_sync(
         return StatusCode::BAD_REQUEST.into_response();
     }
 
-    // Reject unknown senders: node must already be in our CRDT cluster_nodes.
-    let sender_signing_pub: Vec<u8> = {
+    // Reject unknown senders: both signing key and KEM key must be pre-pinned.
+    // KEM key is looked up here (pre-merge) so an attacker cannot redirect our
+    // encrypted response by supplying a modified cluster_nodes entry in their CRDT.
+    let (sender_signing_pub, sender_kem_key): (Vec<u8>, Vec<u8>) = {
         let crdt = state.crdt.read().await;
-        match crdt
-            .cluster_nodes
-            .get(&sender_node_id)
-            .filter(|e| !e.gossip_signing_pub_key_der.is_empty())
-            .map(|e| e.gossip_signing_pub_key_der.clone())
-        {
-            Some(k) => k,
-            None => {
+        let node = match crdt.cluster_nodes.get(&sender_node_id) {
+            Some(n)
+                if !n.gossip_signing_pub_key_der.is_empty() && !n.kem_public_key_der.is_empty() =>
+            {
+                n
+            }
+            _ => {
                 tracing::warn!(
                     sender = %sender_node_id,
                     "gossip/sync: no pinned signing key for sender"
                 );
                 return StatusCode::UNAUTHORIZED.into_response();
             }
-        }
+        };
+        (
+            node.gossip_signing_pub_key_der.clone(),
+            node.kem_public_key_der.clone(),
+        )
     };
 
     let plaintext = match verify_and_open(&body, &state.node_kem_priv, Some(&sender_signing_pub)) {
@@ -69,21 +78,62 @@ pub async fn gossip_sync(
         }
     };
 
-    let tombstone_ttl = state
+    let max_age = state
         .config
         .gossip
         .as_ref()
-        .map(|g| g.tombstone_ttl_secs as i64)
-        .unwrap_or(604_800);
+        .map(|g| g.gossip_envelope_max_age_secs as i64)
+        .unwrap_or(300);
+    let clock_skew = state
+        .config
+        .gossip
+        .as_ref()
+        .map(|g| g.clock_skew_tolerance_secs as i64)
+        .unwrap_or(30);
 
     let now_ts = unix_now();
-    if envelope.issued_at < now_ts - tombstone_ttl {
+    if envelope.issued_at > now_ts + clock_skew {
+        tracing::warn!(
+            sender = %sender_node_id,
+            issued_at = envelope.issued_at,
+            "gossip/sync: rejecting future-dated envelope"
+        );
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    if envelope.issued_at < now_ts - max_age {
         tracing::warn!(
             sender = %sender_node_id,
             issued_at = envelope.issued_at,
             "gossip/sync: rejecting stale envelope"
         );
         return StatusCode::BAD_REQUEST.into_response();
+    }
+
+    // Deduplicate by nonce to prevent replay within the issued_at window.
+    // Nonces are optional (old peers omit them); skip dedup when nonce is absent.
+    // Reject short nonces: anything under 16 bytes provides a negligible dedup space.
+    if !envelope.nonce.is_empty() {
+        if envelope.nonce.len() < 16 {
+            tracing::warn!(
+                sender = %sender_node_id,
+                len = envelope.nonce.len(),
+                "gossip/sync: nonce too short — rejecting"
+            );
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+        let mut nonce_cache = state
+            .gossip_nonce_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Evict expired entries lazily.
+        nonce_cache.retain(|_, &mut ts| ts >= now_ts - max_age);
+        if nonce_cache.insert(envelope.nonce.clone(), now_ts).is_some() {
+            tracing::warn!(
+                sender = %sender_node_id,
+                "gossip/sync: duplicate nonce — rejecting replay"
+            );
+            return StatusCode::BAD_REQUEST.into_response();
+        }
     }
 
     let peer_crdt = match envelope.decode_crdt() {
@@ -94,44 +144,40 @@ pub async fn gossip_sync(
         }
     };
 
-    // Snapshot pre-merge generation so the response excludes entries just received.
-    let pre_merge_gen = CRDT_GENERATION.load(std::sync::atomic::Ordering::Relaxed);
     let request_delta_since = envelope.request_delta_since;
 
-    {
+    // Read both pre- and post-merge generations inside the write lock so no
+    // concurrent task can advance CRDT_GENERATION between our merge and our read.
+    let (pre_merge_gen, post_merge_gen, crdt_snapshot) = {
         let mut crdt = state.crdt.write().await;
+        let pre_merge_gen = CRDT_GENERATION.load(std::sync::atomic::Ordering::Acquire);
         akamu_crdt::Merge::merge(&mut *crdt, peer_crdt);
-    }
+        let post_merge_gen = CRDT_GENERATION.load(std::sync::atomic::Ordering::Acquire);
+        let snapshot = crdt.clone();
+        (pre_merge_gen, post_merge_gen, snapshot)
+    };
 
-    if let Err(e) = akamu_crdt::db::persist_crdt(&state.db, &*state.crdt.read().await).await {
+    if let Err(e) = akamu_crdt::db::persist_crdt(&state.db, &crdt_snapshot).await {
         tracing::error!(sender = %sender_node_id, err = %e, "gossip/sync: persist after merge failed");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
-
-    // Look up sender's KEM key (now available after merge).
-    let sender_kem_key: Option<Vec<u8>> = {
-        let crdt = state.crdt.read().await;
-        crdt.cluster_nodes
-            .get(&sender_node_id)
-            .filter(|e| !e.kem_public_key_der.is_empty())
-            .map(|e| e.kem_public_key_der.clone())
-    };
-    let Some(sender_kem_key) = sender_kem_key else {
-        tracing::warn!(sender = %sender_node_id, "gossip/sync: sender has no KEM key for response encryption");
-        return StatusCode::BAD_REQUEST.into_response();
-    };
-
-    let post_merge_gen = CRDT_GENERATION.load(std::sync::atomic::Ordering::Relaxed);
 
     let response_bytes = {
-        let crdt = state.crdt.read().await;
         let (response_crdt, is_delta) = match request_delta_since {
-            Some(since) => (crdt.delta_range(since, pre_merge_gen), true),
-            None => (crdt.clone(), false),
+            Some(since) => (crdt_snapshot.delta_range(since, pre_merge_gen), true),
+            None => (crdt_snapshot.clone(), false),
         };
         let crdt_bytes = match GossipEnvelope::encode_crdt(&response_crdt) {
             Ok(b) => b,
             Err(e) => {
                 tracing::error!(sender = %sender_node_id, err = %e, "gossip/sync: CBOR encode response CRDT failed");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        };
+        let resp_nonce = match random_nonce() {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::error!(sender = %sender_node_id, err = %e, "gossip/sync: random_nonce for response failed");
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
         };
@@ -141,6 +187,7 @@ pub async fn gossip_sync(
             is_delta,
             my_gen: post_merge_gen,
             request_delta_since: None,
+            nonce: resp_nonce,
         };
         match resp_envelope.encode() {
             Ok(b) => b,
@@ -177,10 +224,150 @@ pub async fn gossip_sync(
         .into_response()
 }
 
-pub async fn gossip_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+/// `POST /admin/gossip/register` — pre-pin a peer node's gossip keys (H-8).
+///
+/// An operator MUST call this endpoint before the gossip loop will push state to
+/// or accept signed responses from the peer.  Requires `administrator` role.
+///
+/// # Request body (JSON)
+///
+/// ```json
+/// {
+///   "node_id":                  "…",
+///   "gossip_url":               "https://peer.acme.internal:8443",
+///   "kem_public_key_b64u":      "<SPKI DER, base64url>",
+///   "gossip_signing_pub_key_b64u": "<SPKI DER, base64url>",
+///   "gossip_signing_cert_b64u": "<X.509 DER, base64url>",
+///   "ca_ids":                   ["ca1"]     // optional; defaults to []
+/// }
+/// ```
+pub async fn gossip_register(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<GossipRegisterRequest>,
+) -> impl IntoResponse {
+    require_role!(operator, state, Administrator);
+
+    if body.node_id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"detail": "node_id is required"})),
+        )
+            .into_response();
+    }
+    if body.node_id == state.node_id.as_str() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"detail": "cannot register own node_id"})),
+        )
+            .into_response();
+    }
+    if body.gossip_url.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"detail": "gossip_url is required"})),
+        )
+            .into_response();
+    }
+
+    let kem_key = match URL_SAFE_NO_PAD.decode(&body.kem_public_key_b64u) {
+        Ok(b) => b,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"detail": "kem_public_key_b64u: invalid base64url"})),
+            )
+                .into_response();
+        }
+    };
+    let signing_pub = match URL_SAFE_NO_PAD.decode(&body.gossip_signing_pub_key_b64u) {
+        Ok(b) => b,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(
+                    serde_json::json!({"detail": "gossip_signing_pub_key_b64u: invalid base64url"}),
+                ),
+            )
+                .into_response();
+        }
+    };
+    let signing_cert = match URL_SAFE_NO_PAD.decode(&body.gossip_signing_cert_b64u) {
+        Ok(b) => b,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"detail": "gossip_signing_cert_b64u: invalid base64url"})),
+            )
+                .into_response();
+        }
+    };
+
+    if kem_key.is_empty() || signing_pub.is_empty() || signing_cert.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"detail": "kem, signing pub, and signing cert must all be non-empty"})),
+        )
+            .into_response();
+    }
+
+    let now = unix_now();
+    let entry = AkaNodeEntry {
+        node_id: body.node_id.clone(),
+        gossip_url: body.gossip_url.clone(),
+        kem_public_key_der: kem_key,
+        gossip_signing_pub_key_der: signing_pub,
+        gossip_signing_cert_der: signing_cert,
+        ca_ids: body.ca_ids.clone(),
+        registered_at: now,
+    };
+
+    let crdt_snapshot = {
+        let mut crdt = state.crdt.write().await;
+        crdt.cluster_nodes.upsert(body.node_id.clone(), entry, now);
+        crdt.clone()
+    };
+
+    if let Err(e) = akamu_crdt::db::persist_crdt(&state.db, &crdt_snapshot).await {
+        tracing::error!(node_id = %body.node_id, err = %e, "gossip/register: persist failed");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    tracing::info!(
+        node_id = %body.node_id,
+        gossip_url = %body.gossip_url,
+        operator = %operator.name,
+        "gossip/register: peer enrolled"
+    );
+
+    Json(serde_json::json!({
+        "node_id": body.node_id,
+        "gossip_url": body.gossip_url,
+        "ca_ids": body.ca_ids,
+        "registered_at": now,
+    }))
+    .into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub struct GossipRegisterRequest {
+    pub node_id: String,
+    pub gossip_url: String,
+    pub kem_public_key_b64u: String,
+    pub gossip_signing_pub_key_b64u: String,
+    pub gossip_signing_cert_b64u: String,
+    #[serde(default)]
+    pub ca_ids: Vec<String>,
+}
+
+pub async fn gossip_status(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    require_role!(operator, state, Auditor);
     let crdt = state.crdt.read().await;
     let counts = crdt.entry_counts();
-    let crdt_generation = CRDT_GENERATION.load(std::sync::atomic::Ordering::Relaxed);
+    let crdt_generation = CRDT_GENERATION.load(std::sync::atomic::Ordering::Acquire);
 
     let node_entry = crdt.cluster_nodes.get(state.node_id.as_str());
     let kem_enrolled = node_entry

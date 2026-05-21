@@ -87,6 +87,10 @@ pub struct CertEntry {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EabKeyEntry {
     pub kid: String,
+    /// HMAC secret. Skipped from serde so it is never gossiped to peers.
+    /// Only the issuing node has the key; consumption status (`used_at`) is
+    /// the only EAB metadata that needs cluster-wide replication.
+    #[serde(skip)]
     pub hmac_key_b64u: String,
     pub created: i64,
     pub used_at: Option<i64>,
@@ -119,8 +123,12 @@ pub struct MtcCheckpointEntry {
     pub created_at: i64,
 }
 
-/// Identity for MtcCosigEntry in GrowSet: (checkpoint_id, cosigner_url) pair.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+/// A cosignature from one cosigner on one MTC checkpoint.
+///
+/// Stored as `LwwMap<(checkpoint_id, cosigner_url), MtcCosigEntry>` so that an
+/// updated signature from the same cosigner for the same checkpoint overwrites
+/// the earlier one (LWW semantics) rather than being silently dropped.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MtcCosigEntry {
     pub checkpoint_id: String,
     pub cosigner_url: String,

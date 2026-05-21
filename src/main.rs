@@ -157,7 +157,10 @@ async fn run() -> Result<(), String> {
 
     // ── CRDT node identity bootstrap ──────────────────────────────────────────
     // Tell the CRDT DB layer which SQL placeholder style to use.
-    akamu_crdt::db::init_db_kind(matches!(db_kind, db::DbKind::Postgres));
+    akamu_crdt::db::init_db_kind(
+        matches!(db_kind, db::DbKind::Postgres),
+        matches!(db_kind, db::DbKind::MariaDb),
+    );
 
     // Load or generate the node's gossip key material.
     //
@@ -190,15 +193,21 @@ async fn run() -> Result<(), String> {
                 native_ossl::x509::X509NameOwned::new().map_err(|e| format!("X509Name: {e}"))?;
             name.add_entry_by_txt(c"CN", nid.as_bytes())
                 .map_err(|e| format!("X509Name add CN: {e}"))?;
+            let serial: i64 = {
+                let mut buf = [0u8; 7]; // 7 bytes → 56-bit positive i64
+                getrandom::getrandom(&mut buf)
+                    .map_err(|e| format!("getrandom for cert serial: {e}"))?;
+                buf.iter().fold(0i64, |acc, &b| (acc << 8) | i64::from(b))
+            };
             let cert = native_ossl::x509::X509Builder::new()
                 .map_err(|e| format!("X509Builder: {e}"))?
                 .set_version(2)
                 .map_err(|e| format!("X509Builder version: {e}"))?
-                .set_serial_number(1)
+                .set_serial_number(serial)
                 .map_err(|e| format!("X509Builder serial: {e}"))?
                 .set_not_before_offset(0)
                 .map_err(|e| format!("X509Builder not_before: {e}"))?
-                .set_not_after_offset(20 * 365 * 86400)
+                .set_not_after_offset(2 * 365 * 86400)
                 .map_err(|e| format!("X509Builder not_after: {e}"))?
                 .set_subject_name(&name)
                 .map_err(|e| format!("X509Builder subject: {e}"))?
@@ -330,9 +339,17 @@ async fn run() -> Result<(), String> {
         }
     };
 
+    // C-4: node private keys are stored unencrypted (PKCS#8 plaintext) in the
+    // local DB.  In a production deployment the DB file should reside on an
+    // encrypted volume.  HSM-backed key storage is not yet supported.
+    tracing::warn!(
+        "gossip node private keys are stored as plaintext PKCS#8 in the local DB — \
+         ensure the database file resides on an encrypted volume"
+    );
+
     // Load CRDT state from the local DB, then insert/refresh this node's own
     // entry so delta gossip can identify which entries originated here.
-    let crdt_initial = akamu_crdt::db::load_from_db(&db)
+    let crdt_initial = akamu_crdt::db::load_from_db(&db, &node_keys.node_id)
         .await
         .map_err(|e| format!("CRDT load from DB: {e}"))?;
     let crdt = std::sync::Arc::new(tokio::sync::RwLock::new(crdt_initial));
@@ -630,6 +647,11 @@ async fn run() -> Result<(), String> {
     // ── Application state ─────────────────────────────────────────────────────
     // Use the first 11 chars of node_id as the nonce prefix (~64 bits of unique
     // node identity) so that nonces are node-scoped and rejected by other nodes.
+    debug_assert!(
+        node_id.len() >= 11,
+        "node_id too short for nonce prefix: {} chars",
+        node_id.len()
+    );
     let nonce_prefix = node_id.get(..11).unwrap_or(&node_id).to_string();
     let nonces = Arc::new(NonceBucket::with_prefix(nonce_prefix));
     let state = Arc::new(AppState {
@@ -684,7 +706,13 @@ async fn run() -> Result<(), String> {
         node_kem_priv: Arc::new(node_keys.kem_priv_pkcs8),
         node_gossip_signing_priv: Arc::new(node_keys.sign_priv_pem),
         node_gossip_signing_cert: Arc::new(node_keys.sign_cert_der),
-        gossip_client: Arc::new(reqwest::Client::new()),
+        gossip_client: Arc::new(
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .expect("gossip reqwest client build failed"),
+        ),
+        gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     });
 
     // ── Seed audit row counter ────────────────────────────────────────────────
@@ -734,9 +762,11 @@ async fn run() -> Result<(), String> {
     let _delegation_task = delegation_upstream::spawn(Arc::clone(&state));
 
     // ── Gossip background loop (disabled when [gossip] section is absent) ─────
-    if state.config.gossip.is_some() {
-        tokio::spawn(gossip::r#loop::run(Arc::clone(&state)));
-    }
+    let _gossip_task = state
+        .config
+        .gossip
+        .is_some()
+        .then(|| tokio::spawn(gossip::r#loop::run(Arc::clone(&state))));
 
     // ── HTTP / TLS server (serves ACME, admin API, and web UI) ──────────────
     let static_dir = config

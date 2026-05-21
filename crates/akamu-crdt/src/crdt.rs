@@ -13,6 +13,9 @@ use crate::{
     },
 };
 
+// LwwMap key type for cosignatures: (checkpoint_id, cosigner_url)
+type CosigKey = (String, String);
+
 /// Counts of live entries per field — for observability / gossip status endpoint.
 #[derive(Debug, Clone, Default)]
 pub struct AkaCrdtCounts {
@@ -46,7 +49,7 @@ pub struct AkaCrdt {
     pub operators: OrMap<String, OperatorEntry>,
     pub delegations: OrMap<String, DelegationEntry>,
     pub mtc_checkpoints: LwwMap<u64, MtcCheckpointEntry>,
-    pub mtc_cosignatures: GrowSet<MtcCosigEntry>,
+    pub mtc_cosignatures: LwwMap<CosigKey, MtcCosigEntry>,
     pub audit_events: GrowSet<AuditEventEntry>,
     /// Gossip-consensus ownership: order_id → owning node + claim timestamp.
     pub order_owners: LwwMap<String, OrderOwner>,
@@ -68,8 +71,8 @@ impl AkaCrdt {
             operators: self.operators.delta_since(gen),
             delegations: self.delegations.delta_since(gen),
             mtc_checkpoints: self.mtc_checkpoints.delta_since(gen),
-            mtc_cosignatures: self.mtc_cosignatures.delta_since(gen).unwrap_or_default(),
-            audit_events: self.audit_events.delta_since(gen).unwrap_or_default(),
+            mtc_cosignatures: self.mtc_cosignatures.delta_since(gen),
+            audit_events: self.audit_events.delta_since(gen),
             order_owners: self.order_owners.delta_since(gen),
             mtc_writer: self.mtc_writer.delta_since(gen).unwrap_or_default(),
         }
@@ -88,17 +91,8 @@ impl AkaCrdt {
             operators: self.operators.delta_range(since, until),
             delegations: self.delegations.delta_range(since, until),
             mtc_checkpoints: self.mtc_checkpoints.delta_range(since, until),
-            // GrowSet has no delta_range; include full set when since==0, else empty.
-            mtc_cosignatures: if since == 0 {
-                self.mtc_cosignatures.clone()
-            } else {
-                GrowSet::default()
-            },
-            audit_events: if since == 0 {
-                self.audit_events.clone()
-            } else {
-                GrowSet::default()
-            },
+            mtc_cosignatures: self.mtc_cosignatures.delta_range(since, until),
+            audit_events: self.audit_events.delta_range(since, until),
             order_owners: self.order_owners.delta_range(since, until),
             mtc_writer: self.mtc_writer.delta_range(since, until),
         }
@@ -132,7 +126,7 @@ impl AkaCrdt {
             operators: self.operators.count_live(),
             delegations: self.delegations.count_live(),
             mtc_checkpoints: self.mtc_checkpoints.count_live(),
-            mtc_cosignatures: self.mtc_cosignatures.len(),
+            mtc_cosignatures: self.mtc_cosignatures.count_live(),
             audit_events: self.audit_events.len(),
         }
     }
@@ -146,7 +140,7 @@ impl AkaCrdt {
     /// live ownership that has not yet lapsed.
     pub fn claim_order(&mut self, order_id: &str, node_id: &str, now: i64, ttl: i64) -> bool {
         if let Some(owner) = self.order_owners.get(order_id) {
-            if owner.node_id != node_id && owner.claimed_at + ttl >= now {
+            if owner.node_id != node_id && owner.claimed_at.saturating_add(ttl) >= now {
                 return false; // another live owner holds the slot
             }
         }
@@ -166,7 +160,7 @@ impl AkaCrdt {
     pub fn is_order_owner(&self, order_id: &str, node_id: &str, now: i64, ttl: i64) -> bool {
         self.order_owners
             .get(order_id)
-            .map(|o| o.node_id == node_id && o.claimed_at + ttl >= now)
+            .map(|o| o.node_id == node_id && o.claimed_at.saturating_add(ttl) >= now)
             .unwrap_or(false)
     }
 
@@ -175,7 +169,7 @@ impl AkaCrdt {
     /// Returns `true` if this node is now the elected writer.
     pub fn claim_mtc_writer(&mut self, node_id: &str, now: i64, ttl: i64) -> bool {
         if let Some(writer) = self.mtc_writer.get() {
-            if writer.node_id != node_id && writer.claimed_at + ttl >= now {
+            if writer.node_id != node_id && writer.claimed_at.saturating_add(ttl) >= now {
                 return false; // incumbent writer holds the election
             }
         }
@@ -194,7 +188,7 @@ impl AkaCrdt {
     pub fn is_mtc_writer(&self, node_id: &str, now: i64, ttl: i64) -> bool {
         self.mtc_writer
             .get()
-            .map(|w| w.node_id == node_id && w.claimed_at + ttl >= now)
+            .map(|w| w.node_id == node_id && w.claimed_at.saturating_add(ttl) >= now)
             .unwrap_or(false)
     }
 }
@@ -319,12 +313,17 @@ mod tests {
             now,
             "node-1",
         );
-        c.mtc_cosignatures.insert(MtcCosigEntry {
-            checkpoint_id: "cp-1".to_owned(),
-            cosigner_url: "https://cosign/".to_owned(),
-            signature: vec![0, 1, 2],
-            signed_at: now,
-        });
+        c.mtc_cosignatures.set(
+            ("cp-1".to_owned(), "https://cosign/".to_owned()),
+            MtcCosigEntry {
+                checkpoint_id: "cp-1".to_owned(),
+                cosigner_url: "https://cosign/".to_owned(),
+                signature: vec![0, 1, 2],
+                signed_at: now,
+            },
+            now,
+            "node-1",
+        );
         c.audit_events.insert(AuditEventEntry {
             event_id: "evt-1".to_owned(),
             occurred_at: "2024-01-01T00:00:00Z".to_owned(),
@@ -349,7 +348,7 @@ mod tests {
         assert!(decoded.accounts.get("acct-1").is_some());
         assert!(decoded.orders.get("ord-1").is_some());
         assert!(decoded.certificates.get("cert-1").is_some());
-        assert_eq!(decoded.mtc_cosignatures.len(), 1);
+        assert_eq!(decoded.mtc_cosignatures.count_live(), 1);
         assert_eq!(decoded.audit_events.len(), 1);
     }
 

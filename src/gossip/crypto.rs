@@ -6,6 +6,8 @@
 //! Ported from `ekishib-cms`; adapted to accept PEM input for the signing private key
 //! (Akamu stores signing keys as PEM) and to use the `akamu-cms-kek` HKDF info string.
 
+use std::io::Read as _;
+
 use native_ossl::cipher::{AeadDecryptCtx, AeadEncryptCtx, CipherAlg};
 use native_ossl::cms::{CmsContentInfo, CmsSignFlags, CmsVerifyFlags};
 use native_ossl::digest::DigestAlg;
@@ -69,6 +71,11 @@ impl From<synta::Error> for CmsError {
 pub struct SealRecipient<'a> {
     pub hint: &'a str,
     pub spki_der: &'a [u8],
+}
+
+/// Generate 16 cryptographically-random bytes for use as a per-message nonce.
+pub fn random_nonce() -> Result<Vec<u8>, CmsError> {
+    Rand::bytes(16).map_err(CmsError::OpenSsl)
 }
 
 /// Sign-then-encrypt for gossip send.
@@ -136,13 +143,24 @@ fn seal(plaintext: &[u8], recipients: &[SealRecipient<'_>]) -> Result<Vec<u8>, C
 }
 
 fn open(ciphertext_der: &[u8], kem_priv_pkcs8_der: &[u8]) -> Result<Vec<u8>, CmsError> {
+    const MAX_DECOMPRESSED: u64 = 64 * 1024 * 1024; // 64 MiB
     let compressed = open_raw(ciphertext_der, kem_priv_pkcs8_der)?;
-    zstd::decode_all(compressed.as_slice()).map_err(CmsError::Decompress)
+    let decoder = zstd::Decoder::new(compressed.as_slice()).map_err(CmsError::Decompress)?;
+    let mut out = Vec::new();
+    std::io::Read::read_to_end(&mut decoder.take(MAX_DECOMPRESSED + 1), &mut out)
+        .map_err(CmsError::Decompress)?;
+    if out.len() as u64 > MAX_DECOMPRESSED {
+        return Err(CmsError::Decompress(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "decompressed gossip payload exceeds 64 MiB limit",
+        )));
+    }
+    Ok(out)
 }
 
 fn seal_raw(plaintext: &[u8], recipients: &[SealRecipient<'_>]) -> Result<Vec<u8>, CmsError> {
-    let cek: [u8; 32] = Rand::bytes(32)?.try_into().unwrap();
-    let nonce: [u8; 12] = Rand::bytes(12)?.try_into().unwrap();
+    let cek: [u8; 32] = Rand::bytes(32)?.try_into().map_err(|_| CmsError::Encode)?;
+    let nonce: [u8; 12] = Rand::bytes(12)?.try_into().map_err(|_| CmsError::Encode)?;
 
     let gcm = CipherAlg::fetch(c"AES-256-GCM", None)?;
     let mut enc = AeadEncryptCtx::new(&gcm, &cek, &nonce, None)?;
@@ -163,7 +181,7 @@ fn seal_raw(plaintext: &[u8], recipients: &[SealRecipient<'_>]) -> Result<Vec<u8
         })?;
 
         let result = EncapCtx::new(&pub_key)?.encapsulate()?;
-        let kek = hkdf_sha256_kek(&result.shared_secret)?;
+        let kek = hkdf_sha256_kek(&result.shared_secret, &result.wrapped_key)?;
         let encrypted_cek = aes_key_wrap(&kek, &cek)?;
 
         let ski_der = build_ski_der(&sha256(r.spki_der)?);
@@ -204,13 +222,19 @@ fn open_raw(ciphertext_der: &[u8], kem_priv_pkcs8_der: &[u8]) -> Result<Vec<u8>,
         let kemct = kri.kemct.as_bytes();
         let shared_secret = match DecapCtx::new(&priv_key).and_then(|mut c| c.decapsulate(kemct)) {
             Ok(ss) => ss,
-            Err(_) => continue,
+            Err(e) => {
+                tracing::debug!(err = %e, "gossip open: KEM decapsulation failed for recipient info");
+                continue;
+            }
         };
 
-        let kek = hkdf_sha256_kek(&shared_secret)?;
+        let kek = hkdf_sha256_kek(&shared_secret, kemct)?;
         let cek = match aes_key_unwrap(&kek, kri.encrypted_key.as_bytes()) {
             Ok(k) => k,
-            Err(_) => continue,
+            Err(e) => {
+                tracing::debug!(err = %e, "gossip open: AES key-unwrap failed for recipient info");
+                continue;
+            }
         };
 
         let enc_alg_der = env
@@ -280,10 +304,11 @@ fn sha256(data: &[u8]) -> Result<[u8; 32], CmsError> {
         .map_err(|_| CmsError::Encode)
 }
 
-fn hkdf_sha256_kek(shared_secret: &[u8]) -> Result<[u8; 32], CmsError> {
+fn hkdf_sha256_kek(shared_secret: &[u8], kemct: &[u8]) -> Result<[u8; 32], CmsError> {
     let digest = DigestAlg::fetch(c"SHA2-256", None)?;
     HkdfBuilder::new(&digest)
         .key(shared_secret)
+        .salt(kemct)
         .info(HKDF_INFO)
         .derive_to_vec(32)?
         .try_into()
@@ -453,7 +478,7 @@ fn aes_key_unwrap(kek: &[u8; 32], wrapped: &[u8]) -> Result<[u8; 32], CmsError> 
     const N: usize = 4;
     let ecb = CipherAlg::fetch(c"AES-256-ECB", None)?;
 
-    let mut a: [u8; 8] = wrapped[..8].try_into().unwrap();
+    let mut a: [u8; 8] = wrapped[..8].try_into().map_err(|_| CmsError::ParseError)?;
     let mut r: [[u8; 8]; N] = Default::default();
     for i in 0..N {
         r[i].copy_from_slice(&wrapped[8 + i * 8..8 + (i + 1) * 8]);
