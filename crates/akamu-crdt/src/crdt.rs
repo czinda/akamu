@@ -52,9 +52,11 @@ pub struct AkaCrdt {
     pub mtc_cosignatures: LwwMap<CosigKey, MtcCosigEntry>,
     pub audit_events: GrowSet<AuditEventEntry>,
     /// Gossip-consensus ownership: order_id → owning node + claim timestamp.
-    pub order_owners: LwwMap<String, OrderOwner>,
+    /// Access via `claim_order` / `is_order_owner`; not directly writable externally.
+    pub(crate) order_owners: LwwMap<String, OrderOwner>,
     /// Gossip-consensus election: single elected MTC log writer.
-    pub mtc_writer: LwwRegister<MtcWriter>,
+    /// Access via `claim_mtc_writer` / `is_mtc_writer`; not directly writable externally.
+    pub(crate) mtc_writer: LwwRegister<MtcWriter>,
 }
 
 impl AkaCrdt {
@@ -417,5 +419,43 @@ mod tests {
         let lapsed_at = now + ttl + 1;
         assert!(crdt.claim_mtc_writer("node-b", lapsed_at, ttl));
         assert!(crdt.is_mtc_writer("node-b", lapsed_at, ttl));
+    }
+
+    #[test]
+    fn eab_hmac_key_not_gossiped() {
+        // EabKeyEntry.hmac_key_b64u carries the HMAC secret and must be excluded
+        // from CBOR serialization so it is never transmitted in gossip messages.
+        let mut crdt = AkaCrdt::default();
+        crdt.eab_keys.set(
+            "kid-1".to_owned(),
+            EabKeyEntry {
+                kid: "kid-1".to_owned(),
+                hmac_key_b64u: "super-secret-hmac-key".to_owned(),
+                created: 1_700_000_000,
+                used_at: None,
+                profile_grants: None,
+            },
+            1_700_000_000,
+            "node-1",
+        );
+
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&crdt, &mut buf).expect("encode failed");
+
+        // The HMAC key must not appear anywhere in the CBOR bytes.
+        assert!(
+            !buf.windows("super-secret-hmac-key".len())
+                .any(|w| w == b"super-secret-hmac-key"),
+            "HMAC key leaked into CBOR gossip payload"
+        );
+
+        // The key ID must still be present (used_at and other metadata are gossiped).
+        let decoded: AkaCrdt = ciborium::de::from_reader(buf.as_slice()).expect("decode failed");
+        let entry = decoded.eab_keys.get("kid-1").expect("eab key missing after round-trip");
+        assert_eq!(entry.kid, "kid-1");
+        assert!(
+            entry.hmac_key_b64u.is_empty(),
+            "hmac_key_b64u should be empty string after CBOR round-trip (serde skip)"
+        );
     }
 }

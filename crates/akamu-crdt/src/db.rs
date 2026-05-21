@@ -585,7 +585,7 @@ pub async fn load_from_db(pool: &AnyPool, node_id: &str) -> Result<AkaCrdt, sqlx
             tracing::error!(
                 node_id = %row.node_id,
                 raw = %row.ca_ids,
-                err = %e,
+                error = %e,
                 "crdt load: malformed ca_ids JSON — defaulting to empty list"
             );
             Vec::new()

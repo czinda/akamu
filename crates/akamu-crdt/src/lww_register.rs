@@ -88,8 +88,7 @@ impl<T: Clone> LwwRegister<T> {
         self.value.is_none() && self.timestamp > 0
     }
 
-    #[cfg(feature = "db")]
-    pub(crate) const fn local_gen(&self) -> u64 {
+    pub const fn local_gen(&self) -> u64 {
         self.local_gen
     }
 

@@ -29,11 +29,12 @@ impl<K: Eq + std::hash::Hash + Clone, V: Clone> LwwMap<K, V> {
         self.entries.iter()
     }
 
-    pub fn set(&mut self, key: K, value: V, timestamp: i64, node_id: &str) {
-        self.entries
-            .entry(key)
-            .or_default()
-            .set(value, timestamp, node_id);
+    /// Set a value. Returns the `local_gen` of the register after the write
+    /// (unchanged if the new timestamp did not win the LWW race).
+    pub fn set(&mut self, key: K, value: V, timestamp: i64, node_id: &str) -> u64 {
+        let reg = self.entries.entry(key).or_default();
+        reg.set(value, timestamp, node_id);
+        reg.local_gen()
     }
 
     pub fn get<Q>(&self, key: &Q) -> Option<&V>
@@ -45,11 +46,11 @@ impl<K: Eq + std::hash::Hash + Clone, V: Clone> LwwMap<K, V> {
     }
 
     /// Record a deletion tombstone for the given key.
-    pub fn remove(&mut self, key: K, timestamp: i64, node_id: &str) {
-        self.entries
-            .entry(key)
-            .or_default()
-            .remove(timestamp, node_id);
+    /// Returns the `local_gen` of the register after the write.
+    pub fn remove(&mut self, key: K, timestamp: i64, node_id: &str) -> u64 {
+        let reg = self.entries.entry(key).or_default();
+        reg.remove(timestamp, node_id);
+        reg.local_gen()
     }
 
     /// Returns `true` if any register (live or tombstoned) exists for this key.
@@ -62,8 +63,9 @@ impl<K: Eq + std::hash::Hash + Clone, V: Clone> LwwMap<K, V> {
     }
 
     pub fn retain<F: FnMut(&V) -> bool>(&mut self, mut f: F) {
+        // Tombstones must always be kept so remove-wins semantics propagate on merge.
         self.entries
-            .retain(|_, reg| reg.get().map(&mut f).unwrap_or(false));
+            .retain(|_, reg| reg.is_tombstone() || reg.get().map(&mut f).unwrap_or(false));
     }
 
     pub fn count_live(&self) -> usize {

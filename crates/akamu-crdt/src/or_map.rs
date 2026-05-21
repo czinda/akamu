@@ -27,16 +27,16 @@ impl<K, V> Default for OrMap<K, V> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrMapEntry<V> {
     #[serde(rename = "v")]
-    pub value: V,
+    pub(crate) value: V,
     #[serde(rename = "at")]
-    pub added_at: i64,
+    pub(crate) added_at: i64,
     #[serde(rename = "ts")]
-    pub tombstone: bool,
+    pub(crate) tombstone: bool,
     #[serde(rename = "ta", skip_serializing_if = "Option::is_none", default)]
-    pub tombstone_at: Option<i64>,
+    pub(crate) tombstone_at: Option<i64>,
     /// Local-only write generation. Never serialised; defaults to 0 after reload.
     #[serde(skip, default)]
-    pub local_gen: u64,
+    pub(crate) local_gen: u64,
 }
 
 impl<K: Eq + std::hash::Hash + Clone, V: Clone> OrMap<K, V> {
@@ -57,13 +57,15 @@ impl<K: Eq + std::hash::Hash + Clone, V: Clone> OrMap<K, V> {
         });
     }
 
-    pub fn remove(&mut self, key: &K, timestamp: i64)
+    /// Tombstone an entry. Returns the `local_gen` of the resulting tombstone.
+    ///
+    /// Inserts a tombstone even when the key is absent: if a remove arrives
+    /// before its matching insert (out-of-order gossip delivery), the tombstone
+    /// must be recorded so the subsequent insert does not resurrect the entry.
+    pub fn remove(&mut self, key: &K, timestamp: i64) -> u64
     where
         V: Default,
     {
-        // Insert a tombstone even when the key is absent: if a remove arrives
-        // before its matching insert (out-of-order gossip delivery), the tombstone
-        // must be recorded so the subsequent insert does not resurrect the entry.
         let e = self
             .entries
             .entry(key.clone())
@@ -74,11 +76,16 @@ impl<K: Eq + std::hash::Hash + Clone, V: Clone> OrMap<K, V> {
                 tombstone_at: None,
                 local_gen: 0,
             });
-        if !e.tombstone {
+        // Also update tombstone_at when the entry is already tombstoned but
+        // tombstone_at is None (can happen when loaded from DB without a
+        // tombstone timestamp). Without a tombstone_at, purge_old_tombstones
+        // would incorrectly GC the entry immediately.
+        if !e.tombstone || e.tombstone_at.is_none() {
             e.tombstone = true;
             e.tombstone_at = Some(timestamp);
             e.local_gen = crate::generation::next_gen();
         }
+        e.local_gen
     }
 
     pub fn get<Q>(&self, key: &Q) -> Option<&V>
@@ -92,7 +99,14 @@ impl<K: Eq + std::hash::Hash + Clone, V: Clone> OrMap<K, V> {
             .map(|e| &e.value)
     }
 
-    pub fn upsert(&mut self, key: K, value: V, timestamp: i64) {
+    /// Insert or replace an entry, clearing any existing tombstone.
+    ///
+    /// If the entry was previously tombstoned (soft-deleted), calling `upsert`
+    /// resurrects it. Only call `upsert` after a `remove` when the business
+    /// logic explicitly permits resurrection (e.g., re-activating an account).
+    ///
+    /// Returns the `local_gen` assigned to this entry.
+    pub fn upsert(&mut self, key: K, value: V, timestamp: i64) -> u64 {
         let gen = crate::generation::next_gen();
         self.entries.insert(
             key,
@@ -104,6 +118,7 @@ impl<K: Eq + std::hash::Hash + Clone, V: Clone> OrMap<K, V> {
                 local_gen: gen,
             },
         );
+        gen
     }
 
     /// Insert an entry directly from a DB row, preserving the stored `local_gen`.
@@ -206,12 +221,20 @@ impl<K: Eq + std::hash::Hash + Clone, V: Clone> Merge for OrMap<K, V> {
                     self.entries.insert(k, other_entry);
                 }
                 Some(self_entry) => {
-                    // Tombstone always wins over live.
                     if other_entry.tombstone && !self_entry.tombstone {
+                        // Tombstone always wins over live.
                         self_entry.tombstone = true;
                         self_entry.tombstone_at = other_entry.tombstone_at;
                         self_entry.local_gen = crate::generation::next_gen();
+                    } else if !other_entry.tombstone
+                        && !self_entry.tombstone
+                        && other_entry.added_at > self_entry.added_at
+                    {
+                        // LWW for live entries: later write timestamp wins.
+                        other_entry.local_gen = crate::generation::next_gen();
+                        *self_entry = other_entry;
                     }
+                    // self is tombstone, other is live → tombstone wins (no change).
                 }
             }
         }
@@ -242,6 +265,39 @@ mod tests {
         a.merge(b);
         assert_eq!(a.get("k"), None); // tombstone won
         assert!(a.entries["k"].tombstone);
+    }
+
+    #[test]
+    fn merge_live_lww_by_added_at() {
+        // Node A has an older version; node B has a newer one.  After merge the
+        // newer value must win — live-vs-live conflict resolves by added_at LWW.
+        let mut a: OrMap<String, u32> = OrMap::default();
+        a.upsert("k".to_owned(), 1, 100);
+
+        let mut b: OrMap<String, u32> = OrMap::default();
+        b.upsert("k".to_owned(), 2, 200);
+
+        a.merge(b);
+        assert_eq!(a.get("k"), Some(&2)); // newer wins
+
+        // Older timestamp must NOT overwrite a newer in-place entry.
+        let mut c: OrMap<String, u32> = OrMap::default();
+        c.upsert("k".to_owned(), 99, 50); // older than current value in a
+
+        a.merge(c);
+        assert_eq!(a.get("k"), Some(&2)); // still 2
+    }
+
+    #[test]
+    fn tombstone_blocks_subsequent_live_insert() {
+        // A tombstone delivered before a matching insert must prevent resurrection.
+        let mut m: OrMap<String, u32> = OrMap::default();
+        m.remove(&"k".to_owned(), 100);
+        assert!(m.entries["k"].tombstone);
+
+        // Later insert at a lower timestamp must not resurrect.
+        m.insert("k".to_owned(), 42, 50);
+        assert_eq!(m.get("k"), None);
     }
 
     #[test]
