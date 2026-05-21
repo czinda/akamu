@@ -277,7 +277,11 @@ async fn on_valid(
 ) -> Result<bool, sqlx::Error> {
     let authz_id_log = authz_id.to_string();
 
-    let result: Result<bool, sqlx::Error> = async {
+    // Returns (validated_now, order_advanced):
+    // - (false, false): concurrent caller already committed; no DB changes made.
+    // - (true, false):  challenge and authz marked valid; order has more pending authz.
+    // - (true, true):   challenge and authz marked valid; order advanced to "ready".
+    let result: Result<(bool, bool), sqlx::Error> = async {
         let mut tx = state.db.begin().await?;
         crate::db::pg_local_async_commit(&mut tx, state.db_kind).await?;
 
@@ -298,7 +302,7 @@ async fn on_valid(
         if chall_rows == 0 {
             // Already validated by a concurrent caller; nothing more to do.
             tx.commit().await?;
-            return Ok(false);
+            return Ok((false, false));
         }
 
         // 2. Mark authorization valid.
@@ -328,25 +332,109 @@ async fn on_valid(
         .rows_affected();
 
         tx.commit().await?;
-        Ok(rows > 0)
+        Ok((true, rows > 0))
     }
     .await;
 
     match result {
-        Ok(true) => {
-            tracing::info!("order {order_id} is now ready");
-            state
-                .record_audit(
-                    crate::audit::AuditEvent::success(
-                        crate::audit::AuditEventType::AuthChallengeOk,
+        Ok((true, order_advanced)) => {
+            // Update in-memory CRDT so gossip propagates the validated state to
+            // other cluster nodes without waiting for a full DB reload.
+            {
+                use akamu_crdt::{AuthzEntry, ChallengeEntry, OrderEntry};
+                let (ch_gen, authz_gen, ord_gen) = {
+                    let mut crdt = state.crdt.write().await;
+
+                    let ch_gen = if let Some(ch) =
+                        crdt.challenges.get(&challenge_id.to_string()).cloned()
+                    {
+                        let updated = ChallengeEntry {
+                            status: "valid".into(),
+                            validated: Some(now),
+                            updated: now,
+                            ..ch
+                        };
+                        Some(crdt.challenges.set(
+                            challenge_id.to_string(),
+                            updated,
+                            now,
+                            state.node_id.as_str(),
+                        ))
+                    } else {
+                        None
+                    };
+
+                    let authz_gen = if let Some(az) =
+                        crdt.authorizations.get(&authz_id.to_string()).cloned()
+                    {
+                        let updated = AuthzEntry {
+                            status: "valid".into(),
+                            updated: now,
+                            ..az
+                        };
+                        Some(crdt.authorizations.upsert(authz_id.to_string(), updated, now))
+                    } else {
+                        None
+                    };
+
+                    let ord_gen = if order_advanced {
+                        if let Some(ord) = crdt.orders.get(&order_id.to_string()).cloned() {
+                            let updated = OrderEntry {
+                                status: "ready".into(),
+                                error: None,
+                                updated: now,
+                                ..ord
+                            };
+                            Some(crdt.orders.upsert(order_id.to_string(), updated, now))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    (ch_gen, authz_gen, ord_gen)
+                };
+                if let Some(gen) = ch_gen {
+                    let _ =
+                        crate::db::query("UPDATE challenges SET local_gen = ? WHERE id = ?")
+                            .bind(gen as i64)
+                            .bind(challenge_id)
+                            .execute(&state.db)
+                            .await;
+                }
+                if let Some(gen) = authz_gen {
+                    let _ = crate::db::query(
+                        "UPDATE authorizations SET local_gen = ? WHERE id = ?",
                     )
-                    .with_subject(authz_id),
-                )
-                .await;
-            Ok(true)
+                    .bind(gen as i64)
+                    .bind(authz_id)
+                    .execute(&state.db)
+                    .await;
+                }
+                if let Some(gen) = ord_gen {
+                    let _ = crate::db::query("UPDATE orders SET local_gen = ? WHERE id = ?")
+                        .bind(gen as i64)
+                        .bind(order_id)
+                        .execute(&state.db)
+                        .await;
+                }
+            }
+            if order_advanced {
+                tracing::info!("order {order_id} is now ready");
+                state
+                    .record_audit(
+                        crate::audit::AuditEvent::success(
+                            crate::audit::AuditEventType::AuthChallengeOk,
+                        )
+                        .with_subject(authz_id),
+                    )
+                    .await;
+            }
+            Ok(order_advanced)
         }
-        Ok(false) => {
-            // Challenge was already validated (concurrent webhook retry); no audit needed.
+        Ok((false, _)) => {
+            // Concurrent caller already committed; no CRDT update needed.
             Ok(false)
         }
         Err(e) => {
