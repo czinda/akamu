@@ -51,10 +51,12 @@ pub async fn run(state: Arc<AppState>) {
 
     let interval = Duration::from_secs(gossip_cfg.interval_secs.max(1));
     let tombstone_ttl_secs = gossip_cfg.tombstone_ttl_secs;
-    // After a write notification, wait this long before running gossip so that
-    // bursts of concurrent writes (e.g. all hooks from one issuance) are batched
-    // into a single round rather than spawning N rounds in quick succession.
-    let write_debounce = Duration::from_millis(10);
+    // Sliding-window debounce: after the first write notification, extend the
+    // wait on each additional notification that arrives within the slide window,
+    // up to a hard cap.  This coalesces all ~8 writes from one ACME issuance
+    // into a single gossip round instead of firing N rounds in quick succession.
+    let write_debounce_slide = Duration::from_millis(20);
+    let write_debounce_max = Duration::from_millis(150);
 
     // Tracks which http:// peers have already received a plaintext-HTTP warning (H-9).
     let mut http_warned: HashSet<String> = HashSet::new();
@@ -88,7 +90,14 @@ pub async fn run(state: Arc<AppState>) {
         tokio::select! {
             _ = tokio::time::sleep(interval) => {},
             _ = state.write_notify.notified() => {
-                tokio::time::sleep(write_debounce).await;
+                let hard_cap = tokio::time::Instant::now() + write_debounce_max;
+                loop {
+                    let window_end = (tokio::time::Instant::now() + write_debounce_slide).min(hard_cap);
+                    match tokio::time::timeout_at(window_end, state.write_notify.notified()).await {
+                        Ok(_) if tokio::time::Instant::now() < hard_cap => {}
+                        _ => break,
+                    }
+                }
             },
         }
 
