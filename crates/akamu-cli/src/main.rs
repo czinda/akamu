@@ -1281,42 +1281,8 @@ async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
         // Check ARI if --cert or cert_path from config exists and --force is not set.
         if !args.force {
             let cert_path = args.cert.as_deref().unwrap_or(&cfg.cert_path);
-            if cert_path.exists() {
-                let client = AcmeClient::new(&cfg_dir_url)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                let cert_pem = fs::read(cert_path)
-                    .map_err(|e| format!("read {}: {e}", cert_path.display()))?;
-                match client.get_renewal_info(&cert_pem).await {
-                    Ok(info) => {
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let start = parse_rfc3339_utc(&info.window_start).unwrap_or(0);
-                        let end = parse_rfc3339_utc(&info.window_end).unwrap_or(u64::MAX);
-                        if now < start {
-                            println!(
-                                "Renewal not yet suggested (window opens {}). Use --force to override.",
-                                info.window_start
-                            );
-                            return Ok(());
-                        }
-                        if now > end {
-                            eprintln!(
-                                "Warning: past the ARI renewal window end ({}); renewing anyway.",
-                                info.window_end
-                            );
-                        }
-                        println!(
-                            "ARI: renewal suggested (window {} – {})",
-                            info.window_start, info.window_end
-                        );
-                    }
-                    Err(e) => {
-                        eprintln!("ARI unavailable ({}); proceeding with renewal.", e);
-                    }
-                }
+            if !check_ari_window(&cfg_dir_url, cert_path).await? {
+                return Ok(());
             }
         }
 
@@ -1349,41 +1315,9 @@ async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
 
     let dir_url = resolve_directory_url(&args.server, args.ca.as_deref());
     if !args.force {
-        if let Some(cert_path) = &args.cert {
-            let client = AcmeClient::new(&dir_url).await.map_err(|e| e.to_string())?;
-            let cert_pem =
-                fs::read(cert_path).map_err(|e| format!("read {}: {e}", cert_path.display()))?;
-            match client.get_renewal_info(&cert_pem).await {
-                Ok(info) => {
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    let start = parse_rfc3339_utc(&info.window_start).unwrap_or(0);
-                    let end = parse_rfc3339_utc(&info.window_end).unwrap_or(u64::MAX);
-                    if now < start {
-                        println!(
-                            "Renewal not yet suggested (window opens {}). Use --force to override.",
-                            info.window_start
-                        );
-                        return Ok(());
-                    }
-                    if now > end {
-                        eprintln!(
-                            "Warning: past the ARI renewal window end ({}); renewing anyway.",
-                            info.window_end
-                        );
-                    }
-                    // Within (or past) window — proceed.
-                    println!(
-                        "ARI: renewal suggested (window {} – {})",
-                        info.window_start, info.window_end
-                    );
-                }
-                Err(e) => {
-                    // ARI not supported or error — proceed with renewal.
-                    eprintln!("ARI unavailable ({}); proceeding with renewal.", e);
-                }
+        if let Some(ref cert_path) = args.cert {
+            if !check_ari_window(&dir_url, cert_path).await? {
+                return Ok(());
             }
         }
     }
