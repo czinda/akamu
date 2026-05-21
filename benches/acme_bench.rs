@@ -1129,7 +1129,7 @@ fn write_node_config(p: NodeConfigParams<'_>) -> std::io::Result<()> {
          enforce_validity_cap = false\n\n\
          [mtc]\nlog_path = \"/dev/null\"\nenabled = false\n\n\
          [server]\nhttp_validation_port = {}\n\
-         http_validation_allow_private_ips = true\n{dns_line}{gossip_section}",
+         http_validation_allow_private_ips = true\nvalidate_dnssec = false\n{dns_line}{gossip_section}",
         p.listen_addr,
         p.base_url,
         p.db_path,
