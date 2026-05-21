@@ -1103,9 +1103,20 @@ pub async fn save_node_keys(pool: &AnyPool, row: &NodeKeysRow) -> Result<(), sql
 pub async fn open_crdt_db(url: &str) -> Result<AnyPool, sqlx::Error> {
     use sqlx::any::AnyPoolOptions;
     let is_mem = url.contains(":memory:");
+    let owned;
+    let effective_url = if url.starts_with("sqlite") && !is_mem && !url.contains("mode=") {
+        owned = if url.contains('?') {
+            format!("{url}&mode=rwc")
+        } else {
+            format!("{url}?mode=rwc")
+        };
+        owned.as_str()
+    } else {
+        url
+    };
     let pool = AnyPoolOptions::new()
         .max_connections(if is_mem { 1 } else { 4 })
-        .connect(url)
+        .connect(effective_url)
         .await?;
 
     // Enable WAL on file-backed SQLite; ignored by Postgres/MariaDB.
