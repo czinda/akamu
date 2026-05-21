@@ -210,6 +210,11 @@ impl<K: Eq + std::hash::Hash + Clone, V: Clone> OrMap<K, V> {
         self.entries
             .retain(|_, e| !e.tombstone || e.tombstone_at.is_some_and(|t| t >= cutoff));
     }
+
+    /// Returns the highest `local_gen` across all entries in this map.
+    pub fn max_local_gen(&self) -> u64 {
+        self.entries.values().map(|e| e.local_gen).max().unwrap_or(0)
+    }
 }
 
 impl<K: Eq + std::hash::Hash + Clone, V: Clone> Merge for OrMap<K, V> {

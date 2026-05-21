@@ -109,7 +109,8 @@ pub async fn on_account_upsert(state: &AppState, p: AccountUpsertParams<'_>) {
         let mut crdt = state.crdt.write().await;
         crdt.accounts.upsert(p.id.to_string(), entry, p.updated)
     };
-    if let Err(e) = query("UPDATE accounts SET local_gen = ? WHERE id = ?")
+    if let Err(e) = query("UPDATE accounts SET local_gen = CASE WHEN local_gen > ? THEN local_gen ELSE ? END WHERE id = ?")
+        .bind(local_gen as i64)
         .bind(local_gen as i64)
         .bind(p.id)
         .execute(&state.db)
@@ -127,7 +128,8 @@ pub async fn on_account_tombstone(state: &AppState, id: &str, now: i64) {
         let mut crdt = state.crdt.write().await;
         crdt.accounts.remove(&id.to_string(), now)
     };
-    if let Err(e) = query("UPDATE accounts SET local_gen = ? WHERE id = ?")
+    if let Err(e) = query("UPDATE accounts SET local_gen = CASE WHEN local_gen > ? THEN local_gen ELSE ? END WHERE id = ?")
+        .bind(local_gen as i64)
         .bind(local_gen as i64)
         .bind(id)
         .execute(&state.db)
@@ -163,7 +165,8 @@ pub async fn on_order_upsert(state: &AppState, p: OrderUpsertParams<'_>) {
         let mut crdt = state.crdt.write().await;
         crdt.orders.upsert(p.id.to_string(), entry, p.updated)
     };
-    if let Err(e) = query("UPDATE orders SET local_gen = ? WHERE id = ?")
+    if let Err(e) = query("UPDATE orders SET local_gen = CASE WHEN local_gen > ? THEN local_gen ELSE ? END WHERE id = ?")
+        .bind(local_gen as i64)
         .bind(local_gen as i64)
         .bind(p.id)
         .execute(&state.db)
@@ -181,7 +184,8 @@ pub async fn on_order_tombstone(state: &AppState, id: &str, now: i64) {
         let mut crdt = state.crdt.write().await;
         crdt.orders.remove(&id.to_string(), now)
     };
-    if let Err(e) = query("UPDATE orders SET local_gen = ? WHERE id = ?")
+    if let Err(e) = query("UPDATE orders SET local_gen = CASE WHEN local_gen > ? THEN local_gen ELSE ? END WHERE id = ?")
+        .bind(local_gen as i64)
         .bind(local_gen as i64)
         .bind(id)
         .execute(&state.db)
@@ -214,7 +218,8 @@ pub async fn on_authz_upsert(state: &AppState, p: AuthzUpsertParams<'_>) {
         crdt.authorizations
             .upsert(p.id.to_string(), entry, p.updated)
     };
-    if let Err(e) = query("UPDATE authorizations SET local_gen = ? WHERE id = ?")
+    if let Err(e) = query("UPDATE authorizations SET local_gen = CASE WHEN local_gen > ? THEN local_gen ELSE ? END WHERE id = ?")
+        .bind(local_gen as i64)
         .bind(local_gen as i64)
         .bind(p.id)
         .execute(&state.db)
@@ -232,7 +237,8 @@ pub async fn on_authz_tombstone(state: &AppState, id: &str, now: i64) {
         let mut crdt = state.crdt.write().await;
         crdt.authorizations.remove(&id.to_string(), now)
     };
-    if let Err(e) = query("UPDATE authorizations SET local_gen = ? WHERE id = ?")
+    if let Err(e) = query("UPDATE authorizations SET local_gen = CASE WHEN local_gen > ? THEN local_gen ELSE ? END WHERE id = ?")
+        .bind(local_gen as i64)
         .bind(local_gen as i64)
         .bind(id)
         .execute(&state.db)
@@ -264,7 +270,8 @@ pub async fn on_challenge_set(state: &AppState, p: ChallengeSetParams<'_>) {
         crdt.challenges
             .set(p.id.to_string(), entry, p.updated, &state.node_id)
     };
-    if let Err(e) = query("UPDATE challenges SET local_gen = ? WHERE id = ?")
+    if let Err(e) = query("UPDATE challenges SET local_gen = CASE WHEN local_gen > ? THEN local_gen ELSE ? END WHERE id = ?")
+        .bind(local_gen as i64)
         .bind(local_gen as i64)
         .bind(p.id)
         .execute(&state.db)
@@ -297,7 +304,8 @@ pub async fn on_cert_upsert(state: &AppState, p: CertUpsertParams<'_>) {
         let mut crdt = state.crdt.write().await;
         crdt.certificates.upsert(p.id.to_string(), entry, p.created)
     };
-    if let Err(e) = query("UPDATE certificates SET local_gen = ? WHERE id = ?")
+    if let Err(e) = query("UPDATE certificates SET local_gen = CASE WHEN local_gen > ? THEN local_gen ELSE ? END WHERE id = ?")
+        .bind(local_gen as i64)
         .bind(local_gen as i64)
         .bind(p.id)
         .execute(&state.db)
@@ -315,7 +323,8 @@ pub async fn on_cert_tombstone(state: &AppState, id: &str, now: i64) {
         let mut crdt = state.crdt.write().await;
         crdt.certificates.remove(&id.to_string(), now)
     };
-    if let Err(e) = query("UPDATE certificates SET local_gen = ? WHERE id = ?")
+    if let Err(e) = query("UPDATE certificates SET local_gen = CASE WHEN local_gen > ? THEN local_gen ELSE ? END WHERE id = ?")
+        .bind(local_gen as i64)
         .bind(local_gen as i64)
         .bind(id)
         .execute(&state.db)
@@ -351,7 +360,8 @@ pub async fn on_eab_key_set(
         crdt.eab_keys
             .set(kid.to_string(), entry, ts, &state.node_id)
     };
-    if let Err(e) = query("UPDATE eab_keys SET local_gen = ? WHERE kid = ?")
+    if let Err(e) = query("UPDATE eab_keys SET local_gen = CASE WHEN local_gen > ? THEN local_gen ELSE ? END WHERE kid = ?")
+        .bind(local_gen as i64)
         .bind(local_gen as i64)
         .bind(kid)
         .execute(&state.db)
@@ -385,7 +395,8 @@ pub async fn on_operator_upsert(
         let mut crdt = state.crdt.write().await;
         crdt.operators.upsert(id.to_string(), entry, created)
     };
-    if let Err(e) = query("UPDATE operators SET local_gen = ? WHERE id = ?")
+    if let Err(e) = query("UPDATE operators SET local_gen = CASE WHEN local_gen > ? THEN local_gen ELSE ? END WHERE id = ?")
+        .bind(local_gen as i64)
         .bind(local_gen as i64)
         .bind(id)
         .execute(&state.db)
@@ -403,7 +414,8 @@ pub async fn on_operator_tombstone(state: &AppState, id: i64, now: i64) {
         let mut crdt = state.crdt.write().await;
         crdt.operators.remove(&id.to_string(), now)
     };
-    if let Err(e) = query("UPDATE operators SET local_gen = ? WHERE id = ?")
+    if let Err(e) = query("UPDATE operators SET local_gen = CASE WHEN local_gen > ? THEN local_gen ELSE ? END WHERE id = ?")
+        .bind(local_gen as i64)
         .bind(local_gen as i64)
         .bind(id)
         .execute(&state.db)
@@ -437,7 +449,8 @@ pub async fn on_delegation_upsert(
         let mut crdt = state.crdt.write().await;
         crdt.delegations.upsert(id.to_string(), entry, created)
     };
-    if let Err(e) = query("UPDATE delegations SET local_gen = ? WHERE id = ?")
+    if let Err(e) = query("UPDATE delegations SET local_gen = CASE WHEN local_gen > ? THEN local_gen ELSE ? END WHERE id = ?")
+        .bind(local_gen as i64)
         .bind(local_gen as i64)
         .bind(id)
         .execute(&state.db)
@@ -455,7 +468,8 @@ pub async fn on_delegation_tombstone(state: &AppState, id: &str, now: i64) {
         let mut crdt = state.crdt.write().await;
         crdt.delegations.remove(&id.to_string(), now)
     };
-    if let Err(e) = query("UPDATE delegations SET local_gen = ? WHERE id = ?")
+    if let Err(e) = query("UPDATE delegations SET local_gen = CASE WHEN local_gen > ? THEN local_gen ELSE ? END WHERE id = ?")
+        .bind(local_gen as i64)
         .bind(local_gen as i64)
         .bind(id)
         .execute(&state.db)

@@ -77,30 +77,25 @@ pub async fn run(state: Arc<AppState>) {
 
         let now = unix_now();
 
-        // Hourly: purge old tombstones.  Build the purged snapshot first, persist it,
-        // then apply the purge to the in-memory CRDT only on success (C-5).
+        // Hourly: purge old tombstones.  Apply the purge in-place under a write lock
+        // rather than persisting a snapshot first.  A snapshot approach has a data-loss
+        // window: entries written after the snapshot read but before the in-memory purge
+        // apply are absent from the persisted snapshot, so a crash at that point loses
+        // them permanently from the DB.  The post-purge DB state is written on the next
+        // successful peer merge via persist_crdt.
         if round.is_multiple_of(rounds_per_hour) {
             let cutoff = now - tombstone_ttl_secs as i64;
             let audit_cutoff_str = unix_to_rfc3339(cutoff);
-            let purged_snapshot = {
-                let crdt = state.crdt.read().await;
-                let mut c = crdt.clone();
-                c.purge_old_tombstones(cutoff);
-                c.audit_events
+            {
+                let mut crdt = state.crdt.write().await;
+                crdt.purge_old_tombstones(cutoff);
+                crdt.audit_events
                     .retain(|e| e.occurred_at.as_str() >= audit_cutoff_str.as_str());
-                c
-            };
-            match akamu_crdt::db::persist_crdt(&state.db, &purged_snapshot).await {
-                Ok(()) => {
-                    let mut crdt = state.crdt.write().await;
-                    crdt.purge_old_tombstones(cutoff);
-                    crdt.audit_events
-                        .retain(|e| e.occurred_at.as_str() >= audit_cutoff_str.as_str());
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "gossip: persist after tombstone purge failed — in-memory state unchanged");
-                }
             }
+            tracing::info!(
+                cutoff_secs = cutoff,
+                "gossip: tombstone GC applied in-memory — DB will sync on next peer merge"
+            );
         }
 
         // Build peer list from config + CRDT-discovered peers (deduplicated).
@@ -113,7 +108,7 @@ pub async fn run(state: Arc<AppState>) {
                 .map(|(_, e)| e.gossip_url.clone())
                 .filter(|url| !url.is_empty())
                 .collect();
-            let mut seen = std::collections::BTreeSet::new();
+            let mut seen = HashSet::new();
             state
                 .config
                 .gossip
@@ -424,10 +419,15 @@ pub async fn run(state: Arc<AppState>) {
                 }
             };
 
-            // Merge and snapshot inside write lock (C-5, C-6: no TOCTOU between merge and persist).
-            let crdt_snapshot = {
+            // Merge under write lock, then clone under read lock.  Holding the write
+            // lock for the clone blocks all concurrent ACME read-lock holders for the
+            // full clone duration; splitting the operations eliminates that stall.
+            {
                 let mut crdt = state.crdt.write().await;
                 Merge::merge(&mut *crdt, peer_crdt);
+            }
+            let crdt_snapshot = {
+                let crdt = state.crdt.read().await;
                 crdt.clone()
             };
 

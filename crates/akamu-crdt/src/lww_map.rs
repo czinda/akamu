@@ -98,13 +98,14 @@ impl<K: Eq + std::hash::Hash + Clone, V: Clone> LwwMap<K, V> {
             entries: self
                 .entries
                 .iter()
-                .filter(|(_, r)| {
-                    let dr = r.delta_range(since, until);
-                    dr.timestamp() > 0 || dr.get().is_some()
-                })
-                .map(|(k, r)| (k.clone(), r.clone()))
+                .filter_map(|(k, r)| r.delta_range(since, until).map(|dr| (k.clone(), dr)))
                 .collect(),
         }
+    }
+
+    /// Returns the highest `local_gen` across all registers in this map.
+    pub fn max_local_gen(&self) -> u64 {
+        self.entries.values().map(|r| r.local_gen()).max().unwrap_or(0)
     }
 
     /// Insert a register directly from a DB row, preserving the stored `local_gen`.

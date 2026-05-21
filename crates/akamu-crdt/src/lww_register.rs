@@ -101,12 +101,12 @@ impl<T: Clone> LwwRegister<T> {
         }
     }
 
-    /// Returns `self` if written in `(since, until]`, else default.
-    pub fn delta_range(&self, since: u64, until: u64) -> Self {
+    /// Returns `Some(self)` if written in `(since, until]`, else `None`.
+    pub fn delta_range(&self, since: u64, until: u64) -> Option<Self> {
         if self.local_gen > since && self.local_gen <= until {
-            self.clone()
+            Some(self.clone())
         } else {
-            LwwRegister::default()
+            None
         }
     }
 }

@@ -9,7 +9,11 @@ CREATE TABLE IF NOT EXISTS crdt_cluster_nodes (
     registered_at            BIGINT       NOT NULL,
     tombstone                TINYINT      NOT NULL DEFAULT 0,
     tombstone_at             BIGINT,
-    local_gen                BIGINT       NOT NULL DEFAULT 0
+    local_gen                BIGINT       NOT NULL DEFAULT 0,
+    CONSTRAINT ck_tombstone_consistency CHECK (
+        (tombstone = 0 AND tombstone_at IS NULL) OR
+        (tombstone = 1 AND tombstone_at IS NOT NULL)
+    )
 );
 
 -- Gossip-consensus order ownership: one row per order that has a live claim.

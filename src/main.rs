@@ -352,9 +352,18 @@ async fn run() -> Result<(), String> {
     let crdt_initial = akamu_crdt::db::load_from_db(&db, &node_keys.node_id)
         .await
         .map_err(|e| format!("CRDT load from DB: {e}"))?;
+    // Seed the process-global generation counter from the highest local_gen
+    // persisted in the DB.  Without this, CRDT_GENERATION starts at 0 after
+    // every restart, so the first gossip round after restart includes every
+    // entry (local_gen > 0 = CRDT_GENERATION), forcing a full-state push
+    // instead of a minimal delta.
+    let max_gen = crdt_initial.max_local_gen();
+    if max_gen > 0 {
+        akamu_crdt::CRDT_GENERATION.fetch_max(max_gen, std::sync::atomic::Ordering::Release);
+    }
     let crdt = std::sync::Arc::new(tokio::sync::RwLock::new(crdt_initial));
     let node_id = std::sync::Arc::new(node_keys.node_id.clone());
-    tracing::info!(node_id = %node_id, "CRDT state loaded from DB");
+    tracing::info!(node_id = %node_id, crdt_gen = max_gen, "CRDT state loaded from DB");
 
     // Seed EAB keys from config into the DB (INSERT OR IGNORE — never overwrites
     // keys that were provisioned or consumed by the runtime admin endpoint).
@@ -762,11 +771,24 @@ async fn run() -> Result<(), String> {
     let _delegation_task = delegation_upstream::spawn(Arc::clone(&state));
 
     // ── Gossip background loop (disabled when [gossip] section is absent) ─────
-    let _gossip_task = state
-        .config
-        .gossip
-        .is_some()
-        .then(|| tokio::spawn(gossip::gossip_loop::run(Arc::clone(&state))));
+    // Wrapped in a supervisor that restarts the loop if it panics.
+    // Clean exit or cancellation (server shutdown) terminates the supervisor.
+    if state.config.gossip.is_some() {
+        let state_for_gossip = Arc::clone(&state);
+        tokio::spawn(async move {
+            loop {
+                let s = Arc::clone(&state_for_gossip);
+                match tokio::spawn(gossip::gossip_loop::run(s)).await {
+                    Ok(()) => break, // clean exit = server shutting down
+                    Err(e) if e.is_cancelled() => break,
+                    Err(e) => {
+                        tracing::error!(err = %e, "gossip loop panicked; restarting in 5s");
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    }
+                }
+            }
+        });
+    }
 
     // ── HTTP / TLS server (serves ACME, admin API, and web UI) ──────────────
     let static_dir = config

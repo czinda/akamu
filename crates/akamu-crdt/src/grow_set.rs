@@ -59,6 +59,11 @@ impl<T: Eq + std::hash::Hash + Clone> GrowSet<T> {
         self.entries.retain(|k, _| keep(k));
     }
 
+    /// Returns the highest `local_gen` across all entries in this set.
+    pub fn max_local_gen(&self) -> u64 {
+        self.entries.values().copied().max().unwrap_or(0)
+    }
+
     /// Returns a GrowSet containing only entries inserted after `gen`.
     pub fn delta_since(&self, gen: u64) -> Self {
         Self {

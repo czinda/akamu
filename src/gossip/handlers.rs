@@ -36,6 +36,11 @@ pub async fn gossip_sync(
         tracing::warn!("gossip/sync: missing x-akamu-node-id header");
         return StatusCode::BAD_REQUEST.into_response();
     }
+    // Bound the header length before any lock acquisition to limit pre-auth resource use.
+    if sender_node_id.len() > 64 {
+        tracing::warn!(len = sender_node_id.len(), "gossip/sync: x-akamu-node-id too long");
+        return StatusCode::BAD_REQUEST.into_response();
+    }
 
     // Reject unknown senders: both signing key and KEM key must be pre-pinned.
     // KEM key is looked up here (pre-merge) so an attacker cannot redirect our
@@ -121,12 +126,30 @@ pub async fn gossip_sync(
             );
             return StatusCode::BAD_REQUEST.into_response();
         }
+        // Cap nonce length to prevent a large HashMap key from being injected.
+        if envelope.nonce.len() > 32 {
+            tracing::warn!(
+                sender = %sender_node_id,
+                len = envelope.nonce.len(),
+                "gossip/sync: nonce too long — rejecting"
+            );
+            return StatusCode::BAD_REQUEST.into_response();
+        }
         let mut nonce_cache = state
             .gossip_nonce_cache
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         // Evict expired entries lazily.
         nonce_cache.retain(|_, &mut ts| ts >= now_ts - max_age);
+        // Bound cache size to prevent memory exhaustion from a compromised peer.
+        const GOSSIP_NONCE_CACHE_MAX: usize = 10_000;
+        if nonce_cache.len() >= GOSSIP_NONCE_CACHE_MAX {
+            tracing::warn!(
+                sender = %sender_node_id,
+                "gossip/sync: nonce cache full — rejecting"
+            );
+            return StatusCode::TOO_MANY_REQUESTS.into_response();
+        }
         if nonce_cache.insert(envelope.nonce.clone(), now_ts).is_some() {
             tracing::warn!(
                 sender = %sender_node_id,
@@ -146,15 +169,20 @@ pub async fn gossip_sync(
 
     let request_delta_since = envelope.request_delta_since;
 
-    // Read both pre- and post-merge generations inside the write lock so no
-    // concurrent task can advance CRDT_GENERATION between our merge and our read.
-    let (pre_merge_gen, post_merge_gen, crdt_snapshot) = {
+    // Merge under write lock, then clone under read lock.  Holding the write lock
+    // for the clone blocks all concurrent ACME read-lock holders; splitting the
+    // operations removes that stall.  post_merge_gen is captured inside the write
+    // lock to avoid seeing concurrent bumps from hook writes.
+    let (pre_merge_gen, post_merge_gen) = {
         let mut crdt = state.crdt.write().await;
         let pre_merge_gen = CRDT_GENERATION.load(std::sync::atomic::Ordering::Acquire);
         akamu_crdt::Merge::merge(&mut *crdt, peer_crdt);
         let post_merge_gen = CRDT_GENERATION.load(std::sync::atomic::Ordering::Acquire);
-        let snapshot = crdt.clone();
-        (pre_merge_gen, post_merge_gen, snapshot)
+        (pre_merge_gen, post_merge_gen)
+    };
+    let crdt_snapshot = {
+        let crdt = state.crdt.read().await;
+        crdt.clone()
     };
 
     if let Err(e) = akamu_crdt::db::persist_crdt(&state.db, &crdt_snapshot).await {
@@ -322,9 +350,12 @@ pub async fn gossip_register(
         registered_at: now,
     };
 
-    let crdt_snapshot = {
+    {
         let mut crdt = state.crdt.write().await;
         crdt.cluster_nodes.upsert(body.node_id.clone(), entry, now);
+    }
+    let crdt_snapshot = {
+        let crdt = state.crdt.read().await;
         crdt.clone()
     };
 

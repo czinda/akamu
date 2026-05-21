@@ -96,7 +96,7 @@ impl AkaCrdt {
             mtc_cosignatures: self.mtc_cosignatures.delta_range(since, until),
             audit_events: self.audit_events.delta_range(since, until),
             order_owners: self.order_owners.delta_range(since, until),
-            mtc_writer: self.mtc_writer.delta_range(since, until),
+            mtc_writer: self.mtc_writer.delta_range(since, until).unwrap_or_default(),
         }
     }
 
@@ -112,7 +112,29 @@ impl AkaCrdt {
         self.operators.purge_old_tombstones(cutoff);
         self.delegations.purge_old_tombstones(cutoff);
         self.mtc_checkpoints.purge_old_tombstones(cutoff);
+        self.mtc_cosignatures.purge_old_tombstones(cutoff);
         self.order_owners.purge_old_tombstones(cutoff);
+    }
+
+    /// Returns the highest `local_gen` across all CRDT sub-collections.
+    /// Used at startup to seed `CRDT_GENERATION` after `load_from_db`.
+    pub fn max_local_gen(&self) -> u64 {
+        let mut max = 0u64;
+        max = max.max(self.cluster_nodes.max_local_gen());
+        max = max.max(self.accounts.max_local_gen());
+        max = max.max(self.orders.max_local_gen());
+        max = max.max(self.authorizations.max_local_gen());
+        max = max.max(self.challenges.max_local_gen());
+        max = max.max(self.certificates.max_local_gen());
+        max = max.max(self.eab_keys.max_local_gen());
+        max = max.max(self.operators.max_local_gen());
+        max = max.max(self.delegations.max_local_gen());
+        max = max.max(self.mtc_checkpoints.max_local_gen());
+        max = max.max(self.mtc_cosignatures.max_local_gen());
+        max = max.max(self.audit_events.max_local_gen());
+        max = max.max(self.order_owners.max_local_gen());
+        max = max.max(self.mtc_writer.local_gen());
+        max
     }
 
     /// Count of live (non-tombstoned) entries per field.
