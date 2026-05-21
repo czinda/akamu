@@ -795,7 +795,7 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
     } else {
         Some(GossipConfig {
             peers: peer_urls,
-            interval_secs: 2,
+            interval_secs: 1,
             tombstone_ttl_secs: 604_800,
             ownership_ttl_secs: 150,
             gossip_envelope_max_age_secs: 300,
@@ -1195,7 +1195,7 @@ async fn post_retrying<F: Fn(&str) -> Value>(
 ) -> Result<(u16, Value, HeaderMap), String> {
     // With N backends and random routing, P(failure per request) = ((N-1)/N)^retries.
     // 30 retries with N=3: (2/3)^30 ≈ 5e-6 failure rate → ~0.02% across 30 requests.
-    for _ in 0..30 {
+    for _ in 0..100 {
         let jws = build_jws(&nonce);
         let (status, body, headers) = http_post_jws(client, url, &jws).await?;
         if status == 400
@@ -1535,13 +1535,13 @@ async fn run_issuance(
     let (order_url, authz_url, fin_url, nonce) = {
         let mut cur_nonce = nonce;
         let mut result = None;
-        for attempt in 0..15 {
+        for attempt in 0..30 {
             match new_order(worker, server, client, &account_url, &cur_nonce).await {
                 Ok(v) => {
                     result = Some(v);
                     break;
                 }
-                Err(e) if attempt < 14 && is_gossip_delay(&e) => {
+                Err(e) if attempt < 29 && is_gossip_delay(&e) => {
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     cur_nonce = match fetch_nonce(client, &nonce_url).await {
                         Ok(n) => n,
@@ -1563,7 +1563,7 @@ async fn run_issuance(
     let (chall_url, token, nonce) = {
         let mut cur_nonce = nonce;
         let mut result = None;
-        for attempt in 0..15 {
+        for attempt in 0..30 {
             match get_authz(
                 worker,
                 server,
@@ -1579,7 +1579,7 @@ async fn run_issuance(
                     result = Some(v);
                     break;
                 }
-                Err(e) if attempt < 14 && is_gossip_delay(&e) => {
+                Err(e) if attempt < 29 && is_gossip_delay(&e) => {
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     cur_nonce = match fetch_nonce(client, &nonce_url).await {
                         Ok(n) => n,
@@ -1616,13 +1616,13 @@ async fn run_issuance(
     let nonce = {
         let mut cur_nonce = nonce;
         let mut result = None;
-        for attempt in 0..15 {
+        for attempt in 0..30 {
             match respond_and_poll(&ctx, &chall_url, &order_url, &cur_nonce, args.poll_ms).await {
                 Ok(v) => {
                     result = Some(v);
                     break;
                 }
-                Err(e) if attempt < 14 && is_gossip_delay(&e) => {
+                Err(e) if attempt < 29 && is_gossip_delay(&e) => {
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     cur_nonce = match fetch_nonce(client, &nonce_url).await {
                         Ok(n) => n,
@@ -1644,13 +1644,14 @@ async fn run_issuance(
     let (cert_url, leftover_nonce) = {
         let mut cur_nonce = nonce;
         let mut result = None;
-        for attempt in 0..15 {
+        // 100 retries: P(miss right backend for all 100 with N=10) ≈ 2.7×10⁻⁵.
+        for attempt in 0..100 {
             match finalize_and_poll(&ctx, &order_url, &fin_url, &args.key_type, &cur_nonce).await {
                 Ok(v) => {
                     result = Some(v);
                     break;
                 }
-                Err(e) if attempt < 14 && is_gossip_delay(&e) => {
+                Err(e) if attempt < 99 && is_gossip_delay(&e) => {
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     cur_nonce = match fetch_nonce(client, &nonce_url).await {
                         Ok(n) => n,
@@ -1676,13 +1677,13 @@ async fn run_issuance(
     let t = Instant::now();
     let dl_body = {
         let mut result = None;
-        for attempt in 0..30 {
+        for attempt in 0..100 {
             match http_get(client, &cert_url).await {
                 Ok((200, body, _)) => {
                     result = Some(body);
                     break;
                 }
-                Ok((status, _, _)) if attempt < 29 && is_gossip_delay(&format!(" {status}")) => {
+                Ok((status, _, _)) if attempt < 99 && is_gossip_delay(&format!(" {status}")) => {
                     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
                 }
                 Ok((status, _, _)) => {
@@ -2120,6 +2121,13 @@ async fn main() {
                 }
             }
         }
+
+        // Wait for at least one gossip cycle to complete with cross-seeded peer
+        // keys. The gossip loop fires every interval_secs (1s); without this
+        // pause the very first tick races against cross-seeding and all peers
+        // get 401 (no matching KEM recipient). Two seconds covers the 1s interval
+        // plus jitter and is imperceptible in a benchmark run.
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
     }
 
     // ── Build the servers slice workers will target ────────────────────────────
