@@ -78,6 +78,9 @@ pub struct Order {
     pub certificate: Option<String>,
     #[serde(default)]
     pub identifiers: Vec<Identifier>,
+    /// Profile echoed back by the server (draft-ietf-acme-profiles-01).
+    #[serde(default)]
+    pub profile: Option<String>,
 }
 
 /// ACME authorization object (RFC 8555 §7.1.4).
@@ -237,6 +240,10 @@ pub struct RenewalConfig {
     /// Hook script for DNS TXT record management.  Invoked as
     /// `<dns_hook> add|remove` with values passed via environment variables.
     pub dns_hook: Option<String>,
+    /// Certificate profile identifier (draft-aaron-acme-profiles-01).
+    /// When set, the value is sent as `"profile"` in the newOrder payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
 
 mod defaults {

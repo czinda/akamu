@@ -1112,6 +1112,11 @@ fn parse_order(body: &Value, url: String) -> Result<Order, ClientError> {
         })
         .unwrap_or_default();
 
+    let profile = body
+        .get("profile")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
     Ok(Order {
         status,
         url,
@@ -1119,6 +1124,7 @@ fn parse_order(body: &Value, url: String) -> Result<Order, ClientError> {
         authorizations,
         certificate,
         identifiers,
+        profile,
     })
 }
 

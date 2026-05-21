@@ -357,6 +357,7 @@ async fn run_star_order(
         authorizations: star_order.authorizations,
         certificate: None,
         identifiers: ids.to_vec(),
+        profile: None,
     };
 
     // Resolve HTTP-01 authorizations, keeping tokens live until poll_order
