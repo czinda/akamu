@@ -225,6 +225,63 @@ pub fn jwk_to_account_key(json: &str) -> Result<AccountKey, String> {
     AccountKey::from_jwk_private(json).map_err(|e| e.to_string())
 }
 
+/// Infer the akamu key-type string from a PEM-encoded private key.
+///
+/// Returns e.g. `"ec:P-256"`, `"ec:P-384"`, falling back to `"ec:P-256"` when
+/// the key cannot be loaded or is an unrecognised type.  RSA cert keys report
+/// `"rsa:2048"` regardless of actual size (akamu only needs this as a hint for
+/// key generation when the key file is absent).
+pub fn pem_key_type(pem: &[u8]) -> String {
+    match AccountKey::from_pem(pem) {
+        Ok(key) => match key.alg() {
+            "ES256" => "ec:P-256".into(),
+            "ES384" => "ec:P-384".into(),
+            "ES512" => "ec:P-521".into(),
+            alg if alg.starts_with("RS") || alg.starts_with("PS") => "rsa:2048".into(),
+            _ => "ec:P-256".into(),
+        },
+        Err(_) => "ec:P-256".into(),
+    }
+}
+
+/// Infer the akamu key type string from a JWK object.
+///
+/// Returns e.g. `"ec:P-256"`, `"ec:P-384"`, `"rsa:2048"`, falling back to
+/// `"ec:P-256"` when the JWK cannot be parsed or the type is unrecognised.
+pub fn jwk_key_type(json: &str) -> String {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+        return "ec:P-256".into();
+    };
+    match v["kty"].as_str() {
+        Some("EC") => {
+            let crv = v["crv"].as_str().unwrap_or("P-256");
+            format!("ec:{crv}")
+        }
+        Some("RSA") => {
+            // Decode the base64url-encoded modulus `n` to get the exact byte length.
+            let bits = v["n"]
+                .as_str()
+                .and_then(|n| {
+                    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+                    URL_SAFE_NO_PAD.decode(n).ok()
+                })
+                .map(|bytes| {
+                    let bit_len = bytes.len() * 8;
+                    if bit_len > 3072 {
+                        4096
+                    } else if bit_len > 2048 {
+                        3072
+                    } else {
+                        2048
+                    }
+                })
+                .unwrap_or(2048);
+            format!("rsa:{bits}")
+        }
+        _ => "ec:P-256".into(),
+    }
+}
+
 // ── Challenge type mapping ────────────────────────────────────────────────────
 
 /// Map certbot `authenticator` and optional `preferred_challenges` to an akamu
@@ -273,9 +330,11 @@ fn canonical_dns_challenge(dns_challenge: &str) -> &'static str {
 /// Returns `(config, optional_warning_message)`.
 pub fn build_renewal_config(
     renewal: &CertbotRenewal,
+    account_key_jwk: &str,
     account_key_path: &Path,
     cert_path: &Path,
     cert_key_path: &Path,
+    cert_key_type: &str,
     contacts: &[String],
     dns_challenge: &str,
     dns_hook: Option<&str>,
@@ -292,15 +351,17 @@ pub fn build_renewal_config(
         renewal.domain.clone()
     };
 
+    let account_key_type = jwk_key_type(account_key_jwk);
+
     let config = RenewalConfig {
         server: renewal.server.clone(),
         ca: None,
         domains: vec![Identifier::dns(domain)],
         account_key: account_key_path.to_path_buf(),
-        account_key_type: "ec:P-256".into(),
+        account_key_type,
         cert_path: cert_path.to_path_buf(),
         cert_key_path: cert_key_path.to_path_buf(),
-        cert_key_type: "ec:P-256".into(),
+        cert_key_type: cert_key_type.into(),
         challenge_type: challenge_type.into(),
         http_port: 80,
         tls_port: 443,
@@ -312,6 +373,7 @@ pub fn build_renewal_config(
         eab_alg: "HS256".into(),
         gssapi_keytab: None,
         dns_hook: dns_hook.map(str::to_string),
+        profile: None,
     };
 
     (config, warning)
@@ -406,6 +468,51 @@ account = abc123
     }
 
     #[test]
+    fn jwk_key_type_ec_p256() {
+        let jwk = r#"{"kty":"EC","crv":"P-256","x":"a","y":"b","d":"c"}"#;
+        assert_eq!(jwk_key_type(jwk), "ec:P-256");
+    }
+
+    #[test]
+    fn jwk_key_type_ec_p384() {
+        let jwk = r#"{"kty":"EC","crv":"P-384","x":"a","y":"b","d":"c"}"#;
+        assert_eq!(jwk_key_type(jwk), "ec:P-384");
+    }
+
+    #[test]
+    fn jwk_key_type_rsa_falls_back() {
+        // An RSA JWK with no `n` field falls back to rsa:2048.
+        let jwk = r#"{"kty":"RSA","e":"AQAB"}"#;
+        assert_eq!(jwk_key_type(jwk), "rsa:2048");
+    }
+
+    #[test]
+    fn jwk_key_type_rsa_2048_exact() {
+        // A 256-byte (2048-bit) modulus encoded as base64url (342 chars, no padding).
+        // With the old heuristic (len * 3/4): 342 * 3 / 4 = 256 bytes → 2048 bits.
+        // With actual decode: exactly 256 bytes → 2048 bits.
+        // Either way this particular case yields 2048; the old code broke for 343-char
+        // encodings (odd lengths). This test asserts the exact value stays correct.
+        let n_256_bytes = "A".repeat(342); // 342 base64url chars → decodes to ~256 bytes
+        let jwk = format!(r#"{{"kty":"RSA","e":"AQAB","n":"{n_256_bytes}"}}"#);
+        assert_eq!(jwk_key_type(&jwk), "rsa:2048");
+    }
+
+    #[test]
+    fn jwk_key_type_rsa_4096() {
+        // 512 bytes (4096 bits) → 682 or 683 base64url chars.
+        let n_512_bytes = "A".repeat(683); // 683 chars → ~512 bytes decoded
+        let jwk = format!(r#"{{"kty":"RSA","e":"AQAB","n":"{n_512_bytes}"}}"#);
+        assert_eq!(jwk_key_type(&jwk), "rsa:4096");
+    }
+
+    #[test]
+    fn jwk_key_type_unknown_falls_back() {
+        let jwk = r#"{"kty":"OKP","crv":"Ed25519"}"#;
+        assert_eq!(jwk_key_type(jwk), "ec:P-256");
+    }
+
+    #[test]
     fn jwk_ec_p256_import() {
         // Generated with: openssl ecparam -genkey -name prime256v1 -noout | openssl pkcs8 -topk8 -nocrypt
         // then extracted JWK components via a JOSE library.
@@ -451,6 +558,7 @@ account = abc123
             eab_alg: "HS256".into(),
             gssapi_keytab: None,
             dns_hook: None,
+            profile: None,
         };
 
         let toml_str = toml::to_string_pretty(&config).expect("serialize");
@@ -459,5 +567,46 @@ account = abc123
         assert_eq!(restored.domains.len(), 1);
         assert_eq!(restored.challenge_type, "http-01");
         assert_eq!(restored.poll_timeout, 120);
+        assert_eq!(restored.profile, None);
+        // None fields must be absent from TOML output.
+        assert!(
+            !toml_str.contains("profile"),
+            "profile key must not appear in TOML when None"
+        );
+        assert!(
+            !toml_str.contains("eab_key"),
+            "eab_key must never appear in TOML (skip_serializing)"
+        );
+
+        // Verify eab_key is skipped even when Some.
+        let mut with_eab = config.clone();
+        with_eab.eab_key = Some("supersecret".into());
+        with_eab.eab_kid = Some("kid-1".into());
+        let toml_eab = toml::to_string_pretty(&with_eab).expect("serialize with eab");
+        assert!(
+            !toml_eab.contains("eab_key"),
+            "eab_key must not appear in TOML even when Some"
+        );
+        assert!(
+            toml_eab.contains("eab_kid"),
+            "eab_kid should be serialized when Some"
+        );
+        let restored_eab: RenewalConfig = toml::from_str(&toml_eab).expect("deserialize with eab");
+        assert_eq!(
+            restored_eab.eab_key, None,
+            "eab_key must deserialize as None (absent)"
+        );
+
+        // Verify a non-None profile round-trips correctly.
+        let mut with_profile = config;
+        with_profile.profile = Some("mtc-leaf".into());
+        let toml_with = toml::to_string_pretty(&with_profile).expect("serialize with profile");
+        assert!(
+            toml_with.contains("profile"),
+            "profile key should be serialized when Some"
+        );
+        let restored_with: RenewalConfig =
+            toml::from_str(&toml_with).expect("deserialize with profile");
+        assert_eq!(restored_with.profile, Some("mtc-leaf".into()));
     }
 }
