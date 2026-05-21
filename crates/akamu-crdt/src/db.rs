@@ -663,6 +663,12 @@ pub async fn load_from_db(pool: &AnyPool, node_id: &str) -> Result<AkaCrdt, sqlx
 pub async fn persist_crdt(pool: &AnyPool, crdt: &AkaCrdt) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
 
+    // Defer FK checks to commit time so the insert ordering within the transaction
+    // (accounts → orders → authz → challenges) satisfies all constraints at commit
+    // even if intermediate statements would temporarily violate them.
+    // Non-SQLite backends ignore PRAGMA statements.
+    let _ = q("PRAGMA defer_foreign_keys=ON").execute(&mut *tx).await;
+
     // ── CRDT cluster nodes (full replace) ─────────────────────────────────────
     q("DELETE FROM crdt_cluster_nodes")
         .execute(&mut *tx)

@@ -722,6 +722,7 @@ async fn run() -> Result<(), String> {
                 .expect("gossip reqwest client build failed"),
         ),
         gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        write_notify: Arc::new(tokio::sync::Notify::new()),
     });
 
     // ── Seed audit row counter ────────────────────────────────────────────────

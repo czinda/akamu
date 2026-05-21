@@ -51,7 +51,10 @@ pub async fn run(state: Arc<AppState>) {
 
     let interval = Duration::from_secs(gossip_cfg.interval_secs.max(1));
     let tombstone_ttl_secs = gossip_cfg.tombstone_ttl_secs;
-    let rounds_per_hour = (3600u64 / interval.as_secs().max(1)).max(1);
+    // After a write notification, wait this long before running gossip so that
+    // bursts of concurrent writes (e.g. all hooks from one issuance) are batched
+    // into a single round rather than spawning N rounds in quick succession.
+    let write_debounce = Duration::from_millis(10);
 
     // Tracks which http:// peers have already received a plaintext-HTTP warning (H-9).
     let mut http_warned: HashSet<String> = HashSet::new();
@@ -69,21 +72,50 @@ pub async fn run(state: Arc<AppState>) {
     // `peer_miss_count`: consecutive rounds a peer had no pinned keys; suppresses log spam.
     let mut peer_miss_count: HashMap<String, u32> = HashMap::new();
 
-    let mut round: u64 = 0;
+    // Time-based hourly GC — independent of how often notify-triggered rounds fire.
+    let gc_interval = Duration::from_secs(3600);
+    let mut last_gc = std::time::Instant::now();
+    // Slow periodic DB persist: the DB is a restart-recovery cache, not hot path.
+    // Persisting on every gossip receive would starve ACME requests on a shared pool.
+    let persist_interval = Duration::from_secs(30);
+    let mut last_persist = std::time::Instant::now();
 
     loop {
-        tokio::time::sleep(interval).await;
-        round += 1;
+        // Wake on whichever fires first: the scheduled interval, or a CRDT write
+        // notification from crdt_hooks.  On a write notification we add a short
+        // debounce so that a burst of writes (all hooks from one issuance) is
+        // batched into a single gossip round.
+        tokio::select! {
+            _ = tokio::time::sleep(interval) => {},
+            _ = state.write_notify.notified() => {
+                tokio::time::sleep(write_debounce).await;
+            },
+        }
 
         let now = unix_now();
+
+        // Slow periodic DB persist — the DB is a restart-recovery cache, not hot path.
+        // Doing this on a 30-second timer rather than after every peer merge avoids
+        // contending with ACME requests on a shared pool.
+        if last_persist.elapsed() >= persist_interval {
+            last_persist = std::time::Instant::now();
+            let snap = {
+                let crdt = state.crdt.read().await;
+                crdt.clone()
+            };
+            if let Err(e) = akamu_crdt::db::persist_crdt(&state.db, &snap).await {
+                tracing::warn!(error = %e, "gossip: periodic DB persist failed");
+            }
+        }
 
         // Hourly: purge old tombstones.  Apply the purge in-place under a write lock
         // rather than persisting a snapshot first.  A snapshot approach has a data-loss
         // window: entries written after the snapshot read but before the in-memory purge
         // apply are absent from the persisted snapshot, so a crash at that point loses
         // them permanently from the DB.  The post-purge DB state is written on the next
-        // successful peer merge via persist_crdt.
-        if round.is_multiple_of(rounds_per_hour) {
+        // periodic persist.
+        if last_gc.elapsed() >= gc_interval {
+            last_gc = std::time::Instant::now();
             let cutoff = now - tombstone_ttl_secs as i64;
             let audit_cutoff_str = unix_to_rfc3339(cutoff);
             {
@@ -94,7 +126,7 @@ pub async fn run(state: Arc<AppState>) {
             }
             tracing::info!(
                 cutoff_secs = cutoff,
-                "gossip: tombstone GC applied in-memory — DB will sync on next peer merge"
+                "gossip: tombstone GC applied in-memory — DB will sync on next periodic persist"
             );
         }
 
@@ -431,11 +463,9 @@ pub async fn run(state: Arc<AppState>) {
                 crdt.clone()
             };
 
-            // H-2: only advance tracking maps when persist succeeds.
-            if let Err(e) = akamu_crdt::db::persist_crdt(&state.db, &crdt_snapshot).await {
-                tracing::error!(peer = %pt.url, error = %e, "gossip: persist after merge failed");
-                continue;
-            }
+            // DB persist is intentionally omitted from the per-merge hot path.
+            // The periodic persist (every 30 s, see above) keeps the DB in sync
+            // without contending with ACME requests on a shared pool.
 
             // H-10: Acquire ordering so we see the generation bump from the merge above.
             let post_merge_gen = CRDT_GENERATION.load(std::sync::atomic::Ordering::Acquire);

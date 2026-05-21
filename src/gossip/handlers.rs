@@ -185,10 +185,11 @@ pub async fn gossip_sync(
         crdt.clone()
     };
 
-    if let Err(e) = akamu_crdt::db::persist_crdt(&state.db, &crdt_snapshot).await {
-        tracing::error!(sender = %sender_node_id, error = %e, "gossip/sync: persist after merge failed");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
+    // The DB persist is intentionally omitted from the gossip hot path.  The DB is
+    // a restart-recovery cache; the in-memory CRDT is the source of truth for live
+    // requests.  Calling persist_crdt on every gossip receive would contend with
+    // concurrent ACME DB writes on a shared pool.  The gossip loop persists on a
+    // slow timer (every 30 s) instead.
 
     let response_bytes = {
         let (response_crdt, is_delta) = match request_delta_since {

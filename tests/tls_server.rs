@@ -551,6 +551,7 @@ async fn start_tls_server() -> TlsTestServer {
         node_gossip_signing_cert: Arc::new(vec![]),
         gossip_client: Arc::new(reqwest::Client::new()),
         gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        write_notify: Arc::new(tokio::sync::Notify::new()),
         gss_cred: None,
         admin_gss_cred: None,
         eab_master_secret: None,

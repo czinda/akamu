@@ -266,6 +266,11 @@ pub struct AppState {
     /// their timestamp falls outside the window.  Absent nonces (empty Vec<u8>)
     /// are not tracked so old peers that omit the field are still accepted.
     pub gossip_nonce_cache: Arc<std::sync::Mutex<std::collections::HashMap<Vec<u8>, i64>>>,
+    /// Signalled after every CRDT write so the gossip loop can fire immediately
+    /// rather than waiting out the full configured interval (typically 1–30 s).
+    /// This bounds cross-node propagation latency to the gossip debounce window
+    /// (~10 ms) instead of the full interval.
+    pub write_notify: Arc<tokio::sync::Notify>,
 }
 
 impl AppState {

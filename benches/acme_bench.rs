@@ -990,6 +990,7 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
         node_gossip_signing_cert: Arc::new(identity.sign_cert_der),
         gossip_client: Arc::new(reqwest::Client::new()),
         gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        write_notify: Arc::new(tokio::sync::Notify::new()),
     });
 
     if state.config.gossip.is_some() {
@@ -1542,7 +1543,7 @@ async fn run_issuance(
                     break;
                 }
                 Err(e) if attempt < 29 && is_gossip_delay(&e) => {
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                     cur_nonce = match fetch_nonce(client, &nonce_url).await {
                         Ok(n) => n,
                         Err(e2) => return IssuanceTiming::failed(wid, node_idx, request_id, format!("nonce: {e2}")),
@@ -1580,7 +1581,7 @@ async fn run_issuance(
                     break;
                 }
                 Err(e) if attempt < 29 && is_gossip_delay(&e) => {
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                     cur_nonce = match fetch_nonce(client, &nonce_url).await {
                         Ok(n) => n,
                         Err(e2) => return IssuanceTiming::failed(wid, node_idx, request_id, format!("nonce: {e2}")),
@@ -1623,7 +1624,7 @@ async fn run_issuance(
                     break;
                 }
                 Err(e) if attempt < 29 && is_gossip_delay(&e) => {
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                     cur_nonce = match fetch_nonce(client, &nonce_url).await {
                         Ok(n) => n,
                         Err(e2) => return IssuanceTiming::failed(wid, node_idx, request_id, format!("nonce: {e2}")),
@@ -1652,7 +1653,7 @@ async fn run_issuance(
                     break;
                 }
                 Err(e) if attempt < 99 && is_gossip_delay(&e) => {
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                     cur_nonce = match fetch_nonce(client, &nonce_url).await {
                         Ok(n) => n,
                         Err(e2) => return IssuanceTiming::failed(wid, node_idx, request_id, format!("nonce: {e2}")),
@@ -1684,7 +1685,7 @@ async fn run_issuance(
                     break;
                 }
                 Ok((status, _, _)) if attempt < 99 && is_gossip_delay(&format!(" {status}")) => {
-                    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                 }
                 Ok((status, _, _)) => {
                     return IssuanceTiming::failed(wid, node_idx, request_id, format!("cert download {status}"))
