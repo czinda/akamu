@@ -17,7 +17,7 @@
 //!   --challenge TYPE  http-01 | dns-persist-01      [default: http-01]
 //!   --key-type TYPE   ec:P-256 | ec:P-384 | rsa:2048 | rsa:4096 | ed25519
 //!   --ca-key-type T   CA key type (same syntax)
-//!   --wildcard        issue *.bench-N.acme-bench.localhost  (dns-persist-01 only)
+//!   --wildcard        issue *.bench-N.acme-bench.test  (dns-persist-01 only)
 //!   --db PATH             :memory: or file path for SQLite
 //!   --pool-connections N  SQLite pool size (ignored for :memory:)  [default: 1]
 //!   --output FORMAT       text | json
@@ -635,7 +635,7 @@ impl MultiDns {
 }
 
 /// Parse the DNS qname from a wire-format query into a dotted string with
-/// trailing dot, e.g. `"_validation-persist.bench-0.acme-bench.localhost."`.
+/// trailing dot, e.g. `"_validation-persist.bench-0.acme-bench.test."`.
 fn parse_qname(query: &[u8]) -> String {
     let mut pos = 12usize; // skip 12-byte DNS header
     let mut labels: Vec<String> = Vec::new();
@@ -713,7 +713,7 @@ impl ChallengeInfra {
                     dns: Some(dns),
                     http_validation_port: 80,
                     dns_resolver_addr: Some(resolver),
-                    issuer_domain: Some("acme-bench.localhost".to_string()),
+                    issuer_domain: Some("acme-bench.test".to_string()),
                 }
             }
             _ /* http-01 */ => {
@@ -821,6 +821,8 @@ struct BenchServer {
     pub challenge_store: Option<ChallengeStore>,
     /// Multi-domain DNS server for dns-persist-01 workers.
     pub dns: Option<Arc<MultiDns>>,
+    /// Issuer domain for dns-persist-01 TXT records (e.g. "acme-bench.test").
+    pub dns_issuer_domain: Option<String>,
     // Keep the CA temp directory alive for the server's lifetime.
     _dir: Option<tempfile::TempDir>,
     // Child process handle — Some in process mode, None in inprocess mode.
@@ -1074,6 +1076,7 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
         state: Some(state),
         challenge_store: infra.store.clone(),
         dns: infra.dns.clone(),
+        dns_issuer_domain: infra.issuer_domain.clone(),
         _dir: Some(dir),
         _process: None,
     }
@@ -1187,15 +1190,17 @@ async fn spawn_node_process(
     if log_file.is_some() {
         eprintln!("  node {port} log → {}", log_path.display());
     }
-    let stderr_fd = log_file
+    // tracing_subscriber::fmt() defaults to stdout; route stdout to the log file
+    // and discard stderr (which would otherwise pollute the bench output).
+    let stdout_fd = log_file
         .as_ref()
         .map(|f| std::process::Stdio::from(f.try_clone().expect("clone log fd")))
         .unwrap_or(std::process::Stdio::null());
     let child = tokio::process::Command::new(&binary)
         .arg(&config_path)
         .kill_on_drop(true)
-        .stderr(stderr_fd)
-        .stdout(std::process::Stdio::null())
+        .stdout(stdout_fd)
+        .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawn akamu process");
 
@@ -1224,6 +1229,7 @@ async fn spawn_node_process(
         state: None,
         challenge_store: infra.store.clone(),
         dns: infra.dns.clone(),
+        dns_issuer_domain: infra.issuer_domain.clone(),
         _dir: Some(dir),
         _process: Some(child),
     }
@@ -1392,44 +1398,57 @@ impl IssuanceTiming {
 //
 // In proxy topology `per_node` has exactly one slot (the proxy URL).
 
-#[derive(Default)]
 struct PerNodeState {
     account_url: Option<String>,
     last_nonce: Option<String>,
+    /// Domain identifier for orders placed against this node slot.
+    /// For dns-persist-01 in direct multi-node mode this is unique per slot
+    /// (bench-{worker}-n{slot}.acme-bench.test) to prevent TXT record
+    /// collisions when the same worker holds different accounts on each node.
+    domain: String,
 }
 
 struct WorkerState {
     id: usize,
     key: AccountKey,
-    /// Domain identifier used in all orders from this worker.
-    domain: String,
     /// One slot per endpoint: N slots for direct topology, 1 for proxy.
     per_node: Vec<PerNodeState>,
 }
 
 impl WorkerState {
     fn new(id: usize, args: &Args) -> Self {
-        let domain = match args.challenge.as_str() {
-            "dns-persist-01" => {
-                let base = format!("bench-{id}.acme-bench.localhost");
-                if args.wildcard {
-                    format!("*.{base}")
-                } else {
-                    base
-                }
-            }
-            _ => "localhost".to_string(),
-        };
         let slots = if args.topology == Topology::Proxy {
             1
         } else {
             args.nodes
         };
-        let per_node = (0..slots).map(|_| PerNodeState::default()).collect();
+        let per_node = (0..slots)
+            .map(|slot_idx| {
+                let domain = match args.challenge.as_str() {
+                    "dns-persist-01" => {
+                        let base = if slots > 1 {
+                            format!("bench-{id}-n{slot_idx}.acme-bench.test")
+                        } else {
+                            format!("bench-{id}.acme-bench.test")
+                        };
+                        if args.wildcard {
+                            format!("*.{base}")
+                        } else {
+                            base
+                        }
+                    }
+                    _ => "localhost".to_string(),
+                };
+                PerNodeState {
+                    account_url: None,
+                    last_nonce: None,
+                    domain,
+                }
+            })
+            .collect();
         WorkerState {
             id,
             key: AccountKey::generate(),
-            domain,
             per_node,
         }
     }
@@ -1520,10 +1539,11 @@ async fn new_order(
     client: &HyperClient,
     account_url: &str,
     nonce: &str,
+    domain: &str,
 ) -> Result<(String, String, String, String), String> {
     let order_url = format!("{}/acme/new-order", server.base_url);
     let nonce_url = format!("{}/acme/new-nonce", server.base_url);
-    let payload = json!({"identifiers": [{"type": "dns", "value": worker.domain}]});
+    let payload = json!({"identifiers": [{"type": "dns", "value": domain}]});
     let (status, body, headers) =
         post_retrying(client, &order_url, &nonce_url, nonce.to_string(), |n| {
             worker
@@ -1587,6 +1607,9 @@ struct IssuanceCtx<'a> {
     server: &'a BenchServer,
     client: &'a HyperClient,
     account_url: &'a str,
+    /// Per-node domain identifier for this issuance (may differ between nodes
+    /// in direct dns-persist-01 mode to avoid TXT record collisions).
+    domain: &'a str,
 }
 
 /// POST the challenge response (using the supplied nonce, no HEAD needed), then
@@ -1664,7 +1687,7 @@ async fn finalize_and_poll(
     let (worker, server, client, account_url) =
         (ctx.worker, ctx.server, ctx.client, ctx.account_url);
     let nonce_url = format!("{}/acme/new-nonce", server.base_url);
-    let csr_der = make_csr(&worker.domain, key_type)?;
+    let csr_der = make_csr(ctx.domain, key_type)?;
     let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
     let fin_path = finalize_url.trim_start_matches(&server.base_url);
     let fin_full = format!("{}{fin_path}", server.base_url);
@@ -1759,6 +1782,7 @@ async fn run_issuance(
     request_id: usize,
 ) -> IssuanceTiming {
     let wid = worker.id;
+    let domain = worker.per_node[node_idx].domain.clone();
 
     // ── Account (first issuance per worker per node) ───────────────────────────
     // create_account returns (account_url, next_nonce) so the nonce from the
@@ -1771,13 +1795,15 @@ async fn run_issuance(
             Ok((url, nonce)) => {
                 // Register dns-persist-01 TXT record now that we have the account URI.
                 if args.challenge == "dns-persist-01" {
-                    if let Some(ref dns) = server.dns {
-                        let base = worker.domain.trim_start_matches("*.");
+                    if let (Some(ref dns), Some(ref issuer)) =
+                        (&server.dns, &server.dns_issuer_domain)
+                    {
+                        let base = domain.trim_start_matches("*.");
                         let qname = format!("_validation-persist.{}.", base);
                         let txt = if args.wildcard {
-                            format!("acme-bench.localhost; accounturi={}; policy=wildcard", url)
+                            format!("{issuer}; accounturi={}; policy=wildcard", url)
                         } else {
-                            format!("acme-bench.localhost; accounturi={}", url)
+                            format!("{issuer}; accounturi={}", url)
                         };
                         dns.set_record(&qname, &txt).await;
                     }
@@ -1815,7 +1841,7 @@ async fn run_issuance(
         let mut cur_nonce = nonce;
         let mut result = None;
         for attempt in 0..30 {
-            match new_order(worker, server, client, &account_url, &cur_nonce).await {
+            match new_order(worker, server, client, &account_url, &cur_nonce, &domain).await {
                 Ok(v) => {
                     result = Some(v);
                     break;
@@ -1927,6 +1953,7 @@ async fn run_issuance(
         server,
         client,
         account_url: &account_url,
+        domain: &domain,
     };
     let t = Instant::now();
     let nonce = {
@@ -2079,7 +2106,7 @@ async fn run_issuance(
     // ── Optional SAN verification ──────────────────────────────────────────────
     if args.verify_cert {
         if let Ok(pem) = String::from_utf8(dl_body) {
-            if let Err(e) = verify_cert_san(&pem, &worker.domain) {
+            if let Err(e) = verify_cert_san(&pem, &domain) {
                 return IssuanceTiming::failed(wid, node_idx, request_id, format!("verify: {e}"));
             }
         }
@@ -2606,6 +2633,7 @@ async fn main() {
             state: bench_backends[0].state.clone(),
             challenge_store: bench_backends[0].challenge_store.clone(),
             dns: bench_backends[0].dns.clone(),
+            dns_issuer_domain: bench_backends[0].dns_issuer_domain.clone(),
             _dir: None,
             _process: None,
         });
