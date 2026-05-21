@@ -895,11 +895,16 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                     eprint!(
                         "Press Enter after the TXT record has propagated (Ctrl-C to abort)... "
                     );
-                    {
+                    tokio::task::spawn_blocking(|| -> Result<(), String> {
                         use std::io::{self, BufRead};
-                        let stdin = io::stdin();
-                        stdin.lock().lines().next();
-                    }
+                        match io::stdin().lock().lines().next() {
+                            Some(Ok(_)) => Ok(()),
+                            Some(Err(e)) => Err(format!("dns-01 stdin read error: {e}")),
+                            None => Err("stdin closed (EOF) — aborting dns-01 challenge".into()),
+                        }
+                    })
+                    .await
+                    .map_err(|e| format!("dns-01 stdin wait: {e}"))??;
                     client
                         .trigger_challenge(&account, chall)
                         .await
@@ -966,11 +971,18 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                     eprint!(
                         "Press Enter after the TXT record has propagated (Ctrl-C to abort)... "
                     );
-                    {
+                    tokio::task::spawn_blocking(|| -> Result<(), String> {
                         use std::io::{self, BufRead};
-                        let stdin = io::stdin();
-                        stdin.lock().lines().next();
-                    }
+                        match io::stdin().lock().lines().next() {
+                            Some(Ok(_)) => Ok(()),
+                            Some(Err(e)) => Err(format!("dns-persist-01 stdin read error: {e}")),
+                            None => Err(
+                                "stdin closed (EOF) — aborting dns-persist-01 challenge".into(),
+                            ),
+                        }
+                    })
+                    .await
+                    .map_err(|e| format!("dns-persist-01 stdin wait: {e}"))??;
                     client
                         .trigger_challenge(&account, chall)
                         .await
