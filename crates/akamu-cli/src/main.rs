@@ -15,9 +15,12 @@ mod import;
 
 use std::{
     fs,
+    io::Write as _,
     path::{Path, PathBuf},
     sync::Arc,
 };
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt as _;
 
 use akamu_client::{
     fetch_eab_via_gssapi, AccountKey, AccountOptions, AcmeClient, ChallengeSolver as _,
@@ -307,6 +310,10 @@ struct IssueArgs {
     #[arg(long, value_name = "CMD")]
     dns_hook: Option<String>,
 
+    /// Certificate profile identifier (draft-aaron-acme-profiles-01)
+    #[arg(long)]
+    profile: Option<String>,
+
     #[command(flatten)]
     eab: EabFlags,
 }
@@ -363,6 +370,11 @@ struct RenewArgs {
     #[arg(long)]
     cert: Option<PathBuf>,
 
+    /// Reuse an existing certificate private key file instead of generating a new one.
+    /// Required for operators who pin keys via HPKP or TLSA records.
+    #[arg(long, value_name = "FILE")]
+    cert_key: Option<PathBuf>,
+
     /// Renew unconditionally, skipping the ARI window check
     #[arg(long)]
     force: bool,
@@ -375,6 +387,10 @@ struct RenewArgs {
     /// with values in AKAMU_DOMAIN / AKAMU_TOKEN / AKAMU_TXT / AKAMU_KEY_AUTH env vars)
     #[arg(long, value_name = "CMD")]
     dns_hook: Option<String>,
+
+    /// Certificate profile identifier (draft-aaron-acme-profiles-01)
+    #[arg(long)]
+    profile: Option<String>,
 
     /// Load renewal configuration from a TOML file written by `akamu-cli issue`.
     /// When provided, all renewal parameters are taken from the file; other flags
@@ -638,8 +654,7 @@ async fn cmd_key_change(args: KeyChangeArgs) -> Result<(), String> {
 
     // Overwrite the account key file with the new key.
     let new_pem = new_key.to_pem().map_err(|e| e.to_string())?;
-    fs::write(&args.account_key, &new_pem)
-        .map_err(|e| format!("write {}: {e}", args.account_key.display()))?;
+    write_private_file(&args.account_key, &new_pem)?;
     // The account URL stays the same — sidecar file is unchanged.
     println!(
         "Key changed. New key written to {}",
@@ -792,9 +807,12 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
     // Place the order.
     let ids: Vec<Identifier> = args.domains.iter().map(Identifier::dns).collect();
     let order = client
-        .new_order(&account, &ids)
+        .new_order_with_profile(&account, &ids, args.profile.as_deref())
         .await
         .map_err(|e| e.to_string())?;
+    // Capture the server-echoed profile (may differ from args.profile if the server
+    // auto-selected a default; used when writing the .renewal.toml sidecar).
+    let server_profile = order.profile.clone();
 
     // Satisfy all authorizations.
     for authz_url in &order.authorizations {
@@ -1050,8 +1068,7 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
         let k = akamu_client::AccountKey::generate(&args.cert_key_type)
             .map_err(|e| format!("generate cert key: {e}"))?;
         let pem = k.to_pem().map_err(|e| e.to_string())?;
-        fs::write(&cert_key_path, &pem)
-            .map_err(|e| format!("write {}: {e}", cert_key_path.display()))?;
+        write_private_file(&cert_key_path, &pem)?;
         println!("Certificate key saved to {}", cert_key_path.display());
         k
     };
@@ -1108,44 +1125,134 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
         eab_alg: args.eab.eab_alg.clone(),
         gssapi_keytab: args.eab.gssapi_keytab.clone(),
         dns_hook: args.dns_hook.clone(),
+        profile: args.profile.or(server_profile),
     };
     let toml_str = toml::to_string_pretty(&renewal_config)
         .map_err(|e| format!("serialize renewal config: {e}"))?;
     let mut renewal_path = args.out.clone().into_os_string();
     renewal_path.push(".renewal.toml");
     let renewal_path = std::path::PathBuf::from(renewal_path);
-    fs::write(&renewal_path, toml_str)
-        .map_err(|e| format!("write {}: {e}", renewal_path.display()))?;
+    write_private_file(&renewal_path, toml_str.as_bytes())?;
     println!("Renewal config:   {}", renewal_path.display());
     println!(
         "To renew: akamu-cli renew --renewal-config {}",
         renewal_path.display()
     );
+    if args.eab.eab_key.is_some() {
+        eprintln!(
+            "Note: EAB HMAC key is NOT saved in the renewal config for security reasons. \
+             Re-supply --eab-key on each renewal."
+        );
+    }
     Ok(())
 }
 
 // ── renew ─────────────────────────────────────────────────────────────────────
 
-/// Parse an RFC 3339 UTC timestamp string ("YYYY-MM-DDTHH:MM:SSZ") to Unix seconds.
+/// Parse an RFC 3339 UTC timestamp string to Unix seconds.
+/// Accepts "Z", "+00:00", or "-00:00" as the UTC offset indicator.
 fn parse_rfc3339_utc(s: &str) -> Option<u64> {
-    // Accept "YYYY-MM-DDTHH:MM:SSZ" or "YYYY-MM-DDTHH:MM:SS.ffffffZ"
-    let s = s.trim_end_matches('Z');
+    // Strip UTC offset suffix, then drop optional sub-second fraction.
+    let s = if let Some(stripped) = s.strip_suffix("+00:00").or_else(|| s.strip_suffix("-00:00")) {
+        stripped
+    } else {
+        s.trim_end_matches('Z')
+    };
     let s = s.split('.').next()?; // drop sub-seconds
                                   // "YYYY-MM-DDTHH:MM:SS" = 19 chars
     if s.len() != 19 {
         return None;
     }
-    let year: u64 = s[0..4].parse().ok()?;
-    let month: u64 = s[5..7].parse().ok()?;
-    let day: u64 = s[8..10].parse().ok()?;
-    let hour: u64 = s[11..13].parse().ok()?;
-    let min: u64 = s[14..16].parse().ok()?;
-    let sec: u64 = s[17..19].parse().ok()?;
-    // Days since Unix epoch (1970-01-01). Gregorian formula.
+    let year: i64 = s[0..4].parse().ok()?;
+    let month: i64 = s[5..7].parse().ok()?;
+    let day: i64 = s[8..10].parse().ok()?;
+    let hour: i64 = s[11..13].parse().ok()?;
+    let min: i64 = s[14..16].parse().ok()?;
+    let sec: i64 = s[17..19].parse().ok()?;
+    if year < 1970 || year > 9999 || month < 1 || month > 12 || day < 1
+        || hour > 23 || min > 59 || sec > 60
+    {
+        return None;
+    }
+    let is_leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let max_day: i64 = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap => 29,
+        2 => 28,
+        _ => return None,
+    };
+    if day > max_day {
+        return None;
+    }
+    // Days since Unix epoch (1970-01-01). Gregorian formula (signed arithmetic).
     let y = if month <= 2 { year - 1 } else { year };
     let m = if month <= 2 { month + 9 } else { month - 3 };
-    let days = 365 * y + y / 4 - y / 100 + y / 400 + (153 * m + 2) / 5 + day - 1 - 719468;
-    Some(days * 86400 + hour * 3600 + min * 60 + sec)
+    let days: i64 = 365 * y + y / 4 - y / 100 + y / 400 + (153 * m + 2) / 5 + day - 1 - 719468;
+    let secs = days
+        .checked_mul(86400)?
+        .checked_add(hour * 3600 + min * 60 + sec)?;
+    u64::try_from(secs).ok()
+}
+
+/// Check ARI renewal window (RFC 9773).
+///
+/// Returns `Ok(true)` if renewal should proceed (window open or past),
+/// `Ok(false)` if the window hasn't opened yet,
+/// or `Err(...)` if the certificate file cannot be read.
+/// When the ARI endpoint is unavailable, logs a warning and returns `Ok(true)`.
+/// Skips the check when `cert_path` does not exist.
+async fn check_ari_window(dir_url: &str, cert_path: &Path) -> Result<bool, String> {
+    if !cert_path.exists() {
+        return Ok(true);
+    }
+    let client = AcmeClient::new(dir_url).await.map_err(|e| e.to_string())?;
+    let cert_pem =
+        fs::read(cert_path).map_err(|e| format!("read {}: {e}", cert_path.display()))?;
+    match client.get_renewal_info(&cert_pem).await {
+        Ok(info) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let start = parse_rfc3339_utc(&info.window_start).unwrap_or_else(|| {
+                eprintln!(
+                    "Warning: cannot parse ARI window_start '{}'; treating as epoch",
+                    info.window_start
+                );
+                0
+            });
+            let end = parse_rfc3339_utc(&info.window_end).unwrap_or_else(|| {
+                eprintln!(
+                    "Warning: cannot parse ARI window_end '{}'; treating as max",
+                    info.window_end
+                );
+                u64::MAX
+            });
+            if now < start {
+                println!(
+                    "Renewal not yet suggested (window opens {}). Use --force to override.",
+                    info.window_start
+                );
+                return Ok(false);
+            }
+            if now > end {
+                eprintln!(
+                    "Warning: past the ARI renewal window end ({}); renewing anyway.",
+                    info.window_end
+                );
+            }
+            println!(
+                "ARI: renewal suggested (window {} – {})",
+                info.window_start, info.window_end
+            );
+            Ok(true)
+        }
+        Err(e) => {
+            eprintln!("ARI unavailable ({}); proceeding with renewal.", e);
+            Ok(true)
+        }
+    }
 }
 
 async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
@@ -1222,6 +1329,7 @@ async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
             out: cfg.cert_path,
             cert_key: Some(cfg.cert_key_path),
             dns_hook: cfg.dns_hook,
+            profile: cfg.profile,
             eab,
         };
         return cmd_issue(issue_args).await;
@@ -1281,9 +1389,10 @@ async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
         tls_port: args.tls_port,
         onion_key: args.onion_key,
         out: args.out,
-        cert_key: None,
+        cert_key: args.cert_key,
         poll_timeout: args.poll_timeout,
         dns_hook: args.dns_hook,
+        profile: args.profile,
         eab: args.eab,
     };
     cmd_issue(issue_args).await
@@ -1442,7 +1551,7 @@ fn account_url_path_for_ca(key_path: &Path, ca: Option<&str>) -> PathBuf {
 
 fn save_account_url_for_ca(key_path: &Path, ca: Option<&str>, url: &str) -> Result<(), String> {
     let p = account_url_path_for_ca(key_path, ca);
-    fs::write(&p, url).map_err(|e| format!("write {}: {e}", p.display()))
+    write_private_file(&p, url.as_bytes())
 }
 
 fn load_account_url_for_ca(key_path: &Path, ca: Option<&str>) -> Result<String, String> {
@@ -1456,7 +1565,7 @@ fn load_or_generate_key(path: &Path, key_type: &str) -> Result<AccountKey, Strin
     } else {
         let key = AccountKey::generate(key_type).map_err(|e| e.to_string())?;
         let pem = key.to_pem().map_err(|e| e.to_string())?;
-        fs::write(path, &pem).map_err(|e| format!("write {}: {e}", path.display()))?;
+        write_private_file(path, &pem)?;
         println!("Generated new {} key → {}", key_type, path.display());
         Ok(key)
     }
@@ -1465,6 +1574,28 @@ fn load_or_generate_key(path: &Path, key_type: &str) -> Result<AccountKey, Strin
 fn load_key(path: &Path) -> Result<AccountKey, String> {
     let pem = fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
     AccountKey::from_pem(&pem).map_err(|e| e.to_string())
+}
+
+/// Write `data` to `path` with mode 0o600 (owner-read/write only).
+/// Enforces 0o600 even when overwriting a pre-existing file.
+pub(crate) fn write_private_file(path: &Path, data: &[u8]) -> Result<(), String> {
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    opts.mode(0o600);
+    let mut f = opts
+        .open(path)
+        .map_err(|e| format!("open {}: {e}", path.display()))?;
+    f.write_all(data)
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
+    // mode(0o600) only applies on O_CREAT; explicitly enforce on existing files.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("chmod {}: {e}", path.display()))?;
+    }
+    Ok(())
 }
 
 fn build_eab_options(flags: &EabFlags) -> Result<Option<(String, Vec<u8>, String)>, String> {
