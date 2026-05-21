@@ -216,7 +216,7 @@ fn open_raw(ciphertext_der: &[u8], kem_priv_pkcs8_der: &[u8]) -> Result<Vec<u8>,
         let shared_secret = match DecapCtx::new(&priv_key).and_then(|mut c| c.decapsulate(kemct)) {
             Ok(ss) => ss,
             Err(e) => {
-                tracing::debug!(err = %e, "gossip open: KEM decapsulation failed for recipient info");
+                tracing::debug!(error = %e, "gossip open: KEM decapsulation failed for recipient info");
                 continue;
             }
         };
@@ -225,7 +225,7 @@ fn open_raw(ciphertext_der: &[u8], kem_priv_pkcs8_der: &[u8]) -> Result<Vec<u8>,
         let cek = match aes_key_unwrap(&kek, kri.encrypted_key.as_bytes()) {
             Ok(k) => k,
             Err(e) => {
-                tracing::debug!(err = %e, "gossip open: AES key-unwrap failed for recipient info");
+                tracing::debug!(error = %e, "gossip open: AES key-unwrap failed for recipient info");
                 continue;
             }
         };
@@ -500,4 +500,225 @@ fn aes_key_unwrap(kek: &[u8; 32], wrapped: &[u8]) -> Result<[u8; 32], CmsError> 
         cek[i * 8..(i + 1) * 8].copy_from_slice(&r[i]);
     }
     Ok(cek)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestKeys {
+        kem_priv_pkcs8: Vec<u8>,
+        kem_pub_spki: Vec<u8>,
+        sign_priv_pem: Vec<u8>,
+        sign_cert_der: Vec<u8>,
+        sign_pub_spki: Vec<u8>,
+    }
+
+    fn gen_test_keys() -> TestKeys {
+        use native_ossl::pkey::{KeygenCtx, Pkey, Private};
+        use synta_certificate::BackendPrivateKey;
+
+        let sign_key = BackendPrivateKey::generate_ec("P-256").expect("ECDSA keygen");
+        let sign_pub_spki = sign_key.public_key().expect("pub").spki_der().to_vec();
+        let sign_priv_pem = sign_key.to_pem(None).expect("to PEM");
+
+        let native_priv = Pkey::<Private>::from_pem(&sign_priv_pem).expect("native pkey");
+        let mut name = native_ossl::x509::X509NameOwned::new().expect("X509Name");
+        name.add_entry_by_txt(c"CN", b"test-node").expect("CN");
+        let sign_cert_der = native_ossl::x509::X509Builder::new()
+            .expect("X509Builder")
+            .set_version(2)
+            .expect("version")
+            .set_serial_number(42)
+            .expect("serial")
+            .set_not_before_offset(0)
+            .expect("not_before")
+            .set_not_after_offset(365 * 86400)
+            .expect("not_after")
+            .set_subject_name(&name)
+            .expect("subject")
+            .set_issuer_name(&name)
+            .expect("issuer")
+            .set_public_key(&native_priv)
+            .expect("pubkey")
+            .sign(&native_priv, None)
+            .expect("sign")
+            .build()
+            .to_der()
+            .expect("to_der");
+
+        let kem_key = KeygenCtx::new(c"ML-KEM-768")
+            .expect("ML-KEM-768 ctx")
+            .generate()
+            .expect("ML-KEM-768 keygen");
+        let kem_priv_pkcs8 = kem_key.to_pkcs8_der().expect("KEM PKCS8");
+        let kem_pub_spki = kem_key.public_key_to_der().expect("KEM SPKI");
+
+        TestKeys {
+            kem_priv_pkcs8,
+            kem_pub_spki,
+            sign_priv_pem,
+            sign_cert_der,
+            sign_pub_spki,
+        }
+    }
+
+    #[test]
+    fn sign_seal_verify_open_round_trip() {
+        let alice = gen_test_keys();
+        let bob = gen_test_keys();
+
+        let plaintext = b"hello gossip world";
+
+        let sealed = sign_and_seal(
+            plaintext,
+            &[SealRecipient {
+                hint: "bob",
+                spki_der: &bob.kem_pub_spki,
+            }],
+            &alice.sign_priv_pem,
+            &alice.sign_cert_der,
+        )
+        .expect("sign_and_seal failed");
+
+        let recovered = verify_and_open(&sealed, &bob.kem_priv_pkcs8, &alice.sign_pub_spki)
+            .expect("verify_and_open failed");
+
+        assert_eq!(recovered, plaintext);
+    }
+
+    #[test]
+    fn wrong_signing_key_is_rejected() {
+        let alice = gen_test_keys();
+        let bob = gen_test_keys();
+        let eve = gen_test_keys();
+
+        let sealed = sign_and_seal(
+            b"data",
+            &[SealRecipient {
+                hint: "bob",
+                spki_der: &bob.kem_pub_spki,
+            }],
+            &alice.sign_priv_pem,
+            &alice.sign_cert_der,
+        )
+        .expect("seal");
+
+        // Bob verifies with Eve's key instead of Alice's — must fail.
+        let result = verify_and_open(&sealed, &bob.kem_priv_pkcs8, &eve.sign_pub_spki);
+        assert!(
+            matches!(result, Err(CmsError::SignatureInvalid)),
+            "expected SignatureInvalid, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn wrong_kem_key_returns_no_matching_recipient() {
+        let alice = gen_test_keys();
+        let bob = gen_test_keys();
+        let charlie = gen_test_keys();
+
+        let sealed = sign_and_seal(
+            b"secret",
+            &[SealRecipient {
+                hint: "bob",
+                spki_der: &bob.kem_pub_spki,
+            }],
+            &alice.sign_priv_pem,
+            &alice.sign_cert_der,
+        )
+        .expect("seal");
+
+        // Charlie tries to open a message encrypted for Bob.
+        let result = verify_and_open(&sealed, &charlie.kem_priv_pkcs8, &alice.sign_pub_spki);
+        assert!(
+            matches!(result, Err(CmsError::NoMatchingRecipient)),
+            "expected NoMatchingRecipient, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn multi_recipient_both_can_open() {
+        let sender = gen_test_keys();
+        let bob = gen_test_keys();
+        let carol = gen_test_keys();
+
+        let plaintext = b"broadcast message";
+
+        let sealed = sign_and_seal(
+            plaintext,
+            &[
+                SealRecipient {
+                    hint: "bob",
+                    spki_der: &bob.kem_pub_spki,
+                },
+                SealRecipient {
+                    hint: "carol",
+                    spki_der: &carol.kem_pub_spki,
+                },
+            ],
+            &sender.sign_priv_pem,
+            &sender.sign_cert_der,
+        )
+        .expect("seal");
+
+        let bob_plaintext =
+            verify_and_open(&sealed, &bob.kem_priv_pkcs8, &sender.sign_pub_spki).expect("bob open");
+        let carol_plaintext =
+            verify_and_open(&sealed, &carol.kem_priv_pkcs8, &sender.sign_pub_spki)
+                .expect("carol open");
+
+        assert_eq!(bob_plaintext, plaintext);
+        assert_eq!(carol_plaintext, plaintext);
+    }
+
+    #[test]
+    fn aes_key_wrap_unwrap_round_trip() {
+        let kek: [u8; 32] = {
+            let mut k = [0u8; 32];
+            native_ossl::rand::Rand::bytes(32)
+                .expect("rand")
+                .iter()
+                .enumerate()
+                .for_each(|(i, &b)| k[i] = b);
+            k
+        };
+        let cek: [u8; 32] = {
+            let mut k = [0u8; 32];
+            native_ossl::rand::Rand::bytes(32)
+                .expect("rand")
+                .iter()
+                .enumerate()
+                .for_each(|(i, &b)| k[i] = b);
+            k
+        };
+
+        let wrapped = aes_key_wrap(&kek, &cek).expect("wrap");
+        let unwrapped = aes_key_unwrap(&kek, &wrapped).expect("unwrap");
+        assert_eq!(cek, unwrapped);
+    }
+
+    #[test]
+    fn aes_key_unwrap_rejects_tampered_data() {
+        let kek: [u8; 32] = {
+            let mut k = [0u8; 32];
+            native_ossl::rand::Rand::bytes(32)
+                .expect("rand")
+                .iter()
+                .enumerate()
+                .for_each(|(i, &b)| k[i] = b);
+            k
+        };
+        let cek: [u8; 32] = [0x42u8; 32];
+        let mut wrapped = aes_key_wrap(&kek, &cek).expect("wrap");
+        wrapped[5] ^= 0xff; // flip a bit
+
+        let result = aes_key_unwrap(&kek, &wrapped);
+        assert!(
+            result.is_err(),
+            "tampered wrapped key should fail to unwrap"
+        );
+    }
 }

@@ -23,6 +23,11 @@ pub struct GossipEnvelope {
     /// `None` requests a full-state response.
     #[serde(rename = "r", default)]
     pub request_delta_since: Option<u64>,
+    /// 16 random bytes generated fresh for each push; used by the receiver to
+    /// deduplicate replayed envelopes within the `issued_at` window.
+    /// Absent on old peers (`default = []`); receiver skips dedup in that case.
+    #[serde(rename = "n", default)]
+    pub nonce: Vec<u8>,
 }
 
 impl GossipEnvelope {

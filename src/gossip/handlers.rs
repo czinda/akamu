@@ -73,7 +73,7 @@ pub async fn gossip_sync(
     let envelope = match GossipEnvelope::decode(&plaintext) {
         Ok(e) => e,
         Err(e) => {
-            tracing::warn!(sender = %sender_node_id, err = %e, "gossip/sync: CBOR decode envelope failed");
+            tracing::warn!(sender = %sender_node_id, error = %e, "gossip/sync: CBOR decode envelope failed");
             return StatusCode::BAD_REQUEST.into_response();
         }
     };
@@ -139,7 +139,7 @@ pub async fn gossip_sync(
     let peer_crdt = match envelope.decode_crdt() {
         Ok(c) => c,
         Err(e) => {
-            tracing::warn!(sender = %sender_node_id, err = %e, "gossip/sync: CBOR decode CRDT failed");
+            tracing::warn!(sender = %sender_node_id, error = %e, "gossip/sync: CBOR decode CRDT failed");
             return StatusCode::BAD_REQUEST.into_response();
         }
     };
@@ -158,7 +158,7 @@ pub async fn gossip_sync(
     };
 
     if let Err(e) = akamu_crdt::db::persist_crdt(&state.db, &crdt_snapshot).await {
-        tracing::error!(sender = %sender_node_id, err = %e, "gossip/sync: persist after merge failed");
+        tracing::error!(sender = %sender_node_id, error = %e, "gossip/sync: persist after merge failed");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
@@ -170,14 +170,14 @@ pub async fn gossip_sync(
         let crdt_bytes = match GossipEnvelope::encode_crdt(&response_crdt) {
             Ok(b) => b,
             Err(e) => {
-                tracing::error!(sender = %sender_node_id, err = %e, "gossip/sync: CBOR encode response CRDT failed");
+                tracing::error!(sender = %sender_node_id, error = %e, "gossip/sync: CBOR encode response CRDT failed");
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
         };
         let resp_nonce = match random_nonce() {
             Ok(n) => n,
             Err(e) => {
-                tracing::error!(sender = %sender_node_id, err = %e, "gossip/sync: random_nonce for response failed");
+                tracing::error!(sender = %sender_node_id, error = %e, "gossip/sync: random_nonce for response failed");
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
         };
@@ -192,7 +192,7 @@ pub async fn gossip_sync(
         match resp_envelope.encode() {
             Ok(b) => b,
             Err(e) => {
-                tracing::error!(sender = %sender_node_id, err = %e, "gossip/sync: CBOR encode response envelope failed");
+                tracing::error!(sender = %sender_node_id, error = %e, "gossip/sync: CBOR encode response envelope failed");
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
         }
@@ -329,7 +329,7 @@ pub async fn gossip_register(
     };
 
     if let Err(e) = akamu_crdt::db::persist_crdt(&state.db, &crdt_snapshot).await {
-        tracing::error!(node_id = %body.node_id, err = %e, "gossip/register: persist failed");
+        tracing::error!(node_id = %body.node_id, error = %e, "gossip/register: persist failed");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
