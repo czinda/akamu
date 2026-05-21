@@ -78,6 +78,23 @@ fn load_or_generate_mtc_key(
     }
 }
 
+fn derive_crdt_db_url(main_url: &str) -> String {
+    if main_url.contains(":memory:") {
+        return "sqlite::memory:".to_string();
+    }
+    // sqlite:///absolute/path/akamu.db  →  sqlite:///absolute/path/akamu_crdt.db
+    // sqlite:relative.db                →  sqlite:relative_crdt.db
+    if main_url.starts_with("sqlite:") {
+        if let Some(path) = main_url.strip_prefix("sqlite:") {
+            if let Some(stem) = path.strip_suffix(".db") {
+                return format!("sqlite:{stem}_crdt.db");
+            }
+        }
+    }
+    // Non-SQLite or unrecognised format: reuse same URL with a separate pool.
+    main_url.to_string()
+}
+
 async fn run() -> Result<(), String> {
     // ── Configuration ─────────────────────────────────────────────────────────
     let config_path = std::env::args()
@@ -155,6 +172,21 @@ async fn run() -> Result<(), String> {
     // nonces written by a previous process that used the DB-backed store).
     let _ = db::nonces::sweep_expired(&db, 86400).await;
 
+    // ── CRDT database (separate pool for cluster tables) ─────────────────────
+    // Derive the CRDT DB URL from config or from the main DB URL by appending
+    // `_crdt` before the `.db` extension (SQLite only).  For `:memory:` the
+    // CRDT DB is also in-memory; for non-SQLite backends the same URL is used
+    // with a separate pool (contention benefit still applies via independent
+    // connection management).
+    let crdt_db_url = config
+        .crdt_db_url
+        .clone()
+        .unwrap_or_else(|| derive_crdt_db_url(&config.database.url));
+    let crdt_db = akamu_crdt::db::open_crdt_db(&crdt_db_url)
+        .await
+        .map_err(|e| format!("CRDT database init: {e}"))?;
+    tracing::info!(url = %crdt_db_url, "CRDT database opened");
+
     // ── CRDT node identity bootstrap ──────────────────────────────────────────
     // Tell the CRDT DB layer which SQL placeholder style to use.
     akamu_crdt::db::init_db_kind(
@@ -180,7 +212,7 @@ async fn run() -> Result<(), String> {
     }
 
     let node_keys: NodeGossipKeys = {
-        let maybe_row = akamu_crdt::db::load_node_keys(&db, LOCAL_KEY)
+        let maybe_row = akamu_crdt::db::load_node_keys(&crdt_db, LOCAL_KEY)
             .await
             .map_err(|e| format!("load node keys: {e}"))?;
 
@@ -259,7 +291,7 @@ async fn run() -> Result<(), String> {
             // Persist upgrade if anything changed.
             if kem_priv != row.kem_private_key_der || sign_cert != row.signing_certificate_der {
                 akamu_crdt::db::save_node_keys(
-                    &db,
+                    &crdt_db,
                     &akamu_crdt::db::NodeKeysRow {
                         node_id: LOCAL_KEY.to_string(),
                         kem_private_key_der: kem_priv.clone(),
@@ -316,7 +348,7 @@ async fn run() -> Result<(), String> {
                 .as_secs() as i64;
 
             akamu_crdt::db::save_node_keys(
-                &db,
+                &crdt_db,
                 &akamu_crdt::db::NodeKeysRow {
                     node_id: LOCAL_KEY.to_string(),
                     kem_private_key_der: kem_priv_pkcs8.clone(),
@@ -349,7 +381,7 @@ async fn run() -> Result<(), String> {
 
     // Load CRDT state from the local DB, then insert/refresh this node's own
     // entry so delta gossip can identify which entries originated here.
-    let crdt_initial = akamu_crdt::db::load_from_db(&db, &node_keys.node_id)
+    let crdt_initial = akamu_crdt::db::load_from_db(&db, &crdt_db, &node_keys.node_id)
         .await
         .map_err(|e| format!("CRDT load from DB: {e}"))?;
     // Seed the process-global generation counter from the highest local_gen
@@ -723,6 +755,7 @@ async fn run() -> Result<(), String> {
         ),
         gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         write_notify: Arc::new(tokio::sync::Notify::new()),
+        crdt_db,
     });
 
     // ── Seed audit row counter ────────────────────────────────────────────────

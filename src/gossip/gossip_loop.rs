@@ -103,8 +103,11 @@ pub async fn run(state: Arc<AppState>) {
                 let crdt = state.crdt.read().await;
                 crdt.clone()
             };
-            if let Err(e) = akamu_crdt::db::persist_crdt(&state.db, &snap).await {
-                tracing::warn!(error = %e, "gossip: periodic DB persist failed");
+            if let Err(e) = akamu_crdt::db::persist_crdt_cluster(&state.crdt_db, &snap).await {
+                tracing::warn!(error = %e, "gossip: periodic CRDT cluster persist failed");
+            }
+            if let Err(e) = akamu_crdt::db::persist_crdt_acme(&state.db, &snap).await {
+                tracing::warn!(error = %e, "gossip: periodic ACME persist failed");
             }
         }
 

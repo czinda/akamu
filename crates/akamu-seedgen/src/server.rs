@@ -114,6 +114,7 @@ pub async fn start(
         email_challenge: None,
         delegation_upstream: None,
         gossip: None,
+        crdt_db_url: None,
     });
 
     // Open the database.
@@ -235,6 +236,7 @@ pub async fn start(
         gossip_client: Arc::new(reqwest::Client::new()),
         gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         write_notify: Arc::new(tokio::sync::Notify::new()),
+        crdt_db: pool.clone(),
     });
 
     let router = routes::build_router(Arc::clone(&state), None);

@@ -866,6 +866,7 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
         email_challenge: None,
         delegation_upstream: None,
         gossip: gossip_cfg,
+        crdt_db_url: None,
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.cas[0]).unwrap();
@@ -891,6 +892,16 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
         db_conn.clone()
     };
     akamu_crdt::db::init_db_kind(false, false);
+    let crdt_db_url = if db_url.contains(":memory:") {
+        "sqlite::memory:".to_string()
+    } else if let Some(stem) = db_url.strip_suffix(".db") {
+        format!("{stem}_crdt.db")
+    } else {
+        db_url.clone()
+    };
+    let crdt_db = akamu_crdt::db::open_crdt_db(&crdt_db_url)
+        .await
+        .expect("CRDT DB init failed");
     let ca = Arc::new(CaState {
         id: "bench".into(),
         key_type: args.ca_key_type.clone(),
@@ -991,6 +1002,7 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
         gossip_client: Arc::new(reqwest::Client::new()),
         gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         write_notify: Arc::new(tokio::sync::Notify::new()),
+        crdt_db,
     });
 
     if state.config.gossip.is_some() {

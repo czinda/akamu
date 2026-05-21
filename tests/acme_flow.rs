@@ -237,6 +237,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         email_challenge: None,
         delegation_upstream: None,
         gossip: None,
+        crdt_db_url: None,
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
@@ -328,6 +329,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         gss_cred: None,
         admin_gss_cred: None,
         eab_master_secret: None,
+            crdt_db: db_conn.clone(),
     });
 
     (state, dir)
@@ -2293,6 +2295,7 @@ async fn test_directory_with_optional_fields() {
         email_challenge: None,
         delegation_upstream: None,
         gossip: None,
+        crdt_db_url: None,
     });
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
     db::install_drivers();
@@ -2380,6 +2383,7 @@ async fn test_directory_with_optional_fields() {
         gss_cred: None,
         admin_gss_cred: None,
         eab_master_secret: None,
+            crdt_db: db_conn.clone(),
     });
     let router = routes::build_router(Arc::clone(&state), None);
     let (status, dir_body, _) = get(&router, "/acme/directory").await;
@@ -2713,6 +2717,7 @@ async fn test_finalize_with_mtc_enabled() {
         email_challenge: None,
         delegation_upstream: None,
         gossip: None,
+        crdt_db_url: None,
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
@@ -2805,6 +2810,7 @@ async fn test_finalize_with_mtc_enabled() {
         gss_cred: None,
         admin_gss_cred: None,
         eab_master_secret: None,
+            crdt_db: db_conn.clone(),
     });
 
     let router = routes::build_router(Arc::clone(&state), None);
@@ -3021,6 +3027,7 @@ async fn test_finalize_with_aia_and_cdp() {
         email_challenge: None,
         delegation_upstream: None,
         gossip: None,
+        crdt_db_url: None,
     });
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
     db::install_drivers();
@@ -3108,6 +3115,7 @@ async fn test_finalize_with_aia_and_cdp() {
         gss_cred: None,
         admin_gss_cred: None,
         eab_master_secret: None,
+            crdt_db: db_conn.clone(),
     });
 
     let router = routes::build_router(Arc::clone(&state), None);
@@ -3572,6 +3580,7 @@ async fn test_smime_email_reply_00_full_flow() {
         }),
         delegation_upstream: None,
         gossip: None,
+        crdt_db_url: None,
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
@@ -3677,6 +3686,7 @@ async fn test_smime_email_reply_00_full_flow() {
         gss_cred: None,
         admin_gss_cred: None,
         eab_master_secret: None,
+            crdt_db: db_conn.clone(),
     });
     let db = state.db.clone();
     let router = routes::build_router(Arc::clone(&state), None);

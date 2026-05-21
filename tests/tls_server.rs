@@ -444,6 +444,7 @@ async fn start_tls_server() -> TlsTestServer {
         email_challenge: None,
         delegation_upstream: None,
         gossip: None,
+        crdt_db_url: None,
     });
 
     // Initialise CA.
@@ -555,6 +556,7 @@ async fn start_tls_server() -> TlsTestServer {
         gss_cred: None,
         admin_gss_cred: None,
         eab_master_secret: None,
+            crdt_db: db_conn.clone(),
     });
 
     let router = routes::build_router(Arc::clone(&state), None);

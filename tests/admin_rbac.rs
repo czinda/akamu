@@ -89,6 +89,7 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         email_challenge: None,
         delegation_upstream: None,
         gossip: None,
+        crdt_db_url: None,
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
@@ -118,7 +119,7 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db_conn.clone(),
-        db_ro: db_conn,
+        db_ro: db_conn.clone(),
         db_kind: db::DbKind::Sqlite,
         profiles: akamu::profiles::ProfileRegistry::empty(&ca),
         cas: {
@@ -184,6 +185,7 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         gss_cred: None,
         admin_gss_cred: None,
         eab_master_secret: None,
+            crdt_db: db_conn.clone(),
     });
 
     // Pre-seed one session token per role (all server-wide) plus one

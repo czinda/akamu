@@ -176,6 +176,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         email_challenge: None,
         delegation_upstream: None,
         gossip: None,
+        crdt_db_url: None,
     });
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
     let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();
@@ -265,6 +266,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         gss_cred: None,
         admin_gss_cred: None,
         eab_master_secret: None,
+            crdt_db: db_conn.clone(),
     });
     (state, dir)
 }
@@ -588,6 +590,7 @@ async fn test_renewal_info_explanation_url() {
         email_challenge: None,
         delegation_upstream: None,
         gossip: None,
+        crdt_db_url: None,
     });
     let state2 = Arc::new(AppState {
         config: Arc::clone(&config),
@@ -647,6 +650,7 @@ async fn test_renewal_info_explanation_url() {
         gss_cred: None,
         admin_gss_cred: None,
         eab_master_secret: None,
+        crdt_db: db.clone(),
     });
     let router = routes::build_router(Arc::clone(&state2), None);
 

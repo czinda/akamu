@@ -161,7 +161,6 @@ struct AccountLoad {
     updated: i64,
     profile_grants: Option<String>,
     ca_id: String,
-    local_gen: i64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -178,7 +177,6 @@ struct OrderLoad {
     created: i64,
     updated: i64,
     ca_id: String,
-    local_gen: i64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -193,7 +191,6 @@ struct AuthzLoad {
     created: i64,
     updated: i64,
     ca_id: String,
-    local_gen: i64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -207,7 +204,6 @@ struct ChallengeLoad {
     error: Option<String>,
     created: i64,
     updated: i64,
-    local_gen: i64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -223,7 +219,6 @@ struct CertLoad {
     revocation_reason: Option<i64>,
     created: i64,
     ca_id: String,
-    local_gen: i64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -233,7 +228,6 @@ struct EabKeyLoad {
     created: i64,
     used_at: Option<i64>,
     profile_grants: Option<String>,
-    local_gen: i64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -244,7 +238,6 @@ struct OperatorLoad {
     ca_id: String,
     active: i64,
     created_at: String,
-    local_gen: i64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -254,7 +247,6 @@ struct DelegationLoad {
     csr_template: String,
     created: i64,
     ca_id: String,
-    local_gen: i64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -263,7 +255,6 @@ struct MtcCheckpointLoad {
     root_hex: String,
     signature: Vec<u8>,
     created: i64,
-    local_gen: i64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -308,29 +299,38 @@ struct NodeKeysLoad {
 
 // ── Public DB functions ───────────────────────────────────────────────────────
 
-/// Load the full `AkaCrdt` state from the node's local database.
+/// Load the full `AkaCrdt` state from the node's local databases.
 ///
-/// Sets `local_gen` on each entry directly from the stored DB column so that
-/// in-memory delta tracking resumes correctly after a restart.  After loading,
-/// `CRDT_GENERATION` is advanced beyond all loaded generation numbers so that
-/// new mutations receive strictly higher generation values.
+/// ACME entries (`accounts`, `orders`, etc.) are read from `main_pool` with
+/// `local_gen = 0`.  After restart the first gossip round does a full-state
+/// exchange regardless, so exact generation tracking on ACME entries is not
+/// needed for correctness.
+///
+/// Cluster tables (`crdt_cluster_nodes`, `crdt_order_owners`, `crdt_mtc_writer`)
+/// are read from `crdt_pool` with their stored `local_gen`, so delta gossip
+/// resumes from the correct generation without a full push after restart.
 ///
 /// `audit_events` and `mtc_cosignatures` GrowSets are intentionally not loaded:
 /// the DB schema stores them with integer PKs incompatible with the CRDT entry
 /// types.  They are repopulated via gossip on first sync after restart.
-pub async fn load_from_db(pool: &AnyPool, node_id: &str) -> Result<AkaCrdt, sqlx::Error> {
+pub async fn load_from_db(
+    main_pool: &AnyPool,
+    crdt_pool: &AnyPool,
+    node_id: &str,
+) -> Result<AkaCrdt, sqlx::Error> {
+    let pool = main_pool;
     let mut crdt = AkaCrdt::default();
     let mut max_gen: u64 = 0;
 
     // ── Accounts ──────────────────────────────────────────────────────────────
     let rows: Vec<AccountLoad> = sqlx::query_as(
         "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated, \
-         profile_grants, ca_id, local_gen FROM accounts",
+         profile_grants, ca_id FROM accounts",
     )
     .fetch_all(pool)
     .await?;
     for row in rows {
-        let gen = row.local_gen as u64;
+        let gen = 0u64;
         max_gen = max_gen.max(gen);
         let tombstone = matches!(row.status.as_str(), "deactivated" | "revoked");
         let entry = AccountEntry {
@@ -357,12 +357,12 @@ pub async fn load_from_db(pool: &AnyPool, node_id: &str) -> Result<AkaCrdt, sqlx
     // ── Orders ────────────────────────────────────────────────────────────────
     let rows: Vec<OrderLoad> = sqlx::query_as(
         "SELECT id, account_id, status, expires, identifiers, not_before, not_after, \
-         error, certificate_id, created, updated, ca_id, local_gen FROM orders",
+         error, certificate_id, created, updated, ca_id FROM orders",
     )
     .fetch_all(pool)
     .await?;
     for row in rows {
-        let gen = row.local_gen as u64;
+        let gen = 0u64;
         max_gen = max_gen.max(gen);
         let tombstone = row.status == "invalid";
         let entry = OrderEntry {
@@ -394,12 +394,12 @@ pub async fn load_from_db(pool: &AnyPool, node_id: &str) -> Result<AkaCrdt, sqlx
     // ── Authorizations ────────────────────────────────────────────────────────
     let rows: Vec<AuthzLoad> = sqlx::query_as(
         "SELECT id, order_id, account_id, status, identifier, expires, wildcard, \
-         created, updated, ca_id, local_gen FROM authorizations",
+         created, updated, ca_id FROM authorizations",
     )
     .fetch_all(pool)
     .await?;
     for row in rows {
-        let gen = row.local_gen as u64;
+        let gen = 0u64;
         max_gen = max_gen.max(gen);
         let tombstone = matches!(
             row.status.as_str(),
@@ -431,12 +431,12 @@ pub async fn load_from_db(pool: &AnyPool, node_id: &str) -> Result<AkaCrdt, sqlx
     // Alias `type` → `challenge_type` to avoid SQL reserved-word issues across backends.
     let rows: Vec<ChallengeLoad> = sqlx::query_as(
         "SELECT id, authz_id, type AS challenge_type, status, token, validated, error, \
-         created, updated, local_gen FROM challenges",
+         created, updated FROM challenges",
     )
     .fetch_all(pool)
     .await?;
     for row in rows {
-        let gen = row.local_gen as u64;
+        let gen = 0u64;
         max_gen = max_gen.max(gen);
         let entry = ChallengeEntry {
             challenge_id: row.id.clone(),
@@ -458,12 +458,12 @@ pub async fn load_from_db(pool: &AnyPool, node_id: &str) -> Result<AkaCrdt, sqlx
     // ── Certificates ──────────────────────────────────────────────────────────
     let rows: Vec<CertLoad> = sqlx::query_as(
         "SELECT id, order_id, account_id, serial_number, status, not_before, not_after, \
-         revoked_at, revocation_reason, created, ca_id, local_gen FROM certificates",
+         revoked_at, revocation_reason, created, ca_id FROM certificates",
     )
     .fetch_all(pool)
     .await?;
     for row in rows {
-        let gen = row.local_gen as u64;
+        let gen = 0u64;
         max_gen = max_gen.max(gen);
         let tombstone = row.status == "revoked";
         let entry = CertEntry {
@@ -485,12 +485,12 @@ pub async fn load_from_db(pool: &AnyPool, node_id: &str) -> Result<AkaCrdt, sqlx
 
     // ── EAB Keys ──────────────────────────────────────────────────────────────
     let rows: Vec<EabKeyLoad> = sqlx::query_as(
-        "SELECT kid, hmac_key_b64u, created, used_at, profile_grants, local_gen FROM eab_keys",
+        "SELECT kid, hmac_key_b64u, created, used_at, profile_grants FROM eab_keys",
     )
     .fetch_all(pool)
     .await?;
     for row in rows {
-        let gen = row.local_gen as u64;
+        let gen = 0u64;
         max_gen = max_gen.max(gen);
         let entry = EabKeyEntry {
             kid: row.kid.clone(),
@@ -507,12 +507,12 @@ pub async fn load_from_db(pool: &AnyPool, node_id: &str) -> Result<AkaCrdt, sqlx
 
     // ── Operators ─────────────────────────────────────────────────────────────
     let rows: Vec<OperatorLoad> = sqlx::query_as(
-        "SELECT id, name, role, ca_id, active, created_at, local_gen FROM operators",
+        "SELECT id, name, role, ca_id, active, created_at FROM operators",
     )
     .fetch_all(pool)
     .await?;
     for row in rows {
-        let gen = row.local_gen as u64;
+        let gen = 0u64;
         max_gen = max_gen.max(gen);
         let tombstone = row.active == 0;
         let created = rfc3339_utc_to_unix(&row.created_at);
@@ -529,12 +529,12 @@ pub async fn load_from_db(pool: &AnyPool, node_id: &str) -> Result<AkaCrdt, sqlx
 
     // ── Delegations ───────────────────────────────────────────────────────────
     let rows: Vec<DelegationLoad> = sqlx::query_as(
-        "SELECT id, account_id, csr_template, created, ca_id, local_gen FROM delegations",
+        "SELECT id, account_id, csr_template, created, ca_id FROM delegations",
     )
     .fetch_all(pool)
     .await?;
     for row in rows {
-        let gen = row.local_gen as u64;
+        let gen = 0u64;
         max_gen = max_gen.max(gen);
         let entry = DelegationEntry {
             delegation_id: row.id.clone(),
@@ -549,12 +549,12 @@ pub async fn load_from_db(pool: &AnyPool, node_id: &str) -> Result<AkaCrdt, sqlx
 
     // ── MTC Checkpoints ───────────────────────────────────────────────────────
     let rows: Vec<MtcCheckpointLoad> = sqlx::query_as(
-        "SELECT tree_size, root_hex, signature, created, local_gen FROM mtc_checkpoints",
+        "SELECT tree_size, root_hex, signature, created FROM mtc_checkpoints",
     )
     .fetch_all(pool)
     .await?;
     for row in rows {
-        let gen = row.local_gen as u64;
+        let gen = 0u64;
         max_gen = max_gen.max(gen);
         let tree_size = row.tree_size as u64;
         let entry = MtcCheckpointEntry {
@@ -575,7 +575,7 @@ pub async fn load_from_db(pool: &AnyPool, node_id: &str) -> Result<AkaCrdt, sqlx
          signing_certificate_der, ca_ids, registered_at, tombstone, tombstone_at, \
          local_gen FROM crdt_cluster_nodes",
     )
-    .fetch_all(pool)
+    .fetch_all(crdt_pool)
     .await?;
     for row in rows {
         let gen = row.local_gen as u64;
@@ -612,7 +612,7 @@ pub async fn load_from_db(pool: &AnyPool, node_id: &str) -> Result<AkaCrdt, sqlx
     // ── CRDT order owners ─────────────────────────────────────────────────────
     let rows: Vec<CrdtOrderOwnerLoad> =
         sqlx::query_as("SELECT order_id, node_id, claimed_at, local_gen FROM crdt_order_owners")
-            .fetch_all(pool)
+            .fetch_all(crdt_pool)
             .await?;
     for row in rows {
         let gen = row.local_gen as u64;
@@ -631,7 +631,7 @@ pub async fn load_from_db(pool: &AnyPool, node_id: &str) -> Result<AkaCrdt, sqlx
     // At most one row (id = 'singleton').
     let rows: Vec<CrdtMtcWriterLoad> =
         sqlx::query_as("SELECT node_id, claimed_at, local_gen FROM crdt_mtc_writer")
-            .fetch_all(pool)
+            .fetch_all(crdt_pool)
             .await?;
     if let Some(row) = rows.into_iter().next() {
         let gen = row.local_gen as u64;
@@ -652,22 +652,13 @@ pub async fn load_from_db(pool: &AnyPool, node_id: &str) -> Result<AkaCrdt, sqlx
     Ok(crdt)
 }
 
-/// Persist the full in-memory CRDT state to the node's local database.
+/// Persist the three CRDT-owned cluster tables to the CRDT database.
 ///
-/// - `crdt_cluster_nodes`, `crdt_order_owners`, `crdt_mtc_writer`: fully
-///   replaced (DELETE + INSERT) since this node owns all columns.
-/// - ACME tables: UPDATE-only for CRDT-tracked fields (status, revocation,
-///   local_gen).  New entries received via gossip that have no matching row
-///   in the local DB are skipped — they will be re-gossiped after restart.
-///   Inserts for locally-created entries happen via write-path hooks (Phase 3).
-pub async fn persist_crdt(pool: &AnyPool, crdt: &AkaCrdt) -> Result<(), sqlx::Error> {
+/// Writes `crdt_cluster_nodes`, `crdt_order_owners`, and `crdt_mtc_writer`
+/// using full-replace (DELETE + INSERT) semantics.  Call with the CRDT pool
+/// (`state.crdt_db`) to avoid contending with ACME writes on the main pool.
+pub async fn persist_crdt_cluster(pool: &AnyPool, crdt: &AkaCrdt) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
-
-    // Defer FK checks to commit time so the insert ordering within the transaction
-    // (accounts → orders → authz → challenges) satisfies all constraints at commit
-    // even if intermediate statements would temporarily violate them.
-    // Non-SQLite backends ignore PRAGMA statements.
-    let _ = q("PRAGMA defer_foreign_keys=ON").execute(&mut *tx).await;
 
     // ── CRDT cluster nodes (full replace) ─────────────────────────────────────
     q("DELETE FROM crdt_cluster_nodes")
@@ -724,6 +715,24 @@ pub async fn persist_crdt(pool: &AnyPool, crdt: &AkaCrdt) -> Result<(), sqlx::Er
         .execute(&mut *tx)
         .await?;
     }
+
+    tx.commit().await
+}
+
+/// Persist ACME-table CRDT fields to the main application database.
+///
+/// Upserts gossip-received entries so cross-node data (accounts, orders, etc.)
+/// is visible to ACME handlers on this node.  Call with the main pool
+/// (`state.db`).  Run on the slow periodic timer (every 30 s), not on the
+/// hot path.
+pub async fn persist_crdt_acme(pool: &AnyPool, crdt: &AkaCrdt) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    // Defer FK checks to commit time so the insert ordering within the transaction
+    // (accounts → orders → authz → challenges) satisfies all constraints at commit
+    // even if intermediate statements would temporarily violate them.
+    // Non-SQLite backends ignore PRAGMA statements.
+    let _ = q("PRAGMA defer_foreign_keys=ON").execute(&mut *tx).await;
 
     // ── ACME tables: upsert all fields so gossip-received entries land in the DB ──
     //
@@ -1080,4 +1089,88 @@ pub async fn save_node_keys(pool: &AnyPool, row: &NodeKeysRow) -> Result<(), sql
     .await?;
 
     Ok(())
+}
+
+/// Open a dedicated pool for CRDT cluster tables and run inline schema setup.
+///
+/// The CRDT DB is separate from the main ACME database so that periodic
+/// cluster-state persists do not contend with ACME reads and writes on the
+/// main pool.  Schema is managed inline (no migration files) because the
+/// CRDT crate owns these tables entirely.
+///
+/// For SQLite the URL should be a file path (`sqlite:///path/crdt.db`) so WAL
+/// mode can be enabled.  `:memory:` is accepted and silently skips WAL setup.
+pub async fn open_crdt_db(url: &str) -> Result<AnyPool, sqlx::Error> {
+    use sqlx::any::AnyPoolOptions;
+    let is_mem = url.contains(":memory:");
+    let pool = AnyPoolOptions::new()
+        .max_connections(if is_mem { 1 } else { 4 })
+        .connect(url)
+        .await?;
+
+    // Enable WAL on file-backed SQLite; ignored by Postgres/MariaDB.
+    if !is_mem {
+        let _ = sqlx::query("PRAGMA journal_mode=WAL")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("PRAGMA synchronous=NORMAL")
+            .execute(&pool)
+            .await;
+    }
+
+    // Create CRDT-owned tables (idempotent).
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS node_keys (
+            node_id                  TEXT    PRIMARY KEY,
+            kem_private_key_der      BLOB    NOT NULL,
+            kem_public_key_der       BLOB    NOT NULL,
+            signing_private_key_der  BLOB    NOT NULL,
+            signing_public_key_der   BLOB    NOT NULL,
+            signing_certificate_der  BLOB    NOT NULL,
+            created_at               INTEGER NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS crdt_cluster_nodes (
+            node_id                  TEXT    PRIMARY KEY,
+            gossip_url               TEXT    NOT NULL,
+            kem_public_key_der       BLOB    NOT NULL,
+            signing_public_key_der   BLOB    NOT NULL,
+            signing_certificate_der  BLOB    NOT NULL,
+            ca_ids                   TEXT    NOT NULL DEFAULT '[]',
+            registered_at            INTEGER NOT NULL,
+            tombstone                INTEGER NOT NULL DEFAULT 0,
+            tombstone_at             INTEGER,
+            local_gen                INTEGER NOT NULL DEFAULT 0
+        )",
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS crdt_order_owners (
+            order_id    TEXT    PRIMARY KEY,
+            node_id     TEXT    NOT NULL,
+            claimed_at  INTEGER NOT NULL,
+            local_gen   INTEGER NOT NULL DEFAULT 0
+        )",
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS crdt_mtc_writer (
+            id          TEXT    PRIMARY KEY,
+            node_id     TEXT    NOT NULL,
+            claimed_at  INTEGER NOT NULL,
+            local_gen   INTEGER NOT NULL DEFAULT 0
+        )",
+    )
+    .execute(&pool)
+    .await?;
+
+    Ok(pool)
 }

@@ -631,6 +631,7 @@ mod tests {
             email_challenge: None,
             delegation_upstream: None,
             gossip: None,
+        crdt_db_url: None,
         });
 
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
@@ -654,7 +655,7 @@ mod tests {
         Arc::new(AppState {
             config: Arc::clone(&config),
             db: db_conn.clone(),
-            db_ro: db_conn,
+            db_ro: db_conn.clone(),
             db_kind: crate::db::DbKind::Sqlite,
             profiles: crate::profiles::ProfileRegistry::empty(&ca),
             cas: {
@@ -719,6 +720,7 @@ mod tests {
             gossip_client: Arc::new(reqwest::Client::new()),
             gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             write_notify: Arc::new(tokio::sync::Notify::new()),
+            crdt_db: db_conn.clone(),
         })
     }
 
@@ -1179,6 +1181,7 @@ mod tests {
             email_challenge: None,
             delegation_upstream: None,
             gossip: None,
+        crdt_db_url: None,
         });
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
         db::install_drivers();
@@ -1200,7 +1203,7 @@ mod tests {
         let state = Arc::new(AppState {
             config: Arc::clone(&config),
             db: db_conn.clone(),
-            db_ro: db_conn,
+            db_ro: db_conn.clone(),
             db_kind: crate::db::DbKind::Sqlite,
             profiles: crate::profiles::ProfileRegistry::empty(&ca),
             cas: {
@@ -1265,6 +1268,7 @@ mod tests {
             gossip_client: Arc::new(reqwest::Client::new()),
             gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             write_notify: Arc::new(tokio::sync::Notify::new()),
+            crdt_db: db_conn.clone(),
         });
 
         // The identifier is just the IP address — no port embedded.
@@ -1533,6 +1537,7 @@ mod tests {
             email_challenge: None,
             delegation_upstream: None,
             gossip: None,
+        crdt_db_url: None,
         });
         let (ca_key, ca_cert_der) = crate::ca::init::load_or_generate(config.default_ca()).unwrap();
         let ca = Arc::new(CaState {
@@ -1549,6 +1554,7 @@ mod tests {
             crl_next_update_secs: 604800,
             caa_identities: vec![],
         });
+        let crdt_pool = db.clone();
         Arc::new(AppState {
             config,
             db_ro: db.clone(),
@@ -1617,6 +1623,7 @@ mod tests {
             gossip_client: Arc::new(reqwest::Client::new()),
             gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             write_notify: Arc::new(tokio::sync::Notify::new()),
+            crdt_db: crdt_pool,
         })
     }
 

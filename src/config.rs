@@ -39,6 +39,11 @@ pub struct Config {
     /// CRDT gossip replication. Absent → single-node mode; no gossip is performed.
     #[serde(default)]
     pub gossip: Option<GossipConfig>,
+    /// URL for the dedicated CRDT database pool.  When absent, derived from
+    /// `database.url` by appending `_crdt` before the `.db` extension (SQLite)
+    /// or reusing the same URL with a separate pool (non-SQLite).
+    #[serde(default)]
+    pub crdt_db_url: Option<String>,
 }
 
 /// Admin API configuration (PP CA v2.1 FMT + FTA_SSL).

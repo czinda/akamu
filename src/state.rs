@@ -271,6 +271,11 @@ pub struct AppState {
     /// This bounds cross-node propagation latency to the gossip debounce window
     /// (~10 ms) instead of the full interval.
     pub write_notify: Arc<tokio::sync::Notify>,
+    /// Dedicated pool for CRDT cluster tables (`crdt_cluster_nodes`,
+    /// `crdt_order_owners`, `crdt_mtc_writer`, `node_keys`).  Separate from
+    /// `db` so that the 30-second periodic cluster-state persist does not
+    /// contend with ACME writes on the main pool.
+    pub crdt_db: crate::db::Db,
 }
 
 impl AppState {

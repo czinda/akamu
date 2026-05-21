@@ -401,6 +401,7 @@ async fn build_akamu_state(
         email_challenge: None,
         delegation_upstream: None,
         gossip: None,
+        crdt_db_url: None,
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
@@ -505,6 +506,7 @@ async fn build_akamu_state(
         write_notify: Arc::new(tokio::sync::Notify::new()),
         gss_cred: None,
         eab_master_secret: None,
+        crdt_db: db_conn.clone(),
     })
 }
 

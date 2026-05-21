@@ -360,7 +360,7 @@ pub async fn gossip_register(
         crdt.clone()
     };
 
-    if let Err(e) = akamu_crdt::db::persist_crdt(&state.db, &crdt_snapshot).await {
+    if let Err(e) = akamu_crdt::db::persist_crdt_cluster(&state.crdt_db, &crdt_snapshot).await {
         tracing::error!(node_id = %body.node_id, error = %e, "gossip/register: persist failed");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
