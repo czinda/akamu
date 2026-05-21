@@ -726,7 +726,7 @@ mod tests {
             email_challenge: None,
             delegation_upstream: None,
             gossip: None,
-        crdt_db_url: None,
+            crdt_db_url: None,
         });
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
         db::install_drivers();

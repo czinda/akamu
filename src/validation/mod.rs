@@ -346,37 +346,38 @@ async fn on_valid(
                 let (ch_gen, authz_gen, ord_gen) = {
                     let mut crdt = state.crdt.write().await;
 
-                    let ch_gen = if let Some(ch) =
-                        crdt.challenges.get(&challenge_id.to_string()).cloned()
-                    {
-                        let updated = ChallengeEntry {
-                            status: "valid".into(),
-                            validated: Some(now),
-                            updated: now,
-                            ..ch
+                    let ch_gen =
+                        if let Some(ch) = crdt.challenges.get(&challenge_id.to_string()).cloned() {
+                            let updated = ChallengeEntry {
+                                status: "valid".into(),
+                                validated: Some(now),
+                                updated: now,
+                                ..ch
+                            };
+                            Some(crdt.challenges.set(
+                                challenge_id.to_string(),
+                                updated,
+                                now,
+                                state.node_id.as_str(),
+                            ))
+                        } else {
+                            None
                         };
-                        Some(crdt.challenges.set(
-                            challenge_id.to_string(),
-                            updated,
-                            now,
-                            state.node_id.as_str(),
-                        ))
-                    } else {
-                        None
-                    };
 
-                    let authz_gen = if let Some(az) =
-                        crdt.authorizations.get(&authz_id.to_string()).cloned()
-                    {
-                        let updated = AuthzEntry {
-                            status: "valid".into(),
-                            updated: now,
-                            ..az
+                    let authz_gen =
+                        if let Some(az) = crdt.authorizations.get(&authz_id.to_string()).cloned() {
+                            let updated = AuthzEntry {
+                                status: "valid".into(),
+                                updated: now,
+                                ..az
+                            };
+                            Some(
+                                crdt.authorizations
+                                    .upsert(authz_id.to_string(), updated, now),
+                            )
+                        } else {
+                            None
                         };
-                        Some(crdt.authorizations.upsert(authz_id.to_string(), updated, now))
-                    } else {
-                        None
-                    };
 
                     let ord_gen = if order_advanced {
                         if let Some(ord) = crdt.orders.get(&order_id.to_string()).cloned() {
@@ -397,21 +398,19 @@ async fn on_valid(
                     (ch_gen, authz_gen, ord_gen)
                 };
                 if let Some(gen) = ch_gen {
-                    let _ =
-                        crate::db::query("UPDATE challenges SET local_gen = ? WHERE id = ?")
-                            .bind(gen as i64)
-                            .bind(challenge_id)
-                            .execute(&state.db)
-                            .await;
+                    let _ = crate::db::query("UPDATE challenges SET local_gen = ? WHERE id = ?")
+                        .bind(gen as i64)
+                        .bind(challenge_id)
+                        .execute(&state.db)
+                        .await;
                 }
                 if let Some(gen) = authz_gen {
-                    let _ = crate::db::query(
-                        "UPDATE authorizations SET local_gen = ? WHERE id = ?",
-                    )
-                    .bind(gen as i64)
-                    .bind(authz_id)
-                    .execute(&state.db)
-                    .await;
+                    let _ =
+                        crate::db::query("UPDATE authorizations SET local_gen = ? WHERE id = ?")
+                            .bind(gen as i64)
+                            .bind(authz_id)
+                            .execute(&state.db)
+                            .await;
                 }
                 if let Some(gen) = ord_gen {
                     let _ = crate::db::query("UPDATE orders SET local_gen = ? WHERE id = ?")
@@ -631,7 +630,7 @@ mod tests {
             email_challenge: None,
             delegation_upstream: None,
             gossip: None,
-        crdt_db_url: None,
+            crdt_db_url: None,
         });
 
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
@@ -1181,7 +1180,7 @@ mod tests {
             email_challenge: None,
             delegation_upstream: None,
             gossip: None,
-        crdt_db_url: None,
+            crdt_db_url: None,
         });
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
         db::install_drivers();
@@ -1537,7 +1536,7 @@ mod tests {
             email_challenge: None,
             delegation_upstream: None,
             gossip: None,
-        crdt_db_url: None,
+            crdt_db_url: None,
         });
         let (ca_key, ca_cert_der) = crate::ca::init::load_or_generate(config.default_ca()).unwrap();
         let ca = Arc::new(CaState {

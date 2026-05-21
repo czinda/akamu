@@ -219,7 +219,7 @@ async fn build_two_ca_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir
         gss_cred: None,
         admin_gss_cred: None,
         eab_master_secret: None,
-            crdt_db: db_conn.clone(),
+        crdt_db: db_conn.clone(),
     });
 
     (state, dir)
@@ -732,7 +732,7 @@ async fn admin_cas_list_returns_both_cas() {
         gss_cred: None,
         admin_gss_cred: None,
         eab_master_secret: None,
-            crdt_db: db_conn.clone(),
+        crdt_db: db_conn.clone(),
     });
 
     let admin_router = routes::build_router(Arc::clone(&state), None);
@@ -1009,7 +1009,7 @@ async fn build_two_ca_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         gss_cred: None,
         admin_gss_cred: None,
         eab_master_secret: None,
-            crdt_db: db_conn.clone(),
+        crdt_db: db_conn.clone(),
     });
 
     (state, dir)

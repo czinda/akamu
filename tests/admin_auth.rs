@@ -250,7 +250,7 @@ async fn build_state(
         gss_cred: None,
         admin_gss_cred: None,
         eab_master_secret: None,
-            crdt_db: db_conn.clone(),
+        crdt_db: db_conn.clone(),
     });
 
     (state, sessions, dir)

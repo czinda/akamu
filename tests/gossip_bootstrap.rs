@@ -307,7 +307,7 @@ async fn spawn_node(params: SpawnParams) -> NodeHandle {
         gss_cred: None,
         admin_gss_cred: None,
         eab_master_secret: None,
-            crdt_db: db_conn.clone(),
+        crdt_db: db_conn.clone(),
     });
 
     if state.config.gossip.is_some() {
