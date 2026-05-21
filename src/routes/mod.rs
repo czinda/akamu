@@ -241,9 +241,9 @@ pub fn build_router(state: Arc<AppState>, static_dir: Option<&std::path::Path>) 
             halt_check,
         ));
 
-    // Non-ACME routes: CRL/OCSP/cross-certs (public, read-only) and provider
-    // webhooks.  Admin routes are served on the dedicated admin listener via
-    // `build_admin_router`; they are not registered here.
+    // Non-ACME routes: CRL/OCSP/cross-certs (public, read-only), provider
+    // webhooks, and inter-node gossip sync.  Admin routes are served on the
+    // dedicated admin listener; they are not registered here.
     let other_router = Router::new()
         // RFC 8823 email-reply-00 webhook — HMAC-authenticated, not JWS-authenticated.
         // Body is capped at 64 KiB; legitimate payloads are a few KiB.
@@ -262,7 +262,10 @@ pub fn build_router(state: Arc<AppState>, static_dir: Option<&std::path::Path>) 
         .route("/ca/{ca_id}/crl", get(crl::get_crl))
         .route("/ca/{ca_id}/ocsp", post(ocsp::post_ocsp))
         .route("/ca/{ca_id}/ocsp/{request}", get(ocsp::get_ocsp))
-        .route("/ca/{ca_id}/cross-certs", get(crl::get_cross_certs));
+        .route("/ca/{ca_id}/cross-certs", get(crl::get_cross_certs))
+        // Inter-node gossip sync (C-3): on the public listener; authentication is
+        // provided by the CMS SignedData wrapper (ECDSA P-256 with pinned peer cert).
+        .route("/gossip/sync", post(crate::gossip::handlers::gossip_sync));
 
     // Admin routes: bypass halt_check; auth enforced per-handler via OperatorContext.
     let admin_router = Router::new()
@@ -358,12 +361,14 @@ pub fn build_router(state: Arc<AppState>, static_dir: Option<&std::path::Path>) 
             axum::routing::get(admin::get_cross_cert),
         )
         .route(
-            "/admin/gossip/sync",
-            post(crate::gossip::handlers::gossip_sync),
-        )
-        .route(
             "/admin/gossip/status",
             axum::routing::get(crate::gossip::handlers::gossip_status),
+        )
+        // Peer enrollment (H-8): operator must pre-pin a peer's keys before gossip
+        // can proceed.  Authentication via OperatorContext (admin session).
+        .route(
+            "/admin/gossip/register",
+            post(crate::gossip::handlers::gossip_register),
         );
 
     let mut router = Router::new()
