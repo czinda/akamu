@@ -185,7 +185,7 @@ pub struct EabOptions<'a> {
 ///
 /// Every field that has a sensible default is annotated with `#[serde(default
 /// = "...")]` so that existing configs with fewer fields remain forward-compatible.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct RenewalConfig {
     /// ACME directory URL (base URL or full per-CA directory URL).
     pub server: String,
@@ -220,6 +220,7 @@ pub struct RenewalConfig {
     #[serde(default = "defaults::tls_port")]
     pub tls_port: u16,
     /// Path to the onion service private key (tor-only orders).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub onion_key: Option<PathBuf>,
     /// Poll timeout in seconds when waiting for challenge validation.
     #[serde(default = "defaults::poll_timeout")]
@@ -228,22 +229,52 @@ pub struct RenewalConfig {
     #[serde(default)]
     pub contacts: Vec<String>,
     /// EAB key identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eab_kid: Option<String>,
-    /// EAB HMAC key (base64url).
+    /// EAB HMAC key (base64url).  Not serialized — operator must re-supply on renewal.
+    #[serde(default, skip_serializing)]
     pub eab_key: Option<String>,
     /// EAB HMAC algorithm.
     #[serde(default = "defaults::eab_alg")]
     pub eab_alg: String,
     /// Path to a Kerberos keytab for GSSAPI-authenticated EAB fetch.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gssapi_keytab: Option<PathBuf>,
     /// Hook script for DNS TXT record management.  Invoked as
     /// `<dns_hook> add|remove` with values passed via environment variables.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dns_hook: Option<String>,
     /// Certificate profile identifier (draft-aaron-acme-profiles-01).
     /// When set, the value is sent as `"profile"` in the newOrder payload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+}
+
+impl std::fmt::Debug for RenewalConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RenewalConfig")
+            .field("server", &self.server)
+            .field("ca", &self.ca)
+            .field("domains", &self.domains)
+            .field("account_key", &self.account_key)
+            .field("account_key_type", &self.account_key_type)
+            .field("cert_path", &self.cert_path)
+            .field("cert_key_path", &self.cert_key_path)
+            .field("cert_key_type", &self.cert_key_type)
+            .field("challenge_type", &self.challenge_type)
+            .field("http_port", &self.http_port)
+            .field("tls_port", &self.tls_port)
+            .field("onion_key", &self.onion_key)
+            .field("poll_timeout", &self.poll_timeout)
+            .field("contacts", &self.contacts)
+            .field("eab_kid", &self.eab_kid)
+            .field("eab_key", &self.eab_key.as_ref().map(|_| "[REDACTED]"))
+            .field("eab_alg", &self.eab_alg)
+            .field("gssapi_keytab", &self.gssapi_keytab)
+            .field("dns_hook", &self.dns_hook)
+            .field("profile", &self.profile)
+            .finish()
+    }
 }
 
 mod defaults {
