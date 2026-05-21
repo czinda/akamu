@@ -13,14 +13,14 @@
 
 mod import;
 
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::{
     fs,
     io::Write as _,
     path::{Path, PathBuf},
     sync::Arc,
 };
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt as _;
 
 use akamu_client::{
     fetch_eab_via_gssapi, AccountKey, AccountOptions, AcmeClient, ChallengeSolver as _,
@@ -976,9 +976,9 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                         match io::stdin().lock().lines().next() {
                             Some(Ok(_)) => Ok(()),
                             Some(Err(e)) => Err(format!("dns-persist-01 stdin read error: {e}")),
-                            None => Err(
-                                "stdin closed (EOF) — aborting dns-persist-01 challenge".into(),
-                            ),
+                            None => {
+                                Err("stdin closed (EOF) — aborting dns-persist-01 challenge".into())
+                            }
                         }
                     })
                     .await
@@ -1165,7 +1165,10 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
 /// Accepts "Z", "+00:00", or "-00:00" as the UTC offset indicator.
 fn parse_rfc3339_utc(s: &str) -> Option<u64> {
     // Strip UTC offset suffix, then drop optional sub-second fraction.
-    let s = if let Some(stripped) = s.strip_suffix("+00:00").or_else(|| s.strip_suffix("-00:00")) {
+    let s = if let Some(stripped) = s
+        .strip_suffix("+00:00")
+        .or_else(|| s.strip_suffix("-00:00"))
+    {
         stripped
     } else {
         s.trim_end_matches('Z')
@@ -1181,8 +1184,14 @@ fn parse_rfc3339_utc(s: &str) -> Option<u64> {
     let hour: i64 = s[11..13].parse().ok()?;
     let min: i64 = s[14..16].parse().ok()?;
     let sec: i64 = s[17..19].parse().ok()?;
-    if year < 1970 || year > 9999 || month < 1 || month > 12 || day < 1
-        || hour > 23 || min > 59 || sec > 60
+    if year < 1970
+        || year > 9999
+        || month < 1
+        || month > 12
+        || day < 1
+        || hour > 23
+        || min > 59
+        || sec > 60
     {
         return None;
     }
@@ -1219,8 +1228,7 @@ async fn check_ari_window(dir_url: &str, cert_path: &Path) -> Result<bool, Strin
         return Ok(true);
     }
     let client = AcmeClient::new(dir_url).await.map_err(|e| e.to_string())?;
-    let cert_pem =
-        fs::read(cert_path).map_err(|e| format!("read {}: {e}", cert_path.display()))?;
+    let cert_pem = fs::read(cert_path).map_err(|e| format!("read {}: {e}", cert_path.display()))?;
     match client.get_renewal_info(&cert_pem).await {
         Ok(info) => {
             let now = std::time::SystemTime::now()
@@ -1564,4 +1572,91 @@ fn derive_eab_url(server_url: &str) -> Result<String, String> {
     }
     let scheme = server_url.split("://").next().unwrap_or("https");
     Ok(format!("{scheme}://{host_port}/acme/eab"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_rfc3339_utc;
+
+    #[test]
+    fn rfc3339_utc_basic() {
+        // 1970-01-01T00:00:00Z = 0
+        assert_eq!(parse_rfc3339_utc("1970-01-01T00:00:00Z"), Some(0));
+    }
+
+    #[test]
+    fn rfc3339_utc_known_timestamp() {
+        // 2024-01-01T00:00:00Z = 1704067200
+        assert_eq!(parse_rfc3339_utc("2024-01-01T00:00:00Z"), Some(1704067200));
+    }
+
+    #[test]
+    fn rfc3339_utc_rejects_feb31() {
+        assert_eq!(parse_rfc3339_utc("2025-02-31T00:00:00Z"), None);
+    }
+
+    #[test]
+    fn rfc3339_utc_rejects_apr31() {
+        assert_eq!(parse_rfc3339_utc("2025-04-31T00:00:00Z"), None);
+    }
+
+    #[test]
+    fn rfc3339_utc_accepts_feb29_leap() {
+        assert!(parse_rfc3339_utc("2024-02-29T00:00:00Z").is_some());
+    }
+
+    #[test]
+    fn rfc3339_utc_rejects_feb29_non_leap() {
+        assert_eq!(parse_rfc3339_utc("2025-02-29T00:00:00Z"), None);
+    }
+
+    #[test]
+    fn rfc3339_utc_rejects_year_before_1970() {
+        assert_eq!(parse_rfc3339_utc("1969-12-31T23:59:59Z"), None);
+    }
+
+    #[test]
+    fn rfc3339_utc_rejects_year_after_9999() {
+        assert_eq!(parse_rfc3339_utc("10000-01-01T00:00:00Z"), None);
+    }
+
+    #[test]
+    fn rfc3339_utc_rejects_hour25() {
+        assert_eq!(parse_rfc3339_utc("2025-01-01T25:00:00Z"), None);
+    }
+
+    #[test]
+    fn rfc3339_utc_rejects_min60() {
+        assert_eq!(parse_rfc3339_utc("2025-01-01T00:60:00Z"), None);
+    }
+
+    #[test]
+    fn rfc3339_utc_subsecond_ignored() {
+        let base = parse_rfc3339_utc("2024-06-15T12:30:45Z");
+        let frac = parse_rfc3339_utc("2024-06-15T12:30:45.123456Z");
+        assert_eq!(base, frac);
+    }
+
+    #[test]
+    fn rfc3339_utc_accepts_plus_zero_offset() {
+        let z = parse_rfc3339_utc("2024-01-01T00:00:00Z");
+        let plus = parse_rfc3339_utc("2024-01-01T00:00:00+00:00");
+        let minus = parse_rfc3339_utc("2024-01-01T00:00:00-00:00");
+        assert!(z.is_some());
+        assert_eq!(z, plus);
+        assert_eq!(z, minus);
+    }
+
+    #[test]
+    fn rfc3339_utc_accepts_subsecond_plus_offset() {
+        let z = parse_rfc3339_utc("2024-06-15T12:30:45Z");
+        let plus = parse_rfc3339_utc("2024-06-15T12:30:45.5+00:00");
+        assert_eq!(z, plus);
+    }
+
+    #[test]
+    fn rfc3339_utc_rejects_nonzero_offset() {
+        assert_eq!(parse_rfc3339_utc("2024-01-01T00:00:00+05:30"), None);
+        assert_eq!(parse_rfc3339_utc("2024-01-01T00:00:00-08:00"), None);
+    }
 }
