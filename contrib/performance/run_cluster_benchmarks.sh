@@ -103,7 +103,7 @@ merge_json() {
         python3 - <<PYEOF
 import json, sys
 d = json.loads("""$json""")
-ex = $extra
+ex = json.loads("""$extra""")
 d = {"label": "$lbl", **ex, **d}
 print(json.dumps(d))
 PYEOF
@@ -209,7 +209,7 @@ print(json.dumps({
         "memory_gb":   round(${mem_kb}.0 / 1048576, 1),
         "kernel":      "$kernel",
         "openssl":     "$ossl_ver_str",
-        "has_pq":      $([ $has_openssl35 -eq 1 ] && echo true || echo false),
+        "has_pq":      $([ $has_openssl35 -eq 1 ] && echo True || echo False),
         "git_commit":  "$git_commit",
         "git_branch":  "$git_branch",
     },
@@ -217,7 +217,7 @@ print(json.dumps({
         "clients":  $CLIENTS,
         "requests": $REQ,
         "warmup":   $WARMUP,
-        "quick":    $([ -n "$QUICK" ] && echo true || echo false),
+        "quick":    $([ -n "$QUICK" ] && echo True || echo False),
     }
 }))
 PYEOF
