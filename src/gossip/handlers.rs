@@ -169,20 +169,14 @@ pub async fn gossip_sync(
 
     let request_delta_since = envelope.request_delta_since;
 
-    // Merge under write lock, then clone under read lock.  Holding the write lock
-    // for the clone blocks all concurrent ACME read-lock holders; splitting the
-    // operations removes that stall.  post_merge_gen is captured inside the write
-    // lock to avoid seeing concurrent bumps from hook writes.
+    // Merge under write lock.  post_merge_gen is captured inside the write lock
+    // to avoid racing with concurrent hook writes.
     let (pre_merge_gen, post_merge_gen) = {
         let mut crdt = state.crdt.write().await;
         let pre_merge_gen = CRDT_GENERATION.load(std::sync::atomic::Ordering::Acquire);
         akamu_crdt::Merge::merge(&mut *crdt, peer_crdt);
         let post_merge_gen = CRDT_GENERATION.load(std::sync::atomic::Ordering::Acquire);
         (pre_merge_gen, post_merge_gen)
-    };
-    let crdt_snapshot = {
-        let crdt = state.crdt.read().await;
-        crdt.clone()
     };
 
     // The DB persist is intentionally omitted from the gossip hot path.  The DB is
@@ -191,39 +185,52 @@ pub async fn gossip_sync(
     // concurrent ACME DB writes on a shared pool.  The gossip loop persists on a
     // slow timer (every 30 s) instead.
 
-    let response_bytes = {
-        let (response_crdt, is_delta) = match request_delta_since {
-            Some(since) => (crdt_snapshot.delta_range(since, pre_merge_gen), true),
-            None => (crdt_snapshot.clone(), false),
-        };
-        let crdt_bytes = match GossipEnvelope::encode_crdt(&response_crdt) {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::error!(sender = %sender_node_id, error = %e, "gossip/sync: CBOR encode response CRDT failed");
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    // Build response CBOR under a read-lock without cloning the full CRDT.
+    // For the common case (Some(since)) only the small delta is allocated;
+    // for first-contact (None) the full CRDT is serialised directly from the guard.
+    let (crdt_bytes, is_delta) = {
+        let crdt = state.crdt.read().await;
+        match request_delta_since {
+            Some(since) => {
+                let delta = crdt.delta_range(since, pre_merge_gen);
+                match GossipEnvelope::encode_crdt(&delta) {
+                    Ok(b) => (b, true),
+                    Err(e) => {
+                        tracing::error!(sender = %sender_node_id, error = %e, "gossip/sync: CBOR encode response delta failed");
+                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    }
+                }
             }
-        };
-        let resp_nonce = match random_nonce() {
-            Ok(n) => n,
-            Err(e) => {
-                tracing::error!(sender = %sender_node_id, error = %e, "gossip/sync: random_nonce for response failed");
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-            }
-        };
-        let resp_envelope = GossipEnvelope {
-            crdt: crdt_bytes,
-            issued_at: unix_now(),
-            is_delta,
-            my_gen: post_merge_gen,
-            request_delta_since: None,
-            nonce: resp_nonce,
-        };
-        match resp_envelope.encode() {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::error!(sender = %sender_node_id, error = %e, "gossip/sync: CBOR encode response envelope failed");
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-            }
+            None => match GossipEnvelope::encode_crdt(&crdt) {
+                Ok(b) => (b, false),
+                Err(e) => {
+                    tracing::error!(sender = %sender_node_id, error = %e, "gossip/sync: CBOR encode response CRDT failed");
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
+            },
+        }
+    };
+
+    let resp_nonce = match random_nonce() {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::error!(sender = %sender_node_id, error = %e, "gossip/sync: random_nonce for response failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let resp_envelope = GossipEnvelope {
+        crdt: crdt_bytes,
+        issued_at: unix_now(),
+        is_delta,
+        my_gen: post_merge_gen,
+        request_delta_since: None,
+        nonce: resp_nonce,
+    };
+    let response_bytes = match resp_envelope.encode() {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!(sender = %sender_node_id, error = %e, "gossip/sync: CBOR encode response envelope failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
 
