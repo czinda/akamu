@@ -13,8 +13,9 @@ The file is parsed once at startup. Changes require a restart. Unknown keys prod
 ## Complete example
 
 ```toml
-listen_addr = "0.0.0.0:8080"
-base_url    = "https://acme.example.com"
+listen_addr  = "0.0.0.0:8080"
+base_url     = "https://acme.example.com"
+crdt_db_url  = "sqlite:///var/lib/akamu/crdt.db"
 
 [database]
 url = "sqlite:///var/lib/akamu/akamu.db"
@@ -89,6 +90,15 @@ webhook_hmac_secret = "replace-with-output-of--openssl-rand-hex-32"
 # challenge_cleanup_script = "/etc/akamu/upstream-dns-cleanup.sh"
 # poll_interval_secs       = 10
 
+[gossip]
+peers                      = ["https://node2.example.com", "https://node3.example.com"]
+interval_secs              = 15
+tombstone_ttl_secs         = 604800
+ownership_ttl_secs         = 150
+gossip_envelope_max_age_secs = 300
+clock_skew_tolerance_secs  = 30
+fan_out                    = 3
+
 [profiles]
 refresh_interval_secs = 3600
 
@@ -145,6 +155,18 @@ base_url = "https://acme.example.com"
 ```
 
 It must match the URL that ACME clients use to reach the directory. It must not end with a slash.
+
+### `crdt_db_url`
+
+**Optional. Default: absent (uses `[database].url`).**
+
+SQLite connection URL for the separate CRDT database used when multi-node clustering is enabled (see `[gossip]`). When absent, CRDT tables are created in the main `[database]` database. A separate database is recommended in production clustering deployments to isolate CRDT write traffic from ACME traffic.
+
+Only SQLite is supported for the CRDT database (`sqlite://…` URL format). The file and its WAL journal are created automatically if they do not exist.
+
+```toml
+crdt_db_url = "sqlite:///var/lib/akamu/crdt.db"
+```
 
 ---
 
@@ -1384,6 +1406,95 @@ poll_interval_secs = 10
 
 ---
 
+## `[gossip]`
+
+The `[gossip]` section enables multi-node clustering via CRDT replication. When present, Akāmu gossips CRDT deltas to the listed peer nodes over HTTP (`POST /gossip/sync`). All domain state — accounts, orders, authorizations, challenges, certificates, EAB keys, operators, delegations, and MTC data — is replicated to every cluster member. When absent, the node operates in single-node mode with no replication.
+
+Gossip envelopes are signed with ML-KEM-768 + ECDSA-P256 to authenticate the source. Before gossip can proceed between two nodes, each node's keys must be registered on the other node via `POST /admin/gossip/register`.
+
+```toml
+[gossip]
+peers                        = ["https://node2.example.com", "https://node3.example.com"]
+interval_secs                = 15
+tombstone_ttl_secs           = 604800
+ownership_ttl_secs           = 150
+gossip_envelope_max_age_secs = 300
+clock_skew_tolerance_secs    = 30
+fan_out                      = 3
+```
+
+### `peers`
+
+**Optional. Default: `[]`.**
+
+List of peer gossip URLs to push CRDT state to. Each entry must be the HTTPS base URL of a peer Akāmu node (scheme, host, and optional port; no trailing path). Peers are contacted each gossip round; the `fan_out` setting limits how many are contacted per round.
+
+```toml
+peers = ["https://node2.acme.internal:8443", "https://node3.acme.internal:8443"]
+```
+
+### `interval_secs`
+
+**Optional. Default: `15`.**
+
+How often (in seconds) the background gossip loop fires and pushes CRDT deltas to peers. Lower values reduce replication lag at the cost of more network traffic.
+
+```toml
+interval_secs = 15
+```
+
+### `tombstone_ttl_secs`
+
+**Optional. Default: `604800` (7 days).**
+
+How long tombstone records are retained in the CRDT before they are garbage-collected. Tombstones must be retained long enough to ensure every peer in the cluster has received the deletion before the record is purged.
+
+```toml
+tombstone_ttl_secs = 604800
+```
+
+### `ownership_ttl_secs`
+
+**Optional. Default: `150`.**
+
+Lease duration in seconds for write-ownership of orders and MTC entries. Each node refreshes its ownership lease every gossip round. When a lease expires (the owning node has been silent for `ownership_ttl_secs`), another node may take over.
+
+```toml
+ownership_ttl_secs = 150
+```
+
+### `gossip_envelope_max_age_secs`
+
+**Optional. Default: `300` (5 minutes).**
+
+Maximum age in seconds of a gossip envelope. Envelopes timestamped more than this many seconds in the past are rejected as potential replays.
+
+```toml
+gossip_envelope_max_age_secs = 300
+```
+
+### `clock_skew_tolerance_secs`
+
+**Optional. Default: `30`.**
+
+Maximum acceptable clock difference between cluster nodes in seconds. Gossip envelopes timestamped more than this many seconds in the *future* are rejected. Ensure NTP synchronisation across all cluster members keeps skew well below this threshold.
+
+```toml
+clock_skew_tolerance_secs = 30
+```
+
+### `fan_out`
+
+**Optional. Default: `0` (contact all peers).**
+
+Maximum number of peers contacted per gossip round. When set to a positive integer, only that many peers are selected at random each round; this reduces O(N²) gossip overhead in clusters larger than roughly five nodes while convergence still occurs transitively in O(log_k(N)) rounds. Set to `0` to contact all configured peers every round.
+
+```toml
+fan_out = 3   # recommended for clusters of 5+ nodes
+```
+
+---
+
 ## `[profiles]`
 
 The `[profiles]` section configures the certificate profile subsystem. Profiles are loaded from one or more *providers* at startup, cached in memory, and refreshed periodically by a background task. `Akāmu`'s own CA always signs; profiles only control which extensions are included and with what values. When no providers are configured, every order falls back to CA defaults (`digitalSignature` KeyUsage, `serverAuth` EKU, and the `[ca]` validity/URL settings).
@@ -1795,6 +1906,8 @@ service_name = "HTTP"
 | `GET` | `/admin/delegations/{id}` | Y | Y | Y | Y |
 | `PUT` | `/admin/delegations/{id}` | Y | Y | | |
 | `DELETE` | `/admin/delegations/{id}` | Y | Y | | |
+| `GET` | `/admin/gossip/status` | Y | Y | Y | Y |
+| `POST` | `/admin/gossip/register` | Y | | | |
 
 See [Admin API and Operator Management](admin-api.md) for the full request/response format of each endpoint.
 
