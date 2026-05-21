@@ -259,6 +259,13 @@ pub struct AppState {
     /// Shared HTTP client for outbound gossip pushes.
     /// Plain HTTP is used; CMS SignedData + EnvelopedData provides auth + confidentiality.
     pub gossip_client: Arc<reqwest::Client>,
+    /// Seen gossip envelope nonces: nonce bytes → first-seen unix timestamp.
+    ///
+    /// Prevents an attacker from replaying a captured CMS blob within the
+    /// `gossip_envelope_max_age_secs` window.  Entries are evicted lazily once
+    /// their timestamp falls outside the window.  Absent nonces (empty Vec<u8>)
+    /// are not tracked so old peers that omit the field are still accepted.
+    pub gossip_nonce_cache: Arc<std::sync::Mutex<std::collections::HashMap<Vec<u8>, i64>>>,
 }
 
 impl AppState {

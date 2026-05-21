@@ -1327,6 +1327,14 @@ pub struct GossipConfig {
     /// Order/MTC writer ownership TTL in seconds. Default: 150.
     #[serde(default = "default_gossip_ownership_ttl_secs")]
     pub ownership_ttl_secs: u64,
+    /// Maximum age of a gossip envelope in seconds before it is rejected as a
+    /// potential replay. Default: 300 (5 minutes).
+    #[serde(default = "default_gossip_envelope_max_age_secs")]
+    pub gossip_envelope_max_age_secs: u64,
+    /// Acceptable clock skew between nodes in seconds; envelopes issued more
+    /// than this many seconds in the future are rejected. Default: 30.
+    #[serde(default = "default_gossip_clock_skew_tolerance_secs")]
+    pub clock_skew_tolerance_secs: u64,
 }
 
 fn default_gossip_interval_secs() -> u64 {
@@ -1339,6 +1347,27 @@ fn default_gossip_tombstone_ttl_secs() -> u64 {
 
 fn default_gossip_ownership_ttl_secs() -> u64 {
     150
+}
+
+fn default_gossip_envelope_max_age_secs() -> u64 {
+    300
+}
+
+fn default_gossip_clock_skew_tolerance_secs() -> u64 {
+    30
+}
+
+impl Default for GossipConfig {
+    fn default() -> Self {
+        Self {
+            peers: Vec::new(),
+            interval_secs: default_gossip_interval_secs(),
+            tombstone_ttl_secs: default_gossip_tombstone_ttl_secs(),
+            ownership_ttl_secs: default_gossip_ownership_ttl_secs(),
+            gossip_envelope_max_age_secs: default_gossip_envelope_max_age_secs(),
+            clock_skew_tolerance_secs: default_gossip_clock_skew_tolerance_secs(),
+        }
+    }
 }
 
 impl Config {

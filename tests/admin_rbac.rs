@@ -179,6 +179,7 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         node_gossip_signing_priv: Arc::new(vec![]),
         node_gossip_signing_cert: Arc::new(vec![]),
         gossip_client: Arc::new(reqwest::Client::new()),
+        gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         gss_cred: None,
         admin_gss_cred: None,
         eab_master_secret: None,

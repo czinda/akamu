@@ -912,6 +912,7 @@ mod tests {
             node_gossip_signing_priv: Arc::new(vec![]),
             node_gossip_signing_cert: Arc::new(vec![]),
             gossip_client: Arc::new(reqwest::Client::new()),
+            gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         });
 
         (
