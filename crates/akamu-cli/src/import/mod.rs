@@ -2,10 +2,19 @@
 
 pub mod certbot;
 
-use std::{fs, path::PathBuf};
+use std::{fs, path::{Path, PathBuf}};
+
+use crate::write_private_file;
+
+/// Copy `src` to `dst` with mode 0o600 on the destination.
+fn copy_private_file(src: &Path, dst: &Path) -> Result<(), String> {
+    let data = fs::read(src).map_err(|e| format!("read {}: {e}", src.display()))?;
+    write_private_file(dst, &data)
+}
 
 use certbot::{
     build_renewal_config, discover_accounts, discover_renewals, jwk_to_account_key, live_cert_paths,
+    pem_key_type,
 };
 
 // ── clap args ─────────────────────────────────────────────────────────────────
@@ -149,8 +158,7 @@ pub async fn cmd_import_certbot(args: CertbotImportArgs) -> Result<(), String> {
             account_key_path.display()
         );
     } else {
-        fs::write(account_key_path, &pem)
-            .map_err(|e| format!("write {}: {e}", account_key_path.display()))?;
+        write_private_file(account_key_path, &pem)?;
         println!("Account key written to {}", account_key_path.display());
     }
 
@@ -162,7 +170,7 @@ pub async fn cmd_import_certbot(args: CertbotImportArgs) -> Result<(), String> {
         if args.dry_run {
             println!("[dry-run] Would write account URL to {}", sidecar.display());
         } else {
-            fs::write(&sidecar, url).map_err(|e| format!("write {}: {e}", sidecar.display()))?;
+            write_private_file(&sidecar, url.as_bytes())?;
             println!("Account URL written to {}", sidecar.display());
         }
     } else {
@@ -206,7 +214,7 @@ pub async fn cmd_import_certbot(args: CertbotImportArgs) -> Result<(), String> {
         let cert_key_path = cert_dir.join(format!("{}.pem.key.pem", r.domain));
 
         // Copy fullchain.pem.
-        if src_chain.exists() {
+        let chain_ok = if src_chain.exists() {
             if args.dry_run {
                 println!(
                     "[dry-run] Would copy {} → {}",
@@ -217,15 +225,17 @@ pub async fn cmd_import_certbot(args: CertbotImportArgs) -> Result<(), String> {
                 fs::copy(&src_chain, &cert_path)
                     .map_err(|e| format!("copy {}: {e}", src_chain.display()))?;
             }
+            true
         } else {
             eprintln!(
                 "Warning: {} not found (may need root access); skipping certificate copy",
                 src_chain.display()
             );
-        }
+            false
+        };
 
         // Copy privkey.pem.
-        if src_key.exists() {
+        let key_ok = if src_key.exists() {
             if args.dry_run {
                 println!(
                     "[dry-run] Would copy {} → {}",
@@ -233,22 +243,38 @@ pub async fn cmd_import_certbot(args: CertbotImportArgs) -> Result<(), String> {
                     cert_key_path.display()
                 );
             } else {
-                fs::copy(&src_key, &cert_key_path)
-                    .map_err(|e| format!("copy {}: {e}", src_key.display()))?;
+                copy_private_file(&src_key, &cert_key_path)?;
             }
+            true
         } else {
             eprintln!(
                 "Warning: {} not found (may need root access); skipping key copy",
                 src_key.display()
             );
+            false
+        };
+
+        if !args.dry_run && (!chain_ok || !key_ok) {
+            eprintln!(
+                "Warning: skipping renewal config for {domain}: \
+                 certificate or key not available (may need root access)"
+            );
+            continue;
         }
 
         // Build and write RenewalConfig.
+        let cert_key_type = if src_key.exists() {
+            pem_key_type(&fs::read(&src_key).unwrap_or_default())
+        } else {
+            "ec:P-256".into()
+        };
         let (renewal_cfg, warning) = build_renewal_config(
             r,
+            &acct.jwk_json,
             account_key_path,
             &cert_path,
             &cert_key_path,
+            &cert_key_type,
             &acct.contacts,
             &args.dns_challenge,
             args.dns_hook.as_deref(),
@@ -271,8 +297,7 @@ pub async fn cmd_import_certbot(args: CertbotImportArgs) -> Result<(), String> {
                 renewal_path.display()
             );
         } else {
-            fs::write(&renewal_path, toml_str)
-                .map_err(|e| format!("write {}: {e}", renewal_path.display()))?;
+            write_private_file(&renewal_path, toml_str.as_bytes())?;
             println!("  {}  →  {}", domain, renewal_path.display());
             println!(
                 "    To renew: akamu-cli renew --renewal-config {}",
