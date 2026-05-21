@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use tokio::task::JoinHandle;
 
-use akamu_crdt::{Merge, CRDT_GENERATION};
+use akamu_crdt::{AkaCrdt, Merge, CRDT_GENERATION};
 
 use crate::gossip::crypto::{random_nonce, sign_and_seal, verify_and_open, SealRecipient};
 use crate::gossip::envelope::GossipEnvelope;
@@ -39,6 +39,13 @@ struct PeerTask {
     handle: JoinHandle<Result<Vec<u8>, ()>>,
 }
 
+struct ValidatedPeer {
+    url: String,
+    peer_my_gen: u64,
+    is_first_contact: bool,
+    is_delta: bool,
+}
+
 /// Entry point: called once from `main`.  Returns immediately when gossip is not configured.
 pub async fn run(state: Arc<AppState>) {
     let gossip_cfg = match state.config.gossip.as_ref() {
@@ -57,6 +64,15 @@ pub async fn run(state: Arc<AppState>) {
     // into a single gossip round instead of firing N rounds in quick succession.
     let write_debounce_slide = Duration::from_millis(20);
     let write_debounce_max = Duration::from_millis(150);
+    // Minimum wall-clock gap between write-notify-triggered rounds.  Under high
+    // concurrency the debounce window fills immediately, capping gossip at ~7 Hz.
+    // At 10 nodes that means 63 simultaneous inbound gossip handlers per second,
+    // each performing a full CRDT clone for its response — enough to saturate the
+    // runtime.  This floor limits write-notify gossip to ~2 Hz regardless of load.
+    let write_notify_min_interval = Duration::from_millis(500);
+    let mut last_notify_round = std::time::Instant::now()
+        .checked_sub(write_notify_min_interval)
+        .unwrap_or_else(std::time::Instant::now);
 
     // Tracks which http:// peers have already received a plaintext-HTTP warning (H-9).
     let mut http_warned: HashSet<String> = HashSet::new();
@@ -98,6 +114,13 @@ pub async fn run(state: Arc<AppState>) {
                         _ => break,
                     }
                 }
+                // Rate-limit write-notify rounds: if the previous round fired recently,
+                // sleep out the remainder so gossip runs at most once per min_interval.
+                let elapsed = last_notify_round.elapsed();
+                if elapsed < write_notify_min_interval {
+                    tokio::time::sleep(write_notify_min_interval - elapsed).await;
+                }
+                last_notify_round = std::time::Instant::now();
             },
         }
 
@@ -373,7 +396,27 @@ pub async fn run(state: Arc<AppState>) {
             });
         }
 
-        // ── Phase D: Process results sequentially (merge → persist → map update) ────────
+        // ── Phase D: Validate + decode (no lock), batch-merge under one write-lock ─────────
+        //
+        // Pass 1: await handles and decrypt/decode all responses without holding any lock.
+        // Pass 2: merge all valid CRDTs under a single write-lock acquisition (N→1 per round).
+        // Pass 3: update per-peer maps and emit first-contact log if needed.
+        let resp_max_age = state
+            .config
+            .gossip
+            .as_ref()
+            .map(|g| g.gossip_envelope_max_age_secs as i64)
+            .unwrap_or(300);
+        let resp_clock_skew = state
+            .config
+            .gossip
+            .as_ref()
+            .map(|g| g.clock_skew_tolerance_secs as i64)
+            .unwrap_or(30);
+
+        let mut peer_crdts: Vec<AkaCrdt> = Vec::new();
+        let mut validated: Vec<ValidatedPeer> = Vec::new();
+
         for pt in peer_tasks {
             let http_result = match pt.handle.await {
                 Ok(r) => r,
@@ -420,18 +463,6 @@ pub async fn run(state: Arc<AppState>) {
             };
 
             // Validate response timestamp — reject future-dated or stale responses.
-            let resp_max_age = state
-                .config
-                .gossip
-                .as_ref()
-                .map(|g| g.gossip_envelope_max_age_secs as i64)
-                .unwrap_or(300);
-            let resp_clock_skew = state
-                .config
-                .gossip
-                .as_ref()
-                .map(|g| g.clock_skew_tolerance_secs as i64)
-                .unwrap_or(30);
             if peer_envelope.issued_at > now + resp_clock_skew {
                 tracing::warn!(
                     peer = %pt.url,
@@ -463,35 +494,49 @@ pub async fn run(state: Arc<AppState>) {
                 }
             };
 
-            // Merge under write lock, then clone under read lock.  Holding the write
-            // lock for the clone blocks all concurrent ACME read-lock holders for the
-            // full clone duration; splitting the operations eliminates that stall.
-            {
-                let mut crdt = state.crdt.write().await;
-                Merge::merge(&mut *crdt, peer_crdt);
+            peer_crdts.push(peer_crdt);
+            validated.push(ValidatedPeer {
+                url: pt.url,
+                peer_my_gen: peer_envelope.my_gen,
+                is_first_contact: pt.is_first_contact,
+                is_delta: peer_envelope.is_delta,
+            });
+        }
+
+        // Pre-merge all peer CRDTs into a scratch accumulator (no lock held).
+        // Then merge the accumulator into the live CRDT under a single brief write-lock.
+        // This reduces both the number of write-lock acquisitions (N→1) and the
+        // lock-hold duration (proportional to one merge instead of N merges).
+        if !peer_crdts.is_empty() {
+            let mut combined = AkaCrdt::default();
+            for peer_crdt in peer_crdts {
+                Merge::merge(&mut combined, peer_crdt);
             }
-            let crdt_snapshot = {
-                let crdt = state.crdt.read().await;
-                crdt.clone()
-            };
+            let mut crdt = state.crdt.write().await;
+            Merge::merge(&mut *crdt, combined);
+        }
 
-            // DB persist is intentionally omitted from the per-merge hot path.
-            // The periodic persist (every 30 s, see above) keeps the DB in sync
-            // without contending with ACME requests on a shared pool.
+        // H-10: Acquire ordering so we see all generation bumps from the merges above.
+        let post_merge_gen = CRDT_GENERATION.load(std::sync::atomic::Ordering::Acquire);
 
-            // H-10: Acquire ordering so we see the generation bump from the merge above.
-            let post_merge_gen = CRDT_GENERATION.load(std::sync::atomic::Ordering::Acquire);
-            peer_last_gen.insert(pt.url.clone(), post_merge_gen);
-            if peer_envelope.my_gen > 0 {
-                peer_response_gen.insert(pt.url.clone(), peer_envelope.my_gen);
+        let has_first_contact = validated.iter().any(|v| v.is_first_contact);
+        let crdt_snapshot = if has_first_contact {
+            let crdt = state.crdt.read().await;
+            Some(crdt.clone())
+        } else {
+            None
+        };
+
+        for v in validated {
+            peer_last_gen.insert(v.url.clone(), post_merge_gen);
+            if v.peer_my_gen > 0 {
+                peer_response_gen.insert(v.url.clone(), v.peer_my_gen);
             }
-
-            tracing::debug!(peer = %pt.url, delta = peer_envelope.is_delta, "gossip: merge complete");
-
-            if pt.is_first_contact {
-                let counts = crdt_snapshot.entry_counts();
+            tracing::debug!(peer = %v.url, delta = v.is_delta, "gossip: merge complete");
+            if v.is_first_contact {
+                let counts = crdt_snapshot.as_ref().unwrap().entry_counts();
                 tracing::info!(
-                    peer = %pt.url,
+                    peer = %v.url,
                     accounts = counts.accounts,
                     orders = counts.orders,
                     certificates = counts.certificates,
