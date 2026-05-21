@@ -62,7 +62,7 @@ pub async fn gossip_sync(
         )
     };
 
-    let plaintext = match verify_and_open(&body, &state.node_kem_priv, Some(&sender_signing_pub)) {
+    let plaintext = match verify_and_open(&body, &state.node_kem_priv, &sender_signing_pub) {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!(%e, sender = %sender_node_id, "gossip/sync: verify_and_open failed");

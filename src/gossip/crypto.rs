@@ -104,11 +104,11 @@ pub fn sign_and_seal(
 /// Verify-then-decrypt for gossip receive.
 ///
 /// `sender_signing_pub_spki` — expected sender ECDSA P-256 SPKI DER.
-/// `None` for TOFU from an unknown node (WARN logged; signature still verified).
+/// The embedded certificate public key must match exactly; no TOFU path exists.
 pub fn verify_and_open(
     signed_der: &[u8],
     kem_priv_pkcs8_der: &[u8],
-    sender_signing_pub_spki: Option<&[u8]>,
+    sender_signing_pub_spki: &[u8],
 ) -> Result<Vec<u8>, CmsError> {
     let cms = CmsContentInfo::from_der(signed_der)?;
 
@@ -116,15 +116,8 @@ pub fn verify_and_open(
     let signer_cert = certs.first().ok_or(CmsError::NoSignerCert)?;
     let embedded_pub = signer_cert.public_key()?.public_key_to_der()?;
 
-    match sender_signing_pub_spki {
-        Some(expected) => {
-            if embedded_pub.as_slice() != expected {
-                return Err(CmsError::SignatureInvalid);
-            }
-        }
-        None => {
-            tracing::warn!("gossip: verifying SignedData from unknown node (TOFU)");
-        }
+    if embedded_pub.as_slice() != sender_signing_pub_spki {
+        return Err(CmsError::SignatureInvalid);
     }
 
     let store = X509Store::new()?;

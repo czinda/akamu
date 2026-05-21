@@ -89,6 +89,42 @@ fn q_upsert<'q>(
     }
 }
 
+/// Parse a UTC RFC 3339 string in `YYYY-MM-DDTHH:MM:SSZ` format to a Unix timestamp.
+///
+/// Returns 0 for malformed input. Only handles the exact format produced by
+/// `util::unix_to_rfc3339`, which always emits UTC with a `Z` suffix.
+fn rfc3339_utc_to_unix(s: &str) -> i64 {
+    let b = s.as_bytes();
+    if b.len() < 20 {
+        return 0;
+    }
+    let p2 = |sl: &[u8]| -> i64 {
+        if sl.len() < 2 {
+            return 0;
+        }
+        (sl[0].wrapping_sub(b'0') as i64) * 10 + sl[1].wrapping_sub(b'0') as i64
+    };
+    let p4 = |sl: &[u8]| -> i64 { p2(sl) * 100 + p2(&sl[2..]) };
+    let year = p4(b);
+    let month = p2(&b[5..]);
+    let day = p2(&b[8..]);
+    let hour = p2(&b[11..]);
+    let min = p2(&b[14..]);
+    let sec = p2(&b[17..]);
+    // Days since Unix epoch using https://howardhinnant.github.io/date_algorithms.html#days_from_civil
+    let (y, m) = if month <= 2 {
+        (year - 1, month + 9)
+    } else {
+        (year, month - 3)
+    };
+    let era = y / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * m + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    days * 86400 + hour * 3600 + min * 60 + sec
+}
+
 fn qa<'q, O>(
     sql: &'static str,
 ) -> sqlx::query::QueryAs<'q, sqlx::Any, O, sqlx::any::AnyArguments<'q>>
@@ -207,6 +243,7 @@ struct OperatorLoad {
     role: String,
     ca_id: String,
     active: i64,
+    created_at: String,
     local_gen: i64,
 }
 
@@ -216,6 +253,7 @@ struct DelegationLoad {
     account_id: String,
     csr_template: String,
     created: i64,
+    ca_id: String,
     local_gen: i64,
 }
 
@@ -468,32 +506,33 @@ pub async fn load_from_db(pool: &AnyPool, node_id: &str) -> Result<AkaCrdt, sqlx
     }
 
     // ── Operators ─────────────────────────────────────────────────────────────
-    // operators.created_at is TEXT (RFC 3339); not mapped to OperatorEntry.created (i64).
-    let rows: Vec<OperatorLoad> =
-        sqlx::query_as("SELECT id, name, role, ca_id, active, local_gen FROM operators")
-            .fetch_all(pool)
-            .await?;
+    let rows: Vec<OperatorLoad> = sqlx::query_as(
+        "SELECT id, name, role, ca_id, active, created_at, local_gen FROM operators",
+    )
+    .fetch_all(pool)
+    .await?;
     for row in rows {
         let gen = row.local_gen as u64;
         max_gen = max_gen.max(gen);
         let tombstone = row.active == 0;
+        let created = rfc3339_utc_to_unix(&row.created_at);
         let entry = OperatorEntry {
             operator_id: row.id,
             name: row.name,
             role: row.role,
             ca_id: row.ca_id,
-            created: 0,
+            created,
         };
         crdt.operators
-            .load_entry(row.id.to_string(), entry, 0, tombstone, None, gen);
+            .load_entry(row.id.to_string(), entry, created, tombstone, None, gen);
     }
 
     // ── Delegations ───────────────────────────────────────────────────────────
-    // delegations table has no ca_id column; DelegationEntry.ca_id is left empty.
-    let rows: Vec<DelegationLoad> =
-        sqlx::query_as("SELECT id, account_id, csr_template, created, local_gen FROM delegations")
-            .fetch_all(pool)
-            .await?;
+    let rows: Vec<DelegationLoad> = sqlx::query_as(
+        "SELECT id, account_id, csr_template, created, ca_id, local_gen FROM delegations",
+    )
+    .fetch_all(pool)
+    .await?;
     for row in rows {
         let gen = row.local_gen as u64;
         max_gen = max_gen.max(gen);
@@ -502,7 +541,7 @@ pub async fn load_from_db(pool: &AnyPool, node_id: &str) -> Result<AkaCrdt, sqlx
             account_id: row.account_id,
             csr_template: row.csr_template,
             created: row.created,
-            ca_id: String::new(),
+            ca_id: row.ca_id,
         };
         crdt.delegations
             .load_entry(row.id, entry, row.created, false, None, gen);
