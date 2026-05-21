@@ -75,26 +75,81 @@ pub async fn finalize_order(
         })
         .collect();
 
-    // Validate CSR.
-    let validated_csr = ca::csr::validate_csr(&csr_der, &allowed)?;
-
-    // draft-ietf-acme-profiles-01: if the order carries a profile name that the
-    // registry does not recognise (or is restricted to a different CA), reject at
-    // finalize time.
-    if let Some(ref p) = order.profile {
-        if !state.profiles.is_empty() && state.profiles.resolve_for_ca(p, &order.ca_id).is_none() {
-            return Err(AcmeError::InvalidProfile(format!(
-                "profile '{p}' is not available for CA '{}'",
-                order.ca_id
-            )));
-        }
-    }
-
-    // Resolve the CA for this order.  Must happen before the CAA check because
-    // per-CA caa_identities may differ from the server-level default.
+    // Resolve the CA for this order.  Done early so that profile resolution and
+    // authorization checks can run before the expensive CSR and CAA operations.
     let order_ca = state.get_ca(&order.ca_id).ok_or_else(|| {
         AcmeError::Internal(format!("order references unknown CA '{}'", order.ca_id))
     })?;
+
+    // Resolve certificate parameters from the profile registry and run
+    // per-profile authorization checks BEFORE validate_csr and CAA so that
+    // auth failures are returned without revealing whether the CSR was
+    // structurally valid (no timing oracle for identifier-namespace probing).
+    //
+    // A single registry read is performed and the result is kept in locals to
+    // avoid a TOCTOU window where a concurrent background refresh could cause
+    // the cert_params and the auth gate to diverge.
+    let (mut cert_params, default_profile_applied) = if !state.profiles.is_empty() {
+        match &order.profile {
+            Some(p) => match state.profiles.resolve_for_ca(p, &order.ca_id) {
+                Some(params) => (params, false),
+                None => {
+                    return Err(AcmeError::InvalidProfile(format!(
+                        "profile '{p}' is not available for CA '{}'",
+                        order.ca_id
+                    )));
+                }
+            },
+            None => match state.profiles.resolve_for_ca("default", &order.ca_id) {
+                Some(params) => (params, true),
+                None => (
+                    crate::profiles::CertificateParameters::from_ca(order_ca),
+                    false,
+                ),
+            },
+        }
+    } else {
+        (
+            crate::profiles::CertificateParameters::from_ca(order_ca),
+            false,
+        )
+    };
+
+    // ProfileRegistry bakes CRL/OCSP URLs from the default CA at startup.  When
+    // a non-default CA issues via a profile that did not explicitly set those URLs,
+    // the baked-in default CA URLs would appear in the certificate.  Override them
+    // with the order CA's own infrastructure URLs in that case.
+    if order.ca_id != *state.default_ca_id {
+        let def = state.default_ca();
+        if cert_params.crl_url == def.crl_url {
+            cert_params.crl_url = order_ca.crl_url.clone();
+        }
+        if cert_params.ocsp_url == def.ocsp_url {
+            cert_params.ocsp_url = order_ca.ocsp_url.clone();
+        }
+    }
+
+    // Per-profile authorization checks (identifier patterns, external hook,
+    // account grants).  Runs when the client named a profile OR when a "default"
+    // profile was silently auto-applied above.
+    let effective_profile: Option<&str> = order.profile.as_deref().or(if default_profile_applied {
+        Some("default")
+    } else {
+        None
+    });
+    if let Some(profile_name) = effective_profile {
+        crate::profiles::auth::check_profile_auth(
+            &state.db,
+            &account_id,
+            profile_name,
+            &cert_params,
+            &allowed,
+        )
+        .await?;
+    }
+
+    // Validate CSR (after auth to avoid timing oracle on CSR structure).
+    let validated_csr = ca::csr::validate_csr(&csr_der, &allowed)?;
 
     // CAA check (RFC 8659 + RFC 8657): only when caa_identities is configured.
     // Per-CA identities take precedence; fall back to server-level when the CA
@@ -162,46 +217,6 @@ pub async fn finalize_order(
             }
             // IP identifiers: CAA is not applicable per RFC 8659.
         }
-    }
-
-    // Resolve certificate parameters from the profile registry (or fall back to
-    // CA defaults when no profile is requested or the registry is empty).
-    // resolve_for_ca() respects ca_ids restrictions so a profile scoped to one CA
-    // cannot be applied by a different CA.
-    let mut cert_params = match &order.profile {
-        Some(p) if !state.profiles.is_empty() => state
-            .profiles
-            .resolve_for_ca(p, &order.ca_id)
-            .unwrap_or_else(|| crate::profiles::CertificateParameters::from_ca(order_ca)),
-        _ => crate::profiles::CertificateParameters::from_ca(order_ca),
-    };
-
-    // ProfileRegistry bakes CRL/OCSP URLs from the default CA at startup.  When
-    // a non-default CA issues via a profile that did not explicitly set those URLs,
-    // the baked-in default CA URLs would appear in the certificate.  Override them
-    // with the order CA's own infrastructure URLs in that case.
-    if order.ca_id != *state.default_ca_id {
-        let def = state.default_ca();
-        if cert_params.crl_url == def.crl_url {
-            cert_params.crl_url = order_ca.crl_url.clone();
-        }
-        if cert_params.ocsp_url == def.ocsp_url {
-            cert_params.ocsp_url = order_ca.ocsp_url.clone();
-        }
-    }
-
-    // Per-profile authorization checks (identifier patterns, external hook,
-    // account grants).  Only meaningful when the order carries a profile.
-    if order.profile.is_some() {
-        let profile_name = order.profile.as_deref().unwrap_or("");
-        crate::profiles::auth::check_profile_auth(
-            &state.db,
-            &account_id,
-            profile_name,
-            &cert_params,
-            &allowed,
-        )
-        .await?;
     }
 
     // Issue the certificate using the resolved parameters.  akamu's own CA
