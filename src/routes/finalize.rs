@@ -254,6 +254,7 @@ pub async fn finalize_order(
         }
     }
 
+
     // Issue the certificate using the resolved parameters.  akamu's own CA
     // signs in all cases; the profile only governs extension content and validity.
     let issued = ca::issue::issue_with_params(
