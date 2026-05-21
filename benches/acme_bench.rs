@@ -28,7 +28,7 @@ use std::{
     cmp::Reverse,
     collections::HashMap,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         Arc,
     },
     time::Instant,
@@ -53,10 +53,11 @@ use indexmap::IndexMap;
 
 use akamu::{
     ca,
-    config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig},
+    config::{CaConfig, Config, DatabaseConfig, GossipConfig, MtcConfig, ServerConfig},
     db, routes,
-    state::{AppState, CaState, MtcState, NonceBucket},
+    state::{AppState, CaState, CrlCache, MtcState, NonceBucket},
 };
+use akamu_crdt::AkaNodeEntry;
 
 // ── Heap-allocation tracking (borrowed from synta-fuzz/src/main.rs) ───────────
 //
@@ -181,6 +182,16 @@ fn kib(bytes: u64) -> f64 {
 
 // ── CLI ────────────────────────────────────────────────────────────────────────
 
+#[derive(Debug, Clone, PartialEq, clap::ValueEnum)]
+enum Topology {
+    /// Each node has its own URL; workers rotate across node URLs.
+    /// Models consistent-hash or sticky-session deployments.
+    Direct,
+    /// An in-process round-robin forwarder sits in front of all backends;
+    /// workers use one URL. Models nginx/HAProxy deployments.
+    Proxy,
+}
+
 #[derive(Parser, Clone, Debug)]
 #[command(name = "acme-bench", about = "ACME server end-to-end load benchmark")]
 struct Args {
@@ -244,6 +255,18 @@ struct Args {
     /// http-01 validation finishes in < 5 ms on loopback; 5 ms is a good floor.
     #[arg(long, default_value_t = 50)]
     poll_ms: u64,
+
+    /// Number of in-process ACME server instances to start. When > 1, gossip is
+    /// wired between all nodes. Requests are distributed round-robin.
+    #[arg(long, default_value_t = 1)]
+    nodes: usize,
+
+    /// How requests are distributed across nodes.
+    /// direct: each node has its own URL; workers maintain per-node accounts.
+    /// proxy:  an in-process round-robin HTTP forwarder fronts all backends;
+    ///         workers use one URL and one account per worker.
+    #[arg(long, default_value = "direct")]
+    topology: Topology,
 }
 
 // ── HTTP client ────────────────────────────────────────────────────────────────
@@ -649,42 +672,150 @@ fn build_txt_response(query: &[u8], txt_value: &str) -> Vec<u8> {
 
 // ── In-process server startup ──────────────────────────────────────────────────
 
+/// Challenge infrastructure shared across all nodes in multi-node mode.
+struct ChallengeInfra {
+    store: Option<ChallengeStore>,
+    dns: Option<Arc<MultiDns>>,
+    http_validation_port: u16,
+    dns_resolver_addr: Option<String>,
+    issuer_domain: Option<String>,
+}
+
+impl ChallengeInfra {
+    async fn setup(args: &Args) -> Self {
+        match args.challenge.as_str() {
+            "dns-persist-01" => {
+                let dns = Arc::new(MultiDns::start().await);
+                let resolver = format!("127.0.0.1:{}", dns.port);
+                ChallengeInfra {
+                    store: None,
+                    dns: Some(dns),
+                    http_validation_port: 80,
+                    dns_resolver_addr: Some(resolver),
+                    issuer_domain: Some("acme-bench.test".to_string()),
+                }
+            }
+            _ /* http-01 */ => {
+                let (port, store) = start_challenge_responder().await;
+                ChallengeInfra {
+                    store: Some(store),
+                    dns: None,
+                    http_validation_port: port,
+                    dns_resolver_addr: None,
+                    issuer_domain: None,
+                }
+            }
+        }
+    }
+}
+
+/// Per-node cryptographic identity for gossip authentication and encryption.
+struct NodeIdentity {
+    node_id: String,
+    kem_priv_pkcs8: Vec<u8>,
+    kem_pub_spki: Vec<u8>,
+    sign_priv_pem: Vec<u8>,
+    sign_cert_der: Vec<u8>,
+    sign_pub_spki: Vec<u8>,
+}
+
+/// Generate a fresh ML-KEM-768 + ECDSA-P256 node identity (same logic as production).
+fn generate_node_identity() -> NodeIdentity {
+    let sign_key = synta_certificate::BackendPrivateKey::generate_ec("P-256").expect("ECDSA keygen");
+    let sign_pub = sign_key.public_key().expect("signing pub key");
+    let sign_pub_spki = sign_pub.spki_der().to_vec();
+    let sign_priv_pem = sign_key.to_pem(None).expect("signing key to PEM");
+
+    let aki = ca::init::compute_aki_from_spki(&sign_pub_spki).expect("compute AKI");
+    let node_id = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&aki);
+
+    let native_sign_key =
+        native_ossl::pkey::Pkey::<native_ossl::pkey::Private>::from_pem(&sign_priv_pem)
+            .expect("native_ossl sign key from PEM");
+    let mut name = native_ossl::x509::X509NameOwned::new().expect("X509Name");
+    name.add_entry_by_txt(c"CN", node_id.as_bytes()).expect("CN");
+    let serial: i64 = {
+        let mut buf = [0u8; 7];
+        getrandom::getrandom(&mut buf).expect("getrandom serial");
+        buf.iter().fold(0i64, |acc, &b| (acc << 8) | i64::from(b))
+    };
+    let sign_cert_der = native_ossl::x509::X509Builder::new()
+        .expect("X509Builder")
+        .set_version(2).expect("version")
+        .set_serial_number(serial).expect("serial")
+        .set_not_before_offset(0).expect("not_before")
+        .set_not_after_offset(365 * 86400).expect("not_after")
+        .set_subject_name(&name).expect("subject")
+        .set_issuer_name(&name).expect("issuer")
+        .set_public_key(&native_sign_key).expect("pubkey")
+        .sign(&native_sign_key, None).expect("sign")
+        .build()
+        .to_der().expect("to_der");
+
+    let kem_key = native_ossl::pkey::KeygenCtx::new(c"ML-KEM-768")
+        .expect("ML-KEM-768 ctx")
+        .generate()
+        .expect("ML-KEM-768 keygen");
+    let kem_priv_pkcs8 = kem_key.to_pkcs8_der().expect("KEM PKCS8");
+    let kem_pub_spki = kem_key.public_key_to_der().expect("KEM SPKI");
+
+    NodeIdentity { node_id, kem_priv_pkcs8, kem_pub_spki, sign_priv_pem, sign_cert_der, sign_pub_spki }
+}
+
+struct SpawnParams<'a> {
+    args: &'a Args,
+    infra: &'a ChallengeInfra,
+    /// Pre-allocated listener (port known before gossip config is built).
+    listener: tokio::net::TcpListener,
+    /// This node's ACME base_url (may be proxy URL in proxy topology).
+    base_url: String,
+    identity: NodeIdentity,
+    /// Gossip peer URLs for other backend nodes (empty → no gossip).
+    peer_urls: Vec<String>,
+}
+
 struct BenchServer {
     pub base_url: String,
+    /// Shared AppState — needed for CRDT cross-seeding in multi-node mode.
+    pub state: Arc<AppState>,
     /// Shared challenge store for http-01 workers.
     pub challenge_store: Option<ChallengeStore>,
     /// Multi-domain DNS server for dns-persist-01 workers.
     pub dns: Option<Arc<MultiDns>>,
     // Keep the CA temp directory alive for the server's lifetime.
-    _dir: tempfile::TempDir,
+    _dir: Option<tempfile::TempDir>,
 }
 
-async fn start_server(args: &Args) -> BenchServer {
+async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
+    let SpawnParams { args, infra, listener, base_url, identity, peer_urls } = p;
     let dir = tempfile::TempDir::new().unwrap();
 
-    // Challenge infrastructure depends on the chosen challenge type.
-    let (challenge_store, dns, http_validation_port, dns_resolver_addr, issuer_domain) = match args.challenge.as_str() {
-            "dns-persist-01" => {
-                let dns = Arc::new(MultiDns::start().await);
-                let resolver = format!("127.0.0.1:{}", dns.port);
-                (None, Some(dns), 80u16, Some(resolver), Some("acme-bench.test".to_string()))
-            }
-            _ /* http-01 */ => {
-                let (port, store) = start_challenge_responder().await;
-                (Some(store), None, port, None, None)
-            }
-        };
+    let gossip_cfg = if peer_urls.is_empty() {
+        None
+    } else {
+        Some(GossipConfig {
+            peers: peer_urls,
+            interval_secs: 2,
+            tombstone_ttl_secs: 604_800,
+            ownership_ttl_secs: 150,
+            gossip_envelope_max_age_secs: 300,
+            clock_skew_tolerance_secs: 30,
+        })
+    };
 
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let addr = listener.local_addr().unwrap();
-    let base_url = format!("http://127.0.0.1:{}", addr.port());
+    // Multi-node nodes need a file-backed DB so each gets its own SQLite file.
+    // Single-node keeps whatever --db the user specified.
+    let db_url = if args.nodes > 1 {
+        format!("sqlite:{}", dir.path().join("node.db").display())
+    } else {
+        args.db.clone()
+    };
 
     let config = Arc::new(Config {
-        listen_addr: addr.to_string(),
+        listen_addr: "127.0.0.1:0".into(),
         base_url: base_url.clone(),
         database: DatabaseConfig {
-            url: args.db.clone(),
+            url: db_url.clone(),
             max_connections: None,
             require_tls: false,
         },
@@ -721,9 +852,9 @@ async fn start_server(args: &Args) -> BenchServer {
             hash_alg: "sha256".into(),
         },
         server: ServerConfig {
-            http_validation_port,
-            dns_persist_issuer_domains: issuer_domain.into_iter().collect(),
-            dns_resolver_addr,
+            http_validation_port: infra.http_validation_port,
+            dns_persist_issuer_domains: infra.issuer_domain.clone().into_iter().collect(),
+            dns_resolver_addr: infra.dns_resolver_addr.clone(),
             // The bench challenge responder binds to 127.0.0.1; allow the
             // SSRF guard to follow redirects to loopback for in-process testing.
             http_validation_allow_private_ips: true,
@@ -734,23 +865,22 @@ async fn start_server(args: &Args) -> BenchServer {
         admin: None,
         email_challenge: None,
         delegation_upstream: None,
-        gossip: None,
+        gossip: gossip_cfg,
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(&config.cas[0]).unwrap();
     let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();
-    let ca_aki_bytes = akamu::ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
+    let ca_aki_bytes = ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
     db::install_drivers();
-    let db_kind = db::DbKind::from_url(&args.db);
-    // Clamp pool size to 1 for sqlite::memory: (each connection gets its own DB).
-    let effective_pool = if db_kind == db::DbKind::Sqlite && args.db.contains(":memory:") {
+    let db_kind = db::DbKind::from_url(&db_url);
+    let effective_pool = if db_kind == db::DbKind::Sqlite && db_url.contains(":memory:") {
         1
     } else {
         args.pool_connections.max(1)
     };
-    let db_conn = db::open(&args.db, effective_pool, false).await.unwrap();
-    let db_ro_conn = if args.ro_connections > 0 {
-        match db::open_ro(&args.db, args.ro_connections).await.unwrap() {
+    let db_conn = db::open(&db_url, effective_pool, false).await.unwrap();
+    let db_ro_conn = if args.ro_connections > 0 && args.nodes == 1 {
+        match db::open_ro(&db_url, args.ro_connections).await.unwrap() {
             Some(ro) => ro,
             None => {
                 eprintln!("warning: --ro-connections ignored for :memory: or non-SQLite");
@@ -760,6 +890,7 @@ async fn start_server(args: &Args) -> BenchServer {
     } else {
         db_conn.clone()
     };
+    akamu_crdt::db::init_db_kind(false, false);
     let ca = Arc::new(CaState {
         id: "bench".into(),
         key_type: args.ca_key_type.clone(),
@@ -777,20 +908,41 @@ async fn start_server(args: &Args) -> BenchServer {
     let default_ca_id = Arc::new("bench".to_string());
     let cas: Arc<IndexMap<String, Arc<CaState>>> =
         Arc::new(IndexMap::from([("bench".to_string(), Arc::clone(&ca))]));
-    let crl_caches: Arc<std::collections::HashMap<String, akamu::state::CrlCache>> = Arc::new(
-        std::collections::HashMap::from([("bench".to_string(), Default::default())]),
-    );
+    let mut crl_map: std::collections::HashMap<String, CrlCache> = std::collections::HashMap::new();
+    crl_map.insert("bench".to_string(), Default::default());
+    let crl_caches = Arc::new(crl_map);
     let link_headers: Arc<std::collections::HashMap<String, Arc<axum::http::HeaderValue>>> =
         Arc::new(std::collections::HashMap::from([(
             "bench".to_string(),
             Arc::new(
                 axum::http::HeaderValue::from_str(&format!(
-                    "<{}/acme/directory>;rel=\"index\"",
-                    base_url
+                    "<{base_url}/acme/directory>;rel=\"index\""
                 ))
                 .expect("base_url produces a valid Link header value"),
             ),
         )]));
+
+    // Populate CRDT with this node's cluster_nodes entry.
+    let now_ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let mut crdt = akamu_crdt::AkaCrdt::default();
+    crdt.cluster_nodes.upsert(
+        identity.node_id.clone(),
+        AkaNodeEntry {
+            node_id: identity.node_id.clone(),
+            gossip_url: base_url.clone(),
+            kem_public_key_der: identity.kem_pub_spki.clone(),
+            gossip_signing_pub_key_der: identity.sign_pub_spki.clone(),
+            gossip_signing_cert_der: identity.sign_cert_der.clone(),
+            ca_ids: vec!["bench".to_string()],
+            registered_at: now_ts,
+        },
+        now_ts,
+    );
+
+    let nonce_prefix = identity.node_id.get(..11).unwrap_or(&identity.node_id).to_string();
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db_conn,
@@ -810,7 +962,7 @@ async fn start_server(args: &Args) -> BenchServer {
         tls: None,
         crl_caches,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-        nonces: Arc::new(NonceBucket::new()),
+        nonces: Arc::new(NonceBucket::with_prefix(nonce_prefix)),
         eab_session_nonces: None,
         link_headers,
         validation_client: {
@@ -831,28 +983,103 @@ async fn start_server(args: &Args) -> BenchServer {
         admin_auth_limiter: None,
         admin_gss_cred: None,
         startup_time: std::time::Instant::now(),
-        crdt: Arc::new(tokio::sync::RwLock::new(akamu_crdt::AkaCrdt::default())),
-        node_id: Arc::new(String::new()),
-        node_kem_priv: Arc::new(vec![]),
-        node_gossip_signing_priv: Arc::new(vec![]),
-        node_gossip_signing_cert: Arc::new(vec![]),
+        crdt: Arc::new(tokio::sync::RwLock::new(crdt)),
+        node_id: Arc::new(identity.node_id),
+        node_kem_priv: Arc::new(identity.kem_priv_pkcs8),
+        node_gossip_signing_priv: Arc::new(identity.sign_priv_pem),
+        node_gossip_signing_cert: Arc::new(identity.sign_cert_der),
         gossip_client: Arc::new(reqwest::Client::new()),
+        gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     });
 
-    let router = routes::build_router(state, None);
-    let tokio_listener = tokio::net::TcpListener::from_std(listener).unwrap();
+    if state.config.gossip.is_some() {
+        tokio::spawn(akamu::gossip::gossip_loop::run(Arc::clone(&state)));
+    }
+
+    let router = routes::build_router(Arc::clone(&state), None);
     tokio::spawn(async move {
-        axum::serve(tokio_listener, router).await.ok();
+        axum::serve(listener, router).await.ok();
     });
     // Allow the server to finish binding before workers start.
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
 
     BenchServer {
         base_url,
-        challenge_store,
-        dns,
-        _dir: dir,
+        state,
+        challenge_store: infra.store.clone(),
+        dns: infra.dns.clone(),
+        _dir: Some(dir),
     }
+}
+
+// ── In-process round-robin HTTP proxy (proxy topology) ────────────────────────
+
+struct ProxyState {
+    backends: Vec<String>,
+    counter: Arc<AtomicUsize>,
+    client: reqwest::Client,
+}
+
+async fn proxy_handler(
+    axum::extract::State(ps): axum::extract::State<Arc<ProxyState>>,
+    req: axum::extract::Request,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    // Random backend selection: round-robin causes a deterministic cycle where
+    // the nonce from backend i is always presented to backend (i+1)%N, which
+    // rejects it forever. Random routing gives each retry a 1/N independent
+    // chance of hitting the backend that issued the current nonce.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as usize)
+        .unwrap_or_else(|_| ps.counter.fetch_add(1, Ordering::Relaxed));
+    let idx = nanos % ps.backends.len();
+    let backend = &ps.backends[idx];
+    let path_query = req.uri().path_and_query().map(|pq| pq.as_str()).unwrap_or("");
+    let target_url = format!("{backend}{path_query}");
+    let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes())
+        .unwrap_or(reqwest::Method::GET);
+    let mut builder = ps.client.request(method, &target_url);
+    for (name, value) in req.headers() {
+        if name != "host" {
+            builder = builder.header(name.as_str(), value.as_bytes());
+        }
+    }
+    let body_bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
+        .await
+        .unwrap_or_default();
+    builder = builder.body(body_bytes.to_vec());
+    match builder.send().await {
+        Ok(resp) => {
+            let status = axum::http::StatusCode::from_u16(resp.status().as_u16())
+                .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+            let mut response = axum::response::Response::builder().status(status);
+            for (name, value) in resp.headers() {
+                response = response.header(name.as_str(), value.as_bytes());
+            }
+            let bytes = resp.bytes().await.unwrap_or_default();
+            response.body(axum::body::Body::from(bytes)).unwrap()
+        }
+        Err(e) => {
+            (axum::http::StatusCode::BAD_GATEWAY, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn spawn_proxy(listener: tokio::net::TcpListener, backends: Vec<String>) {
+    use axum::routing::any;
+    let state = Arc::new(ProxyState {
+        backends,
+        counter: Arc::new(AtomicUsize::new(0)),
+        client: reqwest::Client::new(),
+    });
+    let router = axum::Router::new()
+        .route("/{*path}", any(proxy_handler))
+        .fallback(proxy_handler)
+        .with_state(state);
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.ok();
+    });
 }
 
 // ── Per-issuance timing record ─────────────────────────────────────────────────
@@ -861,6 +1088,8 @@ async fn start_server(args: &Args) -> BenchServer {
 struct IssuanceTiming {
     worker_id: usize,
     request_id: usize,
+    /// Index into the servers vec; used for per-node breakdown.
+    node_idx: usize,
     success: bool,
     error: Option<String>,
     /// 0 when the account was reused from a previous issuance by this worker.
@@ -875,10 +1104,11 @@ struct IssuanceTiming {
 }
 
 impl IssuanceTiming {
-    fn failed(worker_id: usize, request_id: usize, msg: String) -> Self {
+    fn failed(worker_id: usize, node_idx: usize, request_id: usize, msg: String) -> Self {
         IssuanceTiming {
             worker_id,
             request_id,
+            node_idx,
             success: false,
             error: Some(msg),
             account_us: 0,
@@ -892,18 +1122,28 @@ impl IssuanceTiming {
     }
 }
 
-// ── Worker state (one account shared across all issuances from this worker) ────
+// ── Worker state ───────────────────────────────────────────────────────────────
+//
+// Each worker maintains per-node state because:
+//  - Nonces are node-prefixed and cannot be used across nodes.
+//  - Account URLs embed the issuing node's base_url; account_id_from_kid()
+//    validates the full URL prefix, so a kid from node A is rejected by node B.
+//
+// In proxy topology `per_node` has exactly one slot (the proxy URL).
+
+#[derive(Default)]
+struct PerNodeState {
+    account_url: Option<String>,
+    last_nonce: Option<String>,
+}
 
 struct WorkerState {
     id: usize,
     key: AccountKey,
-    account_url: Option<String>,
     /// Domain identifier used in all orders from this worker.
     domain: String,
-    /// Nonce carried over from the previous issuance's last response.
-    /// Each POST response includes Replay-Nonce; threading it eliminates the
-    /// HEAD /new-nonce round-trip at the start of every subsequent issuance.
-    last_nonce: Option<String>,
+    /// One slot per endpoint: N slots for direct topology, 1 for proxy.
+    per_node: Vec<PerNodeState>,
 }
 
 impl WorkerState {
@@ -911,22 +1151,13 @@ impl WorkerState {
         let domain = match args.challenge.as_str() {
             "dns-persist-01" => {
                 let base = format!("bench-{id}.acme-bench.test");
-                if args.wildcard {
-                    format!("*.{base}")
-                } else {
-                    base
-                }
+                if args.wildcard { format!("*.{base}") } else { base }
             }
-            // http-01: all workers order a cert for "localhost" (resolves to 127.0.0.1).
             _ => "localhost".to_string(),
         };
-        WorkerState {
-            id,
-            key: AccountKey::generate(),
-            account_url: None,
-            domain,
-            last_nonce: None,
-        }
+        let slots = if args.topology == Topology::Proxy { 1 } else { args.nodes };
+        let per_node = (0..slots).map(|_| PerNodeState::default()).collect();
+        WorkerState { id, key: AccountKey::generate(), domain, per_node }
     }
 }
 
@@ -935,6 +1166,51 @@ impl WorkerState {
 async fn fetch_nonce(client: &HyperClient, new_nonce_url: &str) -> Result<String, String> {
     let headers = http_head(client, new_nonce_url).await?;
     nonce_hdr(&headers)
+}
+
+/// True when the server error is due to gossip propagation delay: the account,
+/// order, or authz was created on a different node and has not yet arrived on
+/// this node via gossip. The client should wait ~one gossip interval and retry.
+fn is_gossip_delay(err: &str) -> bool {
+    err.contains("unauthorized")
+        || err.contains("not found")
+        || err.contains(" 404")
+        // finalize 403 when authz validation hasn't gossipped yet to the backend
+        // that processes the finalize request
+        || err.contains("orderNotReady")
+        || err.contains("order not ready")
+}
+
+/// POST a JWS request, retrying up to 4× if the server returns `badNonce`.
+/// On each retry, the fresh nonce is taken from the `Replay-Nonce` header of
+/// the error response (falling back to HEAD /new-nonce if absent). Needed in
+/// proxy topologies where round-robin routing may send the request to a backend
+/// that did not issue the cached nonce.
+async fn post_retrying<F: Fn(&str) -> Value>(
+    client: &HyperClient,
+    url: &str,
+    nonce_url: &str,
+    mut nonce: String,
+    build_jws: F,
+) -> Result<(u16, Value, HeaderMap), String> {
+    // With N backends and random routing, P(failure per request) = ((N-1)/N)^retries.
+    // 30 retries with N=3: (2/3)^30 ≈ 5e-6 failure rate → ~0.02% across 30 requests.
+    for _ in 0..30 {
+        let jws = build_jws(&nonce);
+        let (status, body, headers) = http_post_jws(client, url, &jws).await?;
+        if status == 400
+            && body.get("type").and_then(Value::as_str)
+                == Some("urn:ietf:params:acme:error:badNonce")
+        {
+            nonce = nonce_hdr(&headers).unwrap_or_default();
+            if nonce.is_empty() {
+                nonce = fetch_nonce(client, nonce_url).await?;
+            }
+            continue;
+        }
+        return Ok((status, body, headers));
+    }
+    Err("badNonce: exhausted retries".to_string())
 }
 
 /// Create a new ACME account. Returns (account_url, next_nonce) so the caller
@@ -947,12 +1223,12 @@ async fn create_account(
     let nonce_url = format!("{}/acme/new-nonce", server.base_url);
     let acct_url = format!("{}/acme/new-account", server.base_url);
     let nonce = fetch_nonce(client, &nonce_url).await?;
-    let jws = worker.key.jws_jwk(
-        &nonce,
-        &acct_url,
-        Some(json!({"termsOfServiceAgreed": true})),
-    );
-    let (status, body, headers) = http_post_jws(client, &acct_url, &jws).await?;
+    let (status, body, headers) = post_retrying(client, &acct_url, &nonce_url, nonce, |n| {
+        worker
+            .key
+            .jws_jwk(n, &acct_url, Some(json!({"termsOfServiceAgreed": true})))
+    })
+    .await?;
     if status != 201 {
         return Err(format!("new-account {status}: {body}"));
     }
@@ -972,11 +1248,16 @@ async fn new_order(
     nonce: &str,
 ) -> Result<(String, String, String, String), String> {
     let order_url = format!("{}/acme/new-order", server.base_url);
+    let nonce_url = format!("{}/acme/new-nonce", server.base_url);
     let payload = json!({"identifiers": [{"type": "dns", "value": worker.domain}]});
-    let jws = worker
-        .key
-        .jws_kid(account_url, nonce, &order_url, Some(payload));
-    let (status, body, headers) = http_post_jws(client, &order_url, &jws).await?;
+    let (status, body, headers) = post_retrying(
+        client,
+        &order_url,
+        &nonce_url,
+        nonce.to_string(),
+        |n| worker.key.jws_kid(account_url, n, &order_url, Some(payload.clone())),
+    )
+    .await?;
     if status != 201 {
         return Err(format!("new-order {status}: {body}"));
     }
@@ -1005,10 +1286,13 @@ async fn get_authz(
     nonce: &str,
 ) -> Result<(String, Option<String>, String), String> {
     // authz_url is a full URL; the server expects the full URL in the JWS header.
+    let nonce_url = format!("{}/acme/new-nonce", server.base_url);
     let path = authz_url.trim_start_matches(&server.base_url);
-    let jws = worker.key.jws_kid(account_url, nonce, authz_url, None);
-    let (status, body, headers) =
-        http_post_jws(client, &format!("{}{path}", server.base_url), &jws).await?;
+    let full_url = format!("{}{path}", server.base_url);
+    let (status, body, headers) = post_retrying(client, &full_url, &nonce_url, nonce.to_string(), |n| {
+        worker.key.jws_kid(account_url, n, authz_url, None)
+    })
+    .await?;
     if status != 200 {
         return Err(format!("authz {status}: {body}"));
     }
@@ -1046,11 +1330,15 @@ async fn respond_and_poll(
         (ctx.worker, ctx.server, ctx.client, ctx.account_url);
     let nonce_url = format!("{}/acme/new-nonce", server.base_url);
     let chall_path = chall_url.trim_start_matches(&server.base_url);
-    let jws = worker
-        .key
-        .jws_kid(account_url, nonce, chall_url, Some(json!({})));
-    let (status, body, headers) =
-        http_post_jws(client, &format!("{}{chall_path}", server.base_url), &jws).await?;
+    let chall_full = format!("{}{chall_path}", server.base_url);
+    let (status, body, headers) = post_retrying(
+        client,
+        &chall_full,
+        &nonce_url,
+        nonce.to_string(),
+        |n| worker.key.jws_kid(account_url, n, chall_url, Some(json!({}))),
+    )
+    .await?;
     if status != 200 {
         return Err(format!("challenge respond {status}: {body}"));
     }
@@ -1106,14 +1394,15 @@ async fn finalize_and_poll(
     let csr_der = make_csr(&worker.domain, key_type)?;
     let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
     let fin_path = finalize_url.trim_start_matches(&server.base_url);
-    let jws = worker.key.jws_kid(
-        account_url,
-        nonce,
-        finalize_url,
-        Some(json!({"csr": csr_b64})),
-    );
-    let (status, body, headers) =
-        http_post_jws(client, &format!("{}{fin_path}", server.base_url), &jws).await?;
+    let fin_full = format!("{}{fin_path}", server.base_url);
+    let (status, body, headers) = post_retrying(
+        client,
+        &fin_full,
+        &nonce_url,
+        nonce.to_string(),
+        |n| worker.key.jws_kid(account_url, n, finalize_url, Some(json!({"csr": csr_b64.clone()}))),
+    )
+    .await?;
     if status != 200 {
         return Err(format!("finalize {status}: {body}"));
     }
@@ -1188,6 +1477,7 @@ fn verify_cert_san(pem: &str, domain: &str) -> Result<(), String> {
 
 async fn run_issuance(
     worker: &mut WorkerState,
+    node_idx: usize,
     server: &BenchServer,
     client: &HyperClient,
     args: &Args,
@@ -1195,12 +1485,12 @@ async fn run_issuance(
 ) -> IssuanceTiming {
     let wid = worker.id;
 
-    // ── Account (first issuance per worker only) ───────────────────────────────
+    // ── Account (first issuance per worker per node) ───────────────────────────
     // create_account returns (account_url, next_nonce) so the nonce from the
     // new-account response can be threaded directly into the new-order request,
     // eliminating the HEAD /new-nonce that would otherwise precede it.
     let nonce_url = format!("{}/acme/new-nonce", server.base_url);
-    let (account_us, nonce) = if worker.account_url.is_none() {
+    let (account_us, nonce) = if worker.per_node[node_idx].account_url.is_none() {
         let t = Instant::now();
         match create_account(worker, server, client).await {
             Ok((url, nonce)) => {
@@ -1217,51 +1507,92 @@ async fn run_issuance(
                         dns.set_record(&qname, &txt).await;
                     }
                 }
-                worker.account_url = Some(url);
+                worker.per_node[node_idx].account_url = Some(url);
                 (t.elapsed().as_micros() as u64, nonce)
             }
-            Err(e) => return IssuanceTiming::failed(wid, request_id, format!("account: {e}")),
+            Err(e) => return IssuanceTiming::failed(wid, node_idx, request_id, format!("account: {e}")),
         }
     } else {
         // Reuse the nonce carried from the previous issuance's last response.
         // Fall back to HEAD only if no nonce is available (first time or after error).
-        let n = if let Some(n) = worker.last_nonce.take() {
+        let n = if let Some(n) = worker.per_node[node_idx].last_nonce.take() {
             n
         } else {
             match fetch_nonce(client, &nonce_url).await {
                 Ok(n) => n,
-                Err(e) => return IssuanceTiming::failed(wid, request_id, format!("nonce: {e}")),
+                Err(e) => return IssuanceTiming::failed(wid, node_idx, request_id, format!("nonce: {e}")),
             }
         };
         (0, n)
     };
-    let account_url = worker.account_url.clone().unwrap();
+    let account_url = worker.per_node[node_idx].account_url.clone().unwrap();
 
     // ── New order (uses nonce from account creation or previous issuance) ───────
+    // Retry on gossip-delay errors: the account was created on a different backend
+    // and may not yet be visible on this one (up to one gossip interval = 2 s).
     let t_total = Instant::now();
     let t = Instant::now();
-    let (order_url, authz_url, fin_url, nonce) =
-        match new_order(worker, server, client, &account_url, &nonce).await {
-            Ok(v) => v,
-            Err(e) => return IssuanceTiming::failed(wid, request_id, format!("new-order: {e}")),
-        };
+    let (order_url, authz_url, fin_url, nonce) = {
+        let mut cur_nonce = nonce;
+        let mut result = None;
+        for attempt in 0..15 {
+            match new_order(worker, server, client, &account_url, &cur_nonce).await {
+                Ok(v) => {
+                    result = Some(v);
+                    break;
+                }
+                Err(e) if attempt < 14 && is_gossip_delay(&e) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    cur_nonce = match fetch_nonce(client, &nonce_url).await {
+                        Ok(n) => n,
+                        Err(e2) => return IssuanceTiming::failed(wid, node_idx, request_id, format!("nonce: {e2}")),
+                    };
+                }
+                Err(e) => return IssuanceTiming::failed(wid, node_idx, request_id, format!("new-order: {e}")),
+            }
+        }
+        match result {
+            Some(v) => v,
+            None => return IssuanceTiming::failed(wid, node_idx, request_id, "new-order: state not propagated after gossip retries".into()),
+        }
+    };
     let order_us = t.elapsed().as_micros() as u64;
 
     // ── Get authorization (uses nonce from new-order response) ─────────────────
     let t = Instant::now();
-    let (chall_url, token, nonce) = match get_authz(
-        worker,
-        server,
-        client,
-        &account_url,
-        &authz_url,
-        &args.challenge,
-        &nonce,
-    )
-    .await
-    {
-        Ok(v) => v,
-        Err(e) => return IssuanceTiming::failed(wid, request_id, format!("authz: {e}")),
+    let (chall_url, token, nonce) = {
+        let mut cur_nonce = nonce;
+        let mut result = None;
+        for attempt in 0..15 {
+            match get_authz(
+                worker,
+                server,
+                client,
+                &account_url,
+                &authz_url,
+                &args.challenge,
+                &cur_nonce,
+            )
+            .await
+            {
+                Ok(v) => {
+                    result = Some(v);
+                    break;
+                }
+                Err(e) if attempt < 14 && is_gossip_delay(&e) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    cur_nonce = match fetch_nonce(client, &nonce_url).await {
+                        Ok(n) => n,
+                        Err(e2) => return IssuanceTiming::failed(wid, node_idx, request_id, format!("nonce: {e2}")),
+                    };
+                }
+                Err(e) => return IssuanceTiming::failed(wid, node_idx, request_id, format!("authz: {e}")),
+            }
+        }
+        match result {
+            Some(v) => v,
+            None => return IssuanceTiming::failed(wid, node_idx, request_id, "authz: state not propagated after gossip retries".into()),
+        }
     };
     let authz_us = t.elapsed().as_micros() as u64;
 
@@ -1282,39 +1613,98 @@ async fn run_issuance(
         account_url: &account_url,
     };
     let t = Instant::now();
-    let nonce = match respond_and_poll(&ctx, &chall_url, &order_url, &nonce, args.poll_ms).await {
-        Ok(n) => n,
-        Err(e) => return IssuanceTiming::failed(wid, request_id, format!("challenge: {e}")),
+    let nonce = {
+        let mut cur_nonce = nonce;
+        let mut result = None;
+        for attempt in 0..15 {
+            match respond_and_poll(&ctx, &chall_url, &order_url, &cur_nonce, args.poll_ms).await {
+                Ok(v) => {
+                    result = Some(v);
+                    break;
+                }
+                Err(e) if attempt < 14 && is_gossip_delay(&e) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    cur_nonce = match fetch_nonce(client, &nonce_url).await {
+                        Ok(n) => n,
+                        Err(e2) => return IssuanceTiming::failed(wid, node_idx, request_id, format!("nonce: {e2}")),
+                    };
+                }
+                Err(e) => return IssuanceTiming::failed(wid, node_idx, request_id, format!("challenge: {e}")),
+            }
+        }
+        match result {
+            Some(v) => v,
+            None => return IssuanceTiming::failed(wid, node_idx, request_id, "challenge: state not propagated after gossip retries".into()),
+        }
     };
     let challenge_us = t.elapsed().as_micros() as u64;
 
     // ── Finalize (uses nonce from last poll response) → cert URL ───────────────
     let t = Instant::now();
-    let (cert_url, leftover_nonce) =
-        match finalize_and_poll(&ctx, &order_url, &fin_url, &args.key_type, &nonce).await {
-            Ok(v) => v,
-            Err(e) => return IssuanceTiming::failed(wid, request_id, format!("finalize: {e}")),
-        };
+    let (cert_url, leftover_nonce) = {
+        let mut cur_nonce = nonce;
+        let mut result = None;
+        for attempt in 0..15 {
+            match finalize_and_poll(&ctx, &order_url, &fin_url, &args.key_type, &cur_nonce).await {
+                Ok(v) => {
+                    result = Some(v);
+                    break;
+                }
+                Err(e) if attempt < 14 && is_gossip_delay(&e) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    cur_nonce = match fetch_nonce(client, &nonce_url).await {
+                        Ok(n) => n,
+                        Err(e2) => return IssuanceTiming::failed(wid, node_idx, request_id, format!("nonce: {e2}")),
+                    };
+                }
+                Err(e) => return IssuanceTiming::failed(wid, node_idx, request_id, format!("finalize: {e}")),
+            }
+        }
+        match result {
+            Some(v) => v,
+            None => return IssuanceTiming::failed(wid, node_idx, request_id, "finalize: state not propagated after gossip retries".into()),
+        }
+    };
     // Store the nonce for the next issuance (cert download is a GET — no nonce used).
-    worker.last_nonce = leftover_nonce;
+    worker.per_node[node_idx].last_nonce = leftover_nonce;
     let finalize_us = t.elapsed().as_micros() as u64;
 
     // ── Download certificate ───────────────────────────────────────────────────
+    // In multi-node proxy mode the cert was stored on the backend that handled
+    // finalize; gossip propagates it to the other backends. Retry on 404 until
+    // the cert has arrived on whichever backend handles this GET.
     let t = Instant::now();
-    let (dl_status, dl_body, _) = match http_get(client, &cert_url).await {
-        Ok(v) => v,
-        Err(e) => return IssuanceTiming::failed(wid, request_id, format!("download: {e}")),
+    let dl_body = {
+        let mut result = None;
+        for attempt in 0..30 {
+            match http_get(client, &cert_url).await {
+                Ok((200, body, _)) => {
+                    result = Some(body);
+                    break;
+                }
+                Ok((status, _, _)) if attempt < 29 && is_gossip_delay(&format!(" {status}")) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                }
+                Ok((status, _, _)) => {
+                    return IssuanceTiming::failed(wid, node_idx, request_id, format!("cert download {status}"))
+                }
+                Err(e) => {
+                    return IssuanceTiming::failed(wid, node_idx, request_id, format!("download: {e}"))
+                }
+            }
+        }
+        match result {
+            Some(v) => v,
+            None => return IssuanceTiming::failed(wid, node_idx, request_id, "cert download: not propagated after gossip retries".into()),
+        }
     };
-    if dl_status != 200 {
-        return IssuanceTiming::failed(wid, request_id, format!("cert download {dl_status}"));
-    }
     let download_us = t.elapsed().as_micros() as u64;
 
     // ── Optional SAN verification ──────────────────────────────────────────────
     if args.verify_cert {
         if let Ok(pem) = String::from_utf8(dl_body) {
             if let Err(e) = verify_cert_san(&pem, &worker.domain) {
-                return IssuanceTiming::failed(wid, request_id, format!("verify: {e}"));
+                return IssuanceTiming::failed(wid, node_idx, request_id, format!("verify: {e}"));
             }
         }
     }
@@ -1328,6 +1718,7 @@ async fn run_issuance(
     IssuanceTiming {
         worker_id: wid,
         request_id,
+        node_idx,
         success: true,
         error: None,
         account_us,
@@ -1367,7 +1758,7 @@ fn max_ms(v: &[u64]) -> f64 {
 
 // ── Report output ──────────────────────────────────────────────────────────────
 
-fn text_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64, mem: &MemStats) {
+fn text_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64, mem: &MemStats, node_urls: &[String]) {
     let ok: Vec<&IssuanceTiming> = timings.iter().filter(|t| t.success).collect();
     let err: Vec<&IssuanceTiming> = timings.iter().filter(|t| !t.success).collect();
     let n_ok = ok.len();
@@ -1456,6 +1847,30 @@ fn text_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64, mem: &M
         }
     }
 
+    // ── Per-node breakdown ─────────────────────────────────────────────────────
+    if node_urls.len() > 1 {
+        println!(
+            "\n  Per-node breakdown ({} nodes, requests distributed round-robin):",
+            node_urls.len()
+        );
+        for (i, url) in node_urls.iter().enumerate() {
+            let node_ok: Vec<&IssuanceTiming> =
+                ok.iter().copied().filter(|t| t.node_idx == i).collect();
+            let node_err = timings.iter().filter(|t| !t.success && t.node_idx == i).count();
+            let mut node_totals: Vec<u64> = node_ok.iter().map(|t| t.total_us).collect();
+            node_totals.sort_unstable();
+            println!(
+                "    Node {:2}  {}  {} ok / {} err  mean={:.0}ms  p99={:.0}ms",
+                i,
+                url,
+                node_ok.len(),
+                node_err,
+                mean_ms(&node_totals),
+                pct_ms(&node_totals, 99.0),
+            );
+        }
+    }
+
     // ── Memory section ─────────────────────────────────────────────────────────
     {
         let s = &mem.start;
@@ -1505,7 +1920,7 @@ fn text_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64, mem: &M
     println!();
 }
 
-fn json_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64, mem: &MemStats) {
+fn json_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64, mem: &MemStats, node_urls: &[String]) {
     let ok: Vec<&IssuanceTiming> = timings.iter().filter(|t| t.success).collect();
     let n_ok = ok.len();
     let n_err = timings.len() - n_ok;
@@ -1561,8 +1976,21 @@ fn json_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64, mem: &M
             "per_issuance_alloc_bytes": if n > 0 { issuance_alloc / n as u64 } else { 0 },
             "total_alloc_count":        mem.after_bench.total_count,
         },
+        "nodes": node_urls.iter().enumerate().map(|(i, url)| {
+            let node_ok: Vec<&IssuanceTiming> = timings.iter().filter(|t| t.success && t.node_idx == i).collect();
+            let node_err = timings.iter().filter(|t| !t.success && t.node_idx == i).count();
+            let mut node_totals: Vec<u64> = node_ok.iter().map(|t| t.total_us).collect();
+            node_totals.sort_unstable();
+            json!({
+                "url": url,
+                "ok": node_ok.len(),
+                "err": node_err,
+                "mean_ms": mean_ms(&node_totals),
+                "p99_ms": pct_ms(&node_totals, 99.0),
+            })
+        }).collect::<Vec<_>>(),
         "raw": timings.iter().map(|t| json!({
-            "worker_id": t.worker_id, "request_id": t.request_id,
+            "worker_id": t.worker_id, "request_id": t.request_id, "node_idx": t.node_idx,
             "success": t.success, "error": t.error,
             "account_us": t.account_us, "order_us": t.order_us,
             "authz_us": t.authz_us, "challenge_us": t.challenge_us,
@@ -1581,9 +2009,8 @@ async fn main() {
     let raw: Vec<String> = std::env::args().filter(|a| a != "--bench").collect();
     let args = Args::parse_from(raw);
 
-    // Suppress server tracing so the benchmark output is clean.
-    // Set RUST_LOG=debug to see request traces.
     // Always write logs to stderr so that --output json produces clean stdout.
+    // Set RUST_LOG=debug to see request traces.
     let _ = tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "error".to_string()))
@@ -1605,15 +2032,118 @@ async fn main() {
         eprintln!("error: --clients and --requests must be > 0");
         std::process::exit(1);
     }
+    if args.nodes == 0 {
+        eprintln!("error: --nodes must be > 0");
+        std::process::exit(1);
+    }
 
-    eprintln!(
-        "Starting server (ca-key={}, db={})…",
-        args.ca_key_type, args.db
-    );
     let mem_start = alloc_snapshot();
-    let server = Arc::new(start_server(&args).await);
+
+    // ── Shared challenge infrastructure ────────────────────────────────────────
+    let infra = ChallengeInfra::setup(&args).await;
+
+    // ── Pre-allocate one listener per backend node ─────────────────────────────
+    // All ports must be known before building GossipConfig peer lists.
+    let mut backend_listeners: Vec<tokio::net::TcpListener> = Vec::with_capacity(args.nodes);
+    let mut backend_urls: Vec<String> = Vec::with_capacity(args.nodes);
+    for _ in 0..args.nodes {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        backend_urls.push(format!("http://127.0.0.1:{port}"));
+        backend_listeners.push(l);
+    }
+
+    // ── Optional proxy listener ────────────────────────────────────────────────
+    let use_proxy = args.topology == Topology::Proxy && args.nodes > 1;
+    let (proxy_listener, proxy_url) = if use_proxy {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
+        (Some(l), url)
+    } else {
+        (None, backend_urls[0].clone())
+    };
+
+    // In proxy mode all backend nodes use the proxy's URL as their base_url so
+    // account kid URLs embed the proxy address (visible to ACME clients).
+    // In direct mode each node advertises its own listener URL.
+    eprintln!(
+        "Starting {} node(s) (topology={:?}, ca-key={}, db={})…",
+        args.nodes, args.topology, args.ca_key_type, args.db
+    );
+    let mut bench_backends: Vec<Arc<BenchServer>> = Vec::with_capacity(args.nodes);
+    for i in 0..args.nodes {
+        let peer_urls: Vec<String> = backend_urls
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, u)| u.clone())
+            .collect();
+        let base_url = if use_proxy {
+            proxy_url.clone()
+        } else {
+            backend_urls[i].clone()
+        };
+        eprintln!("  Starting backend {i} at {}…", backend_urls[i]);
+        let node = spawn_node(SpawnParams {
+            args: &args,
+            infra: &infra,
+            listener: backend_listeners.remove(0),
+            identity: generate_node_identity(),
+            base_url,
+            peer_urls,
+        })
+        .await;
+        bench_backends.push(Arc::new(node));
+    }
+
+    // ── CRDT cross-seeding (multi-node only) ───────────────────────────────────
+    // Inject each node's cluster_nodes entry into all peers so gossip can
+    // authenticate senders immediately without waiting for a gossip round.
+    if bench_backends.len() > 1 {
+        let mut all_entries: Vec<Vec<(String, akamu_crdt::AkaNodeEntry)>> = Vec::new();
+        for server in &bench_backends {
+            let crdt = server.state.crdt.read().await;
+            all_entries.push(
+                crdt.cluster_nodes
+                    .live_values()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+            );
+        }
+        for (i, server) in bench_backends.iter().enumerate() {
+            let mut crdt = server.state.crdt.write().await;
+            for (j, entries) in all_entries.iter().enumerate() {
+                if j != i {
+                    for (k, v) in entries {
+                        crdt.cluster_nodes.upsert(k.clone(), v.clone(), 0);
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Build the servers slice workers will target ────────────────────────────
+    // Direct: N servers, one per backend.
+    // Proxy:  1 synthetic entry using the proxy URL (workers see a single URL).
+    let (servers, node_urls): (Vec<Arc<BenchServer>>, Vec<String>) = if use_proxy {
+        if let Some(pl) = proxy_listener {
+            tokio::spawn(spawn_proxy(pl, backend_urls.clone()));
+        }
+        let proxy_server = Arc::new(BenchServer {
+            base_url: proxy_url.clone(),
+            state: bench_backends[0].state.clone(),
+            challenge_store: bench_backends[0].challenge_store.clone(),
+            dns: bench_backends[0].dns.clone(),
+            _dir: None,
+        });
+        (vec![proxy_server], vec![proxy_url])
+    } else {
+        let urls: Vec<String> = bench_backends.iter().map(|s| s.base_url.clone()).collect();
+        (bench_backends, urls)
+    };
+
     let mem_server_ready = alloc_snapshot();
-    eprintln!("Server ready at {}", server.base_url);
+    eprintln!("All nodes ready.");
 
     let total = args.warmup + args.requests;
     eprintln!(
@@ -1638,10 +2168,11 @@ async fn main() {
     let t_epoch = Instant::now();
 
     reset_peak();
+    let servers = Arc::new(servers);
     let mut handles = Vec::new();
     for worker_id in 0..args.clients {
         let args = args.clone();
-        let server = Arc::clone(&server);
+        let servers = Arc::clone(&servers);
         let rx = Arc::clone(&rx);
         let result_tx = result_tx.clone();
         let first_us = Arc::clone(&first_bench_us);
@@ -1659,8 +2190,13 @@ async fn main() {
                     }
                 };
                 let is_warmup = request_id < args.warmup;
+                // Round-robin across nodes; proxy topology always picks slot 0.
+                let node_idx = request_id % servers.len();
+                let server = Arc::clone(&servers[node_idx]);
                 let t_start_us = t_epoch.elapsed().as_micros() as u64;
-                let timing = run_issuance(&mut worker, &server, &client, &args, request_id).await;
+                let timing =
+                    run_issuance(&mut worker, node_idx, &server, &client, &args, request_id)
+                        .await;
                 let t_end_us = t_epoch.elapsed().as_micros() as u64;
 
                 if !is_warmup {
@@ -1697,14 +2233,14 @@ async fn main() {
         t_epoch.elapsed().as_secs_f64()
     };
 
-    // Separate warmup results out; warmup IDs are 0..warmup-1.
+    // Separate warmup results; warmup IDs are 0..warmup-1.
     let bench_timings: Vec<IssuanceTiming> = all
         .into_iter()
         .filter(|t| t.request_id >= args.warmup)
         .collect();
 
     match args.output.as_str() {
-        "json" => json_report(&args, &bench_timings, bench_wall, &mem),
-        _ => text_report(&args, &bench_timings, bench_wall, &mem),
+        "json" => json_report(&args, &bench_timings, bench_wall, &mem, &node_urls),
+        _ => text_report(&args, &bench_timings, bench_wall, &mem, &node_urls),
     }
 }
