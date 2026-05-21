@@ -1159,12 +1159,13 @@ async fn spawn_node_process(
         .spawn()
         .expect("spawn akamu process");
 
-    // Poll /acme/directory until the node is ready (up to 10 s).
+    // Poll the node's own listen address (not base_url, which may be a proxy
+    // that hasn't started yet) until the node is ready (up to 10 s).
     let http = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(500))
         .build()
         .unwrap();
-    let directory_url = format!("{base_url}/acme/directory");
+    let directory_url = format!("http://127.0.0.1:{port}/acme/directory");
     for attempt in 0..20 {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         if let Ok(r) = http.get(&directory_url).send().await {
@@ -2381,6 +2382,12 @@ async fn main() {
     // ── Build the servers slice workers will target ────────────────────────────
     // Direct: N servers, one per backend.
     // Proxy:  1 synthetic entry using the proxy URL (workers see a single URL).
+    //
+    // In proxy mode the backend BenchServers are NOT moved into `servers`; keep
+    // them alive here so their `_process` kill_on_drop handles are not dropped
+    // until the bench exits.  In direct mode this is empty (backends move into
+    // `servers` instead).
+    let _backend_keep: Vec<Arc<BenchServer>>;
     let (servers, node_urls): (Vec<Arc<BenchServer>>, Vec<String>) = if use_proxy {
         if let Some(pl) = proxy_listener {
             tokio::spawn(spawn_proxy(pl, backend_urls.clone()));
@@ -2393,8 +2400,10 @@ async fn main() {
             _dir: None,
             _process: None,
         });
+        _backend_keep = bench_backends;
         (vec![proxy_server], vec![proxy_url])
     } else {
+        _backend_keep = vec![];
         let urls: Vec<String> = bench_backends.iter().map(|s| s.base_url.clone()).collect();
         (bench_backends, urls)
     };
