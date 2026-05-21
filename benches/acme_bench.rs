@@ -800,6 +800,7 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
             ownership_ttl_secs: 150,
             gossip_envelope_max_age_secs: 300,
             clock_skew_tolerance_secs: 30,
+            fan_out: if args.nodes > 5 { 3 } else { 0 },
         })
     };
 

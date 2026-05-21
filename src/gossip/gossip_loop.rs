@@ -70,8 +70,21 @@ pub async fn run(state: Arc<AppState>) {
     // each performing a full CRDT clone for its response — enough to saturate the
     // runtime.  This floor limits write-notify gossip to ~2 Hz regardless of load.
     let write_notify_min_interval = Duration::from_millis(500);
+    // Stagger first gossip round by a node-id-derived jitter so that nodes started
+    // together (e.g. in a benchmark or simultaneous deploy) do not all gossip at the
+    // same instant.  Synchronized gossip storms cause N-1 gossip_sync write-lock
+    // requests to queue simultaneously on every receiving node, creating a write-lock
+    // convoy that delays ACME request handlers for the duration of N-1 merges.
+    // The jitter spreads those storms across the full min_interval window.
+    let startup_jitter = {
+        let hash = state
+            .node_id
+            .bytes()
+            .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+        Duration::from_millis(hash % write_notify_min_interval.as_millis() as u64)
+    };
     let mut last_notify_round = std::time::Instant::now()
-        .checked_sub(write_notify_min_interval)
+        .checked_sub(startup_jitter)
         .unwrap_or_else(std::time::Instant::now);
 
     // Tracks which http:// peers have already received a plaintext-HTTP warning (H-9).
@@ -208,11 +221,27 @@ pub async fn run(state: Arc<AppState>) {
         // H-10: Acquire ordering so we see all preceding CRDT writes.
         let current_gen = CRDT_GENERATION.load(std::sync::atomic::Ordering::Acquire);
 
+        // Fan-out limiting: contact at most `fan_out` peers per round to bound the
+        // O(N²) simultaneous-handler load on receiving nodes.  A rotating window
+        // (indexed by current_gen) cycles through all peers so each is reached within
+        // ceil(N / fan_out) rounds.  fan_out = 0 means all peers (default).
+        let fan_out_buf: Vec<String>;
+        let gossip_peers: &[String] =
+            if gossip_cfg.fan_out == 0 || all_peers.len() <= gossip_cfg.fan_out {
+                &all_peers
+            } else {
+                let n = all_peers.len();
+                let k = gossip_cfg.fan_out;
+                let start = (current_gen as usize) % n;
+                fan_out_buf = (0..k).map(|i| all_peers[(start + i) % n].clone()).collect();
+                &fan_out_buf
+            };
+
         // ── Phase A: Build envelopes (sequential, one CRDT read-lock for all peers) ──────
         let mut prepared_peers: Vec<PreparedPeer> = Vec::new();
         {
             let crdt = state.crdt.read().await;
-            for peer_url in &all_peers {
+            for peer_url in gossip_peers {
                 let is_first_contact = !peer_last_gen.contains_key(peer_url.as_str());
 
                 if peer_last_gen.get(peer_url.as_str()).copied() == Some(current_gen) {

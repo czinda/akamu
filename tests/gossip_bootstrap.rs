@@ -137,6 +137,7 @@ async fn spawn_node(params: SpawnParams) -> NodeHandle {
             ownership_ttl_secs: 150,
             gossip_envelope_max_age_secs: 300,
             clock_skew_tolerance_secs: 30,
+            fan_out: 0,
         })
     };
 

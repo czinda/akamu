@@ -1340,6 +1340,12 @@ pub struct GossipConfig {
     /// than this many seconds in the future are rejected. Default: 30.
     #[serde(default = "default_gossip_clock_skew_tolerance_secs")]
     pub clock_skew_tolerance_secs: u64,
+    /// Maximum peers to contact per gossip round (fan-out limit).
+    /// Zero (the default) means all known peers.  Setting this to 3–5
+    /// reduces O(N²) gossip overhead in clusters larger than ~5 nodes
+    /// while convergence still happens transitively in O(log_k(N)) rounds.
+    #[serde(default)]
+    pub fan_out: usize,
 }
 
 fn default_gossip_interval_secs() -> u64 {
@@ -1371,6 +1377,7 @@ impl Default for GossipConfig {
             ownership_ttl_secs: default_gossip_ownership_ttl_secs(),
             gossip_envelope_max_age_secs: default_gossip_envelope_max_age_secs(),
             clock_skew_tolerance_secs: default_gossip_clock_skew_tolerance_secs(),
+            fan_out: 0,
         }
     }
 }
