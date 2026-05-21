@@ -99,10 +99,17 @@ fn parse_rfc3339(s: &str) -> Result<i64, AcmeError> {
     let sec_str = time_parts[2].split('.').next().unwrap_or(time_parts[2]);
     let second: i64 = sec_str.parse().map_err(|_| err())?;
 
+    if hour > 23 || minute > 59 || second > 60 {
+        return Err(err());
+    }
+
     // Parse timezone offset HH:MM
     let tz_parts: Vec<&str> = tz.split(':').collect();
     let tz_hours: i64 = tz_parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
     let tz_mins: i64 = tz_parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    if tz_hours > 23 || tz_mins > 59 {
+        return Err(err());
+    }
     // Determine sign from original string
     let tz_sign: i64 =
         if date_time.len() < s.len() && s.as_bytes().get(date_time.len()) == Some(&b'-') {
@@ -115,13 +122,28 @@ fn parse_rfc3339(s: &str) -> Result<i64, AcmeError> {
     // Convert to Unix timestamp using simple Gregorian algorithm.
     // Days since Unix epoch (1970-01-01).
     let days = days_since_epoch(year, month, day).ok_or_else(err)?;
-    let unix = days * 86400 + hour * 3600 + minute * 60 + second - tz_offset_secs;
+    let unix = days
+        .checked_mul(86400)
+        .and_then(|d| d.checked_add(hour * 3600 + minute * 60 + second))
+        .and_then(|t| t.checked_sub(tz_offset_secs))
+        .ok_or_else(err)?;
     Ok(unix)
 }
 
 /// Compute days since Unix epoch for a Gregorian date (no external deps).
 fn days_since_epoch(year: i64, month: i64, day: i64) -> Option<i64> {
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || year < 1970 {
+    if !(1..=12).contains(&month) || day < 1 || !(1970..=9999).contains(&year) {
+        return None;
+    }
+    let is_leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let max_day: i64 = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap => 29,
+        2 => 28,
+        _ => return None,
+    };
+    if day > max_day {
         return None;
     }
     // Use the proleptic Gregorian formula.
