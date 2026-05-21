@@ -16,6 +16,7 @@ For a detailed breakdown of RFC and draft coverage — including which sections 
 - Optionally appends issued certificates to a Merkle Tree Certificate transparency log using the `synta-mtc` library.
 - When `external_account_required = true`, performs full HMAC verification of the `externalAccountBinding` JWS (HS256/HS384/HS512), confirms the payload is the account key, and atomically consumes the EAB key on account creation. EAB keys can be provisioned in two ways: statically in the TOML config under `[server.eab_keys]`, or derived on demand via HKDF-SHA-256 (RFC 5869) when `[server].eab_master_secret` is set and the client authenticates via GSSAPI or a trusted proxy (`GET /acme/eab`).
 - Optionally terminates TLS directly using rustls, with an auto-generated certificate on first run. Supports mutual TLS (mTLS) client certificate authentication with configurable CA trust anchors, chain depth, RSA modulus enforcement, and post-quantum client certificate acceptance.
+- Supports multi-node clustering through a built-in CRDT + gossip replication layer. All domain state (accounts, orders, authorizations, challenges, certificates, EAB keys, operators, delegations, MTC) is replicated to every cluster member via signed gossip envelopes. Nodes are registered with each other via the `POST /admin/gossip/register` admin endpoint. When the `[gossip]` section is absent the node runs in single-node mode with no replication overhead.
 
 ## What it does not do
 
@@ -39,6 +40,7 @@ For a detailed breakdown of RFC and draft coverage — including which sections 
 | JWK/JWS primitives | akamu-jose (workspace crate) |
 | ACME client library | akamu-client (workspace crate) |
 | CLI | akamu-cli (workspace crate) |
+| CRDT replication | akamu-crdt (workspace crate) — LWW-register, OR-map, LWW-map, GrowSet primitives |
 
 ## Standards implemented
 
