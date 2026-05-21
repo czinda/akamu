@@ -1499,6 +1499,8 @@ fan_out = 3   # recommended for clusters of 5+ nodes
 
 The `[profiles]` section configures the certificate profile subsystem. Profiles are loaded from one or more *providers* at startup, cached in memory, and refreshed periodically by a background task. `Akāmu`'s own CA always signs; profiles only control which extensions are included and with what values. When no providers are configured, every order falls back to CA defaults (`digitalSignature` KeyUsage, `serverAuth` EKU, and the `[ca]` validity/URL settings).
 
+When at least one provider is configured and a `newOrder` request omits the `profile` field, the server checks whether a profile named `"default"` exists in the registry. If it does, `"default"` is applied automatically and echoed back in the order response. If no `"default"` profile exists, the order falls back to the CA's built-in defaults.
+
 See [Certificate Profiles](profiles.md) for the complete reference including all provider types, key usage names, EKU OIDs, and three-state URL semantics.
 
 ### `refresh_interval_secs`

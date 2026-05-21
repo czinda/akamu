@@ -146,6 +146,7 @@ akamu-cli issue --server URL --account-key FILE -d DOMAIN --out FILE [OPTIONS]
 | `--tls-port PORT` | no | Port for the built-in tls-alpn-01 solver. Default: `443`. |
 | `--onion-key FILE` | required for `onion-csr-01` | Ed25519 hidden-service private key PEM file. |
 | `--poll-timeout SECS` | no | Maximum seconds to wait for order/challenge validation. Default: `120`. |
+| `--profile NAME` | no | Certificate profile name (draft-aaron-acme-profiles-01). Sent as `"profile"` in the `newOrder` payload. The server may echo a different name (e.g. `"default"`) if auto-selection applies; the echoed value is stored in the renewal sidecar. |
 | `--eab-kid KID` | no | EAB key ID (used if no account exists yet). Mutually exclusive with `--gssapi-keytab`. |
 | `--eab-key KEY_B64U` | no | EAB HMAC key (base64url). Mutually exclusive with `--gssapi-keytab`. |
 | `--gssapi-keytab PATH` | no | Path to a Kerberos keytab file. When set and no account URL sidecar exists, the CLI performs a GSSAPI-authenticated `GET /acme/eab` before registering. Mutually exclusive with `--eab-kid` / `--eab-key`. |
@@ -183,6 +184,8 @@ akamu-cli renew --server URL --account-key FILE -d DOMAIN --out FILE [OPTIONS]
 | `--poll-timeout SECS` | no | Default: `120`. |
 | `--key-type TYPE` | no | Account key type. Default: `ec:P-256`. |
 | `--cert-key-type TYPE` | no | Certificate key type. Default: `ec:P-256`. |
+| `--cert-key FILE` | no | Reuse an existing certificate private key PEM file instead of generating a new one. Useful for HPKP / TLSA key pinning scenarios where the public key must remain stable across renewals. |
+| `--profile NAME` | no | Certificate profile name (draft-aaron-acme-profiles-01). Stored in the renewal sidecar so subsequent `renew` calls request the same profile. |
 | `--eab-kid KID` | no | EAB key ID. Mutually exclusive with `--gssapi-keytab`. |
 | `--eab-key KEY_B64U` | no | EAB HMAC key (base64url). Mutually exclusive with `--gssapi-keytab`. |
 | `--gssapi-keytab PATH` | no | Path to a Kerberos keytab file for GSSAPI-authenticated EAB. Mutually exclusive with `--eab-kid` / `--eab-key`. |
@@ -243,7 +246,7 @@ akamu-cli import certbot [OPTIONS]
 
 2. Converts the certbot JWK private key to a PEM file written to `--account-key`. Writes the account URL to `<account-key>.account-url` as an [account URL sidecar](#sidecar-files).
 
-3. Walks `<certbot-dir>/renewal/*.conf` to discover certificate configurations. For each matching domain, copies `live/<domain>/fullchain.pem` and `live/<domain>/privkey.pem` into `--cert-dir`, then writes a `.renewal.toml` sidecar (see [Renewal configuration sidecar](#renewal-configuration-sidecar)).
+3. Walks `<certbot-dir>/renewal/*.conf` to discover certificate configurations. For each matching domain, copies `live/<domain>/fullchain.pem` and `live/<domain>/privkey.pem` into `--cert-dir` with mode `0o600`, then writes a `.renewal.toml` sidecar (see [Renewal configuration sidecar](#renewal-configuration-sidecar)). If either the certificate chain or the private key file cannot be read (for example, due to a permissions issue), the renewal sidecar is not written for that domain and a warning is printed.
 
 4. Prints the `akamu-cli renew --renewal-config` command for each imported certificate.
 
@@ -259,16 +262,21 @@ Certbot's authenticator field is mapped to an akamu challenge type as follows:
 | Any `dns-*` plugin (dns-cloudflare, dns-route53, etc.) | value of `--dns-challenge` |
 | `tls-sni-01` | `tls-alpn-01` (with a deprecation warning) |
 
-When a DNS-based authenticator is mapped, a note is printed suggesting you configure `--dns-hook` if you did not supply one.
+When a DNS-based challenge type is selected but no `--dns-hook` was supplied, the importer emits a warning for each affected domain (unless `--dry-run` is set) reminding you to add a hook script before the next renewal.
+
+#### Certificate key type detection
+
+The importer reads the actual key PEM file from `live/<domain>/privkey.pem` to determine the key type (`ec:P-256`, `rsa:2048`, etc.) stored in the renewal sidecar. This ensures the sidecar accurately reflects the key material rather than relying on filename heuristics.
 
 #### Wildcard domain handling
 
-Certbot stores wildcard certificates under `live/_wildcard.<domain>/`. The importer decodes this convention automatically: `_wildcard.example.com``_wildcard.example.com` becomes `*.example.com` in the generated renewal configuration file.
+Certbot stores wildcard certificates under `live/_wildcard.<domain>/`. The importer decodes this convention automatically: `_wildcard.example.com` becomes `*.example.com` in the generated renewal configuration file.
 
 #### Prerequisites
 
 - The importer reads certbot's `live/` and `accounts/` directories. On most systems these are owned by root with mode 0700. Run the importer as root or with sufficient privilege to read them.
 - The `--account-key` output path must not already exist.
+- All output files (account key, certificate chain, certificate key, renewal sidecar) are written with mode `0o600`.
 
 #### Example
 
@@ -303,6 +311,10 @@ After import, renew each certificate with:
 ```bash
 akamu-cli renew --renewal-config /etc/akamu/certs/example.com.pem.renewal.toml
 ```
+
+## File permissions
+
+All output files written by `akamu-cli` — account keys, certificate private keys, account URL sidecars, and renewal configuration sidecars — are created with mode `0o600` (owner read/write only). When overwriting a pre-existing file, the mode is explicitly re-applied so that stale group or world permissions left by a previous tool are corrected.
 
 ## Sidecar files
 
@@ -347,9 +359,10 @@ value = "*.example.com"
 onion_key       = "/path/to/hs_key.pem"
 contacts        = ["mailto:admin@example.com"]
 eab_kid         = "kid-from-ca"
-eab_key         = "base64url-hmac-key"
+# eab_key is intentionally omitted: the HMAC key is never written to this file.
 gssapi_keytab   = "/etc/akamu/http.keytab"
 dns_hook        = "/etc/akamu/hooks/dns-update.sh"
+profile         = "tlsserver"
 ```
 
 #### Fields
@@ -370,10 +383,12 @@ dns_hook        = "/etc/akamu/hooks/dns-update.sh"
 | `poll_timeout` | `120` | Seconds to wait for challenge validation |
 | `contacts` | `[]` | Contact URIs registered with the account |
 | `eab_kid` | — | EAB key ID |
-| `eab_key` | — | EAB HMAC key (base64url) |
 | `eab_alg` | `"HS256"` | EAB HMAC algorithm |
-| `gssapi_keytab` | — | Path to a Kerberos keytab for GSSAPI-authenticated EAB (mutually exclusive with `eab_kid` / `eab_key`) |
+| `gssapi_keytab` | — | Path to a Kerberos keytab for GSSAPI-authenticated EAB (mutually exclusive with `eab_kid`) |
 | `dns_hook` | — | Hook script path for DNS TXT record management |
+| `profile` | — | Certificate profile name (draft-aaron-acme-profiles-01). When set, passed as `"profile"` in the `newOrder` payload on renewal. Populated from the server's echoed value after issuance. |
+
+> The `eab_key` HMAC secret is **never written** to the renewal sidecar. Supply it again via `--eab-key` or `--gssapi-keytab` if EAB is required for the renewal account.
 
 Fields that have defaults are optional in the TOML file. Existing configs with fewer fields remain forward-compatible as new optional fields are added.
 

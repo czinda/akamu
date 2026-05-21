@@ -746,9 +746,17 @@ The server validates that the requested profile is loaded in the registry. If no
 
 The `profile` field is echoed back in every subsequent order response so that clients can confirm which profile applies.
 
+### Default profile auto-selection
+
+When a `newOrder` request omits the `profile` field and a profile named `"default"` exists in the registry, the server automatically applies `"default"` and echoes it in the order response. This means clients that do not specify a profile will receive `"profile": "default"` in the order JSON rather than an absent field, giving operators a clean way to enforce a baseline policy without requiring client-side changes.
+
+If no `"default"` profile is configured and the client omits `profile`, the order is issued under the CA's built-in defaults (no profile applied).
+
 ### Finalize-time enforcement
 
-At finalize time the server resolves the profile's `CertificateParameters` (key usage bits, EKU OIDs, validity, CRL/OCSP URLs, certificate policies) and issues the certificate with those exact extension values. If the profile is no longer loaded (e.g. removed since the order was placed), the request is rejected with `invalidProfile`.
+At finalize time the server reads the profile registry once and uses the result for both authorization and certificate parameter construction. Per-profile authorization checks (`allowed_identifiers`, `auth_hook`, `require_account_grant`) run **before** CSR validation so that authorization failures are reported before the server expends effort parsing and validating the CSR.
+
+The server resolves the profile's `CertificateParameters` (key usage bits, EKU OIDs, validity, CRL/OCSP URLs, certificate policies) and issues the certificate with those exact extension values. If the profile is no longer loaded (e.g. removed since the order was placed), the request is rejected with `invalidProfile`.
 
 ### Configuration
 
