@@ -17,7 +17,7 @@
 //!   --challenge TYPE  http-01 | dns-persist-01      [default: http-01]
 //!   --key-type TYPE   ec:P-256 | ec:P-384 | rsa:2048 | rsa:4096 | ed25519
 //!   --ca-key-type T   CA key type (same syntax)
-//!   --wildcard        issue *.bench-N.acme-bench.test  (dns-persist-01 only)
+//!   --wildcard        issue *.bench-N.acme-bench.localhost  (dns-persist-01 only)
 //!   --db PATH             :memory: or file path for SQLite
 //!   --pool-connections N  SQLite pool size (ignored for :memory:)  [default: 1]
 //!   --output FORMAT       text | json
@@ -635,7 +635,7 @@ impl MultiDns {
 }
 
 /// Parse the DNS qname from a wire-format query into a dotted string with
-/// trailing dot, e.g. `"_validation-persist.bench-0.acme-bench.test."`.
+/// trailing dot, e.g. `"_validation-persist.bench-0.acme-bench.localhost."`.
 fn parse_qname(query: &[u8]) -> String {
     let mut pos = 12usize; // skip 12-byte DNS header
     let mut labels: Vec<String> = Vec::new();
@@ -713,7 +713,7 @@ impl ChallengeInfra {
                     dns: Some(dns),
                     http_validation_port: 80,
                     dns_resolver_addr: Some(resolver),
-                    issuer_domain: Some("acme-bench.test".to_string()),
+                    issuer_domain: Some("acme-bench.localhost".to_string()),
                 }
             }
             _ /* http-01 */ => {
@@ -1062,14 +1062,18 @@ struct NodeConfigParams<'a> {
     ca_key_type: &'a str,
     http_validation_port: u16,
     dns_resolver_addr: Option<&'a str>,
+    dns_persist_issuer_domain: Option<&'a str>,
     peer_urls: &'a [String],
     fan_out: usize,
 }
 
 fn write_node_config(p: NodeConfigParams<'_>) -> std::io::Result<()> {
-    let dns_line = match p.dns_resolver_addr {
-        Some(addr) => format!("dns_resolver_addr = \"{addr}\"\n"),
-        None => String::new(),
+    let dns_line = match (p.dns_resolver_addr, p.dns_persist_issuer_domain) {
+        (Some(addr), Some(domain)) => {
+            format!("dns_resolver_addr = \"{addr}\"\ndns_persist_issuer_domains = \"{domain}\"\n")
+        }
+        (Some(addr), None) => format!("dns_resolver_addr = \"{addr}\"\n"),
+        _ => String::new(),
     };
     let peer_list = p
         .peer_urls
@@ -1134,6 +1138,7 @@ async fn spawn_node_process(
         ca_key_type: &args.ca_key_type,
         http_validation_port: infra.http_validation_port,
         dns_resolver_addr: infra.dns_resolver_addr.as_deref(),
+        dns_persist_issuer_domain: infra.issuer_domain.as_deref(),
         peer_urls: &peer_urls,
         fan_out,
     })
@@ -1321,8 +1326,12 @@ impl WorkerState {
     fn new(id: usize, args: &Args) -> Self {
         let domain = match args.challenge.as_str() {
             "dns-persist-01" => {
-                let base = format!("bench-{id}.acme-bench.test");
-                if args.wildcard { format!("*.{base}") } else { base }
+                let base = format!("bench-{id}.acme-bench.localhost");
+                if args.wildcard {
+                    format!("*.{base}")
+                } else {
+                    base
+                }
             }
             _ => "localhost".to_string(),
         };
@@ -1671,9 +1680,9 @@ async fn run_issuance(
                         let base = worker.domain.trim_start_matches("*.");
                         let qname = format!("_validation-persist.{}.", base);
                         let txt = if args.wildcard {
-                            format!("acme-bench.test; accounturi={}; policy=wildcard", url)
+                            format!("acme-bench.localhost; accounturi={}; policy=wildcard", url)
                         } else {
-                            format!("acme-bench.test; accounturi={}", url)
+                            format!("acme-bench.localhost; accounturi={}", url)
                         };
                         dns.set_record(&qname, &txt).await;
                     }
