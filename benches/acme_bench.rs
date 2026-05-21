@@ -1218,12 +1218,32 @@ async fn spawn_node_process(
     }
 }
 
-// ── In-process round-robin HTTP proxy (proxy topology) ────────────────────────
+// ── In-process nonce-tracking HTTP proxy (proxy topology) ─────────────────────
+//
+// ACME nonces are node-local (stored in each backend's SQLite DB). A naive
+// round-robin or random proxy causes badNonce errors because the nonce issued
+// by backend A is presented to backend B, which rejects it. Instead we track
+// which backend issued each nonce and route accordingly: requests whose nonce
+// is known go to the owning backend; requests with unknown nonces (e.g. the
+// initial HEAD /new-nonce) use round-robin. After forwarding, we record the
+// new Replay-Nonce from the response so subsequent requests route correctly.
 
 struct ProxyState {
     backends: Vec<String>,
     counter: Arc<AtomicUsize>,
     client: reqwest::Client,
+    // nonce value → backend index that issued it.
+    nonce_map: Arc<std::sync::Mutex<HashMap<String, usize>>>,
+}
+
+/// Extract the `nonce` field from a JWS protected header carried in an
+/// ACME request body (`{"protected":"<b64url>","payload":...,"signature":...}`).
+fn extract_jws_nonce(body: &[u8]) -> Option<String> {
+    let jws: Value = serde_json::from_slice(body).ok()?;
+    let protected_b64 = jws.get("protected")?.as_str()?;
+    let protected_bytes = URL_SAFE_NO_PAD.decode(protected_b64).ok()?;
+    let protected: Value = serde_json::from_slice(&protected_bytes).ok()?;
+    Some(protected.get("nonce")?.as_str()?.to_string())
 }
 
 async fn proxy_handler(
@@ -1231,38 +1251,59 @@ async fn proxy_handler(
     req: axum::extract::Request,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    // Random backend selection: round-robin causes a deterministic cycle where
-    // the nonce from backend i is always presented to backend (i+1)%N, which
-    // rejects it forever. Random routing gives each retry a 1/N independent
-    // chance of hitting the backend that issued the current nonce.
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos() as usize)
-        .unwrap_or_else(|_| ps.counter.fetch_add(1, Ordering::Relaxed));
-    let idx = nanos % ps.backends.len();
-    let backend = &ps.backends[idx];
+
     let path_query = req
         .uri()
         .path_and_query()
         .map(|pq| pq.as_str())
-        .unwrap_or("");
-    let target_url = format!("{backend}{path_query}");
+        .unwrap_or("")
+        .to_string();
     let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes())
         .unwrap_or(reqwest::Method::GET);
-    let mut builder = ps.client.request(method, &target_url);
+
+    // Buffer the body so we can inspect the JWS nonce before forwarding.
+    let mut headers_copy: Vec<(String, Vec<u8>)> = Vec::new();
     for (name, value) in req.headers() {
         if name != "host" {
-            builder = builder.header(name.as_str(), value.as_bytes());
+            headers_copy.push((name.as_str().to_string(), value.as_bytes().to_vec()));
         }
     }
     let body_bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
         .await
         .unwrap_or_default();
+
+    // Route to the backend that issued the nonce, or round-robin if unknown.
+    let idx = extract_jws_nonce(&body_bytes)
+        .and_then(|nonce| ps.nonce_map.lock().ok()?.get(&nonce).copied())
+        .unwrap_or_else(|| ps.counter.fetch_add(1, Ordering::Relaxed) % ps.backends.len());
+
+    let backend = &ps.backends[idx];
+    let target_url = format!("{backend}{path_query}");
+    let mut builder = ps.client.request(method, &target_url);
+    for (name, value) in &headers_copy {
+        builder = builder.header(name.as_str(), value.as_slice());
+    }
     builder = builder.body(body_bytes.to_vec());
+
     match builder.send().await {
         Ok(resp) => {
             let status = axum::http::StatusCode::from_u16(resp.status().as_u16())
                 .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+
+            // Record Replay-Nonce → backend before consuming the response.
+            if let Some(new_nonce) = resp
+                .headers()
+                .get("replay-nonce")
+                .and_then(|v| v.to_str().ok())
+            {
+                if let Ok(mut map) = ps.nonce_map.lock() {
+                    if map.len() >= 10_000 {
+                        map.clear();
+                    }
+                    map.insert(new_nonce.to_string(), idx);
+                }
+            }
+
             let mut response = axum::response::Response::builder().status(status);
             for (name, value) in resp.headers() {
                 response = response.header(name.as_str(), value.as_bytes());
@@ -1280,6 +1321,7 @@ async fn spawn_proxy(listener: tokio::net::TcpListener, backends: Vec<String>) {
         backends,
         counter: Arc::new(AtomicUsize::new(0)),
         client: reqwest::Client::new(),
+        nonce_map: Arc::new(std::sync::Mutex::new(HashMap::new())),
     });
     let router = axum::Router::new()
         .route("/{*path}", any(proxy_handler))
