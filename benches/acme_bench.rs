@@ -1180,10 +1180,21 @@ async fn spawn_node_process(
         "target/release/akamu not found — run `cargo build --release` first"
     );
 
+    // Write node log to /tmp so it outlives the TempDir and can be inspected
+    // after a failed benchmark (e.g. dns-persist-01 validation failures).
+    let log_path = std::path::PathBuf::from(format!("/tmp/akamu_node_{port}.log"));
+    let log_file = std::fs::File::create(&log_path).ok();
+    if log_file.is_some() {
+        eprintln!("  node {port} log → {}", log_path.display());
+    }
+    let stderr_fd = log_file
+        .as_ref()
+        .map(|f| std::process::Stdio::from(f.try_clone().expect("clone log fd")))
+        .unwrap_or(std::process::Stdio::null());
     let child = tokio::process::Command::new(&binary)
         .arg(&config_path)
         .kill_on_drop(true)
-        .stderr(std::process::Stdio::null())
+        .stderr(stderr_fd)
         .stdout(std::process::Stdio::null())
         .spawn()
         .expect("spawn akamu process");
