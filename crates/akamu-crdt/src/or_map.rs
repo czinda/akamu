@@ -213,7 +213,11 @@ impl<K: Eq + std::hash::Hash + Clone, V: Clone> OrMap<K, V> {
 
     /// Returns the highest `local_gen` across all entries in this map.
     pub fn max_local_gen(&self) -> u64 {
-        self.entries.values().map(|e| e.local_gen).max().unwrap_or(0)
+        self.entries
+            .values()
+            .map(|e| e.local_gen)
+            .max()
+            .unwrap_or(0)
     }
 }
 

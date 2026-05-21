@@ -105,7 +105,11 @@ impl<K: Eq + std::hash::Hash + Clone, V: Clone> LwwMap<K, V> {
 
     /// Returns the highest `local_gen` across all registers in this map.
     pub fn max_local_gen(&self) -> u64 {
-        self.entries.values().map(|r| r.local_gen()).max().unwrap_or(0)
+        self.entries
+            .values()
+            .map(|r| r.local_gen())
+            .max()
+            .unwrap_or(0)
     }
 
     /// Insert a register directly from a DB row, preserving the stored `local_gen`.

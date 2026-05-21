@@ -484,11 +484,10 @@ pub async fn load_from_db(
     }
 
     // ── EAB Keys ──────────────────────────────────────────────────────────────
-    let rows: Vec<EabKeyLoad> = sqlx::query_as(
-        "SELECT kid, hmac_key_b64u, created, used_at, profile_grants FROM eab_keys",
-    )
-    .fetch_all(pool)
-    .await?;
+    let rows: Vec<EabKeyLoad> =
+        sqlx::query_as("SELECT kid, hmac_key_b64u, created, used_at, profile_grants FROM eab_keys")
+            .fetch_all(pool)
+            .await?;
     for row in rows {
         let gen = 0u64;
         max_gen = max_gen.max(gen);
@@ -506,11 +505,10 @@ pub async fn load_from_db(
     }
 
     // ── Operators ─────────────────────────────────────────────────────────────
-    let rows: Vec<OperatorLoad> = sqlx::query_as(
-        "SELECT id, name, role, ca_id, active, created_at FROM operators",
-    )
-    .fetch_all(pool)
-    .await?;
+    let rows: Vec<OperatorLoad> =
+        sqlx::query_as("SELECT id, name, role, ca_id, active, created_at FROM operators")
+            .fetch_all(pool)
+            .await?;
     for row in rows {
         let gen = 0u64;
         max_gen = max_gen.max(gen);
@@ -528,11 +526,10 @@ pub async fn load_from_db(
     }
 
     // ── Delegations ───────────────────────────────────────────────────────────
-    let rows: Vec<DelegationLoad> = sqlx::query_as(
-        "SELECT id, account_id, csr_template, created, ca_id FROM delegations",
-    )
-    .fetch_all(pool)
-    .await?;
+    let rows: Vec<DelegationLoad> =
+        sqlx::query_as("SELECT id, account_id, csr_template, created, ca_id FROM delegations")
+            .fetch_all(pool)
+            .await?;
     for row in rows {
         let gen = 0u64;
         max_gen = max_gen.max(gen);
@@ -548,11 +545,10 @@ pub async fn load_from_db(
     }
 
     // ── MTC Checkpoints ───────────────────────────────────────────────────────
-    let rows: Vec<MtcCheckpointLoad> = sqlx::query_as(
-        "SELECT tree_size, root_hex, signature, created FROM mtc_checkpoints",
-    )
-    .fetch_all(pool)
-    .await?;
+    let rows: Vec<MtcCheckpointLoad> =
+        sqlx::query_as("SELECT tree_size, root_hex, signature, created FROM mtc_checkpoints")
+            .fetch_all(pool)
+            .await?;
     for row in rows {
         let gen = 0u64;
         max_gen = max_gen.max(gen);
@@ -1121,9 +1117,7 @@ pub async fn open_crdt_db(url: &str) -> Result<AnyPool, sqlx::Error> {
 
     // Enable WAL on file-backed SQLite; ignored by Postgres/MariaDB.
     if !is_mem {
-        let _ = sqlx::query("PRAGMA journal_mode=WAL")
-            .execute(&pool)
-            .await;
+        let _ = sqlx::query("PRAGMA journal_mode=WAL").execute(&pool).await;
         let _ = sqlx::query("PRAGMA synchronous=NORMAL")
             .execute(&pool)
             .await;

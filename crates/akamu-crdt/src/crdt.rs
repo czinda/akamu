@@ -96,7 +96,10 @@ impl AkaCrdt {
             mtc_cosignatures: self.mtc_cosignatures.delta_range(since, until),
             audit_events: self.audit_events.delta_range(since, until),
             order_owners: self.order_owners.delta_range(since, until),
-            mtc_writer: self.mtc_writer.delta_range(since, until).unwrap_or_default(),
+            mtc_writer: self
+                .mtc_writer
+                .delta_range(since, until)
+                .unwrap_or_default(),
         }
     }
 
@@ -473,7 +476,10 @@ mod tests {
 
         // The key ID must still be present (used_at and other metadata are gossiped).
         let decoded: AkaCrdt = ciborium::de::from_reader(buf.as_slice()).expect("decode failed");
-        let entry = decoded.eab_keys.get("kid-1").expect("eab key missing after round-trip");
+        let entry = decoded
+            .eab_keys
+            .get("kid-1")
+            .expect("eab key missing after round-trip");
         assert_eq!(entry.kid, "kid-1");
         assert!(
             entry.hmac_key_b64u.is_empty(),

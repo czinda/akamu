@@ -742,7 +742,8 @@ struct NodeIdentity {
 
 /// Generate a fresh ML-KEM-768 + ECDSA-P256 node identity (same logic as production).
 fn generate_node_identity() -> NodeIdentity {
-    let sign_key = synta_certificate::BackendPrivateKey::generate_ec("P-256").expect("ECDSA keygen");
+    let sign_key =
+        synta_certificate::BackendPrivateKey::generate_ec("P-256").expect("ECDSA keygen");
     let sign_pub = sign_key.public_key().expect("signing pub key");
     let sign_pub_spki = sign_pub.spki_der().to_vec();
     let sign_priv_pem = sign_key.to_pem(None).expect("signing key to PEM");
@@ -754,7 +755,8 @@ fn generate_node_identity() -> NodeIdentity {
         native_ossl::pkey::Pkey::<native_ossl::pkey::Private>::from_pem(&sign_priv_pem)
             .expect("native_ossl sign key from PEM");
     let mut name = native_ossl::x509::X509NameOwned::new().expect("X509Name");
-    name.add_entry_by_txt(c"CN", node_id.as_bytes()).expect("CN");
+    name.add_entry_by_txt(c"CN", node_id.as_bytes())
+        .expect("CN");
     let serial: i64 = {
         let mut buf = [0u8; 7];
         getrandom::getrandom(&mut buf).expect("getrandom serial");
@@ -762,16 +764,25 @@ fn generate_node_identity() -> NodeIdentity {
     };
     let sign_cert_der = native_ossl::x509::X509Builder::new()
         .expect("X509Builder")
-        .set_version(2).expect("version")
-        .set_serial_number(serial).expect("serial")
-        .set_not_before_offset(0).expect("not_before")
-        .set_not_after_offset(365 * 86400).expect("not_after")
-        .set_subject_name(&name).expect("subject")
-        .set_issuer_name(&name).expect("issuer")
-        .set_public_key(&native_sign_key).expect("pubkey")
-        .sign(&native_sign_key, None).expect("sign")
+        .set_version(2)
+        .expect("version")
+        .set_serial_number(serial)
+        .expect("serial")
+        .set_not_before_offset(0)
+        .expect("not_before")
+        .set_not_after_offset(365 * 86400)
+        .expect("not_after")
+        .set_subject_name(&name)
+        .expect("subject")
+        .set_issuer_name(&name)
+        .expect("issuer")
+        .set_public_key(&native_sign_key)
+        .expect("pubkey")
+        .sign(&native_sign_key, None)
+        .expect("sign")
         .build()
-        .to_der().expect("to_der");
+        .to_der()
+        .expect("to_der");
 
     let kem_key = native_ossl::pkey::KeygenCtx::new(c"ML-KEM-768")
         .expect("ML-KEM-768 ctx")
@@ -780,7 +791,14 @@ fn generate_node_identity() -> NodeIdentity {
     let kem_priv_pkcs8 = kem_key.to_pkcs8_der().expect("KEM PKCS8");
     let kem_pub_spki = kem_key.public_key_to_der().expect("KEM SPKI");
 
-    NodeIdentity { node_id, kem_priv_pkcs8, kem_pub_spki, sign_priv_pem, sign_cert_der, sign_pub_spki }
+    NodeIdentity {
+        node_id,
+        kem_priv_pkcs8,
+        kem_pub_spki,
+        sign_priv_pem,
+        sign_cert_der,
+        sign_pub_spki,
+    }
 }
 
 struct SpawnParams<'a> {
@@ -810,7 +828,14 @@ struct BenchServer {
 }
 
 async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
-    let SpawnParams { args, infra, listener, base_url, identity, peer_urls } = p;
+    let SpawnParams {
+        args,
+        infra,
+        listener,
+        base_url,
+        identity,
+        peer_urls,
+    } = p;
     let dir = tempfile::TempDir::new().unwrap();
 
     let gossip_cfg = if peer_urls.is_empty() {
@@ -977,7 +1002,11 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
         now_ts,
     );
 
-    let nonce_prefix = identity.node_id.get(..11).unwrap_or(&identity.node_id).to_string();
+    let nonce_prefix = identity
+        .node_id
+        .get(..11)
+        .unwrap_or(&identity.node_id)
+        .to_string();
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
         db: db_conn,
@@ -1212,7 +1241,11 @@ async fn proxy_handler(
         .unwrap_or_else(|_| ps.counter.fetch_add(1, Ordering::Relaxed));
     let idx = nanos % ps.backends.len();
     let backend = &ps.backends[idx];
-    let path_query = req.uri().path_and_query().map(|pq| pq.as_str()).unwrap_or("");
+    let path_query = req
+        .uri()
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("");
     let target_url = format!("{backend}{path_query}");
     let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes())
         .unwrap_or(reqwest::Method::GET);
@@ -1237,9 +1270,7 @@ async fn proxy_handler(
             let bytes = resp.bytes().await.unwrap_or_default();
             response.body(axum::body::Body::from(bytes)).unwrap()
         }
-        Err(e) => {
-            (axum::http::StatusCode::BAD_GATEWAY, e.to_string()).into_response()
-        }
+        Err(e) => (axum::http::StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
     }
 }
 
@@ -1336,9 +1367,18 @@ impl WorkerState {
             }
             _ => "localhost".to_string(),
         };
-        let slots = if args.topology == Topology::Proxy { 1 } else { args.nodes };
+        let slots = if args.topology == Topology::Proxy {
+            1
+        } else {
+            args.nodes
+        };
         let per_node = (0..slots).map(|_| PerNodeState::default()).collect();
-        WorkerState { id, key: AccountKey::generate(), domain, per_node }
+        WorkerState {
+            id,
+            key: AccountKey::generate(),
+            domain,
+            per_node,
+        }
     }
 }
 
@@ -1431,14 +1471,13 @@ async fn new_order(
     let order_url = format!("{}/acme/new-order", server.base_url);
     let nonce_url = format!("{}/acme/new-nonce", server.base_url);
     let payload = json!({"identifiers": [{"type": "dns", "value": worker.domain}]});
-    let (status, body, headers) = post_retrying(
-        client,
-        &order_url,
-        &nonce_url,
-        nonce.to_string(),
-        |n| worker.key.jws_kid(account_url, n, &order_url, Some(payload.clone())),
-    )
-    .await?;
+    let (status, body, headers) =
+        post_retrying(client, &order_url, &nonce_url, nonce.to_string(), |n| {
+            worker
+                .key
+                .jws_kid(account_url, n, &order_url, Some(payload.clone()))
+        })
+        .await?;
     if status != 201 {
         return Err(format!("new-order {status}: {body}"));
     }
@@ -1470,10 +1509,11 @@ async fn get_authz(
     let nonce_url = format!("{}/acme/new-nonce", server.base_url);
     let path = authz_url.trim_start_matches(&server.base_url);
     let full_url = format!("{}{path}", server.base_url);
-    let (status, body, headers) = post_retrying(client, &full_url, &nonce_url, nonce.to_string(), |n| {
-        worker.key.jws_kid(account_url, n, authz_url, None)
-    })
-    .await?;
+    let (status, body, headers) =
+        post_retrying(client, &full_url, &nonce_url, nonce.to_string(), |n| {
+            worker.key.jws_kid(account_url, n, authz_url, None)
+        })
+        .await?;
     if status != 200 {
         return Err(format!("authz {status}: {body}"));
     }
@@ -1512,14 +1552,13 @@ async fn respond_and_poll(
     let nonce_url = format!("{}/acme/new-nonce", server.base_url);
     let chall_path = chall_url.trim_start_matches(&server.base_url);
     let chall_full = format!("{}{chall_path}", server.base_url);
-    let (status, body, headers) = post_retrying(
-        client,
-        &chall_full,
-        &nonce_url,
-        nonce.to_string(),
-        |n| worker.key.jws_kid(account_url, n, chall_url, Some(json!({}))),
-    )
-    .await?;
+    let (status, body, headers) =
+        post_retrying(client, &chall_full, &nonce_url, nonce.to_string(), |n| {
+            worker
+                .key
+                .jws_kid(account_url, n, chall_url, Some(json!({})))
+        })
+        .await?;
     if status != 200 {
         return Err(format!("challenge respond {status}: {body}"));
     }
@@ -1576,14 +1615,16 @@ async fn finalize_and_poll(
     let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
     let fin_path = finalize_url.trim_start_matches(&server.base_url);
     let fin_full = format!("{}{fin_path}", server.base_url);
-    let (status, body, headers) = post_retrying(
-        client,
-        &fin_full,
-        &nonce_url,
-        nonce.to_string(),
-        |n| worker.key.jws_kid(account_url, n, finalize_url, Some(json!({"csr": csr_b64.clone()}))),
-    )
-    .await?;
+    let (status, body, headers) =
+        post_retrying(client, &fin_full, &nonce_url, nonce.to_string(), |n| {
+            worker.key.jws_kid(
+                account_url,
+                n,
+                finalize_url,
+                Some(json!({"csr": csr_b64.clone()})),
+            )
+        })
+        .await?;
     if status != 200 {
         return Err(format!("finalize {status}: {body}"));
     }
@@ -1691,7 +1732,9 @@ async fn run_issuance(
                 worker.per_node[node_idx].account_url = Some(url);
                 (t.elapsed().as_micros() as u64, nonce)
             }
-            Err(e) => return IssuanceTiming::failed(wid, node_idx, request_id, format!("account: {e}")),
+            Err(e) => {
+                return IssuanceTiming::failed(wid, node_idx, request_id, format!("account: {e}"))
+            }
         }
     } else {
         // Reuse the nonce carried from the previous issuance's last response.
@@ -1701,7 +1744,9 @@ async fn run_issuance(
         } else {
             match fetch_nonce(client, &nonce_url).await {
                 Ok(n) => n,
-                Err(e) => return IssuanceTiming::failed(wid, node_idx, request_id, format!("nonce: {e}")),
+                Err(e) => {
+                    return IssuanceTiming::failed(wid, node_idx, request_id, format!("nonce: {e}"))
+                }
             }
         };
         (0, n)
@@ -1726,15 +1771,36 @@ async fn run_issuance(
                     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                     cur_nonce = match fetch_nonce(client, &nonce_url).await {
                         Ok(n) => n,
-                        Err(e2) => return IssuanceTiming::failed(wid, node_idx, request_id, format!("nonce: {e2}")),
+                        Err(e2) => {
+                            return IssuanceTiming::failed(
+                                wid,
+                                node_idx,
+                                request_id,
+                                format!("nonce: {e2}"),
+                            )
+                        }
                     };
                 }
-                Err(e) => return IssuanceTiming::failed(wid, node_idx, request_id, format!("new-order: {e}")),
+                Err(e) => {
+                    return IssuanceTiming::failed(
+                        wid,
+                        node_idx,
+                        request_id,
+                        format!("new-order: {e}"),
+                    )
+                }
             }
         }
         match result {
             Some(v) => v,
-            None => return IssuanceTiming::failed(wid, node_idx, request_id, "new-order: state not propagated after gossip retries".into()),
+            None => {
+                return IssuanceTiming::failed(
+                    wid,
+                    node_idx,
+                    request_id,
+                    "new-order: state not propagated after gossip retries".into(),
+                )
+            }
         }
     };
     let order_us = t.elapsed().as_micros() as u64;
@@ -1764,15 +1830,31 @@ async fn run_issuance(
                     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                     cur_nonce = match fetch_nonce(client, &nonce_url).await {
                         Ok(n) => n,
-                        Err(e2) => return IssuanceTiming::failed(wid, node_idx, request_id, format!("nonce: {e2}")),
+                        Err(e2) => {
+                            return IssuanceTiming::failed(
+                                wid,
+                                node_idx,
+                                request_id,
+                                format!("nonce: {e2}"),
+                            )
+                        }
                     };
                 }
-                Err(e) => return IssuanceTiming::failed(wid, node_idx, request_id, format!("authz: {e}")),
+                Err(e) => {
+                    return IssuanceTiming::failed(wid, node_idx, request_id, format!("authz: {e}"))
+                }
             }
         }
         match result {
             Some(v) => v,
-            None => return IssuanceTiming::failed(wid, node_idx, request_id, "authz: state not propagated after gossip retries".into()),
+            None => {
+                return IssuanceTiming::failed(
+                    wid,
+                    node_idx,
+                    request_id,
+                    "authz: state not propagated after gossip retries".into(),
+                )
+            }
         }
     };
     let authz_us = t.elapsed().as_micros() as u64;
@@ -1807,15 +1889,36 @@ async fn run_issuance(
                     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                     cur_nonce = match fetch_nonce(client, &nonce_url).await {
                         Ok(n) => n,
-                        Err(e2) => return IssuanceTiming::failed(wid, node_idx, request_id, format!("nonce: {e2}")),
+                        Err(e2) => {
+                            return IssuanceTiming::failed(
+                                wid,
+                                node_idx,
+                                request_id,
+                                format!("nonce: {e2}"),
+                            )
+                        }
                     };
                 }
-                Err(e) => return IssuanceTiming::failed(wid, node_idx, request_id, format!("challenge: {e}")),
+                Err(e) => {
+                    return IssuanceTiming::failed(
+                        wid,
+                        node_idx,
+                        request_id,
+                        format!("challenge: {e}"),
+                    )
+                }
             }
         }
         match result {
             Some(v) => v,
-            None => return IssuanceTiming::failed(wid, node_idx, request_id, "challenge: state not propagated after gossip retries".into()),
+            None => {
+                return IssuanceTiming::failed(
+                    wid,
+                    node_idx,
+                    request_id,
+                    "challenge: state not propagated after gossip retries".into(),
+                )
+            }
         }
     };
     let challenge_us = t.elapsed().as_micros() as u64;
@@ -1836,15 +1939,36 @@ async fn run_issuance(
                     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                     cur_nonce = match fetch_nonce(client, &nonce_url).await {
                         Ok(n) => n,
-                        Err(e2) => return IssuanceTiming::failed(wid, node_idx, request_id, format!("nonce: {e2}")),
+                        Err(e2) => {
+                            return IssuanceTiming::failed(
+                                wid,
+                                node_idx,
+                                request_id,
+                                format!("nonce: {e2}"),
+                            )
+                        }
                     };
                 }
-                Err(e) => return IssuanceTiming::failed(wid, node_idx, request_id, format!("finalize: {e}")),
+                Err(e) => {
+                    return IssuanceTiming::failed(
+                        wid,
+                        node_idx,
+                        request_id,
+                        format!("finalize: {e}"),
+                    )
+                }
             }
         }
         match result {
             Some(v) => v,
-            None => return IssuanceTiming::failed(wid, node_idx, request_id, "finalize: state not propagated after gossip retries".into()),
+            None => {
+                return IssuanceTiming::failed(
+                    wid,
+                    node_idx,
+                    request_id,
+                    "finalize: state not propagated after gossip retries".into(),
+                )
+            }
         }
     };
     // Store the nonce for the next issuance (cert download is a GET — no nonce used).
@@ -1868,16 +1992,33 @@ async fn run_issuance(
                     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                 }
                 Ok((status, _, _)) => {
-                    return IssuanceTiming::failed(wid, node_idx, request_id, format!("cert download {status}"))
+                    return IssuanceTiming::failed(
+                        wid,
+                        node_idx,
+                        request_id,
+                        format!("cert download {status}"),
+                    )
                 }
                 Err(e) => {
-                    return IssuanceTiming::failed(wid, node_idx, request_id, format!("download: {e}"))
+                    return IssuanceTiming::failed(
+                        wid,
+                        node_idx,
+                        request_id,
+                        format!("download: {e}"),
+                    )
                 }
             }
         }
         match result {
             Some(v) => v,
-            None => return IssuanceTiming::failed(wid, node_idx, request_id, "cert download: not propagated after gossip retries".into()),
+            None => {
+                return IssuanceTiming::failed(
+                    wid,
+                    node_idx,
+                    request_id,
+                    "cert download: not propagated after gossip retries".into(),
+                )
+            }
         }
     };
     let download_us = t.elapsed().as_micros() as u64;
@@ -1940,7 +2081,13 @@ fn max_ms(v: &[u64]) -> f64 {
 
 // ── Report output ──────────────────────────────────────────────────────────────
 
-fn text_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64, mem: &MemStats, node_urls: &[String]) {
+fn text_report(
+    args: &Args,
+    timings: &[IssuanceTiming],
+    bench_wall: f64,
+    mem: &MemStats,
+    node_urls: &[String],
+) {
     let ok: Vec<&IssuanceTiming> = timings.iter().filter(|t| t.success).collect();
     let err: Vec<&IssuanceTiming> = timings.iter().filter(|t| !t.success).collect();
     let n_ok = ok.len();
@@ -2038,7 +2185,10 @@ fn text_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64, mem: &M
         for (i, url) in node_urls.iter().enumerate() {
             let node_ok: Vec<&IssuanceTiming> =
                 ok.iter().copied().filter(|t| t.node_idx == i).collect();
-            let node_err = timings.iter().filter(|t| !t.success && t.node_idx == i).count();
+            let node_err = timings
+                .iter()
+                .filter(|t| !t.success && t.node_idx == i)
+                .count();
             let mut node_totals: Vec<u64> = node_ok.iter().map(|t| t.total_us).collect();
             node_totals.sort_unstable();
             println!(
@@ -2102,7 +2252,13 @@ fn text_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64, mem: &M
     println!();
 }
 
-fn json_report(args: &Args, timings: &[IssuanceTiming], bench_wall: f64, mem: &MemStats, node_urls: &[String]) {
+fn json_report(
+    args: &Args,
+    timings: &[IssuanceTiming],
+    bench_wall: f64,
+    mem: &MemStats,
+    node_urls: &[String],
+) {
     let ok: Vec<&IssuanceTiming> = timings.iter().filter(|t| t.success).collect();
     let n_ok = ok.len();
     let n_err = timings.len() - n_ok;
@@ -2461,8 +2617,7 @@ async fn main() {
                 let server = Arc::clone(&servers[node_idx]);
                 let t_start_us = t_epoch.elapsed().as_micros() as u64;
                 let timing =
-                    run_issuance(&mut worker, node_idx, &server, &client, &args, request_id)
-                        .await;
+                    run_issuance(&mut worker, node_idx, &server, &client, &args, request_id).await;
                 let t_end_us = t_epoch.elapsed().as_micros() as u64;
 
                 if !is_warmup {

@@ -103,7 +103,8 @@ pub async fn on_account_upsert(state: &AppState, p: AccountUpsertParams<'_>) {
         updated: p.updated,
         profile_grants: p.profile_grants,
         ca_id: p.ca_id.to_string(),
-    }; {
+    };
+    {
         let mut crdt = state.crdt.write().await;
         crdt.accounts.upsert(p.id.to_string(), entry, p.updated)
     };
@@ -142,7 +143,8 @@ pub async fn on_order_upsert(state: &AppState, p: OrderUpsertParams<'_>) {
         ca_id: p.ca_id.to_string(),
         processing_node_id: None,
         processing_claimed_at: None,
-    }; {
+    };
+    {
         let mut crdt = state.crdt.write().await;
         crdt.orders.upsert(p.id.to_string(), entry, p.updated)
     };
@@ -177,7 +179,8 @@ pub async fn on_authz_upsert(state: &AppState, p: AuthzUpsertParams<'_>) {
         created: p.created,
         updated: p.updated,
         ca_id: p.ca_id.to_string(),
-    }; {
+    };
+    {
         let mut crdt = state.crdt.write().await;
         crdt.authorizations
             .upsert(p.id.to_string(), entry, p.updated)
@@ -212,7 +215,8 @@ pub async fn on_challenge_set(state: &AppState, p: ChallengeSetParams<'_>) {
         error: p.error,
         created: p.created,
         updated: p.updated,
-    }; {
+    };
+    {
         let mut crdt = state.crdt.write().await;
         crdt.challenges
             .set(p.id.to_string(), entry, p.updated, &state.node_id)
@@ -238,7 +242,8 @@ pub async fn on_cert_upsert(state: &AppState, p: CertUpsertParams<'_>) {
         revocation_reason: p.revocation_reason,
         created: p.created,
         ca_id: p.ca_id.to_string(),
-    }; {
+    };
+    {
         let mut crdt = state.crdt.write().await;
         crdt.certificates.upsert(p.id.to_string(), entry, p.created)
     };
@@ -275,7 +280,8 @@ pub async fn on_eab_key_set(
         created,
         used_at,
         profile_grants,
-    }; {
+    };
+    {
         let mut crdt = state.crdt.write().await;
         let ts = used_at.unwrap_or(created);
         crdt.eab_keys
@@ -303,7 +309,8 @@ pub async fn on_operator_upsert(
         role: role.to_string(),
         ca_id: ca_id.to_string(),
         created,
-    }; {
+    };
+    {
         let mut crdt = state.crdt.write().await;
         crdt.operators.upsert(id.to_string(), entry, created)
     };
@@ -340,7 +347,8 @@ pub async fn on_delegation_upsert(
         csr_template: csr_template.to_string(),
         created,
         ca_id: ca_id.to_string(),
-    }; {
+    };
+    {
         let mut crdt = state.crdt.write().await;
         crdt.delegations.upsert(id.to_string(), entry, created)
     };

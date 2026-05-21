@@ -38,7 +38,10 @@ pub async fn gossip_sync(
     }
     // Bound the header length before any lock acquisition to limit pre-auth resource use.
     if sender_node_id.len() > 64 {
-        tracing::warn!(len = sender_node_id.len(), "gossip/sync: x-akamu-node-id too long");
+        tracing::warn!(
+            len = sender_node_id.len(),
+            "gossip/sync: x-akamu-node-id too long"
+        );
         return StatusCode::BAD_REQUEST.into_response();
     }
 
