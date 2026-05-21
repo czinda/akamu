@@ -719,54 +719,180 @@ pub async fn persist_crdt(pool: &AnyPool, crdt: &AkaCrdt) -> Result<(), sqlx::Er
         .await?;
     }
 
-    // ── ACME tables: UPDATE CRDT-tracked fields ────────────────────────────────
+    // ── ACME tables: upsert all fields so gossip-received entries land in the DB ──
+    //
+    // Uses ON CONFLICT … DO UPDATE (true upsert) rather than INSERT OR REPLACE.
+    // INSERT OR REPLACE deletes the old row first, which violates FK constraints
+    // (PRAGMA foreign_keys=ON) when child rows already reference the parent.
+    //
+    // Insert order follows FK dependency: accounts → orders → authorizations →
+    // challenges, so a first-time gossip receive in a single persist call works.
+    //
+    // Certificates are intentionally kept as UPDATE-only: CertEntry does not carry
+    // the PEM/DER bytes; only status/revocation fields are gossip-tracked.
 
     for (id, entry) in crdt.accounts.all_entries() {
-        q("UPDATE accounts SET status = ?, local_gen = ? WHERE id = ?")
-            .bind(&entry.value.status)
-            .bind(entry.local_gen as i64)
-            .bind(id.as_str())
-            .execute(&mut *tx)
-            .await?;
+        q_upsert(
+            "INSERT INTO accounts \
+             (id, status, contact, public_key, jwk_thumbprint, created, updated, \
+              ca_id, profile_grants, local_gen) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET \
+             status = excluded.status, contact = excluded.contact, \
+             updated = excluded.updated, ca_id = excluded.ca_id, \
+             profile_grants = excluded.profile_grants, local_gen = excluded.local_gen",
+            "INSERT INTO accounts \
+             (id, status, contact, public_key, jwk_thumbprint, created, updated, \
+              ca_id, profile_grants, local_gen) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON DUPLICATE KEY UPDATE \
+             status = VALUES(status), contact = VALUES(contact), \
+             updated = VALUES(updated), ca_id = VALUES(ca_id), \
+             profile_grants = VALUES(profile_grants), local_gen = VALUES(local_gen)",
+            "INSERT INTO accounts \
+             (id, status, contact, public_key, jwk_thumbprint, created, updated, \
+              ca_id, profile_grants, local_gen) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+             ON CONFLICT (id) DO UPDATE SET \
+             status = EXCLUDED.status, contact = EXCLUDED.contact, \
+             updated = EXCLUDED.updated, ca_id = EXCLUDED.ca_id, \
+             profile_grants = EXCLUDED.profile_grants, local_gen = EXCLUDED.local_gen",
+        )
+        .bind(id.as_str())
+        .bind(&entry.value.status)
+        .bind(entry.value.contact.as_deref())
+        .bind(&entry.value.public_key_der)
+        .bind(&entry.value.jwk_thumbprint)
+        .bind(entry.value.created)
+        .bind(entry.value.updated)
+        .bind(&entry.value.ca_id)
+        .bind(entry.value.profile_grants.as_deref())
+        .bind(entry.local_gen as i64)
+        .execute(&mut *tx)
+        .await?;
     }
 
     for (id, entry) in crdt.orders.all_entries() {
-        q(
-            "UPDATE orders SET status = ?, certificate_id = ?, error = ?, updated = ?, \
-           local_gen = ? WHERE id = ?",
+        q_upsert(
+            "INSERT INTO orders \
+             (id, account_id, status, expires, identifiers, not_before, not_after, \
+              error, certificate_id, created, updated, ca_id, local_gen) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET \
+             status = excluded.status, expires = excluded.expires, \
+             error = excluded.error, certificate_id = excluded.certificate_id, \
+             updated = excluded.updated, local_gen = excluded.local_gen",
+            "INSERT INTO orders \
+             (id, account_id, status, expires, identifiers, not_before, not_after, \
+              error, certificate_id, created, updated, ca_id, local_gen) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON DUPLICATE KEY UPDATE \
+             status = VALUES(status), expires = VALUES(expires), \
+             error = VALUES(error), certificate_id = VALUES(certificate_id), \
+             updated = VALUES(updated), local_gen = VALUES(local_gen)",
+            "INSERT INTO orders \
+             (id, account_id, status, expires, identifiers, not_before, not_after, \
+              error, certificate_id, created, updated, ca_id, local_gen) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
+             ON CONFLICT (id) DO UPDATE SET \
+             status = EXCLUDED.status, expires = EXCLUDED.expires, \
+             error = EXCLUDED.error, certificate_id = EXCLUDED.certificate_id, \
+             updated = EXCLUDED.updated, local_gen = EXCLUDED.local_gen",
         )
-        .bind(&entry.value.status)
-        .bind(entry.value.certificate_id.as_deref())
-        .bind(entry.value.error.as_deref())
-        .bind(entry.value.updated)
-        .bind(entry.local_gen as i64)
         .bind(id.as_str())
+        .bind(&entry.value.account_id)
+        .bind(&entry.value.status)
+        .bind(entry.value.expires)
+        .bind(&entry.value.identifiers)
+        .bind(entry.value.not_before)
+        .bind(entry.value.not_after)
+        .bind(entry.value.error.as_deref())
+        .bind(entry.value.certificate_id.as_deref())
+        .bind(entry.value.created)
+        .bind(entry.value.updated)
+        .bind(&entry.value.ca_id)
+        .bind(entry.local_gen as i64)
         .execute(&mut *tx)
         .await?;
     }
 
     for (id, entry) in crdt.authorizations.all_entries() {
-        q("UPDATE authorizations SET status = ?, updated = ?, local_gen = ? WHERE id = ?")
-            .bind(&entry.value.status)
-            .bind(entry.value.updated)
-            .bind(entry.local_gen as i64)
-            .bind(id.as_str())
-            .execute(&mut *tx)
-            .await?;
+        q_upsert(
+            "INSERT INTO authorizations \
+             (id, order_id, account_id, status, identifier, expires, wildcard, \
+              created, updated, ca_id, local_gen) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET \
+             status = excluded.status, expires = excluded.expires, \
+             updated = excluded.updated, local_gen = excluded.local_gen",
+            "INSERT INTO authorizations \
+             (id, order_id, account_id, status, identifier, expires, wildcard, \
+              created, updated, ca_id, local_gen) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON DUPLICATE KEY UPDATE \
+             status = VALUES(status), expires = VALUES(expires), \
+             updated = VALUES(updated), local_gen = VALUES(local_gen)",
+            "INSERT INTO authorizations \
+             (id, order_id, account_id, status, identifier, expires, wildcard, \
+              created, updated, ca_id, local_gen) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+             ON CONFLICT (id) DO UPDATE SET \
+             status = EXCLUDED.status, expires = EXCLUDED.expires, \
+             updated = EXCLUDED.updated, local_gen = EXCLUDED.local_gen",
+        )
+        .bind(id.as_str())
+        .bind(&entry.value.order_id)
+        .bind(&entry.value.account_id)
+        .bind(&entry.value.status)
+        .bind(&entry.value.identifier)
+        .bind(entry.value.expires)
+        .bind(if entry.value.wildcard { 1i64 } else { 0i64 })
+        .bind(entry.value.created)
+        .bind(entry.value.updated)
+        .bind(&entry.value.ca_id)
+        .bind(entry.local_gen as i64)
+        .execute(&mut *tx)
+        .await?;
     }
 
     for (id, register) in crdt.challenges.all_entries() {
         if let Some(ch) = register.get() {
-            q(
-                "UPDATE challenges SET status = ?, validated = ?, error = ?, updated = ?, \
-               local_gen = ? WHERE id = ?",
+            q_upsert(
+                "INSERT INTO challenges \
+                 (id, authz_id, type, status, token, validated, error, \
+                  created, updated, local_gen) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 ON CONFLICT(id) DO UPDATE SET \
+                 status = excluded.status, validated = excluded.validated, \
+                 error = excluded.error, updated = excluded.updated, \
+                 local_gen = excluded.local_gen",
+                "INSERT INTO challenges \
+                 (id, authz_id, type, status, token, validated, error, \
+                  created, updated, local_gen) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 ON DUPLICATE KEY UPDATE \
+                 status = VALUES(status), validated = VALUES(validated), \
+                 error = VALUES(error), updated = VALUES(updated), \
+                 local_gen = VALUES(local_gen)",
+                "INSERT INTO challenges \
+                 (id, authz_id, type, status, token, validated, error, \
+                  created, updated, local_gen) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+                 ON CONFLICT (id) DO UPDATE SET \
+                 status = EXCLUDED.status, validated = EXCLUDED.validated, \
+                 error = EXCLUDED.error, updated = EXCLUDED.updated, \
+                 local_gen = EXCLUDED.local_gen",
             )
+            .bind(id.as_str())
+            .bind(&ch.authz_id)
+            .bind(&ch.challenge_type)
             .bind(&ch.status)
+            .bind(&ch.token)
             .bind(ch.validated)
             .bind(ch.error.as_deref())
+            .bind(ch.created)
             .bind(ch.updated)
             .bind(register.local_gen() as i64)
-            .bind(id.as_str())
             .execute(&mut *tx)
             .await?;
         }
