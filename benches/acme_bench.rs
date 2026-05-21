@@ -192,6 +192,15 @@ enum Topology {
     Proxy,
 }
 
+#[derive(Debug, Clone, PartialEq, clap::ValueEnum)]
+enum SpawnMode {
+    /// All nodes share one tokio runtime in this process (fast startup, not realistic).
+    Inprocess,
+    /// Each node is a separate `akamu` OS process with its own runtime and address space.
+    /// Requires `target/release/akamu` to be built first (`cargo build --release`).
+    Process,
+}
+
 #[derive(Parser, Clone, Debug)]
 #[command(name = "acme-bench", about = "ACME server end-to-end load benchmark")]
 struct Args {
@@ -267,6 +276,18 @@ struct Args {
     ///         workers use one URL and one account per worker.
     #[arg(long, default_value = "direct")]
     topology: Topology,
+
+    /// Disable gossip even when --nodes > 1. Nodes are started and wired with
+    /// independent file DBs but no peer list, so there is no gossip traffic.
+    /// Use this to establish a no-gossip baseline for comparison.
+    #[arg(long)]
+    no_gossip: bool,
+
+    /// How to spawn server nodes.
+    /// inprocess: all nodes share this process's tokio runtime (default, fast startup).
+    /// process: each node is a separate OS process; requires `cargo build --release` first.
+    #[arg(long, value_enum, default_value_t = SpawnMode::Inprocess)]
+    spawn: SpawnMode,
 }
 
 // ── HTTP client ────────────────────────────────────────────────────────────────
@@ -776,14 +797,16 @@ struct SpawnParams<'a> {
 
 struct BenchServer {
     pub base_url: String,
-    /// Shared AppState — needed for CRDT cross-seeding in multi-node mode.
-    pub state: Arc<AppState>,
+    /// AppState — Some in inprocess mode, None in process mode.
+    pub state: Option<Arc<AppState>>,
     /// Shared challenge store for http-01 workers.
     pub challenge_store: Option<ChallengeStore>,
     /// Multi-domain DNS server for dns-persist-01 workers.
     pub dns: Option<Arc<MultiDns>>,
     // Keep the CA temp directory alive for the server's lifetime.
     _dir: Option<tempfile::TempDir>,
+    // Child process handle — Some in process mode, None in inprocess mode.
+    _process: Option<tokio::process::Child>,
 }
 
 async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
@@ -1019,10 +1042,144 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
 
     BenchServer {
         base_url,
-        state,
+        state: Some(state),
         challenge_store: infra.store.clone(),
         dns: infra.dns.clone(),
         _dir: Some(dir),
+        _process: None,
+    }
+}
+
+// ── Process-mode node spawning ────────────────────────────────────────────────
+
+struct NodeConfigParams<'a> {
+    path: &'a std::path::Path,
+    listen_addr: &'a str,
+    base_url: &'a str,
+    db_path: &'a str,
+    ca_key_file: &'a str,
+    ca_cert_file: &'a str,
+    ca_key_type: &'a str,
+    http_validation_port: u16,
+    dns_resolver_addr: Option<&'a str>,
+    peer_urls: &'a [String],
+    fan_out: usize,
+}
+
+fn write_node_config(p: NodeConfigParams<'_>) -> std::io::Result<()> {
+    let dns_line = match p.dns_resolver_addr {
+        Some(addr) => format!("dns_resolver_addr = \"{addr}\"\n"),
+        None => String::new(),
+    };
+    let peer_list = p
+        .peer_urls
+        .iter()
+        .map(|u| format!("\"{u}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let gossip_section = if p.peer_urls.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n[gossip]\npeers = [{peer_list}]\ninterval_secs = 1\ntombstone_ttl_secs = 604800\n\
+             ownership_ttl_secs = 150\ngossip_envelope_max_age_secs = 300\n\
+             clock_skew_tolerance_secs = 30\nfan_out = {}\n",
+            p.fan_out
+        )
+    };
+    let contents = format!(
+        "listen_addr = \"{}\"\nbase_url = \"{}\"\n\n\
+         [database]\nurl = \"sqlite:{}\"\n\n\
+         [ca]\nid = \"bench\"\nkey_file = \"{}\"\ncert_file = \"{}\"\n\
+         key_type = \"{}\"\nhash_alg = \"sha256\"\nvalidity_days = 90\n\
+         common_name = \"Bench CA\"\norganization = \"Bench\"\nca_validity_years = 10\n\
+         enforce_validity_cap = false\n\n\
+         [mtc]\nlog_path = \"/dev/null\"\nenabled = false\n\n\
+         [server]\nhttp_validation_port = {}\n\
+         http_validation_allow_private_ips = true\n{dns_line}{gossip_section}",
+        p.listen_addr,
+        p.base_url,
+        p.db_path,
+        p.ca_key_file,
+        p.ca_cert_file,
+        p.ca_key_type,
+        p.http_validation_port,
+    );
+    std::fs::write(p.path, contents)
+}
+
+async fn spawn_node_process(
+    args: &Args,
+    infra: &ChallengeInfra,
+    port: u16,
+    base_url: String,
+    ca_dir: &std::path::Path,
+    peer_urls: Vec<String>,
+) -> BenchServer {
+    let dir = tempfile::TempDir::new().unwrap();
+    let config_path = dir.path().join("config.toml");
+    let db_path = dir.path().join("node.db").to_string_lossy().into_owned();
+    let ca_key_file = ca_dir.join("ca.key").to_string_lossy().into_owned();
+    let ca_cert_file = ca_dir.join("ca.crt").to_string_lossy().into_owned();
+    let listen_addr = format!("127.0.0.1:{port}");
+    let fan_out = if args.nodes > 5 { 3 } else { 0 };
+
+    write_node_config(NodeConfigParams {
+        path: &config_path,
+        listen_addr: &listen_addr,
+        base_url: &base_url,
+        db_path: &db_path,
+        ca_key_file: &ca_key_file,
+        ca_cert_file: &ca_cert_file,
+        ca_key_type: &args.ca_key_type,
+        http_validation_port: infra.http_validation_port,
+        dns_resolver_addr: infra.dns_resolver_addr.as_deref(),
+        peer_urls: &peer_urls,
+        fan_out,
+    })
+    .expect("write node config");
+
+    // Locate the release binary relative to the workspace root.
+    let binary = std::path::PathBuf::from("target/release/akamu");
+    assert!(
+        binary.exists(),
+        "target/release/akamu not found — run `cargo build --release` first"
+    );
+
+    let child = tokio::process::Command::new(&binary)
+        .arg(&config_path)
+        .kill_on_drop(true)
+        .stderr(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn akamu process");
+
+    // Poll /acme/directory until the node is ready (up to 10 s).
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(500))
+        .build()
+        .unwrap();
+    let directory_url = format!("{base_url}/acme/directory");
+    for attempt in 0..20 {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        if let Ok(r) = http.get(&directory_url).send().await {
+            if r.status().is_success() {
+                break;
+            }
+        }
+        assert!(
+            attempt < 19,
+            "node at {base_url} did not become ready within 10 s"
+        );
+    }
+
+    BenchServer {
+        base_url,
+        state: None,
+        challenge_store: infra.store.clone(),
+        dns: infra.dns.clone(),
+        _dir: Some(dir),
+        _process: Some(child),
     }
 }
 
@@ -2067,6 +2224,20 @@ async fn main() {
         backend_urls.push(format!("http://127.0.0.1:{port}"));
         backend_listeners.push(l);
     }
+    // Record the bound ports before potentially releasing the listeners.
+    // In process mode the OS listener is dropped so child processes can bind
+    // the same port; the port numbers are kept for config generation.
+    let backend_ports: Vec<u16> = backend_listeners
+        .iter()
+        .map(|l| l.local_addr().unwrap().port())
+        .collect();
+    let mut backend_listeners: Option<Vec<tokio::net::TcpListener>> =
+        if args.spawn == SpawnMode::Process {
+            drop(backend_listeners);
+            None
+        } else {
+            Some(backend_listeners)
+        };
 
     // ── Optional proxy listener ────────────────────────────────────────────────
     let use_proxy = args.topology == Topology::Proxy && args.nodes > 1;
@@ -2078,70 +2249,124 @@ async fn main() {
         (None, backend_urls[0].clone())
     };
 
+    // For process mode: generate the CA key+cert once so all child nodes share
+    // the same CA without race-prone concurrent generation.
+    let shared_ca_dir: Option<tempfile::TempDir> = if args.spawn == SpawnMode::Process {
+        let d = tempfile::TempDir::new().unwrap();
+        let ca_cfg = CaConfig {
+            id: "bench".into(),
+            is_default: true,
+            caa_identities: vec![],
+            key_file: d.path().join("ca.key").to_string_lossy().into_owned(),
+            cert_file: d.path().join("ca.crt").to_string_lossy().into_owned(),
+            key_type: args.ca_key_type.clone(),
+            hash_alg: "sha256".into(),
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            common_name: "Bench CA".into(),
+            organization: "Bench".into(),
+            ca_validity_years: 10,
+            crl_next_update_secs: 86400,
+            enforce_validity_cap: false,
+            require_encrypted_key: false,
+            key_password_file: None,
+        };
+        ca::init::load_or_generate(&ca_cfg).unwrap();
+        Some(d)
+    } else {
+        None
+    };
+
     // In proxy mode all backend nodes use the proxy's URL as their base_url so
     // account kid URLs embed the proxy address (visible to ACME clients).
     // In direct mode each node advertises its own listener URL.
     eprintln!(
-        "Starting {} node(s) (topology={:?}, ca-key={}, db={})…",
-        args.nodes, args.topology, args.ca_key_type, args.db
+        "Starting {} node(s) (topology={:?}, spawn={:?}, ca-key={}, db={})…",
+        args.nodes, args.topology, args.spawn, args.ca_key_type, args.db
     );
     let mut bench_backends: Vec<Arc<BenchServer>> = Vec::with_capacity(args.nodes);
     for i in 0..args.nodes {
-        let peer_urls: Vec<String> = backend_urls
-            .iter()
-            .enumerate()
-            .filter(|(j, _)| *j != i)
-            .map(|(_, u)| u.clone())
-            .collect();
+        let peer_urls: Vec<String> = if args.no_gossip {
+            vec![]
+        } else {
+            backend_urls
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, u)| u.clone())
+                .collect()
+        };
         let base_url = if use_proxy {
             proxy_url.clone()
         } else {
             backend_urls[i].clone()
         };
         eprintln!("  Starting backend {i} at {}…", backend_urls[i]);
-        let node = spawn_node(SpawnParams {
-            args: &args,
-            infra: &infra,
-            listener: backend_listeners.remove(0),
-            identity: generate_node_identity(),
-            base_url,
-            peer_urls,
-        })
-        .await;
+        let node = match args.spawn {
+            SpawnMode::Inprocess => {
+                spawn_node(SpawnParams {
+                    args: &args,
+                    infra: &infra,
+                    listener: backend_listeners.as_mut().unwrap().remove(0),
+                    identity: generate_node_identity(),
+                    base_url,
+                    peer_urls,
+                })
+                .await
+            }
+            SpawnMode::Process => {
+                spawn_node_process(
+                    &args,
+                    &infra,
+                    backend_ports[i],
+                    base_url,
+                    shared_ca_dir.as_ref().unwrap().path(),
+                    peer_urls,
+                )
+                .await
+            }
+        };
         bench_backends.push(Arc::new(node));
     }
 
-    // ── CRDT cross-seeding (multi-node only) ───────────────────────────────────
+    // ── CRDT cross-seeding (inprocess multi-node only) ────────────────────────
     // Inject each node's cluster_nodes entry into all peers so gossip can
     // authenticate senders immediately without waiting for a gossip round.
+    // In process mode each node generates its own keys and registers via gossip
+    // naturally; we wait for convergence instead.
     if bench_backends.len() > 1 {
-        let mut all_entries: Vec<Vec<(String, akamu_crdt::AkaNodeEntry)>> = Vec::new();
-        for server in &bench_backends {
-            let crdt = server.state.crdt.read().await;
-            all_entries.push(
-                crdt.cluster_nodes
-                    .live_values()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect(),
-            );
-        }
-        for (i, server) in bench_backends.iter().enumerate() {
-            let mut crdt = server.state.crdt.write().await;
-            for (j, entries) in all_entries.iter().enumerate() {
-                if j != i {
-                    for (k, v) in entries {
-                        crdt.cluster_nodes.upsert(k.clone(), v.clone(), 0);
+        if bench_backends[0].state.is_some() {
+            let mut all_entries: Vec<Vec<(String, akamu_crdt::AkaNodeEntry)>> = Vec::new();
+            for server in &bench_backends {
+                let crdt = server.state.as_ref().unwrap().crdt.read().await;
+                all_entries.push(
+                    crdt.cluster_nodes
+                        .live_values()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                );
+            }
+            for (i, server) in bench_backends.iter().enumerate() {
+                let mut crdt = server.state.as_ref().unwrap().crdt.write().await;
+                for (j, entries) in all_entries.iter().enumerate() {
+                    if j != i {
+                        for (k, v) in entries {
+                            crdt.cluster_nodes.upsert(k.clone(), v.clone(), 0);
+                        }
                     }
                 }
             }
+            // Wait for at least one gossip cycle to complete with cross-seeded peer
+            // keys. The gossip loop fires every interval_secs (1s); without this
+            // pause the very first tick races against cross-seeding and all peers
+            // get 401 (no matching KEM recipient).
+            tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        } else {
+            // Process mode: nodes generate their own keys and exchange them via
+            // gossip. Wait 3 gossip intervals (3 × 1 s) for convergence.
+            tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
         }
-
-        // Wait for at least one gossip cycle to complete with cross-seeded peer
-        // keys. The gossip loop fires every interval_secs (1s); without this
-        // pause the very first tick races against cross-seeding and all peers
-        // get 401 (no matching KEM recipient). Two seconds covers the 1s interval
-        // plus jitter and is imperceptible in a benchmark run.
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
     }
 
     // ── Build the servers slice workers will target ────────────────────────────
@@ -2157,6 +2382,7 @@ async fn main() {
             challenge_store: bench_backends[0].challenge_store.clone(),
             dns: bench_backends[0].dns.clone(),
             _dir: None,
+            _process: None,
         });
         (vec![proxy_server], vec![proxy_url])
     } else {
