@@ -4,6 +4,7 @@
 //! `AppState::crdt` replica consistent.  Errors are logged but not propagated
 //! — a missed CRDT update is recoverable via gossip or server restart.
 
+use crate::db::query;
 use crate::state::AppState;
 use akamu_crdt::{
     AccountEntry, AuthzEntry, CertEntry, ChallengeEntry, DelegationEntry, EabKeyEntry,
@@ -92,13 +93,33 @@ pub async fn on_account_upsert(state: &AppState, p: AccountUpsertParams<'_>) {
         profile_grants: p.profile_grants,
         ca_id: p.ca_id.to_string(),
     };
-    let mut crdt = state.crdt.write().await;
-    crdt.accounts.upsert(p.id.to_string(), entry, p.updated);
+    let local_gen = {
+        let mut crdt = state.crdt.write().await;
+        crdt.accounts.upsert(p.id.to_string(), entry, p.updated)
+    };
+    if let Err(e) = query("UPDATE accounts SET local_gen = ? WHERE id = ?")
+        .bind(local_gen as i64)
+        .bind(p.id)
+        .execute(&state.db)
+        .await
+    {
+        tracing::error!(id = %p.id, err = %e, "crdt_hook: failed to persist local_gen for account");
+    }
 }
 
 pub async fn on_account_tombstone(state: &AppState, id: &str, now: i64) {
-    let mut crdt = state.crdt.write().await;
-    crdt.accounts.remove(&id.to_string(), now);
+    let local_gen = {
+        let mut crdt = state.crdt.write().await;
+        crdt.accounts.remove(&id.to_string(), now)
+    };
+    if let Err(e) = query("UPDATE accounts SET local_gen = ? WHERE id = ?")
+        .bind(local_gen as i64)
+        .bind(id)
+        .execute(&state.db)
+        .await
+    {
+        tracing::error!(%id, err = %e, "crdt_hook: failed to persist local_gen for account tombstone");
+    }
 }
 
 // ── Orders ────────────────────────────────────────────────────────────────────
@@ -120,13 +141,33 @@ pub async fn on_order_upsert(state: &AppState, p: OrderUpsertParams<'_>) {
         processing_node_id: None,
         processing_claimed_at: None,
     };
-    let mut crdt = state.crdt.write().await;
-    crdt.orders.upsert(p.id.to_string(), entry, p.updated);
+    let local_gen = {
+        let mut crdt = state.crdt.write().await;
+        crdt.orders.upsert(p.id.to_string(), entry, p.updated)
+    };
+    if let Err(e) = query("UPDATE orders SET local_gen = ? WHERE id = ?")
+        .bind(local_gen as i64)
+        .bind(p.id)
+        .execute(&state.db)
+        .await
+    {
+        tracing::error!(id = %p.id, err = %e, "crdt_hook: failed to persist local_gen for order");
+    }
 }
 
 pub async fn on_order_tombstone(state: &AppState, id: &str, now: i64) {
-    let mut crdt = state.crdt.write().await;
-    crdt.orders.remove(&id.to_string(), now);
+    let local_gen = {
+        let mut crdt = state.crdt.write().await;
+        crdt.orders.remove(&id.to_string(), now)
+    };
+    if let Err(e) = query("UPDATE orders SET local_gen = ? WHERE id = ?")
+        .bind(local_gen as i64)
+        .bind(id)
+        .execute(&state.db)
+        .await
+    {
+        tracing::error!(%id, err = %e, "crdt_hook: failed to persist local_gen for order tombstone");
+    }
 }
 
 // ── Authorizations ────────────────────────────────────────────────────────────
@@ -144,14 +185,34 @@ pub async fn on_authz_upsert(state: &AppState, p: AuthzUpsertParams<'_>) {
         updated: p.updated,
         ca_id: p.ca_id.to_string(),
     };
-    let mut crdt = state.crdt.write().await;
-    crdt.authorizations
-        .upsert(p.id.to_string(), entry, p.updated);
+    let local_gen = {
+        let mut crdt = state.crdt.write().await;
+        crdt.authorizations
+            .upsert(p.id.to_string(), entry, p.updated)
+    };
+    if let Err(e) = query("UPDATE authorizations SET local_gen = ? WHERE id = ?")
+        .bind(local_gen as i64)
+        .bind(p.id)
+        .execute(&state.db)
+        .await
+    {
+        tracing::error!(id = %p.id, err = %e, "crdt_hook: failed to persist local_gen for authz");
+    }
 }
 
 pub async fn on_authz_tombstone(state: &AppState, id: &str, now: i64) {
-    let mut crdt = state.crdt.write().await;
-    crdt.authorizations.remove(&id.to_string(), now);
+    let local_gen = {
+        let mut crdt = state.crdt.write().await;
+        crdt.authorizations.remove(&id.to_string(), now)
+    };
+    if let Err(e) = query("UPDATE authorizations SET local_gen = ? WHERE id = ?")
+        .bind(local_gen as i64)
+        .bind(id)
+        .execute(&state.db)
+        .await
+    {
+        tracing::error!(%id, err = %e, "crdt_hook: failed to persist local_gen for authz tombstone");
+    }
 }
 
 // ── Challenges ────────────────────────────────────────────────────────────────
@@ -168,9 +229,19 @@ pub async fn on_challenge_set(state: &AppState, p: ChallengeSetParams<'_>) {
         created: p.created,
         updated: p.updated,
     };
-    let mut crdt = state.crdt.write().await;
-    crdt.challenges
-        .set(p.id.to_string(), entry, p.updated, &state.node_id);
+    let local_gen = {
+        let mut crdt = state.crdt.write().await;
+        crdt.challenges
+            .set(p.id.to_string(), entry, p.updated, &state.node_id)
+    };
+    if let Err(e) = query("UPDATE challenges SET local_gen = ? WHERE id = ?")
+        .bind(local_gen as i64)
+        .bind(p.id)
+        .execute(&state.db)
+        .await
+    {
+        tracing::error!(id = %p.id, err = %e, "crdt_hook: failed to persist local_gen for challenge");
+    }
 }
 
 // ── Certificates ──────────────────────────────────────────────────────────────
@@ -189,13 +260,33 @@ pub async fn on_cert_upsert(state: &AppState, p: CertUpsertParams<'_>) {
         created: p.created,
         ca_id: p.ca_id.to_string(),
     };
-    let mut crdt = state.crdt.write().await;
-    crdt.certificates.upsert(p.id.to_string(), entry, p.created);
+    let local_gen = {
+        let mut crdt = state.crdt.write().await;
+        crdt.certificates.upsert(p.id.to_string(), entry, p.created)
+    };
+    if let Err(e) = query("UPDATE certificates SET local_gen = ? WHERE id = ?")
+        .bind(local_gen as i64)
+        .bind(p.id)
+        .execute(&state.db)
+        .await
+    {
+        tracing::error!(id = %p.id, err = %e, "crdt_hook: failed to persist local_gen for certificate");
+    }
 }
 
 pub async fn on_cert_tombstone(state: &AppState, id: &str, now: i64) {
-    let mut crdt = state.crdt.write().await;
-    crdt.certificates.remove(&id.to_string(), now);
+    let local_gen = {
+        let mut crdt = state.crdt.write().await;
+        crdt.certificates.remove(&id.to_string(), now)
+    };
+    if let Err(e) = query("UPDATE certificates SET local_gen = ? WHERE id = ?")
+        .bind(local_gen as i64)
+        .bind(id)
+        .execute(&state.db)
+        .await
+    {
+        tracing::error!(%id, err = %e, "crdt_hook: failed to persist local_gen for certificate tombstone");
+    }
 }
 
 // ── EAB keys ─────────────────────────────────────────────────────────────────
@@ -215,10 +306,20 @@ pub async fn on_eab_key_set(
         used_at,
         profile_grants,
     };
-    let mut crdt = state.crdt.write().await;
-    let ts = used_at.unwrap_or(created);
-    crdt.eab_keys
-        .set(kid.to_string(), entry, ts, &state.node_id);
+    let local_gen = {
+        let mut crdt = state.crdt.write().await;
+        let ts = used_at.unwrap_or(created);
+        crdt.eab_keys
+            .set(kid.to_string(), entry, ts, &state.node_id)
+    };
+    if let Err(e) = query("UPDATE eab_keys SET local_gen = ? WHERE kid = ?")
+        .bind(local_gen as i64)
+        .bind(kid)
+        .execute(&state.db)
+        .await
+    {
+        tracing::error!(%kid, err = %e, "crdt_hook: failed to persist local_gen for eab_key");
+    }
 }
 
 // ── Operators ─────────────────────────────────────────────────────────────────
@@ -238,13 +339,33 @@ pub async fn on_operator_upsert(
         ca_id: ca_id.to_string(),
         created,
     };
-    let mut crdt = state.crdt.write().await;
-    crdt.operators.upsert(id.to_string(), entry, created);
+    let local_gen = {
+        let mut crdt = state.crdt.write().await;
+        crdt.operators.upsert(id.to_string(), entry, created)
+    };
+    if let Err(e) = query("UPDATE operators SET local_gen = ? WHERE id = ?")
+        .bind(local_gen as i64)
+        .bind(id)
+        .execute(&state.db)
+        .await
+    {
+        tracing::error!(%id, err = %e, "crdt_hook: failed to persist local_gen for operator");
+    }
 }
 
 pub async fn on_operator_tombstone(state: &AppState, id: i64, now: i64) {
-    let mut crdt = state.crdt.write().await;
-    crdt.operators.remove(&id.to_string(), now);
+    let local_gen = {
+        let mut crdt = state.crdt.write().await;
+        crdt.operators.remove(&id.to_string(), now)
+    };
+    if let Err(e) = query("UPDATE operators SET local_gen = ? WHERE id = ?")
+        .bind(local_gen as i64)
+        .bind(id)
+        .execute(&state.db)
+        .await
+    {
+        tracing::error!(%id, err = %e, "crdt_hook: failed to persist local_gen for operator tombstone");
+    }
 }
 
 // ── Delegations ───────────────────────────────────────────────────────────────
@@ -264,11 +385,31 @@ pub async fn on_delegation_upsert(
         created,
         ca_id: ca_id.to_string(),
     };
-    let mut crdt = state.crdt.write().await;
-    crdt.delegations.upsert(id.to_string(), entry, created);
+    let local_gen = {
+        let mut crdt = state.crdt.write().await;
+        crdt.delegations.upsert(id.to_string(), entry, created)
+    };
+    if let Err(e) = query("UPDATE delegations SET local_gen = ? WHERE id = ?")
+        .bind(local_gen as i64)
+        .bind(id)
+        .execute(&state.db)
+        .await
+    {
+        tracing::error!(%id, err = %e, "crdt_hook: failed to persist local_gen for delegation");
+    }
 }
 
 pub async fn on_delegation_tombstone(state: &AppState, id: &str, now: i64) {
-    let mut crdt = state.crdt.write().await;
-    crdt.delegations.remove(&id.to_string(), now);
+    let local_gen = {
+        let mut crdt = state.crdt.write().await;
+        crdt.delegations.remove(&id.to_string(), now)
+    };
+    if let Err(e) = query("UPDATE delegations SET local_gen = ? WHERE id = ?")
+        .bind(local_gen as i64)
+        .bind(id)
+        .execute(&state.db)
+        .await
+    {
+        tracing::error!(%id, err = %e, "crdt_hook: failed to persist local_gen for delegation tombstone");
+    }
 }
