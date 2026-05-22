@@ -35,10 +35,12 @@ migration 0007 onward:
 | 0022   | 0024/0023          | node_keys               |
 | 0023   | 0025/0024          | local_gen (CRDT delta gossip) |
 | 0024   | 0026/0025          | crdt_cluster_nodes, crdt_order_owners, crdt_mtc_writer |
+| 0025   | 0027/0026          | delegation_ca_id              |
+| 0026   | 0028/0027          | tkauth (RFC 9447 JTI cache + challenge fields) |
 
 **Rule for future migrations:**
-- SQLite: use the next number in `migrations/sqlite/` (currently `0025_…`)
-- Postgres: use the next number in `migrations/postgres/` (currently `0027_…`)
-- MariaDB: use the next number in `migrations/mariadb/` (currently `0026_…`)
+- SQLite: use the next number in `migrations/sqlite/` (currently `0027_…`)
+- Postgres: use the next number in `migrations/postgres/` (currently `0029_…`)
+- MariaDB: use the next number in `migrations/mariadb/` (currently `0028_…`)
 
 The divergence is intentional and permanent.  Do not attempt to renumber.
