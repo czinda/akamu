@@ -342,6 +342,10 @@ pub fn build_router(state: Arc<AppState>, static_dir: Option<&std::path::Path>) 
         )
         .route("/admin/config", axum::routing::get(admin::get_config))
         .route("/admin/crl/force", post(admin::post_crl_force))
+        .route(
+            "/admin/tkauth/prune-jti",
+            post(admin::post_tkauth_prune_jti),
+        )
         .route("/admin/revoke", post(admin::post_revoke))
         .route("/admin/stats", axum::routing::get(admin::get_stats))
         .route("/admin/cas", axum::routing::get(admin::get_cas))
