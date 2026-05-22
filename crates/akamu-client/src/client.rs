@@ -551,47 +551,76 @@ impl AcmeClient {
 
     /// Fetch renewal information for a certificate (RFC 9773 ARI).
     ///
-    /// `cert_pem` is the PEM-encoded certificate chain (as returned by
-    /// `download_certificate()`). Only the first certificate (end-entity) is used.
+    /// `cert_bytes` is either a PEM-encoded certificate chain or a raw
+    /// DER-encoded certificate (including MTC `StandaloneCertificate` objects).
+    /// Only the first (end-entity) certificate is used.
+    ///
+    /// Both X.509 `Certificate` and MTC `StandaloneCertificate` encode
+    /// `TBSCertificate` as their first SEQUENCE field, so ARI cert-id
+    /// construction works for either format.
     ///
     /// Returns `Err` if the server does not advertise an ARI endpoint.
-    pub async fn get_renewal_info(&self, cert_pem: &[u8]) -> Result<RenewalInfo, ClientError> {
+    pub async fn get_renewal_info(&self, cert_bytes: &[u8]) -> Result<RenewalInfo, ClientError> {
         use synta::{Decoder, Encoding};
         use synta_certificate::oids;
-        use synta_certificate::owned::Certificate;
+        use synta_certificate::owned::{Certificate, TBSCertificate};
 
         let renewal_info_url = self.renewal_info_url.as_deref().ok_or_else(|| {
             ClientError::Http("server does not support ARI (no renewalInfo in directory)".into())
         })?;
 
-        // Parse the end-entity certificate.
-        let cert_ders = synta_certificate::pem_to_der(cert_pem);
-        let cert_der = cert_ders
-            .into_iter()
-            .next()
-            .ok_or_else(|| ClientError::Crypto("no certificate found in PEM".into()))?;
+        // Parse the end-entity certificate and extract serial + AKI for cert-id.
+        //
+        // PEM path: decode the first PEM block as a full X.509 Certificate.
+        // Binary DER path: both X.509 Certificate and MTC StandaloneCertificate
+        // have TBSCertificate as their first SEQUENCE element.
+        // validate_envelope() locates the TBSCertificate TLV in either structure
+        // without needing to understand the rest of the outer SEQUENCE.
+        let (serial_bytes, aki_bytes) = {
+            let extract = |tbs: TBSCertificate| -> Result<(Vec<u8>, Vec<u8>), ClientError> {
+                let serial = tbs.serial_number.as_bytes().to_vec();
+                let extensions = tbs
+                    .extensions
+                    .as_ref()
+                    .ok_or_else(|| ClientError::Crypto("certificate has no extensions".into()))?;
+                let aki_ext = extensions
+                    .iter()
+                    .find(|e| e.extn_id.components() == oids::AUTHORITY_KEY_IDENTIFIER)
+                    .ok_or_else(|| {
+                        ClientError::Crypto("certificate missing AKI extension".into())
+                    })?;
+                let aki = aki_key_id_bytes(aki_ext.extn_value.as_bytes()).ok_or_else(|| {
+                    ClientError::Crypto("could not parse AKI key identifier".into())
+                })?;
+                Ok((serial, aki))
+            };
 
-        let cert: Certificate = {
-            let mut dec = Decoder::new(&cert_der, Encoding::Der);
-            dec.decode()
-                .map_err(|e| ClientError::Crypto(format!("cert parse: {e}")))?
+            let cert_ders = synta_certificate::pem_to_der(cert_bytes);
+            if let Some(cert_der) = cert_ders.into_iter().next() {
+                let cert: Certificate = {
+                    let mut dec = Decoder::new(&cert_der, Encoding::Der);
+                    dec.decode()
+                        .map_err(|e| ClientError::Crypto(format!("cert parse: {e}")))?
+                };
+                extract(cert.tbs_certificate)?
+            } else {
+                // Binary DER: use validate_envelope to find the TBSCertificate TLV.
+                // This works for X.509 Certificate DER and MTC StandaloneCertificate
+                // DER alike, since both begin with SEQUENCE { TBSCertificate, ... }.
+                let tbs_range = synta_certificate::validate_envelope(cert_bytes).map_err(|_| {
+                    ClientError::Crypto(
+                        "no PEM certificate found and binary DER is not a valid SEQUENCE".into(),
+                    )
+                })?;
+                let tbs_der = &cert_bytes[tbs_range];
+                let tbs: TBSCertificate = {
+                    let mut dec = Decoder::new(tbs_der, Encoding::Der);
+                    dec.decode()
+                        .map_err(|e| ClientError::Crypto(format!("TBSCertificate parse: {e}")))?
+                };
+                extract(tbs)?
+            }
         };
-
-        // Extract serial bytes.
-        let serial_bytes = cert.tbs_certificate.serial_number.as_bytes().to_vec();
-
-        // Extract AKI key identifier bytes.
-        let extensions = cert
-            .tbs_certificate
-            .extensions
-            .as_ref()
-            .ok_or_else(|| ClientError::Crypto("certificate has no extensions".into()))?;
-        let aki_ext = extensions
-            .iter()
-            .find(|e| e.extn_id.components() == oids::AUTHORITY_KEY_IDENTIFIER)
-            .ok_or_else(|| ClientError::Crypto("certificate missing AKI extension".into()))?;
-        let aki_bytes = aki_key_id_bytes(aki_ext.extn_value.as_bytes())
-            .ok_or_else(|| ClientError::Crypto("could not parse AKI key identifier".into()))?;
 
         // Build cert-id and fetch.
         let cert_id = format!(

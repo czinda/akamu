@@ -1228,8 +1228,9 @@ async fn check_ari_window(dir_url: &str, cert_path: &Path) -> Result<bool, Strin
         return Ok(true);
     }
     let client = AcmeClient::new(dir_url).await.map_err(|e| e.to_string())?;
-    let cert_pem = fs::read(cert_path).map_err(|e| format!("read {}: {e}", cert_path.display()))?;
-    match client.get_renewal_info(&cert_pem).await {
+    let cert_bytes =
+        fs::read(cert_path).map_err(|e| format!("read {}: {e}", cert_path.display()))?;
+    match client.get_renewal_info(&cert_bytes).await {
         Ok(info) => {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
