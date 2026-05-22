@@ -354,7 +354,7 @@ When enabled, Akāmu accepts:
 
 - **Pure ML-DSA certificate chains**: verified via the OpenSSL backend.
 - **Composite ML-DSA+classical TLS 1.3 `CertificateVerify` signatures**: provisional
-  code points from draft-ietf-lamps-pq-composite-sigs are advertised and verified.
+  code points from draft-reddy-tls-composite-mldsa are advertised and verified.
 
 Classical algorithms are always verified using a standard cryptographic backend.
 Composite schemes are TLS 1.3 only and never appear in a TLS 1.2 handshake.
@@ -389,10 +389,11 @@ minimum_rsa_modulus = 3072
 
 ## Known limitations
 
-- **Composite scheme code points**: the composite ML-DSA+classical scheme identifiers
-  are taken from the provisional IANA allocations in draft-ietf-lamps-pq-composite-sigs.
-  They must be verified against the current draft version before deploying to production;
-  if the draft advances and code points change, a code update is required.
+- **Composite scheme code points**: the TLS `SignatureScheme` code points for composite
+  ML-DSA+classical schemes are provisional values from draft-reddy-tls-composite-mldsa
+  (all TBD pending IANA allocation).  The corresponding X.509 OIDs are defined in
+  draft-ietf-lamps-pq-composite-sigs.  If assigned code points differ from the provisional
+  values used here, a code update will be required before deploying to production.
 
 - **Composite scheme support depends on the OpenSSL version**: composite ML-DSA+classical
   `CertificateVerify` verification requires OpenSSL 3.5 or later with composite NID support.

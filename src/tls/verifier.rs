@@ -285,12 +285,11 @@ fn composite_digest(scheme: SignatureScheme) -> Result<native_ossl::digest::Dige
         SignatureScheme::Unknown(MLDSA44_ED25519_SHA512) => c"SHA2-512",
         SignatureScheme::Unknown(MLDSA65_ECDSA_P256_SHA512) => c"SHA2-512",
         SignatureScheme::Unknown(MLDSA65_ECDSA_P384_SHA512) => c"SHA2-512",
-        SignatureScheme::Unknown(MLDSA65_RSA3072_PKCS15_SHA384) => c"SHA2-384",
-        SignatureScheme::Unknown(MLDSA65_RSA3072_PSS_SHA384) => c"SHA2-384",
+        SignatureScheme::Unknown(MLDSA65_RSA3072_PKCS15_SHA512) => c"SHA2-512",
+        SignatureScheme::Unknown(MLDSA65_RSA3072_PSS_SHA512) => c"SHA2-512",
         SignatureScheme::Unknown(MLDSA65_ED25519_SHA512) => c"SHA2-512",
         SignatureScheme::Unknown(MLDSA87_ECDSA_P384_SHA512) => c"SHA2-512",
-        SignatureScheme::Unknown(MLDSA87_ECDSA_P521_SHA512) => c"SHA2-512",
-        SignatureScheme::Unknown(MLDSA87_ED448_SHA512) => c"SHA2-512",
+        SignatureScheme::Unknown(MLDSA87_ED448_SHAKE256) => c"SHAKE256",
         other => return Err(format!("unknown composite scheme {other:?}")),
     };
     native_ossl::digest::DigestAlg::fetch(name, None)

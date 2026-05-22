@@ -151,13 +151,16 @@ in the verifier struct (built once at `SyntaClientCertVerifier::new`), so a sing
 ```rust
 pub const MLDSA44_ECDSA_P256_SHA256:     u16 = 0x0901;
 pub const MLDSA44_RSA2048_PKCS15_SHA256: u16 = 0x0902;
-// … 12 entries total
-pub const MLDSA87_ED448_SHA512:          u16 = 0x090C;
+// … 11 entries total
+pub const MLDSA87_ED448_SHAKE256:        u16 = 0x090C;
 ```
 
-These are taken from the provisional IANA allocations in draft-ietf-lamps-pq-composite-sigs. They are advertised as `SignatureScheme::Unknown(code)` values because rustls does not have built-in named variants for these provisional code points.
+These are provisional code points from draft-reddy-tls-composite-mldsa (all TBD pending IANA
+allocation). The X.509 OIDs for the same algorithm combinations are defined in the companion
+draft-ietf-lamps-pq-composite-sigs. They are advertised as `SignatureScheme::Unknown(code)`
+values because rustls does not have built-in named variants for these provisional code points.
 
-`COMPOSITE_SCHEMES` is a `&[SignatureScheme]` slice of all 12 entries, returned by `supported_verify_schemes` when `allow_post_quantum = true`.
+`COMPOSITE_SCHEMES` is a `&[SignatureScheme]` slice of all 11 entries, returned by `supported_verify_schemes` when `allow_post_quantum = true`.
 
 `is_composite(scheme: SignatureScheme) -> bool` checks whether a scheme's code point is in `COMPOSITE_SCHEMES`:
 
@@ -204,13 +207,19 @@ verifier.verify(sig_bytes)?
 
 `composite_digest` maps each code point to the correct hash algorithm name for `native_ossl::digest::DigestAlg::fetch`:
 
-| Code point | Hash |
-|---|---|
-| `0x0901` MLDSA44_ECDSA_P256_SHA256 | `SHA2-256` |
-| `0x0904` MLDSA44_ED25519_SHA512 | `SHA2-512` |
-| `0x0907` MLDSA65_RSA3072_PKCS15_SHA384 | `SHA2-384` |
-| `0x090A` MLDSA87_ECDSA_P384_SHA512 | `SHA2-512` |
-| … | … |
+| Code point | Constant | Hash |
+|---|---|---|
+| `0x0901` | MLDSA44_ECDSA_P256_SHA256 | `SHA2-256` |
+| `0x0902` | MLDSA44_RSA2048_PKCS15_SHA256 | `SHA2-256` |
+| `0x0903` | MLDSA44_RSA2048_PSS_SHA256 | `SHA2-256` |
+| `0x0904` | MLDSA44_ED25519_SHA512 | `SHA2-512` |
+| `0x0905` | MLDSA65_ECDSA_P256_SHA512 | `SHA2-512` |
+| `0x0906` | MLDSA65_ECDSA_P384_SHA512 | `SHA2-512` |
+| `0x0907` | MLDSA65_RSA3072_PKCS15_SHA512 | `SHA2-512` |
+| `0x0908` | MLDSA65_RSA3072_PSS_SHA512 | `SHA2-512` |
+| `0x0909` | MLDSA65_ED25519_SHA512 | `SHA2-512` |
+| `0x090A` | MLDSA87_ECDSA_P384_SHA512 | `SHA2-512` |
+| `0x090C` | MLDSA87_ED448_SHAKE256 | `SHAKE256` |
 
 ## Channel binding (`src/tls/channel_binding.rs`)
 
