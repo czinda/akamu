@@ -36,6 +36,10 @@ pub struct Config {
     /// When absent, delegation orders are issued directly by Akamu's own CA.
     #[serde(default)]
     pub delegation_upstream: Option<DelegationUpstreamConfig>,
+    /// RFC 9447 tkauth-01 / RFC 9448 TNAuthList / jwtclaimcon authority token challenge support.
+    /// Absent or `enabled = false` → "TNAuthList" and "JWTClaimConstraints" identifiers rejected.
+    #[serde(default)]
+    pub tkauth: Option<TkauthConfig>,
     /// CRDT gossip replication. Absent → single-node mode; no gossip is performed.
     #[serde(default)]
     pub gossip: Option<GossipConfig>,
@@ -1320,6 +1324,50 @@ impl std::fmt::Debug for EmailChallengeConfig {
     }
 }
 
+/// RFC 9447 tkauth-01 authority token challenge configuration.
+///
+/// When present and `enabled = true`, the server accepts `"TNAuthList"` (RFC 9448) and
+/// `"JWTClaimConstraints"` (draft-ietf-acme-authority-token-jwtclaimcon) identifier types
+/// and offers the `"tkauth-01"` challenge type.
+///
+/// ```toml
+/// [tkauth]
+/// enabled                 = true
+/// trusted_ta_ca_files     = ["/etc/akamu/tn-authority-root.pem"]
+/// token_authority_url     = "https://ta.example.com"
+/// max_validity_secs       = 3600
+/// jti_prune_interval_secs = 3600
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct TkauthConfig {
+    /// Enable tkauth-01 challenge type. Default: false.
+    #[serde(default)]
+    pub enabled: bool,
+    /// PEM files for trusted Token Authority CA certificates.
+    /// The signing certificate from the authority token's x5u/x5c must chain
+    /// to one of these roots.  Required (non-empty) when `enabled = true`.
+    #[serde(default)]
+    pub trusted_ta_ca_files: Vec<String>,
+    /// Optional `token-authority` URL hint included in tkauth-01 challenge responses.
+    pub token_authority_url: Option<String>,
+    /// Cap on token lifetime: tokens with `exp − now > max_validity_secs` are rejected.
+    /// Default: 3600 (1 hour).
+    #[serde(default = "default_tkauth_max_validity_secs")]
+    pub max_validity_secs: u64,
+    /// Seconds between automatic JTI cache pruning background task runs.
+    /// Default: 3600 (1 hour).
+    #[serde(default = "default_tkauth_jti_prune_interval_secs")]
+    pub jti_prune_interval_secs: u64,
+}
+
+fn default_tkauth_max_validity_secs() -> u64 {
+    3600
+}
+
+fn default_tkauth_jti_prune_interval_secs() -> u64 {
+    3600
+}
+
 /// CRDT gossip replication configuration.
 ///
 /// When this section is present, Akamu gossips CRDT deltas to the listed peers.
@@ -1614,6 +1662,29 @@ impl Config {
         let is_unix = self.listen_addr.starts_with("unix:") || self.listen_addr.starts_with('/');
         if self.tls.enabled && is_unix {
             return Err("TLS cannot be used with a Unix domain socket listener".to_owned());
+        }
+
+        if let Some(tkauth) = &self.tkauth {
+            if tkauth.max_validity_secs == 0 {
+                return Err("[tkauth].max_validity_secs must be at least 1".into());
+            }
+            if tkauth.jti_prune_interval_secs == 0 {
+                return Err("[tkauth].jti_prune_interval_secs must be at least 1".into());
+            }
+            if tkauth.enabled {
+                if tkauth.trusted_ta_ca_files.is_empty() {
+                    return Err(
+                        "[tkauth].trusted_ta_ca_files must not be empty when enabled".into(),
+                    );
+                }
+                for path in &tkauth.trusted_ta_ca_files {
+                    if !std::path::Path::new(path).is_absolute() {
+                        return Err(format!(
+                            "[tkauth].trusted_ta_ca_files: '{path}' must be an absolute path"
+                        ));
+                    }
+                }
+            }
         }
 
         Ok(())

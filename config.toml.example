@@ -235,6 +235,29 @@ validate_dnssec = true
 # Generate with: openssl rand -hex 32
 # webhook_hmac_secret = "replace-with-output-of--openssl-rand-hex-32"
 
+# ── RFC 9447 / RFC 9448 tkauth-01 challenge support ──────────────────────────
+# When absent or enabled = false, TNAuthList and JWTClaimConstraints identifier
+# orders are rejected.  When enabled, a tkauth-01 challenge is created for each
+# such authorization.  The client must obtain a signed JWT from the Token Authority
+# and submit it in the challenge response.
+# [tkauth]
+# enabled = false
+#
+# PEM file(s) containing the CA certificate(s) that sign Token Authority certs.
+# The signing cert presented in the authority token (via x5u or x5c) must chain
+# to one of these anchors.  Required when enabled = true.
+# trusted_ta_ca_files = ["/etc/akamu/ta-root.pem"]
+#
+# Optional Token Authority URL hint included in tkauth-01 challenge objects.
+# The client uses this to locate the TA if not already known.
+# token_authority_url = "https://ta.example.com"
+#
+# Maximum accepted token validity window (exp − now) in seconds.  Default: 3600.
+# max_validity_secs = 3600
+#
+# Interval (seconds) between automatic expired-JTI cache pruning runs.  Default: 3600.
+# jti_prune_interval_secs = 3600
+
 # ── Server-side TLS ───────────────────────────────────────────────────────────
 # When absent or enabled = false, the server speaks plain HTTP.
 # Typical production setup: TLS termination upstream (nginx, haproxy).
