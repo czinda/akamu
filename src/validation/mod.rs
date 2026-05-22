@@ -282,7 +282,9 @@ async fn on_valid(
     // - (true, false):  challenge and authz marked valid; order has more pending authz.
     // - (true, true):   challenge and authz marked valid; order advanced to "ready".
     let result: Result<(bool, bool), sqlx::Error> = async {
-        let mut tx = state.db.begin().await?;
+        let mut tx = crate::db::begin_write(&state.db, state.db_kind)
+            .await
+            .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
         crate::db::pg_local_async_commit(&mut tx, state.db_kind).await?;
 
         // 1. Mark challenge valid only if still in 'processing' state.
@@ -484,7 +486,9 @@ async fn on_invalid_with_order(
     let authz_id_log = authz_id.to_string();
 
     let result: Result<bool, sqlx::Error> = async {
-        let mut tx = state.db.begin().await?;
+        let mut tx = crate::db::begin_write(&state.db, state.db_kind)
+            .await
+            .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
         crate::db::pg_local_async_commit(&mut tx, state.db_kind).await?;
 
         // 1. Mark challenge invalid only if still in 'processing' state.
