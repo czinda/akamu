@@ -181,14 +181,22 @@ pub fn discover_renewals(certbot_dir: &Path) -> Vec<CertbotRenewal> {
         };
 
         let kv = parse_ini_flat(&content);
-        let server = kv
-            .get("server")
-            .cloned()
-            .unwrap_or_else(|| "https://acme-v02.api.letsencrypt.org/directory".into());
-        let authenticator = kv
-            .get("authenticator")
-            .cloned()
-            .unwrap_or_else(|| "standalone".into());
+        let server = kv.get("server").cloned().unwrap_or_else(|| {
+            eprintln!(
+                "Warning: renewal config {} missing 'server'; \
+                 defaulting to Let's Encrypt production",
+                path.display()
+            );
+            "https://acme-v02.api.letsencrypt.org/directory".into()
+        });
+        let authenticator = kv.get("authenticator").cloned().unwrap_or_else(|| {
+            eprintln!(
+                "Warning: renewal config {} missing 'authenticator'; \
+                 defaulting to 'standalone'",
+                path.display()
+            );
+            "standalone".into()
+        });
         let preferred_challenges = kv.get("preferred_challenges").cloned();
 
         renewals.push(CertbotRenewal {
@@ -237,10 +245,19 @@ pub fn pem_key_type(pem: &[u8]) -> String {
             "ES256" => "ec:P-256".into(),
             "ES384" => "ec:P-384".into(),
             "ES512" => "ec:P-521".into(),
-            alg if alg.starts_with("RS") || alg.starts_with("PS") => "rsa:2048".into(),
+            alg if alg.starts_with("RS") || alg.starts_with("PS") => {
+                eprintln!(
+                    "Note: RSA cert key detected; cert_key_type recorded as rsa:2048 \
+                     (actual modulus size cannot be inferred from PEM; adjust manually if needed)"
+                );
+                "rsa:2048".into()
+            }
             _ => "ec:P-256".into(),
         },
-        Err(_) => "ec:P-256".into(),
+        Err(e) => {
+            eprintln!("Warning: could not determine key type ({e}); defaulting to ec:P-256");
+            "ec:P-256".into()
+        }
     }
 }
 
@@ -258,7 +275,10 @@ pub fn jwk_key_type(json: &str) -> String {
             format!("ec:{crv}")
         }
         Some("RSA") => {
-            // Decode the base64url-encoded modulus `n` to get the exact byte length.
+            // Decode the base64url-encoded modulus `n` to get the significant bit length.
+            // DER encodes non-negative integers with a leading 0x00 byte when the high
+            // bit would otherwise be set; skip those before computing bit length so a
+            // standard 2048-bit key encoded as 257 bytes isn't misclassified as 3072-bit.
             let bits = v["n"]
                 .as_str()
                 .and_then(|n| {
@@ -266,10 +286,11 @@ pub fn jwk_key_type(json: &str) -> String {
                     URL_SAFE_NO_PAD.decode(n).ok()
                 })
                 .map(|bytes| {
-                    let bit_len = bytes.len() * 8;
-                    if bit_len > 3072 {
+                    let significant = bytes.iter().skip_while(|&&b| b == 0).count();
+                    let bit_len = significant * 8;
+                    if bit_len >= 4096 {
                         4096
-                    } else if bit_len > 2048 {
+                    } else if bit_len >= 3072 {
                         3072
                     } else {
                         2048
@@ -500,8 +521,10 @@ account = abc123
 
     #[test]
     fn jwk_key_type_rsa_4096() {
-        // 512 bytes (4096 bits) → 682 or 683 base64url chars.
-        let n_512_bytes = "A".repeat(683); // 683 chars → ~512 bytes decoded
+        // 512 bytes of 0xFF → 4096 significant bits after leading-zero stripping.
+        // "A".repeat(683) would decode to all zeros, which strip to 0 bits.
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        let n_512_bytes = URL_SAFE_NO_PAD.encode(&vec![0xFFu8; 512]);
         let jwk = format!(r#"{{"kty":"RSA","e":"AQAB","n":"{n_512_bytes}"}}"#);
         assert_eq!(jwk_key_type(&jwk), "rsa:4096");
     }

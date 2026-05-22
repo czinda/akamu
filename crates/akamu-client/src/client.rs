@@ -561,66 +561,11 @@ impl AcmeClient {
     ///
     /// Returns `Err` if the server does not advertise an ARI endpoint.
     pub async fn get_renewal_info(&self, cert_bytes: &[u8]) -> Result<RenewalInfo, ClientError> {
-        use synta::{Decoder, Encoding};
-        use synta_certificate::oids;
-        use synta_certificate::owned::{Certificate, TBSCertificate};
-
         let renewal_info_url = self.renewal_info_url.as_deref().ok_or_else(|| {
             ClientError::Http("server does not support ARI (no renewalInfo in directory)".into())
         })?;
 
-        // Parse the end-entity certificate and extract serial + AKI for cert-id.
-        //
-        // PEM path: decode the first PEM block as a full X.509 Certificate.
-        // Binary DER path: both X.509 Certificate and MTC StandaloneCertificate
-        // have TBSCertificate as their first SEQUENCE element.
-        // validate_envelope() locates the TBSCertificate TLV in either structure
-        // without needing to understand the rest of the outer SEQUENCE.
-        let (serial_bytes, aki_bytes) = {
-            let extract = |tbs: TBSCertificate| -> Result<(Vec<u8>, Vec<u8>), ClientError> {
-                let serial = tbs.serial_number.as_bytes().to_vec();
-                let extensions = tbs
-                    .extensions
-                    .as_ref()
-                    .ok_or_else(|| ClientError::Crypto("certificate has no extensions".into()))?;
-                let aki_ext = extensions
-                    .iter()
-                    .find(|e| e.extn_id.components() == oids::AUTHORITY_KEY_IDENTIFIER)
-                    .ok_or_else(|| {
-                        ClientError::Crypto("certificate missing AKI extension".into())
-                    })?;
-                let aki = aki_key_id_bytes(aki_ext.extn_value.as_bytes()).ok_or_else(|| {
-                    ClientError::Crypto("could not parse AKI key identifier".into())
-                })?;
-                Ok((serial, aki))
-            };
-
-            let cert_ders = synta_certificate::pem_to_der(cert_bytes);
-            if let Some(cert_der) = cert_ders.into_iter().next() {
-                let cert: Certificate = {
-                    let mut dec = Decoder::new(&cert_der, Encoding::Der);
-                    dec.decode()
-                        .map_err(|e| ClientError::Crypto(format!("cert parse: {e}")))?
-                };
-                extract(cert.tbs_certificate)?
-            } else {
-                // Binary DER: use validate_envelope to find the TBSCertificate TLV.
-                // This works for X.509 Certificate DER and MTC StandaloneCertificate
-                // DER alike, since both begin with SEQUENCE { TBSCertificate, ... }.
-                let tbs_range = synta_certificate::validate_envelope(cert_bytes).map_err(|_| {
-                    ClientError::Crypto(
-                        "no PEM certificate found and binary DER is not a valid SEQUENCE".into(),
-                    )
-                })?;
-                let tbs_der = &cert_bytes[tbs_range];
-                let tbs: TBSCertificate = {
-                    let mut dec = Decoder::new(tbs_der, Encoding::Der);
-                    dec.decode()
-                        .map_err(|e| ClientError::Crypto(format!("TBSCertificate parse: {e}")))?
-                };
-                extract(tbs)?
-            }
-        };
+        let (serial_bytes, aki_bytes) = cert_id_from_bytes(cert_bytes)?;
 
         // Build cert-id and fetch.
         let cert_id = format!(
@@ -708,31 +653,45 @@ impl AcmeClient {
         cert_der: &[u8],
         reason: Option<u8>,
     ) -> Result<(), ClientError> {
-        let nonce = self.fetch_nonce().await?;
         let url = &self.revoke_cert_url;
         let cert_b64 = URL_SAFE_NO_PAD.encode(cert_der);
-        let mut payload = serde_json::json!({ "certificate": cert_b64 });
+        let mut payload_obj = serde_json::json!({ "certificate": cert_b64 });
         if let Some(r) = reason {
-            payload["reason"] = serde_json::json!(r);
+            payload_obj["reason"] = serde_json::json!(r);
         }
-        let key_ref = JwsKeyRef::Jwk {
-            jwk: cert_key.public_jwk().clone(),
-        };
-        let jws = JwsFlattened::sign(
-            cert_key.private_key(),
-            cert_key.alg(),
-            &nonce,
-            url,
-            key_ref,
-            Some(payload.to_string().as_bytes()),
-        )?;
-        let jws_value = serde_json::to_value(&jws)
-            .map_err(|e| ClientError::Jose(akamu_jose::JoseError::Json(e)))?;
-        let (status, body, _) = self.post_jws_once(url, &jws_value).await?;
-        if status != StatusCode::OK {
-            return Err(acme_error(&body, status, "revoke-cert"));
+        let payload_str = payload_obj.to_string();
+
+        for attempt in 0..5_u8 {
+            let nonce = self.fetch_nonce().await?;
+            let key_ref = JwsKeyRef::Jwk {
+                jwk: cert_key.public_jwk().clone(),
+            };
+            let jws = JwsFlattened::sign(
+                cert_key.private_key(),
+                cert_key.alg(),
+                &nonce,
+                url,
+                key_ref,
+                Some(payload_str.as_bytes()),
+            )?;
+            let jws_value = serde_json::to_value(&jws)
+                .map_err(|e| ClientError::Jose(akamu_jose::JoseError::Json(e)))?;
+            let (status, body, _) = self.post_jws_once(url, &jws_value).await?;
+            if body["type"].as_str() == Some("urn:ietf:params:acme:error:badNonce") {
+                if attempt == 4 {
+                    return Err(ClientError::Http(
+                        "badNonce retry limit exceeded".to_string(),
+                    ));
+                }
+                *self.cached_nonce.lock().await = None;
+                continue;
+            }
+            if status != StatusCode::OK {
+                return Err(acme_error(&body, status, "revoke-cert"));
+            }
+            return Ok(());
         }
-        Ok(())
+        unreachable!()
     }
 
     // ── STAR order lifecycle (RFC 8739) ──────────────────────────────────────────
@@ -1167,6 +1126,57 @@ fn parse_order(body: &Value, url: String) -> Result<Order, ClientError> {
 ///     <N bytes>  -- the raw SHA-1 hash
 /// }
 /// ```
+/// Extract `(serial_bytes, aki_bytes)` from a PEM or binary-DER certificate.
+///
+/// Accepts X.509 `Certificate` PEM/DER and MTC `StandaloneCertificate` DER alike,
+/// since both begin with `SEQUENCE { TBSCertificate, ... }`.
+fn cert_id_from_bytes(cert_bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>), ClientError> {
+    use synta::{Decoder, Encoding};
+    use synta_certificate::oids;
+    use synta_certificate::owned::{Certificate, TBSCertificate};
+
+    let extract = |tbs: TBSCertificate| -> Result<(Vec<u8>, Vec<u8>), ClientError> {
+        let serial = tbs.serial_number.as_bytes().to_vec();
+        let extensions = tbs
+            .extensions
+            .as_ref()
+            .ok_or_else(|| ClientError::Crypto("certificate has no extensions".into()))?;
+        let aki_ext = extensions
+            .iter()
+            .find(|e| e.extn_id.components() == oids::AUTHORITY_KEY_IDENTIFIER)
+            .ok_or_else(|| ClientError::Crypto("certificate missing AKI extension".into()))?;
+        let aki = aki_key_id_bytes(aki_ext.extn_value.as_bytes())
+            .ok_or_else(|| ClientError::Crypto("could not parse AKI key identifier".into()))?;
+        Ok((serial, aki))
+    };
+
+    let cert_ders = synta_certificate::pem_to_der(cert_bytes);
+    if let Some(cert_der) = cert_ders.into_iter().next() {
+        let cert: Certificate = {
+            let mut dec = Decoder::new(&cert_der, Encoding::Der);
+            dec.decode()
+                .map_err(|e| ClientError::Crypto(format!("cert parse: {e}")))?
+        };
+        extract(cert.tbs_certificate)
+    } else {
+        // Binary DER: validate_envelope locates the TBSCertificate TLV.
+        let tbs_range = synta_certificate::validate_envelope(cert_bytes).map_err(|_| {
+            ClientError::Crypto(
+                "no PEM certificate found and binary DER is not a valid SEQUENCE".into(),
+            )
+        })?;
+        let tbs_der = cert_bytes
+            .get(tbs_range)
+            .ok_or_else(|| ClientError::Crypto("DER input is truncated or malformed".into()))?;
+        let tbs: TBSCertificate = {
+            let mut dec = Decoder::new(tbs_der, Encoding::Der);
+            dec.decode()
+                .map_err(|e| ClientError::Crypto(format!("TBSCertificate parse: {e}")))?
+        };
+        extract(tbs)
+    }
+}
+
 fn aki_key_id_bytes(ext_value: &[u8]) -> Option<Vec<u8>> {
     // Skip SEQUENCE (tag 0x30 + length).
     if ext_value.len() < 4 || ext_value[0] != 0x30 {
@@ -1184,4 +1194,52 @@ fn aki_key_id_bytes(ext_value: &[u8]) -> Option<Vec<u8>> {
     }
     let len = *content.get(1)? as usize;
     content.get(2..2 + len).map(<[u8]>::to_vec)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cert_id_from_bytes_rejects_garbage() {
+        let err = cert_id_from_bytes(b"not a certificate").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no PEM certificate found")
+                || msg.contains("DER input")
+                || msg.contains("parse"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn cert_id_from_bytes_rejects_truncated_der() {
+        // A valid SEQUENCE tag/length prefix but truncated body — must not panic.
+        let truncated = &[0x30u8, 0x82, 0x01, 0x00, 0x01, 0x02];
+        let err = cert_id_from_bytes(truncated).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no PEM certificate found")
+                || msg.contains("DER input")
+                || msg.contains("parse"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn aki_key_id_bytes_empty_returns_none() {
+        assert!(aki_key_id_bytes(&[]).is_none());
+    }
+
+    #[test]
+    fn aki_key_id_bytes_wrong_tag_returns_none() {
+        assert!(aki_key_id_bytes(&[0x31, 0x04, 0x80, 0x02, 0xAA, 0xBB]).is_none());
+    }
+
+    #[test]
+    fn aki_key_id_bytes_happy_path() {
+        // SEQUENCE { [0] PRIMITIVE 0xAA 0xBB }
+        let aki_der = &[0x30u8, 0x04, 0x80, 0x02, 0xAA, 0xBB];
+        assert_eq!(aki_key_id_bytes(aki_der), Some(vec![0xAA, 0xBB]));
+    }
 }

@@ -216,7 +216,8 @@ pub async fn cmd_import_certbot(args: CertbotImportArgs) -> Result<(), String> {
         let cert_path = cert_dir.join(format!("{}.pem", r.domain));
         let cert_key_path = cert_dir.join(format!("{}.pem.key.pem", r.domain));
 
-        // Copy fullchain.pem.
+        // Copy fullchain.pem. Certificate chains are public (0o644 is intentional);
+        // use explicit read+write to enforce the mode regardless of source permissions or umask.
         let chain_ok = if src_chain.exists() {
             if args.dry_run {
                 println!(
@@ -225,8 +226,16 @@ pub async fn cmd_import_certbot(args: CertbotImportArgs) -> Result<(), String> {
                     cert_path.display()
                 );
             } else {
-                fs::copy(&src_chain, &cert_path)
-                    .map_err(|e| format!("copy {}: {e}", src_chain.display()))?;
+                let data = fs::read(&src_chain)
+                    .map_err(|e| format!("read {}: {e}", src_chain.display()))?;
+                fs::write(&cert_path, &data)
+                    .map_err(|e| format!("write {}: {e}", cert_path.display()))?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(&cert_path, fs::Permissions::from_mode(0o644))
+                        .map_err(|e| format!("chmod {}: {e}", cert_path.display()))?;
+                }
             }
             true
         } else {
@@ -257,19 +266,35 @@ pub async fn cmd_import_certbot(args: CertbotImportArgs) -> Result<(), String> {
             false
         };
 
-        if !args.dry_run && (!chain_ok || !key_ok) {
+        if !chain_ok || !key_ok {
+            let verb = if args.dry_run {
+                "would skip"
+            } else {
+                "skipping"
+            };
             eprintln!(
-                "Warning: skipping renewal config for {domain}: \
+                "Warning: {verb} renewal config for {domain}: \
                  certificate or key not available (may need root access)"
             );
             continue;
         }
 
         // Build and write RenewalConfig.
-        let cert_key_type = if src_key.exists() {
-            pem_key_type(&fs::read(&src_key).unwrap_or_default())
-        } else {
+        // key_ok is true here (guaranteed by the !key_ok continue above).
+        // In dry-run mode, skip the actual key read to avoid touching root-owned paths.
+        let cert_key_type = if args.dry_run {
             "ec:P-256".into()
+        } else {
+            match fs::read(&src_key) {
+                Ok(data) => pem_key_type(&data),
+                Err(e) => {
+                    eprintln!(
+                        "Warning: could not read {}: {e}; defaulting cert_key_type to ec:P-256",
+                        src_key.display()
+                    );
+                    "ec:P-256".into()
+                }
+            }
         };
         let (renewal_cfg, warning) = build_renewal_config(
             r,

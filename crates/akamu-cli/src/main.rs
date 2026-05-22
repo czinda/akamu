@@ -633,7 +633,15 @@ async fn cmd_deregister(args: DeregisterArgs) -> Result<(), String> {
 
     // Remove the stored account URL.
     let url_path = account_url_path_for_ca(&args.account_key, args.ca.as_deref());
-    let _ = fs::remove_file(&url_path);
+    if let Err(e) = fs::remove_file(&url_path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            eprintln!(
+                "Warning: account deactivated but could not remove sidecar {}: {e}. \
+                 Future commands may attempt to use the deactivated account.",
+                url_path.display()
+            );
+        }
+    }
     println!("Deactivated: {account_url}");
     Ok(())
 }
