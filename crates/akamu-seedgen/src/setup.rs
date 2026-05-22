@@ -122,6 +122,9 @@ pub fn register_profiles(state: &Arc<AppState>, profiles: &[ProfileSpec]) {
             auth_hook_timeout_secs: 30,
             require_account_grant: p.require_account_grant,
             ca_ids: p.ca_ids.clone(),
+            kpn_san_templates: vec![],
+            ms_upn_san_template: None,
+            inject_account_kpn: false,
         };
 
         let added = state
