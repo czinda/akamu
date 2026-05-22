@@ -681,6 +681,13 @@ all orders.
 	How often profile providers are re-read, in seconds.
 	Default: *3600* (1 hour).
 
+When a *default* profile is configured, the server automatically applies it
+to *newOrder* requests that omit the *profile* field (RECOMMENDED by
+draft-ietf-acme-profiles-01 §4).  The echoed profile name in the order
+object allows clients to record which profile was applied.  Profiles named
+anything other than *default* are never auto-applied; the client must
+request them explicitly.
+
 Profile providers are defined under *[profiles.providers.*_name_*]*.
 Each provider has a *type* field that determines its kind.
 
@@ -769,6 +776,15 @@ Individual profiles are defined as
 *issue_as* = _string_
 	Certificate format for issuance.  Accepted values: *x509* (standard
 	X.509 DER/PEM), *mtc* (Merkle Tree Certificate).  Default: *x509*.
+
+	When set to *mtc*, the ACME certificate download endpoint
+	(*GET /acme/cert/{id}*) returns a binary DER-encoded
+	*StandaloneCertificate* with *Content-Type: application/pkix-cert*
+	instead of a PEM chain.  *akamu-cli*(1) saves the binary directly to
+	the file given by *--out*; the ARI renewal check (*akamu-cli renew*)
+	extracts the embedded *TBSCertificate* — present as the first SEQUENCE
+	field in *StandaloneCertificate* — for cert-id construction, so ARI
+	works identically for MTC and X.509 certificates.
 
 *ca_ids* = _[string, ...]_
 	List of CA IDs for which this profile is available.  When set,
