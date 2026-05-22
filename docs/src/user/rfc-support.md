@@ -25,8 +25,9 @@ This page documents every RFC that is relevant to `Akāmu`, explaining what each
 | [RFC 5280](#rfc-5280--x509-certificate-profile) | X.509 Certificate and CRL Profile | Full |
 | [RFC 6960](#rfc-6960--ocsp-responder) | Online Certificate Status Protocol (OCSP) | Full |
 | [RFC 9115](#rfc-9115--acme-profile-for-delegated-certificates) | ACME Profile for Delegated Certificates | Full |
-| [RFC 9447](#rfc-9447--acme-challenges-using-an-authority-token) | ACME Challenges Using an Authority Token | Not implemented |
-| [RFC 9448](#rfc-9448--acme-tnauthlist-authority-token) | ACME TNAuthList Authority Token | Not considered |
+| [RFC 9447](#rfc-9447--acme-challenges-using-an-authority-token) | ACME Challenges Using an Authority Token | Full |
+| [RFC 9448](#rfc-9448--acme-tnauthlist-authority-token) | ACME TNAuthList Authority Token | Full |
+| [draft-ietf-acme-authority-token-jwtclaimcon](#draft-ietf-acme-authority-token-jwtclaimcon) | ACME Authority Token: JWTClaimConstraints | Full |
 | [RFC 9538](#rfc-9538--acme-delegation-metadata-for-cdni) | ACME Delegation Metadata for CDNI | Not implemented |
 | [RFC 9891](#rfc-9891--acme-dtn-node-id-validation-experimental) | ACME DTN Node ID Validation (Experimental) | Not considered |
 
@@ -1031,19 +1032,80 @@ Delegation orders skip the `pending` state and the challenge/authorization flow 
 
 ---
 
+## RFC 9447 — ACME Challenges Using an Authority Token
+
+**[RFC 9447](https://www.rfc-editor.org/rfc/rfc9447)** defines the `tkauth-01` ACME challenge type. Instead of a network probe, the client proves control of the identifier by presenting a signed JWT (an *authority token*) issued by an external Token Authority (TA). This enables ACME automation for identifier types — such as telephone numbers — that cannot be validated by `http-01` or `dns-01`.
+
+The authority token is a compact JWT carrying an `atc` claim that binds:
+- `tktype` — the identifier type (e.g., `"TNAuthList"`)
+- `tkvalue` — the identifier value (base64url-encoded DER)
+- `fingerprint` — the ACME account's JWK thumbprint
+- `ca` — must be absent or `false` (CA-cert issuance not supported)
+
+Akāmu validates the TA's signing certificate chain against a locally-configured set of trust anchors, verifies the JWT signature and expiry, and enforces one-time use via a JTI replay-prevention cache.
+
+### What it adds to the ACME API
+
+| Feature | Status |
+|---------|--------|
+| `tkauth-01` challenge type | Yes |
+| `tkauth-type` field in challenge object | Yes — always `"atc"` |
+| `token-authority` hint in challenge object | Yes — optional, from `tkauth.token_authority_url` |
+| x5u cert fetch for TA signing cert | Yes |
+| x5c inline cert for TA signing cert | Yes |
+| JTI replay prevention | Yes — database-backed `tkauth_jti_cache` table |
+| Automatic JTI cache pruning | Yes — background task, interval from `tkauth.jti_prune_interval_secs` |
+
+### Configuration
+
+```toml
+[tkauth]
+enabled                 = true
+trusted_ta_ca_files     = ["/etc/akamu/ta-root.pem"]
+token_authority_url     = "https://ta.example.com"   # optional hint
+max_validity_secs       = 3600
+jti_prune_interval_secs = 3600
+```
+
+`trusted_ta_ca_files` must list one or more PEM files containing the CA certificates that sign Token Authority certificates. The signing cert presented in the authority token (via `x5u` or `x5c`) must chain to one of these anchors.
+
+### JTI cache management
+
+Expired JTI entries accumulate over time. The background task prunes them automatically. Operators can also trigger manual pruning via:
+
+```
+akamuctl tkauth prune-jti
+akamuctl tkauth prune-jti --dry-run   # count without deleting
+```
+
+Or via the Admin API:
+
+```
+POST /admin/tkauth/prune-jti
+POST /admin/tkauth/prune-jti?dry_run=true
+```
+
+---
+
+## RFC 9448 — ACME TNAuthList Authority Token
+
+**[RFC 9448](https://www.rfc-editor.org/rfc/rfc9448)** defines the `TNAuthList` ACME identifier type and its use with the RFC 9447 `tkauth-01` challenge for STIR/SHAKEN telephone number automation. The identifier value is a base64url-encoded DER-encoded `TNAuthorizationList` structure as defined in RFC 8226.
+
+When a `new-order` request contains a `TNAuthList` identifier, Akāmu creates a `tkauth-01` challenge. The client obtains a signed authority token from the Token Authority — attesting that the account holds the telephone number authority — and submits it in the challenge response.
+
+---
+
+## draft-ietf-acme-authority-token-jwtclaimcon
+
+**[draft-ietf-acme-authority-token-jwtclaimcon](https://datatracker.ietf.org/doc/draft-ietf-acme-authority-token-jwtclaimcon/)** defines a second RFC 9447 profile for the `JWTClaimConstraints` identifier type. The identifier value is a base64url-encoded DER-encoded `JWTClaimConstraints` ASN.1 structure (from RFC 8226), constraining which PASSporT claims may appear on issued certificates.
+
+The `tkauth-01` validation is identical to RFC 9448 — the only differences are the identifier type string (`"JWTClaimConstraints"`) and the corresponding `atc.tktype` value in the authority token. Akāmu validates these generically; no separate configuration is required beyond enabling `[tkauth]`.
+
+An order may contain both `TNAuthList` and `JWTClaimConstraints` identifiers simultaneously. Each gets its own authorization and `tkauth-01` challenge; all authorizations must be valid before the order may be finalized.
+
+---
+
 ## Not implemented
-
-### RFC 9447 — ACME Challenges Using an Authority Token
-
-Defines a generic `tkauth-01` challenge type where proof of control comes from a JWT issued by an external authority rather than from DNS or HTTP. Designed for identifier types that cannot be validated by the classic ACME challenges (e.g., telephone numbers in STIR/SHAKEN).
-
-**Not implemented.** Requires integration with an external token authority, which is deployment-specific.
-
-### RFC 9448 — ACME TNAuthList Authority Token
-
-Extends RFC 9447 for telephone number (STIR/SHAKEN) use cases, where the authority token contains a TNAuthList claim.
-
-**Not considered.** Telecom-specific; outside the scope of Akāmu's target deployments.
 
 ### RFC 9538 — ACME Delegation Metadata for CDNI
 

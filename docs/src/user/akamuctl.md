@@ -952,6 +952,26 @@ akamuctl cosigner config
 
 Requires the `administrator` role on the cosigner.
 
+## tkauth JTI cache management
+
+These commands require `administrator` or `ca_operations` role and are only available when `[tkauth]` is enabled in the server configuration.
+
+### `tkauth prune-jti`
+
+Delete expired entries from the JTI replay-prevention cache:
+
+```bash
+akamuctl tkauth prune-jti
+```
+
+Use `--dry-run` to see the count of expired entries without deleting them:
+
+```bash
+akamuctl tkauth prune-jti --dry-run
+```
+
+The background task prunes the cache automatically at the configured interval. This command provides on-demand pruning or lets operators inspect cache size before a scheduled maintenance window.
+
 ## Configuration utilities
 
 ### `config generate`

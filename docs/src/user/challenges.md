@@ -1,6 +1,6 @@
 # Challenges
 
-A challenge is the mechanism by which `Akāmu` verifies that an ACME client controls the identifier (domain name, IP address, or email address) in an authorization. The server supports six challenge types: **http-01**, **dns-01**, **tls-alpn-01**, **dns-persist-01**, **onion-csr-01**, and **email-reply-00**.
+A challenge is the mechanism by which `Akāmu` verifies that an ACME client controls the identifier (domain name, IP address, email address, or telephone-number authority) in an authorization. The server supports seven challenge types: **http-01**, **dns-01**, **tls-alpn-01**, **dns-persist-01**, **onion-csr-01**, **email-reply-00**, and **tkauth-01**.
 
 For each identifier in an order, the server creates one challenge of each supported type. The client chooses which challenge type to complete.
 
@@ -9,6 +9,8 @@ For each identifier in an order, the server creates one challenge of each suppor
 `onion-csr-01` is offered exclusively for `.onion` identifiers (Tor hidden services) and uses a CSR-based proof-of-control mechanism rather than a network probe. See [onion-csr-01](#onion-csr-01-rfc-9799) below for the full description.
 
 `email-reply-00` is offered exclusively for `email` identifiers (RFC 8823 S/MIME) and uses a two-channel token delivered by email. It requires explicit server configuration. See [email-reply-00](#email-reply-00-rfc-8823) below for the full description.
+
+`tkauth-01` is offered exclusively for `TNAuthList` and `JWTClaimConstraints` identifiers (RFC 9447/9448). The client obtains a signed JWT from an external Token Authority and submits it in the challenge response. It requires explicit server configuration. See [tkauth-01](#tkauth-01-rfc-9447--rfc-9448) below for the full description.
 
 ## Key authorization
 
@@ -628,3 +630,80 @@ EOF
 ```
 
 The script is responsible for DKIM signing. The server does not sign outbound email.
+
+---
+
+## tkauth-01 (RFC 9447 / RFC 9448)
+
+`tkauth-01` validates control of a `TNAuthList` or `JWTClaimConstraints` identifier by verifying a signed JWT *authority token* issued by an external Token Authority (TA). This challenge type is defined by [RFC 9447](https://www.rfc-editor.org/rfc/rfc9447); the `TNAuthList` profile is defined by [RFC 9448](https://www.rfc-editor.org/rfc/rfc9448).
+
+Unlike network-based challenges, `tkauth-01` relies on the TA asserting the client's authority over the identifier out-of-band. The server only verifies the cryptographic integrity of the token.
+
+### Challenge object
+
+When an order contains a `TNAuthList` or `JWTClaimConstraints` identifier, the authorization contains a `tkauth-01` challenge object:
+
+```json
+{
+  "type": "tkauth-01",
+  "url": "https://acme.example.com/acme/chall/<authz-id>/tkauth-01",
+  "status": "pending",
+  "tkauth-type": "atc",
+  "token-authority": "https://ta.example.com"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `tkauth-type` | Always `"atc"` — the authority token type profile |
+| `token-authority` | Optional URL hint for the Token Authority, from `tkauth.token_authority_url` |
+
+### Key authorization
+
+`tkauth-01` uses the standard key authorization formula: `token.thumbprint` where `thumbprint` is the base64url-encoded SHA-256 JWK thumbprint of the account key. The `token` field is not present in the challenge object; the thumbprint is used directly as the `fingerprint` check in the authority token's `atc` claim.
+
+### Obtaining an authority token
+
+The client contacts the Token Authority (identified by `token-authority` or by deployment convention) and requests an authority token for its identifier. The TA issues a compact JWT that must contain:
+
+- **Header**: `alg` (ES256/RS256/etc.) and either `x5u` (URL to signing cert) or `x5c` (inline cert chain)
+- **Claims**:
+  - `atc`: an object with `tktype` (identifier type), `tkvalue` (identifier value), `fingerprint` (account JWK thumbprint), and optionally `ca: false`
+  - `jti`: a unique token identifier (REQUIRED; enforces one-time use)
+  - `exp`: expiry timestamp (REQUIRED)
+
+### Challenge response
+
+POST to the challenge URL with the JWT in the `tkauth` field:
+
+```json
+{
+  "tkauth": "<compact-JWT>"
+}
+```
+
+Example (JWS payload shown before signing):
+```json
+{
+  "tkauth": "eyJhbGciOiJFUzI1NiIsIng1dSI6Imh0dHBzOi8vdGEuZXhhbXBsZS5jb20vY2VydCJ9.<claims>.<sig>"
+}
+```
+
+### Validation steps
+
+1. Decode the JWT header to determine the signing certificate (via `x5u` fetch or `x5c` inline).
+2. Validate the signing certificate chain against the configured `trusted_ta_ca_files`.
+3. Verify the JWT signature and confirm `exp` has not elapsed.
+4. Check the `atc` claim: `tktype` matches the identifier type, `tkvalue` matches the identifier value, `fingerprint` matches the account JWK thumbprint.
+5. Record the `jti` in the replay-prevention cache; duplicate JTIs are rejected.
+
+### Configuration
+
+```toml
+[tkauth]
+enabled                 = true
+trusted_ta_ca_files     = ["/etc/akamu/ta-root.pem"]
+token_authority_url     = "https://ta.example.com"   # optional hint in challenge object
+max_validity_secs       = 3600   # reject tokens with exp - now > this
+jti_prune_interval_secs = 3600   # how often to purge expired JTI cache entries
+```
