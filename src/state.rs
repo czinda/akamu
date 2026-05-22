@@ -263,7 +263,7 @@ pub struct AppState {
     ///
     /// Prevents an attacker from replaying a captured CMS blob within the
     /// `gossip_envelope_max_age_secs` window.  Entries are evicted lazily once
-    /// their timestamp falls outside the window.  Absent nonces (empty Vec<u8>)
+    /// their timestamp falls outside the window.  Absent nonces (empty `Vec<u8>`)
     /// are not tracked so old peers that omit the field are still accepted.
     pub gossip_nonce_cache: Arc<std::sync::Mutex<std::collections::HashMap<Vec<u8>, i64>>>,
     /// Signalled after every CRDT write so the gossip loop can fire immediately
