@@ -160,6 +160,8 @@ pub async fn get_with_challenges(
                 // (get_by_email_message_id) and would bloat all authz fetches.
                 email_token_part1: None,
                 email_message_id: None,
+                tkauth_type: None,
+                token_authority: None,
             })
         })
         .collect();

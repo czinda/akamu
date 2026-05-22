@@ -29,7 +29,7 @@ pub async fn get_by_id(
 ) -> Result<Option<ChallengeRow>, AcmeError> {
     let row = super::query_as::<ChallengeRow>(
         "SELECT id, authz_id, type, status, token, validated, error, created, updated,
-                email_token_part1, email_message_id
+                email_token_part1, email_message_id, tkauth_type, token_authority
          FROM challenges WHERE id = ?",
     )
     .bind(id)
@@ -44,7 +44,7 @@ pub async fn list_by_authz(
 ) -> Result<Vec<ChallengeRow>, AcmeError> {
     let rows = super::query_as::<ChallengeRow>(
         "SELECT id, authz_id, type, status, token, validated, error, created, updated,
-                email_token_part1, email_message_id
+                email_token_part1, email_message_id, tkauth_type, token_authority
          FROM challenges WHERE authz_id = ?",
     )
     .bind(authz_id)
@@ -172,7 +172,7 @@ pub async fn get_by_email_message_id(
     let row = super::query_as::<ChallengeRow>(
         "SELECT id, authz_id, type, status, token,
                 validated, error, created, updated,
-                email_token_part1, email_message_id
+                email_token_part1, email_message_id, tkauth_type, token_authority
          FROM challenges
          WHERE email_message_id = ? AND type = 'email-reply-00' AND status = 'processing'
          LIMIT 1",
@@ -200,21 +200,34 @@ pub async fn get_status(
 ///
 /// `challenges` is a slice of `(id, type)` pairs; all rows share the same
 /// `authz_id`, `token`, and timestamps.  A no-op when `challenges` is empty.
+///
+/// `tkauth_token_authority` is the URL of the Token Authority hint to include
+/// in `tkauth-01` challenges; `None` when tkauth is not configured.  Only rows
+/// whose type is `"tkauth-01"` receive the `tkauth_type`/`token_authority`
+/// columns; all other rows leave them NULL.
 pub async fn insert_batch(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     authz_id: &str,
     challenges: &[(String, String)],
     token: &str,
     now: i64,
+    tkauth_token_authority: Option<&str>,
 ) -> Result<(), AcmeError> {
     if challenges.is_empty() {
         return Ok(());
     }
     let mut qb = super::DynQueryBuilder::new(
         "INSERT INTO challenges \
-         (id, authz_id, type, status, token, validated, error, created, updated) VALUES ",
+         (id, authz_id, type, status, token, validated, error, created, updated, \
+          tkauth_type, token_authority) VALUES ",
     );
     qb.push_values(challenges.iter(), |b, (chall_id, chall_type)| {
+        let (tkauth_type, token_authority): (Option<&str>, Option<&str>) =
+            if chall_type == "tkauth-01" {
+                (Some("atc"), tkauth_token_authority)
+            } else {
+                (None, None)
+            };
         b.push_bind(chall_id.as_str())
             .push_bind(authz_id)
             .push_bind(chall_type.as_str())
@@ -223,7 +236,9 @@ pub async fn insert_batch(
             .push_bind(None::<i64>)
             .push_bind(None::<String>)
             .push_bind(now)
-            .push_bind(now);
+            .push_bind(now)
+            .push_bind(tkauth_type)
+            .push_bind(token_authority);
     });
     qb.execute(executor).await?;
     Ok(())
@@ -326,6 +341,8 @@ mod tests {
             updated: 1_700_000_000,
             email_token_part1: None,
             email_message_id: None,
+            tkauth_type: None,
+            token_authority: None,
         }
     }
 
@@ -373,6 +390,8 @@ mod tests {
                 updated: 1_700_000_000,
                 email_token_part1: None,
                 email_message_id: None,
+                tkauth_type: None,
+                token_authority: None,
             },
         )
         .await
@@ -464,6 +483,8 @@ mod tests {
                 updated: 1_700_000_000,
                 email_token_part1: None,
                 email_message_id: None,
+                tkauth_type: None,
+                token_authority: None,
             },
         )
         .await
@@ -580,6 +601,8 @@ mod tests {
                 updated: 1_700_000_000,
                 email_token_part1: None,
                 email_message_id: None,
+                tkauth_type: None,
+                token_authority: None,
             },
         )
         .await
@@ -613,6 +636,8 @@ mod tests {
                 updated: 1_700_000_000,
                 email_token_part1: None,
                 email_message_id: None,
+                tkauth_type: None,
+                token_authority: None,
             },
         )
         .await

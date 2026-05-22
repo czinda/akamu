@@ -98,6 +98,12 @@ pub struct ChallengeRow {
     /// Message-ID of the sent challenge email; matched against In-Reply-To in the response.
     #[sqlx(default)]
     pub email_message_id: Option<String>,
+    /// RFC 9447 tkauth-01: authority token type (e.g. `"atc"`).
+    #[sqlx(default)]
+    pub tkauth_type: Option<String>,
+    /// RFC 9447 tkauth-01: Token Authority URL hint in challenge response.
+    #[sqlx(default)]
+    pub token_authority: Option<String>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]

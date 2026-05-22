@@ -26,6 +26,7 @@ pub mod operators;
 pub mod orders;
 pub mod schema;
 pub mod stats;
+pub mod tkauth;
 
 use crate::error::AcmeError;
 
