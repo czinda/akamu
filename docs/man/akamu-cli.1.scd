@@ -151,8 +151,25 @@ the account key (see *SIDECAR FILES* below).  No daemon, no database.
 		Key type for a newly generated certificate key.
 		Default: *ec:P-256*.
 
+	*--profile* _ID_
+		Request a named certificate profile (draft-ietf-acme-profiles-01).
+		The profile controls validity period, key usage, EKU, and other
+		certificate parameters on servers that support profiles.  Omit to
+		let the server apply its default (servers with a *default* profile
+		configured will apply it automatically).  The echoed profile name
+		is saved in the renewal TOML sidecar.
+
 	*--out* _FILE_
-		Write the PEM certificate chain to this file.
+		Write the issued certificate to this file.  For standard X.509
+		profiles the content is a PEM certificate chain
+		(*application/pem-certificate-chain*).  For MTC profiles
+		(*issue_as = "mtc"* in *akamu.conf*(5)) the server delivers a
+		binary DER-encoded *StandaloneCertificate*
+		(*application/pkix-cert*); the file is written as-is and is *not*
+		a PEM file.  *akamu-cli renew* handles both formats transparently:
+		the ARI cert-id is derived from the embedded *TBSCertificate*,
+		which is the first field of both *Certificate* and
+		*StandaloneCertificate*.
 
 	*--challenge* _TYPE_
 		Challenge type.  Default: *http-01*.  See *CHALLENGE TYPES* below.
@@ -197,6 +214,17 @@ the account key (see *SIDECAR FILES* below).  No daemon, no database.
 
 	*--force*
 		Renew unconditionally, skipping the ARI window check.
+
+	*--cert-key* _FILE_
+		Reuse an existing certificate private key instead of generating a
+		new one.  Use this when the key is pinned via DANE TLSA records or
+		similar mechanisms.  Overrides the *cert_key_path* in
+		*--renewal-config* when both are given.
+
+	*--profile* _ID_
+		Override the certificate profile for this renewal.  When
+		*--renewal-config* is used, the profile stored in the TOML is sent
+		by default; this flag overrides it.
 
 	When *--renewal-config* is not given, all the *issue* flags must be
 	provided explicitly (or via a combination with *--cert* for the ARI check).
@@ -295,7 +323,10 @@ the account key (see *SIDECAR FILES* below).  No daemon, no database.
 	*--dns-hook* _CMD_
 		Hook script to store in generated renewal configurations.  Not
 		invoked during import; stored so subsequent *renew* calls can use
-		it.
+		it.  If the certbot configuration used a DNS authenticator but no
+		*--dns-hook* is provided, a warning is printed for each affected
+		domain — the renewal config will require manual addition of
+		*dns_hook* before unattended renewal is possible.
 
 	*--dry-run*
 		Show what would be done without writing any files.
@@ -306,6 +337,20 @@ the account key (see *SIDECAR FILES* below).  No daemon, no database.
 
 	Wildcard domains stored by certbot with a leading underscore prefix
 	are re-encoded as *\*.example.com* in the renewal configuration.
+
+	Account key type and certificate key type are auto-detected from the
+	imported key files (EC curve or RSA modulus size); the generated
+	renewal TOML will reflect the detected type rather than a hardcoded
+	*ec:P-256* default.
+
+	Domains whose certificate chain or private key file is not accessible
+	(e.g. requires root and the command is run without elevated privileges)
+	are skipped with a warning rather than writing an incomplete renewal
+	configuration.  Re-run with *sudo* (or check *--dry-run* first) to
+	include them.
+
+	All written files (account key, renewal TOML) are created with mode
+	*0600*; copied certificate keys are set to *0600* at the destination.
 
 Certbot authenticator names are mapped to akamu challenge types as follows:
 
@@ -423,6 +468,11 @@ The following flags are available on *account register*, *issue*, and *renew*:
 On *issue* and *renew*, EAB flags are used only when no account URL sidecar
 exists (i.e. when inline account registration is required).
 
+The *--eab-key* HMAC secret is intentionally *not* saved in the renewal TOML
+sidecar written after a successful *issue*.  Re-supply *--eab-key* on each
+renewal that requires a fresh inline registration, or register the account
+separately with *account register* first.
+
 # DNS HOOK INTERFACE
 
 When *--dns-hook* _CMD_ is combined with *--challenge dns-01* or
@@ -511,6 +561,7 @@ tls_port         = 443
 poll_timeout     = 120
 eab_alg          = "HS256"
 dns_hook         = "/etc/akamu/hooks/dns-update.sh"
+profile          = "dv-tls"    # omitted when no profile was requested
 
 [[domains]]
 type  = "dns"
@@ -520,6 +571,14 @@ value = "example.com"
 type  = "dns"
 value = "*.example.com"
 ```
+
+The *profile* key is omitted when neither the client nor the server selected
+a profile during issuance.  The *eab_key* field is never written; supply
+*--eab-key* explicitly on renewals that require inline account registration.
+
+All private files written by *akamu-cli* (*account_key*, *cert_key_path*,
+the renewal TOML itself) are created with mode *0600*, readable only by the
+owning user.
 
 # EXAMPLES
 
