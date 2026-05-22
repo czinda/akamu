@@ -50,7 +50,7 @@ struct NewOrderPayload {
     replaces: Option<String>,
     #[serde(rename = "auto-renewal", default)]
     auto_renewal: Option<AutoRenewalRequest>,
-    /// draft-aaron-acme-profiles-01: optional profile identifier.
+    /// draft-ietf-acme-profiles-01: optional profile identifier.
     #[serde(default)]
     profile: Option<String>,
     /// RFC 9115 §2.3.2: URL of the delegation config object on this server.
@@ -234,7 +234,7 @@ pub async fn new_order(
         None
     };
 
-    // draft-aaron-acme-profiles-01: validate profile if specified.
+    // draft-ietf-acme-profiles-01: validate profile if specified.
     // resolve_for_ca() enforces ca_ids so a profile scoped to one CA is
     // rejected when the order targets a different CA.
     let order_profile: Option<String> = if let Some(ref p) = payload.profile {
@@ -773,7 +773,7 @@ pub(crate) struct OrderJson<'a> {
     replaces: Option<&'a str>,
     #[serde(rename = "auto-renewal", skip_serializing_if = "Option::is_none")]
     auto_renewal: Option<AutoRenewalJson>,
-    /// draft-aaron-acme-profiles-01
+    /// draft-ietf-acme-profiles-01
     #[serde(skip_serializing_if = "Option::is_none")]
     profile: Option<&'a str>,
     /// RFC 9115 §2.3.2: URL of the delegation config object.

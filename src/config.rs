@@ -825,7 +825,7 @@ pub struct ServerConfig {
     /// non-STAR delegation orders.
     #[serde(default)]
     pub allow_certificate_get: bool,
-    /// Certificate profiles (draft-aaron-acme-profiles-01).
+    /// Certificate profiles (draft-ietf-acme-profiles-01).
     /// Maps profile identifier → human-readable description or documentation URL.
     /// Advertised in directory meta. Clients may request a profile by name in newOrder.
     /// When empty, profile selection is not advertised and profile fields are ignored.

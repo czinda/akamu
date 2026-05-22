@@ -309,7 +309,7 @@ impl ProfileRegistry {
     /// Return all `profile_id → description` pairs from the cache.
     ///
     /// Used to populate the ACME directory `meta.profiles` field
-    /// (draft-aaron-acme-profiles-01).
+    /// (draft-ietf-acme-profiles-01).
     pub fn all_profiles(&self) -> HashMap<String, String> {
         self.cache
             .read()

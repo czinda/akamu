@@ -47,7 +47,7 @@ pub struct OrderRow {
     /// For delegation orders with an upstream CA this field is set atomically with
     /// `status='processing'` in `set_processing_with_csr_der`.
     pub star_csr_der: Option<Vec<u8>>,
-    // draft-aaron-acme-profiles-01
+    // draft-ietf-acme-profiles-01
     pub profile: Option<String>,
     /// CA that will issue / issued the certificate for this order.
     /// Defaults to `'default'` for rows created before the multi-CA migration.

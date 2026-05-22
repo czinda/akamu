@@ -73,7 +73,7 @@ pub enum AcmeError {
     #[error("TLS error: {0}")]
     Tls(String),
 
-    // ── draft-aaron-acme-profiles-01 ─────────────────────────────────────────
+    // ── draft-ietf-acme-profiles-01 ─────────────────────────────────────────
     #[error("invalid profile: {0}")]
     InvalidProfile(String),
 

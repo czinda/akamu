@@ -98,7 +98,7 @@ CREATE TABLE orders (
     star_allow_cert_get       INTEGER NOT NULL DEFAULT 0,
     star_canceled_at          INTEGER,
     star_csr_der              BLOB,               -- stored CSR DER for reissuance
-    -- draft-aaron-acme-profiles-01
+    -- draft-ietf-acme-profiles-01
     profile                   TEXT
 );
 CREATE INDEX idx_orders_account  ON orders(account_id);

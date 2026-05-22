@@ -2,7 +2,7 @@
 
 Certificate profiles let `Akāmu` issue certificates with different extension sets, validity periods, and key usage policies depending on the use case. Without profiles every order gets the same default profile: `digitalSignature` KeyUsage, `serverAuth` EKU, and the validity and URL settings from `[ca]`. With profiles configured, clients can request a named policy at order time and the server enforces it at issuance.
 
-Profiles implement [draft-aaron-acme-profiles-01](https://www.ietf.org/archive/id/draft-aaron-acme-profiles-01.html).
+Profiles implement [draft-ietf-acme-profiles-01](https://datatracker.ietf.org/doc/draft-ietf-acme-profiles/).
 
 ---
 

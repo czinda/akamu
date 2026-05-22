@@ -78,7 +78,7 @@ pub async fn finalize_order(
     // Validate CSR.
     let validated_csr = ca::csr::validate_csr(&csr_der, &allowed)?;
 
-    // draft-aaron-acme-profiles-01: if the order carries a profile name that the
+    // draft-ietf-acme-profiles-01: if the order carries a profile name that the
     // registry does not recognise (or is restricted to a different CA), reject at
     // finalize time.
     if let Some(ref p) = order.profile {
