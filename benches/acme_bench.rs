@@ -916,6 +916,7 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
         admin: None,
         email_challenge: None,
         delegation_upstream: None,
+        tkauth: None,
         gossip: gossip_cfg,
         crdt_db_url: None,
     });
@@ -1058,6 +1059,7 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
         gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         write_notify: Arc::new(tokio::sync::Notify::new()),
         crdt_db,
+        tkauth_trust_anchors: None,
     });
 
     if state.config.gossip.is_some() {

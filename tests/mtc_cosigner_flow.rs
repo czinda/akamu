@@ -400,6 +400,7 @@ async fn build_akamu_state(
         admin: None,
         email_challenge: None,
         delegation_upstream: None,
+        tkauth: None,
         gossip: None,
         crdt_db_url: None,
     });
@@ -507,6 +508,7 @@ async fn build_akamu_state(
         gss_cred: None,
         eab_master_secret: None,
         crdt_db: db_conn.clone(),
+        tkauth_trust_anchors: None,
     })
 }
 

@@ -113,6 +113,7 @@ pub async fn start(
         admin: None,
         email_challenge: None,
         delegation_upstream: None,
+        tkauth: None,
         gossip: None,
         crdt_db_url: None,
     });
@@ -237,6 +238,7 @@ pub async fn start(
         gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         write_notify: Arc::new(tokio::sync::Notify::new()),
         crdt_db: pool.clone(),
+        tkauth_trust_anchors: None,
     });
 
     let router = routes::build_router(Arc::clone(&state), None);

@@ -9,6 +9,7 @@ mod dns_persist_01;
 pub mod email_reply_00;
 mod http01;
 pub mod onion_csr_01;
+mod tkauth01;
 mod tls_alpn01;
 
 use std::sync::Arc;
@@ -34,6 +35,9 @@ pub struct ChallengeParams<'a> {
     /// this challenge.  Used by dns-persist-01 to verify the account is still
     /// active before trusting the long-lived TXT record.
     pub account_id: &'a str,
+    /// Raw compact JWT from the client's tkauth-01 challenge response payload.
+    /// `None` for all other challenge types.
+    pub authority_token: Option<&'a str>,
 }
 
 /// Entry point called from `routes::challenge::respond_challenge`.
@@ -65,6 +69,7 @@ pub async fn validate_challenge(
         token,
         onion_csr_der,
         account_id,
+        authority_token,
     } = params;
 
     // dns-persist-01: the TXT record is long-lived and pre-provisioned; the
@@ -99,6 +104,37 @@ pub async fn validate_challenge(
                 return "invalid";
             }
         }
+    }
+
+    // tkauth-01 (RFC 9447): authority token presented in challenge response.
+    if chall_type == "tkauth-01" {
+        let now = unix_now();
+        let token_jwt = match authority_token {
+            Some(t) => t,
+            None => {
+                let err = AcmeError::IncorrectResponse(
+                    "tkauth-01: authority token not provided in challenge response".into(),
+                );
+                let _ =
+                    on_invalid_with_order(state, challenge_id, authz_id, Some(order_id), err, now)
+                        .await;
+                return "invalid";
+            }
+        };
+        let result =
+            tkauth01::validate(id_type, id_value, key_auth, token_jwt, authz_id, state).await;
+        return match result {
+            Ok(()) => {
+                let _ = on_valid(state, challenge_id, authz_id, order_id, now).await;
+                "valid"
+            }
+            Err(e) => {
+                let _ =
+                    on_invalid_with_order(state, challenge_id, authz_id, Some(order_id), e, now)
+                        .await;
+                "invalid"
+            }
+        };
     }
 
     // email-reply-00 (RFC 8823): triggering the challenge sends the challenge
@@ -635,6 +671,7 @@ mod tests {
             delegation_upstream: None,
             gossip: None,
             crdt_db_url: None,
+            tkauth: None,
         });
 
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
@@ -724,6 +761,7 @@ mod tests {
             gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             write_notify: Arc::new(tokio::sync::Notify::new()),
             crdt_db: db_conn.clone(),
+            tkauth_trust_anchors: None,
         })
     }
 
@@ -843,6 +881,7 @@ mod tests {
                 token: "token",
                 onion_csr_der: None,
                 account_id: "1",
+                authority_token: None,
             },
         )
         .await;
@@ -946,6 +985,8 @@ mod tests {
                 updated: now,
                 email_token_part1: None,
                 email_message_id: None,
+                tkauth_type: None,
+                token_authority: None,
             },
         )
         .await
@@ -1074,6 +1115,8 @@ mod tests {
                 updated: now,
                 email_token_part1: None,
                 email_message_id: None,
+                tkauth_type: None,
+                token_authority: None,
             },
         )
         .await
@@ -1187,6 +1230,7 @@ mod tests {
             delegation_upstream: None,
             gossip: None,
             crdt_db_url: None,
+            tkauth: None,
         });
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
         db::install_drivers();
@@ -1274,6 +1318,7 @@ mod tests {
             gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             write_notify: Arc::new(tokio::sync::Notify::new()),
             crdt_db: db_conn.clone(),
+            tkauth_trust_anchors: None,
         });
 
         // The identifier is just the IP address — no port embedded.
@@ -1371,6 +1416,8 @@ mod tests {
                 updated: now,
                 email_token_part1: None,
                 email_message_id: None,
+                tkauth_type: None,
+                token_authority: None,
             },
         )
         .await
@@ -1389,6 +1436,7 @@ mod tests {
                 token,
                 onion_csr_der: None,
                 account_id: "1",
+                authority_token: None,
             },
         )
         .await;
@@ -1544,6 +1592,7 @@ mod tests {
             delegation_upstream: None,
             gossip: None,
             crdt_db_url: None,
+            tkauth: None,
         });
         let (ca_key, ca_cert_der) = crate::ca::init::load_or_generate(config.default_ca()).unwrap();
         let ca = Arc::new(CaState {
@@ -1630,6 +1679,7 @@ mod tests {
             gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             write_notify: Arc::new(tokio::sync::Notify::new()),
             crdt_db: crdt_pool,
+            tkauth_trust_anchors: None,
         })
     }
 
@@ -1726,6 +1776,8 @@ mod tests {
                 updated: now,
                 email_token_part1: None,
                 email_message_id: None,
+                tkauth_type: None,
+                token_authority: None,
             },
         )
         .await
