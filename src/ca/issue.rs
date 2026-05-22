@@ -387,6 +387,7 @@ pub fn issue_with_params(
     params: &CertificateParameters,
     not_before_override: Option<i64>,
     not_after_override: Option<i64>,
+    extra_other_names: &[Vec<u8>],
 ) -> Result<IssuedCert, AcmeError> {
     // ── Extract CA name and SPKI DER ─────────────────────────────────────────
     let ca_name_der = extract_ca_subject_der(&ca.cert_der)?;
@@ -504,6 +505,9 @@ pub fn issue_with_params(
                 );
             }
         }
+    }
+    for on_der in extra_other_names {
+        san_builder = san_builder.other_name(on_der);
     }
     let san_der = san_builder
         .build()
@@ -1525,9 +1529,12 @@ mod tests {
             auth_hook_timeout_secs: 30,
             require_account_grant: false,
             ca_ids: vec![],
+            kpn_san_templates: vec![],
+            ms_upn_san_template: None,
+            inject_account_kpn: false,
         };
 
-        let result = issue_with_params(&ca, &validated_csr, &params, None, None);
+        let result = issue_with_params(&ca, &validated_csr, &params, None, None, &[]);
         assert!(
             result.is_err(),
             "expected Err when enforce_validity_cap=true and validity_days=201"
@@ -1580,9 +1587,12 @@ mod tests {
             auth_hook_timeout_secs: 30,
             require_account_grant: false,
             ca_ids: vec![],
+            kpn_san_templates: vec![],
+            ms_upn_san_template: None,
+            inject_account_kpn: false,
         };
 
-        let result = issue_with_params(&ca, &validated_csr, &params, None, None);
+        let result = issue_with_params(&ca, &validated_csr, &params, None, None, &[]);
         assert!(
             result.is_ok(),
             "expected Ok when enforce_validity_cap=true and validity_days=200: {result:?}"

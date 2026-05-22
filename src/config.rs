@@ -378,6 +378,20 @@ pub struct BuiltinProfileConfig {
     /// through the RSA and EC CAs.
     #[serde(default)]
     pub ca_ids: Vec<String>,
+    /// KPN SAN templates expanded against the order's DNS SANs at issuance.
+    /// Syntax: `"HTTP/{dns}@REALM"` → NT-SRV-HST(3); `"{dns}@REALM"` →
+    /// NT-PRINCIPAL(1).  Static templates (no `{dns}`) are injected once.
+    #[serde(default)]
+    pub kpn_san_templates: Vec<String>,
+    /// MS-UPN SAN template (OID 1.3.6.1.4.1.311.20.2.3).  `{dns}` is replaced
+    /// with the first DNS SAN from the CSR, or use a literal UPN for a static value.
+    #[serde(default)]
+    pub ms_upn_san_template: Option<String>,
+    /// When `true`, inject the account's stored Kerberos principal
+    /// (copied from the EAB `bound_principal` at registration) as a
+    /// KRB5PrincipalName OtherName SAN.
+    #[serde(default)]
+    pub inject_account_kpn: bool,
 }
 
 /// A certificate policy OID with an optional CPS URI qualifier.

@@ -1219,6 +1219,12 @@ struct ProfilePayload {
     require_account_grant: bool,
     #[serde(default)]
     ca_ids: Vec<String>,
+    #[serde(default)]
+    kpn_san_templates: Vec<String>,
+    #[serde(default)]
+    ms_upn_san_template: Option<String>,
+    #[serde(default)]
+    inject_account_kpn: bool,
 }
 
 fn default_profile_validity_days() -> u32 {
@@ -1252,6 +1258,9 @@ impl ProfilePayload {
             auth_hook_timeout_secs: self.auth_hook_timeout_secs,
             require_account_grant: self.require_account_grant,
             ca_ids: self.ca_ids,
+            kpn_san_templates: self.kpn_san_templates,
+            ms_upn_san_template: self.ms_upn_san_template,
+            inject_account_kpn: self.inject_account_kpn,
         }
     }
 }

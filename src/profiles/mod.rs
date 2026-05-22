@@ -145,6 +145,21 @@ pub struct CertificateParameters {
     /// Populated from `BuiltinProfileConfig.ca_ids`; Dogtag/IPA profiles always
     /// use `vec![]` (no per-CA restriction).
     pub ca_ids: Vec<String>,
+    /// KPN SAN templates expanded against the CSR's DNS SANs at issuance time.
+    /// Each entry follows the syntax `"SERVICE/{dns}@REALM"` (NT-SRV-HST) or
+    /// `"{dns}@REALM"` (NT-PRINCIPAL).  Templates without `{dns}` are static
+    /// and injected exactly once.  See `ca::krb5_san::expand_kpn_template`.
+    pub kpn_san_templates: Vec<String>,
+    /// MS-UPN SAN template expanded against the first CSR DNS SAN.  Produces
+    /// an OtherName SAN with OID 1.3.6.1.4.1.311.20.2.3 (UTF-8 UPN value).
+    /// Use `{dns}` as a placeholder for the first DNS SAN, or a literal value
+    /// for a static UPN that is always injected.
+    pub ms_upn_san_template: Option<String>,
+    /// When `true`, look up the account's stored Kerberos principal
+    /// (`accounts.kerberos_principal`) and inject it as a KRB5PrincipalName
+    /// OtherName SAN.  The principal is stored at account registration when the
+    /// account is created via a GSSAPI-authenticated EAB key.
+    pub inject_account_kpn: bool,
 }
 
 impl CertificateParameters {
@@ -171,6 +186,9 @@ impl CertificateParameters {
             auth_hook_timeout_secs: 30,
             require_account_grant: false,
             ca_ids: vec![],
+            kpn_san_templates: vec![],
+            ms_upn_san_template: None,
+            inject_account_kpn: false,
         }
     }
 }
@@ -502,6 +520,9 @@ mod tests {
             auth_hook_timeout_secs: 30,
             require_account_grant: false,
             ca_ids,
+            kpn_san_templates: vec![],
+            ms_upn_san_template: None,
+            inject_account_kpn: false,
         }
     }
 

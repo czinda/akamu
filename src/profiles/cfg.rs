@@ -340,6 +340,9 @@ fn translate(
         auth_hook_timeout_secs: 30,
         require_account_grant: false,
         ca_ids: vec![],
+        kpn_san_templates: vec![],
+        ms_upn_san_template: None,
+        inject_account_kpn: false,
     })
 }
 

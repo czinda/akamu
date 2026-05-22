@@ -137,7 +137,7 @@ pub async fn finalize_order(
     } else {
         None
     });
-    if let Some(profile_name) = effective_profile {
+    let mut extra_other_names: Vec<Vec<u8>> = if let Some(profile_name) = effective_profile {
         crate::profiles::auth::check_profile_auth(
             &state.db,
             &account_id,
@@ -145,8 +145,10 @@ pub async fn finalize_order(
             &cert_params,
             &allowed,
         )
-        .await?;
-    }
+        .await?
+    } else {
+        vec![]
+    };
 
     // Validate CSR (after auth to avoid timing oracle on CSR structure).
     let validated_csr = ca::csr::validate_csr(&csr_der, &allowed)?;
@@ -219,6 +221,39 @@ pub async fn finalize_order(
         }
     }
 
+    // Option A: expand KPN/MS-UPN templates against CSR DNS SANs.
+    let dns_sans: Vec<&str> = validated_csr
+        .sans
+        .iter()
+        .filter(|s| s.san_type == "dns")
+        .map(|s| s.value.as_str())
+        .collect();
+    for tmpl in &cert_params.kpn_san_templates {
+        extra_other_names.extend(
+            crate::ca::krb5_san::expand_kpn_template(tmpl, &dns_sans)
+                .map_err(AcmeError::Builder)?,
+        );
+    }
+    if let Some(ref tmpl) = cert_params.ms_upn_san_template {
+        if let Some(der) = crate::ca::krb5_san::expand_ms_upn_template(tmpl, &dns_sans)
+            .map_err(AcmeError::Builder)?
+        {
+            extra_other_names.push(der);
+        }
+    }
+
+    // Option B: account-stored Kerberos principal injected as KPN OtherName SAN.
+    if cert_params.inject_account_kpn {
+        if let Some(principal) =
+            db::accounts::get_kerberos_principal(&state.db, &account_id).await?
+        {
+            extra_other_names.push(
+                crate::ca::krb5_san::encode_principal_str_other_name(&principal)
+                    .map_err(AcmeError::Builder)?,
+            );
+        }
+    }
+
     // Issue the certificate using the resolved parameters.  akamu's own CA
     // signs in all cases; the profile only governs extension content and validity.
     let issued = ca::issue::issue_with_params(
@@ -227,6 +262,7 @@ pub async fn finalize_order(
         &cert_params,
         order.not_before,
         order.not_after,
+        &extra_other_names,
     )?;
 
     // For MTC issuance profiles, build a StandaloneCertificate from the issued
