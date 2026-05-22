@@ -874,6 +874,7 @@ mod tests {
                 updated: now,
                 profile_grants: None,
                 ca_id: String::new(),
+                kerberos_principal: None,
             },
         )
         .await
@@ -1000,6 +1001,7 @@ mod tests {
                 updated: now,
                 profile_grants: None,
                 ca_id: String::new(),
+                kerberos_principal: None,
             },
         )
         .await
@@ -1294,6 +1296,7 @@ mod tests {
                 updated: now,
                 profile_grants: None,
                 ca_id: String::new(),
+                kerberos_principal: None,
             },
         )
         .await
@@ -1653,6 +1656,7 @@ mod tests {
                 updated: now,
                 profile_grants: None,
                 ca_id: String::new(),
+                kerberos_principal: None,
             },
         )
         .await

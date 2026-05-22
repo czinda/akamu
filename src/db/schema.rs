@@ -20,6 +20,10 @@ pub struct AccountRow {
     /// CA this account is scoped to.  Empty string means server-wide (no CA restriction).
     /// Non-empty only when `server.account_scope = "ca"`.
     pub ca_id: String,
+    /// Kerberos principal stored at registration time when the account was created via a
+    /// GSSAPI-authenticated EAB key (`eab_keys.bound_principal`).  `None` for accounts
+    /// not using GSSAPI EAB.
+    pub kerberos_principal: Option<String>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]

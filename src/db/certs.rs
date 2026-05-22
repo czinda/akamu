@@ -450,6 +450,7 @@ mod tests {
             updated: 1_700_000_000,
             profile_grants: None,
             ca_id: String::new(),
+            kerberos_principal: None,
         };
         crate::db::accounts::insert(db, acct).await.unwrap();
 

@@ -120,7 +120,7 @@ pub async fn new_account(
     // a valid HMAC-signed EAB JWS whose payload is the account public key.
     // The (kid, profile_grants) tuple lets us copy grants from the EAB key to
     // the account atomically in the same transaction.
-    let verified_eab: Option<(String, Option<String>)> =
+    let verified_eab: Option<(String, Option<String>, Option<String>)> =
         if state.config.server.external_account_required {
             let eab_val = payload
                 .external_account_binding
@@ -174,9 +174,10 @@ pub async fn new_account(
                 )
                 .await;
 
-            // Capture grants before dropping key_row.
+            // Capture grants and Kerberos principal before dropping key_row.
             let grants = key_row.profile_grants.clone();
-            Some((kid, grants))
+            let principal = key_row.bound_principal.clone();
+            Some((kid, grants, principal))
         } else {
             None
         };
@@ -189,8 +190,9 @@ pub async fn new_account(
         .transpose()
         .map_err(|e| AcmeError::Internal(format!("contact serialization: {e}")))?;
 
-    // Profile grants inherited from the EAB key (None when no EAB was used).
-    let eab_profile_grants = verified_eab.as_ref().and_then(|(_, g)| g.clone());
+    // Profile grants and Kerberos principal inherited from the EAB key.
+    let eab_profile_grants = verified_eab.as_ref().and_then(|(_, g, _)| g.clone());
+    let eab_kerberos_principal = verified_eab.as_ref().and_then(|(_, _, p)| p.clone());
 
     // Capture copies before moves into AccountRow below.
     let spki_for_crdt = ctx.spki_der.clone();
@@ -213,10 +215,11 @@ pub async fn new_account(
                 updated: now,
                 profile_grants: eab_profile_grants,
                 ca_id: String::new(),
+                kerberos_principal: eab_kerberos_principal,
             },
         )
         .await?;
-        if let Some((eab_kid, _)) = verified_eab {
+        if let Some((eab_kid, _, _)) = verified_eab {
             db::eab::mark_used(&mut *tx, &eab_kid, now).await?;
         }
         tx.commit().await.map_err(AcmeError::from)?;
@@ -253,6 +256,7 @@ pub async fn new_account(
         updated: now,
         profile_grants: None,
         ca_id: String::new(),
+        kerberos_principal: None,
     };
     let contacts = payload.contact.unwrap_or_default();
     let account_url = format!("{pfx}/account/{id}");
@@ -545,6 +549,7 @@ mod tests {
             updated: 0,
             profile_grants: None,
             ca_id: String::new(),
+            kerberos_principal: None,
         };
         let contacts = vec!["mailto:a@b.com".to_string()];
         let json = account_json(&row, &contacts, "https://acme.test", false);

@@ -7,8 +7,8 @@ pub async fn insert(
 ) -> Result<(), AcmeError> {
     super::query(
         "INSERT INTO accounts \
-         (id, status, contact, public_key, jwk_thumbprint, created, updated, profile_grants, ca_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         (id, status, contact, public_key, jwk_thumbprint, created, updated, profile_grants, ca_id, kerberos_principal)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&row.id)
     .bind(&row.status)
@@ -19,6 +19,7 @@ pub async fn insert(
     .bind(row.updated)
     .bind(&row.profile_grants)
     .bind(&row.ca_id)
+    .bind(&row.kerberos_principal)
     .execute(executor)
     .await?;
     Ok(())
@@ -29,7 +30,7 @@ pub async fn get_by_id(
     id: &str,
 ) -> Result<Option<AccountRow>, AcmeError> {
     let row = super::query_as::<AccountRow>(
-        "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated, profile_grants, ca_id
+        "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated, profile_grants, ca_id, kerberos_principal
          FROM accounts WHERE id = ?",
     )
     .bind(id)
@@ -43,7 +44,7 @@ pub async fn get_by_thumbprint(
     thumbprint: &str,
 ) -> Result<Option<AccountRow>, AcmeError> {
     let row = super::query_as::<AccountRow>(
-        "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated, profile_grants, ca_id
+        "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated, profile_grants, ca_id, kerberos_principal
          FROM accounts WHERE jwk_thumbprint = ?",
     )
     .bind(thumbprint)
@@ -149,6 +150,21 @@ pub async fn get_profile_grants(
     Ok(row.map(|(grants,)| grants))
 }
 
+/// Fetch the `kerberos_principal` for an account.
+///
+/// Returns `Ok(None)` when the account is not found or has no stored principal.
+pub async fn get_kerberos_principal(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    id: &str,
+) -> Result<Option<String>, AcmeError> {
+    let row: Option<(Option<String>,)> =
+        super::query_as("SELECT kerberos_principal FROM accounts WHERE id = ?")
+            .bind(id)
+            .fetch_optional(executor)
+            .await?;
+    Ok(row.and_then(|(p,)| p))
+}
+
 /// List accounts with optional status filter and pagination.
 pub async fn list(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
@@ -158,7 +174,7 @@ pub async fn list(
     offset: i64,
 ) -> Result<Vec<AccountRow>, AcmeError> {
     let mut qb = super::DynQueryBuilder::new(
-        "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated, profile_grants, ca_id \
+        "SELECT id, status, contact, public_key, jwk_thumbprint, created, updated, profile_grants, ca_id, kerberos_principal \
          FROM accounts WHERE 1=1",
     );
     if let Some(st) = status {
@@ -204,6 +220,7 @@ mod tests {
             updated: 1_700_000_000,
             profile_grants: None,
             ca_id: String::new(),
+            kerberos_principal: None,
         }
     }
 
@@ -381,6 +398,7 @@ mod tests {
             .is_err());
         assert!(set_profile_grants(&raw, "any", None, 0).await.is_err());
         assert!(get_profile_grants(&raw, "any").await.is_err());
+        assert!(get_kerberos_principal(&raw, "any").await.is_err());
     }
 
     #[tokio::test]
@@ -432,6 +450,39 @@ mod tests {
             g,
             Some(Some("[\"mtc-tls\"]".to_string())),
             "grants passed to insert should be persisted"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_kerberos_principal_not_found_returns_none() {
+        let db = open_db().await;
+        let result = get_kerberos_principal(&db, "nonexistent").await.unwrap();
+        assert!(result.is_none(), "missing account should return None");
+    }
+
+    #[tokio::test]
+    async fn get_kerberos_principal_null_returns_none() {
+        // sample_account sets kerberos_principal = None (NULL in DB).
+        let db = open_db().await;
+        insert(&db, sample_account("kpn-null")).await.unwrap();
+        let result = get_kerberos_principal(&db, "kpn-null").await.unwrap();
+        assert!(
+            result.is_none(),
+            "account with NULL kerberos_principal should return None"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_kerberos_principal_stored_value_returned() {
+        let db = open_db().await;
+        let mut row = sample_account("kpn-set");
+        row.kerberos_principal = Some("alice@EXAMPLE.COM".to_string());
+        insert(&db, row).await.unwrap();
+        let result = get_kerberos_principal(&db, "kpn-set").await.unwrap();
+        assert_eq!(
+            result.as_deref(),
+            Some("alice@EXAMPLE.COM"),
+            "stored principal should be returned verbatim"
         );
     }
 }
