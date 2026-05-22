@@ -56,12 +56,12 @@ $(if $(SYNTA_VERSION),,$(error SYNTA_VERSION: could not extract synta version fr
 
 TARBALL              := $(NAME)-$(VERSION).tar.gz
 VENDOR_TARBALL       := $(NAME)-$(VERSION)-vendor.tar.gz
-WEBUI_VENDOR_TARBALL := $(NAME)-$(VERSION)-webui-node_modules.tar.gz
+WEBUI_DIST_TARBALL   := $(NAME)-$(VERSION)-webui-dist.tar.gz
 
 # Absolute path to the crate dependency checker script.
 CHECKDEPS := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))check-crate-deps.sh
 
-ALL_SOURCES := $(TARBALL) $(VENDOR_TARBALL) $(WEBUI_VENDOR_TARBALL)
+ALL_SOURCES := $(TARBALL) $(VENDOR_TARBALL) $(WEBUI_DIST_TARBALL)
 
 # Git ref used for the tarball and snapshot release identifiers.
 # Defaults to HEAD so snapshots reflect the current branch tip.
@@ -86,7 +86,7 @@ MOCK_CONFIG ?= fedora-rawhide-x86_64
 
 # ──────────────────────────────────────────────────────────────────────────────
 
-.PHONY: all sources tarball vendor webui-vendor spec srpm mock lint check-deps clean help copr-build
+.PHONY: all sources tarball vendor webui-dist spec srpm mock lint check-deps clean help copr-build
 
 all: sources
 
@@ -95,7 +95,7 @@ help:
 	@echo "  sources       prepare all source files (tarball + vendor + webui-vendor)"
 	@echo "  tarball       create $(TARBALL) from GIT_REF=$(GIT_REF)"
 	@echo "  vendor        create $(VENDOR_TARBALL)  [needs network]"
-	@echo "  webui-vendor  create $(WEBUI_VENDOR_TARBALL)  [needs network]"
+	@echo "  webui-dist    create $(WEBUI_DIST_TARBALL)  [needs npm + rollup locally]"
 	@echo "  spec          validate rust2rpm.toml and generate $(SPEC_OUT)"
 	@echo "  srpm          build SRPM (Release: $(RELEASE)%{?dist})"
 	@echo "  mock          rebuild SRPM in mock chroot (MOCK_CONFIG=$(MOCK_CONFIG))"
@@ -117,7 +117,7 @@ help:
 # SOURCE PREPARATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-sources: tarball vendor webui-vendor
+sources: tarball vendor webui-dist
 
 # ── tarball ───────────────────────────────────────────────────────────────────
 
@@ -182,21 +182,25 @@ $(VENDOR_TARBALL):
 	rm -rf "$(REPOROOT)/vendor"
 	@echo "==> $@ ready"
 
-# ── webui-vendor ──────────────────────────────────────────────────────────────
+# ── webui-dist ────────────────────────────────────────────────────────────────
 #
-# The webui node_modules tarball vendors all Node.js dependencies for the
-# management web UI so the RPM build can run 'npm run build' without network
-# access inside the mock chroot.  Re-run this target whenever package.json or
-# package-lock.json changes.
+# Build the management web UI static assets on the developer machine and pack
+# the resulting webui/dist/ directory into a tarball.  The COPR/mock build
+# environment unpacks this pre-built tarball instead of running npm/rollup,
+# which is not available for aarch64 in the npm registry.
+#
+# Re-run this target whenever webui source files change.  Requires npm and a
+# rollup-capable Node.js environment (e.g. x86_64 Fedora workstation).
 
-webui-vendor: $(WEBUI_VENDOR_TARBALL)
+webui-dist: $(WEBUI_DIST_TARBALL)
 
-$(WEBUI_VENDOR_TARBALL):
-	@echo "==> Creating $@ (Node.js dependencies for the management web UI)"
+$(WEBUI_DIST_TARBALL):
+	@echo "==> Building webui (npm install + vite build) and packing dist/"
 	cd "$(REPOROOT)/webui" && npm install --prefer-offline
+	cd "$(REPOROOT)/webui" && npm run build
 	tar -czf "$(CURDIR)/$@" \
-	    -C "$(REPOROOT)/webui" node_modules/
-	@echo "==> $@ ready"
+	    -C "$(REPOROOT)/webui" dist/
+	@echo "==> $@ ready (pre-built; unpack in RPM %%build instead of running npm)"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SPEC / SRPM / MOCK / LINT

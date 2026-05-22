@@ -91,10 +91,12 @@ Source12:       akamu-cosigner.socket
 Source3:        config.toml.example
 # Example akamuctl configuration file; installed as a doc file.
 Source9:        akamuctl.toml.example
-# Node.js dependency vendor tarball for the management web UI.
-# Generated with: cd webui && npm install && tar czf akamu-{version}-webui-node_modules.tar.gz node_modules/
-# See 'make webui-vendor' in contrib/packages/.
-Source10:       akamu-%{version}-webui-node_modules.tar.gz
+# Pre-built management web UI static assets.
+# Built on the developer machine (requires npm + rollup on x86_64) and unpacked
+# verbatim in %build.  rollup is not available in the npm registry for aarch64,
+# so the dist/ tree is pre-generated rather than built inside the mock chroot.
+# Generated with: make webui-dist  (in contrib/packages/)
+Source10:       akamu-%{version}-webui-dist.tar.gz
 
 ExclusiveArch:  %{rust_arches}
 
@@ -133,10 +135,9 @@ BuildRequires:  rust-synta-mtc-devel
 BuildRequires:  scdoc
 # Systemd scriptlet support
 BuildRequires:  systemd-rpm-macros
-# Management web UI (Node.js/npm); only needed when %%{with webui} is set.
-%if %{with webui}
-BuildRequires:  npm
-%endif
+# Management web UI: no npm/rollup BuildRequires — the dist/ tree is
+# pre-built on the developer machine and shipped as Source10.  See
+# 'make webui-dist' in contrib/packages/.
 %{?systemd_requires}
 
 Requires:       akamuctl = %{version}-%{release}
@@ -337,10 +338,9 @@ sed -i -E \
 scdoc < docs/man/akamu.8.scd          | gzip -9 > akamu.8.gz
 scdoc < docs/man/akamu-cosigner.8.scd | gzip -9 > akamu-cosigner.8.gz
 scdoc < docs/man/akamuctl.1.scd       | gzip -9 > akamuctl.1.gz
-# Build the management web UI static assets (requires Source10 node_modules tarball).
+# Unpack pre-built web UI static assets (Source10 contains webui/dist/).
 %if %{with webui}
 tar -xzf %{SOURCE10} -C webui/
-npm --prefix webui run build
 %endif
 
 

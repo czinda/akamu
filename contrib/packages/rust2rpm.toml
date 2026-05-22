@@ -45,10 +45,10 @@ extra-sources = [
     { number = 7, file = "akamu-tmpfiles.conf", comments = ["tmpfiles.d entry that creates /var/lib/akamu at boot."] },
     { number = 8, file = "akamu-cosigner-tmpfiles.conf", comments = ["tmpfiles.d entry that creates /var/lib/akamu-cosigner at boot."] },
     { number = 9, file = "akamuctl.toml.example", comments = ["Example akamuctl configuration; installed as a %doc file."] },
-    # NOTE: The actual filename on disk is akamu-{version}-webui-node_modules.tar.gz;
+    # NOTE: The actual filename on disk is akamu-{version}-webui-dist.tar.gz;
     # rust2rpm does not expand {version} in file names, so the spec.in uses the
-    # correct %%{version}-interpolated name directly.  See 'make webui-vendor'.
-    { number = 10, file = "akamu-webui-node_modules.tar.gz", comments = ["Node.js dependency vendor tarball for the management web UI (see 'make webui-vendor')."] },
+    # correct %%{version}-interpolated name directly.  See 'make webui-dist'.
+    { number = 10, file = "akamu-webui-dist.tar.gz", comments = ["Pre-built management web UI static assets (webui/dist/); see 'make webui-dist'."] },
 ]
 
 # Additional %files entries for the main akamu binary subpackage.
@@ -102,7 +102,7 @@ package-extra = """
 %bcond backend_postgres 1
 %bcond backend_mariadb  1
 
-# Optional management web UI (requires npm at build time).
+# Optional management web UI (pre-built dist/ tarball; no npm at build time).
 # Disable with: rpmbuild --without webui
 %bcond webui 1
 
@@ -129,10 +129,8 @@ BuildRequires:  libpq-devel
 BuildRequires:  pkgconfig(libmariadb)
 BuildRequires:  mariadb-connector-c-devel
 %endif
-# Optional: management web UI (Node.js/npm)
-%if %{with webui}
-BuildRequires:  npm
-%endif
+# Management web UI: no npm/rollup BuildRequires — dist/ is pre-built on the
+# developer machine and shipped as Source10 (see 'make webui-dist').
 
 
 # ── Subpackage: management web UI ─────────────────────────────────────────────
@@ -339,10 +337,9 @@ post = [
     "scdoc < docs/man/akamu.8.scd          | gzip -9 > akamu.8.gz",
     "scdoc < docs/man/akamu-cosigner.8.scd | gzip -9 > akamu-cosigner.8.gz",
     "scdoc < docs/man/akamuctl.1.scd       | gzip -9 > akamuctl.1.gz",
-    # Build the management web UI static assets.
+    # Unpack pre-built web UI static assets (Source10 contains webui/dist/).
     "%if %{with webui}",
     "tar -xzf %{SOURCE10} -C webui/",
-    "npm --prefix webui run build",
     "%endif",
 ]
 
