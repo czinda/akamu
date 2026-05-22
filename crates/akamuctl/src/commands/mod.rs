@@ -16,3 +16,4 @@ pub mod eab;
 pub mod operator;
 pub mod server;
 pub mod session;
+pub mod tkauth;

@@ -138,10 +138,23 @@ enum Commands {
     /// Manage RFC 9115 delegation objects.
     #[command(subcommand)]
     Delegation(DelegationCmd),
+    /// RFC 9447 authority token administration.
+    #[command(subcommand)]
+    Tkauth(TkauthCmd),
     /// Generate shell completions.
     Completions {
         /// Shell to generate completions for.
         shell: clap_complete::Shell,
+    },
+}
+
+#[derive(Subcommand)]
+enum TkauthCmd {
+    /// Delete expired entries from the JTI replay-prevention cache.
+    PruneJti {
+        /// Print the count of expired entries without deleting them.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -904,6 +917,11 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
             }
             ConfigCmd::Validate => {
                 commands::config_cmd::validate(&config_path, &cfg);
+            }
+        },
+        Commands::Tkauth(tkauth_cmd) => match tkauth_cmd {
+            TkauthCmd::PruneJti { dry_run } => {
+                commands::tkauth::prune_jti(&server_client, dry_run).await?;
             }
         },
         Commands::Completions { shell } => {
