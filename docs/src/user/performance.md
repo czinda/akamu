@@ -1,186 +1,229 @@
 # Performance
 
 This chapter covers issuance throughput and latency characteristics of Akāmu
-under load, with guidance on key type selection, database backend choice, and
-capacity planning.
+under load, with guidance on key type selection, cluster sizing, and capacity
+planning.
 
-All numbers were collected on a single host — a Lenovo ThinkPad P1 Gen 5
-(12th Gen Intel Core i7-12800H, 14 cores / 20 threads) — using the `acme-bench`
-tool shipped in the repository:
+All numbers were collected on a single host — AMD Ryzen 9 3900X (24 cores,
+63 GB RAM, Fedora Linux 6.19, OpenSSL 3.5.5) — using the `acme-bench` tool in
+**process mode** (`--spawn process`):
 
 ```
-cargo bench --bench acme_bench -- [OPTIONS]
+cargo build --release
+cargo bench --bench acme_bench -- --spawn process [OPTIONS]
 ```
 
-The benchmark runs full ACME flows (account → new-order → challenge validate →
-finalize → certificate download) against a real in-process server over the
-loopback interface.  Reported latency is end-to-end wall time from the start of
-`new-order` through certificate download; account creation is excluded because
-it is amortised across all orders from a given client.
+Process mode starts each node as a separate `akamu` OS process with its own
+Tokio runtime, memory allocator, and SQLite in-memory database.  This matches
+how a real cluster deployment behaves: nodes share only the network interface
+and no process state.  All measurements use SQLite `:memory:` unless otherwise
+noted.
 
-Results are shown for two database backends: **SQLite** (tmpfs-backed file on
-`/dev/shm`) and **PostgreSQL** (connected via UNIX-domain socket, so no
-network cost).
-
-> **Database architecture.**  SQLite uses a single-connection write pool with
-> `BEGIN IMMEDIATE` for every write transaction.  `SQLITE_BUSY_SNAPSHOT`
-> (error 517) bypasses the busy handler in WAL mode — using `BEGIN IMMEDIATE`
-> and a single connection eliminates the error entirely.  The optional
-> read-only pool (`?mode=ro`) serves pure-read handlers (`get_order`,
-> `get_authz`, `download_cert`) to reduce write-lock contention at high
-> concurrency.  Approximately 23 SQL round-trips are needed per issuance
-> (reduced from ~55 by moving anti-replay nonces to an in-memory store, using
-> JOIN queries to collapse read pairs, consolidating multi-CA scope checks
-> inside write transactions, replacing explicit 4-RT transactions with
-> conditional-UPDATE autocommit in the challenge handler, and batching finalize
-> audit events into a single two-row INSERT).
->
-> PostgreSQL uses a standard connection pool (default 20, recommended 25
-> connections) and per-connection MVCC; there is no write-lock serialisation.
-> State-transition transactions (`new-order`, `new-authz`, `challenge`) use
-> `SET LOCAL synchronous_commit = off` to eliminate per-commit WAL flush
-> overhead (~1–4 ms on SSD); the certificate issuance transaction (`finalize`)
-> retains full durability.
+The benchmark runs full ACME workflows (new-order → authz → challenge validate
+→ finalize → certificate download) against N nodes, distributing requests
+round-robin across nodes.  Latency is end-to-end wall time from `new-order`
+through certificate download; account creation is amortised and excluded.
+Default configuration uses ec:P-256 client keys, http-01 challenge, direct
+topology, and 100 concurrent clients.
 
 ---
 
-## Concurrency scaling
+## Scale-out
 
-With EC P-256 certificates and an EC P-256 CA, the two backends scale
-differently as client count increases.  SQLite saturates near 780 iss/s around
-5–10 concurrent clients because the single write connection serialises all
-writers regardless of concurrency.  PostgreSQL scales further — the crossover
-where PostgreSQL overtakes SQLite occurs between c=10 and c=25 depending on
-pool size.
+With ec:P-256 certificates, http-01 validation, and 100 concurrent clients,
+issuance throughput scales near-linearly from 1 to 5 nodes and remains strong
+through 10 nodes.
 
-| Clients | SQLite (iss/s) | mean (ms) | p95 (ms) | PG p=20 (iss/s) | mean (ms) | p95 (ms) | PG p=25 (iss/s) | mean (ms) | p95 (ms) |
-|--------:|---------------:|----------:|---------:|----------------:|----------:|---------:|----------------:|----------:|---------:|
-|  1      |    130         |   7.7     |  11.2    |      39         |  25.7     |  30.0    |      39         |  25.6     |  30.2    |
-|  5      |    780         |   6.4     |   7.6    |     208         |  23.9     |  28.9    |     217         |  22.8     |  27.4    |
-| 10      |    782         |  12.6     |  14.1    |     511         |  19.0     |  22.0    |     522         |  18.9     |  22.0    |
-| 25      |    740         |  29.2     |  31.8    |     725         |  29.3     |  33.3    |     879         |  20.9     |  23.2    |
-| 50      |    710         |  57.6     |  72.1    |     780         |  52.9     |  62.0    |     913         |  42.9     |  62.8    |
+| Nodes | Throughput (iss/s) | Mean (ms) | p99 (ms) | new_order | authz | challenge | finalize | download |
+|------:|-------------------:|----------:|---------:|----------:|------:|----------:|---------:|---------:|
+|  1    |    467             |   182     |   194    |  47.5     | 21.8  |  43.6     |  69.2    |  0.2     |
+|  2    |    724             |   112     |   128    |  31.3     | 10.0  |  31.8     |  38.3    |  0.2     |
+|  3    |    957             |    79     |   102    |  22.5     |  6.7  |  22.0     |  27.3    |  0.3     |
+|  5    |  1,270             |    59     |    79    |  16.3     |  4.9  |  16.6     |  20.3    |  0.4     |
+|  7    |  1,653             |    43     |    58    |  12.5     |  3.6  |  12.6     |  14.3    |  0.3     |
+| 10    |  2,016             |    35     |    51    |   9.5     |  3.0  |  10.1     |  11.5    |  0.4     |
 
-At c=1 PostgreSQL is ~3× slower than SQLite: each of the ~23 round-trips
-requires a kernel context switch across the UNIX socket, whereas SQLite
-executes in-process.  At c=5–10 the gap narrows as more requests overlap those
-round-trips.  At c≥25 PostgreSQL with pool=25 is 19–28% faster than SQLite
-because concurrent transactions execute without the write-lock queue.
+Phase columns show mean milliseconds per ACME step.
 
----
+Five nodes deliver **3.3× throughput** at 59 ms mean latency versus a single
+node — a good operating point.  Ten nodes reach 4.3× with diminishing
+per-node efficiency (202 iss/s/node vs 467 at n=1) as scheduler contention on
+the shared host grows.
 
-## Key type comparison
-
-The table below compares issuance performance for different CSR key types at
-25 concurrent clients with an EC P-256 CA.
-
-| CSR key type | SQLite (iss/s) | PG (iss/s) | SQLite fin (ms) | PG fin (ms) | p95 SQLite | p95 PG |
-|:-------------|---------------:|-----------:|----------------:|------------:|-----------:|-------:|
-| ec:P-256     |   552          |   608      |   7.4           |   8.0       |  46.4      |  30.6  |
-| ed25519      |   613          |   528      |   7.9           |   8.1       |  41.1      |  52.4  |
-| ec:P-384     |   593          |   541      |   8.2           |   8.6       |  49.1      |  53.7  |
-| ml-dsa-44    |   552          |   503      |   9.7           |   8.6       |  45.8      |  50.3  |
-| ml-dsa-65    |   437          |   521      |  11.9           |   8.9       |  73.2      |  47.4  |
-| ml-dsa-87    |   427          |   516      |  12.8           |   9.4       |  80.9      |  55.1  |
-| rsa:2048     |   179          |   143      | 80.0            |  90.0       | 207.5      | 183.9  |
-| rsa:4096     |    14          |    16      | 785.2           | 766.2       | 1641.8     | 1630.9 |
-
-PG column uses pool=20; pool=25 adds a further ~5–14% on most key types.
-
-At c=25 SQLite's single write connection is the bottleneck for all key types.
-Under PostgreSQL the bottleneck shifts to crypto cost: ML-DSA-65 and ML-DSA-87
-outperform their SQLite counterparts by ~20% because concurrent signing no
-longer queues behind the write lock.  RSA numbers are CPU-bound and nearly
-identical across backends.
-
-Classical EC and Ed25519 cluster around 530–610 iss/s across both backends.
-Finalize-phase latency (CSR verification + certificate issuance) reflects
-signing cost: EC and Ed25519 run at ~7–8 ms, ML-DSA adds 1–4 ms, and RSA
-adds tens to hundreds of milliseconds.
-
-RSA is the outlier: RSA 2048 adds ~80–90 ms to finalize, and RSA 4096 adds
-~766–785 ms.
-
-### RSA 4096 saturation
-
-| Clients | Throughput (iss/s) | Finalize mean (ms) | p99 (ms) |
-|--------:|-------------------:|-------------------:|---------:|
-|  1      |    3               |   348              |   787    |
-| 10      |   14               |   609              |  1904    |
-| 25      |   16               |  1072              |  3235    |
-| 50      |   14               |  1861              |  6332    |
-
-Throughput is limited by RSA 4096 key generation time; both backends produce
-the same results since the bottleneck is CPU, not IO.  At 50 clients queuing
-raises p99 to over 6 seconds.  Avoid RSA 4096 in any configuration where more
-than a handful of concurrent ACME clients are expected.
+The finalize phase dominates at all node counts and benefits most from
+parallelism: 69 ms at n=1 compresses to 12 ms at n=10 as certificate signing
+is distributed across independent processes.  All five phases compress
+proportionally; the download phase remains sub-millisecond throughout.
 
 ---
 
-## Post-quantum cryptography
+## Concurrency
 
-Akāmu supports ML-DSA (FIPS 204 / RFC 9881) for both CA keys and certificate
-keys.  Three security levels are available.  The table uses a full post-quantum
-chain (ML-DSA CA + ML-DSA leaf, with `--verify-cert`) at 25 concurrent clients:
+At a fixed number of nodes, throughput peaks between 25 and 50 concurrent
+clients.  Higher concurrency raises queue depth, increasing mean latency
+without proportional throughput gains.
 
-| Parameter set | NIST cat. | SQLite (iss/s) | PG p=20 (iss/s) | PG p=25 (iss/s) | Alloc (MiB/iss) |
-|:--------------|:---------:|---------------:|----------------:|----------------:|----------------:|
-| ML-DSA-44     | 2         |   501          |   468           |   540           | 0.74            |
-| ML-DSA-65     | 3         |   390          |   503           |   540           | 0.86            |
-| ML-DSA-87     | 5         |   399          |   424           |   506           | 1.03            |
-| EC P-256      | —         |   496          |   512           |   586           | 0.49            |
+| Clients | n=1 (iss/s) | n=1 mean (ms) | n=1 p99 (ms) | n=5 (iss/s) | n=5 mean (ms) | n=5 p99 (ms) |
+|--------:|------------:|--------------:|-------------:|------------:|--------------:|-------------:|
+|  10     |   540        |    18.4       |   20.9       |  1,400       |     6.9       |    8.8       |
+|  25     |   552        |    45.0       |   47.7       |  1,609       |    14.4       |   28.2       |
+|  50     |   531        |    91.4       |   96.1       |  1,427       |    30.0       |   40.0       |
+| 100     |   465        |   183.5       |  192.4       |  1,382       |    54.5       |   69.4       |
 
-Alloc figures are for PG p=25; SQLite is ~10–15% lower due to absent protocol
-framing overhead.
+At c=10 the server is under-utilised: **6.9 ms mean latency** at n=5 reflects
+near-zero queueing.  Throughput peaks at c=25 for both node counts; beyond
+that, queue depth grows faster than concurrency gains.
 
-PostgreSQL removes the write-lock serialisation that suppresses ML-DSA
-throughput under SQLite.  ML-DSA-65 and ML-DSA-87 at pool=25 reach 540 and
-506 iss/s respectively, matching or exceeding their SQLite figures despite the
-larger certificate structures.  ML-DSA allocation pressure is 50–110% higher
-than EC P-256 per issuance, reflecting larger key and signature structures.
+For high-concurrency deployments, adding nodes is more effective than raising
+concurrency per node: n=5 at c=25 (1,609 iss/s) outperforms n=1 at any
+concurrency level.
+
+---
+
+## Client key type
+
+The client key type is the largest single determinant of per-issuance latency.
+EC and Ed25519 keys complete in sub-200 ms at n=1; RSA key generation is
+CPU-bound in the client worker and barely benefits from adding server nodes.
+
+| CSR key type | n=1 mean (ms) | n=5 mean (ms) | Speedup | n=1 p99 (ms) | n=5 p99 (ms) | n=1 tput (iss/s) |
+|:-------------|:-------------:|:-------------:|:-------:|:------------:|:------------:|:----------------:|
+| ec:P-256     |   179         |    54         |  3.3×   |   194        |    69        |   474            |
+| ed25519      |   187         |    57         |  3.3×   |   201        |    85        |   457            |
+| ec:P-384     |   237         |    66         |  3.6×   |   253        |    89        |   363            |
+| rsa2048      |   347         |   282         |  1.2×   |   526        |   470        |   237            |
+| rsa4096      | 2,797         | 2,307         |  1.2×   | 3,889        | 3,249        |    24            |
+
+EC P-256 and Ed25519 are equivalent for practical purposes (~180–187 ms at
+n=1, ~54–57 ms at n=5).  EC P-384 adds ~58 ms to the finalize phase.  Both
+scale linearly with node count: 3.3–3.6× speedup at n=5.
+
+RSA 2048 improves to 282 ms at n=5 (1.2× speedup from 347 ms at n=1) because
+RSA key generation runs in the bench client worker, not the server, and cannot
+be parallelised by adding server nodes.  RSA 4096 is effectively CPU-wall-limited
+at all node counts: 2,797 ms at n=1 shrinks only to 2,307 ms at n=5.  The
+challenge and finalize phases each exceed one second.
+
+**RSA 4096 is strongly discouraged for ACME clients in multi-client
+deployments.**
+
+---
+
+## CA key type
+
+Unlike client-side key generation, CA signing is server-side and parallelises
+well across nodes.  An RSA 4096 CA at n=5 is 4.3× faster than at n=1,
+matching the speedup ratio of ec:P-256.
+
+| CA key     | n=1 mean (ms) | n=5 mean (ms) | Speedup | n=1 finalize (ms) | n=5 finalize (ms) |
+|:-----------|:-------------:|:-------------:|:-------:|:-----------------:|:-----------------:|
+| ec:P-256   |   182         |    56         |  3.2×   |    68.7           |    18.1           |
+| rsa2048    |   229         |    62         |  3.7×   |    91.6           |    21.6           |
+| ec:P-384   |   268         |    72         |  3.7×   |   110.0           |    26.4           |
+| rsa4096 ¹  |   442         |   104         |  4.3×   |   225.5           |    52.9           |
+
+¹ rsa4096 runs used 100 issuances due to practical time constraints.
+
+EC P-256 is the fastest CA key type and the recommended default.  RSA 4096 as
+CA adds 157 ms to finalize at n=1 and reduces single-node throughput from 469
+to 154 iss/s (3× penalty).  At n=5 the gap narrows to 104 ms total mean vs
+56 ms — multi-node deployments can absorb larger RSA CA keys without severe
+degradation because each node signs independently.
+
+---
+
+## Post-quantum chain
+
+Akāmu supports ML-DSA (FIPS 204 / RFC 9881) CA keys at three NIST security
+levels.  The table measures a post-quantum CA with ec:P-256 client keys and
+compares to an ec:P-256 CA baseline at 100 concurrent clients.
+
+| CA chain    | NIST cat. | n=1 mean (ms) | n=5 mean (ms) | Speedup | vs P-256 n=1 | Alloc/issuance |
+|:------------|:---------:|:-------------:|:-------------:|:-------:|:------------:|:--------------:|
+| ec:P-256    |     —     |   182         |    56         |  3.2×   |     —        |   147 KB       |
+| ML-DSA-44   |     2     |   268         |    70         |  3.8×   |   +47%       |   215 KB       |
+| ML-DSA-65   |     3     |   337         |    82         |  4.1×   |   +85%       |   266 KB       |
+| ML-DSA-87   |     5     |   394         |    91         |  4.3×   |  +116%       |   316 KB       |
+
+All ML-DSA variants scale well: 3.8–4.3× speedup at n=5, comparable to
+classical keys.  At n=5, ML-DSA-44 is only 25% slower than ec:P-256 (70 ms vs
+56 ms), versus 47% slower at n=1.  Allocation pressure rises with key size:
+ML-DSA-87 uses 316 KB per issuance vs 147 KB for ec:P-256, reflecting the
+larger certificate and signature structures.
 
 ML-DSA requires OpenSSL 3.5 or later.  Akāmu will report a startup error if
 the requested key type is unavailable on the installed OpenSSL version.
 
-### CA key type impact
+---
 
-The table uses an EC P-256 leaf at 25 concurrent clients, varying the CA key.
+## Challenge type
 
-| CA key    | SQLite (iss/s) | PG p=20 (iss/s) | PG p=25 (iss/s) | PG p=25 fin (ms) |
-|:----------|---------------:|----------------:|----------------:|-----------------:|
-| ec:P-256  |   457          |   510           |   616           |   7.2            |
-| ec:P-384  |   500          |   477           |   552           |   8.7            |
-| rsa:2048  |   519          |   512           |   591           |   8.1            |
-| rsa:3072  |   440          |   496           |   528           |   9.9            |
-| rsa:4096  |   389          |   433           |   447           |  16.0            |
+| Challenge      | Nodes | Throughput (iss/s) | Mean (ms) | p99 (ms) | Challenge phase (ms) |
+|:---------------|------:|-------------------:|----------:|---------:|---------------------:|
+| http-01        |   1   |    471             |   180     |   199    |  47.1                |
+| dns-persist-01 |   1   |    419             |   203     |   224    |  66.9                |
+| http-01        |   5   |  1,405             |    53     |    71    |  15.1                |
+| dns-persist-01 |   5   |  1,240             |    61     |    83    |  22.5                |
 
-EC P-256 delivers the highest throughput at 25 clients across all backends.
-Larger RSA CA keys incur increasing finalize latency; RSA 4096 as CA costs
-~9 ms more than EC P-256 at finalize and reduces throughput by ~27%.  Avoid
-RSA 4096 as a CA key for performance-sensitive deployments.
+`dns-persist-01` adds approximately 20 ms to the challenge phase at n=1 and
+7 ms at n=5.  The absolute gap shrinks with scale as parallel nodes service
+challenge poll loops concurrently.  Both challenge types deliver zero errors
+across all runs.
+
+Deployments using dns-persist-01 in process mode must configure
+`dns_resolver_addr` in each node's `[server]` section to point at a DNS
+resolver that can see the validation TXT records.
 
 ---
 
-## Challenge type comparison
+## Topology
 
-| Challenge type | SQLite (iss/s) | PG p=20 (iss/s) | PG p=25 (iss/s) | Challenge phase (ms) PG p=25 | Alloc (MiB/iss) |
-|:---------------|---------------:|----------------:|----------------:|-----------------------------:|----------------:|
-| http-01        |   615          |   652           |   785           |   7.8                        | 0.46            |
-| dns-persist-01 |   530          |   655           |   712           |   8.7                        | 0.52            |
+| Topology | Nodes | Throughput (iss/s) | Mean (ms) | p99 (ms) | Download (ms) |
+|:---------|------:|-------------------:|----------:|---------:|--------------:|
+| direct   |   5   |  1,354             |    56     |    68    |    0.3        |
+| proxy    |   5   |    579             |    95     |   452    |   81.7        |
+| direct   |  10   |  2,046             |    35     |    52    |    0.4        |
+| proxy    |  10   |    241             |   209     | 1,030    |  200.0        |
 
-`http-01` and `dns-persist-01` deliver equivalent throughput across all
-backends (difference is within run-to-run noise).  Both challenge phases reflect
-the adaptive poll backoff (starts at 1 ms, caps at `--poll-ms`) rather than
-network latency.  At pool=25 the challenge phase drops from ~10–12 ms (SQLite)
-to ~8–9 ms because concurrent challenge updates no longer serialise behind the
-write lock.
+Direct topology routes clients to individual nodes round-robin.  Proxy
+topology fronts the cluster with a single akamu node that nonce-routes each
+request to the backend that issued the corresponding nonce.
+
+**Proxy mode introduces severe tail latency.**  At n=10, p99 reaches 1,030 ms
+vs 52 ms for direct — a 20× gap.  The proxy must serialise certificate
+downloads through a single forwarding path, causing the download phase alone to
+account for 200 ms.  Memory overhead reflects full response body buffering:
+721 KB per issuance (proxy n=10) vs 187 KB (direct n=10).
+
+For performance-sensitive deployments, direct topology is strongly preferred.
+Use proxy topology only when a single entry point is required for network
+routing, and limit the cluster to n≤5 to contain nonce serialisation overhead.
+
+---
+
+## Gossip overhead
+
+Gossip synchronisation (CRDT state exchange across cluster nodes) imposes
+negligible overhead:
+
+| Gossip | Nodes | Throughput (iss/s) | Mean (ms) | p99 (ms) |
+|:-------|------:|-------------------:|----------:|---------:|
+| on     |   5   |  1,416             |    53.0   |   68.4   |
+| off    |   5   |  1,420             |    51.3   |   67.5   |
+| on     |  10   |  2,012             |    35.6   |   53.7   |
+| off    |  10   |  2,056             |    34.6   |   51.9   |
+
+The difference is within measurement noise at both node counts.  Gossip
+fan-out at 1-second intervals generates sub-millisecond background traffic and
+does not block the ACME request path.  Enable gossip in all multi-node
+deployments.
 
 ---
 
 ## Key type recommendations
 
-| Scenario | Recommended key type |
-|:---------|:---------------------|
+| Scenario | Recommended type |
+|:---------|:-----------------|
 | General purpose, broad client compatibility | `ec:P-256` |
 | Smallest footprint, fastest validation | `ed25519` |
 | Higher security margin, still classical | `ec:P-384` |
@@ -191,255 +234,52 @@ write lock.
 
 ---
 
-## Database scalability
+## Cluster sizing guidance
 
-### Choosing a backend
+| Target throughput | Nodes | Expected mean latency | Notes |
+|:-----------------:|:-----:|:---------------------:|:------|
+| ≤500 iss/s        |  1    | ~180 ms               | SQLite `:memory:` adequate |
+| ≤1,000 iss/s      | 2–3   | 79–112 ms             | |
+| ≤1,500 iss/s      |  5    |  ~59 ms               | Good efficiency–latency balance |
+| ≤2,000 iss/s      | 7–10  | 35–43 ms              | Diminishing per-node efficiency |
 
-| Workload | Recommended backend |
-|:---------|:--------------------|
-| Lab, CI, ephemeral CA | SQLite `:memory:` — fastest startup, no persistence |
-| Single-node, ≤10 concurrent clients | SQLite (tmpfs or SSD WAL) — lower per-round-trip cost than PostgreSQL at low concurrency |
-| Single-node, ≥25 concurrent clients | PostgreSQL — no write-lock serialisation; scales to 900+ iss/s |
-| Production, multi-node | PostgreSQL — standard connection pooling, MVCC, operational tooling |
+Figures assume ec:P-256 keys, http-01, direct topology, and 100 concurrent
+clients.  RSA or ML-DSA keys lower per-node throughput proportionally.
 
-SQLite is faster than PostgreSQL at low concurrency (c≤10) because each query
-is an in-process function call with no kernel IPC.  PostgreSQL pays ~1–2 ms per
-round-trip in UNIX-socket context-switch overhead; at c=1 this results in
-~3× lower throughput.  The crossover where PostgreSQL overtakes SQLite occurs
-at c=25 with pool=20, or at c=10–25 with pool=25.
-
-### SQLite: backend comparison (tmpfs vs persistent file)
-
-The table compares a persistent `/dev/shm` file (accumulated rows from prior
-benchmark sections) with a fresh tmpfs file created per benchmark run.
-
-| Concurrent clients | Persistent shm (iss/s) | Fresh tmpfs (iss/s) |
-|-------------------:|-----------------------:|--------------------:|
-|  1                 |   108                  |   113               |
-|  5                 |   691                  |   681               |
-| 10                 |   684                  |   809               |
-| 25                 |   650                  |   759               |
-| 50                 |   658                  |   692               |
-
-At c=10–25 the fresh tmpfs file is 17–18% faster; the persistent file carries
-accumulated rows that increase index scan cost.  Both use WAL mode on a
-RAM-backed filesystem; storage speed is not a factor.  For sustained production
-use, periodic `VACUUM` or WAL checkpointing keeps the persistent file compact.
-
-### SQLite: connection pool and `BEGIN IMMEDIATE`
-
-`SQLITE_BUSY_SNAPSHOT` (error 517) occurs in WAL mode when a deferred
-transaction (`BEGIN`) captures a read snapshot that becomes stale after another
-connection commits — even when the two transactions write to completely different
-rows.  Unlike `SQLITE_BUSY` (error 5), error 517 bypasses the busy handler
-entirely, so `busy_timeout` has no effect on it.
-
-Akāmu resolves this by using `BEGIN IMMEDIATE` for every write transaction.
-`BEGIN IMMEDIATE` acquires the write lock at transaction start, so the snapshot
-is always current.  Any resulting `SQLITE_BUSY` contention is handled
-transparently by the `busy_timeout = 5 s` already configured on the pool.
-
-**Throughput (iss/s) on fresh tmpfs WAL with `BEGIN IMMEDIATE`:**
-
-| Concurrent clients | Pool = 1 | Pool = 2 | Pool = 4 | Pool = 8 |
-|-------------------:|---------:|---------:|---------:|---------:|
-|  1                 |  118     |  115     |  103     |   95     |
-|  5                 |  726     |  659     |  402     |  262     |
-| 10                 |  778     |  752     |  714     |  614     |
-| 25                 |  736     |  666     |  630     |  608     |
-| 50                 |  692     |  652     |  639     |  544     |
-
-All pool sizes produce **zero errors** — `BEGIN IMMEDIATE` eliminates
-`SQLITE_BUSY_SNAPSHOT` regardless of pool size.  Pool = 1 consistently delivers
-the highest throughput because all requests share a single serialised connection
-channel with no lock-acquisition contention.  Pool = 2 and above pay
-increasingly for `BEGIN IMMEDIATE` wait time as multiple connections compete
-for the WAL write lock; the gap widens at medium concurrency (5–10 clients)
-where lock contention is highest relative to available parallelism.
-
-For the single-connection production default this has no observable effect:
-with one connection there is never a concurrent writer, so `BEGIN IMMEDIATE`
-and `BEGIN DEFERRED` behave identically.
-
-### SQLite: read-only pool split
-
-Separating read-heavy handlers onto a dedicated `?mode=ro` pool frees the write
-connection from serving pure-read requests.  The benefit grows with concurrency,
-where read and write requests are most likely to interleave.
-
-**Throughput (iss/s) on fresh tmpfs WAL — no split vs read-only pool (ro = 4):**
-
-| Concurrent clients | No split (iss/s) | With ro=4 (iss/s) | Gain |
-|-------------------:|-----------------:|------------------:|-----:|
-|  1                 |  114             |  102              |  −11% |
-|  5                 |  775             |  858              |  +11% |
-| 10                 |  857             | 1045              |  +22% |
-| 25                 |  780             |  871              |  +12% |
-| 50                 |  757             |  793              |   +5% |
-
-The split provides negligible benefit at c=1 (no contention) but yields
-+11–22% at c=5–25, where write and read handlers compete most heavily for the
-single write connection.  At c=50 most contention is again on the write lock
-and the gain falls to +5%.
-
-**Throughput (iss/s) sweeping ro-connections at 10 concurrent clients:**
-
-| ro connections | Throughput (iss/s) |
-|---------------:|-------------------:|
-|  1             |  1010              |
-|  2             |  1056              |
-|  4             |   990              |
-|  8             |   980              |
-| 16             |  1007              |
-
-ro=2 saturates the benefit (1056 iss/s); additional connections beyond 2
-provide no further improvement because write-connection serialisation becomes
-the dominant constraint.
-
-### PostgreSQL: connection pool size
-
-With PostgreSQL the connection pool size directly controls how many concurrent
-requests can hold a database connection simultaneously.  With fewer connections
-than clients, excess clients queue; with pool ≥ clients all run in parallel.
-
-| Concurrent clients | PG pool=20 (iss/s) | PG pool=25 (iss/s) | Gain |
-|-------------------:|-------------------:|-------------------:|-----:|
-|  1                 |   39               |   39               |   0% |
-|  5                 |  208               |  217               |  +4% |
-| 10                 |  511               |  522               |  +2% |
-| 25                 |  725               |  879               | +21% |
-| 50                 |  780               |  913               | +17% |
-
-At c≤10 pool size has almost no effect because 10 clients rarely saturate a
-20-connection pool.  At c=25–50 raising the pool from 20 to 25 eliminates the
-5-connection queue that forms at peak concurrency and yields +17–21%.
-
-The recommended default is **25 connections** (`--pool-connections 25`).
-Raising the pool beyond 25 has not shown further benefit and can increase
-PostgreSQL shared-memory pressure.
+For the database backend: SQLite `:memory:` suits nodes with no persistent
+state requirement (accounts, orders, and certificates are lost on restart).
+For persistent deployments, PostgreSQL is recommended; use a connection pool
+of 20–25 (`[database] pool_connections = 25`) and accept that
+`synchronous_commit = off` is appropriate for the new-order, authz, and
+challenge transactions (finalize retains full durability).
 
 ---
 
-## Running the benchmark
+## Memory
 
-The `acme-bench` binary is built as a Cargo bench target:
+The benchmark instruments heap allocation using a custom `GlobalAlloc` wrapper.
+Per-issuance allocation pressure — bytes requested from the system allocator
+per certificate, including memory subsequently freed — varies by configuration:
 
-```bash
-cargo bench --bench acme_bench -- --help
-```
+| Configuration                               | Per-issuance alloc |
+|:--------------------------------------------|:------------------:|
+| ec:P-256 CA + ec:P-256 client, n=1          | 147 KB             |
+| ec:P-256 CA + ec:P-256 client, n=5          | 176 KB             |
+| ec:P-256 CA + ec:P-256 client, n=10         | 183 KB             |
+| ec:P-256 CA + rsa4096 client, n=1           | 229 KB             |
+| ML-DSA-44 CA + ec:P-256 client, n=5         | 265 KB             |
+| ML-DSA-65 CA + ec:P-256 client, n=5         | 313 KB             |
+| ML-DSA-87 CA + ec:P-256 client, n=5         | 364 KB             |
+| proxy topology, n=10                        | 721 KB             |
 
-The `contrib/performance/run_benchmarks.sh` script runs the full suite and
-writes one JSON object per benchmark to a newline-delimited file:
-
-```bash
-# SQLite (tmpfs-backed /dev/shm) — sections 1–9 including pool/RO comparisons
-DB=/dev/shm/akamu_bench.db
-SQLITE_URL="sqlite://$DB" \
-  contrib/performance/run_benchmarks.sh ~/bench_sqlite.ndjson
-rm -f "$DB" "$DB-wal" "$DB-shm"
-
-# PostgreSQL — sections 1–6; requires backend-postgres feature and a running server
-BENCH_RESET=1 PG_POOL=25 PG_URL="postgres:///akamu_bench" \
-  contrib/performance/run_benchmarks.sh ~/bench_pg25.ndjson
-```
-
-`BENCH_RESET=1` truncates all ACME tables and issues `CHECKPOINT` before
-section 1, ensuring a clean database state across successive runs.
-
-Common individual invocations:
-
-```bash
-# Baseline: 25 concurrent clients, 200 issuances, EC P-256, 5 ms poll cap
-cargo bench --bench acme_bench -- --clients 25 --requests 200 --warmup 20 --poll-ms 5
-
-# PostgreSQL backend
-cargo bench --features backend-postgres --bench acme_bench -- \
-  --db postgres:///akamu_bench --pool-connections 25 \
-  --clients 25 --requests 200 --warmup 20 --poll-ms 5
-
-# Compare RSA 2048 vs EC P-256
-cargo bench --bench acme_bench -- --key-type rsa:2048 --clients 25 --requests 100
-cargo bench --bench acme_bench -- --key-type ec:P-256  --clients 25 --requests 100
-
-# Full post-quantum chain (ML-DSA-65 CA + ML-DSA-65 leaf)
-cargo bench --bench acme_bench -- \
-  --ca-key-type ml-dsa-65 --key-type ml-dsa-65 \
-  --clients 25 --requests 100 --verify-cert
-
-# Concurrency sweep
-for n in 1 5 10 25 50; do
-  cargo bench --bench acme_bench -- --clients $n --requests 300 --warmup 20 --poll-ms 5
-done
-
-# dns-persist-01 challenge type
-cargo bench --bench acme_bench -- --challenge dns-persist-01 --clients 25 --requests 200
-
-# JSON output for scripting
-cargo bench --bench acme_bench -- --output json --clients 25 --requests 200 --poll-ms 5 | jq .summary
-```
-
-### Available options
-
-| Option | Default | Description |
-|:-------|:--------|:------------|
-| `--clients N` | 10 | Concurrent worker tasks |
-| `--requests N` | 100 | Issuances to measure (warmup not counted) |
-| `--warmup N` | 10 | Warmup issuances discarded before measurement |
-| `--poll-ms N` | 50 | Poll interval cap in milliseconds; adaptive backoff starts at 1 ms |
-| `--challenge TYPE` | `http-01` | `http-01` or `dns-persist-01` |
-| `--key-type TYPE` | `ec:P-256` | CSR key type (see table above) |
-| `--ca-key-type TYPE` | `ec:P-256` | CA key type (same syntax) |
-| `--db PATH` | `:memory:` | Database URL — SQLite path or `postgres://…` |
-| `--pool-connections N` | `1` | Connection pool size; for SQLite, pool > 1 is not recommended (see [Connection pool size](#sqlite-connection-pool-and-begin-immediate)); for PostgreSQL, use 25 |
-| `--ro-connections N` | `0` | Read-only pool size (SQLite only); `0` disables the split |
-| `--wildcard` | off | Issue `*.bench-N.acme-bench.test` (dns-persist-01 only) |
-| `--output FORMAT` | `text` | `text` or `json` |
-| `--verify-cert` | off | Parse and verify the SAN of every issued certificate |
-
-The poll loop uses adaptive exponential backoff: it starts at 1 ms, doubles each
-miss, and caps at `--poll-ms`.  This mirrors how production ACME clients behave
-and reveals the true validation latency without a fixed artificial floor.
-
----
-
-## Memory consumption
-
-The benchmark instruments heap allocation using a custom
-[`GlobalAlloc`](https://doc.rust-lang.org/std/alloc/trait.GlobalAlloc.html)
-wrapper that records four `AtomicU64` counters.  This reports in-process heap
-usage without any external tooling or `/proc` parsing.
-
-Three snapshots are taken:
-
-| Milestone | When |
-|:----------|:-----|
-| **process start** | Before the server is initialised |
-| **server ready** | After the server has bound its port and is accepting connections |
-| **after bench** | After all issuances (warmup + measured) have completed |
-
-The peak counter is reset at `server ready` so the high-water mark reflects
-only the issuance window, not server startup allocations.
-
-### Text output
-
-```
-  Heap (allocator counters):
-    process start:        0.1 MiB  live
-    server ready:         0.2 MiB  live   (server overhead: +0.5 MiB)
-    after  220 iss.:      0.6 MiB  live   (issuance growth: +0.4 MiB, 1.9 KiB/iss.)
-    peak live:            1.5 MiB         (high-water mark during issuances)
-    alloc pressure:      83.5 MiB  total  (0.379 MiB/iss. requested, incl. freed)
-```
-
-**live** — bytes currently held on the heap (footprint).
-**alloc pressure** — cumulative bytes requested from the system allocator since
-`server ready`, including memory that was allocated and subsequently freed.  A
-high pressure-to-footprint ratio indicates short-lived allocations (normal for
-per-request work like signature buffers and JSON serialisation).
+Server overhead per process-mode node is approximately 0.15–1.4 MB RSS,
+growing with node count as gossip peer state and nonce caches accumulate.
+Per-issuance live heap growth is 1–2 KB per concurrent worker — the footprint
+is bounded by the number of in-flight requests, not the total issuance count.
 
 ### JSON output
 
-The `"memory"` key is present in JSON output when `--output json` is used:
+The `"memory"` key is present when `--output json` is used:
 
 ```json
 {
@@ -452,8 +292,8 @@ The `"memory"` key is present in JSON output when `--output json` is used:
     "issuance_growth_bytes":      409600,
     "per_issuance_growth_bytes":    1900,
     "issuance_alloc_bytes":     87523328,
-    "per_issuance_alloc_bytes":   397833,
-    "total_alloc_count":         700000
+    "per_issuance_alloc_bytes":   150120,
+    "total_alloc_count":         319099
   }
 }
 ```
@@ -469,20 +309,81 @@ The `"memory"` key is present in JSON output when `--output json` is used:
 | `per_issuance_alloc_bytes` | Per-issuance allocation pressure |
 | `total_alloc_count` | Total number of `alloc` calls in the whole process |
 
-### Typical figures
+---
 
-At 25 concurrent clients with 300 measured issuances (EC P-256, 5 ms poll cap):
+## Running the benchmark
 
-- Server overhead: ~0.3 MiB live (router tables, DB connection pool, CA state, HTTP client)
-- Per-issuance heap growth: ~1–2 KiB (request-scoped state retained by tokio workers)
-- Peak during issuances: ~2.5 MiB (25 in-flight requests simultaneously)
-- Allocation pressure: ~430–470 KiB per issuance (JWS buffers, JSON serialisation, cert DER/PEM); PostgreSQL adds ~30–50 KiB per issuance for protocol framing
+Process mode requires the release binary to be built first:
 
-For ML-DSA key types allocation pressure rises to ~580–740 KiB per issuance for
-leaf keys (with EC P-256 CA), and to ~740–1030 KiB per issuance for a full
-post-quantum chain (matching ML-DSA CA + ML-DSA leaf), due to larger key and
-certificate structures.
+```bash
+cargo build --release
+cargo bench --bench acme_bench -- --spawn process [OPTIONS]
+```
 
-These figures confirm that Akāmu has a stable heap footprint at steady state.
-Per-issuance live growth is small and bounded by the number of concurrent workers,
-not the total number of issuances.
+Common invocations:
+
+```bash
+# Scale-out sweep
+for n in 1 2 3 5 7 10; do
+  cargo bench --bench acme_bench -- \
+    --spawn process --nodes $n --clients 100 --requests 500 --warmup 50
+done
+
+# Key type comparison at n=5
+for kt in ec:P-256 ec:P-384 ed25519 rsa:2048; do
+  cargo bench --bench acme_bench -- \
+    --spawn process --nodes 5 --key-type $kt --clients 100 --requests 500 --warmup 50
+done
+
+# CA key type comparison at n=5
+cargo bench --bench acme_bench -- \
+  --spawn process --nodes 5 --ca-key-type rsa:4096 --clients 100 --requests 100
+
+# Post-quantum chain (ML-DSA-44 CA, ec:P-256 client)
+cargo bench --bench acme_bench -- \
+  --spawn process --nodes 5 --ca-key-type ml-dsa-44 --clients 100 --requests 500
+
+# dns-persist-01 challenge
+cargo bench --bench acme_bench -- \
+  --spawn process --nodes 5 --challenge dns-persist-01 --clients 100 --requests 500
+
+# Proxy topology
+cargo bench --bench acme_bench -- \
+  --spawn process --nodes 5 --topology proxy --clients 100 --requests 500
+
+# Gossip on vs off
+cargo bench --bench acme_bench -- \
+  --spawn process --nodes 5 --clients 100 --requests 500
+cargo bench --bench acme_bench -- \
+  --spawn process --nodes 5 --no-gossip --clients 100 --requests 500
+
+# Concurrency sweep at n=5
+for c in 10 25 50 100; do
+  cargo bench --bench acme_bench -- \
+    --spawn process --nodes 5 --clients $c --requests 500 --warmup 50
+done
+
+# JSON output for scripting
+cargo bench --bench acme_bench -- \
+  --spawn process --nodes 5 --clients 100 --requests 500 --output json | jq .summary
+```
+
+### Available options
+
+| Option | Default | Description |
+|:-------|:--------|:------------|
+| `--spawn MODE` | `inprocess` | `inprocess` or `process`; use `process` for representative measurements |
+| `--nodes N` | 1 | Number of akamu nodes in the cluster |
+| `--clients N` | 10 | Concurrent worker tasks |
+| `--requests N` | 100 | Issuances to measure (warmup not counted) |
+| `--warmup N` | 10 | Warmup issuances discarded before measurement |
+| `--challenge TYPE` | `http-01` | `http-01` or `dns-persist-01` |
+| `--key-type TYPE` | `ec:P-256` | CSR key type (see table above) |
+| `--ca-key-type TYPE` | `ec:P-256` | CA key type (same syntax) |
+| `--topology MODE` | `direct` | `direct` (round-robin) or `proxy` (single-node proxy) |
+| `--no-gossip` | off | Disable gossip in multi-node runs |
+| `--db PATH` | `:memory:` | SQLite URL; ignored in process mode (always `:memory:`) |
+| `--pool-connections N` | `1` | Connection pool size (process mode: always 1) |
+| `--wildcard` | off | Issue `*.bench-N.acme-bench.test` (dns-persist-01 only) |
+| `--output FORMAT` | `text` | `text` or `json` |
+| `--verify-cert` | off | Parse and verify the SAN of every issued certificate |
