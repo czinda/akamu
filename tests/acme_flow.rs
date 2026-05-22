@@ -3567,7 +3567,15 @@ async fn test_smime_email_reply_00_full_flow() {
             checkpoint_retention_count: 1000,
             hash_alg: "sha256".into(),
         },
-        server: ServerConfig::default(),
+        server: ServerConfig {
+            // Non-zero expiry: ServerConfig::default() uses 0, which sets
+            // authz_expiry = now + 0 = now.  If the webhook arrives even one
+            // second later, verify_response sees now > expires and invalidates
+            // the challenge — a spurious intermittent test failure.
+            authz_expiry_secs: 3600,
+            order_expiry_secs: 3600,
+            ..ServerConfig::default()
+        },
         tls: Default::default(),
         profiles: Default::default(),
         admin: None,
