@@ -276,6 +276,11 @@ pub struct AppState {
     /// `db` so that the 30-second periodic cluster-state persist does not
     /// contend with ACME writes on the main pool.
     pub crdt_db: crate::db::Db,
+    /// Trust anchors for Token Authority cert chain validation (RFC 9447 §5.3).
+    ///
+    /// Built from `config.tkauth.trusted_ta_ca_files` at startup.
+    /// `None` when `[tkauth]` is absent or `enabled = false`.
+    pub tkauth_trust_anchors: Option<std::sync::Arc<synta_x509_verification::OwnedStore>>,
 }
 
 impl AppState {

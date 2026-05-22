@@ -664,6 +664,22 @@ async fn run() -> Result<(), String> {
         }
     };
 
+    // ── tkauth Token Authority trust anchors (RFC 9447) ──────────────────────
+    let tkauth_trust_anchors = if let Some(tkauth) = config.tkauth.as_ref().filter(|t| t.enabled) {
+        let ca_ders = akamu::tls::loader::load_ca_certs(&tkauth.trusted_ta_ca_files)
+            .map_err(|e| format!("tkauth trust anchors: {e}"))?;
+        let store =
+            synta_x509_verification::OwnedStore::try_new(ca_ders.iter().map(|d| d.as_slice()))
+                .map_err(|e| format!("build tkauth trust store: {e}"))?;
+        tracing::info!(
+            count = ca_ders.len(),
+            "loaded tkauth Token Authority trust anchors"
+        );
+        Some(Arc::new(store))
+    } else {
+        None
+    };
+
     // ── Per-CA Link headers ───────────────────────────────────────────────────
     let link_headers_map: std::collections::HashMap<String, Arc<axum::http::HeaderValue>> = config
         .cas
@@ -756,6 +772,7 @@ async fn run() -> Result<(), String> {
         gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         write_notify: Arc::new(tokio::sync::Notify::new()),
         crdt_db,
+        tkauth_trust_anchors,
     });
 
     // ── Seed audit row counter ────────────────────────────────────────────────
@@ -819,6 +836,28 @@ async fn run() -> Result<(), String> {
                         tracing::error!(err = %e, "gossip loop panicked; restarting in 5s");
                         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                     }
+                }
+            }
+        });
+    }
+
+    // ── RFC 9447 tkauth JTI pruning background task ──────────────────────────
+    if let Some(tkauth_cfg) = config.tkauth.as_ref().filter(|t| t.enabled) {
+        let prune_interval = tkauth_cfg.jti_prune_interval_secs;
+        let state_for_jti = Arc::clone(&state);
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(prune_interval));
+            interval.tick().await; // skip immediate first tick
+            loop {
+                interval.tick().await;
+                let now = akamu::util::unix_now();
+                match crate::db::tkauth::purge_expired(&state_for_jti.db, now).await {
+                    Ok(n) if n > 0 => {
+                        tracing::debug!(deleted = n, "tkauth JTI cache pruned");
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(err = %e, "tkauth JTI cache prune failed"),
                 }
             }
         });
