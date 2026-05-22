@@ -222,6 +222,25 @@ pub async fn new_order(
                     )));
                 }
             }
+            "TNAuthList" | "JWTClaimConstraints" => {
+                if !state.config.tkauth.as_ref().is_some_and(|t| t.enabled) {
+                    return Err(AcmeError::UnsupportedIdentifier(id.r#type.clone()));
+                }
+                if id.value.is_empty() {
+                    return Err(AcmeError::BadRequest(format!(
+                        "{} identifier value must not be empty",
+                        id.r#type
+                    )));
+                }
+                use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+                use base64::Engine;
+                URL_SAFE_NO_PAD.decode(&id.value).map_err(|_| {
+                    AcmeError::BadRequest(format!(
+                        "{} value is not valid base64url: '{}'",
+                        id.r#type, id.value
+                    ))
+                })?;
+            }
             other => return Err(AcmeError::UnsupportedIdentifier(other.into())),
         }
         // Validate ancestorDomain if present: identifier.value must end with
@@ -472,6 +491,7 @@ pub async fn new_order(
             "dns" => dns_types,
             "ip" => &["http-01", "tls-alpn-01"],
             "email" => &["email-reply-00"],
+            "TNAuthList" | "JWTClaimConstraints" => &["tkauth-01"],
             _ => &[],
         };
         let challenges = challenge_types
@@ -566,6 +586,11 @@ pub async fn new_order(
                 &plan.challenges,
                 &plan.token,
                 now,
+                state
+                    .config
+                    .tkauth
+                    .as_ref()
+                    .and_then(|t| t.token_authority_url.as_deref()),
             )
             .await?;
         }
