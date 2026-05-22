@@ -318,6 +318,7 @@ fn handle_alarm(state: &AuditState, policy: &AuditPolicy) {
 /// (failed `delete_oldest`) are also propagated.
 pub async fn record(
     db: &Db,
+    db_kind: crate::db::DbKind,
     state: &AuditState,
     policy: &AuditPolicy,
     ev: AuditEvent,
@@ -364,10 +365,7 @@ pub async fn record(
     // FAU_STG.1 / FAU_STG.4: INSERT and overflow enforcement must be atomic so
     // that concurrent writes cannot interleave between the COUNT and DELETE and
     // leave the table over the configured cap.
-    let mut tx = db
-        .begin()
-        .await
-        .map_err(|e| AcmeError::Database(format!("begin audit transaction: {e}")))?;
+    let mut tx = crate::db::begin_write(db, db_kind).await?;
 
     crate::db::audit::insert(
         &mut *tx,
@@ -470,6 +468,7 @@ pub async fn record(
 /// Slow path: falls back to two sequential `record` calls with full overflow enforcement.
 pub async fn record_pair(
     db: &Db,
+    db_kind: crate::db::DbKind,
     state: &AuditState,
     policy: &AuditPolicy,
     ev1: AuditEvent,
@@ -505,8 +504,8 @@ pub async fn record_pair(
 
     // Attempt both inserts regardless of individual failures so that a failed
     // ev1 does not silently drop ev2.  Return the first error encountered.
-    let err1 = record(db, state, policy, ev1).await.err();
-    let err2 = record(db, state, policy, ev2).await.err();
+    let err1 = record(db, db_kind, state, policy, ev1).await.err();
+    let err2 = record(db, db_kind, state, policy, ev2).await.err();
     if let Some(e) = err1 {
         return Err(e);
     }
@@ -518,6 +517,7 @@ pub async fn record_pair(
 
 pub async fn record_or_log_pair(
     db: &Db,
+    db_kind: crate::db::DbKind,
     state: &AuditState,
     policy: &AuditPolicy,
     ev1: AuditEvent,
@@ -525,7 +525,7 @@ pub async fn record_or_log_pair(
 ) {
     let ev1_type = ev1.event_type.as_str();
     let ev2_type = ev2.event_type.as_str();
-    if let Err(e) = record_pair(db, state, policy, ev1, ev2).await {
+    if let Err(e) = record_pair(db, db_kind, state, policy, ev1, ev2).await {
         let n = state
             .consecutive_insert_failures
             .fetch_add(1, Ordering::AcqRel)
@@ -552,10 +552,16 @@ pub async fn record_or_log_pair(
     }
 }
 
-pub async fn record_or_log(db: &Db, state: &AuditState, policy: &AuditPolicy, ev: AuditEvent) {
+pub async fn record_or_log(
+    db: &Db,
+    db_kind: crate::db::DbKind,
+    state: &AuditState,
+    policy: &AuditPolicy,
+    ev: AuditEvent,
+) {
     let ev_type = ev.event_type.as_str();
     let ev_outcome = ev.outcome.as_str();
-    if let Err(e) = record(db, state, policy, ev).await {
+    if let Err(e) = record(db, db_kind, state, policy, ev).await {
         let n = state
             .consecutive_insert_failures
             .fetch_add(1, Ordering::AcqRel)
@@ -588,26 +594,29 @@ mod tests {
     use crate::db::Db;
     use std::sync::Arc;
 
-    async fn open_db() -> Db {
+    const TEST_DB_URL: &str = "sqlite::memory:";
+
+    async fn open_db() -> (Db, crate::db::DbKind) {
         crate::db::install_drivers();
-        crate::db::open("sqlite::memory:", 1, false).await.unwrap()
+        let db = crate::db::open(TEST_DB_URL, 1, false).await.unwrap();
+        (db, crate::db::DbKind::from_url(TEST_DB_URL))
     }
 
     #[tokio::test]
     async fn record_inserts_event() {
-        let db = open_db().await;
+        let (db, db_kind) = open_db().await;
         let state = AuditState::new();
         let policy = AuditPolicy::default();
         let ev = AuditEvent::success(AuditEventType::CertIssue)
             .with_subject("acc-123")
             .with_principal("alice");
-        record(&db, &state, &policy, ev).await.unwrap();
+        record(&db, db_kind, &state, &policy, ev).await.unwrap();
         assert_eq!(crate::db::audit::count(&db).await.unwrap(), 1);
     }
 
     #[tokio::test]
     async fn overflow_drop_oldest_enforced() {
-        let db = open_db().await;
+        let (db, db_kind) = open_db().await;
         let state = AuditState::new();
         let policy = AuditPolicy {
             max_rows: Some(3),
@@ -617,6 +626,7 @@ mod tests {
         for _ in 0..5 {
             record(
                 &db,
+                db_kind,
                 &state,
                 &policy,
                 AuditEvent::success(AuditEventType::CertIssue),
@@ -631,7 +641,7 @@ mod tests {
 
     #[tokio::test]
     async fn overflow_halt_sets_flag() {
-        let db = open_db().await;
+        let (db, db_kind) = open_db().await;
         let state = Arc::new(AuditState::new());
         let policy = AuditPolicy {
             max_rows: Some(1),
@@ -641,6 +651,7 @@ mod tests {
         // First event — inserts fine.
         record(
             &db,
+            db_kind,
             &state,
             &policy,
             AuditEvent::success(AuditEventType::CertIssue),
@@ -650,6 +661,7 @@ mod tests {
         // Second event — triggers overflow halt.
         record(
             &db,
+            db_kind,
             &state,
             &policy,
             AuditEvent::success(AuditEventType::CertIssue),
@@ -661,7 +673,7 @@ mod tests {
 
     #[tokio::test]
     async fn alarm_fires_after_threshold() {
-        let db = open_db().await;
+        let (db, db_kind) = open_db().await;
         let state = Arc::new(AuditState::new());
         let policy = AuditPolicy {
             max_rows: None,
@@ -672,6 +684,7 @@ mod tests {
         for _ in 0..3 {
             record(
                 &db,
+                db_kind,
                 &state,
                 &policy,
                 AuditEvent::failure(AuditEventType::SecurityViolation),
