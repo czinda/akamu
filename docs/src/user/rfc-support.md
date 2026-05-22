@@ -8,9 +8,9 @@ This page documents every RFC that is relevant to `Akāmu`, explaining what each
 |---------------|-------|--------|
 | [CA/B Forum BR](#cab-forum-baseline-requirements) | CA/Browser Forum Baseline Requirements v2.x | Partial |
 | [dns-persist-01](#lets-encrypt-dns-persist-01) | Let's Encrypt Persistent DNS Challenge | Full |
-| [draft-aaron-acme-profiles-01](#draft-aaron-acme-profiles-01) | ACME Certificate Profiles | Full |
-| [draft-ietf-cose-dilithium-11](#draft-ietf-cose-dilithium-11) | ML-DSA (Dilithium) for JOSE (JWK + JWS) | Full |
-| [draft-ietf-lamps-pq-composite-sigs](#draft-ietf-lamps-pq-composite-sigs) | ML-DSA Composite TLS Signature Schemes | Partial (provisional code points) |
+| [draft-ietf-acme-profiles-01](#draft-ietf-acme-profiles-01) | ACME Certificate Profiles | Full |
+| [RFC 9964](#rfc-9964--ml-dsa-for-jose-and-cose) | ML-DSA for JSON Object Signing and Encryption (JOSE) and CBOR Object Signing and Encryption (COSE) | Full |
+| [draft-ietf-lamps-pq-composite-sigs / draft-reddy-tls-composite-mldsa](#draft-ietf-lamps-pq-composite-sigs--draft-reddy-tls-composite-mldsa) | ML-DSA Composite TLS Signature Schemes | Partial (provisional code points) |
 | [RFC 7807](#rfc-7807--problem-details-for-http-apis) | Problem Details for HTTP APIs | Full |
 | [RFC 8555](#rfc-8555--core-acme) | Automatic Certificate Management Environment (ACME) | Full |
 | [RFC 8659](#rfc-8659--caa-dns-resource-record) | DNS Certification Authority Authorization (CAA) | Full |
@@ -696,9 +696,9 @@ Akāmu queries the `_validation-persist.<domain>` TXT record, verifies the issue
 
 ---
 
-## draft-aaron-acme-profiles-01
+## draft-ietf-acme-profiles-01
 
-**[draft-aaron-acme-profiles-01](https://www.ietf.org/archive/id/draft-aaron-acme-profiles-01.html)** defines a mechanism for an ACME server to advertise named certificate profiles and for clients to request a specific profile when placing an order. This moves policy selection from CSR extensions and post-issuance inspection into the order object itself, making the server's issuance policy explicit and machine-readable.
+**[draft-ietf-acme-profiles-01](https://datatracker.ietf.org/doc/draft-ietf-acme-profiles/)** defines a mechanism for an ACME server to advertise named certificate profiles and for clients to request a specific profile when placing an order. This moves policy selection from CSR extensions and post-issuance inspection into the order object itself, making the server's issuance policy explicit and machine-readable.
 
 ### What it adds
 
@@ -767,14 +767,14 @@ See [Certificate Profiles](profiles.md) for the full configuration reference inc
 
 ---
 
-## draft-ietf-cose-dilithium-11
+## RFC 9964 — ML-DSA for JOSE and COSE
 
-**[draft-ietf-cose-dilithium-11](https://datatracker.ietf.org/doc/draft-ietf-cose-dilithium/)**
+**[RFC 9964](https://www.rfc-editor.org/rfc/rfc9964)**
 defines how ML-DSA (Module-Lattice-Based Digital Signature Algorithm, formerly
 CRYSTALS-Dilithium, standardized in FIPS 204) keys and signatures are represented in JOSE
-(JSON Object Signing and Encryption). This draft has been submitted for RFC publication and
-its wire format is frozen. Akāmu implements it for ACME account key authentication, meaning
-ACME clients can register an ML-DSA key pair and sign every subsequent ACME request with it.
+(JSON Object Signing and Encryption) and COSE (CBOR Object Signing and Encryption). Akāmu
+implements it for ACME account key authentication, meaning ACME clients can register an
+ML-DSA key pair and sign every subsequent ACME request with it.
 
 ### JWK key type: `AKP`
 
@@ -807,7 +807,7 @@ algorithm is encoded inside the JWK itself (not only in the JWS protected header
 
 ### JWK thumbprint
 
-Per draft-ietf-cose-dilithium-11 §6, the JWK thumbprint for an `AKP` key is the
+Per RFC 9964 §6, the JWK thumbprint for an `AKP` key is the
 SHA-256 hash of the following canonical JSON object with members in lexicographic order:
 
 ```json
@@ -823,7 +823,7 @@ ML-DSA signatures in JOSE are **raw bytes** as defined by FIPS 204 §7.2. They a
 **not** DER-encoded. The server validates the signature length before attempting
 verification and returns `HTTP 400` if the length does not match the declared algorithm.
 
-The signing context MUST be an empty byte string per draft-ietf-cose-dilithium-11 §4.
+The signing context MUST be an empty byte string per RFC 9964 §4.
 Signature failures return `HTTP 401 Unauthorized`.
 
 ### ACME client integration notes
@@ -842,34 +842,33 @@ ML-DSA; the feature is always available.
 
 ---
 
-## draft-ietf-lamps-pq-composite-sigs
+## draft-ietf-lamps-pq-composite-sigs / draft-reddy-tls-composite-mldsa
 
-**[draft-ietf-lamps-pq-composite-sigs](https://datatracker.ietf.org/doc/draft-ietf-lamps-pq-composite-sigs/)** is an active IETF draft that defines hybrid post-quantum signature algorithms combining a classical algorithm (ECDSA or RSA) with a post-quantum algorithm (ML-DSA, formerly CRYSTALS-Dilithium). Akāmu implements the TLS 1.3 signature scheme code points from the provisional IANA allocations in this draft.
+**[draft-ietf-lamps-pq-composite-sigs](https://datatracker.ietf.org/doc/draft-ietf-lamps-pq-composite-sigs/)** defines the X.509/PKIX OIDs for hybrid ML-DSA+classical composite signature algorithms. The TLS 1.3 `SignatureScheme` code points for use in `CertificateVerify` are defined in the companion draft **[draft-reddy-tls-composite-mldsa](https://datatracker.ietf.org/doc/draft-reddy-tls-composite-mldsa/)**.
 
 ### What this affects
 
 These code points are used only for **mutual TLS client authentication** — they appear in the TLS `CertificateVerify` message when a client presents a certificate signed with a composite ML-DSA scheme. Server-side certificate issuance (for ACME clients) is not affected.
 
-The 12 composite scheme code points implemented are:
+The 11 composite scheme code points implemented are:
 
 | Code point | Scheme |
 |------------|--------|
-| 0x0901 | id-MLDSA44-RSA2048-PSS-SHA256 |
-| 0x0902 | id-MLDSA44-RSA2048-PKCS15-SHA256 |
-| 0x0903 | id-MLDSA44-Ed25519-SHA512 |
-| 0x0904 | id-MLDSA44-ECDSA-P256-SHA256 |
-| 0x0905 | id-MLDSA65-RSA3072-PSS-SHA512 |
-| 0x0906 | id-MLDSA65-RSA3072-PKCS15-SHA512 |
-| 0x0907 | id-MLDSA65-ECDSA-P384-SHA512 |
-| 0x0908 | id-MLDSA65-ECDSA-brainpoolP256r1-SHA512 |
-| 0x0909 | id-MLDSA87-ECDSA-P384-SHA512 |
-| 0x090A | id-MLDSA87-ECDSA-brainpoolP384r1-SHA512 |
-| 0x090B | id-MLDSA87-Ed448-SHA512 |
-| 0x090C | id-MLDSA65-ECDSA-P256-SHA512 |
+| 0x0901 | MLDSA44-ECDSA-P256-SHA256 |
+| 0x0902 | MLDSA44-RSA2048-PKCS15-SHA256 |
+| 0x0903 | MLDSA44-RSA2048-PSS-SHA256 |
+| 0x0904 | MLDSA44-Ed25519-SHA512 |
+| 0x0905 | MLDSA65-ECDSA-P256-SHA512 |
+| 0x0906 | MLDSA65-ECDSA-P384-SHA512 |
+| 0x0907 | MLDSA65-RSA3072-PKCS15-SHA512 |
+| 0x0908 | MLDSA65-RSA3072-PSS-SHA512 |
+| 0x0909 | MLDSA65-Ed25519-SHA512 |
+| 0x090A | MLDSA87-ECDSA-P384-SHA512 |
+| 0x090C | MLDSA87-Ed448-SHAKE256 |
 
 ### Stability warning
 
-These code points come from the **provisional IANA registry** for an in-progress draft. They may change as the draft advances toward RFC publication. Before deploying to production, verify the current draft version against the code points listed above.
+All code points in `draft-reddy-tls-composite-mldsa` are still TBD pending IANA allocation. The `0x090x` values used here are provisional. They may change as the drafts advance toward RFC publication. Before deploying to production, verify the current draft version against the code points listed above.
 
 ---
 
