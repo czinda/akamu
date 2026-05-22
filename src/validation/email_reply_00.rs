@@ -727,6 +727,7 @@ mod tests {
             delegation_upstream: None,
             gossip: None,
             crdt_db_url: None,
+            tkauth: None,
         });
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
         db::install_drivers();
@@ -841,6 +842,8 @@ mod tests {
                 updated: now,
                 email_token_part1: None,
                 email_message_id: None,
+                tkauth_type: None,
+                token_authority: None,
             },
         )
         .await
@@ -917,6 +920,7 @@ mod tests {
             gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             write_notify: Arc::new(tokio::sync::Notify::new()),
             crdt_db: db_conn.clone(),
+            tkauth_trust_anchors: None,
         });
 
         (

@@ -98,6 +98,7 @@ async fn build_two_ca_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir
         delegation_upstream: None,
         gossip: None,
         crdt_db_url: None,
+        tkauth: None,
     });
 
     db::install_drivers();
@@ -220,6 +221,7 @@ async fn build_two_ca_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir
         admin_gss_cred: None,
         eab_master_secret: None,
         crdt_db: db_conn.clone(),
+        tkauth_trust_anchors: None,
     });
 
     (state, dir)
@@ -601,6 +603,7 @@ async fn admin_cas_list_returns_both_cas() {
         delegation_upstream: None,
         gossip: None,
         crdt_db_url: None,
+        tkauth: None,
     });
 
     db::install_drivers();
@@ -733,6 +736,7 @@ async fn admin_cas_list_returns_both_cas() {
         admin_gss_cred: None,
         eab_master_secret: None,
         crdt_db: db_conn.clone(),
+        tkauth_trust_anchors: None,
     });
 
     let admin_router = routes::build_router(Arc::clone(&state), None);
@@ -866,6 +870,7 @@ async fn build_two_ca_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         delegation_upstream: None,
         gossip: None,
         crdt_db_url: None,
+        tkauth: None,
     });
 
     db::install_drivers();
@@ -1010,6 +1015,7 @@ async fn build_two_ca_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         admin_gss_cred: None,
         eab_master_secret: None,
         crdt_db: db_conn.clone(),
+        tkauth_trust_anchors: None,
     });
 
     (state, dir)

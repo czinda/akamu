@@ -153,6 +153,7 @@ async fn build_state(
         delegation_upstream: None,
         gossip: None,
         crdt_db_url: None,
+        tkauth: None,
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
@@ -251,6 +252,7 @@ async fn build_state(
         admin_gss_cred: None,
         eab_master_secret: None,
         crdt_db: db_conn.clone(),
+        tkauth_trust_anchors: None,
     });
 
     (state, sessions, dir)
