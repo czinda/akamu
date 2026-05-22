@@ -363,6 +363,62 @@ Certbot authenticator names are mapped to akamu challenge types as follows:
 |  tls-sni-01
 :  tls-alpn-01 (with a deprecation notice)
 
+## System integration
+
+*install timer* *--renewal-config* _FILE_ [_OPTIONS_]
+	Generate a systemd *.service* and *.timer* unit pair that runs
+	*akamu-cli renew --renewal-config* _FILE_ on a daily schedule.
+	The units are written to */etc/systemd/system/* when the command
+	runs as root, or *~/.config/systemd/user/* otherwise.  Use
+	*--system* or *--user* to override the auto-detected location.
+
+	*--renewal-config* _FILE_
+		TOML renewal configuration written by *akamu-cli issue* or
+		*akamu-cli import certbot*.  Required.
+
+	*--unit-name* _NAME_
+		Override the generated unit base name.  Default: derived from
+		the first domain in the renewal config (e.g.
+		*akamu-renew-example.com* for *example.com*; wildcard domains
+		produce *akamu-renew-wildcard-example.com*).
+
+	*--system*
+		Write units to */etc/systemd/system/* even when running as
+		non-root.  Mutually exclusive with *--user*.
+
+	*--user*
+		Write units to *~/.config/systemd/user/* even when running as
+		root.  Mutually exclusive with *--system*.
+
+	*--on-calendar* _SPEC_
+		systemd *OnCalendar* expression for the timer.
+		Default: *daily*.  Example: *"Mon *-*-* 04:00:00"*.
+
+	*--enable*
+		Run *systemctl [--user] enable* on the timer after writing the
+		unit files.
+
+	*--now*
+		Start the timer immediately after enabling.  Implies *--enable*.
+
+	*--print-only*
+		Print the generated unit file contents to standard output
+		without writing any files or calling *systemctl*.  Useful for
+		review before committing to installation.
+
+	*--force*
+		Overwrite existing unit files without prompting.
+
+	The generated timer uses *RandomizedDelaySec=1h* and
+	*Persistent=true* so that a missed run (e.g. the machine was off
+	at midnight) is executed on the next startup.  The *ExecStart*
+	path is set to the absolute path of the running *akamu-cli*
+	binary.
+
+	By default the command writes the unit files and prints a
+	ready-to-paste *systemctl enable* command; it does not enable or
+	start the timer automatically.
+
 # KEY TYPES
 
 The following values are accepted by *--key-type*, *--cert-key-type*, and
@@ -663,6 +719,31 @@ akamu-cli revoke \
   --cert /etc/ssl/example.com/fullchain.pem \
   --cert-key /etc/ssl/example.com/fullchain.pem.key.pem \
   --reason 1
+```
+
+Preview the generated unit files without writing anything:
+
+```
+akamu-cli install timer \
+  --renewal-config /etc/ssl/example.com/fullchain.pem.renewal.toml \
+  --print-only
+```
+
+Install a system-wide timer and enable it immediately (requires root):
+
+```
+sudo akamu-cli install timer \
+  --renewal-config /etc/ssl/example.com/fullchain.pem.renewal.toml \
+  --enable --now
+```
+
+Install a user-level timer for non-root certificate management:
+
+```
+akamu-cli install timer \
+  --renewal-config ~/certs/example.com.pem.renewal.toml
+# then:
+systemctl --user enable --now akamu-renew-example.com.timer
 ```
 
 # ENVIRONMENT
