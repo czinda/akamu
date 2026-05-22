@@ -26,7 +26,7 @@ All ACME POST requests must be signed with JWS flattened JSON serialization (RFC
 
 Any other `alg` value returns `badSignatureAlgorithm` (HTTP 400). ECDSA signatures use IEEE P1363 encoding (raw `r||s`).
 
-### ML-DSA signature wire format (draft-ietf-cose-dilithium-11)
+### ML-DSA signature wire format (RFC 9964)
 
 ML-DSA signatures in JOSE are raw bytes per FIPS 204 §7.2 — **not** DER-wrapped. The server checks the signature length before verification:
 
@@ -36,11 +36,11 @@ ML-DSA signatures in JOSE are raw bytes per FIPS 204 §7.2 — **not** DER-wrapp
 | `ML-DSA-65` | 3309 bytes |
 | `ML-DSA-87` | 4627 bytes |
 
-A length mismatch causes an immediate `badSignatureAlgorithm` error. The signing context must be an empty byte string per draft-ietf-cose-dilithium-11 §4.
+A length mismatch causes an immediate `badSignatureAlgorithm` error. The signing context must be an empty byte string per RFC 9964 §4.
 
 ### JWK thumbprint for AKP keys (ML-DSA)
 
-Per draft-ietf-cose-dilithium-11 §6, the canonical JSON for computing the RFC 7638 thumbprint of an ML-DSA public key is:
+Per RFC 9964 §6, the canonical JSON for computing the RFC 7638 thumbprint of an ML-DSA public key is:
 
 ```json
 {"alg":"ML-DSA-65","kty":"AKP","pub":"<base64url-public-key>"}

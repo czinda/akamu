@@ -12,11 +12,11 @@ ECDSA signatures arrive as IEEE P1363 encoding (raw `r||s`) on the wire; the ser
 
 The JWK thumbprint computation (RFC 7638) supports key types `RSA`, `EC`, `OKP`, and `AKP` (ML-DSA). The canonical JSON fields and their order per key type are implemented in `crates/akamu-jose/src/jwk.rs`.
 
-### ML-DSA JWS verification internals (draft-ietf-cose-dilithium-11)
+### ML-DSA JWS verification internals (RFC 9964)
 
-After detecting an `ML-DSA-*` algorithm in the protected header `alg` field, the server checks the raw signature length (see [protocol reference](../client/protocol.md#ml-dsa-signature-wire-format-draft-ietf-cose-dilithium-11) for the byte counts). A length mismatch causes an immediate `badSignatureAlgorithm` error without attempting the verify call — this prevents malformed input from reaching the OpenSSL backend.
+After detecting an `ML-DSA-*` algorithm in the protected header `alg` field, the server checks the raw signature length (see [protocol reference](../client/protocol.md#ml-dsa-signature-wire-format-rfc-9964) for the byte counts). A length mismatch causes an immediate `badSignatureAlgorithm` error without attempting the verify call — this prevents malformed input from reaching the OpenSSL backend.
 
-Per draft-ietf-cose-dilithium-11 §4, the signing context must be an empty byte string. The server calls:
+Per RFC 9964 §4, the signing context must be an empty byte string. The server calls:
 
 ```rust
 BackendPublicKey::verify_ml_dsa_with_context(

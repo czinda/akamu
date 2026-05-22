@@ -10,7 +10,7 @@
 - Signing and verifying RFC 7515 JWS flattened serialization (`JwsFlattened`)
 - Decoding JWS protected headers (`JwsProtectedHeader`)
 - All classical algorithms: ES256/ES384/ES512, PS256/PS384/PS512, EdDSA
-- Post-quantum algorithms: ML-DSA-44, ML-DSA-65, ML-DSA-87 (draft-ietf-cose-dilithium-11)
+- Post-quantum algorithms: ML-DSA-44, ML-DSA-65, ML-DSA-87 (RFC 9964)
 
 ## What it does NOT provide
 
@@ -83,7 +83,7 @@ For ML-DSA-87, the call is identical — the algorithm is determined by the key 
 let jws = JwsFlattened::sign(&protected_b64, &payload_b64, &private_key)?;
 ```
 
-ML-DSA signatures are produced over the raw signing input using an empty context string as required by draft-ietf-cose-dilithium-11 §4.
+ML-DSA signatures are produced over the raw signing input using an empty context string as required by RFC 9964 §4.
 
 ### Verifying
 
@@ -136,9 +136,9 @@ Use `Jwk` when the request is made before an account exists (new-account) or for
 | RSASSA-PSS | `PS384` | `RSA` | SHA-384 / MGF1-SHA-384 |
 | RSASSA-PSS | `PS512` | `RSA` | SHA-512 / MGF1-SHA-512 |
 | EdDSA | `EdDSA` | `OKP` / `Ed25519` or `Ed448` | RFC 8037 |
-| ML-DSA | `ML-DSA-44` | `LWE` (draft) | draft-ietf-cose-dilithium-11 |
-| ML-DSA | `ML-DSA-65` | `LWE` (draft) | draft-ietf-cose-dilithium-11 |
-| ML-DSA | `ML-DSA-87` | `LWE` (draft) | draft-ietf-cose-dilithium-11 |
+| ML-DSA | `ML-DSA-44` | `LWE` | RFC 9964 |
+| ML-DSA | `ML-DSA-65` | `LWE` | RFC 9964 |
+| ML-DSA | `ML-DSA-87` | `LWE` | RFC 9964 |
 
 ## JoseError
 

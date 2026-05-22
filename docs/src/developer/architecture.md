@@ -436,7 +436,7 @@ Almost every POST endpoint calls `routes::parse_jws` before processing the paylo
 4. **Nonce check**: look up `header.nonce` in the in-memory `NonceBucket` and atomically replace it with a fresh nonce. A missing or already-used nonce returns `badNonce`. The nonce store is in-memory (a `Mutex<HashMap>` inside `AppState::nonces`); nonces issued before a server restart are silently dropped, and clients detect the resulting `badNonce` and retry per RFC 8555 §6.5.
 5. **Key resolution**: if the header uses `jwk`, extract the SPKI DER from the JWK directly. If it uses `kid`, look up the account in the database and fetch its stored SPKI DER.
 6. **Signature verification**: verify the JWS signature over `protected || "." || payload` using the resolved public key via `synta-certificate`. Classical algorithms (RS256, RS384,
-   RS512, PS256, PS384, PS512, ES256, ES384, ES512, EdDSA) use `verify_signature`. ML-DSA algorithms (`ML-DSA-44`, `ML-DSA-65`, `ML-DSA-87`) are dispatched first — their raw-byte signatures (not DER) are verified with `verify_ml_dsa_with_context` using an empty context string, as required by draft-ietf-cose-dilithium-11 §4.
+   RS512, PS256, PS384, PS512, ES256, ES384, ES512, EdDSA) use `verify_signature`. ML-DSA algorithms (`ML-DSA-44`, `ML-DSA-65`, `ML-DSA-87`) are dispatched first — their raw-byte signatures (not DER) are verified with `verify_ml_dsa_with_context` using an empty context string, as required by RFC 9964 §4.
 7. **Payload decode**: base64url-decode the `payload` field.
 
 The result is a `JwsContext` struct containing the decoded header, payload bytes, SPKI DER, and optional account ID.
