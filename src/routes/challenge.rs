@@ -169,6 +169,23 @@ pub async fn respond_challenge(
         None
     };
 
+    let authority_token: Option<String> = if chall_type == "tkauth-01" {
+        #[derive(serde::Deserialize)]
+        struct TkauthPayload {
+            tkauth: String,
+        }
+        match serde_json::from_slice::<TkauthPayload>(&ctx.payload) {
+            Ok(p) => Some(p.tkauth),
+            Err(e) => {
+                return Err(AcmeError::BadRequest(format!(
+                    "tkauth-01: payload must be {{\"tkauth\":\"<JWT>\"}}: {e}"
+                )));
+            }
+        }
+    } else {
+        None
+    };
+
     // Spawn background validation task. The JoinHandle is observed so that a
     // panic inside the task is logged rather than silently swallowed.
     //
@@ -196,6 +213,7 @@ pub async fn respond_challenge(
                 token: &token,
                 onion_csr_der: onion_csr_der.as_deref(),
                 account_id: &account_id,
+                authority_token: authority_token.as_deref(),
             },
         )
         .await;
@@ -234,6 +252,12 @@ struct ChallengeJson<'a> {
     /// RFC 8823 §3: present only for `email-reply-00` challenges.
     #[serde(skip_serializing_if = "Option::is_none")]
     from: Option<String>,
+    /// RFC 9447 §4: present only for `tkauth-01` challenges.
+    #[serde(rename = "tkauth-type", skip_serializing_if = "Option::is_none")]
+    tkauth_type: Option<&'a str>,
+    /// RFC 9447 §4: optional Token Authority URL hint, present only for `tkauth-01`.
+    #[serde(rename = "token-authority", skip_serializing_if = "Option::is_none")]
+    token_authority: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     validated: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -281,6 +305,14 @@ fn challenge_response(
     } else {
         (Some(challenge.token.as_str()), None, None, None)
     };
+    let (tkauth_type, token_authority) = if challenge.r#type == "tkauth-01" {
+        (
+            challenge.tkauth_type.as_deref(),
+            challenge.token_authority.as_deref(),
+        )
+    } else {
+        (None, None)
+    };
     let body = ChallengeJson {
         r#type: &challenge.r#type,
         url: format!(
@@ -292,6 +324,8 @@ fn challenge_response(
         issuer_domain_names,
         auth_key,
         from,
+        tkauth_type,
+        token_authority,
         validated: challenge.validated.map(fmt_time),
         error: challenge.error.as_deref().and_then(|s| {
             serde_json::value::RawValue::from_string(s.to_string())

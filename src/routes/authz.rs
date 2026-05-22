@@ -49,6 +49,12 @@ struct ChallengeJson<'a> {
     /// Value is the server's `From:` address for challenge emails.
     #[serde(skip_serializing_if = "Option::is_none")]
     from: Option<String>,
+    /// RFC 9447 §4: present only for `tkauth-01` challenges.
+    #[serde(rename = "tkauth-type", skip_serializing_if = "Option::is_none")]
+    tkauth_type: Option<&'a str>,
+    /// RFC 9447 §4: optional Token Authority URL hint, present only for `tkauth-01`.
+    #[serde(rename = "token-authority", skip_serializing_if = "Option::is_none")]
+    token_authority: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     validated: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -242,7 +248,19 @@ pub async fn new_authz(
         .await
         .map_err(AcmeError::from)?;
 
-        db::challenges::insert_batch(&mut *tx, &authz_id, &challenges, &token, now).await?;
+        db::challenges::insert_batch(
+            &mut *tx,
+            &authz_id,
+            &challenges,
+            &token,
+            now,
+            state
+                .config
+                .tkauth
+                .as_ref()
+                .and_then(|t| t.token_authority_url.as_deref()),
+        )
+        .await?;
         tx.commit().await.map_err(AcmeError::from)?;
     }
 
@@ -318,6 +336,11 @@ fn build_authz_json<'a>(
             } else {
                 None
             };
+            let (tkauth_type, token_authority) = if c.r#type == "tkauth-01" {
+                (c.tkauth_type.as_deref(), c.token_authority.as_deref())
+            } else {
+                (None, None)
+            };
             Ok(ChallengeJson {
                 r#type: &c.r#type,
                 url: format!("{acme_pfx}/chall/{}/{}", authz.id, c.r#type),
@@ -326,6 +349,8 @@ fn build_authz_json<'a>(
                 issuer_domain_names,
                 auth_key,
                 from,
+                tkauth_type,
+                token_authority,
                 validated: c.validated.map(fmt_time),
                 error: c.error.as_deref().and_then(|s| {
                     serde_json::value::RawValue::from_string(s.to_string())
@@ -438,6 +463,8 @@ mod tests {
             updated: 1_700_000_000,
             email_token_part1: None,
             email_message_id: None,
+            tkauth_type: None,
+            token_authority: None,
         }
     }
 
@@ -519,6 +546,8 @@ mod tests {
                 issuer_domain_names: None,
                 auth_key: None,
                 from: None,
+                tkauth_type: None,
+                token_authority: None,
                 validated: None,
                 error: None,
             })
