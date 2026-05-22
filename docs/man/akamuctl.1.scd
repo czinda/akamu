@@ -554,7 +554,14 @@ url      = "https://akamu.example.com"
 
 # SEE ALSO
 
-*akamu*(8), *akamu-cosigner*(8)
+*akamu*(8), *akamu-cosigner*(8),
+*akamu.conf*(5), *akamu-cosigner.conf*(5)
+
+RFC 5280 - Internet X.509 Public Key Infrastructure Certificate and CRL Profile++
+RFC 6960 - X.509 Internet PKI Online Certificate Status Protocol (OCSP)++
+RFC 8555 - Automatic Certificate Management Environment (ACME)++
+RFC 9115 - An ACME Profile for Generating Delegated Certificates++
+RFC 9773 - ACME Renewal Information (ARI)
 
 # AUTHORS
 
