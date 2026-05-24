@@ -411,6 +411,28 @@ impl JwkPublic {
     }
 }
 
+/// Find the JWK whose `kid` field matches `kid` in a raw JWKS JSON body.
+///
+/// Returns a deserialized `JwkPublic` so callers can call `.to_spki_der()`.
+/// `JwkPublic` has no `kid` field; the lookup reads `kid` from raw JSON before
+/// deserializing, so extra JWKS fields are silently ignored.
+pub fn find_by_kid(jwks_bytes: &[u8], kid: &str) -> Result<JwkPublic, JoseError> {
+    let jwks: serde_json::Value = serde_json::from_slice(jwks_bytes)
+        .map_err(|e| JoseError::BadRequest(format!("JWKS JSON: {e}")))?;
+    let keys = jwks["keys"]
+        .as_array()
+        .ok_or_else(|| JoseError::BadRequest("JWKS missing 'keys' array".into()))?;
+    for entry in keys {
+        if entry.get("kid").and_then(|k| k.as_str()) == Some(kid) {
+            return serde_json::from_value::<JwkPublic>(entry.clone())
+                .map_err(|e| JoseError::BadRequest(format!("JWKS entry for kid '{kid}': {e}")));
+        }
+    }
+    Err(JoseError::BadRequest(format!(
+        "kid '{kid}' not found in JWKS"
+    )))
+}
+
 // ── SPKI helper for coordinate padding ────────────────────────────────────────
 
 fn pad_coord(v: &[u8], size: usize) -> String {
@@ -1231,6 +1253,42 @@ mod tests {
         assert!(!json.contains("\"n\""), "n must be absent");
         assert!(!json.contains("\"e\""), "e must be absent");
         assert!(!json.contains("\"alg\""), "alg must be absent");
+    }
+
+    // ── find_by_kid tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn find_by_kid_returns_matching_key() {
+        let jwks = br#"{"keys":[
+            {"kty":"EC","kid":"key-1","crv":"P-256","x":"AAAA","y":"BBBB"},
+            {"kty":"EC","kid":"key-2","crv":"P-384","x":"CCCC","y":"DDDD"}
+        ]}"#;
+        let jwk = find_by_kid(jwks, "key-2").unwrap();
+        assert_eq!(jwk.kty, "EC");
+        assert_eq!(jwk.crv.as_deref(), Some("P-384"));
+    }
+
+    #[test]
+    fn find_by_kid_absent_kid_returns_error() {
+        let jwks = br#"{"keys":[{"kty":"EC","kid":"key-1","crv":"P-256","x":"A","y":"B"}]}"#;
+        let err = find_by_kid(jwks, "key-99").unwrap_err();
+        assert!(
+            matches!(err, JoseError::BadRequest(ref m) if m.contains("key-99")),
+            "expected error mentioning missing kid, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn find_by_kid_missing_keys_array_returns_error() {
+        let jwks = br#"{"not_keys":[]}"#;
+        let err = find_by_kid(jwks, "any").unwrap_err();
+        assert!(matches!(err, JoseError::BadRequest(_)));
+    }
+
+    #[test]
+    fn find_by_kid_invalid_json_returns_error() {
+        let err = find_by_kid(b"not json", "any").unwrap_err();
+        assert!(matches!(err, JoseError::BadRequest(_)));
     }
 
     #[test]

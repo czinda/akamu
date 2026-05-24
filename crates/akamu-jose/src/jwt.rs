@@ -15,6 +15,8 @@ use crate::error::JoseError;
 #[derive(Debug, Deserialize)]
 pub struct AuthorityTokenHeader {
     pub alg: String,
+    /// Key ID identifying the signing key in a JWKS endpoint (RFC 7515 §4.1.4).
+    pub kid: Option<String>,
     /// HTTPS URL of the Token Authority signing certificate (RFC 7515 §4.1.5).
     pub x5u: Option<String>,
     /// Certificate chain as base64-std (not base64url) DER entries; first is the signing cert
@@ -74,27 +76,34 @@ impl AuthorityToken {
         let claims: serde_json::Value = serde_json::from_slice(&claims_bytes)
             .map_err(|e| JoseError::BadRequest(format!("authority token claims JSON: {e}")))?;
 
-        // Verify `exp` before doing crypto work.
-        let exp = claims.get("exp").and_then(|v| v.as_i64()).ok_or_else(|| {
-            JoseError::BadRequest("authority token: missing or non-integer 'exp' claim".into())
-        })?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-        if exp <= now {
-            return Err(JoseError::BadRequest(format!(
-                "authority token expired: exp={exp}, now={now}"
-            )));
-        }
-
-        // Compact JWT signing input: ASCII bytes of "<header_b64url>.<claims_b64url>".
+        // Verify signature first to avoid timing oracles on claim values.
         let signing_input = format!("{}.{}", parts[0], parts[1]);
         let raw_sig = URL_SAFE_NO_PAD
             .decode(parts[2])
             .map_err(|e| JoseError::BadRequest(format!("authority token signature base64: {e}")))?;
 
         crate::jws::verify_with_spki(&header.alg, signing_input.as_bytes(), &raw_sig, spki_der)?;
+
+        // Check time claims after signature is verified.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| JoseError::BadRequest("system clock is before Unix epoch".into()))?
+            .as_secs() as i64;
+        let exp = claims.get("exp").and_then(|v| v.as_i64()).ok_or_else(|| {
+            JoseError::BadRequest("authority token: missing or non-integer 'exp' claim".into())
+        })?;
+        if exp <= now {
+            return Err(JoseError::BadRequest(format!(
+                "authority token expired: exp={exp}, now={now}"
+            )));
+        }
+        if let Some(nbf) = claims.get("nbf").and_then(|v| v.as_i64()) {
+            if now < nbf {
+                return Err(JoseError::BadRequest(format!(
+                    "authority token not yet valid: nbf={nbf}, now={now}"
+                )));
+            }
+        }
 
         Ok(AuthorityToken { header, claims })
     }

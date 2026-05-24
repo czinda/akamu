@@ -263,6 +263,25 @@ pub(crate) fn verify_with_spki(
             (ES512_ALG_DER, der_sig)
         }
         "EdDSA" => (EDDSA_ALG_DER, raw_sig.to_vec()),
+        "ML-DSA-44" | "ML-DSA-65" | "ML-DSA-87" => {
+            let expected_sig_len: usize = match alg {
+                "ML-DSA-44" => 2420,
+                "ML-DSA-65" => 3309,
+                "ML-DSA-87" => 4627,
+                _ => unreachable!(),
+            };
+            if raw_sig.len() != expected_sig_len {
+                return Err(JoseError::BadRequest(format!(
+                    "ML-DSA signature length {} is wrong for {} (expected {})",
+                    raw_sig.len(),
+                    alg,
+                    expected_sig_len
+                )));
+            }
+            return key
+                .verify_ml_dsa_with_context(signing_input, raw_sig, b"")
+                .map_err(|e| JoseError::BadRequest(format!("ML-DSA signature invalid: {e}")));
+        }
         a => {
             return Err(JoseError::UnsupportedAlgorithm(format!(
                 "unsupported algorithm: {a}"
