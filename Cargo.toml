@@ -61,7 +61,7 @@ hickory-resolver = { version = "0.24", features = ["dnssec-openssl", "dns-over-n
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"] }
 rustls-pki-types = "1"
-rustls-native-ossl = "0.1.8"
+rustls-native-ossl = "0.1"
 
 # HTTP client for http-01 challenge validation (hyper is already pulled by axum)
 hyper = { version = "1", features = ["client", "http1"] }
@@ -75,6 +75,9 @@ rustls-native-certs = "0.8"
 
 # Service utilities (tower::ServiceExt used in TLS accept loop)
 tower = { version = "0.5", features = ["util"] }
+
+# Percent-encoding for http+unix:// JWKS URL socket path decoding
+percent-encoding = "2"
 
 # Error handling
 thiserror = "2"
@@ -121,7 +124,7 @@ synta-x509-verification =  { version = ">=0.2.0" }
 synta-mtc = { version = ">=0.2.0", features = ["std"] }
 
 # Native Rust bindings to system OpenSSL (composite ML-DSA TLS verify)
-native-ossl = "0.1.8"
+native-ossl = "0.1"
 
 # zstd compression for gossip CRDT payloads
 zstd = "0.13"
@@ -141,7 +144,7 @@ akamu-client = { path = "crates/akamu-client" }
 clap = { version = "4", features = ["derive"] }
 # Native Rust OpenSSL bindings — used by gossip_bootstrap integration test
 # to generate ML-KEM-768 and ECDSA P-256 node keys without the full server binary.
-native-ossl = "0.1.8"
+native-ossl = "0.1"
 
 [[bench]]
 name = "acme_bench"

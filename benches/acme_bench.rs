@@ -1060,6 +1060,8 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
         write_notify: Arc::new(tokio::sync::Notify::new()),
         crdt_db,
         tkauth_trust_anchors: None,
+        claim_encoder_registry: None,
+        jwks_cache: None,
     });
 
     if state.config.gossip.is_some() {

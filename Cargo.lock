@@ -35,6 +35,7 @@ dependencies = [
  "libc",
  "listenfd",
  "native-ossl",
+ "percent-encoding",
  "regex",
  "reqwest",
  "rustls",
@@ -88,7 +89,11 @@ dependencies = [
  "hyper",
  "hyper-rustls",
  "hyper-util",
+ "libc",
+ "native-ossl",
+ "percent-encoding",
  "rustls",
+ "rustls-native-certs",
  "rustls-native-ossl",
  "serde",
  "serde_json",
@@ -210,6 +215,7 @@ dependencies = [
 name = "akamuctl"
 version = "0.1.0"
 dependencies = [
+ "akamu-client",
  "akamu-gssapi",
  "base64",
  "clap",
@@ -1613,18 +1619,15 @@ dependencies = [
 
 [[package]]
 name = "native-ossl"
-version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52c799efd688850edbf7081d081f8320d9907be23b5144ea248be43b06fb8b86"
+version = "0.1.9"
 dependencies = [
+ "log",
  "native-ossl-sys",
 ]
 
 [[package]]
 name = "native-ossl-sys"
-version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8b6ae662f665ee1fad256368611847b1719f46a8639094873053dce3163b684"
+version = "0.1.9"
 dependencies = [
  "bindgen",
  "pkg-config",
@@ -2194,10 +2197,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-native-ossl"
-version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d33408a124513b9788c13175cef36a1ba2c603bcdb74e2d0ae72cf43afc5aa37"
+version = "0.1.9"
 dependencies = [
+ "log",
  "native-ossl",
  "rustls",
  "rustls-pki-types",
