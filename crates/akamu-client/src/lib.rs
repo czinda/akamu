@@ -7,8 +7,10 @@ pub mod error;
 pub mod gssapi_eab;
 pub mod onion;
 pub mod types;
+pub mod unix;
 
 pub use account::{Account, AccountKey};
+pub use challenge::fetch_authority_token;
 pub use challenge::{
     ChallengeSolver, Dns01Helper, DnsHookSolver, DnsPersist01Helper, Http01Solver, TlsAlpn01Solver,
 };
