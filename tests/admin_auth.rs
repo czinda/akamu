@@ -136,6 +136,8 @@ async fn build_state(
             bootstrap_key_type: "ec:P-256".into(),
             bootstrap_operator_cert_file: None,
             bootstrap_operator_key_file: None,
+            bootstrap_operator_pkcs12_file: None,
+            bootstrap_operator_pkcs12_password: "".into(),
             bootstrap_operator_name: "admin".into(),
             bootstrap_operator_gssapi_principal: None,
             gssapi: None,
