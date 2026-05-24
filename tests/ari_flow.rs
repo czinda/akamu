@@ -269,6 +269,8 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         eab_master_secret: None,
         crdt_db: db_conn.clone(),
         tkauth_trust_anchors: None,
+        claim_encoder_registry: None,
+        jwks_cache: None,
     });
     (state, dir)
 }
@@ -655,6 +657,8 @@ async fn test_renewal_info_explanation_url() {
         eab_master_secret: None,
         crdt_db: db.clone(),
         tkauth_trust_anchors: None,
+        claim_encoder_registry: None,
+        jwks_cache: None,
     });
     let router = routes::build_router(Arc::clone(&state2), None);
 

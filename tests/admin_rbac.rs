@@ -188,6 +188,8 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         eab_master_secret: None,
         crdt_db: db_conn.clone(),
         tkauth_trust_anchors: None,
+        claim_encoder_registry: None,
+        jwks_cache: None,
     });
 
     // Pre-seed one session token per role (all server-wide) plus one

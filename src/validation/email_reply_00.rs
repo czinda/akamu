@@ -921,6 +921,8 @@ mod tests {
             write_notify: Arc::new(tokio::sync::Notify::new()),
             crdt_db: db_conn.clone(),
             tkauth_trust_anchors: None,
+            claim_encoder_registry: None,
+            jwks_cache: None,
         });
 
         (

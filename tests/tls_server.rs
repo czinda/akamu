@@ -559,6 +559,8 @@ async fn start_tls_server() -> TlsTestServer {
         eab_master_secret: None,
         crdt_db: db_conn.clone(),
         tkauth_trust_anchors: None,
+        claim_encoder_registry: None,
+        jwks_cache: None,
     });
 
     let router = routes::build_router(Arc::clone(&state), None);

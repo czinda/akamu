@@ -214,6 +214,8 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
         eab_master_secret: None,
         crdt_db: db_conn.clone(),
         tkauth_trust_anchors: None,
+        claim_encoder_registry: None,
+        jwks_cache: None,
     })
 }
 

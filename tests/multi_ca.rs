@@ -222,6 +222,8 @@ async fn build_two_ca_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir
         eab_master_secret: None,
         crdt_db: db_conn.clone(),
         tkauth_trust_anchors: None,
+        claim_encoder_registry: None,
+        jwks_cache: None,
     });
 
     (state, dir)
@@ -737,6 +739,8 @@ async fn admin_cas_list_returns_both_cas() {
         eab_master_secret: None,
         crdt_db: db_conn.clone(),
         tkauth_trust_anchors: None,
+        claim_encoder_registry: None,
+        jwks_cache: None,
     });
 
     let admin_router = routes::build_router(Arc::clone(&state), None);
@@ -1016,6 +1020,8 @@ async fn build_two_ca_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         eab_master_secret: None,
         crdt_db: db_conn.clone(),
         tkauth_trust_anchors: None,
+        claim_encoder_registry: None,
+        jwks_cache: None,
     });
 
     (state, dir)
