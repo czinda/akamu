@@ -943,6 +943,13 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
 ///
 /// If reverse DNS fails, the raw IP is used and a warning is printed.
 pub(crate) async fn derive_spn(url: &str) -> String {
+    if url.starts_with("http+unix://") {
+        // Unix socket: the admin server is on this machine.
+        let host = system_fqdn()
+            .await
+            .unwrap_or_else(|| "localhost".to_owned());
+        return format!("HTTP@{host}");
+    }
     let host = url
         .trim_start_matches("https://")
         .trim_start_matches("http://")

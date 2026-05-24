@@ -46,6 +46,7 @@ hickory-resolver = { version = "0.24" }
 
 # GSSAPI / Kerberos (ccache-based login)
 akamu-gssapi   = { path = "../akamu-gssapi" }
+akamu-client   = { path = "../akamu-client" }
 base64         = "0.22"
 libc           = "0.2"
 

@@ -355,6 +355,7 @@ impl AdminClient {
         auth_header: Option<&str>,
     ) -> Result<RawResponse, CtlError> {
         let url = format!("{}{}", self.base_url.trim_end_matches('/'), path);
+
         let mut req_builder = Request::builder()
             .method(method)
             .uri(&url)
@@ -374,24 +375,33 @@ impl AdminClient {
             .body(Full::new(body_bytes))
             .map_err(|e| CtlError::Http(format!("build request: {e}")))?;
 
-        let resp = self
-            .client
-            .request(req)
-            .await
-            .map_err(|e| CtlError::Http(format!("{url}: {e}")))?;
-        let status = resp.status();
-        let www_authenticate = resp
-            .headers()
+        let (status, resp_headers, resp_bytes) = if url.starts_with("http+unix://") {
+            akamu_client::unix::unix_dispatch(req)
+                .await
+                .map_err(|e| CtlError::Http(e.to_string()))?
+        } else {
+            let resp = self
+                .client
+                .request(req)
+                .await
+                .map_err(|e| CtlError::Http(format!("{url}: {e}")))?;
+            let status = resp.status();
+            let headers = resp.headers().clone();
+            let bytes = resp
+                .into_body()
+                .collect()
+                .await
+                .map_err(|e| CtlError::Http(format!("read body: {e}")))?
+                .to_bytes()
+                .to_vec();
+            (status, headers, bytes)
+        };
+
+        let www_authenticate = resp_headers
             .get("www-authenticate")
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
-        let body_bytes = resp
-            .into_body()
-            .collect()
-            .await
-            .map_err(|e| CtlError::Http(format!("read body: {e}")))?
-            .to_bytes();
-        let body = String::from_utf8_lossy(&body_bytes).into_owned();
+        let body = String::from_utf8_lossy(&resp_bytes).into_owned();
         Ok(RawResponse {
             status,
             body,
