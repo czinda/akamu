@@ -5,9 +5,10 @@ ALTER TABLE challenges ADD COLUMN token_authority TEXT;
 
 CREATE TABLE tkauth_jti_cache (
     jti      VARCHAR(512) PRIMARY KEY,
-    authz_id VARCHAR(36)  NOT NULL,
+    authz_id VARCHAR(64)  NOT NULL,
     expires  BIGINT       NOT NULL,
     created  BIGINT       NOT NULL
 );
 
-CREATE INDEX tkauth_jti_expires_idx ON tkauth_jti_cache (expires);
+CREATE INDEX tkauth_jti_expires_idx  ON tkauth_jti_cache (expires);
+CREATE INDEX tkauth_jti_authzid_idx  ON tkauth_jti_cache (authz_id, expires);
