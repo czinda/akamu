@@ -637,7 +637,7 @@ The script is responsible for DKIM signing. The server does not sign outbound em
 
 `tkauth-01` validates control of a `TNAuthList` or `JWTClaimConstraints` identifier by verifying a signed JWT *authority token* issued by an external Token Authority (TA). This challenge type is defined by [RFC 9447](https://www.rfc-editor.org/rfc/rfc9447); the `TNAuthList` profile is defined by [RFC 9448](https://www.rfc-editor.org/rfc/rfc9448).
 
-Unlike network-based challenges, `tkauth-01` relies on the TA asserting the client's authority over the identifier out-of-band. The server only verifies the cryptographic integrity of the token.
+Unlike network-based challenges, `tkauth-01` relies on the TA asserting the client's authority over the identifier out-of-band. The server only verifies the cryptographic integrity of the token and the `atc` claim binding.
 
 ### Challenge object
 
@@ -662,13 +662,48 @@ When an order contains a `TNAuthList` or `JWTClaimConstraints` identifier, the a
 
 `tkauth-01` uses the standard key authorization formula: `token.thumbprint` where `thumbprint` is the base64url-encoded SHA-256 JWK thumbprint of the account key. The `token` field is not present in the challenge object; the thumbprint is used directly as the `fingerprint` check in the authority token's `atc` claim.
 
+The `fingerprint` field in the `atc` claim must be formatted as:
+
+```
+SHA256 XX:XX:XX:...
+```
+
+where `XX:XX:XX:...` is the colon-separated uppercase hex encoding of the raw SHA-256 JWK thumbprint bytes.
+
+### Identifier value format (JWTClaimConstraints)
+
+For `JWTClaimConstraints` identifiers, the `tkvalue` in the `atc` claim and the ACME order identifier value must both be the **base64url encoding of a DER-encoded `JWTClaimConstraints` structure** as defined in [RFC 8226 §3](https://www.rfc-editor.org/rfc/rfc8226#section-3):
+
+```asn1
+JWTClaimConstraints ::= SEQUENCE {
+    mustInclude  [0] JWTClaimNames   OPTIONAL,
+    permittedValues [1] JWTClaimValuesList OPTIONAL
+}
+```
+
+The server validates both `mustInclude` (claim names that must be present in the JWT) and `permittedValues` (allowed values for specific claims). At least one of the two MUST be present.
+
+Example: to require a specific Kerberos principal in the `sub` claim, encode:
+
+```
+JWTClaimConstraints {
+    permittedValues [1]: [("sub", ["user@REALM"])]
+}
+```
+
+The resulting DER bytes, base64url-encoded, become the identifier value.
+
 ### Obtaining an authority token
 
 The client contacts the Token Authority (identified by `token-authority` or by deployment convention) and requests an authority token for its identifier. The TA issues a compact JWT that must contain:
 
-- **Header**: `alg` (ES256/RS256/etc.) and either `x5u` (URL to signing cert) or `x5c` (inline cert chain)
+- **Header**: `alg` and **one of**:
+  - `x5c`: inline certificate chain (array of base64-encoded DER certs); the leaf signs the JWT
+  - `x5u`: URL from which the server fetches the signing certificate chain
+  - `kid`: key identifier used to locate the signing public key in a JWKS endpoint
+
 - **Claims**:
-  - `atc`: an object with `tktype` (identifier type), `tkvalue` (identifier value), `fingerprint` (account JWK thumbprint), and optionally `ca: false`
+  - `atc`: an object with `tktype` (identifier type), `tkvalue` (identifier value, DER-encoded for `JWTClaimConstraints`), `fingerprint` (account key thumbprint in `SHA256 XX:XX:...` format), and optionally `ca: false`
   - `jti`: a unique token identifier (REQUIRED; enforces one-time use)
   - `exp`: expiry timestamp (REQUIRED)
 
@@ -682,20 +717,87 @@ POST to the challenge URL with the JWT in the `tkauth` field:
 }
 ```
 
-Example (JWS payload shown before signing):
+Example (header shown decoded):
 ```json
 {
-  "tkauth": "eyJhbGciOiJFUzI1NiIsIng1dSI6Imh0dHBzOi8vdGEuZXhhbXBsZS5jb20vY2VydCJ9.<claims>.<sig>"
+  "alg": "ES256",
+  "x5u": "https://ta.example.com/cert"
 }
 ```
 
 ### Validation steps
 
-1. Decode the JWT header to determine the signing certificate (via `x5u` fetch or `x5c` inline).
-2. Validate the signing certificate chain against the configured `trusted_ta_ca_files`.
-3. Verify the JWT signature and confirm `exp` has not elapsed.
-4. Check the `atc` claim: `tktype` matches the identifier type, `tkvalue` matches the identifier value, `fingerprint` matches the account JWK thumbprint.
-5. Record the `jti` in the replay-prevention cache; duplicate JTIs are rejected.
+1. Decode the JWT header to determine the key resolution path:
+   - **`x5c`**: parse the inline certificate chain directly
+   - **`x5u`**: fetch the certificate chain from the URL (HTTPS only; SSRF guard applies)
+   - **`kid`**: look up the signing public key from a JWKS endpoint (see [JWKS trust](#jwks-trust-kid-based-tokens) below)
+2. For `x5c`/`x5u`: validate the certificate chain against the configured `trusted_ta_ca_files`. For `kid`: the trust is established by the per-profile `trust_jwks_urls` list.
+3. Verify the JWT signature using the resolved public key. The public key algorithm must match `alg`; supported algorithms include ES256/ES384/ES512 (ECDSA), RS256/RS384/RS512/PS256/PS384/PS512 (RSA), EdDSA (Ed25519), and ML-DSA-44/ML-DSA-65/ML-DSA-87.
+4. Confirm `exp` has not elapsed and `exp - now` does not exceed `max_validity_secs`.
+5. Check the `atc` claim: `tktype` matches the identifier type, `tkvalue` matches the identifier value, `fingerprint` matches the account key thumbprint.
+6. For `JWTClaimConstraints`: parse the DER-encoded `tkvalue` and verify that the JWT's own claims satisfy both `mustInclude` (all named claims are present) and `permittedValues` (each constrained claim's value is in the allowed list).
+7. Record the `jti` in the replay-prevention store; duplicate JTIs are rejected.
+
+### JWKS trust (kid-based tokens)
+
+When the JWT header contains `kid` instead of `x5c`/`x5u`, the server looks up the signing public key from a JWKS endpoint. Trust is configured **per profile**:
+
+```toml
+[profiles.providers.local.profiles.my-profile]
+description     = "Example profile"
+ca_ids          = ["my-ca"]
+trust_jwks_urls = [
+    "https://idp.example.com/jwks",
+    "http+unix://%2Frun%2Fekishib%2Fekishib.sock/jwks",
+]
+```
+
+The `trust_jwks_urls` list is searched in order. The first JWKS that contains a key with a matching `kid` is used. If no profile has `trust_jwks_urls` set, `kid`-signed tokens are rejected.
+
+JWKS responses are cached in memory for 5 minutes. Each URL is refreshed independently when the cache entry expires.
+
+**URL schemes:**
+
+| Scheme | Usage |
+|--------|-------|
+| `https://...` | Standard HTTPS fetch; SSRF guard applies (no RFC-1918 targets without explicit configuration) |
+| `http+unix://ENCODED_PATH/request-path` | HTTP over a Unix domain socket; `ENCODED_PATH` is the socket file path with `/` encoded as `%2F` (e.g. `%2Frun%2Fekishib%2Fekishib.sock`) |
+
+The `http+unix://` scheme is intended for co-located Token Authorities (e.g. Ekishib IdP running on the same host) where TLS is unnecessary.
+
+> **Note**: ML-DSA-44/ML-DSA-65/ML-DSA-87 keys are supported in JWKS entries (`kty: "AKP"`). This allows post-quantum Token Authorities to sign authority tokens without an X.509 certificate chain.
+
+### Certificate SAN injection (claim_encoders)
+
+When the server issues a certificate for a `JWTClaimConstraints` identifier, it can inject Subject Alternative Names derived from the `permittedValues` of the validated token. This is controlled by the `[[tkauth.claim_encoders]]` configuration.
+
+Each entry maps a JWT claim name to an encoder that knows how to produce an OtherName SAN:
+
+```toml
+[[tkauth.claim_encoders]]
+claim   = "sub"
+encoder = "krb5-kpn"   # Kerberos principal (id-pkinit-san OtherName, OID 1.3.6.1.5.2.2)
+
+[[tkauth.claim_encoders]]
+claim   = "upn"
+encoder = "ms-upn"     # Microsoft UPN OtherName (OID 1.3.6.1.4.1.311.20.2.3)
+
+[[tkauth.claim_encoders]]
+claim   = "dns"
+encoder = "dns-san"    # plain dNSName SAN; wildcards are rejected
+```
+
+**Built-in encoders:**
+
+| Encoder name | SAN type | Details |
+|---|---|---|
+| `krb5-kpn` | OtherName (id-pkinit-san, OID `1.3.6.1.5.2.2`) | `principal@REALM`; if `@` is absent, `default_realm` is appended |
+| `ms-upn` | OtherName (OID `1.3.6.1.4.1.311.20.2.3`) | `user@domain` |
+| `dns-san` | dNSName | Plain hostname; wildcards rejected; lowercased before injection |
+
+A `permittedValues` entry with exactly **one** value is injected as a SAN using the matching encoder. Entries with multiple permitted values are skipped (the server cannot determine which specific value the TA attested).
+
+For `dns-san`, the DNS name from the token constraint is added alongside any DNS SANs already in the CSR. The ACME client must still include the name in its CSR — the encoder only grants permission to inject it from the token, it does not bypass the CSR.
 
 ### Configuration
 
@@ -703,7 +805,27 @@ Example (JWS payload shown before signing):
 [tkauth]
 enabled                 = true
 trusted_ta_ca_files     = ["/etc/akamu/ta-root.pem"]
-token_authority_url     = "https://ta.example.com"   # optional hint in challenge object
-max_validity_secs       = 3600   # reject tokens with exp - now > this
-jti_prune_interval_secs = 3600   # how often to purge expired JTI cache entries
+token_authority_url     = "https://ta.example.com"   # optional hint surfaced in challenge object
+max_validity_secs       = 3600   # reject tokens with exp - now > this value
+jti_prune_interval_secs = 3600   # how often to purge expired JTI records from the database
+
+# SAN injection: map JWT claim names to OtherName encoders
+[[tkauth.claim_encoders]]
+claim   = "sub"
+encoder = "krb5-kpn"
+```
+
+Per-profile JWKS trust (set in each profile that should accept `kid`-signed tokens):
+
+```toml
+[profiles.providers.local.profiles.kerberos-svc]
+description     = "Kerberos service certificate"
+ca_ids          = ["kerberos-ca"]
+trust_jwks_urls = ["https://idp.example.com/jwks"]
+
+[profiles.providers.local.profiles.ipa-ldap]
+description     = "IPA LDAP server certificate"
+ca_ids          = ["ipa-ca"]
+# Co-located Ekishib IdP via Unix socket
+trust_jwks_urls = ["http+unix://%2Frun%2Fekishib%2Fekishib.sock/jwks"]
 ```
