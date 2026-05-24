@@ -12,8 +12,8 @@ pub use account::{Account, AccountKey};
 pub use challenge::{
     ChallengeSolver, Dns01Helper, DnsHookSolver, DnsPersist01Helper, Http01Solver, TlsAlpn01Solver,
 };
-pub use client::AcmeClient;
-pub use csr::build_csr;
+pub use client::{rfc9447_fingerprint, AcmeClient};
+pub use csr::{build_csr, build_subject_only_csr};
 pub use error::ClientError;
 pub use gssapi_eab::{fetch_eab_via_gssapi, GssapiEabResult};
 pub use onion::build_onion_csr;
