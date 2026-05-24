@@ -23,9 +23,24 @@ implements RFC 8555 (ACME) and several extensions:
 - *dns-persist-01* challenge — long-lived DNS TXT records per
   draft-ietf-acme-dns-persist, avoiding per-renewal DNS writes.
 - *onion-csr-01* challenge — certificate issuance for Tor hidden services.
+- *tkauth-01* (RFC 9447 / RFC 9448) — token-based authorisation for DNS
+  identifiers; fetches a *JWTClaimConstraints* authority token from a Token
+  Authority via SPNEGO/Kerberos and submits it as the challenge response.
+  Enables the server to embed KRB5PrincipalName OtherName SANs derived from
+  the token's *permittedValues* claims.
 
 The tool is stateless except for two sidecar files it maintains alongside
 the account key (see *SIDECAR FILES* below).  No daemon, no database.
+
+# GLOBAL OPTIONS
+
+*-v*, *--verbose*
+	Enable debug-level logging for the ACME client library.  Prints the
+	subject, issuer, validity dates, and signature algorithm of any CA
+	certificate supplied via *--server-ca* and of the server TLS certificate
+	during the connection handshake.  Has no visible effect without
+	*--server-ca*.  Pass twice (*-vv*) to additionally enable *hyper_util*
+	and *rustls* debug output for full TLS-level tracing.
 
 # COMMANDS
 
@@ -173,6 +188,27 @@ the account key (see *SIDECAR FILES* below).  No daemon, no database.
 
 	*--challenge* _TYPE_
 		Challenge type.  Default: *http-01*.  See *CHALLENGE TYPES* below.
+
+	*--server-ca* _FILE_
+		Trust the CA certificate in _FILE_ (PEM) when connecting to the
+		ACME server over HTTPS.  Use this when the server uses a private or
+		self-signed CA that is not in the system trust store.  The path is
+		saved in the renewal TOML sidecar so subsequent *renew* runs do not
+		need to repeat this flag.  Enables *-v* cert logging (see *GLOBAL
+		OPTIONS*).
+
+	*--tkauth-url* _URL_
+		Token Authority endpoint for the *tkauth-01* challenge.  The client
+		POSTs an *EnhancedJWTClaimConstraints* request (RFC 9447 §3) with
+		SPNEGO *Authorization: Negotiate* to this URL and extracts the
+		returned JWT.  Accepts *http://*, *https://*, and *http+unix://*
+		URLs.  See *UNIX DOMAIN SOCKET URLS* below.
+
+	*--tkauth-keytab* _FILE_
+		Kerberos keytab for SPNEGO authentication to the Token Authority.
+		Required when *--challenge tkauth-01* is used.  The principal in
+		the keytab is used to acquire a service ticket for the Token
+		Authority.
 
 	*--http-port* _PORT_
 		Port to serve *http-01* challenges on.  Default: *80*.
@@ -490,6 +526,49 @@ JWS algorithms.  *akamu*(8) does; most public CA servers do not.
 	builds and submits a CSR signed with the onion service key, proving
 	ownership without any network challenge.
 
+*tkauth-01*
+	Token-based authorisation challenge (RFC 9447 / RFC 9448) for DNS
+	identifiers.  Requires *--tkauth-url* and *--tkauth-keytab*.
+
+	The client first fetches a preliminary authority token from the Token
+	Authority, extracts the *tkvalue* claim, constructs a JWK thumbprint
+	fingerprint of the account key, and fetches the final token bound to
+	that fingerprint.  The resulting JWT is submitted to the server as the
+	challenge response.
+
+	The server validates the JWT signature (via *x5c* certificate chain,
+	*x5u* certificate URL, or *kid* key identifier resolved against a
+	configured JWKS endpoint), checks the *JWTClaimConstraints*
+	*permittedValues*, and embeds the token's allowed Kerberos principals as
+	*KRB5PrincipalName* OtherName SANs in the issued certificate.
+
+	Only DNS identifiers are supported; wildcards are not permitted.
+
+# UNIX DOMAIN SOCKET URLS
+
+The *--server* and *--tkauth-url* flags accept *http+unix://* URLs in addition
+to *https://* URLs.  This scheme routes the request over a Unix domain socket
+instead of a TCP connection.
+
+URL format:
+
+```
+http+unix://SOCKET_PATH_ENCODED/REQUEST_PATH
+```
+
+where _SOCKET_PATH_ENCODED_ is the socket file path with */* percent-encoded
+as *%2F* (all other characters may appear literally or percent-encoded), and
+_REQUEST_PATH_ is the normal HTTP path starting with */*.
+
+Examples:
+
+- *http+unix://%2Frun%2Fakamu%2Fakamu.sock/acme/default/directory*
+- *http+unix://%2Frun%2Fekishib%2Fekishib.sock/at/account/1/token*
+
+The local machine's hostname (from *gethostname*(2)) is used as the GSSAPI
+service host component when authenticating to a Token Authority over a Unix
+domain socket.
+
 # EXTERNAL ACCOUNT BINDING
 
 Some CA servers require an External Account Binding (EAB) credential to
@@ -618,6 +697,9 @@ poll_timeout     = 120
 eab_alg          = "HS256"
 dns_hook         = "/etc/akamu/hooks/dns-update.sh"
 profile          = "dv-tls"    # omitted when no profile was requested
+server_ca        = "/etc/akamu/ca.pem"      # omitted when not set
+tkauth_url       = "https://idp.example.com/at/account/1/token"  # omitted when not set
+tkauth_keytab    = "/etc/akamu/client.keytab"                    # omitted when not set
 
 [[domains]]
 type  = "dns"
@@ -631,6 +713,8 @@ value = "*.example.com"
 The *profile* key is omitted when neither the client nor the server selected
 a profile during issuance.  The *eab_key* field is never written; supply
 *--eab-key* explicitly on renewals that require inline account registration.
+The *server_ca*, *tkauth_url*, and *tkauth_keytab* fields are omitted when
+the corresponding flags were not set during issuance.
 
 All private files written by *akamu-cli* (*account_key*, *cert_key_path*,
 the renewal TOML itself) are created with mode *0600*, readable only by the
@@ -721,6 +805,21 @@ akamu-cli revoke \
   --reason 1
 ```
 
+Issue a certificate using tkauth-01 with GSSAPI authentication to a Token
+Authority (Ekishib) via Unix socket:
+
+```
+akamu-cli issue \
+  --server https://acme.corp.example.com \
+  --ca kerberos-svc \
+  --account-key /etc/akamu/acme.pem \
+  --domain host.example.com \
+  --challenge tkauth-01 \
+  --tkauth-url 'http+unix://%2Frun%2Fekishib%2Fekishib.sock/at/account/1/token' \
+  --tkauth-keytab /etc/akamu/client.keytab \
+  --out /etc/ssl/host.example.com/fullchain.pem
+```
+
 Preview the generated unit files without writing anything:
 
 ```
@@ -771,6 +870,8 @@ systemctl --user enable --now akamu-renew-example.com.timer
 RFC 5280 - Internet X.509 Public Key Infrastructure Certificate and CRL Profile++
 RFC 8555 - Automatic Certificate Management Environment (ACME)++
 RFC 8737 - ACME TLS-ALPN-01 Challenge Extension++
+RFC 9447 - Automated Certificate Management Environment (ACME) Token Binding for Path Validation (tkauth-01)++
+RFC 9448 - TNAuthList Profile of Automated Certificate Management Environment (ACME) Authority Token++
 RFC 9773 - ACME Renewal Information (ARI)++
 RFC 9799 - ACME Extensions for .onion Special-Use Domain Names++
 draft-ietf-acme-dns-persist - Persistent DNS-01 Challenge for ACME++

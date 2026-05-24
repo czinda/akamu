@@ -29,10 +29,13 @@ Session tokens obtained after *login* are cached in
 
 *--server-url* _URL_
 	Admin API base URL (overrides *[server].url* in the config).
+	Accepts *https://*, *http://*, and *http+unix://SOCKET_PATH_ENCODED/PATH*
+	URLs.  For Unix domain socket usage see *UNIX DOMAIN SOCKET URLS* below.
 
 *--ca-cert* _FILE_
 	CA certificate file for TLS server verification
-	(overrides *[server].ca_cert*).
+	(overrides *[server].ca_cert*).  Not used when *--server-url* is a
+	Unix domain socket URL.
 
 *--cert* _FILE_
 	mTLS client certificate file (overrides *[server].cert_file*).
@@ -454,6 +457,15 @@ Read operations are available to all authenticated roles.  Write operations
 	Delete a delegation object.  Returns HTTP 409 Conflict when
 	one or more active orders still reference the delegation.
 
+## Token authority management
+
+*tkauth prune-jti*
+	Trigger immediate pruning of expired JWT ID (JTI) replay-prevention
+	entries from the database (RFC 9447 §4.2).  Normally performed
+	automatically by a background task; use this command to run it on
+	demand.  Requires *administrator* or *ca_operations* role.  Only
+	effective when *[tkauth].enabled = true* in *akamu.conf*(5).
+
 ## Server configuration
 
 *server-config*
@@ -508,6 +520,28 @@ Read operations are available to all authenticated roles.  Write operations
 
 		akamuctl completions bash > /etc/bash_completion.d/akamuctl
 
+# UNIX DOMAIN SOCKET URLS
+
+When akamu is configured to listen on a Unix domain socket
+(*unix:/run/akamu/akamu.sock* in *akamu.conf*(5)), *akamuctl* can communicate
+with it directly using *http+unix://* URLs:
+
+```
+http+unix://SOCKET_PATH_ENCODED/PATH
+```
+
+where _SOCKET_PATH_ENCODED_ is the socket file path with */* percent-encoded
+as *%2F*.  Example:
+
+```
+akamuctl --server-url 'http+unix://%2Frun%2Fakamu%2Fakamu.sock' ca list
+```
+
+For *akamuctl login --gssapi* over a Unix socket, the GSSAPI service principal
+is derived as *HTTP@*_fqdn_ where _fqdn_ is the machine's fully-qualified
+hostname (from *gethostname*(2) with DNS FQDN resolution).  Override with
+*gssapi_service* in the configuration file if needed.
+
 # CONFIGURATION FILE
 
 The default configuration file is *~/.config/akamu/akamuctl.toml*.
@@ -518,8 +552,11 @@ Use *akamuctl config generate* to produce an annotated template.
 # Base URL of the akamu server (admin API is on the main listener).
 url      = "https://akamu.example.com"
 
+# Unix domain socket URL (alternative to HTTPS when server listens on a socket).
+# url    = "http+unix://%2Frun%2Fakamu%2Fakamu.sock"
+
 # CA certificate used to verify the server TLS certificate.
-# Omit to use system trust anchors.
+# Omit to use system trust anchors.  Not used with Unix socket URLs.
 # ca_cert = "/etc/akamu/certs/ca.cert.pem"
 
 # mTLS client credentials (required when the admin API uses cert auth).
@@ -561,6 +598,7 @@ RFC 5280 - Internet X.509 Public Key Infrastructure Certificate and CRL Profile+
 RFC 6960 - X.509 Internet PKI Online Certificate Status Protocol (OCSP)++
 RFC 8555 - Automatic Certificate Management Environment (ACME)++
 RFC 9115 - An ACME Profile for Generating Delegated Certificates++
+RFC 9447 - Automated Certificate Management Environment (ACME) Token Binding for Path Validation (tkauth-01)++
 RFC 9773 - ACME Renewal Information (ARI)
 
 # AUTHORS

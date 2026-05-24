@@ -467,6 +467,66 @@ marks the authorization as complete.
 	openssl rand -hex 32
 	```
 
+# [tkauth] — RFC 9447 / RFC 9448 token-based authorisation
+
+When this section is absent or *enabled = false*, the *tkauth-01* challenge
+type is not advertised, and authority token validation is disabled.
+
+*enabled* = _bool_
+	Set to *true* to enable the *tkauth-01* challenge type (RFC 9447).
+	When enabled, the server advertises *tkauth-01* in authorization
+	challenges for DNS identifiers and validates submitted authority tokens.
+	Default: *false*.
+
+*trusted_ta_ca_files* = _[path, ...]_
+	List of PEM files containing CA certificates trusted for verifying
+	the Token Authority's signing certificate.  Used when an authority
+	token JWT header carries an *x5c* certificate chain or an *x5u*
+	certificate URL.  At least one file should be listed in production
+	deployments.  When empty, chain verification for *x5c*/*x5u* tokens
+	still proceeds using system trust anchors.
+
+*jti_prune_interval_secs* = _integer_
+	Interval in seconds for pruning expired JTI (JWT ID) replay-prevention
+	entries from the database.  Default: *3600* (1 hour).
+
+## [[tkauth.claim_encoders]]
+
+Claim encoders map *permittedValues* entries from a *JWTClaimConstraints*
+authority token to OtherName SANs embedded in the issued certificate.
+Repeat this block for each claim encoder.
+
+*claim* = _string_
+	The JWT claim name whose *permittedValues* entries this encoder
+	processes.  Required.
+
+*oid* = _string_
+	OID of the OtherName SAN type to produce.  Must be an ASN.1 OID
+	in dotted notation.  Required.
+
+*encoding* = _string_
+	How to encode the *permittedValues* string as an ASN.1 value:
+	*utf8string*, *ia5string*, *printablestring*, *utf8-krb5principal*.
+	Required.
+
+*krb5_realm* = _string_
+	Kerberos realm to append when *encoding = utf8-krb5principal* and
+	the value does not already contain an *@* realm separator.  Optional.
+
+Example configuration:
+
+```
+[tkauth]
+enabled = true
+trusted_ta_ca_files = ["/etc/akamu/ta-ca.pem"]
+
+[[tkauth.claim_encoders]]
+claim    = "tkauth-01"
+oid      = "1.3.6.1.5.2.2"
+encoding = "utf8-krb5principal"
+krb5_realm = "EXAMPLE.COM"
+```
+
 # [tls] — server-side TLS
 
 When this section is absent or *enabled = false*, the server speaks
@@ -794,6 +854,31 @@ Individual profiles are defined as
 	Config validation rejects *ca_ids* entries that do not match any
 	configured CA *id*.
 
+*trust_jwks_urls* = _[string, ...]_
+	HTTPS or *http+unix://* URLs of JWKS endpoints trusted for
+	*kid*-signed authority tokens (RFC 9447 *tkauth-01* challenge).
+	Only meaningful when *[tkauth]* is enabled.  When an authority token
+	JWT header carries a *kid* field (instead of *x5c* or *x5u*), the
+	server fetches each URL in order, searches the JWKS for the named
+	key identifier, and uses the matching JWK public key to verify the
+	JWT signature.  JWKS responses are cached for 5 minutes.
+
+	When this list is empty (the default), *kid*-signed authority tokens
+	are rejected for orders that request this profile.
+
+	*http+unix://* URLs use the format
+	*http+unix://SOCKET_PATH_ENCODED/REQUEST_PATH* where the socket path
+	uses *%2F*-encoded slashes (see *akamu-cli*(1) *UNIX DOMAIN SOCKET URLS*).
+
+	Example:
+
+	```
+	trust_jwks_urls = [
+	  "https://idp.example.com/jwks",
+	  "http+unix://%2Frun%2Fekishib%2Fekishib.sock/jwks",
+	]
+	```
+
 ## Dogtag profile provider
 
 ```
@@ -914,9 +999,23 @@ may only revoke and view certificates issued by that CA.  An unscoped
 *ca_ra* (empty *ca_id*) is rejected with *403 Forbidden* at all
 restricted endpoints.
 
+## Token authority endpoints
+
+	*POST /admin/tkauth/prune-jti*
+		Immediately trigger pruning of expired JWT ID (JTI) replay-
+		prevention entries from the database, without waiting for the
+		scheduled background task.  Requires *administrator* or
+		*ca_operations* role.  Also available via
+		*akamuctl tkauth prune-jti*.  Only effective when
+		*[tkauth].enabled = true*.
+
 # SEE ALSO
 
-*akamu*(8), *akamuctl*(1), *akamu-cosigner.conf*(5)
+*akamu*(8), *akamuctl*(1), *akamu-cli*(1), *akamu-cosigner.conf*(5)
+
+RFC 8555 - Automatic Certificate Management Environment (ACME)++
+RFC 9447 - Automated Certificate Management Environment (ACME) Token Binding for Path Validation (tkauth-01)++
+RFC 9448 - TNAuthList Profile of Automated Certificate Management Environment (ACME) Authority Token
 
 # AUTHORS
 
