@@ -222,7 +222,7 @@ pub async fn new_order(
                     )));
                 }
             }
-            "TNAuthList" | "JWTClaimConstraints" => {
+            "TNAuthList" | "EnhancedJWTClaimConstraints" => {
                 if !state.config.tkauth.as_ref().is_some_and(|t| t.enabled) {
                     return Err(AcmeError::UnsupportedIdentifier(id.r#type.clone()));
                 }
@@ -485,13 +485,22 @@ pub async fn new_order(
         } else {
             onion_types_no_tor
         };
+        // Offer tkauth-01 INSTEAD OF the normal http-01/dns-01 challenges for
+        // regular dns identifiers when tkauth is enabled and a dns-san encoder is
+        // configured.  Wildcards and .onion domains are unaffected.
+        let tkauth_dns_san_enabled = state.config.tkauth.as_ref().is_some_and(|t| t.enabled)
+            && state.claim_encoder_registry.as_ref().is_some_and(|r| {
+                r.values()
+                    .any(|e| e.authorized_identifier_type() == Some("dns"))
+            });
         let challenge_types: &[&str] = match authz_type {
             "dns" if is_onion_domain(authz_value) => onion_types,
             "dns" if authz_value.starts_with("*.") => wildcard_dns_types,
+            "dns" if tkauth_dns_san_enabled => &["tkauth-01"],
             "dns" => dns_types,
             "ip" => &["http-01", "tls-alpn-01"],
             "email" => &["email-reply-00"],
-            "TNAuthList" | "JWTClaimConstraints" => &["tkauth-01"],
+            "TNAuthList" | "EnhancedJWTClaimConstraints" => &["tkauth-01"],
             _ => &[],
         };
         let challenges = challenge_types

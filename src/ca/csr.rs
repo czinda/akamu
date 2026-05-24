@@ -156,6 +156,13 @@ pub fn validate_csr(
         }
     }
     for (t, v) in allowed_identifiers {
+        // Non-SAN identifier types (e.g. JWTClaimConstraints, TNAuthList) are
+        // validated via tkauth-01 and do not appear as DNS/IP/email SANs in the
+        // CSR.  Only enforce the reverse check for identifier types that map to
+        // standard X.509 SAN entries.
+        if !matches!(*t, "dns" | "ip" | "email") {
+            continue;
+        }
         if !sans.iter().any(|s| s.san_type == *t && s.value == *v) {
             return Err(AcmeError::BadCsr(format!(
                 "order identifier {t}:{v} missing from CSR SANs"

@@ -188,19 +188,23 @@ pub fn issue_certificate(params: IssueCertParams<'_>) -> Result<IssuedCert, Acme
             .ok_or_else(|| AcmeError::Builder("AKI encode".into()))?;
 
     // SubjectAlternativeName: rebuild from the validated SANs.
+    let mut san_has_entries = false;
     let mut san_builder = SubjectAlternativeNameBuilder::new();
     for san in &csr.sans {
         match san.san_type.as_str() {
             "dns" => {
                 san_builder = san_builder.dns_name(&san.value);
+                san_has_entries = true;
             }
             "ip" => {
                 let ip_bytes = ip_string_to_bytes(&san.value)
                     .ok_or_else(|| AcmeError::Builder(format!("invalid IP SAN: {}", san.value)))?;
                 san_builder = san_builder.ip_address(&ip_bytes);
+                san_has_entries = true;
             }
             "email" => {
                 san_builder = san_builder.rfc822_name(&san.value);
+                san_has_entries = true;
             }
             other => {
                 tracing::warn!(
@@ -210,9 +214,6 @@ pub fn issue_certificate(params: IssueCertParams<'_>) -> Result<IssuedCert, Acme
             }
         }
     }
-    let san_der = san_builder
-        .build()
-        .map_err(|e| AcmeError::Builder(format!("SAN: {e}")))?;
 
     // ── Assemble the certificate ──────────────────────────────────────────────
     let signer = ca_key.as_signer(hash_alg);
@@ -228,8 +229,14 @@ pub fn issue_certificate(params: IssueCertParams<'_>) -> Result<IssuedCert, Acme
         .add_extension_oid(oids::KEY_USAGE, true, &ku_der)
         .add_extension_oid(oids::EXTENDED_KEY_USAGE, false, &eku_der)
         .add_extension_oid(oids::SUBJECT_KEY_IDENTIFIER, false, &ski_der)
-        .add_extension_oid(oids::AUTHORITY_KEY_IDENTIFIER, false, &aki_der)
-        .add_extension_oid(oids::SUBJECT_ALT_NAME, false, &san_der);
+        .add_extension_oid(oids::AUTHORITY_KEY_IDENTIFIER, false, &aki_der);
+
+    if san_has_entries {
+        let san_der = san_builder
+            .build()
+            .map_err(|e| AcmeError::Builder(format!("SAN: {e}")))?;
+        builder = builder.add_extension_oid(oids::SUBJECT_ALT_NAME, false, &san_der);
+    }
 
     if let Some(ocsp) = ocsp_url {
         let aia_der = AuthorityInformationAccessBuilder::new()
@@ -388,6 +395,7 @@ pub fn issue_with_params(
     not_before_override: Option<i64>,
     not_after_override: Option<i64>,
     extra_other_names: &[Vec<u8>],
+    extra_dns_names: &[String],
 ) -> Result<IssuedCert, AcmeError> {
     // ── Extract CA name and SPKI DER ─────────────────────────────────────────
     let ca_name_der = extract_ca_subject_der(&ca.cert_der)?;
@@ -484,19 +492,23 @@ pub fn issue_with_params(
         encode_authority_key_identifier(&ca_spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
             .ok_or_else(|| AcmeError::Builder("AKI encode".into()))?;
 
+    let mut san_has_entries = false;
     let mut san_builder = SubjectAlternativeNameBuilder::new();
     for san in &csr.sans {
         match san.san_type.as_str() {
             "dns" => {
                 san_builder = san_builder.dns_name(&san.value);
+                san_has_entries = true;
             }
             "ip" => {
                 let ip_bytes = ip_string_to_bytes(&san.value)
                     .ok_or_else(|| AcmeError::Builder(format!("invalid IP SAN: {}", san.value)))?;
                 san_builder = san_builder.ip_address(&ip_bytes);
+                san_has_entries = true;
             }
             "email" => {
                 san_builder = san_builder.rfc822_name(&san.value);
+                san_has_entries = true;
             }
             other => {
                 tracing::warn!(
@@ -508,10 +520,12 @@ pub fn issue_with_params(
     }
     for on_der in extra_other_names {
         san_builder = san_builder.other_name(on_der);
+        san_has_entries = true;
     }
-    let san_der = san_builder
-        .build()
-        .map_err(|e| AcmeError::Builder(format!("SAN: {e}")))?;
+    for dns in extra_dns_names {
+        san_builder = san_builder.dns_name(dns);
+        san_has_entries = true;
+    }
 
     // ── Assemble certificate ─────────────────────────────────────────────────
     let signer = ca.key.as_signer(&params.hash_alg);
@@ -534,8 +548,14 @@ pub fn issue_with_params(
 
     builder = builder
         .add_extension_oid(oids::SUBJECT_KEY_IDENTIFIER, false, &ski_der)
-        .add_extension_oid(oids::AUTHORITY_KEY_IDENTIFIER, false, &aki_der)
-        .add_extension_oid(oids::SUBJECT_ALT_NAME, false, &san_der);
+        .add_extension_oid(oids::AUTHORITY_KEY_IDENTIFIER, false, &aki_der);
+
+    if san_has_entries {
+        let san_der = san_builder
+            .build()
+            .map_err(|e| AcmeError::Builder(format!("SAN: {e}")))?;
+        builder = builder.add_extension_oid(oids::SUBJECT_ALT_NAME, false, &san_der);
+    }
 
     if let Some(ocsp) = &params.ocsp_url {
         let aia_der = AuthorityInformationAccessBuilder::new()
@@ -656,8 +676,13 @@ pub fn sign_server_cert(
         encode_authority_key_identifier(&ca_spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
             .ok_or_else(|| AcmeError::Builder("AKI".into()))?;
 
-    let san_der = SubjectAlternativeNameBuilder::new()
-        .dns_name(server_name)
+    let mut san_builder = SubjectAlternativeNameBuilder::new();
+    san_builder = if let Some(ip_bytes) = ip_string_to_bytes(server_name) {
+        san_builder.ip_address(&ip_bytes)
+    } else {
+        san_builder.dns_name(server_name)
+    };
+    let san_der = san_builder
         .build()
         .map_err(|e| AcmeError::Builder(format!("SAN: {e}")))?;
 
@@ -1532,9 +1557,10 @@ mod tests {
             kpn_san_templates: vec![],
             ms_upn_san_template: None,
             inject_account_kpn: false,
+            trust_jwks_urls: vec![],
         };
 
-        let result = issue_with_params(&ca, &validated_csr, &params, None, None, &[]);
+        let result = issue_with_params(&ca, &validated_csr, &params, None, None, &[], &[]);
         assert!(
             result.is_err(),
             "expected Err when enforce_validity_cap=true and validity_days=201"
@@ -1590,9 +1616,10 @@ mod tests {
             kpn_san_templates: vec![],
             ms_upn_san_template: None,
             inject_account_kpn: false,
+            trust_jwks_urls: vec![],
         };
 
-        let result = issue_with_params(&ca, &validated_csr, &params, None, None, &[]);
+        let result = issue_with_params(&ca, &validated_csr, &params, None, None, &[], &[]);
         assert!(
             result.is_ok(),
             "expected Ok when enforce_validity_cap=true and validity_days=200: {result:?}"
