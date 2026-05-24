@@ -38,6 +38,14 @@ use clap::{Parser, Subcommand};
     about = "ACME client with ML-DSA account key support"
 )]
 struct Cli {
+    /// Enable debug logging.  Pass twice (-vv) to include hyper/TLS internals.
+    ///
+    /// At -v, akamu-cli logs TLS certificate details (subject, issuer, validity,
+    /// signature algorithm) for the ACME server and any CA certificates loaded
+    /// via --server-ca.
+    #[arg(short, long, action = clap::ArgAction::Count, global = true)]
+    verbose: u8,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -365,6 +373,25 @@ struct IssueArgs {
     #[arg(long)]
     profile: Option<String>,
 
+    /// Token Authority URL for tkauth-01 challenges (RFC 9447)
+    #[arg(long, value_name = "URL")]
+    tkauth_url: Option<String>,
+
+    /// Keytab file for SPNEGO authentication to the Token Authority
+    #[arg(long, value_name = "FILE")]
+    tkauth_keytab: Option<PathBuf>,
+
+    /// Base64url-encoded JWTClaimConstraints blob for tkauth-01 orders.
+    /// When provided, the order uses a JWTClaimConstraints identifier instead
+    /// of dns; --domain is ignored.
+    #[arg(long, value_name = "B64URL")]
+    jwtcc: Option<String>,
+
+    /// PEM file of an extra CA certificate to trust for the ACME server's TLS connection.
+    /// Use when the server uses a private CA not in the system trust store.
+    #[arg(long, value_name = "FILE")]
+    server_ca: Option<PathBuf>,
+
     #[command(flatten)]
     eab: EabFlags,
 }
@@ -443,6 +470,23 @@ struct RenewArgs {
     #[arg(long)]
     profile: Option<String>,
 
+    /// Token Authority URL for tkauth-01 challenges (RFC 9447)
+    #[arg(long, value_name = "URL")]
+    tkauth_url: Option<String>,
+
+    /// Keytab file for SPNEGO authentication to the Token Authority
+    #[arg(long, value_name = "FILE")]
+    tkauth_keytab: Option<PathBuf>,
+
+    /// Base64url-encoded JWTClaimConstraints blob for tkauth-01 orders.
+    #[arg(long, value_name = "B64URL")]
+    jwtcc: Option<String>,
+
+    /// PEM file of an extra CA certificate to trust for the ACME server's TLS connection.
+    /// Use when the server uses a private CA not in the system trust store.
+    #[arg(long, value_name = "FILE")]
+    server_ca: Option<PathBuf>,
+
     /// Load renewal configuration from a TOML file written by `akamu-cli issue`.
     /// When provided, all renewal parameters are taken from the file; other flags
     /// are ignored.
@@ -513,14 +557,21 @@ struct CaShowArgs {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("akamu_client=info".parse().unwrap()),
-        )
-        .init();
-
     let cli = Cli::parse();
+
+    let filter = {
+        let base = tracing_subscriber::EnvFilter::from_default_env();
+        match cli.verbose {
+            0 => base.add_directive("akamu_client=info".parse().unwrap()),
+            1 => base.add_directive("akamu_client=debug".parse().unwrap()),
+            _ => base
+                .add_directive("akamu_client=debug".parse().unwrap())
+                .add_directive("hyper_util=debug".parse().unwrap())
+                .add_directive("rustls=debug".parse().unwrap()),
+        }
+    };
+    tracing_subscriber::fmt().with_env_filter(filter).init();
+
     if let Err(e) = run(cli).await {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -747,8 +798,9 @@ async fn poll_with_timeout(
 // ── issue ─────────────────────────────────────────────────────────────────────
 
 async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
-    if args.domains.is_empty() {
-        return Err("at least one --domain is required".into());
+    let using_jwtcc = args.challenge_type == "tkauth-01" && args.jwtcc.is_some();
+    if args.domains.is_empty() && !using_jwtcc {
+        return Err("at least one --domain is required (or --jwtcc for tkauth-01)".into());
     }
 
     let dir_url = resolve_directory_url(&args.server, args.ca.as_deref());
@@ -757,7 +809,15 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
     let key = load_or_generate_key(&args.account_key, &args.key_type)?;
     let key = Arc::new(key);
 
-    let client = AcmeClient::new(&dir_url).await.map_err(|e| e.to_string())?;
+    let client = if let Some(ca_path) = &args.server_ca {
+        let pem =
+            fs::read(ca_path).map_err(|e| format!("--server-ca {}: {e}", ca_path.display()))?;
+        AcmeClient::new_with_extra_root(&dir_url, &pem)
+            .await
+            .map_err(|e| e.to_string())?
+    } else {
+        AcmeClient::new(&dir_url).await.map_err(|e| e.to_string())?
+    };
 
     // Load existing account or register a new one.
     let account = if let Ok(url) = load_account_url_for_ca(&args.account_key, args.ca.as_deref()) {
@@ -837,9 +897,17 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                 return Err("--onion-key is required for onion-csr-01 challenges".to_string());
             }
         }
+        "tkauth-01" => {
+            if args.tkauth_url.is_none() {
+                return Err("--tkauth-url is required for tkauth-01 challenges".to_string());
+            }
+            if args.tkauth_keytab.is_none() {
+                return Err("--tkauth-keytab is required for tkauth-01 challenges".to_string());
+            }
+        }
         other => {
             return Err(format!(
-                "unsupported challenge type '{other}'; supported: http-01, dns-01, dns-persist-01, tls-alpn-01, onion-csr-01"
+                "unsupported challenge type '{other}'; supported: http-01, dns-01, dns-persist-01, tls-alpn-01, onion-csr-01, tkauth-01"
             ));
         }
     }
@@ -866,8 +934,25 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
         None
     };
 
+    // Compute the RFC 9447 fingerprint once (needed per-authz for tkauth-01).
+    let tkauth_fingerprint: Option<String> = if args.challenge_type == "tkauth-01" {
+        Some(
+            akamu_client::rfc9447_fingerprint(account.thumbprint())
+                .map_err(|e| format!("rfc9447 fingerprint: {e}"))?,
+        )
+    } else {
+        None
+    };
+
     // Place the order.
-    let ids: Vec<Identifier> = args.domains.iter().map(Identifier::dns).collect();
+    let ids: Vec<Identifier> = if using_jwtcc {
+        vec![Identifier {
+            r#type: "EnhancedJWTClaimConstraints".to_string(),
+            value: args.jwtcc.clone().unwrap(),
+        }]
+    } else {
+        args.domains.iter().map(Identifier::dns).collect()
+    };
     let order = client
         .new_order_with_profile(&account, &ids, args.profile.as_deref())
         .await
@@ -1115,6 +1200,43 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                     ));
                 }
             }
+            "tkauth-01" => {
+                let chall = authz.find_challenge("tkauth-01").ok_or_else(|| {
+                    format!("no tkauth-01 challenge for {}", authz.identifier.value)
+                })?;
+                // tkvalue is the ACME identifier value (the JWTClaimConstraints blob),
+                // NOT the challenge token.  The TA echoes it in atc.tkvalue; the server
+                // checks atc.tkvalue == id_value to bind the token to this order.
+                let tkvalue = authz.identifier.value.as_str();
+                let ta_url = args.tkauth_url.as_deref().unwrap(); // guarded above
+                let keytab = args.tkauth_keytab.as_ref().unwrap(); // guarded above
+                let fingerprint = tkauth_fingerprint.as_deref().unwrap(); // set when tkauth-01
+
+                let jwt = akamu_client::fetch_authority_token(
+                    ta_url,
+                    tkvalue,
+                    fingerprint,
+                    keytab
+                        .to_str()
+                        .ok_or("tkauth-keytab path is not valid UTF-8")?,
+                )
+                .await
+                .map_err(|e| format!("fetch authority token: {e}"))?;
+
+                client
+                    .trigger_challenge_tkauth(&account, &chall.url, &jwt)
+                    .await
+                    .map_err(|e| format!("trigger tkauth-01: {e}"))?;
+
+                let polled =
+                    poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
+                if polled.status == "invalid" {
+                    return Err(format!(
+                        "order invalid after tkauth-01 challenge for {}",
+                        authz.identifier.value
+                    ));
+                }
+            }
             _ => unreachable!(),
         }
     }
@@ -1148,9 +1270,15 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
     };
 
     // Build the CSR.
-    let domain_refs: Vec<&str> = args.domains.iter().map(String::as_str).collect();
-    let csr_der =
-        akamu_client::build_csr(&domain_refs, cert_key.private_key()).map_err(|e| e.to_string())?;
+    let csr_der = if using_jwtcc && args.domains.is_empty() {
+        // JWTClaimConstraints-only orders: no DNS SANs in the CSR; the server
+        // adds any claim-derived OtherName SANs during finalization.
+        akamu_client::build_subject_only_csr("EnhancedJWTClaimConstraints", cert_key.private_key())
+            .map_err(|e| e.to_string())?
+    } else {
+        let domain_refs: Vec<&str> = args.domains.iter().map(String::as_str).collect();
+        akamu_client::build_csr(&domain_refs, cert_key.private_key()).map_err(|e| e.to_string())?
+    };
 
     // Finalize and download.
     let order = client
@@ -1200,6 +1328,9 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
         gssapi_keytab: args.eab.gssapi_keytab.clone(),
         dns_hook: args.dns_hook.clone(),
         profile: args.profile.or(server_profile),
+        tkauth_url: args.tkauth_url.clone(),
+        tkauth_keytab: args.tkauth_keytab.clone(),
+        jwtcc: args.jwtcc.clone(),
     };
     let toml_str = toml::to_string_pretty(&renewal_config)
         .map_err(|e| format!("serialize renewal config: {e}"))?;
@@ -1379,6 +1510,10 @@ async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
             cert_key: Some(cfg.cert_key_path),
             dns_hook: cfg.dns_hook,
             profile: cfg.profile,
+            tkauth_url: cfg.tkauth_url,
+            tkauth_keytab: cfg.tkauth_keytab,
+            jwtcc: cfg.jwtcc,
+            server_ca: args.server_ca.clone(),
             eab,
         };
         return cmd_issue(issue_args).await;
@@ -1410,6 +1545,10 @@ async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
         poll_timeout: args.poll_timeout,
         dns_hook: args.dns_hook,
         profile: args.profile,
+        tkauth_url: args.tkauth_url,
+        tkauth_keytab: args.tkauth_keytab,
+        jwtcc: args.jwtcc,
+        server_ca: args.server_ca,
         eab: args.eab,
     };
     cmd_issue(issue_args).await

@@ -395,6 +395,9 @@ pub fn build_renewal_config(
         gssapi_keytab: None,
         dns_hook: dns_hook.map(str::to_string),
         profile: None,
+        tkauth_url: None,
+        tkauth_keytab: None,
+        jwtcc: None,
     };
 
     (config, warning)
