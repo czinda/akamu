@@ -160,6 +160,12 @@ pub struct CertificateParameters {
     /// OtherName SAN.  The principal is stored at account registration when the
     /// account is created via a GSSAPI-authenticated EAB key.
     pub inject_account_kpn: bool,
+    /// JWKS endpoint URLs trusted for `kid`-signed authority tokens (RFC 9447).
+    ///
+    /// Empty = this profile does not accept `kid`-keyed authority tokens.
+    /// Populated from `BuiltinProfileConfig.trust_jwks_urls`; non-builtin
+    /// providers always carry an empty list.
+    pub trust_jwks_urls: Vec<String>,
 }
 
 impl CertificateParameters {
@@ -189,6 +195,7 @@ impl CertificateParameters {
             kpn_san_templates: vec![],
             ms_upn_san_template: None,
             inject_account_kpn: false,
+            trust_jwks_urls: vec![],
         }
     }
 }
@@ -523,6 +530,7 @@ mod tests {
             kpn_san_templates: vec![],
             ms_upn_san_template: None,
             inject_account_kpn: false,
+            trust_jwks_urls: vec![],
         }
     }
 

@@ -37,7 +37,7 @@ pub struct Config {
     #[serde(default)]
     pub delegation_upstream: Option<DelegationUpstreamConfig>,
     /// RFC 9447 tkauth-01 / RFC 9448 TNAuthList / jwtclaimcon authority token challenge support.
-    /// Absent or `enabled = false` → "TNAuthList" and "JWTClaimConstraints" identifiers rejected.
+    /// Absent or `enabled = false` → "TNAuthList" and "EnhancedJWTClaimConstraints" identifiers rejected.
     #[serde(default)]
     pub tkauth: Option<TkauthConfig>,
     /// CRDT gossip replication. Absent → single-node mode; no gossip is performed.
@@ -396,6 +396,12 @@ pub struct BuiltinProfileConfig {
     /// KRB5PrincipalName OtherName SAN.
     #[serde(default)]
     pub inject_account_kpn: bool,
+    /// HTTPS or Unix-socket URLs of JWKS endpoints trusted for `kid`-signed
+    /// authority tokens (RFC 9447 tkauth-01).  Only meaningful when `[tkauth]`
+    /// is enabled.  When empty, `kid`-signed tokens are rejected for this profile.
+    /// Unix-socket form: `"http+unix://%2Frun%2Fekishib%2Fekishib.sock/jwks"`.
+    #[serde(default)]
+    pub trust_jwks_urls: Vec<String>,
 }
 
 /// A certificate policy OID with an optional CPS URI qualifier.
@@ -1324,10 +1330,38 @@ impl std::fmt::Debug for EmailChallengeConfig {
     }
 }
 
+/// One entry in `[[tkauth.claim_encoders]]`.
+///
+/// Maps a JWT claim name in the authority token payload to a built-in
+/// certificate extension encoder.
+///
+/// ```toml
+/// [[tkauth.claim_encoders]]
+/// claim         = "krb5-principal"
+/// encoder       = "krb5-kpn"
+/// default_realm = "EXAMPLE.COM"   # optional — appended when value has no '@'
+///
+/// [[tkauth.claim_encoders]]
+/// claim   = "ms-upn"
+/// encoder = "ms-upn"
+/// ```
+///
+/// Supported encoder names: `"krb5-kpn"`, `"ms-upn"`.
+#[derive(Debug, Deserialize, Clone)]
+pub struct ClaimEncoderEntry {
+    /// JWT claim name in the authority token payload.
+    pub claim: String,
+    /// Built-in encoder name: `"krb5-kpn"`, `"ms-upn"`, or `"dns-san"`.
+    pub encoder: String,
+    /// Default Kerberos realm appended when the claim value contains no `@`.
+    /// Only meaningful for `"krb5-kpn"`.
+    pub default_realm: Option<String>,
+}
+
 /// RFC 9447 tkauth-01 authority token challenge configuration.
 ///
 /// When present and `enabled = true`, the server accepts `"TNAuthList"` (RFC 9448) and
-/// `"JWTClaimConstraints"` (draft-ietf-acme-authority-token-jwtclaimcon) identifier types
+/// `"EnhancedJWTClaimConstraints"` (draft-ietf-acme-authority-token-jwtclaimcon) identifier types
 /// and offers the `"tkauth-01"` challenge type.
 ///
 /// ```toml
@@ -1337,6 +1371,11 @@ impl std::fmt::Debug for EmailChallengeConfig {
 /// token_authority_url     = "https://ta.example.com"
 /// max_validity_secs       = 3600
 /// jti_prune_interval_secs = 3600
+///
+/// [[tkauth.claim_encoders]]
+/// claim         = "krb5-principal"
+/// encoder       = "krb5-kpn"
+/// default_realm = "EXAMPLE.COM"
 /// ```
 #[derive(Debug, Deserialize, Clone)]
 pub struct TkauthConfig {
@@ -1358,6 +1397,12 @@ pub struct TkauthConfig {
     /// Default: 3600 (1 hour).
     #[serde(default = "default_tkauth_jti_prune_interval_secs")]
     pub jti_prune_interval_secs: u64,
+    /// Claim-to-extension encoder entries for `JWTClaimConstraints` finalize injection.
+    /// Each validated `must-include` claim whose name appears here will produce one
+    /// OtherName SAN per value in the issued certificate.
+    /// Empty (the default) means no claim-derived extension injection.
+    #[serde(default)]
+    pub claim_encoders: Vec<ClaimEncoderEntry>,
 }
 
 fn default_tkauth_max_validity_secs() -> u64 {

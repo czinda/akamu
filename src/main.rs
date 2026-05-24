@@ -680,6 +680,30 @@ async fn run() -> Result<(), String> {
         None
     };
 
+    // ── Claim-to-extension encoder registry (RFC 9447 JWTClaimConstraints) ─────
+    let claim_encoder_registry = if let Some(tkauth) = config.tkauth.as_ref().filter(|t| t.enabled)
+    {
+        if tkauth.claim_encoders.is_empty() {
+            None
+        } else {
+            let reg = akamu::validation::claim_encoder::build_registry(&tkauth.claim_encoders)
+                .map_err(|e| format!("tkauth claim encoders: {e}"))?;
+            tracing::info!(count = reg.len(), "registered tkauth claim encoders");
+            Some(Arc::new(reg))
+        }
+    } else {
+        None
+    };
+
+    // ── JWKS body cache for kid-signed authority tokens (RFC 9447) ──────────
+    let jwks_cache = if config.tkauth.as_ref().is_some_and(|t| t.enabled) {
+        Some(Arc::new(tokio::sync::Mutex::new(
+            std::collections::HashMap::<String, (Vec<u8>, std::time::Instant)>::new(),
+        )))
+    } else {
+        None
+    };
+
     // ── Per-CA Link headers ───────────────────────────────────────────────────
     let link_headers_map: std::collections::HashMap<String, Arc<axum::http::HeaderValue>> = config
         .cas
@@ -773,6 +797,8 @@ async fn run() -> Result<(), String> {
         write_notify: Arc::new(tokio::sync::Notify::new()),
         crdt_db,
         tkauth_trust_anchors,
+        claim_encoder_registry,
+        jwks_cache,
     });
 
     // ── Seed audit row counter ────────────────────────────────────────────────

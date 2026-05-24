@@ -70,6 +70,7 @@ pub fn load_builtin(
             kpn_san_templates: pcfg.kpn_san_templates.clone(),
             ms_upn_san_template: pcfg.ms_upn_san_template.clone(),
             inject_account_kpn: pcfg.inject_account_kpn,
+            trust_jwks_urls: pcfg.trust_jwks_urls.clone(),
         };
 
         out.insert(id.clone(), (pcfg.description.clone(), params));
@@ -148,6 +149,7 @@ mod tests {
             kpn_san_templates: vec![],
             ms_upn_san_template: None,
             inject_account_kpn: false,
+            trust_jwks_urls: vec![],
         }
     }
 

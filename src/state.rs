@@ -9,6 +9,11 @@ use indexmap::IndexMap;
 
 type AdminAuthLimiter = Arc<tokio::sync::Mutex<HashMap<IpAddr, VecDeque<Instant>>>>;
 
+/// Per-URL JWKS body cache: raw body bytes + fetch timestamp.
+///
+/// Keyed by JWKS URL string.  Entries are refreshed after a 5-minute TTL.
+pub(crate) type JwksCache = Arc<tokio::sync::Mutex<HashMap<String, (Vec<u8>, std::time::Instant)>>>;
+
 use axum::http::HeaderValue;
 use http_body_util::Empty;
 use hyper_rustls::HttpsConnector;
@@ -281,6 +286,18 @@ pub struct AppState {
     /// Built from `config.tkauth.trusted_ta_ca_files` at startup.
     /// `None` when `[tkauth]` is absent or `enabled = false`.
     pub tkauth_trust_anchors: Option<std::sync::Arc<synta_x509_verification::OwnedStore>>,
+    /// Registry mapping JWT claim names to DER extension encoders.
+    ///
+    /// Used at finalize time to convert validated `JWTClaimConstraints` claims into
+    /// OtherName SANs.  Built from `[tkauth.claim_encoders]` at startup.
+    /// `None` when tkauth is disabled or no encoders are configured.
+    pub claim_encoder_registry:
+        Option<std::sync::Arc<crate::validation::claim_encoder::ClaimEncoderRegistry>>,
+    /// In-memory JWKS body cache for `kid`-signed authority tokens (RFC 9447).
+    ///
+    /// Keyed by JWKS endpoint URL; entries are refreshed after 5 minutes.
+    /// `None` when tkauth is disabled.
+    pub jwks_cache: Option<JwksCache>,
 }
 
 impl AppState {
