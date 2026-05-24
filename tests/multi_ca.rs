@@ -58,6 +58,7 @@ async fn build_two_ca_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir
                 enforce_validity_cap: false,
                 require_encrypted_key: false,
                 key_password_file: None,
+                mtc: None,
             },
             CaConfig {
                 id: "ec".to_owned(),
@@ -77,9 +78,10 @@ async fn build_two_ca_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir
                 enforce_validity_cap: false,
                 require_encrypted_key: false,
                 key_password_file: None,
+                mtc: None,
             },
         ],
-        mtc: MtcConfig {
+        mtc: Some(MtcConfig {
             log_path: "/dev/null".into(),
             enabled: false,
             signing_key: None,
@@ -89,7 +91,7 @@ async fn build_two_ca_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir
             max_active_landmarks: 100,
             checkpoint_retention_count: 1000,
             hash_alg: "sha256".into(),
-        },
+        }),
         server: ServerConfig::default(),
         tls: Default::default(),
         profiles: Default::default(),
@@ -128,6 +130,7 @@ async fn build_two_ca_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir
         aki_bytes: rsa_aki,
         enforce_validity_cap: false,
         caa_identities: vec![],
+        mtc: Arc::new(MtcState::disabled()),
     });
     let ca_ec = Arc::new(CaState {
         id: "ec".into(),
@@ -142,6 +145,7 @@ async fn build_two_ca_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir
         aki_bytes: ec_aki,
         enforce_validity_cap: false,
         caa_identities: vec![],
+        mtc: Arc::new(MtcState::disabled()),
     });
 
     let mut cas_map = indexmap::IndexMap::new();
@@ -180,14 +184,6 @@ async fn build_two_ca_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir
         profiles: akamu::profiles::ProfileRegistry::empty(&ca_rsa),
         cas: Arc::new(cas_map),
         default_ca_id: Arc::new("rsa".to_string()),
-        mtc: Arc::new(MtcState {
-            log: None,
-            algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
-            signing_key: None,
-            signing_hash_alg: "sha256".into(),
-            cosigner_clients: vec![],
-            _log_lock: None,
-        }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),
@@ -549,6 +545,7 @@ async fn admin_cas_list_returns_both_cas() {
                 enforce_validity_cap: false,
                 require_encrypted_key: false,
                 key_password_file: None,
+                mtc: None,
             },
             CaConfig {
                 id: "ec".to_owned(),
@@ -568,9 +565,10 @@ async fn admin_cas_list_returns_both_cas() {
                 enforce_validity_cap: false,
                 require_encrypted_key: false,
                 key_password_file: None,
+                mtc: None,
             },
         ],
-        mtc: MtcConfig {
+        mtc: Some(MtcConfig {
             log_path: "/dev/null".into(),
             enabled: false,
             signing_key: None,
@@ -580,7 +578,7 @@ async fn admin_cas_list_returns_both_cas() {
             max_active_landmarks: 100,
             checkpoint_retention_count: 1000,
             hash_alg: "sha256".into(),
-        },
+        }),
         server: ServerConfig::default(),
         tls: Default::default(),
         profiles: Default::default(),
@@ -636,6 +634,7 @@ async fn admin_cas_list_returns_both_cas() {
         aki_bytes: rsa_aki,
         enforce_validity_cap: false,
         caa_identities: vec![],
+        mtc: Arc::new(MtcState::disabled()),
     });
     let ca_ec = Arc::new(CaState {
         id: "ec".into(),
@@ -650,6 +649,7 @@ async fn admin_cas_list_returns_both_cas() {
         aki_bytes: ec_aki,
         enforce_validity_cap: false,
         caa_identities: vec![],
+        mtc: Arc::new(MtcState::disabled()),
     });
 
     let mut cas_map = indexmap::IndexMap::new();
@@ -699,14 +699,6 @@ async fn admin_cas_list_returns_both_cas() {
         profiles: akamu::profiles::ProfileRegistry::empty(&ca_rsa),
         cas: Arc::new(cas_map),
         default_ca_id: Arc::new("rsa".to_string()),
-        mtc: Arc::new(MtcState {
-            log: None,
-            algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
-            signing_key: None,
-            signing_hash_alg: "sha256".into(),
-            cosigner_clients: vec![],
-            _log_lock: None,
-        }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),
@@ -820,6 +812,7 @@ async fn build_two_ca_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
                 enforce_validity_cap: false,
                 require_encrypted_key: false,
                 key_password_file: None,
+                mtc: None,
             },
             CaConfig {
                 id: "ec".to_owned(),
@@ -839,9 +832,10 @@ async fn build_two_ca_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
                 enforce_validity_cap: false,
                 require_encrypted_key: false,
                 key_password_file: None,
+                mtc: None,
             },
         ],
-        mtc: MtcConfig {
+        mtc: Some(MtcConfig {
             log_path: "/dev/null".into(),
             enabled: false,
             signing_key: None,
@@ -851,7 +845,7 @@ async fn build_two_ca_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
             max_active_landmarks: 100,
             checkpoint_retention_count: 1000,
             hash_alg: "sha256".into(),
-        },
+        }),
         server: ServerConfig::default(),
         tls: Default::default(),
         profiles: Default::default(),
@@ -907,6 +901,7 @@ async fn build_two_ca_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         aki_bytes: rsa_aki,
         enforce_validity_cap: false,
         caa_identities: vec![],
+        mtc: Arc::new(MtcState::disabled()),
     });
     let ca_ec = Arc::new(CaState {
         id: "ec".into(),
@@ -921,6 +916,7 @@ async fn build_two_ca_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         aki_bytes: ec_aki,
         enforce_validity_cap: false,
         caa_identities: vec![],
+        mtc: Arc::new(MtcState::disabled()),
     });
 
     let mut cas_map = indexmap::IndexMap::new();
@@ -982,14 +978,6 @@ async fn build_two_ca_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         profiles: akamu::profiles::ProfileRegistry::empty(&ca_rsa),
         cas: Arc::new(cas_map),
         default_ca_id: Arc::new("rsa".to_string()),
-        mtc: Arc::new(MtcState {
-            log: None,
-            algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
-            signing_key: None,
-            signing_hash_alg: "sha256".into(),
-            cosigner_clients: vec![],
-            _log_lock: None,
-        }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         nonces: Arc::new(akamu::state::NonceBucket::new()),

@@ -285,8 +285,9 @@ async fn build_delegation_state() -> (
             enforce_validity_cap: false,
             require_encrypted_key: false,
             key_password_file: None,
+            mtc: None,
         }],
-        mtc: MtcConfig {
+        mtc: Some(MtcConfig {
             log_path: "/dev/null".into(),
             enabled: false,
             signing_key: None,
@@ -296,7 +297,7 @@ async fn build_delegation_state() -> (
             max_active_landmarks: 100,
             checkpoint_retention_count: 1000,
             hash_alg: "sha256".into(),
-        },
+        }),
         server,
         tls: Default::default(),
         profiles: Default::default(),
@@ -345,6 +346,7 @@ async fn build_delegation_state() -> (
         aki_bytes: ca_aki_bytes,
         enforce_validity_cap: false,
         caa_identities: vec![],
+        mtc: Arc::new(MtcState::disabled()),
     });
 
     let admin_token = "test-admin-token".to_string();
@@ -375,14 +377,6 @@ async fn build_delegation_state() -> (
             Arc::new(m)
         },
         default_ca_id: Arc::new("default".to_string()),
-        mtc: Arc::new(MtcState {
-            log: None,
-            algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
-            signing_key: None,
-            signing_hash_alg: "sha256".into(),
-            cosigner_clients: vec![],
-            _log_lock: None,
-        }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),
@@ -1305,8 +1299,9 @@ async fn delegation_disabled_returns_404() {
             enforce_validity_cap: false,
             require_encrypted_key: false,
             key_password_file: None,
+            mtc: None,
         }],
-        mtc: MtcConfig {
+        mtc: Some(MtcConfig {
             log_path: "/dev/null".into(),
             enabled: false,
             signing_key: None,
@@ -1316,7 +1311,7 @@ async fn delegation_disabled_returns_404() {
             max_active_landmarks: 100,
             checkpoint_retention_count: 1000,
             hash_alg: "sha256".into(),
-        },
+        }),
         server,
         tls: Default::default(),
         profiles: Default::default(),
@@ -1347,6 +1342,7 @@ async fn delegation_disabled_returns_404() {
         aki_bytes: ca_aki_bytes,
         enforce_validity_cap: false,
         caa_identities: vec![],
+        mtc: Arc::new(MtcState::disabled()),
     });
 
     let state = Arc::new(AppState {
@@ -1361,14 +1357,6 @@ async fn delegation_disabled_returns_404() {
             Arc::new(m)
         },
         default_ca_id: Arc::new("default".to_string()),
-        mtc: Arc::new(MtcState {
-            log: None,
-            algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
-            signing_key: None,
-            signing_hash_alg: "sha256".into(),
-            cosigner_clients: vec![],
-            _log_lock: None,
-        }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),

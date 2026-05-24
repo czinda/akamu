@@ -157,8 +157,9 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             enforce_validity_cap: false,
             require_encrypted_key: false,
             key_password_file: None,
+            mtc: None,
         }],
-        mtc: MtcConfig {
+        mtc: Some(MtcConfig {
             log_path: "/dev/null".into(),
             enabled: false,
             signing_key: None,
@@ -168,7 +169,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             max_active_landmarks: 100,
             checkpoint_retention_count: 1000,
             hash_alg: "sha256".into(),
-        },
+        }),
         server: ServerConfig::default(),
         tls: Default::default(),
         profiles: Default::default(),
@@ -197,6 +198,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         aki_bytes: ca_aki_bytes,
         enforce_validity_cap: false,
         caa_identities: vec![],
+        mtc: Arc::new(MtcState::disabled()),
     });
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
@@ -210,14 +212,6 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             Arc::new(_ca_map)
         },
         default_ca_id: Arc::new("default".to_string()),
-        mtc: Arc::new(MtcState {
-            log: None,
-            algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
-            signing_key: None,
-            signing_hash_alg: "sha256".into(),
-            cosigner_clients: vec![],
-            _log_lock: None,
-        }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),
@@ -575,8 +569,9 @@ async fn test_renewal_info_explanation_url() {
             enforce_validity_cap: false,
             require_encrypted_key: false,
             key_password_file: None,
+            mtc: None,
         }],
-        mtc: MtcConfig {
+        mtc: Some(MtcConfig {
             log_path: "/dev/null".into(),
             enabled: false,
             signing_key: None,
@@ -586,7 +581,7 @@ async fn test_renewal_info_explanation_url() {
             max_active_landmarks: 100,
             checkpoint_retention_count: 1000,
             hash_alg: "sha256".into(),
-        },
+        }),
         server: server_cfg,
         tls: Default::default(),
         profiles: Default::default(),
@@ -605,7 +600,6 @@ async fn test_renewal_info_explanation_url() {
         profiles: akamu::profiles::ProfileRegistry::empty(state.default_ca()),
         cas: Arc::clone(&state.cas),
         default_ca_id: Arc::clone(&state.default_ca_id),
-        mtc: Arc::clone(&state.mtc),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),

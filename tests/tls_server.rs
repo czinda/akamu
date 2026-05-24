@@ -417,8 +417,9 @@ async fn start_tls_server() -> TlsTestServer {
             enforce_validity_cap: false,
             require_encrypted_key: false,
             key_password_file: None,
+            mtc: None,
         }],
-        mtc: MtcConfig {
+        mtc: Some(MtcConfig {
             log_path: "/dev/null".into(),
             enabled: false,
             signing_key: None,
@@ -428,7 +429,7 @@ async fn start_tls_server() -> TlsTestServer {
             max_active_landmarks: 100,
             checkpoint_retention_count: 1000,
             hash_alg: "sha256".into(),
-        },
+        }),
         server: ServerConfig::default(),
         profiles: Default::default(),
         tls: TlsConfig {
@@ -473,6 +474,7 @@ async fn start_tls_server() -> TlsTestServer {
         enforce_validity_cap: false,
         crl_next_update_secs: 86400,
         caa_identities: vec![],
+        mtc: Arc::new(MtcState::disabled()),
     });
 
     // Bootstrap TLS cert/key signed by the CA.
@@ -500,14 +502,6 @@ async fn start_tls_server() -> TlsTestServer {
             Arc::new(m)
         },
         default_ca_id: Arc::new("default".to_string()),
-        mtc: Arc::new(MtcState {
-            log: None,
-            algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
-            signing_key: None,
-            signing_hash_alg: "sha256".into(),
-            cosigner_clients: vec![],
-            _log_lock: None,
-        }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),
@@ -1016,6 +1010,7 @@ async fn test_tls_untrusted_ca_rejected() {
         enforce_validity_cap: false,
         require_encrypted_key: false,
         key_password_file: None,
+        mtc: None,
     };
     let (_, other_ca_der) = ca::init::load_or_generate(&unrelated_ca_cfg).unwrap();
     tracing::info!("Attempting TLS handshake with unrelated CA trust store…");

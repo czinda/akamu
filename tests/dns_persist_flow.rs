@@ -172,8 +172,9 @@ async fn build_state(
             enforce_validity_cap: false,
             require_encrypted_key: false,
             key_password_file: None,
+            mtc: None,
         }],
-        mtc: MtcConfig {
+        mtc: Some(MtcConfig {
             log_path: "/dev/null".into(),
             enabled: false,
             signing_key: None,
@@ -183,7 +184,7 @@ async fn build_state(
             max_active_landmarks: 100,
             checkpoint_retention_count: 1000,
             hash_alg: "sha256".into(),
-        },
+        }),
         server: ServerConfig {
             dns_persist_issuer_domains: vec![issuer_domain.into()],
             dns_resolver_addr: Some(dns_resolver_addr.into()),
@@ -215,6 +216,7 @@ async fn build_state(
         aki_bytes: Vec::new(),
         enforce_validity_cap: false,
         caa_identities: vec![],
+        mtc: Arc::new(MtcState::disabled()),
     });
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
@@ -228,14 +230,6 @@ async fn build_state(
             Arc::new(_ca_map)
         },
         default_ca_id: Arc::new("default".to_string()),
-        mtc: Arc::new(MtcState {
-            log: None,
-            algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
-            signing_key: None,
-            signing_hash_alg: "sha256".into(),
-            cosigner_clients: vec![],
-            _log_lock: None,
-        }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),

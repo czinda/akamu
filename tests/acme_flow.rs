@@ -218,8 +218,9 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             enforce_validity_cap: false,
             require_encrypted_key: false,
             key_password_file: None,
+            mtc: None,
         }],
-        mtc: MtcConfig {
+        mtc: Some(MtcConfig {
             log_path: "/dev/null".into(),
             enabled: false,
             signing_key: None,
@@ -229,7 +230,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             max_active_landmarks: 100,
             checkpoint_retention_count: 1000,
             hash_alg: "sha256".into(),
-        },
+        }),
         server: ServerConfig::default(),
         tls: Default::default(),
         profiles: Default::default(),
@@ -260,6 +261,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         aki_bytes: ca_aki_bytes,
         enforce_validity_cap: false,
         caa_identities: vec![],
+        mtc: Arc::new(MtcState::disabled()),
     });
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
@@ -273,14 +275,6 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             Arc::new(_ca_map)
         },
         default_ca_id: Arc::new("default".to_string()),
-        mtc: Arc::new(MtcState {
-            log: None,
-            algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
-            signing_key: None,
-            signing_hash_alg: "sha256".into(),
-            cosigner_clients: vec![],
-            _log_lock: None,
-        }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),
@@ -2274,8 +2268,9 @@ async fn test_directory_with_optional_fields() {
             enforce_validity_cap: false,
             require_encrypted_key: false,
             key_password_file: None,
+            mtc: None,
         }],
-        mtc: akamu::config::MtcConfig {
+        mtc: Some(akamu::config::MtcConfig {
             log_path: "/dev/null".into(),
             enabled: false,
             signing_key: None,
@@ -2285,7 +2280,7 @@ async fn test_directory_with_optional_fields() {
             max_active_landmarks: 100,
             checkpoint_retention_count: 1000,
             hash_alg: "sha256".into(),
-        },
+        }),
         server: akamu::config::ServerConfig {
             terms_of_service_url: Some("https://example.org/tos".into()),
             website_url: Some("https://example.org".into()),
@@ -2318,6 +2313,7 @@ async fn test_directory_with_optional_fields() {
         aki_bytes: Vec::new(),
         enforce_validity_cap: false,
         caa_identities: vec![],
+        mtc: Arc::new(MtcState::disabled()),
     });
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
@@ -2331,14 +2327,6 @@ async fn test_directory_with_optional_fields() {
             Arc::new(_ca_map)
         },
         default_ca_id: Arc::new("default".to_string()),
-        mtc: Arc::new(akamu::state::MtcState {
-            log: None,
-            algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
-            signing_key: None,
-            signing_hash_alg: "sha256".into(),
-            cosigner_clients: vec![],
-            _log_lock: None,
-        }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),
@@ -2706,8 +2694,9 @@ async fn test_finalize_with_mtc_enabled() {
             enforce_validity_cap: false,
             require_encrypted_key: false,
             key_password_file: None,
+            mtc: None,
         }],
-        mtc: MtcConfig {
+        mtc: Some(MtcConfig {
             log_path: log_path.clone(),
             enabled: true,
             signing_key: None,
@@ -2717,7 +2706,7 @@ async fn test_finalize_with_mtc_enabled() {
             max_active_landmarks: 100,
             checkpoint_retention_count: 1000,
             hash_alg: "sha256".into(),
-        },
+        }),
         server: akamu::config::ServerConfig::default(),
         tls: Default::default(),
         profiles: Default::default(),
@@ -2749,6 +2738,7 @@ async fn test_finalize_with_mtc_enabled() {
         aki_bytes: Vec::new(),
         enforce_validity_cap: false,
         caa_identities: vec![],
+        mtc: Arc::new(MtcState::disabled()),
     });
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
@@ -2762,14 +2752,6 @@ async fn test_finalize_with_mtc_enabled() {
             Arc::new(_ca_map)
         },
         default_ca_id: Arc::new("default".to_string()),
-        mtc: Arc::new(MtcState {
-            log: Some(shared_log.clone()),
-            algorithm,
-            signing_key: None,
-            signing_hash_alg: "sha256".into(),
-            cosigner_clients: vec![],
-            _log_lock: None,
-        }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),
@@ -3020,8 +3002,9 @@ async fn test_finalize_with_aia_and_cdp() {
             enforce_validity_cap: false,
             require_encrypted_key: false,
             key_password_file: None,
+            mtc: None,
         }],
-        mtc: MtcConfig {
+        mtc: Some(MtcConfig {
             log_path: "/dev/null".into(),
             enabled: false,
             signing_key: None,
@@ -3031,7 +3014,7 @@ async fn test_finalize_with_aia_and_cdp() {
             max_active_landmarks: 100,
             checkpoint_retention_count: 1000,
             hash_alg: "sha256".into(),
-        },
+        }),
         server: ServerConfig::default(),
         tls: Default::default(),
         profiles: Default::default(),
@@ -3058,6 +3041,7 @@ async fn test_finalize_with_aia_and_cdp() {
         aki_bytes: Vec::new(),
         enforce_validity_cap: false,
         caa_identities: vec![],
+        mtc: Arc::new(MtcState::disabled()),
     });
     let state = Arc::new(AppState {
         config: Arc::clone(&config),
@@ -3071,14 +3055,6 @@ async fn test_finalize_with_aia_and_cdp() {
             Arc::new(_ca_map)
         },
         default_ca_id: Arc::new("default".to_string()),
-        mtc: Arc::new(MtcState {
-            log: None,
-            algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
-            signing_key: None,
-            signing_hash_alg: "sha256".into(),
-            cosigner_clients: vec![],
-            _log_lock: None,
-        }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),
@@ -3571,8 +3547,9 @@ async fn test_smime_email_reply_00_full_flow() {
             enforce_validity_cap: false,
             require_encrypted_key: false,
             key_password_file: None,
+            mtc: None,
         }],
-        mtc: MtcConfig {
+        mtc: Some(MtcConfig {
             log_path: "/dev/null".into(),
             enabled: false,
             signing_key: None,
@@ -3582,7 +3559,7 @@ async fn test_smime_email_reply_00_full_flow() {
             max_active_landmarks: 100,
             checkpoint_retention_count: 1000,
             hash_alg: "sha256".into(),
-        },
+        }),
         server: ServerConfig {
             // Non-zero expiry: ServerConfig::default() uses 0, which sets
             // authz_expiry = now + 0 = now.  If the webhook arrives even one
@@ -3626,6 +3603,7 @@ async fn test_smime_email_reply_00_full_flow() {
         aki_bytes: ca_aki_bytes,
         enforce_validity_cap: false,
         caa_identities: vec![],
+        mtc: Arc::new(MtcState::disabled()),
     });
     // Build a profile registry with the S/MIME profile so the finalize route
     // picks up the emailProtection EKU instead of the CA default server_auth.
@@ -3658,14 +3636,6 @@ async fn test_smime_email_reply_00_full_flow() {
             Arc::new(m)
         },
         default_ca_id: Arc::new("default".to_string()),
-        mtc: Arc::new(MtcState {
-            log: None,
-            algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
-            signing_key: None,
-            signing_hash_alg: "sha256".into(),
-            cosigner_clients: vec![],
-            _log_lock: None,
-        }),
         tls: None,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),
