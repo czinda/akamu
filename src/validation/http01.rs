@@ -16,7 +16,7 @@ const MAX_REDIRECTS: usize = 10;
 
 /// Returns `true` when `ip` is a private, loopback, link-local, or otherwise
 /// non-globally-routable address that must not be reached via a redirect.
-fn is_blocked_ip(ip: std::net::IpAddr) -> bool {
+pub(crate) fn is_blocked_ip(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(v4) => {
             v4.is_loopback()
@@ -52,7 +52,7 @@ fn is_blocked_ip(ip: std::net::IpAddr) -> bool {
 ///
 /// `host` may be a bare hostname, an IPv4 literal, or an IPv6 literal
 /// enclosed in `[`…`]` as it appears in a URI authority.
-async fn check_redirect_host(
+pub(crate) async fn check_redirect_host(
     host: &str,
     allow_private_ips: bool,
     from_url: &str,

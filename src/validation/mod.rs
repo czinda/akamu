@@ -4,12 +4,13 @@
 //! After validation the function updates challenge, authorization, and order state.
 
 pub mod caa;
+pub mod claim_encoder;
 mod dns01;
 mod dns_persist_01;
 pub mod email_reply_00;
 mod http01;
 pub mod onion_csr_01;
-mod tkauth01;
+pub(crate) mod tkauth01;
 mod tls_alpn01;
 
 use std::sync::Arc;
@@ -90,17 +91,23 @@ pub async fn validate_challenge(
                 let err =
                     AcmeError::Unauthorized(format!("dns-persist-01: account {account_id} is {s}"));
                 let now = unix_now();
-                let _ =
+                if let Err(db_err) =
                     on_invalid_with_order(state, challenge_id, authz_id, Some(order_id), err, now)
-                        .await;
+                        .await
+                {
+                    tracing::warn!(challenge_id, error = %db_err, "failed to record challenge failure");
+                }
                 return "invalid";
             }
             Err(e) => {
                 let err = AcmeError::Internal(format!("account status lookup: {e}"));
                 let now = unix_now();
-                let _ =
+                if let Err(db_err) =
                     on_invalid_with_order(state, challenge_id, authz_id, Some(order_id), err, now)
-                        .await;
+                        .await
+                {
+                    tracing::warn!(challenge_id, error = %db_err, "failed to record challenge failure");
+                }
                 return "invalid";
             }
         }
@@ -115,23 +122,33 @@ pub async fn validate_challenge(
                 let err = AcmeError::IncorrectResponse(
                     "tkauth-01: authority token not provided in challenge response".into(),
                 );
-                let _ =
+                if let Err(db_err) =
                     on_invalid_with_order(state, challenge_id, authz_id, Some(order_id), err, now)
-                        .await;
+                        .await
+                {
+                    tracing::warn!(challenge_id, error = %db_err, "failed to record challenge failure");
+                }
                 return "invalid";
             }
         };
-        let result =
-            tkauth01::validate(id_type, id_value, key_auth, token_jwt, authz_id, state).await;
+        let result = tkauth01::validate(
+            id_type, id_value, key_auth, token_jwt, authz_id, order_id, state,
+        )
+        .await;
         return match result {
             Ok(()) => {
-                let _ = on_valid(state, challenge_id, authz_id, order_id, now).await;
+                if let Err(db_err) = on_valid(state, challenge_id, authz_id, order_id, now).await {
+                    tracing::warn!(challenge_id, error = %db_err, "failed to mark challenge valid");
+                }
                 "valid"
             }
             Err(e) => {
-                let _ =
+                if let Err(db_err) =
                     on_invalid_with_order(state, challenge_id, authz_id, Some(order_id), e, now)
-                        .await;
+                        .await
+                {
+                    tracing::warn!(challenge_id, error = %db_err, "failed to record challenge failure");
+                }
                 "invalid"
             }
         };
@@ -145,9 +162,12 @@ pub async fn validate_challenge(
         match email_reply_00::send_challenge_email(state, challenge_id, id_value, token).await {
             Ok(()) => return "processing",
             Err(e) => {
-                let _ =
+                if let Err(db_err) =
                     on_invalid_with_order(state, challenge_id, authz_id, Some(order_id), e, now)
-                        .await;
+                        .await
+                {
+                    tracing::warn!(challenge_id, error = %db_err, "failed to record challenge failure");
+                }
                 return "invalid";
             }
         }
@@ -204,12 +224,17 @@ pub async fn validate_challenge(
     let now = unix_now();
     match result {
         Ok(()) => {
-            let _ = on_valid(state, challenge_id, authz_id, order_id, now).await;
+            if let Err(db_err) = on_valid(state, challenge_id, authz_id, order_id, now).await {
+                tracing::warn!(challenge_id, error = %db_err, "failed to mark challenge valid");
+            }
             "valid"
         }
         Err(e) => {
-            let _ =
-                on_invalid_with_order(state, challenge_id, authz_id, Some(order_id), e, now).await;
+            if let Err(db_err) =
+                on_invalid_with_order(state, challenge_id, authz_id, Some(order_id), e, now).await
+            {
+                tracing::warn!(challenge_id, error = %db_err, "failed to record challenge failure");
+            }
             "invalid"
         }
     }
@@ -762,6 +787,8 @@ mod tests {
             write_notify: Arc::new(tokio::sync::Notify::new()),
             crdt_db: db_conn.clone(),
             tkauth_trust_anchors: None,
+            claim_encoder_registry: None,
+            jwks_cache: None,
         })
     }
 
@@ -1319,6 +1346,8 @@ mod tests {
             write_notify: Arc::new(tokio::sync::Notify::new()),
             crdt_db: db_conn.clone(),
             tkauth_trust_anchors: None,
+            claim_encoder_registry: None,
+            jwks_cache: None,
         });
 
         // The identifier is just the IP address — no port embedded.
@@ -1680,6 +1709,8 @@ mod tests {
             write_notify: Arc::new(tokio::sync::Notify::new()),
             crdt_db: crdt_pool,
             tkauth_trust_anchors: None,
+            claim_encoder_registry: None,
+            jwks_cache: None,
         })
     }
 
