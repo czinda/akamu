@@ -1,18 +1,25 @@
-//! rustls `ClientCertVerifier` backed by `synta-x509-verification`.
+//! rustls `ClientCertVerifier` backed by `synta-x509-verification` policy,
+//! wired into the `rustls-native-ossl` chain-verifier framework.
 //!
-//! Trust anchors are pre-parsed once at startup via `OwnedStore::try_new` and
-//! re-used across all connections — no DER re-parsing per handshake.
+//! `SyntaChainVerifier` implements the pluggable `CertChainVerifier` trait from
+//! `rustls-native-ossl`, translating from native-ossl `X509` types back to the
+//! synta `VerificationCertificate` / `OwnedStore` API so full policy (chain depth,
+//! RSA modulus, profile, PQ algorithm set) is enforced.
 //!
-//! Composite ML-DSA+classical TLS 1.3 `CertificateVerify` signatures are routed
-//! through the native-ossl EVP interface.  Classical schemes delegate to the
-//! rustls-native-ossl crypto provider.
+//! `SyntaClientCertVerifier` wraps an `OsslClientCertVerifier` (which carries the
+//! synta chain verifier) and adds:
+//!   - configurable `client_auth_mandatory` (`required` field)
+//!   - composite ML-DSA+classical TLS 1.3 `CertificateVerify` routing
+//!   - `allow_post_quantum` scheme advertising
 
 use std::sync::Arc;
 
+use native_ossl::x509::X509;
 use rustls::client::danger::HandshakeSignatureValid;
-use rustls::pki_types::{CertificateDer, UnixTime};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 use rustls::{DigitallySignedStruct, DistinguishedName, Error as TlsError, SignatureScheme};
+use rustls_native_ossl::cert_verifier::{CertChainVerifier, OsslClientCertVerifier};
 use synta::{Decoder, Encoding};
 use synta_certificate::{Certificate, OpensslSignatureVerifier};
 use synta_x509_verification::{
@@ -25,18 +32,107 @@ use synta_x509_verification::{
 
 use crate::config::ClientAuthConfig;
 
-/// rustls `ClientCertVerifier` that delegates chain validation to
-/// `synta-x509-verification` with a configurable profile, depth, and algorithm
-/// policy.  Optionally accepts composite ML-DSA+classical hybrid schemes.
-pub struct SyntaClientCertVerifier {
-    /// Pre-parsed trust anchors — owned, `Send + Sync`, shared across connections.
+// ── SyntaChainVerifier ─────────────────────────────────────────────────────────
+
+/// `CertChainVerifier` implementation backed by `synta-x509-verification`.
+///
+/// Converts native-ossl `X509` certificates (as supplied by the rustls-native-ossl
+/// framework) back to DER and then uses `OwnedStore::verify` with a full
+/// `PolicyDefinition` (profile, chain depth, RSA modulus, PQ algorithm set).
+struct SyntaChainVerifier {
     owned_store: Arc<OwnedStore>,
-    /// DN hints pre-computed once at startup (returned cheaply on every handshake).
-    root_hints: Vec<DistinguishedName>,
-    required: bool,
     profile: ValidationProfile,
     max_chain_depth: u8,
     minimum_rsa_modulus: usize,
+    allow_post_quantum: bool,
+}
+
+impl std::fmt::Debug for SyntaChainVerifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SyntaChainVerifier")
+            .field("allow_post_quantum", &self.allow_post_quantum)
+            .finish_non_exhaustive()
+    }
+}
+
+impl CertChainVerifier for SyntaChainVerifier {
+    fn verify_chain(
+        &self,
+        end_entity: &X509,
+        intermediates: &[X509],
+        _server_name: Option<&ServerName<'_>>,
+        now: UnixTime,
+    ) -> Result<(), TlsError> {
+        // Convert native-ossl X509 values back to DER (zero copies avoided;
+        // OpenSSL DER encoding is cheap compared to chain validation).
+        let leaf_der = end_entity
+            .to_der()
+            .map_err(|e| TlsError::General(format!("leaf cert DER encode: {e}")))?;
+        let inter_ders: Vec<Vec<u8>> = intermediates
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                c.to_der()
+                    .map_err(|e| TlsError::General(format!("intermediate {i} DER encode: {e}")))
+            })
+            .collect::<Result<_, _>>()?;
+
+        // Parse leaf cert with synta.
+        let leaf_cert: Certificate = Decoder::new(&leaf_der, Encoding::Der)
+            .decode()
+            .map_err(|e| TlsError::General(format!("leaf cert synta parse: {e}")))?;
+        let leaf_vc = VerificationCertificate::new(leaf_cert, &leaf_der);
+
+        // Parse intermediates with synta.
+        let inter_vcs: Vec<VerificationCertificate<'_>> = inter_ders
+            .iter()
+            .map(|der| {
+                let cert: Certificate = Decoder::new(der, Encoding::Der).decode().map_err(|e| {
+                    TlsError::General(format!("intermediate cert synta parse: {e}"))
+                })?;
+                Ok(VerificationCertificate::new(cert, der.as_slice()))
+            })
+            .collect::<Result<_, TlsError>>()?;
+
+        let (spki_algs, sig_algs) = if self.allow_post_quantum {
+            (
+                WEBPKI_PERMITTED_SPKI_ALGORITHMS_WITH_PQ,
+                WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS_WITH_PQ,
+            )
+        } else {
+            (
+                WEBPKI_PERMITTED_SPKI_ALGORITHMS,
+                WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS,
+            )
+        };
+
+        let validation_time = now.as_secs() as i64;
+        let mut policy = PolicyDefinition::new_client(OpensslSignatureVerifier, validation_time);
+        policy.profile = self.profile;
+        policy.max_chain_depth = self.max_chain_depth;
+        policy.minimum_rsa_modulus = self.minimum_rsa_modulus;
+        policy.permitted_spki_algorithms = spki_algs;
+        policy.permitted_signature_algorithms = sig_algs;
+
+        self.owned_store
+            .verify(&leaf_vc, &inter_vcs, &policy, RevocationChecks::default())
+            .map(|_| ())
+            .map_err(|e| TlsError::General(format!("client cert verification failed: {e}")))
+    }
+}
+
+// ── SyntaClientCertVerifier ────────────────────────────────────────────────────
+
+/// rustls `ClientCertVerifier` that delegates chain validation to
+/// `synta-x509-verification` via the `OsslClientCertVerifier` framework.
+///
+/// Chain policy (profile, depth, RSA modulus, PQ algorithms) is enforced by
+/// `SyntaChainVerifier`.  Composite ML-DSA+classical TLS 1.3 `CertificateVerify`
+/// signatures are handled inline via native-ossl EVP DigestVerify.
+pub struct SyntaClientCertVerifier {
+    /// Inner verifier from rustls-native-ossl, carries the SyntaChainVerifier.
+    inner: OsslClientCertVerifier,
+    required: bool,
     allow_post_quantum: bool,
     /// Crypto provider — built once at construction, shared across all handshakes.
     provider: Arc<rustls::crypto::CryptoProvider>,
@@ -76,13 +172,21 @@ impl SyntaClientCertVerifier {
         let owned_store = OwnedStore::try_new(ca_ders.iter().map(|d| d.as_slice()))
             .map_err(|e| format!("build client-auth trust store: {e}"))?;
 
-        Ok(Self {
+        let synta_verifier = Arc::new(SyntaChainVerifier {
             owned_store: Arc::new(owned_store),
-            root_hints,
-            required: config.required,
             profile,
             max_chain_depth: config.max_chain_depth,
             minimum_rsa_modulus: config.minimum_rsa_modulus,
+            allow_post_quantum: config.allow_post_quantum,
+        });
+
+        let inner = OsslClientCertVerifier::builder_with_verifier(synta_verifier)
+            .with_root_hint_subjects(root_hints)
+            .build();
+
+        Ok(Self {
+            inner,
+            required: config.required,
             allow_post_quantum: config.allow_post_quantum,
             provider: Arc::new(rustls_native_ossl::default_provider()),
         })
@@ -99,7 +203,7 @@ impl ClientCertVerifier for SyntaClientCertVerifier {
     }
 
     fn root_hint_subjects(&self) -> &[DistinguishedName] {
-        &self.root_hints
+        self.inner.root_hint_subjects()
     }
 
     fn verify_client_cert(
@@ -108,52 +212,8 @@ impl ClientCertVerifier for SyntaClientCertVerifier {
         intermediates: &[CertificateDer<'_>],
         now: UnixTime,
     ) -> Result<ClientCertVerified, TlsError> {
-        // Clone DER into owned buffers: CertificateDer borrows are short-lived.
-        let leaf_der: Vec<u8> = end_entity.as_ref().to_vec();
-        let inter_ders: Vec<Vec<u8>> = intermediates.iter().map(|c| c.as_ref().to_vec()).collect();
-        let validation_time = now.as_secs() as i64;
-
-        // Parse leaf (borrows from leaf_der on the stack).
-        let leaf_cert: Certificate = Decoder::new(&leaf_der, Encoding::Der)
-            .decode()
-            .map_err(|e| TlsError::General(format!("leaf cert parse: {e}")))?;
-        let leaf_vc = VerificationCertificate::new(leaf_cert, &leaf_der);
-
-        // Parse intermediates (each borrows from its own owned DER).
-        let inter_vcs: Vec<VerificationCertificate<'_>> = inter_ders
-            .iter()
-            .map(|der| {
-                let cert: Certificate = Decoder::new(der, Encoding::Der)
-                    .decode()
-                    .map_err(|e| TlsError::General(format!("intermediate cert parse: {e}")))?;
-                Ok(VerificationCertificate::new(cert, der.as_slice()))
-            })
-            .collect::<Result<_, TlsError>>()?;
-
-        // Build validation policy.
-        let (spki_algs, sig_algs) = if self.allow_post_quantum {
-            (
-                WEBPKI_PERMITTED_SPKI_ALGORITHMS_WITH_PQ,
-                WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS_WITH_PQ,
-            )
-        } else {
-            (
-                WEBPKI_PERMITTED_SPKI_ALGORITHMS,
-                WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS,
-            )
-        };
-        let mut policy = PolicyDefinition::new_client(OpensslSignatureVerifier, validation_time);
-        policy.profile = self.profile;
-        policy.max_chain_depth = self.max_chain_depth;
-        policy.minimum_rsa_modulus = self.minimum_rsa_modulus;
-        policy.permitted_spki_algorithms = spki_algs;
-        policy.permitted_signature_algorithms = sig_algs;
-
-        // Trust anchors are already parsed — no re-parsing per connection.
-        self.owned_store
-            .verify(&leaf_vc, &inter_vcs, &policy, RevocationChecks::default())
-            .map(|_| ClientCertVerified::assertion())
-            .map_err(|e| TlsError::General(format!("client cert verification failed: {e}")))
+        self.inner
+            .verify_client_cert(end_entity, intermediates, now)
     }
 
     /// TLS 1.2 `CertificateVerify` — all schemes delegated to rustls-native-ossl.
@@ -175,7 +235,7 @@ impl ClientCertVerifier for SyntaClientCertVerifier {
     /// TLS 1.3 `CertificateVerify`.
     ///
     /// Classical schemes delegate to rustls-native-ossl.
-    /// Composite ML-DSA+classical schemes route through native-ossl.
+    /// Composite ML-DSA+classical schemes route through native-ossl EVP DigestVerify.
     fn verify_tls13_signature(
         &self,
         message: &[u8],
@@ -228,9 +288,6 @@ fn verify_composite_tls13_signature(
     cert: &CertificateDer<'_>,
     dss: &DigitallySignedStruct,
 ) -> Result<HandshakeSignatureValid, TlsError> {
-    // Extract the composite SubjectPublicKeyInfo DER from the raw cert bytes
-    // without re-parsing the certificate — cert_byte_ranges gives the exact
-    // SPKI TLV byte range within the original DER.
     let cert_der: &[u8] = cert.as_ref();
     let ranges = synta_certificate::cert_byte_ranges(cert_der)
         .ok_or_else(|| TlsError::General("composite verify: extract SPKI range".into()))?;
@@ -242,10 +299,6 @@ fn verify_composite_tls13_signature(
 }
 
 /// Verify a composite ML-DSA+classical signature using native-ossl EVP DigestVerify.
-///
-/// `Pkey::<Public>::from_der(spki_der)` loads the composite key via d2i_PUBKEY.
-/// `Verifier::verify` validates both components in one streaming call — the
-/// underlying OpenSSL provider handles the "and" semantics internally.
 fn verify_composite_via_openssl(
     scheme: SignatureScheme,
     message: &[u8],
