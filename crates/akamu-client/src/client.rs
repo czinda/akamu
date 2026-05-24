@@ -36,9 +36,66 @@ use crate::{
         AccountOptions, Authorization, Challenge, Identifier, Order, RenewalInfo, StarOrder,
         StarOrderParams,
     },
+    unix::unix_dispatch,
 };
 
 type HyperClient = Client<hyper_rustls::HttpsConnector<HttpConnector>, Full<Bytes>>;
+
+// ── TLS certificate debug logging ─────────────────────────────────────────────
+
+/// Log key fields of an X.509 certificate at `debug` level.
+///
+/// Called for CA certs loaded via `--server-ca` and for the server cert during
+/// the TLS handshake when the tracing subscriber is at `debug` level.
+fn log_x509(label: &str, cert: &native_ossl::x509::X509) {
+    use native_ossl::x509::nid_to_long_name;
+
+    let subject = cert
+        .subject_name()
+        .to_string()
+        .unwrap_or_else(|| "<parse error>".into());
+    let issuer = cert
+        .issuer_name()
+        .to_string()
+        .unwrap_or_else(|| "<parse error>".into());
+    let not_before = cert.not_before_str().unwrap_or_else(|| "<unknown>".into());
+    let not_after = cert.not_after_str().unwrap_or_else(|| "<unknown>".into());
+    let sig_alg = cert
+        .signature_info()
+        .ok()
+        .and_then(|si| nid_to_long_name(si.pk_nid))
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "<unknown>".into());
+    tracing::debug!(
+        "{label}: subject={subject:?} issuer={issuer:?} \
+         not_before={not_before} not_after={not_after} sig_alg={sig_alg}"
+    );
+}
+
+/// `CertChainVerifier` that logs certificate details before delegating to
+/// the inner `OsslChainVerifier`.  Logging is at `debug` level so it is
+/// a no-op unless the tracing subscriber is configured at that level.
+#[derive(Debug)]
+struct LoggingChainVerifier {
+    inner: rustls_native_ossl::cert_verifier::OsslChainVerifier,
+}
+
+impl rustls_native_ossl::cert_verifier::CertChainVerifier for LoggingChainVerifier {
+    fn verify_chain(
+        &self,
+        end_entity: &native_ossl::x509::X509,
+        intermediates: &[native_ossl::x509::X509],
+        server_name: Option<&rustls::pki_types::ServerName<'_>>,
+        now: rustls::pki_types::UnixTime,
+    ) -> Result<(), rustls::Error> {
+        log_x509("server certificate", end_entity);
+        for (i, cert) in intermediates.iter().enumerate() {
+            log_x509(&format!("intermediate certificate [{i}]"), cert);
+        }
+        self.inner
+            .verify_chain(end_entity, intermediates, server_name, now)
+    }
+}
 
 /// Directory-aware ACME client.
 ///
@@ -64,6 +121,76 @@ impl AcmeClient {
         let https = HttpsConnectorBuilder::new()
             .with_provider_and_native_roots(rustls_native_ossl::default_provider())
             .map_err(|e| ClientError::Http(format!("TLS root certs: {e}")))?
+            .https_or_http()
+            .enable_http1()
+            .build();
+        let http = Client::builder(TokioExecutor::new()).build(https);
+        Self::new_with_client(http, directory_url).await
+    }
+
+    /// Construct a client that trusts the system CA store PLUS an extra PEM CA cert.
+    ///
+    /// Use when the ACME server uses a private CA that is not in the system trust store
+    /// (e.g. a local demo or staging server).  All other trust behaviour matches
+    /// [`AcmeClient::new`]: both HTTP and HTTPS directory URLs are accepted.
+    ///
+    /// Chain validation is performed by `OsslServerCertVerifier` (OpenSSL
+    /// `X509_verify_cert`) so ML-DSA-signed server certificates are accepted
+    /// when OpenSSL 3.3+ with PQ support is installed.
+    pub async fn new_with_extra_root(
+        directory_url: &str,
+        ca_cert_pem: &[u8],
+    ) -> Result<Self, ClientError> {
+        use rustls::pki_types::CertificateDer;
+        use rustls_native_ossl::cert_verifier::OsslServerCertVerifier;
+
+        // Parse caller-supplied PEM CA cert.
+        let extra_ders = synta_certificate::pem_to_der(ca_cert_pem);
+        if extra_ders.is_empty() {
+            return Err(ClientError::Http(
+                "--server-ca: PEM file contains no certificate block".into(),
+            ));
+        }
+
+        // Log extra CA details at debug level (active when -v is passed).
+        for (i, der) in extra_ders.iter().enumerate() {
+            if let Ok(cert) = native_ossl::x509::X509::from_der(der) {
+                log_x509(&format!("CA certificate [{i}]"), &cert);
+            }
+        }
+
+        // Build the full CA set: system certs + the extra CA.
+        // LoggingChainVerifier wraps OsslChainVerifier so server cert details
+        // are logged at debug level during the TLS handshake.
+        let native = rustls_native_certs::load_native_certs();
+        let mut all_ca_ders: Vec<CertificateDer<'_>> = native
+            .certs
+            .iter()
+            .map(|c| CertificateDer::from(c.as_ref()))
+            .collect();
+        for der in &extra_ders {
+            all_ca_ders.push(CertificateDer::from(der.as_slice()));
+        }
+
+        let chain_verifier =
+            rustls_native_ossl::cert_verifier::OsslChainVerifier::new(&all_ca_ders)
+                .map_err(|e| ClientError::Http(format!("build server-CA verifier: {e}")))?;
+        let logging_verifier = Arc::new(LoggingChainVerifier {
+            inner: chain_verifier,
+        });
+        let verifier = OsslServerCertVerifier::builder_with_verifier(logging_verifier).build();
+
+        let config = rustls::ClientConfig::builder_with_provider(
+            rustls_native_ossl::default_provider().into(),
+        )
+        .with_safe_default_protocol_versions()
+        .map_err(|e| ClientError::Http(format!("TLS protocol versions: {e}")))?
+        .dangerous()
+        .with_custom_certificate_verifier(std::sync::Arc::new(verifier))
+        .with_no_client_auth();
+
+        let https = HttpsConnectorBuilder::new()
+            .with_tls_config(config)
             .https_or_http()
             .enable_http1()
             .build();
@@ -446,6 +573,26 @@ impl AcmeClient {
     ///
     /// Posts `{"csr": "<base64url DER>"}` to the challenge URL and returns
     /// the updated [`Challenge`] object from the server response.
+    /// Respond to a `tkauth-01` challenge with an authority token.
+    ///
+    /// Posts `{"tkauth": authority_token}` to the challenge URL, triggering
+    /// server-side validation per RFC 9447.
+    pub async fn trigger_challenge_tkauth(
+        &self,
+        acct: &Account,
+        url: &str,
+        authority_token: &str,
+    ) -> Result<Challenge, ClientError> {
+        let payload = serde_json::json!({"tkauth": authority_token});
+        let body_bytes =
+            serde_json::to_vec(&payload).map_err(|e| ClientError::Http(format!("JSON: {e}")))?;
+        let (status, body, _) = self.post_kid(acct, url, Some(&body_bytes)).await?;
+        if status != StatusCode::OK {
+            return Err(acme_error(&body, status, "trigger-challenge-tkauth"));
+        }
+        serde_json::from_value(body).map_err(|e| ClientError::Http(format!("parse challenge: {e}")))
+    }
+
     pub async fn trigger_challenge_onion(
         &self,
         acct: &Account,
@@ -575,30 +722,17 @@ impl AcmeClient {
         );
         let url = format!("{}/{}", renewal_info_url.trim_end_matches('/'), cert_id);
 
-        let req = hyper::Request::builder()
-            .method(hyper::Method::GET)
+        let req = Request::builder()
+            .method(Method::GET)
             .uri(&url)
-            .body(http_body_util::Full::<hyper::body::Bytes>::new(
-                hyper::body::Bytes::new(),
-            ))
+            .body(Full::<Bytes>::new(Bytes::new()))
             .map_err(|e| ClientError::Http(format!("build ARI request: {e}")))?;
-        let resp = self
-            .http
-            .request(req)
-            .await
-            .map_err(|e| ClientError::Http(format!("GET {url}: {e}")))?;
-        let status = resp.status();
-        let retry_after_secs = resp
-            .headers()
+        let (status, headers, raw) = self.http_dispatch(req).await?;
+        let retry_after_secs = headers
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<u64>().ok());
-        let raw = resp
-            .into_body()
-            .collect()
-            .await
-            .map_err(|e| ClientError::Http(format!("read ARI body: {e}")))?
-            .to_bytes();
+        let raw = hyper::body::Bytes::from(raw);
         if !status.is_success() {
             return Err(ClientError::Http(format!("get-renewal-info {status}")));
         }
@@ -774,19 +908,7 @@ impl AcmeClient {
             .uri(star_cert_url)
             .body(Full::<Bytes>::new(Bytes::new()))
             .map_err(|e| ClientError::Http(format!("build star-cert request: {e}")))?;
-        let resp = self
-            .http
-            .request(req)
-            .await
-            .map_err(|e| ClientError::Http(format!("GET {star_cert_url}: {e}")))?;
-        let status = resp.status();
-        let raw = resp
-            .into_body()
-            .collect()
-            .await
-            .map_err(|e| ClientError::Http(format!("read star-cert body: {e}")))?
-            .to_bytes()
-            .to_vec();
+        let (status, _, raw) = self.http_dispatch(req).await?;
         if !status.is_success() {
             return Err(ClientError::Http(format!(
                 "get-star-certificate {status}: {}",
@@ -812,6 +934,36 @@ impl AcmeClient {
             )));
         }
         Ok(raw)
+    }
+
+    // ── Internal transport dispatch ───────────────────────────────────────────
+
+    /// Send an HTTP request, routing `http+unix://` URIs to a Unix domain socket
+    /// and all other URIs through the TLS client.
+    ///
+    /// Returns `(status, headers, body_bytes)`.
+    async fn http_dispatch(
+        &self,
+        req: Request<Full<Bytes>>,
+    ) -> Result<(StatusCode, HeaderMap, Vec<u8>), ClientError> {
+        if req.uri().scheme_str() == Some("http+unix") {
+            return unix_dispatch(req).await;
+        }
+        let resp = self
+            .http
+            .request(req)
+            .await
+            .map_err(|e| ClientError::Http(format!("request: {e}")))?;
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let raw = resp
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| ClientError::Http(format!("read body: {e}")))?
+            .to_bytes()
+            .to_vec();
+        Ok((status, headers, raw))
     }
 
     // ── Internal signing helpers ───────────────────────────────────────────────
@@ -926,26 +1078,11 @@ impl AcmeClient {
             .body(Full::<Bytes>::new(Bytes::from(body_bytes)))
             .map_err(|e| ClientError::Http(format!("build request: {e}")))?;
 
-        let resp = self
-            .http
-            .request(req)
-            .await
-            .map_err(|e| ClientError::Http(format!("HTTP POST: {e}")))?;
-
-        let status = resp.status();
-        let headers = resp.headers().clone();
+        let (status, headers, raw) = self.http_dispatch(req).await?;
         // Cache the nonce from the response for the next request.
         if let Ok(nonce) = nonce_from_headers(&headers) {
             *self.cached_nonce.lock().await = Some(nonce);
         }
-        let raw = resp
-            .into_body()
-            .collect()
-            .await
-            .map_err(|e| ClientError::Http(format!("read body: {e}")))?
-            .to_bytes()
-            .to_vec();
-
         Ok((status, headers, raw))
     }
 
@@ -964,13 +1101,7 @@ impl AcmeClient {
             .uri(&self.new_nonce_url)
             .body(Full::<Bytes>::new(Bytes::new()))
             .map_err(|e| ClientError::Http(format!("build nonce request: {e}")))?;
-        let resp = self
-            .http
-            .request(req)
-            .await
-            .map_err(|e| ClientError::Http(format!("HEAD new-nonce: {e}")))?;
-        let status = resp.status();
-        let headers = resp.headers().clone();
+        let (status, headers, _) = self.http_dispatch(req).await?;
         nonce_from_headers(&headers).map_err(|_| {
             ClientError::Http(format!(
                 "HEAD {url} returned {status} without Replay-Nonce header \
@@ -984,6 +1115,7 @@ impl AcmeClient {
 // ── Utility functions ─────────────────────────────────────────────────────────
 
 /// GET a URL and parse the response body as JSON.
+/// Handles both regular HTTP(S) and `http+unix://` URLs.
 async fn get_json(http: &HyperClient, url: &str) -> Result<Value, ClientError> {
     let req = Request::builder()
         .method(Method::GET)
@@ -991,21 +1123,28 @@ async fn get_json(http: &HyperClient, url: &str) -> Result<Value, ClientError> {
         .body(Full::<Bytes>::new(Bytes::new()))
         .map_err(|e| ClientError::Http(format!("build GET request: {e}")))?;
 
-    let resp = http
-        .request(req)
-        .await
-        .map_err(|e| ClientError::Http(format!("GET {url}: {e}")))?;
+    let (status, _, raw) = if url.starts_with("http+unix://") {
+        unix_dispatch(req).await?
+    } else {
+        let resp = http
+            .request(req)
+            .await
+            .map_err(|e| ClientError::Http(format!("GET {url}: {e}")))?;
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let raw = resp
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| ClientError::Http(format!("read body: {e}")))?
+            .to_bytes()
+            .to_vec();
+        (status, headers, raw)
+    };
 
-    if !resp.status().is_success() {
-        return Err(ClientError::Http(format!("GET {url}: {}", resp.status())));
+    if !status.is_success() {
+        return Err(ClientError::Http(format!("GET {url}: {status}")));
     }
-
-    let raw = resp
-        .into_body()
-        .collect()
-        .await
-        .map_err(|e| ClientError::Http(format!("read body: {e}")))?
-        .to_bytes();
 
     serde_json::from_slice(&raw)
         .map_err(|e| ClientError::Http(format!("parse directory JSON: {e}")))
@@ -1196,6 +1335,25 @@ fn aki_key_id_bytes(ext_value: &[u8]) -> Option<Vec<u8>> {
     content.get(2..2 + len).map(<[u8]>::to_vec)
 }
 
+/// Format a JWK thumbprint as an RFC 9447 fingerprint string.
+///
+/// `thumbprint_b64url` is the base64url (no padding) SHA-256 of the canonical
+/// JWK.  Returns `"SHA256 XX:XX:..."` (colon-separated uppercase hex bytes).
+pub fn rfc9447_fingerprint(thumbprint_b64url: &str) -> Result<String, ClientError> {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    let raw = URL_SAFE_NO_PAD
+        .decode(thumbprint_b64url)
+        .map_err(|e| ClientError::Http(format!("base64url decode thumbprint: {e}")))?;
+    Ok(format!(
+        "SHA256 {}",
+        raw.iter()
+            .map(|b| format!("{b:02X}"))
+            .collect::<Vec<_>>()
+            .join(":")
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1241,5 +1399,27 @@ mod tests {
         // SEQUENCE { [0] PRIMITIVE 0xAA 0xBB }
         let aki_der = &[0x30u8, 0x04, 0x80, 0x02, 0xAA, 0xBB];
         assert_eq!(aki_key_id_bytes(aki_der), Some(vec![0xAA, 0xBB]));
+    }
+
+    #[test]
+    fn rfc9447_fingerprint_formats_correctly() {
+        // SHA-256 of the empty string, base64url-encoded (no padding).
+        // SHA-256("") = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+        let b64url = "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU";
+        let fp = rfc9447_fingerprint(b64url).unwrap();
+        assert_eq!(
+            fp,
+            "SHA256 E3:B0:C4:42:98:FC:1C:14:9A:FB:F4:C8:99:6F:B9:24:\
+             27:AE:41:E4:64:9B:93:4C:A4:95:99:1B:78:52:B8:55"
+        );
+    }
+
+    #[test]
+    fn rfc9447_fingerprint_rejects_invalid_base64() {
+        let err = rfc9447_fingerprint("not!valid!base64url").unwrap_err();
+        assert!(
+            err.to_string().contains("base64") || err.to_string().contains("decode"),
+            "unexpected error: {err}"
+        );
     }
 }

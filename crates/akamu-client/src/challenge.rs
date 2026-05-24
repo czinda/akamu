@@ -543,6 +543,141 @@ fn unix_to_generalized_time(secs: i64) -> String {
     )
 }
 
+/// Fetch an RFC 9447 authority token from a Token Authority using SPNEGO.
+///
+/// Posts `{"atc": {"tktype": "EnhancedJWTClaimConstraints", "tkvalue": ...,
+/// "fingerprint": ..., "ca": false}}` to `ta_url` with a `Negotiate` token
+/// derived from `keytab_path`.  Drives the full multi-step SPNEGO exchange.
+///
+/// Returns the compact JWT string from `response["token"]`.
+pub async fn fetch_authority_token(
+    ta_url: &str,
+    tkvalue: &str,
+    fingerprint: &str,
+    keytab_path: &str,
+) -> Result<String, ClientError> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use http_body_util::{BodyExt, Full};
+    use hyper::{body::Bytes, Request, StatusCode};
+
+    let cred = akamu_gssapi::GssClientCred::from_keytab(keytab_path)
+        .map_err(|e| ClientError::Gssapi(e.to_string()))?;
+    let target = derive_ta_service_name(ta_url)?;
+    let mut ctx = akamu_gssapi::GssClientContext::new(&target)
+        .map_err(|e| ClientError::Gssapi(e.to_string()))?;
+
+    // Build the TCP client only for non-unix URLs.
+    let http_opt = if !ta_url.starts_with("http+unix://") {
+        use hyper_rustls::HttpsConnectorBuilder;
+        use hyper_util::{client::legacy::Client, rt::TokioExecutor};
+        let https = HttpsConnectorBuilder::new()
+            .with_provider_and_native_roots(rustls_native_ossl::default_provider())
+            .map_err(|e| ClientError::Http(format!("TLS root certs: {e}")))?
+            .https_or_http()
+            .enable_http1()
+            .build();
+        Some(Client::builder(TokioExecutor::new()).build::<_, Full<Bytes>>(https))
+    } else {
+        None
+    };
+
+    let body_json = serde_json::json!({
+        "atc": {
+            "tktype": "EnhancedJWTClaimConstraints",
+            "tkvalue": tkvalue,
+            "fingerprint": fingerprint,
+            "ca": false,
+        }
+    });
+    let body_bytes: Bytes = serde_json::to_vec(&body_json)
+        .map_err(|e| ClientError::Http(format!("JSON body: {e}")))?
+        .into();
+
+    let mut server_token: Option<Vec<u8>> = None;
+    loop {
+        let (token_bytes, _complete) = ctx
+            .step(&cred, server_token.as_deref(), None)
+            .map_err(|e| ClientError::Gssapi(e.to_string()))?;
+
+        let token_b64 = STANDARD.encode(&token_bytes);
+        let req = Request::builder()
+            .method("POST")
+            .uri(ta_url)
+            .header("Authorization", format!("Negotiate {token_b64}"))
+            .header("Content-Type", "application/json")
+            .body(Full::new(body_bytes.clone()))
+            .map_err(|e| ClientError::Http(format!("request build: {e}")))?;
+
+        let (status, resp_headers, resp_bytes) = if let Some(http) = &http_opt {
+            let resp = http
+                .request(req)
+                .await
+                .map_err(|e| ClientError::Http(format!("POST {ta_url}: {e}")))?;
+            let status = resp.status();
+            let headers = resp.headers().clone();
+            let raw = resp
+                .into_body()
+                .collect()
+                .await
+                .map_err(|e| ClientError::Http(format!("read body: {e}")))?
+                .to_bytes()
+                .to_vec();
+            (status, headers, raw)
+        } else {
+            crate::unix::unix_dispatch(req).await?
+        };
+
+        let cont_token: Option<Vec<u8>> = resp_headers
+            .get("WWW-Authenticate")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| {
+                v.split_once(' ')
+                    .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("negotiate"))
+                    .map(|(_, b64)| b64.trim())
+            })
+            .and_then(|b64| STANDARD.decode(b64).ok());
+
+        if status == StatusCode::UNAUTHORIZED {
+            if let Some(cont) = cont_token {
+                server_token = Some(cont);
+                continue;
+            }
+            return Err(ClientError::Http(format!(
+                "POST {ta_url}: HTTP {status}: authentication required"
+            )));
+        }
+
+        if !status.is_success() {
+            let body = String::from_utf8_lossy(&resp_bytes);
+            return Err(ClientError::Http(format!(
+                "POST {ta_url}: HTTP {status}: {body}"
+            )));
+        }
+
+        let json: serde_json::Value = serde_json::from_slice(&resp_bytes)
+            .map_err(|e| ClientError::Http(format!("parse TA response: {e}")))?;
+        return json["token"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| ClientError::Http("TA response missing 'token' field".into()));
+    }
+}
+
+fn derive_ta_service_name(url: &str) -> Result<String, ClientError> {
+    if url.starts_with("http+unix://") {
+        // Unix socket: the service runs on this machine.
+        return Ok(format!("HTTP@{}", crate::unix::local_hostname()));
+    }
+    let without_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    let host = without_scheme
+        .split('/')
+        .next()
+        .and_then(|h| h.split(':').next())
+        .filter(|h| !h.is_empty())
+        .ok_or_else(|| ClientError::Http(format!("cannot extract hostname from '{url}'")))?;
+    Ok(format!("HTTP@{host}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

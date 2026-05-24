@@ -43,6 +43,30 @@ pub fn build_csr(domains: &[&str], key: &BackendPrivateKey) -> Result<Vec<u8>, C
         .map_err(|e| ClientError::Crypto(format!("CSR sign: {e}")))
 }
 
+/// Build a DER-encoded CSR with only a subject CN and no SAN extension.
+///
+/// Used for `JWTClaimConstraints` and `TNAuthList` orders where the ACME
+/// identifiers do not map to DNS/IP SANs.  The server adds any claim-derived
+/// OtherName SANs during finalization.
+pub fn build_subject_only_csr(cn: &str, key: &BackendPrivateKey) -> Result<Vec<u8>, ClientError> {
+    let pub_key = key
+        .public_key()
+        .map_err(|e| ClientError::Crypto(format!("public key: {e}")))?;
+    let spki = pub_key.spki_der().to_vec();
+
+    let name = NameBuilder::new()
+        .common_name(cn)
+        .build()
+        .map_err(|e| ClientError::Crypto(format!("CSR name: {e}")))?;
+
+    let signer = key.as_signer("sha256");
+    CsrBuilder::new()
+        .subject_name(&name)
+        .public_key_der(&spki)
+        .sign(&signer)
+        .map_err(|e| ClientError::Crypto(format!("CSR sign: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

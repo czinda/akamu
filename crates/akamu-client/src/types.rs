@@ -109,6 +109,12 @@ pub struct Challenge {
     /// Issuer domain names sent by the server for `dns-persist-01` challenges.
     #[serde(default, rename = "issuer-domain-names")]
     pub issuer_domain_names: Option<Vec<String>>,
+    /// Token type for `tkauth-01` challenges (RFC 9447).
+    #[serde(default, rename = "tkauth-type")]
+    pub tkauth_type: Option<String>,
+    /// Token Authority URL hint for `tkauth-01` challenges (RFC 9447).
+    #[serde(default, rename = "token-authority")]
+    pub token_authority: Option<String>,
 }
 
 /// Renewal information from the ACME server (RFC 9773).
@@ -248,6 +254,15 @@ pub struct RenewalConfig {
     /// When set, the value is sent as `"profile"` in the newOrder payload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    /// Token Authority URL for `tkauth-01` challenges (RFC 9447).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tkauth_url: Option<String>,
+    /// Path to a Kerberos keytab for SPNEGO authentication to the Token Authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tkauth_keytab: Option<PathBuf>,
+    /// Base64url-encoded JWTClaimConstraints blob for `tkauth-01` orders.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jwtcc: Option<String>,
 }
 
 impl std::fmt::Debug for RenewalConfig {
