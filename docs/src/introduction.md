@@ -8,6 +8,7 @@ For a detailed breakdown of RFC and draft coverage — including which sections 
 
 - Implements the full RFC 8555 ACME server protocol: directory, nonces, accounts, orders, authorizations, challenges, certificate issuance, and revocation.
 - Validates domain ownership using **http-01**, **dns-01**, **tls-alpn-01**, and **dns-persist-01** challenge types (RFC 8555 §8, RFC 8737, and the [Let's Encrypt dns-persist-01 specification](https://letsencrypt.org/2026/02/18/dns-persist-01)).
+- Validates `TNAuthList` and `JWTClaimConstraints` identifiers using the **tkauth-01** challenge type (RFC 9447 / RFC 9448), verifying signed authority tokens issued by an external Token Authority.
 - Issues end-entity certificates signed by a built-in Certificate Authority whose key and self-signed root are generated automatically on first run, or loaded from existing PEM files.
 - Persists all ACME objects (accounts, orders, authorizations, challenges, certificates, nonces) in a SQL database. The supported backends are **SQLite** (default; single-file, no external service required), **PostgreSQL**, and **MariaDB/MySQL**, selected by the `database.url` configuration key.
 - Generates and serves CRLs (Certificate Revocation Lists) at `GET /ca/crl`.
@@ -51,6 +52,8 @@ For a detailed breakdown of RFC and draft coverage — including which sections 
 - [RFC 8738](https://www.rfc-editor.org/rfc/rfc8738) — ACME IP Identifier Validation
 - [RFC 8739](https://www.rfc-editor.org/rfc/rfc8739) — ACME Short-Term, Automatically Renewed (STAR) Certificates
 - [RFC 9444](https://www.rfc-editor.org/rfc/rfc9444) — ACME for Subdomains
+- [RFC 9447](https://www.rfc-editor.org/rfc/rfc9447) — ACME Challenges Using an Authority Token (tkauth-01)
+- [RFC 9448](https://www.rfc-editor.org/rfc/rfc9448) — ACME TNAuthList Authority Token
 - [RFC 9773](https://www.rfc-editor.org/rfc/rfc9773) — ACME Renewal Information (ARI)
 - [RFC 9799](https://www.rfc-editor.org/rfc/rfc9799) — ACME Extensions for .onion Special-Use Domain Names
 - [RFC 7807](https://www.rfc-editor.org/rfc/rfc7807) — Problem Details for HTTP APIs (error responses)

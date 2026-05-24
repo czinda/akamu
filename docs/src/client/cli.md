@@ -27,7 +27,7 @@ This installs the binary to `~/.cargo/bin/akamu-cli`.
 ## Command tree
 
 ```
-akamu-cli
+akamu-cli [-v] [-vv]
   account
     register       Register a new ACME account
     deregister     Deactivate an existing account (RFC 8555 §7.3.7)
@@ -35,12 +35,21 @@ akamu-cli
     update         Update account contact list
     key-change     Roll the account key to a new key (RFC 8555 §7.3.5)
   issue            Obtain a certificate (http-01 / dns-01 / dns-persist-01 /
-                   tls-alpn-01 / onion-csr-01)
+                   tls-alpn-01 / onion-csr-01 / tkauth-01)
   renew            ARI-aware renewal (RFC 9773); skips issuance if outside window
   revoke           Revoke a certificate via account key or certificate's own key
   import
     certbot        Import accounts and certificates from a certbot installation
 ```
+
+## Global flags
+
+| Flag | Description |
+|------|-------------|
+| `-v` | Enable debug logging for `akamu_client`. When `--server-ca` is in use (i.e., `issue` or `renew`), also logs TLS certificate details (subject, issuer, validity, signature algorithm) for the ACME server and any CA certificates loaded via `--server-ca`. |
+| `-vv` | All of `-v`, plus enables debug logging for `hyper_util` and `rustls` (HTTP internals and TLS handshake details). |
+
+These flags are global and may be placed immediately after `akamu-cli`, before the subcommand name. The `RUST_LOG` environment variable still works for fine-grained control (see [Logging](#logging)).
 
 ## Subcommands
 
@@ -140,13 +149,17 @@ akamu-cli issue --server URL --account-key FILE -d DOMAIN --out FILE [OPTIONS]
 | `--key-type TYPE` | no | Account key type when generating a new key. Default: `ec:P-256`. |
 | `--cert-key-type TYPE` | no | Certificate key type. Default: `ec:P-256`. |
 | `--cert-key FILE` | no | Reuse an existing certificate private key PEM file. Generated and saved alongside `--out` if absent. |
-| `--challenge TYPE` | no | Challenge type: `http-01`, `dns-01`, `dns-persist-01`, `tls-alpn-01`, `onion-csr-01`. Default: `http-01`. |
+| `--challenge TYPE` | no | Challenge type: `http-01`, `dns-01`, `dns-persist-01`, `tls-alpn-01`, `onion-csr-01`, `tkauth-01`. Default: `http-01`. |
 | `--dns-hook CMD` | no | Hook script for dns-01 / dns-persist-01 automation. See [DNS hook interface](#dns-hook-interface). |
 | `--http-port PORT` | no | Port for the built-in http-01 solver. Default: `80`. |
 | `--tls-port PORT` | no | Port for the built-in tls-alpn-01 solver. Default: `443`. |
 | `--onion-key FILE` | required for `onion-csr-01` | Ed25519 hidden-service private key PEM file. |
+| `--tkauth-url URL` | required for `tkauth-01` | Token Authority URL. Accepts `https://`, and `http+unix://ENCODED_PATH/path` for a local Token Authority reachable via a Unix domain socket. |
+| `--tkauth-keytab FILE` | required for `tkauth-01` | Path to a Kerberos keytab file used for SPNEGO authentication to the Token Authority. |
+| `--jwtcc B64URL` | no | Base64url-encoded DER `JWTClaimConstraints` blob. When provided with `--challenge tkauth-01`, the order uses a `JWTClaimConstraints` identifier instead of `dns`; `--domain` is not required. |
 | `--poll-timeout SECS` | no | Maximum seconds to wait for order/challenge validation. Default: `120`. |
 | `--profile NAME` | no | Certificate profile name (draft-aaron-acme-profiles-01). Sent as `"profile"` in the `newOrder` payload. The server may echo a different name (e.g. `"default"`) if auto-selection applies; the echoed value is stored in the renewal sidecar. |
+| `--server-ca FILE` | no | PEM file containing an extra CA certificate to trust for the ACME server's TLS connection. Use when the server uses a private CA not in the system trust store. |
 | `--eab-kid KID` | no | EAB key ID (used if no account exists yet). Mutually exclusive with `--gssapi-keytab`. |
 | `--eab-key KEY_B64U` | no | EAB HMAC key (base64url). Mutually exclusive with `--gssapi-keytab`. |
 | `--gssapi-keytab PATH` | no | Path to a Kerberos keytab file. When set and no account URL sidecar exists, the CLI performs a GSSAPI-authenticated `GET /acme/eab` before registering. Mutually exclusive with `--eab-kid` / `--eab-key`. |
@@ -181,11 +194,15 @@ akamu-cli renew --server URL --account-key FILE -d DOMAIN --out FILE [OPTIONS]
 | `--http-port PORT` | no | Default: `80`. |
 | `--tls-port PORT` | no | Default: `443`. |
 | `--onion-key FILE` | no | Required for `onion-csr-01`. |
+| `--tkauth-url URL` | no (required for `tkauth-01`) | Token Authority URL for tkauth-01 challenges. Loaded from the renewal sidecar when `--renewal-config` is used. |
+| `--tkauth-keytab FILE` | no (required for `tkauth-01`) | Kerberos keytab for SPNEGO authentication to the Token Authority. |
+| `--jwtcc B64URL` | no | Base64url-encoded `JWTClaimConstraints` blob for tkauth-01 orders. |
 | `--poll-timeout SECS` | no | Default: `120`. |
 | `--key-type TYPE` | no | Account key type. Default: `ec:P-256`. |
 | `--cert-key-type TYPE` | no | Certificate key type. Default: `ec:P-256`. |
 | `--cert-key FILE` | no | Reuse an existing certificate private key PEM file instead of generating a new one. Useful for HPKP / TLSA key pinning scenarios where the public key must remain stable across renewals. |
 | `--profile NAME` | no | Certificate profile name (draft-aaron-acme-profiles-01). Stored in the renewal sidecar so subsequent `renew` calls request the same profile. |
+| `--server-ca FILE` | no | PEM file containing an extra CA certificate to trust for the ACME server's TLS connection. Not stored in the renewal sidecar; must be re-supplied on each invocation when needed. |
 | `--eab-kid KID` | no | EAB key ID. Mutually exclusive with `--gssapi-keytab`. |
 | `--eab-key KEY_B64U` | no | EAB HMAC key (base64url). Mutually exclusive with `--gssapi-keytab`. |
 | `--gssapi-keytab PATH` | no | Path to a Kerberos keytab file for GSSAPI-authenticated EAB. Mutually exclusive with `--eab-kid` / `--eab-key`. |
@@ -363,6 +380,9 @@ eab_kid         = "kid-from-ca"
 gssapi_keytab   = "/etc/akamu/http.keytab"
 dns_hook        = "/etc/akamu/hooks/dns-update.sh"
 profile         = "tlsserver"
+tkauth_url      = "https://ta.example.com"
+tkauth_keytab   = "/etc/akamu/ta-client.keytab"
+# jwtcc is stored when --jwtcc was used at issuance time
 ```
 
 #### Fields
@@ -380,6 +400,9 @@ profile         = "tlsserver"
 | `http_port` | `80` | Port for the http-01 solver |
 | `tls_port` | `443` | Port for the tls-alpn-01 solver |
 | `onion_key` | — | Path to the Ed25519 onion service key (onion-csr-01 only) |
+| `tkauth_url` | — | Token Authority URL (tkauth-01 only). Saved from `--tkauth-url` at issuance time. |
+| `tkauth_keytab` | — | Path to the Kerberos keytab for the Token Authority (tkauth-01 only). |
+| `jwtcc` | — | Base64url-encoded `JWTClaimConstraints` blob (tkauth-01 + JWTClaimConstraints orders only). |
 | `poll_timeout` | `120` | Seconds to wait for challenge validation |
 | `contacts` | `[]` | Contact URIs registered with the account |
 | `eab_kid` | — | EAB key ID |
@@ -553,6 +576,27 @@ akamu-cli issue \
   --out /etc/ssl/myservice/fullchain.pem
 ```
 
+### Issue with tkauth-01 (RFC 9447 — authority token)
+
+`tkauth-01` is used for `TNAuthList` and `JWTClaimConstraints` identifier types. Use `--jwtcc` to supply a base64url-encoded `JWTClaimConstraints` blob when ordering a certificate constrained by JWT claims rather than DNS names.
+
+```bash
+akamu-cli issue \
+  --server https://acme.example.com/acme/directory \
+  --account-key ~/.akamu/account.pem \
+  --challenge tkauth-01 \
+  --tkauth-url https://ta.example.com \
+  --tkauth-keytab /etc/akamu/ta-client.keytab \
+  --jwtcc "AAABBBCCC..." \
+  --out /etc/ssl/service/fullchain.pem
+```
+
+The CLI:
+1. Computes the RFC 9447 `fingerprint` (`SHA256 XX:XX:...`) from the account key's JWK thumbprint.
+2. POSTs `{"atc": {"tktype":"EnhancedJWTClaimConstraints","tkvalue":"","fingerprint":"SHA256 ...","ca":false}}` to the Token Authority with SPNEGO/Negotiate authentication using `--tkauth-keytab`.
+3. Extracts the `tkvalue` from the returned JWT.
+4. For each authorization, fetches a per-identifier authority token from the Token Authority and submits it to the challenge URL as `{"tkauth": "<jwt>"}`.
+
 ### ARI-aware renewal (manual flags)
 
 ```bash
@@ -701,9 +745,54 @@ If the server has `external_account_required = true` and you omit all EAB flags,
 
 ML-DSA keys require an Akāmu server linked against OpenSSL 3.5 or later, which provides native ML-DSA support via the standard EVP interface. Vanilla Let's Encrypt does not support ML-DSA.
 
+## Unix domain socket URLs
+
+Both `--server` and `--tkauth-url` accept `http+unix://` URLs in addition to `https://`. This allows connecting to a local Akāmu server or Token Authority through a Unix domain socket without opening a network port.
+
+**URL format:**
+
+```
+http+unix://SOCKET_PATH_ENCODED/REQUEST_PATH
+```
+
+`SOCKET_PATH_ENCODED` is the socket file path with each `/` percent-encoded as `%2F`:
+
+```
+http+unix://%2Frun%2Fakamu%2Fakamu.sock/acme/default/directory
+```
+
+**Examples:**
+
+```bash
+# ACME server via Unix socket
+akamu-cli issue \
+  --server "http+unix://%2Frun%2Fakamu%2Fakamu.sock/acme/default" \
+  --account-key ~/.akamu/account.pem \
+  -d example.com \
+  --out /etc/ssl/example.com/fullchain.pem
+
+# Token Authority via Unix socket (tkauth-01)
+akamu-cli issue \
+  --server https://acme.example.com/acme/directory \
+  --challenge tkauth-01 \
+  --tkauth-url "http+unix://%2Frun%2Fekishib%2Fekishib.sock" \
+  --tkauth-keytab /etc/akamu/ta-client.keytab \
+  --jwtcc "AAAA..." \
+  --out /etc/ssl/service/fullchain.pem
+```
+
+When the Token Authority is reached via a Unix socket URL, the GSSAPI service principal is derived as `HTTP@<local-hostname>` (using `gethostname(2)`).
+
 ## Logging
 
-Set the `RUST_LOG` environment variable to control log output:
+Use the `-v` / `-vv` global flags for convenient verbosity control:
+
+```bash
+akamu-cli -v  issue ...    # akamu_client=debug (TLS cert details, request flow)
+akamu-cli -vv issue ...    # additionally enables hyper_util=debug and rustls=debug
+```
+
+The `RUST_LOG` environment variable provides fine-grained control and overrides the `-v` flags:
 
 ```bash
 RUST_LOG=info   akamu-cli issue ...    # normal progress messages
@@ -711,7 +800,7 @@ RUST_LOG=debug  akamu-cli issue ...    # HTTP request/response details
 RUST_LOG=trace  akamu-cli issue ...    # full JWS content and all internal steps
 ```
 
-The default level is `warn`, which prints only errors and warnings.
+The default level (no `-v` flag and no `RUST_LOG`) is `warn`, which prints only errors and warnings.
 
 ## Error messages and troubleshooting
 

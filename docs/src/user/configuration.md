@@ -90,6 +90,16 @@ webhook_hmac_secret = "replace-with-output-of--openssl-rand-hex-32"
 # challenge_cleanup_script = "/etc/akamu/upstream-dns-cleanup.sh"
 # poll_interval_secs       = 10
 
+[tkauth]
+enabled                 = false
+# trusted_ta_ca_files   = ["/etc/akamu/ta-root.pem"]
+# token_authority_url   = "https://ta.example.com"
+# max_validity_secs     = 3600
+# jti_prune_interval_secs = 3600
+# [[tkauth.claim_encoders]]
+# claim   = "sub"
+# encoder = "krb5-kpn"
+
 [gossip]
 peers                      = ["https://node2.example.com", "https://node3.example.com"]
 interval_secs              = 15
@@ -1406,6 +1416,120 @@ poll_interval_secs = 10
 
 ---
 
+## `[tkauth]`
+
+The `[tkauth]` section enables the RFC 9447 `tkauth-01` challenge type for `TNAuthList` (RFC 9448) and `JWTClaimConstraints` (draft-ietf-acme-authority-token-jwtclaimcon) identifier types. When this section is absent or `enabled = false`, orders containing these identifier types are rejected.
+
+See [tkauth-01](challenges.md#tkauth-01-rfc-9447--rfc-9448) in the Challenges reference for the full protocol description including the authority token format, validation steps, and claim encoder configuration.
+
+```toml
+[tkauth]
+enabled                 = true
+trusted_ta_ca_files     = ["/etc/akamu/ta-root.pem"]
+token_authority_url     = "https://ta.example.com"   # optional hint
+max_validity_secs       = 3600
+jti_prune_interval_secs = 3600
+
+[[tkauth.claim_encoders]]
+claim   = "sub"
+encoder = "krb5-kpn"
+```
+
+### `enabled`
+
+**Optional. Default: `false`.**
+
+Set to `true` to activate the `tkauth-01` challenge type. When `false`, any order with `TNAuthList` or `JWTClaimConstraints` identifiers is rejected with `unsupportedIdentifier`.
+
+### `trusted_ta_ca_files`
+
+**Required when `enabled = true`.** List of absolute paths to PEM files containing trusted CA certificates for Token Authority signing certificate validation. The signing certificate presented in the authority token (via `x5u` or `x5c`) must chain to one of these CA roots. Not used for `kid`-signed tokens (which rely on `trust_jwks_urls` in per-profile configuration instead).
+
+```toml
+trusted_ta_ca_files = ["/etc/akamu/ta-root.pem"]
+```
+
+### `token_authority_url`
+
+**Optional. Default: absent.**
+
+URL hint included in `tkauth-01` challenge responses as the `token-authority` field. When set, ACME clients that read this field can use it to discover where to obtain an authority token. This is informational only; the server does not contact this URL itself.
+
+```toml
+token_authority_url = "https://ta.example.com"
+```
+
+### `max_validity_secs`
+
+**Optional. Default: `3600` (1 hour).**
+
+Maximum accepted lifetime of an authority token: tokens with `exp − now > max_validity_secs` are rejected. This caps how long into the future a Token Authority may pre-issue tokens, limiting the window in which a stolen token could be replayed.
+
+```toml
+max_validity_secs = 3600
+```
+
+### `jti_prune_interval_secs`
+
+**Optional. Default: `3600` (1 hour).**
+
+How often the background task purges expired JTI (JWT ID) entries from the replay-prevention cache in the database. Lower values reduce database growth at the cost of more frequent pruning queries. The background task only runs when `[tkauth]` is enabled.
+
+```toml
+jti_prune_interval_secs = 3600
+```
+
+Operators can also trigger manual pruning via the admin API or `akamuctl`:
+
+```
+POST /admin/tkauth/prune-jti
+POST /admin/tkauth/prune-jti?dry_run=true
+```
+
+```bash
+akamuctl tkauth prune-jti
+akamuctl tkauth prune-jti --dry-run   # count without deleting
+```
+
+### `[[tkauth.claim_encoders]]`
+
+Optional array of claim-to-extension encoder entries. Each entry maps a JWT claim name in `permittedValues` of the validated `JWTClaimConstraints` token to a built-in certificate extension encoder. The encoder runs at finalize time and injects the claim value as a Subject Alternative Name in the issued certificate.
+
+```toml
+[[tkauth.claim_encoders]]
+claim   = "sub"
+encoder = "krb5-kpn"
+# default_realm = "EXAMPLE.COM"   # appended when claim value has no '@'
+
+[[tkauth.claim_encoders]]
+claim   = "upn"
+encoder = "ms-upn"
+
+[[tkauth.claim_encoders]]
+claim   = "dns"
+encoder = "dns-san"
+```
+
+**Built-in encoder names:**
+
+| Encoder | SAN type | Notes |
+|---------|----------|-------|
+| `krb5-kpn` | OtherName (id-pkinit-san, OID `1.3.6.1.5.2.2`) | `principal@REALM`; if `@` is absent, `default_realm` is appended |
+| `ms-upn` | OtherName (OID `1.3.6.1.4.1.311.20.2.3`) | `user@domain` |
+| `dns-san` | dNSName | Plain hostname; wildcards rejected; lowercased before injection |
+
+Each encoder entry has these fields:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `claim` | yes | JWT claim name in the authority token's `permittedValues` |
+| `encoder` | yes | Encoder name: `"krb5-kpn"`, `"ms-upn"`, or `"dns-san"` |
+| `default_realm` | no | Kerberos realm appended when the claim value contains no `@`. Only meaningful for `"krb5-kpn"`. |
+
+A `permittedValues` entry with exactly one value is injected as a SAN using the matching encoder. Entries with multiple permitted values are skipped (the server cannot determine which specific value to attest).
+
+---
+
 ## `[gossip]`
 
 The `[gossip]` section enables multi-node clustering via CRDT replication. When present, Akāmu gossips CRDT deltas to the listed peer nodes over HTTP (`POST /gossip/sync`). All domain state — accounts, orders, authorizations, challenges, certificates, EAB keys, operators, delegations, and MTC data — is replicated to every cluster member. When absent, the node operates in single-node mode with no replication.
@@ -1638,6 +1762,26 @@ Beyond the core extension fields, each `builtin` profile supports four groups of
 | `auth_hook` | absent | Path to an external executable. Receives JSON on stdin; exit 0 = permit, non-zero = deny. |
 | `auth_hook_timeout_secs` | `30` | Seconds to wait for the hook before denying. |
 | `require_account_grant` | `false` | When `true`, the account must have this profile's name in its `profile_grants` attribute (set via the Admin API or inherited from its EAB key). |
+
+*tkauth-01 JWKS trust*
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `trust_jwks_urls` | `[]` | List of HTTPS or `http+unix://` URLs of JWKS endpoints trusted for `kid`-signed authority tokens (RFC 9447 tkauth-01). Only meaningful when `[tkauth]` is enabled. When empty, `kid`-signed tokens are rejected for this profile. |
+
+The `http+unix://` form allows co-located Token Authorities (for example, an Ekishib IdP on the same host) to be reached without a network port. Encode the socket path with `/` as `%2F`:
+
+```toml
+[profiles.providers.local.profiles.kerberos-svc]
+description     = "Kerberos service certificate"
+ca_ids          = ["kerberos-ca"]
+trust_jwks_urls = [
+    "https://idp.example.com/jwks",
+    "http+unix://%2Frun%2Fekishib%2Fekishib.sock/jwks",
+]
+```
+
+JWKS responses are cached in memory for 5 minutes and refreshed independently per URL.
 
 See [Certificate Profiles](profiles.md) for detailed descriptions with examples.
 
@@ -1910,6 +2054,7 @@ service_name = "HTTP"
 | `DELETE` | `/admin/delegations/{id}` | Y | Y | | |
 | `GET` | `/admin/gossip/status` | Y | Y | Y | Y |
 | `POST` | `/admin/gossip/register` | Y | | | |
+| `POST` | `/admin/tkauth/prune-jti` | Y | Y | | |
 
 See [Admin API and Operator Management](admin-api.md) for the full request/response format of each endpoint.
 
