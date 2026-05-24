@@ -239,6 +239,8 @@ pub async fn start(
         write_notify: Arc::new(tokio::sync::Notify::new()),
         crdt_db: pool.clone(),
         tkauth_trust_anchors: None,
+        claim_encoder_registry: None,
+        jwks_cache: None,
     });
 
     let router = routes::build_router(Arc::clone(&state), None);

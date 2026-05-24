@@ -125,6 +125,7 @@ pub fn register_profiles(state: &Arc<AppState>, profiles: &[ProfileSpec]) {
             kpn_san_templates: vec![],
             ms_upn_san_template: None,
             inject_account_kpn: false,
+            trust_jwks_urls: vec![],
         };
 
         let added = state
