@@ -853,13 +853,17 @@ ML-DSA; the feature is always available.
 
 ## draft-ietf-lamps-pq-composite-sigs / draft-reddy-tls-composite-mldsa
 
-**[draft-ietf-lamps-pq-composite-sigs](https://datatracker.ietf.org/doc/draft-ietf-lamps-pq-composite-sigs/)** defines the X.509/PKIX OIDs for hybrid ML-DSA+classical composite signature algorithms. The TLS 1.3 `SignatureScheme` code points for use in `CertificateVerify` are defined in the companion draft **[draft-reddy-tls-composite-mldsa](https://datatracker.ietf.org/doc/draft-reddy-tls-composite-mldsa/)**.
+**[draft-ietf-lamps-pq-composite-sigs](https://datatracker.ietf.org/doc/draft-ietf-lamps-pq-composite-sigs/)** defines the X.509/PKIX OIDs for hybrid ML-DSA+classical composite signature algorithms (sub-arcs 37–54 under the id-CompositeSig arc). The TLS 1.3 `SignatureScheme` code points for use in `CertificateVerify` are defined in the companion draft **[draft-reddy-tls-composite-mldsa](https://datatracker.ietf.org/doc/draft-reddy-tls-composite-mldsa/)**.
 
-### What this affects
+### CA signing keys (draft-ietf-lamps-pq-composite-sigs-19)
 
-These code points are used only for **mutual TLS client authentication** — they appear in the TLS `CertificateVerify` message when a client presents a certificate signed with a composite ML-DSA scheme. Server-side certificate issuance (for ACME clients) is not affected.
+All 18 composite ML-DSA variants defined in sub-arcs 37–54 are supported as CA signing keys. When `ca.key_type` is set to a composite variant (e.g. `"composite-mldsa65-ecdsa-p384-sha512"`), Akāmu generates a composite CA key and issues all end-entity certificates with that composite signature. Issued certificates pass pre-issuance lint via `synta-x509-verification`.
 
-The 11 composite scheme code points implemented are:
+Requires OpenSSL 3.5 or later (same requirement as pure ML-DSA keys). The full list of 18 supported variants and their OID sub-arcs is documented in the [`ca.key_type` configuration reference](configuration.md#key_type).
+
+### Mutual TLS client authentication (draft-reddy-tls-composite-mldsa)
+
+Composite ML-DSA schemes also appear in the TLS `CertificateVerify` message when a client presents a certificate signed with a composite ML-DSA scheme. The 11 composite scheme code points implemented for mTLS are:
 
 | Code point | Scheme |
 |------------|--------|
@@ -877,7 +881,7 @@ The 11 composite scheme code points implemented are:
 
 ### Stability warning
 
-All code points in `draft-reddy-tls-composite-mldsa` are still TBD pending IANA allocation. The `0x090x` values used here are provisional. They may change as the drafts advance toward RFC publication. Before deploying to production, verify the current draft version against the code points listed above.
+All OID sub-arcs (37–54) and all `SignatureScheme` code points (`0x090x`) are provisional pending IANA allocation. They may change as the drafts advance toward RFC publication. Before deploying to production, verify the current draft version against the values listed above.
 
 ---
 

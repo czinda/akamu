@@ -343,9 +343,52 @@ Algorithm used when auto-generating a new CA key. Ignored when loading an existi
 | `"rsa:4096"` | RSA 4096-bit, exponent 65537 |
 | `"ed25519"` | Ed25519 |
 | `"ed448"` | Ed448 |
+| `"ml-dsa-44"` | Pure ML-DSA-44 (FIPS 204 parameter set 2) — requires OpenSSL 3.5+ |
+| `"ml-dsa-65"` | Pure ML-DSA-65 (FIPS 204 parameter set 3) — requires OpenSSL 3.5+ |
+| `"ml-dsa-87"` | Pure ML-DSA-87 (FIPS 204 parameter set 5) — requires OpenSSL 3.5+ |
+
+**Composite ML-DSA variants** (draft-ietf-lamps-pq-composite-sigs-19, sub-arcs 37–54 — requires OpenSSL 3.5+):
+
+| Value | Algorithm | OID sub-arc |
+|---|---|---|
+| `"composite-mldsa44-rsa2048-pss-sha256"` | ML-DSA-44 + RSA-2048-PSS-SHA-256 | 37 |
+| `"composite-mldsa44-rsa2048-pkcs15-sha256"` | ML-DSA-44 + RSA-2048-PKCS#1v1.5-SHA-256 | 38 |
+| `"composite-mldsa44-ed25519-sha512"` | ML-DSA-44 + Ed25519-SHA-512 | 39 |
+| `"composite-mldsa44-ecdsa-p256-sha256"` | ML-DSA-44 + ECDSA-P256-SHA-256 | 40 |
+| `"composite-mldsa65-rsa3072-pss-sha512"` | ML-DSA-65 + RSA-3072-PSS-SHA-512 | 41 |
+| `"composite-mldsa65-rsa3072-pkcs15-sha512"` | ML-DSA-65 + RSA-3072-PKCS#1v1.5-SHA-512 | 42 |
+| `"composite-mldsa65-rsa4096-pss-sha512"` | ML-DSA-65 + RSA-4096-PSS-SHA-512 | 43 |
+| `"composite-mldsa65-rsa4096-pkcs15-sha512"` | ML-DSA-65 + RSA-4096-PKCS#1v1.5-SHA-512 | 44 |
+| `"composite-mldsa65-ecdsa-p256-sha512"` | ML-DSA-65 + ECDSA-P256-SHA-512 | 45 |
+| `"composite-mldsa65-ecdsa-p384-sha512"` | ML-DSA-65 + ECDSA-P384-SHA-512 | 46 |
+| `"composite-mldsa65-ecdsa-brainpoolp256r1-sha512"` | ML-DSA-65 + ECDSA-brainpoolP256r1-SHA-512 | 47 |
+| `"composite-mldsa65-ed25519-sha512"` | ML-DSA-65 + Ed25519-SHA-512 | 48 |
+| `"composite-mldsa87-ecdsa-p384-sha512"` | ML-DSA-87 + ECDSA-P384-SHA-512 | 49 |
+| `"composite-mldsa87-ecdsa-brainpoolp384r1-sha512"` | ML-DSA-87 + ECDSA-brainpoolP384r1-SHA-512 | 50 |
+| `"composite-mldsa87-ed448-shake256"` | ML-DSA-87 + Ed448-SHAKE-256 | 51 |
+| `"composite-mldsa87-rsa3072-pss-sha512"` | ML-DSA-87 + RSA-3072-PSS-SHA-512 | 52 |
+| `"composite-mldsa87-rsa4096-pss-sha512"` | ML-DSA-87 + RSA-4096-PSS-SHA-512 | 53 |
+| `"composite-mldsa87-ecdsa-p521-sha512"` | ML-DSA-87 + ECDSA-P521-SHA-512 | 54 |
+
+Each composite variant also accepts the canonical `COMPSIG-*` label (case-insensitive, with or without the `COMPSIG-` prefix). For example, sub-arc 40 accepts all three forms: `"composite-mldsa44-ecdsa-p256-sha256"`, `"COMPSIG-MLDSA44-ECDSA-P256-SHA256"`, and `"mldsa44-ecdsa-p256-sha256"`.
+
+> **`hash_alg` is ignored for composite CA keys.** The hash algorithm is fixed by the composite algorithm specification (e.g. SHA-256 for sub-arc 40, SHA-512 for sub-arc 46). Set `hash_alg` to a valid value for any non-composite CA that shares the same config stanza; Akāmu silently ignores it for composite keys. For pure ML-DSA keys, `hash_alg` is also ignored — ML-DSA has no separate hash parameter.
+
+> **OID stability note:** The composite OIDs (sub-arcs 37–54) are defined by draft-ietf-lamps-pq-composite-sigs-19 and are provisional pending IANA allocation. They may change as the draft advances toward RFC publication.
 
 ```toml
 key_type = "ec:P-256"
+```
+
+Example: composite CA key with ML-DSA-65 + ECDSA-P384:
+
+```toml
+[[ca]]
+id       = "composite-pq"
+key_file  = "/etc/akamu/composite-ca.key.pem"
+cert_file = "/etc/akamu/composite-ca.cert.pem"
+key_type  = "composite-mldsa65-ecdsa-p384-sha512"
+hash_alg  = "sha512"   # ignored for composite keys; set for documentation clarity
 ```
 
 ### `hash_alg`

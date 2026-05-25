@@ -110,7 +110,16 @@ receives *id="default"* and *is_default=true* automatically.
 
 	- *ec:P-256*, *ec:P-384*, *ec:P-521*
 	- *rsa:2048*, *rsa:3072*, *rsa:4096*
-	- *ed25519*
+	- *ed25519*, *ed448*
+	- *ml-dsa-44*, *ml-dsa-65*, *ml-dsa-87* (pure ML-DSA, requires OpenSSL 3.5+)
+	- Composite ML-DSA variants *composite-mldsa44-ecdsa-p256-sha256*,
+	  *composite-mldsa65-ecdsa-p384-sha512*, *composite-mldsa87-ecdsa-p384-sha512*,
+	  and 15 further variants (draft-ietf-lamps-pq-composite-sigs-19, sub-arcs
+	  37–54; requires OpenSSL 3.5+).  See the online configuration reference for
+	  the full list.
+
+	For composite and pure ML-DSA key types, *hash_alg* is ignored — the
+	hash is fixed by the algorithm specification.
 
 	Has no effect when *key_file* already exists.  Default: *ec:P-256*.
 
