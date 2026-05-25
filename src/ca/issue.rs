@@ -14,7 +14,7 @@ use synta_certificate::{
 use synta_x509_verification::{
     ops::VerificationCertificate,
     policy::{
-        ExtensionPolicy, PolicyDefinition, ValidationProfile,
+        AlgorithmId, ExtensionPolicy, PolicyDefinition, ValidationProfile,
         WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS_WITH_PQ, WEBPKI_PERMITTED_SPKI_ALGORITHMS_WITH_PQ,
     },
     OwnedStore, RevocationChecks,
@@ -27,6 +27,124 @@ use crate::util::{extract_ca_subject_der, unix_now};
 
 use super::csr::ValidatedCsr;
 use super::init::unix_to_generalized_time;
+
+// ── Composite ML-DSA policy extension ────────────────────────────────────────
+//
+// synta-x509-verification < 0.2.4 does not include the 18 composite ML-DSA
+// signature OIDs (draft-ietf-lamps-pq-composite-sigs-19) in its
+// WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS_WITH_PQ and
+// WEBPKI_PERMITTED_SPKI_ALGORITHMS_WITH_PQ constants.  We detect this at
+// first use and, when necessary, build extended slices that include all 18
+// composite OIDs so that pre-issuance lint passes for composite CA keys.
+//
+// Once synta-x509-verification ships those OIDs natively, the OnceLock
+// initialiser will detect their presence and fall back to the upstream static
+// slices with no allocation overhead.
+
+static COMPOSITE_SIG_ALGS: std::sync::OnceLock<Option<Vec<AlgorithmId>>> =
+    std::sync::OnceLock::new();
+static COMPOSITE_SPKI_ALGS: std::sync::OnceLock<Option<Vec<AlgorithmId>>> =
+    std::sync::OnceLock::new();
+
+/// Return the permitted signature algorithm list, extended with composite ML-DSA
+/// OIDs when they are absent from the upstream constant.
+fn permitted_sig_algs_with_composite() -> &'static [AlgorithmId] {
+    let cached = COMPOSITE_SIG_ALGS.get_or_init(|| {
+        let already = WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS_WITH_PQ
+            .iter()
+            .any(|a| a.oid == oids::MLDSA44_RSA2048_PSS_SHA256);
+        if already {
+            return None;
+        }
+        let mut algs = WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS_WITH_PQ.to_vec();
+        algs.extend(composite_mldsa_algorithm_ids());
+        Some(algs)
+    });
+    match cached {
+        None => WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS_WITH_PQ,
+        Some(v) => v.as_slice(),
+    }
+}
+
+/// Return the permitted SPKI algorithm list, extended with composite ML-DSA
+/// OIDs when they are absent from the upstream constant.
+fn permitted_spki_algs_with_composite() -> &'static [AlgorithmId] {
+    let cached = COMPOSITE_SPKI_ALGS.get_or_init(|| {
+        let already = WEBPKI_PERMITTED_SPKI_ALGORITHMS_WITH_PQ
+            .iter()
+            .any(|a| a.oid == oids::MLDSA44_RSA2048_PSS_SHA256);
+        if already {
+            return None;
+        }
+        let mut algs = WEBPKI_PERMITTED_SPKI_ALGORITHMS_WITH_PQ.to_vec();
+        algs.extend(composite_mldsa_algorithm_ids());
+        Some(algs)
+    });
+    match cached {
+        None => WEBPKI_PERMITTED_SPKI_ALGORITHMS_WITH_PQ,
+        Some(v) => v.as_slice(),
+    }
+}
+
+/// All 18 composite ML-DSA `AlgorithmId` entries (sub-arcs 37–54).
+fn composite_mldsa_algorithm_ids() -> [AlgorithmId; 18] {
+    [
+        AlgorithmId {
+            oid: oids::MLDSA44_RSA2048_PSS_SHA256,
+        }, // 37
+        AlgorithmId {
+            oid: oids::MLDSA44_RSA2048_PKCS15_SHA256,
+        }, // 38
+        AlgorithmId {
+            oid: oids::MLDSA44_ED25519_SHA512,
+        }, // 39
+        AlgorithmId {
+            oid: oids::MLDSA44_ECDSA_P256_SHA256,
+        }, // 40
+        AlgorithmId {
+            oid: oids::MLDSA65_RSA3072_PSS_SHA512,
+        }, // 41
+        AlgorithmId {
+            oid: oids::MLDSA65_RSA3072_PKCS15_SHA512,
+        }, // 42
+        AlgorithmId {
+            oid: oids::MLDSA65_RSA4096_PSS_SHA512,
+        }, // 43
+        AlgorithmId {
+            oid: oids::MLDSA65_RSA4096_PKCS15_SHA512,
+        }, // 44
+        AlgorithmId {
+            oid: oids::MLDSA65_ECDSA_P256_SHA512,
+        }, // 45
+        AlgorithmId {
+            oid: oids::MLDSA65_ECDSA_P384_SHA512,
+        }, // 46
+        AlgorithmId {
+            oid: oids::MLDSA65_ECDSA_BRAINPOOL_P256R1_SHA512,
+        }, // 47
+        AlgorithmId {
+            oid: oids::MLDSA65_ED25519_SHA512,
+        }, // 48
+        AlgorithmId {
+            oid: oids::MLDSA87_ECDSA_P384_SHA512,
+        }, // 49
+        AlgorithmId {
+            oid: oids::MLDSA87_ECDSA_BRAINPOOL_P384R1_SHA512,
+        }, // 50
+        AlgorithmId {
+            oid: oids::MLDSA87_ED448_SHAKE256,
+        }, // 51
+        AlgorithmId {
+            oid: oids::MLDSA87_RSA3072_PSS_SHA512,
+        }, // 52
+        AlgorithmId {
+            oid: oids::MLDSA87_RSA4096_PSS_SHA512,
+        }, // 53
+        AlgorithmId {
+            oid: oids::MLDSA87_ECDSA_P521_SHA512,
+        }, // 54
+    ]
+}
 
 /// Output of a successful certificate issuance.
 #[derive(Debug)]
@@ -813,8 +931,10 @@ fn lint_issued_cert(cert_der: &[u8], ca_cert_der: &[u8], now: i64) -> Result<(),
     let mut policy = PolicyDefinition::new_server_pq(OpensslSignatureVerifier, vec![], now);
     // Profiles may use non-serverAuth EKUs — skip the EKU presence/content check.
     policy.extended_key_usage = None;
-    policy.permitted_spki_algorithms = WEBPKI_PERMITTED_SPKI_ALGORITHMS_WITH_PQ;
-    policy.permitted_signature_algorithms = WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS_WITH_PQ;
+    // Use composite-extended lists (falls back to upstream statics when upstream
+    // already includes composite OIDs, detected at first call via OnceLock).
+    policy.permitted_spki_algorithms = permitted_spki_algs_with_composite();
+    policy.permitted_signature_algorithms = permitted_sig_algs_with_composite();
 
     store
         .verify(&leaf, &[], &policy, RevocationChecks::default())
@@ -1044,9 +1164,11 @@ mod tests {
     };
 
     use super::{
-        hex_encode, ip_string_to_bytes, issue_certificate, issue_with_params, IssueCertParams,
+        hex_encode, ip_string_to_bytes, issue_certificate, issue_with_params,
+        permitted_sig_algs_with_composite, permitted_spki_algs_with_composite, IssueCertParams,
     };
     use crate::ca::csr::{validate_csr, SanEntry, ValidatedCsr};
+    use synta_certificate::oids;
 
     /// Build a minimal self-signed CA certificate DER for testing.
     fn make_test_ca() -> (BackendPrivateKey, Vec<u8>) {
@@ -1626,5 +1748,43 @@ mod tests {
             result.is_ok(),
             "expected Ok when enforce_validity_cap=true and validity_days=200: {result:?}"
         );
+    }
+
+    /// The composite policy helpers must include all 18 composite ML-DSA OIDs in
+    /// `permitted_signature_algorithms` and `permitted_spki_algorithms`.
+    #[test]
+    fn permitted_algs_with_composite_include_all_18_composite_oids() {
+        let sig_algs = permitted_sig_algs_with_composite();
+        let spki_algs = permitted_spki_algs_with_composite();
+
+        for (sub_arc, oid) in [
+            (37u32, oids::MLDSA44_RSA2048_PSS_SHA256),
+            (38, oids::MLDSA44_RSA2048_PKCS15_SHA256),
+            (39, oids::MLDSA44_ED25519_SHA512),
+            (40, oids::MLDSA44_ECDSA_P256_SHA256),
+            (41, oids::MLDSA65_RSA3072_PSS_SHA512),
+            (42, oids::MLDSA65_RSA3072_PKCS15_SHA512),
+            (43, oids::MLDSA65_RSA4096_PSS_SHA512),
+            (44, oids::MLDSA65_RSA4096_PKCS15_SHA512),
+            (45, oids::MLDSA65_ECDSA_P256_SHA512),
+            (46, oids::MLDSA65_ECDSA_P384_SHA512),
+            (47, oids::MLDSA65_ECDSA_BRAINPOOL_P256R1_SHA512),
+            (48, oids::MLDSA65_ED25519_SHA512),
+            (49, oids::MLDSA87_ECDSA_P384_SHA512),
+            (50, oids::MLDSA87_ECDSA_BRAINPOOL_P384R1_SHA512),
+            (51, oids::MLDSA87_ED448_SHAKE256),
+            (52, oids::MLDSA87_RSA3072_PSS_SHA512),
+            (53, oids::MLDSA87_RSA4096_PSS_SHA512),
+            (54, oids::MLDSA87_ECDSA_P521_SHA512),
+        ] {
+            assert!(
+                sig_algs.iter().any(|a| a.oid == oid),
+                "composite sig alg sub-arc {sub_arc} missing from permitted_signature_algorithms"
+            );
+            assert!(
+                spki_algs.iter().any(|a| a.oid == oid),
+                "composite sig alg sub-arc {sub_arc} missing from permitted_spki_algorithms"
+            );
+        }
     }
 }
