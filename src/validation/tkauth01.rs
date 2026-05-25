@@ -233,12 +233,10 @@ pub async fn validate(
         ));
     }
 
-    // ca must be absent or false — CA cert issuance is not supported.
-    if atc.get("ca").and_then(|v| v.as_bool()).unwrap_or(false) {
-        return Err(AcmeError::IncorrectResponse(
-            "tkauth-01: atc.ca=true is not supported".into(),
-        ));
-    }
+    // Extract atc.ca; defaults to false when absent.  The actual match against the
+    // CSR's BasicConstraints cA field is enforced at finalize time when the CSR is
+    // available (draft-ietf-acme-authority-token-jwtclaimcon §6 step 8).
+    let atc_ca = atc.get("ca").and_then(|v| v.as_bool()).unwrap_or(false);
 
     // Step 7b (JWTClaimConstraints / EnhancedJWTClaimConstraints): verify the
     // token's claims satisfy the must-include/permittedValues/mustExclude constraints
@@ -272,6 +270,7 @@ pub async fn validate(
         exp,
         now_i64,
         stored_tkvalue.as_deref(),
+        atc_ca,
     )
     .await
     .map_err(|e| AcmeError::Internal(format!("tkauth-01: JTI insert: {e}")))?;
@@ -1396,7 +1395,9 @@ mod tests {
     const FINGERPRINT: &str = "SHA256 00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00";
 
     #[tokio::test]
-    async fn validate_atc_ca_true_is_rejected() {
+    async fn validate_atc_ca_true_is_accepted_by_challenge_validator() {
+        // atc.ca=true is no longer rejected at challenge validation time.
+        // The match against the CSR's BasicConstraints cA field happens at finalize.
         let (ta_key, ta_cert_der) = make_ta_cert();
         let (signing_key, signing_cert_der) = make_signing_cert(&ta_key, &ta_cert_der);
         let state = make_tkauth_state(&ta_cert_der).await;
@@ -1405,21 +1406,17 @@ mod tests {
         claims["atc"]["ca"] = serde_json::Value::Bool(true);
         let token = make_authority_token(&signing_key, &signing_cert_der, claims);
 
-        let err = validate(
+        validate(
             "TNAuthList",
             "test-value",
             KEY_AUTH,
             &token,
-            "authz-1",
+            "authz-ca-1",
             "order-test",
             &state,
         )
         .await
-        .unwrap_err();
-        assert!(
-            matches!(err, AcmeError::IncorrectResponse(ref m) if m.contains("atc.ca=true")),
-            "got {err:?}"
-        );
+        .expect("validate should succeed when atc.ca=true; ca flag check is deferred to finalize");
     }
 
     #[tokio::test]

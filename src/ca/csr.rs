@@ -30,6 +30,9 @@ pub struct ValidatedCsr {
     pub subject_der: Vec<u8>,
     /// Parsed SANs.
     pub sans: Vec<SanEntry>,
+    /// True if the CSR includes BasicConstraints with cA=TRUE.
+    /// Callers (finalize) must match this against authority token atc.ca flags.
+    pub ca_cert: bool,
 }
 
 /// Parse and validate a DER-encoded PKCS #10 CSR.
@@ -88,17 +91,21 @@ pub fn validate_csr(
     // 6. Extract X.509 extensions from the extensionRequest attribute.
     let extensions = extract_csr_extensions(&csr)?;
 
-    // 7. Reject CSRs that assert cA=TRUE in BasicConstraints.
-    if let Some(bc_bytes) = find_ext_value(&extensions, oids::BASIC_CONSTRAINTS) {
+    // 7. Record whether the CSR asserts cA=TRUE in BasicConstraints.
+    // The caller (finalize) is responsible for rejecting or allowing this
+    // based on the authority token atc.ca flag (§6 step 8 of
+    // draft-ietf-acme-authority-token-jwtclaimcon).
+    let ca_cert = if let Some(bc_bytes) = find_ext_value(&extensions, oids::BASIC_CONSTRAINTS) {
         let mut bc_dec = Decoder::new(&bc_bytes, Encoding::Der);
-        if let Ok(bc) = bc_dec.decode::<BasicConstraints>() {
-            if bc.c_a.map(|b| b.0).unwrap_or(false) {
-                return Err(AcmeError::BadCsr(
-                    "cA=TRUE not allowed in end-entity CSR".into(),
-                ));
-            }
-        }
-    }
+        bc_dec
+            .decode::<BasicConstraints>()
+            .ok()
+            .and_then(|bc| bc.c_a)
+            .map(|b| b.0)
+            .unwrap_or(false)
+    } else {
+        false
+    };
 
     // 8. Parse Subject Alternative Names.
     let mut sans: Vec<SanEntry> = Vec::new();
@@ -184,6 +191,7 @@ pub fn validate_csr(
         spki_der,
         subject_der,
         sans,
+        ca_cert,
     })
 }
 
@@ -333,15 +341,14 @@ mod tests {
     }
 
     #[test]
-    fn ca_true_in_basic_constraints_rejected() {
+    fn ca_true_in_basic_constraints_recorded() {
+        // validate_csr no longer rejects cA=TRUE; it records it in ValidatedCsr.ca_cert.
+        // The caller (finalize) is responsible for matching it against atc.ca.
         let key = BackendPrivateKey::generate_ec("P-256").unwrap();
         let csr_der = make_csr_der(&key, "example.com", true);
         let result = validate_csr(&csr_der, &[("dns", "example.com")]);
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            AcmeError::BadCsr(msg) => assert!(msg.contains("cA=TRUE")),
-            other => panic!("expected BadCsr, got {other:?}"),
-        }
+        let vcsr = result.expect("validate_csr should succeed when cA=TRUE");
+        assert!(vcsr.ca_cert, "ca_cert should be true for a CA CSR");
     }
 
     #[test]
@@ -556,9 +563,7 @@ mod tests {
 
     #[test]
     fn csr_with_basic_constraints_ca_false_is_accepted() {
-        // CSR with BasicConstraints present but cA=FALSE — should pass the cA check.
-        // This covers the closing braces of the inner `if bc.c_a...` block (lines 94-97)
-        // reached when BasicConstraints is decoded successfully but cA is not TRUE.
+        // CSR with BasicConstraints present but cA=FALSE — should succeed and report ca_cert=false.
         use synta_certificate::encode_basic_constraints;
         let key = BackendPrivateKey::generate_ec("P-256").unwrap();
         let spki_der = key.public_key().unwrap().spki_der().to_vec();
@@ -580,9 +585,7 @@ mod tests {
             .sign(&signer)
             .unwrap();
         let result = validate_csr(&csr_der, &[("dns", "example.com")]);
-        assert!(
-            result.is_ok(),
-            "CSR with cA=FALSE BasicConstraints should be accepted: {result:?}"
-        );
+        let vcsr = result.expect("CSR with cA=FALSE BasicConstraints should be accepted");
+        assert!(!vcsr.ca_cert, "ca_cert should be false for end-entity CSR");
     }
 }

@@ -1304,6 +1304,7 @@ mod tests {
                 san_type: "ip".into(),
                 value: "not-an-ip".into(),
             }],
+            ca_cert: false,
         };
         let result = issue_certificate(IssueCertParams {
             ca_key: &ca_key,
@@ -1338,6 +1339,7 @@ mod tests {
                 san_type: "email".into(),
                 value: "user@example.com".into(),
             }],
+            ca_cert: false,
         };
         let result = issue_certificate(IssueCertParams {
             ca_key: &ca_key,

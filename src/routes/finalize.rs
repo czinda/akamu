@@ -287,7 +287,9 @@ pub async fn finalize_order(
                 let authz_id_type = id_obj["type"].as_str().unwrap_or("");
 
                 // Obtain the JWTClaimConstraints blob for this authz.
-                let blob_opt: Option<String> = if authz_id_type == "EnhancedJWTClaimConstraints" {
+                let blob_opt: Option<String> = if authz_id_type == "JWTClaimConstraints"
+                    || authz_id_type == "EnhancedJWTClaimConstraints"
+                {
                     id_obj["value"].as_str().map(str::to_string)
                 } else {
                     db::tkauth::get_tkvalue_for_authz(&state.db, &authz.id)
@@ -388,10 +390,35 @@ pub async fn finalize_order(
                 continue;
             }
             if let Ok(id_obj) = serde_json::from_str::<serde_json::Value>(&authz.identifier) {
-                if id_obj["type"].as_str() == Some("EnhancedJWTClaimConstraints") {
+                if matches!(
+                    id_obj["type"].as_str(),
+                    Some("JWTClaimConstraints") | Some("EnhancedJWTClaimConstraints")
+                ) {
                     tkauth_authz_ids.push(authz.id.clone());
                 }
             }
+        }
+    }
+
+    // draft-ietf-acme-authority-token-jwtclaimcon §6 step 8: verify that the atc.ca
+    // flag stored for each tkauth-validated authz matches the CSR's BasicConstraints
+    // cA field.  When no tkauth authzs are present, cA=TRUE is never allowed.
+    {
+        let tkauth_ca = if !tkauth_authz_ids.is_empty() {
+            let refs: Vec<&str> = tkauth_authz_ids.iter().map(String::as_str).collect();
+            db::tkauth::get_any_ca_flag_for_authzs(&state.db, &refs).await?
+        } else {
+            false
+        };
+        if validated_csr.ca_cert != tkauth_ca {
+            return Err(AcmeError::BadCsr(
+                if validated_csr.ca_cert {
+                    "CSR asserts cA=TRUE but no authority token permitted CA cert issuance"
+                } else {
+                    "authority token asserts atc.ca=true but CSR does not assert cA=TRUE"
+                }
+                .into(),
+            ));
         }
     }
 
