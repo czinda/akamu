@@ -336,10 +336,47 @@ pub fn generate_backend_key(key_type: &str) -> Result<BackendPrivateKey, AcmeErr
         "ml-dsa-87" | "ML-DSA-87" => {
             BackendPrivateKey::generate_ml_dsa("ML-DSA-87").map_err(|e| cry(&e))
         }
-        other => Err(AcmeError::Internal(format!(
-            "unknown key type '{other}'; use 'ec:P-256', 'rsa:2048', 'ed25519', 'ml-dsa-44', etc."
-        ))),
+        // Composite ML-DSA (draft-ietf-lamps-pq-composite-sigs-19, requires OpenSSL 3.5+).
+        // Accept the COMPSIG-* domain-separation label (case-insensitive), with or without
+        // the "COMPSIG-" prefix and with an optional "composite-" prefix substituted for it.
+        // Example accepted forms for sub-arc 40:
+        //   "composite-mldsa44-ecdsa-p256-sha256"
+        //   "COMPSIG-MLDSA44-ECDSA-P256-SHA256"
+        //   "mldsa44-ecdsa-p256-sha256"
+        other => {
+            if let Some(sub_arc) = composite_mldsa_sub_arc(other) {
+                BackendPrivateKey::generate_composite_ml_dsa(sub_arc).map_err(|e| cry(&e))
+            } else {
+                Err(AcmeError::Internal(format!(
+                    "unknown key type '{other}'; use 'ec:P-256', 'rsa:2048', 'ed25519', \
+                     'ml-dsa-44', or 'composite-mldsa44-ecdsa-p256-sha256' etc."
+                )))
+            }
+        }
     }
+}
+
+/// Resolve a composite ML-DSA sub-arc (37–54) from a `key_type` config string.
+///
+/// Accepts the COMPSIG-* domain-separation label in any case, with or without
+/// the `COMPSIG-` prefix, and with `composite-` as an alternative prefix.
+/// Returns `None` when `key_type` does not match any of the 18 composite variants.
+fn composite_mldsa_sub_arc(key_type: &str) -> Option<u32> {
+    let upper = key_type.to_ascii_uppercase();
+    // Strip optional "COMPOSITE-" prefix (akamu convention) so that
+    // "composite-mldsa44-ecdsa-p256-sha256" matches "MLDSA44-ECDSA-P256-SHA256".
+    let candidate = upper.strip_prefix("COMPOSITE-").unwrap_or(&upper);
+    for sub_arc in 37u32..=54 {
+        if let Some(spec) = synta_certificate::crypto::composite_spec(sub_arc) {
+            let label_upper = spec.label.to_ascii_uppercase();
+            // Accept the full COMPSIG-* label or the label without the COMPSIG- prefix.
+            let label_short = label_upper.strip_prefix("COMPSIG-").unwrap_or(&label_upper);
+            if candidate == label_upper || candidate == label_short {
+                return Some(sub_arc);
+            }
+        }
+    }
+    None
 }
 
 /// Return the current UTC time as a GeneralizedTime string `YYYYMMDDHHmmssZ`.
@@ -427,6 +464,57 @@ mod tests {
     fn generate_backend_key_ed25519() {
         let key = generate_backend_key("ed25519").unwrap();
         assert!(!key.public_key().unwrap().spki_der().is_empty());
+    }
+
+    #[test]
+    fn generate_backend_key_composite_mldsa44_ecdsa_p256() {
+        // sub-arc 40: COMPSIG-MLDSA44-ECDSA-P256-SHA256
+        let key = generate_backend_key("composite-mldsa44-ecdsa-p256-sha256").unwrap();
+        assert!(!key.public_key().unwrap().spki_der().is_empty());
+    }
+
+    #[test]
+    fn generate_backend_key_composite_label_case_variants() {
+        // Uppercase COMPSIG- prefix accepted.
+        let k1 = generate_backend_key("COMPSIG-MLDSA44-ECDSA-P256-SHA256").unwrap();
+        // Lowercase without prefix accepted.
+        let k2 = generate_backend_key("mldsa44-ecdsa-p256-sha256").unwrap();
+        assert!(!k1.public_key().unwrap().spki_der().is_empty());
+        assert!(!k2.public_key().unwrap().spki_der().is_empty());
+    }
+
+    #[test]
+    fn generate_backend_key_composite_mldsa65_ecdsa_p384() {
+        // sub-arc 46: COMPSIG-MLDSA65-ECDSA-P384-SHA512
+        let key = generate_backend_key("composite-mldsa65-ecdsa-p384-sha512").unwrap();
+        assert!(!key.public_key().unwrap().spki_der().is_empty());
+    }
+
+    #[test]
+    fn generate_backend_key_composite_sub_arc_lookup() {
+        // Verify that composite_mldsa_sub_arc resolves all 18 defined variants.
+        for sub_arc in 37u32..=54 {
+            let spec = synta_certificate::crypto::composite_spec(sub_arc).unwrap();
+            // All three label forms must resolve back to the same sub-arc.
+            let full = spec.label; // "COMPSIG-MLDSA44-..."
+            let without_prefix = full.strip_prefix("COMPSIG-").unwrap();
+            let with_composite = format!("composite-{}", without_prefix.to_ascii_lowercase());
+            assert_eq!(
+                composite_mldsa_sub_arc(full),
+                Some(sub_arc),
+                "full label {full}"
+            );
+            assert_eq!(
+                composite_mldsa_sub_arc(without_prefix),
+                Some(sub_arc),
+                "without prefix {without_prefix}"
+            );
+            assert_eq!(
+                composite_mldsa_sub_arc(&with_composite),
+                Some(sub_arc),
+                "composite- prefix {with_composite}"
+            );
+        }
     }
 
     #[test]
