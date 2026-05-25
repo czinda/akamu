@@ -12,6 +12,10 @@ use crate::db::Db;
 /// `tkvalue` is the base64url-encoded JWTClaimConstraints DER blob from `atc.tkvalue`,
 /// stored only for encoder-backed identifier types (e.g., "dns") so finalize can
 /// retrieve and apply claim encoders when issuing the certificate.
+///
+/// `ca_flag` is the boolean value of `atc.ca` from the authority token.  Stored so
+/// finalize can verify it matches the CSR's BasicConstraints cA field per
+/// draft-ietf-acme-authority-token-jwtclaimcon §6 step 8.
 pub async fn insert_jti(
     db: &Db,
     jti: &str,
@@ -19,10 +23,11 @@ pub async fn insert_jti(
     expires: i64,
     now: i64,
     tkvalue: Option<&str>,
+    ca_flag: bool,
 ) -> Result<bool, sqlx::Error> {
     let result = super::query(
-        "INSERT INTO tkauth_jti_cache (jti, authz_id, expires, created, tkvalue) \
-         SELECT ?, ?, ?, ?, ? \
+        "INSERT INTO tkauth_jti_cache (jti, authz_id, expires, created, tkvalue, ca_flag) \
+         SELECT ?, ?, ?, ?, ?, ? \
          WHERE NOT EXISTS (SELECT 1 FROM tkauth_jti_cache WHERE jti = ?)",
     )
     .bind(jti)
@@ -30,10 +35,30 @@ pub async fn insert_jti(
     .bind(expires)
     .bind(now)
     .bind(tkvalue)
+    .bind(ca_flag)
     .bind(jti)
     .execute(db)
     .await?;
     Ok(result.rows_affected() > 0)
+}
+
+/// Return `true` if any JTI entry for the given authz_ids has `ca_flag = true`.
+///
+/// Used at finalize time to check whether the authority token(s) assert CA cert
+/// issuance, so the result can be matched against the CSR's BasicConstraints cA field.
+pub async fn get_any_ca_flag_for_authzs(db: &Db, authz_ids: &[&str]) -> Result<bool, sqlx::Error> {
+    for authz_id in authz_ids {
+        let row: (i64,) = super::query_as(
+            "SELECT COUNT(*) FROM tkauth_jti_cache WHERE authz_id = ? AND ca_flag = 1",
+        )
+        .bind(authz_id)
+        .fetch_one(db)
+        .await?;
+        if row.0 > 0 {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Return the stored tkvalue for a given authz_id, or `None` if not present.
