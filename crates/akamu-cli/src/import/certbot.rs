@@ -585,6 +585,9 @@ account = abc123
             gssapi_keytab: None,
             dns_hook: None,
             profile: None,
+            tkauth_url: None,
+            tkauth_keytab: None,
+            jwtcc: None,
         };
 
         let toml_str = toml::to_string_pretty(&config).expect("serialize");
