@@ -500,7 +500,7 @@ pub async fn new_order(
             "dns" => dns_types,
             "ip" => &["http-01", "tls-alpn-01"],
             "email" => &["email-reply-00"],
-            "TNAuthList" | "EnhancedJWTClaimConstraints" => &["tkauth-01"],
+            "TNAuthList" | "JWTClaimConstraints" | "EnhancedJWTClaimConstraints" => &["tkauth-01"],
             _ => &[],
         };
         let challenges = challenge_types
