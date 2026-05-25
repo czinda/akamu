@@ -116,12 +116,14 @@ akamu-client = { path = "crates/akamu-client" }
 akamu-ldap = { path = "crates/akamu-ldap" }
 
 # Base ASN.1 library (needed for Decoder/Encoder and Integer type)
-synta = { version = ">=0.2.0", default-features = false, features = ["std", "derive"] }
+synta = { version = ">=0.2.3", default-features = false, features = ["std", "derive"] }
 
 # Synta crates for all X.509 / MTC operations
-synta-certificate =  { version = ">=0.2.0", features = ["std", "pqc"] }
-synta-x509-verification =  { version = ">=0.2.0" }
-synta-mtc = { version = ">=0.2.0", features = ["std"] }
+# >=0.2.3: adds composite ML-DSA key generation and OID constants
+# (draft-ietf-lamps-pq-composite-sigs-19, 18 algorithms, sub-arcs 37–54).
+synta-certificate =  { version = ">=0.2.3", features = ["std", "pqc"] }
+synta-x509-verification =  { version = ">=0.2.3" }
+synta-mtc = { version = ">=0.2.3", features = ["std"] }
 
 # Native Rust bindings to system OpenSSL (composite ML-DSA TLS verify)
 native-ossl = "0.1"
