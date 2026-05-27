@@ -131,6 +131,7 @@ echo "[demo] Build complete."
 
 # ── testdir ───────────────────────────────────────────────────────────────────
 
+rm -rf "$TESTDIR"
 mkdir -p "$TESTDIR"
 echo "[demo] Working directory: $TESTDIR"
 
@@ -231,8 +232,13 @@ trust_jwks_urls = ["http://127.0.0.1:${IDP_PORT}/jwks"]
 
 [admin]
 bootstrap_key_type = "ec:P-256"
-bootstrap_operator_cert_file = "${TESTDIR}/admin-bootstrap.pem"
-bootstrap_operator_key_file = "${TESTDIR}/admin-bootstrap-key.pem"
+bootstrap_operator_pkcs12_file     = "${TESTDIR}/admin-bootstrap.p12"
+bootstrap_operator_pkcs12_password = "demo"
+bootstrap_operator_gssapi_principal = "user@DEMO.TEST"
+
+[admin.gssapi]
+keytab_file  = "${IDP_KEYTAB}"
+service_name = "HTTP"
 EOF
 echo "[demo] akamu config written to $AKAMU_CFG"
 
@@ -321,6 +327,9 @@ echo "[demo] ================================================"
 echo
 echo "[demo] Tip: inspect the full cert with:"
 echo "[demo]   openssl x509 -in ${CERT_OUT} -noout -text"
+echo
+echo "[demo] Admin bootstrap PKCS#12: ${TESTDIR}/admin-bootstrap.p12"
+echo "[demo]   password: demo  (use this when importing into Firefox)"
 echo
 if $INTERACTIVE; then
     echo "[demo] Demo complete. Press Ctrl-C to stop the KDC, IdP, and akamu server."
