@@ -65,7 +65,7 @@ delegation_enabled          = false
 allow_certificate_get       = false
 
 [server.gssapi]
-keytab_file  = "/etc/akamu/http.keytab"
+keytab_file  = "/etc/akamu/http.keytab"   # omit and set gssproxy = true to use gssproxy instead
 service_name = "HTTP"
 
 [tls.client_auth]
@@ -1057,11 +1057,13 @@ a configuration error; the server exits at startup with an error message.
 
 Configures akamu to accept `Authorization: Negotiate` tokens directly, without
 a reverse proxy. At startup the server acquires a combined initiator+acceptor
-credential (`GSS_C_BOTH`) from `keytab_file` using `gss_acquire_cred_from` and
-uses `gss_accept_sec_context` to validate each SPNEGO token. The
-`GSS_C_BOTH` usage flag is required for S4U2Self constrained delegation (used
-internally for LDAP profile lookups) and is compatible with gssproxy-managed
-credentials.
+credential (`GSS_C_BOTH`) using `gss_acquire_cred_from` and then uses
+`gss_accept_sec_context` to validate each SPNEGO token. The `GSS_C_BOTH` usage
+flag is required for S4U2Self constrained delegation (used internally for LDAP
+profile lookups). Credentials are acquired either directly from `keytab_file`
+or, when `gssproxy = true`, via the [gssproxy](https://github.com/gssapi/gssproxy)
+daemon (which intercepts the underlying GSSAPI call and supplies credentials
+from its own keytab configuration).
 
 Use this mode when you want akamu to handle Kerberos authentication itself
 rather than delegating to a front-end proxy such as Apache or Nginx.
@@ -1093,17 +1095,11 @@ rather than delegating to a front-end proxy such as Apache or Nginx.
 
 #### `keytab_file`
 
-**Required within `[server.gssapi]`.** Path to the HTTP service keytab file.
-The akamu process must be able to read this file; no other user should have
-read access to it. The path is logged at `debug` level only.
-
-When [gssproxy](https://github.com/gssapi/gssproxy) is active for the akamu
-process (matched by UID in `/etc/gssproxy/conf.d/`), it intercepts the
-underlying `gss_acquire_cred_from` call and supplies credentials from the
-configured keytab without requiring the akamu process to have direct read
-access to the keytab file on disk. In this case the `keytab_file` value
-is still parsed by the config parser and passed to the GSSAPI library call,
-but gssproxy ignores it in favour of its own keytab configuration.
+**Required when `gssproxy = false` (the default). Must be absent when `gssproxy = true`.**
+Path to the HTTP service keytab file. The akamu process must be able to read
+this file; no other user should have read access to it. The path is logged at
+`debug` level only. Setting both `keytab_file` and `gssproxy = true` is a
+configuration error; the server exits at startup.
 
 ```toml
 keytab_file = "/etc/akamu/http.keytab"
@@ -1116,6 +1112,26 @@ ipa-getkeytab -s ipa.example.com -p HTTP/akamu.example.com@EXAMPLE.COM \
     -k /etc/akamu/http.keytab
 chmod 600 /etc/akamu/http.keytab
 chown akamu: /etc/akamu/http.keytab
+```
+
+#### `gssproxy`
+
+**Optional. Default: `false`.**
+
+When `true`, GSSAPI credential acquisition is delegated to the
+[gssproxy](https://github.com/gssapi/gssproxy) daemon instead of reading a
+keytab file directly. The akamu process must have a matching entry in
+`/etc/gssproxy/conf.d/` (typically matched by UID). The server sets
+`GSS_USE_PROXY=yes` in its environment before the first GSSAPI call so that the
+GSSAPI library routes the credential request through gssproxy. No direct access
+to a keytab file on disk is needed. `keytab_file` must be absent when this is
+`true`.
+
+```toml
+# gssproxy mode — no keytab access required for the akamu process
+[server.gssapi]
+gssproxy     = true
+service_name = "HTTP"
 ```
 
 #### `service_name`
@@ -1142,7 +1158,9 @@ are allowed to supply `X-Remote-User`. Requests from any other source that reach
 an authenticated endpoint return `404 Not Found` (no authentication mechanism
 is configured for those connections).
 
-#### Standalone GSSAPI example
+#### Standalone GSSAPI examples
+
+Keytab mode — akamu reads the keytab file directly:
 
 ```toml
 [server.gssapi]
@@ -1150,9 +1168,18 @@ keytab_file  = "/etc/akamu/http.keytab"
 service_name = "HTTP"
 ```
 
-In this configuration, akamu handles `Authorization: Negotiate` directly. Clients
-must obtain a Kerberos service ticket for `HTTP/<hostname>` before calling
-authenticated endpoints.
+gssproxy mode — akamu delegates credential acquisition to gssproxy (no direct
+keytab access required for the akamu process):
+
+```toml
+[server.gssapi]
+gssproxy     = true
+service_name = "HTTP"
+```
+
+In both configurations, akamu handles `Authorization: Negotiate` directly.
+Clients must obtain a Kerberos service ticket for `HTTP/<hostname>` before
+calling authenticated endpoints.
 
 ---
 
@@ -1875,7 +1902,7 @@ session_ttl_secs = 3600
 
 # Optional: also accept GSSAPI-authenticated operators
 [admin.gssapi]
-keytab_file  = "/etc/akamu/http.keytab"
+keytab_file  = "/etc/akamu/http.keytab"   # omit and set gssproxy = true to use gssproxy instead
 service_name = "HTTP"
 ```
 
@@ -2046,10 +2073,32 @@ Configures GSSAPI/Kerberos authentication for operators accessing the admin API.
 
 #### `keytab_file`
 
-**Required within `[admin.gssapi]`.** Path to the Kerberos keytab file for the admin service principal.
+**Required when `gssproxy = false` (the default). Must be absent when `gssproxy = true`.**
+Path to the Kerberos keytab file for the admin service principal. The akamu
+process must be able to read this file; no other user should have read access
+to it. Setting both `keytab_file` and `gssproxy = true` is a configuration
+error; the server exits at startup.
 
 ```toml
 keytab_file = "/etc/akamu/http.keytab"
+```
+
+#### `gssproxy`
+
+**Optional. Default: `false`.**
+
+When `true`, GSSAPI credential acquisition for the admin service principal is
+delegated to the [gssproxy](https://github.com/gssapi/gssproxy) daemon. The
+akamu process must have a matching entry in `/etc/gssproxy/conf.d/`. The server
+sets `GSS_USE_PROXY=yes` in its environment before the first GSSAPI call. No
+direct access to a keytab file on disk is needed. `keytab_file` must be absent
+when this is `true`.
+
+```toml
+# gssproxy mode for the admin interface
+[admin.gssapi]
+gssproxy     = true
+service_name = "HTTP"
 ```
 
 #### `service_name`
