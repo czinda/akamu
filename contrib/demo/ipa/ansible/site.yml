@@ -1,0 +1,25 @@
+---
+# Full site deployment: FreeIPA server + replicas + akamu on all nodes.
+#
+# Usage:
+#   cp inventory.ini.example inventory.ini
+#   # Edit inventory.ini — set hostnames, ipa_domain, ipa_realm, passwords.
+#   ansible-playbook -i inventory.ini site.yml
+#
+# To run individual phases:
+#   ansible-playbook -i inventory.ini playbooks/ipa_server.yml
+#   ansible-playbook -i inventory.ini playbooks/ipa_replica.yml
+#   ansible-playbook -i inventory.ini playbooks/akamu.yml
+#   ansible-playbook -i inventory.ini playbooks/ipa_permissions.yml
+
+- name: Install FreeIPA server
+  import_playbook: playbooks/ipa_server.yml
+
+- name: Install FreeIPA replicas
+  import_playbook: playbooks/ipa_replica.yml
+
+- name: Install akamu on all IPA nodes
+  import_playbook: playbooks/akamu.yml
+
+- name: Grant IPA privileges to akamu HTTP service principals
+  import_playbook: playbooks/ipa_permissions.yml

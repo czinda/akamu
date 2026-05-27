@@ -1,0 +1,17 @@
+---
+# Variables shared across all IPA nodes.
+# Override per-host in host_vars/<hostname>.yml or in inventory.ini.
+
+# COPR repository providing the akamu package.
+akamu_copr_repo: abbra/synta
+
+# akamu systemd service name and Unix socket path (must match akamu.toml).
+akamu_service: akamu
+akamu_socket_path: /run/akamu/akamu.sock
+
+# Database path for SQLite.  For production multi-node deployments use PostgreSQL.
+akamu_db_url: "sqlite:///var/lib/akamu/akamu.db"
+
+# CA certificate files (auto-generated on first run when absent).
+akamu_ca_key_file: /etc/akamu/certs/ca.key.pem
+akamu_ca_cert_file: /etc/akamu/certs/ca.cert.pem

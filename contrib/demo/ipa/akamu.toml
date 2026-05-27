@@ -1,0 +1,95 @@
+# Akamu configuration for co-deployment with FreeIPA on the same host,
+# proxied behind IPA's Apache httpd at the /acme path prefix.
+#
+# Apache terminates TLS and forwards /acme/* to this process.
+# Akamu listens on a Unix domain socket — no [tls] section needed here.
+#
+# Quick-start checklist (replace "ipa.example.com" / "EXAMPLE.COM" throughout):
+#   1. cp akamu-gssproxy.conf /etc/gssproxy/20-akamu.conf
+#      systemctl restart gssproxy
+#   2. cp ipa-acme-proxy.conf /etc/httpd/conf.d/ && systemctl reload httpd
+#   3. usermod -aG akamu apache    # allow Apache to connect to the Unix socket
+#   4. systemctl enable --now akamu
+#
+# ACME directory: https://ipa.example.com/acme/acme/directory
+
+# ── Server ────────────────────────────────────────────────────────────────────
+
+# Unix domain socket — Apache proxies /acme/* here.
+# The parent directory /run/akamu/ is created by systemd RuntimeDirectory=akamu
+# with mode 0710 (owner:group can traverse).  The apache user must be in the
+# akamu system group (usermod -aG akamu apache) to connect to the socket.
+listen_addr = "unix:/run/akamu/akamu.sock"
+
+# Public base URL including the /acme path prefix.
+# All URLs returned to ACME clients reference this base, so it must be reachable
+# from the internet (or your internal CA clients) via HTTPS.
+base_url = "https://ipa.example.com/acme"
+
+# ── Database ──────────────────────────────────────────────────────────────────
+
+[database]
+url             = "sqlite:///var/lib/akamu/akamu.db"
+max_connections = 5
+
+# ── CA ────────────────────────────────────────────────────────────────────────
+
+[ca]
+# Auto-generated on first run when neither file exists.
+key_file  = "/etc/akamu/certs/ca.key.pem"
+cert_file = "/etc/akamu/certs/ca.cert.pem"
+key_type  = "ec:P-256"
+hash_alg  = "sha256"
+
+# Set the CA subject to something meaningful for your deployment.
+common_name  = "IPA ACME CA"
+organization = "EXAMPLE.COM"
+
+# ── ACME server behaviour ─────────────────────────────────────────────────────
+
+[server]
+validate_dnssec = true
+
+# GSSAPI/SPNEGO authentication for ACME clients.
+# IPA-enrolled services authenticate directly with their Kerberos service ticket;
+# no kinit is required for the client.
+# gssproxy intercepts gss_acquire_cred_from — no direct keytab access needed.
+[server.gssapi]
+service_name = "HTTP"
+gssproxy     = true
+
+# ── Admin API ─────────────────────────────────────────────────────────────────
+
+[admin]
+# Bootstrap the first Administrator from the IPA admin principal on first run.
+# Change to the GSSAPI principal of the operator who will manage akamu.
+bootstrap_operator_gssapi_principal = "admin@EXAMPLE.COM"
+
+# GSSAPI/Kerberos authentication for admin operators.
+# IPA admin principals (e.g. admin@EXAMPLE.COM) authenticate via SPNEGO;
+# the same gssproxy entry handles both ACME client and admin operator tickets.
+[admin.gssapi]
+service_name = "HTTP"
+gssproxy     = true
+
+# ── Certificate profiles (optional) ──────────────────────────────────────────
+
+# Uncomment to expose IPAThinCA certificate profiles via akamu.
+# The HTTP service principal must have read access to o=ipaca in the IPA CA LDAP.
+# On Fedora/RHEL IPA, this subtree is readable by any IPA-enrolled principal.
+#
+# [profiles]
+# refresh_interval_secs = 3600
+#
+# [profiles.providers.ipa]
+# type     = "ipa"
+# profiles = ["caIPAserviceCert", "IECUserRoles"]
+#
+# [profiles.providers.ipa.ldap]
+# # Local IPA CA LDAP port (7389 is IPA-internal, not the standard 389).
+# uri          = "ldap://ipa.example.com:7389"
+# base_dn      = "o=ipaca"
+# gssapi       = true
+# keytab_file  = "/var/lib/ipa/gssproxy/http.keytab"
+# principal    = "HTTP/ipa.example.com@EXAMPLE.COM"
+# tls_ca_cert_file = "/etc/ipa/ca.crt"

@@ -1,0 +1,31 @@
+---
+# Install FreeIPA replicas using ansible-freeipa.
+#
+# Run standalone:
+#   ansible-playbook -i inventory.ini playbooks/ipa_replica.yml
+#
+# Requires the primary IPA server to be fully configured first
+# (run playbooks/ipa_server.yml before this playbook).
+#
+# Variables (set in inventory or group_vars):
+#   ipa_domain          — IPA DNS domain     (e.g. ipa.example.com)
+#   ipa_realm           — Kerberos realm      (e.g. IPA.EXAMPLE.COM)
+#   ipa_admin_password  — IPA admin password
+#   ipa_ds_password     — Directory Manager password
+
+- name: Install FreeIPA replicas
+  hosts: ipa_replicas
+  become: true
+  serial: 1  # Install one replica at a time to avoid replication conflicts.
+  roles:
+    - role: freeipa.ansible_freeipa.ipareplica
+      vars:
+        ipareplica_domain: "{{ ipa_domain }}"
+        ipareplica_realm: "{{ ipa_realm }}"
+        ipaadmin_password: "{{ ipa_admin_password }}"
+        ipadm_password: "{{ ipa_ds_password }}"
+        ipareplica_setup_dns: true
+        ipareplica_auto_forwarders: true
+        ipareplica_auto_reverse: true
+        ipareplica_mkhomedir: true
+        ipareplica_no_host_dns: true

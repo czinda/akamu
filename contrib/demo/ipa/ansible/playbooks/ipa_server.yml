@@ -1,0 +1,26 @@
+---
+# Install and configure the primary FreeIPA server using ansible-freeipa.
+#
+# Run standalone:
+#   ansible-playbook -i inventory.ini playbooks/ipa_server.yml
+#
+# Variables (set in inventory or group_vars):
+#   ipa_domain          — IPA DNS domain     (e.g. ipa.example.com)
+#   ipa_realm           — Kerberos realm      (e.g. IPA.EXAMPLE.COM)
+#   ipa_admin_password  — IPA admin password
+#   ipa_ds_password     — Directory Manager password
+
+- name: Install FreeIPA server
+  hosts: ipa_server
+  become: true
+  roles:
+    - role: freeipa.ansible_freeipa.ipaserver
+      vars:
+        ipaserver_domain: "{{ ipa_domain }}"
+        ipaserver_realm: "{{ ipa_realm }}"
+        ipaadmin_password: "{{ ipa_admin_password }}"
+        ipadm_password: "{{ ipa_ds_password }}"
+        ipaserver_setup_dns: true
+        ipaserver_auto_forwarders: true
+        ipaserver_auto_reverse: true
+        ipaserver_mkhomedir: true

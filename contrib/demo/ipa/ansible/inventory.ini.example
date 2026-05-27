@@ -1,0 +1,45 @@
+# Ansible inventory for a FreeIPA + akamu deployment.
+# Copy to inventory.ini and edit hostnames / variables.
+#
+# Assumptions:
+#   - All nodes run Fedora 42+ or RHEL 10+ (systemd, dnf, gssproxy, httpd).
+#   - DNS resolves all FQDNs — IPA installation requires working forward/reverse DNS.
+#   - SSH key-based login as a user with passwordless sudo.
+
+[ipa_server]
+ipa1.example.com
+
+[ipa_replicas]
+ipa2.example.com
+ipa3.example.com
+
+# All IPA nodes (server + replicas) — akamu is installed on every member.
+[ipa_nodes:children]
+ipa_server
+ipa_replicas
+
+[ipa_nodes:vars]
+# IPA domain and realm.  The realm is conventionally the uppercased domain.
+ipa_domain=ipa.example.com
+ipa_realm=IPA.EXAMPLE.COM
+
+# Passwords — use ansible-vault in production.
+ipa_admin_password=SomeAdminPass1!
+ipa_ds_password=SomeDSPass1!
+
+# URL path prefix at which akamu is exposed behind Apache.
+akamu_issuer_path=/acme
+
+# Standalone akamu nodes: IPA-enrolled hosts that run akamu but are NOT
+# IPA replicas (no local 389-ds or KDC).  These nodes require additional
+# Kerberos constrained delegation so their HTTP principal can perform S4U2Proxy
+# against the IPA server's LDAP service when fetching IPAThinCA profiles.
+# Leave this group empty or omit it entirely if every akamu node is an IPA replica.
+[akamu_standalone]
+# acme.example.com
+
+[akamu_standalone:vars]
+ipa_domain=ipa.example.com
+ipa_realm=IPA.EXAMPLE.COM
+ipa_admin_password=SomeAdminPass1!
+akamu_issuer_path=/acme

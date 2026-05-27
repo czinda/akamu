@@ -1,0 +1,107 @@
+---
+# Install and configure akamu on all IPA nodes.
+#
+# Run standalone:
+#   ansible-playbook -i inventory.ini playbooks/akamu.yml
+#
+# Installs akamu from the abbra/synta COPR repository, configures
+# gssproxy and Apache, and enables the akamu systemd service.
+
+- name: Install and configure akamu
+  hosts: ipa_nodes
+  become: true
+
+  tasks:
+    # ── Package installation ────────────────────────────────────────────────
+
+    - name: Install dnf-plugins-core (provides dnf copr)
+      ansible.builtin.dnf:
+        name: dnf-plugins-core
+        state: present
+
+    - name: Enable abbra/synta COPR repository
+      ansible.builtin.command:
+        cmd: dnf copr enable -y {{ akamu_copr_repo }}
+      register: copr_enable
+      changed_when: "'Enabling' in copr_enable.stdout"
+      failed_when: copr_enable.rc != 0
+
+    - name: Install akamu
+      ansible.builtin.dnf:
+        name: akamu
+        state: present
+
+    # ── Socket group permission ─────────────────────────────────────────────
+    #
+    # /run/akamu/ is created by the akamu service unit with mode 0710 (akamu:akamu).
+    # The apache user must be in the akamu group to connect to the Unix socket.
+
+    - name: Add apache user to akamu group
+      ansible.builtin.user:
+        name: apache
+        groups: akamu
+        append: true
+
+    # ── Configuration ───────────────────────────────────────────────────────
+
+    - name: Deploy akamu.toml
+      ansible.builtin.template:
+        src: ../templates/akamu.toml.j2
+        dest: /etc/akamu/config.toml
+        owner: akamu
+        group: akamu
+        mode: "0640"
+      notify:
+        - Restart akamu
+
+    - name: Deploy gssproxy configuration for akamu
+      ansible.builtin.template:
+        src: ../templates/akamu-gssproxy.conf.j2
+        dest: /etc/gssproxy/20-akamu.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify:
+        - Restart gssproxy
+
+    - name: Deploy Apache proxy configuration for akamu
+      ansible.builtin.template:
+        src: ../templates/ipa-acme-proxy.conf.j2
+        dest: /etc/httpd/conf.d/ipa-acme-proxy.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify:
+        - Reload httpd
+
+    # ── Service management ──────────────────────────────────────────────────
+
+    - name: Enable and start akamu
+      ansible.builtin.service:
+        name: "{{ akamu_service }}"
+        state: started
+        enabled: true
+
+    - name: Open firewall for HTTPS (if firewalld is active)
+      ansible.posix.firewalld:
+        service: https
+        permanent: true
+        state: enabled
+        immediate: true
+      ignore_errors: true  # firewalld may not be installed in all environments
+
+  handlers:
+    - name: Restart akamu
+      ansible.builtin.service:
+        name: "{{ akamu_service }}"
+        state: restarted
+
+    - name: Restart gssproxy
+      ansible.builtin.service:
+        name: gssproxy
+        state: restarted
+
+    - name: Reload httpd
+      ansible.builtin.service:
+        name: httpd
+        state: reloaded

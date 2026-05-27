@@ -1,0 +1,129 @@
+---
+# Grant IPA privileges required by akamu to the HTTP service principals.
+#
+# Run once after all IPA nodes are installed:
+#   ansible-playbook -i inventory.ini playbooks/ipa_permissions.yml
+#
+# Uses ansible-freeipa modules — fully idempotent.
+# Runs IPA tasks on the primary server; gathers FQDNs from all nodes first.
+#
+# For the basic deployment (gssproxy SPNEGO auth, own CA) no IPA LDAP
+# privileges are strictly required.  This playbook covers:
+#
+#   1. Optional IPAThinCA profile access — if you enable [profiles.providers.ipa]
+#      in akamu.toml, the HTTP principal needs read access to the IPA CA LDAP.
+#      On Fedora/RHEL IPA this subtree is world-readable for enrolled principals,
+#      but the role assignment below makes the grant explicit.
+#
+#   2. S4U2Proxy constrained delegation for standalone (non-replica) nodes —
+#      if an akamu node is not an IPA replica and needs to perform GSSAPI LDAP
+#      binds to the IPA server for profile fetches, its HTTP principal must be
+#      delegated access to the IPA server's ldap/ principal.
+
+- name: Gather facts from all IPA nodes
+  hosts: ipa_nodes
+  gather_facts: true
+
+- name: Gather facts from standalone akamu nodes (if any)
+  hosts: akamu_standalone
+  gather_facts: true
+  ignore_unreachable: true
+
+- name: Configure IPA privileges for akamu
+  hosts: ipa_server
+  become: true
+
+  vars:
+    # 389-ds instance name derived from the IPA realm (dots become hyphens).
+    dirsrv_instance: "slapd-{{ ipa_realm | replace('.', '-') }}"
+
+  tasks:
+    # ── Privilege: IPA CA profile read ────────────────────────────────────────
+    #
+    # Needed only when [profiles.providers.ipa] is enabled in akamu.toml.
+    # On Fedora/RHEL IPA the o=ipaca subtree is readable by any enrolled
+    # principal; this role assignment is for explicit auditability.
+
+    - name: Create akamu IPA CA read privilege
+      freeipa.ansible_freeipa.ipaprivilege:
+        ipaadmin_password: "{{ ipa_admin_password }}"
+        name: "Akamu IPA CA Read"
+        description: "Allows akamu to read IPAThinCA certificate profiles via LDAP"
+        permission:
+          - "System: Read Certificate Profiles"
+        state: present
+
+    - name: Create akamu role and assign HTTP service members
+      freeipa.ansible_freeipa.iparole:
+        ipaadmin_password: "{{ ipa_admin_password }}"
+        name: "Akamu Services"
+        description: "Role for akamu ACME server HTTP service accounts"
+        privilege:
+          - "Akamu IPA CA Read"
+        service: >-
+          {{
+            (groups['ipa_nodes'] + (groups['akamu_standalone'] | default([])))
+            | map('extract', hostvars, 'ansible_fqdn')
+            | select('defined')
+            | map('regex_replace', '^(.+)$', 'HTTP/\1@' + ipa_realm)
+            | list
+          }}
+        state: present
+
+    # ── S4U2Proxy delegation for standalone (non-replica) akamu nodes ──────────
+    #
+    # A standalone node has its own HTTP service principal but no local IPA
+    # replica.  To perform GSSAPI LDAP binds against the IPA server (for
+    # IPAThinCA profile fetches via S4U2Proxy), the HTTP principal needs:
+    #   1. ok_to_auth_as_delegate = true  (enables S4U2Self in the KDC)
+    #   2. A service delegation target listing the IPA servers' ldap/ principals
+    #   3. A service delegation rule assigning the standalone HTTP principal
+    #
+    # These tasks are skipped when the akamu_standalone group is empty.
+
+    - name: Enable ok-to-auth-as-delegate on standalone akamu HTTP principals
+      freeipa.ansible_freeipa.ipaservice:
+        ipaadmin_password: "{{ ipa_admin_password }}"
+        name: "HTTP/{{ hostvars[item]['ansible_fqdn'] }}@{{ ipa_realm }}"
+        ok_to_auth_as_delegate: true
+        state: present
+      loop: "{{ groups['akamu_standalone'] | default([]) }}"
+      when: groups['akamu_standalone'] | default([]) | length > 0
+
+    - name: Create service delegation target for standalone akamu S4U2Proxy
+      freeipa.ansible_freeipa.ipaservicedelegationtarget:
+        ipaadmin_password: "{{ ipa_admin_password }}"
+        name: "akamu-delegation-targets"
+        principal: >-
+          {{
+            groups['ipa_nodes']
+            | map('extract', hostvars, 'ansible_fqdn')
+            | select('defined')
+            | map('regex_replace', '^(.+)$', 'HTTP/\1@' + ipa_realm)
+            | list
+            +
+            groups['ipa_nodes']
+            | map('extract', hostvars, 'ansible_fqdn')
+            | select('defined')
+            | map('regex_replace', '^(.+)$', 'ldap/\1@' + ipa_realm)
+            | list
+          }}
+        state: present
+      when: groups['akamu_standalone'] | default([]) | length > 0
+
+    - name: Create service delegation rule granting standalone akamu S4U2Proxy
+      freeipa.ansible_freeipa.ipaservicedelegationrule:
+        ipaadmin_password: "{{ ipa_admin_password }}"
+        name: "akamu-delegation"
+        principal: >-
+          {{
+            groups['akamu_standalone'] | default([])
+            | map('extract', hostvars, 'ansible_fqdn')
+            | select('defined')
+            | map('regex_replace', '^(.+)$', 'HTTP/\1@' + ipa_realm)
+            | list
+          }}
+        target:
+          - "akamu-delegation-targets"
+        state: present
+      when: groups['akamu_standalone'] | default([]) | length > 0
