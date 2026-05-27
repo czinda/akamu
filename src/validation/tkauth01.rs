@@ -1055,8 +1055,7 @@ mod tests {
         use synta_certificate::{
             encode_authority_key_identifier, encode_basic_constraints, encode_key_usage,
             encode_subject_key_identifier, parse_time, BackendPrivateKey, CertificateBuilder,
-            CertificateSigner as _, KeyIdMethod, NameBuilder, PrivateKey as _, KEY_USAGE_C_RLSIGN,
-            KEY_USAGE_KEY_CERT_SIGN,
+            KeyIdMethod, NameBuilder, PrivateKey as _, KEY_USAGE_C_RLSIGN, KEY_USAGE_KEY_CERT_SIGN,
         };
         let key = BackendPrivateKey::generate_ec("P-256").unwrap();
         let spki = key.public_key().unwrap().spki_der().to_vec();
@@ -1108,8 +1107,8 @@ mod tests {
     ) -> (synta_certificate::BackendPrivateKey, Vec<u8>) {
         use synta_certificate::{
             encode_authority_key_identifier, encode_subject_key_identifier, parse_time,
-            BackendPrivateKey, CertificateBuilder, CertificateSigner as _, KeyIdMethod,
-            NameBuilder, PrivateKey as _, SubjectAlternativeNameBuilder,
+            BackendPrivateKey, CertificateBuilder, KeyIdMethod, NameBuilder, PrivateKey as _,
+            SubjectAlternativeNameBuilder,
         };
         let key = BackendPrivateKey::generate_ec("P-256").unwrap();
         let spki = key.public_key().unwrap().spki_der().to_vec();

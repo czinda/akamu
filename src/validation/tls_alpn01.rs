@@ -299,24 +299,6 @@ mod tests {
             .unwrap()
     }
 
-    /// SAN extension value with a single iPAddress.
-    fn san_ip(ip_str: &str) -> Vec<u8> {
-        use synta_certificate::SubjectAlternativeNameBuilder;
-        let ip_bytes = if let Ok(v4) = ip_str.parse::<std::net::Ipv4Addr>() {
-            v4.octets().to_vec()
-        } else {
-            ip_str
-                .parse::<std::net::Ipv6Addr>()
-                .unwrap()
-                .octets()
-                .to_vec()
-        };
-        SubjectAlternativeNameBuilder::new()
-            .ip_address(&ip_bytes)
-            .build()
-            .unwrap()
-    }
-
     #[test]
     fn verify_acme_cert_correct_extension_succeeds() {
         let key_auth = "test-key-auth";
