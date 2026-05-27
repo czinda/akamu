@@ -1056,8 +1056,12 @@ any client to impersonate any principal.
 a configuration error; the server exits at startup with an error message.
 
 Configures akamu to accept `Authorization: Negotiate` tokens directly, without
-a reverse proxy. At startup the server acquires an acceptor credential from
-`keytab_file` and uses `gss_accept_sec_context` to validate each SPNEGO token.
+a reverse proxy. At startup the server acquires a combined initiator+acceptor
+credential (`GSS_C_BOTH`) from `keytab_file` using `gss_acquire_cred_from` and
+uses `gss_accept_sec_context` to validate each SPNEGO token. The
+`GSS_C_BOTH` usage flag is required for S4U2Self constrained delegation (used
+internally for LDAP profile lookups) and is compatible with gssproxy-managed
+credentials.
 
 Use this mode when you want akamu to handle Kerberos authentication itself
 rather than delegating to a front-end proxy such as Apache or Nginx.
@@ -1075,9 +1079,12 @@ rather than delegating to a front-end proxy such as Apache or Nginx.
   channel. Channel bindings are disabled automatically when the server
   certificate uses ML-DSA (pure or composite) or Ed448, because RFC 5929
   defines no canonical hash for those algorithms.
-- **Replay detection.** After a successful context acceptance, akamu verifies
-  that `GSS_C_REPLAY_FLAG` is set. Contexts without replay detection are
-  rejected with `403 Forbidden`.
+- **Replay detection.** After a successful context acceptance, akamu checks
+  whether `GSS_C_REPLAY_FLAG` is set. When the flag is absent (common when
+  clients connect over TLS, because TLS already provides replay protection),
+  a `debug`-level log entry is emitted and the authentication proceeds
+  normally. This behaviour is intentional: browsers and TLS-first clients
+  typically do not negotiate Kerberos-level replay protection.
 - **GSSAPI without TLS.** Running standalone GSSAPI without TLS is permitted
   but emits a `warn`-level log at startup: SPNEGO tokens are vulnerable to
   interception and relay attacks without TLS.
@@ -1089,6 +1096,14 @@ rather than delegating to a front-end proxy such as Apache or Nginx.
 **Required within `[server.gssapi]`.** Path to the HTTP service keytab file.
 The akamu process must be able to read this file; no other user should have
 read access to it. The path is logged at `debug` level only.
+
+When [gssproxy](https://github.com/gssapi/gssproxy) is active for the akamu
+process (matched by UID in `/etc/gssproxy/conf.d/`), it intercepts the
+underlying `gss_acquire_cred_from` call and supplies credentials from the
+configured keytab without requiring the akamu process to have direct read
+access to the keytab file on disk. In this case the `keytab_file` value
+is still parsed by the config parser and passed to the GSSAPI library call,
+but gssproxy ignores it in favour of its own keytab configuration.
 
 ```toml
 keytab_file = "/etc/akamu/http.keytab"
