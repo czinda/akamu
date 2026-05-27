@@ -36,7 +36,7 @@ impl AuthorityToken {
     /// Decode the JWT header without verifying the signature or expiry.
     ///
     /// Use this to learn which certificate to fetch before calling
-    /// [`decode_and_verify`].
+    /// [`AuthorityToken::decode_and_verify`].
     pub fn decode_header(token: &str) -> Result<AuthorityTokenHeader, JoseError> {
         let header_b64 = token
             .split('.')
