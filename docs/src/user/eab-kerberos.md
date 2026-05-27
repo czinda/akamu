@@ -43,8 +43,11 @@ Additional behaviors of this mode:
   which RFC 5929 defines no canonical hash — channel bindings are disabled
   automatically.
 - **Replay detection.** After a successful `gss_accept_sec_context` call, akamu
-  verifies that `GSS_C_REPLAY_FLAG` is set in the returned flags. Contexts
-  without replay detection are rejected with `403 Forbidden`.
+  checks whether `GSS_C_REPLAY_FLAG` is set. When the flag is absent (common
+  when clients connect over TLS, because TLS already provides replay
+  protection), a `debug`-level log entry is emitted and the authentication
+  proceeds normally. This behaviour is intentional: browsers and TLS-first
+  clients typically do not negotiate Kerberos-level replay protection.
 - **No authentication mechanism configured.** When neither `trusted_proxies`
   nor `[server.gssapi]` is set, requests to authenticated endpoints return
   `404 Not Found` rather than `403 Forbidden`.
@@ -62,8 +65,9 @@ Both modes require a working Kerberos environment:
 
 - A Kerberos realm (for example, managed by FreeIPA or Active Directory).
 - A service principal of the form `HTTP/<hostname>@REALM` registered in the KDC.
-- For standalone GSSAPI: a keytab containing a key for that principal, readable
-  only by the akamu process.
+- For standalone GSSAPI: either a keytab file readable only by the akamu
+  process, or a gssproxy daemon entry that supplies the credential (no direct
+  keytab access needed — see [FreeIPA deployment](deployment-ipa.md)).
 - For proxy mode: a reverse proxy configured to perform SPNEGO and set
   `X-Remote-User`.
 
@@ -100,17 +104,15 @@ Example Apache configuration (mod_auth_gssapi):
 
 ### Standalone GSSAPI mode
 
+Two credential sources are supported: a keytab file read directly by akamu, or
+the gssproxy daemon (no direct file access needed).
+
+**Keytab mode** — akamu reads the keytab at startup:
+
 ```toml
 [server.gssapi]
-keytab_file  = "/etc/akamu/http.keytab"
-service_name = "HTTP"
+keytab_file = "/etc/akamu/http.keytab"
 ```
-
-- `keytab_file` — path to the HTTP service keytab. The akamu process must be
-  able to read this file; no other user should have access to it.
-- `service_name` — host-based service name. MIT Kerberos appends
-  `@<local-hostname>` automatically when no realm is given. Use
-  `"HTTP@akamu.example.com"` to be explicit about the hostname.
 
 Generate and install the keytab for an IPA-managed host:
 
@@ -122,11 +124,29 @@ chmod 600 /etc/akamu/http.keytab
 chown akamu: /etc/akamu/http.keytab
 ```
 
-Verify the keytab:
+**gssproxy mode** — gssproxy supplies the credential; no keytab path is needed:
 
-```bash
-klist -kt /etc/akamu/http.keytab
+```toml
+[server.gssapi]
+gssproxy = true
 ```
+
+Set `GSS_USE_PROXY=yes` is handled automatically; akamu sets it before the
+first GSSAPI call when `gssproxy = true`. Install the gssproxy service entry
+first — see [FreeIPA deployment](deployment-ipa.md) for a complete example.
+
+**Common option** — `service_name` selects the Kerberos service component.
+MIT Kerberos appends `@<local-hostname>` automatically when no realm is given.
+The default is `"HTTP"`; use `"HTTP@akamu.example.com"` to be explicit:
+
+```toml
+[server.gssapi]
+keytab_file  = "/etc/akamu/http.keytab"
+service_name = "HTTP@akamu.example.com"   # explicit hostname
+```
+
+`keytab_file` and `gssproxy` are mutually exclusive — the server exits at
+startup if both are set.
 
 ## The `GET /acme/eab` endpoint
 
@@ -278,10 +298,13 @@ consumed by a prior registration. Contact your CA administrator to reset them.
 
 ## Security notes
 
-- The keytab grants the ability to accept Kerberos service tickets for the HTTP
-  principal. Treat it with the same care as a private key.
-- File permissions: `600`, owned by the akamu service account.
-- Do not share the same keytab between akamu and other services.
+- In keytab mode the keytab grants the ability to accept Kerberos service
+  tickets for the HTTP principal. Treat it with the same care as a private key:
+  permissions `600`, owned by the akamu service account, never shared with
+  other services.
+- In gssproxy mode the keytab is held by the gssproxy daemon; verify that the
+  gssproxy service entry restricts access by `euid = akamu` so that no other
+  process on the host can obtain the HTTP service credential.
 - The `trusted_proxies` list must be kept tightly scoped to the actual IP
   addresses of your reverse proxy. A broadly scoped list (for example,
   `0.0.0.0/0`) allows any network client to assert any principal name.
