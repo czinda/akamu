@@ -236,7 +236,15 @@ impl AdminConfig {
 #[derive(Debug, Deserialize, Clone)]
 pub struct AdminGssapiConfig {
     /// Path to the HTTP service keytab (e.g. `/etc/akamu/http.keytab`).
-    pub keytab_file: String,
+    /// Required when `gssproxy = false` (the default).  Omit when `gssproxy = true`.
+    #[serde(default)]
+    pub keytab_file: Option<String>,
+    /// When `true`, GSSAPI credential acquisition is delegated to gssproxy.
+    /// The process must have a matching entry in `/etc/gssproxy/conf.d/`.
+    /// `GSS_USE_PROXY=yes` is set in the environment before the first GSSAPI call.
+    /// Default: `false`.
+    #[serde(default)]
+    pub gssproxy: bool,
     /// Host-based service name.  MIT Kerberos appends `@<hostname>` automatically.
     /// Default: `"HTTP"`.
     #[serde(default = "default_gssapi_service")]
@@ -1003,7 +1011,15 @@ fn default_upstream_poll_secs() -> u64 {
 #[derive(Debug, Deserialize)]
 pub struct GssapiConfig {
     /// Path to the HTTP service keytab (e.g. `/etc/akamu/http.keytab`).
-    pub keytab_file: String,
+    /// Required when `gssproxy = false` (the default).  Omit when `gssproxy = true`.
+    #[serde(default)]
+    pub keytab_file: Option<String>,
+    /// When `true`, GSSAPI credential acquisition is delegated to gssproxy.
+    /// The process must have a matching entry in `/etc/gssproxy/conf.d/`.
+    /// No direct keytab access is needed.  `GSS_USE_PROXY=yes` is set in the
+    /// environment before the first GSSAPI call.  Default: `false`.
+    #[serde(default)]
+    pub gssproxy: bool,
     /// Host-based service name to acquire credentials for.
     /// MIT Kerberos appends `@<local-hostname>` when no realm is specified.
     /// Default: `"HTTP"`.
@@ -1753,6 +1769,36 @@ impl Config {
             }
         }
 
+        if let Some(ref gcfg) = self.server.gssapi {
+            if !gcfg.gssproxy && gcfg.keytab_file.is_none() {
+                return Err(
+                    "[server.gssapi]: set `keytab_file` or enable `gssproxy = true`".into(),
+                );
+            }
+            if gcfg.gssproxy && gcfg.keytab_file.is_some() {
+                return Err(
+                    "[server.gssapi]: `keytab_file` and `gssproxy = true` are mutually exclusive"
+                        .into(),
+                );
+            }
+        }
+
+        if let Some(ref admin) = self.admin {
+            if let Some(ref gcfg) = admin.gssapi {
+                if !gcfg.gssproxy && gcfg.keytab_file.is_none() {
+                    return Err(
+                        "[admin.gssapi]: set `keytab_file` or enable `gssproxy = true`".into(),
+                    );
+                }
+                if gcfg.gssproxy && gcfg.keytab_file.is_some() {
+                    return Err(
+                        "[admin.gssapi]: `keytab_file` and `gssproxy = true` are mutually exclusive"
+                            .into(),
+                    );
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -2104,7 +2150,7 @@ max_body_bytes = 131072
         );
         let cfg: Config = toml::from_str(&toml).unwrap();
         let gcfg = cfg.server.gssapi.expect("gssapi should be Some");
-        assert_eq!(gcfg.keytab_file, "/etc/akamu/http.keytab");
+        assert_eq!(gcfg.keytab_file.as_deref(), Some("/etc/akamu/http.keytab"));
         assert_eq!(gcfg.service_name, "HTTP@host.example.com");
     }
 
