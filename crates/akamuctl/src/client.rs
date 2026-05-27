@@ -152,7 +152,7 @@ impl AdminClient {
         // POST /admin/session — mTLS cert or GSSAPI Negotiate authenticates the operator.
         let session_resp = if let Some(ref spn) = self.gssapi_service {
             // GSSAPI multi-round-trip loop: step → send → check for server token → repeat.
-            let cred = akamu_gssapi::GssClientCred::from_ccache()
+            let cred = akamu_gssapi::GssClientCred::ambient()
                 .map_err(|e| {
                     CtlError::Auth(format!(
                         "GSSAPI ccache: {e}\n\nhint: run 'kinit' to obtain a Kerberos ticket, then retry"
