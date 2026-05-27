@@ -68,6 +68,9 @@ allow_certificate_get       = false
 keytab_file  = "/etc/akamu/http.keytab"   # omit and set gssproxy = true to use gssproxy instead
 service_name = "HTTP"
 
+# [server.webui]
+# static_dir = "/usr/share/akamu/webui"
+
 [tls.client_auth]
 ca_certs = ["/etc/akamu/operator-ca.pem"]
 required = false
@@ -1180,6 +1183,60 @@ service_name = "HTTP"
 In both configurations, akamu handles `Authorization: Negotiate` directly.
 Clients must obtain a Kerberos service ticket for `HTTP/<hostname>` before
 calling authenticated endpoints.
+
+### `[server.webui]`
+
+**Optional. When absent, the `/ui/` routes are not registered and return 404.**
+
+When present, Akāmu serves the built PatternFly management web UI from a
+directory of static files. The UI is mounted at `/ui/*` on the same listener
+as the ACME and admin APIs; no separate process or proxy is required.
+
+When `[server.webui]` is absent (the default), no `/ui/*` routes are
+registered at all. Requests to `/ui/` and `GET /` receive 404 responses as
+if the routes did not exist.
+
+When `[server.webui]` is present:
+
+- `GET /ui/*` serves static files from `static_dir`.
+- Directory requests fall back to `index.html` inside that directory (SPA
+  routing support).
+- `GET /` permanently redirects to `/ui/`.
+- Security headers (`Content-Security-Policy`, `X-Frame-Options`, etc.) are
+  added to every `/ui/*` response.
+
+The admin API (`/admin/*`) is served on the same listener and is called
+directly by the browser — no additional proxy is needed.
+
+#### `static_dir`
+
+**Optional. Default: absent (web UI disabled).**
+
+Absolute path to the directory containing the built web UI files. The
+directory must contain at minimum an `index.html` file.
+
+| Deployment | Typical path |
+|------------|--------------|
+| Fedora / RHEL package | `/usr/share/akamu/webui` |
+| Source build | `webui/dist/` (relative to the repository root, absolute path required) |
+
+When `static_dir` is absent but `[server.webui]` is present, the section is
+accepted without error and no routes are registered — the behavior is identical
+to omitting `[server.webui]` entirely. Set `static_dir` to actually serve the UI.
+
+Config validation rejects a relative path with a startup error.
+
+```toml
+[server.webui]
+static_dir = "/usr/share/akamu/webui"
+```
+
+Source build example (absolute path required):
+
+```toml
+[server.webui]
+static_dir = "/home/user/akamu/webui/dist"
+```
 
 ---
 
