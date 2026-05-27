@@ -85,6 +85,14 @@ pub enum GssError {
     #[error("target service name contains an interior NUL byte")]
     NulInTargetName,
 
+    /// `user_principal` passed to [`crate::GssClientCred::impersonate`] contains an interior NUL byte.
+    #[error("user principal contains an interior NUL byte")]
+    NulInUserPrincipal,
+
+    /// A ccache name passed to a credential function contains an interior NUL byte.
+    #[error("ccache name contains an interior NUL byte")]
+    NulInCcacheName,
+
     /// `gss_init_sec_context` failed to produce the initial token.
     ///
     /// Common causes: the Kerberos TGT in the default ccache has expired
@@ -96,4 +104,36 @@ pub enum GssError {
         minor: OmUint32,
         detail: String,
     },
+
+    /// `gss_acquire_cred_impersonate_name` failed (S4U2Self).
+    ///
+    /// Common causes: the KDC does not allow protocol transition for this
+    /// service, the user principal does not exist, or constrained delegation
+    /// is not configured.
+    #[error("gss_acquire_cred_impersonate_name failed: {detail}")]
+    ImpersonateCred {
+        major: OmUint32,
+        minor: OmUint32,
+        detail: String,
+    },
+
+    /// `gss_store_cred_into` failed to write the credential to the named cache.
+    #[error("gss_store_cred_into failed: {detail}")]
+    StoreCred {
+        major: OmUint32,
+        minor: OmUint32,
+        detail: String,
+    },
+
+    /// `gss_krb5_ccache_name` failed to set the thread-local credential cache.
+    #[error("gss_krb5_ccache_name failed: {detail}")]
+    SetCcache {
+        major: OmUint32,
+        minor: OmUint32,
+        detail: String,
+    },
+
+    /// A libkrb5 function failed (TGT acquisition or ccache operation).
+    #[error("krb5 error in {msg}: code {code:#010x}")]
+    Krb5 { code: i32, msg: &'static str },
 }
