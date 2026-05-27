@@ -19,9 +19,9 @@ organization = "{{ ipa_realm }}"
 [server]
 validate_dnssec = true
 
+# service_name defaults to "HTTP".
 [server.gssapi]
-service_name = "HTTP"
-gssproxy     = true
+gssproxy = true
 
 [admin]
 # Bootstrap the IPA admin principal as the first akamu Administrator.
@@ -29,8 +29,7 @@ gssproxy     = true
 bootstrap_operator_gssapi_principal = "admin@{{ ipa_realm }}"
 
 [admin.gssapi]
-service_name = "HTTP"
-gssproxy     = true
+gssproxy = true
 
 # Uncomment to expose IPAThinCA certificate profiles via ACME.
 # The HTTP service principal must have read access to o=ipaca (see ipa_permissions.yml).

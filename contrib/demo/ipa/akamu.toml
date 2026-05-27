@@ -50,13 +50,11 @@ organization = "EXAMPLE.COM"
 [server]
 validate_dnssec = true
 
-# GSSAPI/SPNEGO authentication for ACME clients.
-# IPA-enrolled services authenticate directly with their Kerberos service ticket;
-# no kinit is required for the client.
+# GSSAPI/SPNEGO for ACME clients and admin operators.
 # gssproxy intercepts gss_acquire_cred_from — no direct keytab access needed.
+# service_name defaults to "HTTP".
 [server.gssapi]
-service_name = "HTTP"
-gssproxy     = true
+gssproxy = true
 
 # ── Admin API ─────────────────────────────────────────────────────────────────
 
@@ -65,12 +63,8 @@ gssproxy     = true
 # Change to the GSSAPI principal of the operator who will manage akamu.
 bootstrap_operator_gssapi_principal = "admin@EXAMPLE.COM"
 
-# GSSAPI/Kerberos authentication for admin operators.
-# IPA admin principals (e.g. admin@EXAMPLE.COM) authenticate via SPNEGO;
-# the same gssproxy entry handles both ACME client and admin operator tickets.
 [admin.gssapi]
-service_name = "HTTP"
-gssproxy     = true
+gssproxy = true
 
 # ── Certificate profiles (optional) ──────────────────────────────────────────
 
