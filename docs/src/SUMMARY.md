@@ -24,6 +24,7 @@
 - [Performance](user/performance.md)
 - [RFC Support Reference](user/rfc-support.md)
 - [EAB and Kerberos Authentication](user/eab-kerberos.md)
+- [FreeIPA Co-deployment](user/deployment-ipa.md)
 - [Backup and Restore](user/backup-restore.md)
 - [akamuctl — Admin CLI](user/akamuctl.md)
 
