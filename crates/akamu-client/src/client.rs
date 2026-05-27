@@ -322,7 +322,8 @@ impl AcmeClient {
         let (status, body, headers) =
             last_result.expect("loop always sets last_result before break");
 
-        if status != StatusCode::CREATED {
+        // RFC 8555 §7.3.1: 201 = new account, 200 = existing account returned.
+        if status != StatusCode::CREATED && status != StatusCode::OK {
             return Err(acme_error(&body, status, "new-account"));
         }
 
