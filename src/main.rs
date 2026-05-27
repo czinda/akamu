@@ -104,6 +104,22 @@ async fn run() -> Result<(), String> {
     tracing::info!("loading config from '{config_path}'");
     let config = Config::from_file(&config_path)?;
 
+    // Set GSS_USE_PROXY before the first GSSAPI call so MIT Kerberos intercepts
+    // gss_acquire_cred_from() via gssproxy.  No krb5/GSSAPI C library thread exists
+    // yet at this point in startup, so the write is not concurrent with any getenv.
+    let needs_gssproxy = config.server.gssapi.as_ref().is_some_and(|g| g.gssproxy)
+        || config
+            .admin
+            .as_ref()
+            .and_then(|a| a.gssapi.as_ref())
+            .is_some_and(|g| g.gssproxy);
+    if needs_gssproxy {
+        // SAFETY: no krb5/GSSAPI C library thread has been created yet; the only
+        // concurrent threads are tokio worker threads, which do not call getenv.
+        unsafe { std::env::set_var("GSS_USE_PROXY", "yes") };
+        tracing::info!("gssproxy mode enabled: GSS_USE_PROXY=yes");
+    }
+
     // CA/B Forum BR §7.1.3.2.1: SHA-1 prohibited in certificate/CRL signatures since 2026-09-15.
     // CA/B Forum BR §6.3.2 validity caps: 200 days since 2026-03-15, 100 from 2027-03-15.
     for ca_cfg in &config.cas {
@@ -609,15 +625,25 @@ async fn run() -> Result<(), String> {
             "initializing GSSAPI credential for service '{}'",
             gcfg.service_name
         );
-        tracing::info!("GSSAPI keytab: '{}'", gcfg.keytab_file);
         if !config.tls.enabled {
             tracing::warn!(
                 "GSSAPI is configured without TLS; SPNEGO tokens are not protected against \
                  interception or relay attacks — enable TLS or use a TLS-terminating proxy"
             );
         }
-        let cred = akamu_gssapi::GssServerCred::acquire(&gcfg.service_name, &gcfg.keytab_file)
-            .map_err(|e| format!("GSSAPI credential init: {e}"))?;
+        let cred = if gcfg.gssproxy {
+            tracing::info!("acquiring GSSAPI credential via gssproxy");
+            akamu_gssapi::GssServerCred::from_gssproxy(&gcfg.service_name)
+                .map_err(|e| format!("GSSAPI credential init (gssproxy): {e}"))?
+        } else {
+            let keytab = gcfg
+                .keytab_file
+                .as_deref()
+                .ok_or("[server.gssapi]: keytab_file is required when gssproxy = false")?;
+            tracing::info!("acquiring GSSAPI credential from keytab: '{keytab}'");
+            akamu_gssapi::GssServerCred::acquire(&gcfg.service_name, keytab)
+                .map_err(|e| format!("GSSAPI credential init: {e}"))?
+        };
         Some(Arc::new(cred))
     } else {
         None
@@ -627,12 +653,22 @@ async fn run() -> Result<(), String> {
     let admin_gss_cred = if let Some(ref admin_cfg) = config.admin {
         if let Some(ref gcfg) = admin_cfg.gssapi {
             tracing::info!(
-                "initializing admin GSSAPI credential for service '{}', keytab: '{}'",
-                gcfg.service_name,
-                gcfg.keytab_file
+                "initializing admin GSSAPI credential for service '{}'",
+                gcfg.service_name
             );
-            let cred = akamu_gssapi::GssServerCred::acquire(&gcfg.service_name, &gcfg.keytab_file)
-                .map_err(|e| format!("admin GSSAPI credential init: {e}"))?;
+            let cred = if gcfg.gssproxy {
+                tracing::info!("acquiring admin GSSAPI credential via gssproxy");
+                akamu_gssapi::GssServerCred::from_gssproxy(&gcfg.service_name)
+                    .map_err(|e| format!("admin GSSAPI credential init (gssproxy): {e}"))?
+            } else {
+                let keytab = gcfg
+                    .keytab_file
+                    .as_deref()
+                    .ok_or("[admin.gssapi]: keytab_file is required when gssproxy = false")?;
+                tracing::info!("acquiring admin GSSAPI credential from keytab: '{keytab}'");
+                akamu_gssapi::GssServerCred::acquire(&gcfg.service_name, keytab)
+                    .map_err(|e| format!("admin GSSAPI credential init: {e}"))?
+            };
             Some(Arc::new(cred))
         } else {
             None
