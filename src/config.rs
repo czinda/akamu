@@ -120,19 +120,38 @@ pub struct AdminConfig {
     /// If set and the file is absent when the operators table is empty, a
     /// client certificate signed by the Akāmu CA is generated automatically
     /// and the operator is registered in the database.
+    /// Mutually exclusive with `bootstrap_operator_pkcs12_file`.
     pub bootstrap_operator_cert_file: Option<String>,
     /// PEM file for the bootstrap Administrator operator's client private key.
     /// Must be set alongside `bootstrap_operator_cert_file`.
+    /// Mutually exclusive with `bootstrap_operator_pkcs12_file`.
     pub bootstrap_operator_key_file: Option<String>,
+    /// PKCS#12 / PFX file for the bootstrap Administrator operator's client
+    /// certificate and private key.  When set and the file is absent and the
+    /// operators table is empty, a client certificate and key are generated,
+    /// bundled into a PKCS#12 file, and the operator is registered.
+    /// Mutually exclusive with `bootstrap_operator_cert_file` /
+    /// `bootstrap_operator_key_file`.
+    pub bootstrap_operator_pkcs12_file: Option<String>,
+    /// Password for the PKCS#12 bundle written by `bootstrap_operator_pkcs12_file`.
+    /// Default: `""` (empty password — the key is still encrypted with PBES2/AES-256-CBC;
+    /// leave the password field blank or press Enter when tools prompt for it).
+    #[serde(default)]
+    pub bootstrap_operator_pkcs12_password: String,
     /// Name recorded in the database for the auto-provisioned bootstrap operator.
     /// Default: `"admin"`.
     #[serde(default = "default_admin_bootstrap_operator_name")]
     pub bootstrap_operator_name: String,
     /// Kerberos principal for the GSSAPI bootstrap Administrator operator
-    /// (e.g. `"admin@REALM"`).  When set and the operators table is empty at
-    /// startup, an Administrator row with this principal is inserted so that
-    /// the first GSSAPI login succeeds without manual `akamuctl operator add`.
-    /// Mutually exclusive with `bootstrap_operator_cert_file` / `bootstrap_operator_key_file`.
+    /// (e.g. `"admin@REALM"`).  When set and no cert bootstrap is configured,
+    /// an Administrator row with this principal is inserted at startup (if the
+    /// operators table is empty) so that the first GSSAPI login succeeds without
+    /// a manual `akamuctl operator add`.
+    ///
+    /// When set alongside `bootstrap_operator_pkcs12_file` or
+    /// `bootstrap_operator_cert_file` / `bootstrap_operator_key_file`, the
+    /// principal is stored on the same bootstrapped operator row so that the
+    /// operator can authenticate via either mTLS or GSSAPI.
     pub bootstrap_operator_gssapi_principal: Option<String>,
 }
 
@@ -199,13 +218,15 @@ impl AdminConfig {
             }
             _ => {}
         }
-        if self.bootstrap_operator_gssapi_principal.is_some()
+        if self.bootstrap_operator_pkcs12_file.is_some()
             && self.bootstrap_operator_cert_file.is_some()
         {
-            return Err("[admin] bootstrap_operator_gssapi_principal and \
-                 bootstrap_operator_cert_file / bootstrap_operator_key_file \
-                 are mutually exclusive; choose one bootstrap method"
-                .into());
+            return Err(
+                "[admin] bootstrap_operator_pkcs12_file is mutually exclusive with \
+                 bootstrap_operator_cert_file / bootstrap_operator_key_file; \
+                 choose one bootstrap output format"
+                    .into(),
+            );
         }
         Ok(())
     }
