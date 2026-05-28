@@ -13,8 +13,16 @@ use crate::error::AcmeError;
 use crate::mtc::{log, tlog};
 use crate::state::AppState;
 
+/// X-MTC-Version header value for draft-04 responses.
+pub const MTC_DRAFT_VERSION: &str = "draft-04";
+
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    use std::fmt::Write as _;
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
 }
 
 /// GET /acme/mtc/tree-size
@@ -91,7 +99,7 @@ pub async fn get_standalone(
             ),
             (
                 axum::http::HeaderName::from_static("x-mtc-version"),
-                axum::http::HeaderValue::from_static("draft-03"),
+                axum::http::HeaderValue::from_static(MTC_DRAFT_VERSION),
             ),
         ],
         der,
@@ -145,7 +153,7 @@ pub async fn get_landmark_cert(
             ),
             (
                 axum::http::HeaderName::from_static("x-mtc-version"),
-                axum::http::HeaderValue::from_static("draft-03"),
+                axum::http::HeaderValue::from_static(MTC_DRAFT_VERSION),
             ),
         ],
         der,

@@ -74,6 +74,13 @@ pub fn build_standalone_der(p: StandaloneParams<'_>) -> Result<Vec<u8>, AcmeErro
             ),
         }
     }
+    if signatures.len() < cosignature_ders.len() {
+        tracing::warn!(
+            expected = cosignature_ders.len(),
+            embedded = signatures.len(),
+            "some cosignatures could not be decoded and were excluded from the standalone cert"
+        );
+    }
 
     let inclusion_proof_bytes: Vec<u8> = proof.into_iter().flatten().collect();
 
