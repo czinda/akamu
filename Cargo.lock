@@ -2733,9 +2733,9 @@ dependencies = [
 
 [[package]]
 name = "synta"
-version = "0.2.3"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "266642608a3b1df0da795bea2837f734f177458ca6c9ea4b4b3c398eaaaeff84"
+checksum = "00f43ce15cec68260dfb71b699cc0937019868719895baf7a7336972e672c827"
 dependencies = [
  "smallvec",
  "synta-derive",
@@ -2743,9 +2743,9 @@ dependencies = [
 
 [[package]]
 name = "synta-certificate"
-version = "0.2.3"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23a2283605e0c5802da9c5e620b35e19dc2d99d16b828ed40f7a8ead55c7426d"
+checksum = "c3bbcc7b01b3e21b86e72dced3b86957927d1b723144f7ab48fca9890792b2ff"
 dependencies = [
  "cryptoki",
  "log",
@@ -2757,15 +2757,15 @@ dependencies = [
 
 [[package]]
 name = "synta-codegen"
-version = "0.2.3"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "392e2c5dd18ea02d9530f2db952a71090654892de1012d84f3710d677860a39e"
+checksum = "291712b5a7e6efb4e7216efd482e5cfd3c5ee29fb868f3c7dabce27210ebd7f5"
 
 [[package]]
 name = "synta-derive"
-version = "0.2.3"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f831bf09be1c686f34d14e8d4021c560b77adab17a0eb9dd0e43b73b5700783"
+checksum = "e3834f96da437d20080739ef2977e9862e44651a6ab5cf1c85636d19d8e2f258"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2774,9 +2774,9 @@ dependencies = [
 
 [[package]]
 name = "synta-mtc"
-version = "0.2.3"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f66fa8baa76be5145277925e52ffec61f95fff61d817a38435082da023732c0"
+checksum = "6a4d934b85377f551f4c5c562d49ad8736acd0043b52ffc2c3a37f9aeba05dc6"
 dependencies = [
  "smallvec",
  "synta",
@@ -2787,9 +2787,9 @@ dependencies = [
 
 [[package]]
 name = "synta-x509-verification"
-version = "0.2.3"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f213f5f83e0b5abdb2c71a4ee06a62d17eb4386d51795b70bf49940d989740b"
+checksum = "5dc2e0f48cdbca1e1372d1de790746604eaa8588c5a8321f38b366f72aae4c7e"
 dependencies = [
  "openssl",
  "synta",
