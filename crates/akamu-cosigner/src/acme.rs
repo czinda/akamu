@@ -2,9 +2,10 @@
 //!
 //! When `[acme_bootstrap]` is configured, this module runs at startup to
 //! obtain a certificate from the ACME server using External Account Binding.
-//! The issued certificate is stored on disk and used as both the TLS server
-//! certificate and the source of the `CosignerID` (issuer + serial) embedded
-//! in every `SubtreeSignature`.
+//! The issued certificate is stored on disk and used as the TLS server
+//! certificate.  The cosigner's identity is the `TrustAnchorID` OID from
+//! `cosigner_id.trust_anchor_id`; the ACME certificate plays no role in the
+//! `SubtreeSignature.cosigner` field under draft-04.
 //!
 //! Challenge types supported:
 //! - `"http-01"` — tokens served by the main Axum server at
@@ -117,7 +118,10 @@ pub async fn run_bootstrap(
                 let key_auth = acct.key_authorization(token);
                 challenge_tokens
                     .write()
-                    .unwrap()
+                    .unwrap_or_else(|e| {
+                        tracing::error!("challenge_tokens RwLock poisoned; recovering: {e}");
+                        e.into_inner()
+                    })
                     .insert(token.to_owned(), key_auth);
             }
             "dns-01" => {

@@ -207,7 +207,13 @@ pub async fn post_session(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
         gt.year, gt.month, gt.day, gt.hour, gt.minute, gt.second
     );
-    let token = operator.session_token.unwrap_or_default();
+    let token = match operator.session_token {
+        Some(t) => t,
+        None => {
+            tracing::error!("BUG: authenticated OperatorContext has no session_token in post_session");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
     (
         StatusCode::OK,
         Json(json!({

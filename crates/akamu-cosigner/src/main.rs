@@ -28,6 +28,21 @@ async fn main() {
     }
 }
 
+/// Resolves when the process receives SIGTERM or Ctrl-C.
+///
+/// Installs the SIGTERM handler once so signal slots are not exhausted.
+/// Called from each `with_graceful_shutdown` closure; also used by
+/// `start_tls_server` which manages its own select loop.
+async fn shutdown_signal(
+    sigterm: &mut tokio::signal::unix::Signal,
+) {
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {},
+        _ = sigterm.recv() => {},
+    }
+    tracing::info!("received shutdown signal; stopping akamu-cosigner");
+}
+
 async fn run() -> Result<(), CosignerError> {
     let config_path = std::env::args()
         .nth(1)
@@ -81,30 +96,24 @@ async fn run() -> Result<(), CosignerError> {
         );
     }
 
-    let id_cert_pem = std::fs::read(&id_cert_path)?;
-    let id_cert_der = synta_certificate::pem_to_der(&id_cert_pem)
-        .into_iter()
-        .next()
-        .ok_or_else(|| CosignerError::Crypto("no DER block in cosigner-id PEM".into()))?;
-    let (cosigner_hash_alg_der, cosigner_spki_der) = parse_cosigner_id(&id_cert_der)?;
+    let cosigner_oid = parse_cosigner_oid(&config.cosigner_id.trust_anchor_id)?;
 
     // ── Build application state ───────────────────────────────────────────────
-    let admin_operators = config
-        .admin
-        .as_ref()
-        .map(|a| a.operators.clone())
-        .unwrap_or_default();
-    let admin_session_ttl_secs = config
-        .admin
-        .as_ref()
-        .map(|a| a.session_ttl_secs)
-        .unwrap_or(3600);
+    let (admin_operators, admin_session_ttl_secs) = match config.admin {
+        Some(ref a) => (a.operators.clone(), a.session_ttl_secs),
+        None => {
+            tracing::warn!(
+                "[admin] section not configured; \
+                 all admin endpoints will return 401 Unauthorized"
+            );
+            (vec![], akamu_cosigner::config::DEFAULT_SESSION_TTL_SECS)
+        }
+    };
     let state = Arc::new(AppState {
         signing_key,
         hash_alg: config.signing_key.hash_alg.clone(),
         sig_alg_der,
-        cosigner_hash_alg_der,
-        cosigner_spki_der,
+        cosigner_oid,
         challenge_tokens: Arc::clone(&challenge_tokens),
         admin_operators,
         admin_sessions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -115,6 +124,11 @@ async fn run() -> Result<(), CosignerError> {
 
     // ── Build router ──────────────────────────────────────────────────────────
     let router = routes::build_router(Arc::clone(&state));
+
+    // ── Install signal handler once before branching ─────────────────────────
+    let mut sigterm =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .map_err(|e| CosignerError::Config(format!("install SIGTERM handler: {e}")))?;
 
     // ── Start HTTP or HTTPS server ────────────────────────────────────────────
     // Try systemd socket activation first (listenfd), then fall back to config.
@@ -146,18 +160,9 @@ async fn run() -> Result<(), CosignerError> {
         tracing::info!("akamu-cosigner listening on systemd-activated Unix socket");
         let router = router.layer(axum::middleware::from_fn(uds_marker_layer));
         axum::serve(listener, router)
-            .with_graceful_shutdown(async {
-                let mut sigterm =
-                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                        .expect("failed to install SIGTERM handler");
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {},
-                    _ = sigterm.recv() => {},
-                }
-                tracing::info!("received shutdown signal; stopping akamu-cosigner");
-            })
+            .with_graceful_shutdown(async move { shutdown_signal(&mut sigterm).await })
             .await
-            .map_err(|e| CosignerError::Config(format!("server error: {e}")))?;
+            .map_err(|e| CosignerError::Io(e))?;
     } else {
         let target = parse_listen_target(&config.server.listen_addr, "AKAMU_COSIGNER_LISTEN")
             .map_err(CosignerError::Config)?;
@@ -170,7 +175,7 @@ async fn run() -> Result<(), CosignerError> {
                     ));
                 }
             };
-            start_tls_server(router, addr, &tls_cfg).await?;
+            start_tls_server(router, addr, &tls_cfg, sigterm).await?;
         } else {
             match target {
                 ListenTarget::Tcp(addr) => {
@@ -179,19 +184,9 @@ async fn run() -> Result<(), CosignerError> {
                         .await
                         .map_err(|e| CosignerError::Config(format!("bind '{}': {e}", addr)))?;
                     axum::serve(listener, router)
-                        .with_graceful_shutdown(async {
-                            let mut sigterm = tokio::signal::unix::signal(
-                                tokio::signal::unix::SignalKind::terminate(),
-                            )
-                            .expect("failed to install SIGTERM handler");
-                            tokio::select! {
-                                _ = tokio::signal::ctrl_c() => {},
-                                _ = sigterm.recv() => {},
-                            }
-                            tracing::info!("received shutdown signal; stopping akamu-cosigner");
-                        })
+                        .with_graceful_shutdown(async move { shutdown_signal(&mut sigterm).await })
                         .await
-                        .map_err(|e| CosignerError::Config(format!("server error: {e}")))?;
+                        .map_err(|e| CosignerError::Io(e))?;
                 }
                 ListenTarget::Unix(path) => {
                     remove_stale_socket(&path)
@@ -202,19 +197,9 @@ async fn run() -> Result<(), CosignerError> {
                     tracing::info!(path = %path, "akamu-cosigner listening on Unix socket");
                     let router = router.layer(axum::middleware::from_fn(uds_marker_layer));
                     axum::serve(listener, router)
-                        .with_graceful_shutdown(async {
-                            let mut sigterm = tokio::signal::unix::signal(
-                                tokio::signal::unix::SignalKind::terminate(),
-                            )
-                            .expect("failed to install SIGTERM handler");
-                            tokio::select! {
-                                _ = tokio::signal::ctrl_c() => {},
-                                _ = sigterm.recv() => {},
-                            }
-                            tracing::info!("received shutdown signal; stopping akamu-cosigner");
-                        })
+                        .with_graceful_shutdown(async move { shutdown_signal(&mut sigterm).await })
                         .await
-                        .map_err(|e| CosignerError::Config(format!("server error: {e}")))?;
+                        .map_err(|e| CosignerError::Io(e))?;
                     // Best-effort cleanup of the socket file after graceful shutdown.
                     let _ = std::fs::remove_file(&path);
                 }
@@ -257,10 +242,10 @@ fn generate_self_signed_cert(
         .map_err(|e| CosignerError::Crypto(format!("public key: {e}")))?;
     let spki_der = pub_key.spki_der().to_vec();
 
-    let now_secs = now_unix();
+    let now_secs = now_unix()?;
     let ten_years = 10 * 365 * 24 * 3600i64;
-    let nb = unix_to_time_str(now_secs);
-    let na = unix_to_time_str(now_secs + ten_years);
+    let nb = unix_to_time_str(now_secs)?;
+    let na = unix_to_time_str(now_secs + ten_years)?;
 
     let not_before = synta_certificate::parse_time(&nb)
         .map_err(|e| CosignerError::Crypto(format!("notBefore: {e}")))?;
@@ -275,7 +260,7 @@ fn generate_self_signed_cert(
         .issuer_name(&name_der)
         .subject_name(&name_der)
         .public_key_der(&spki_der)
-        .serial_number(synta::Integer::from_i64(now_unix()))
+        .serial_number(synta::Integer::from_i64(now_secs))
         .not_valid_before(not_before)
         .not_valid_after(not_after)
         .add_extension_oid(synta_certificate::oids::KEY_USAGE, true, &ku_der)
@@ -289,41 +274,20 @@ fn generate_self_signed_cert(
     Ok(())
 }
 
-/// Extract `(hash_alg_der, spki_der)` from a DER-encoded cosigner-id certificate.
-fn parse_cosigner_id(cert_der: &[u8]) -> Result<(Vec<u8>, Vec<u8>), CosignerError> {
-    use synta::traits::Encode;
-    use synta::{Decoder, Encoder, Encoding};
-    use synta_certificate::owned::Certificate;
-
-    let cert: Certificate = Decoder::new(cert_der, Encoding::Der)
-        .decode()
-        .map_err(|e| CosignerError::Asn1(format!("decode cert for cosigner-id: {e}")))?;
-
-    let mut enc = Encoder::new(Encoding::Der);
-    cert.tbs_certificate
-        .signature
-        .encode(&mut enc)
-        .map_err(|e| CosignerError::Asn1(format!("encode signature AlgorithmIdentifier: {e}")))?;
-    let hash_alg_der = enc
-        .finish()
-        .map_err(|e| CosignerError::Asn1(format!("finish hash_alg DER: {e}")))?;
-
-    let mut enc2 = Encoder::new(Encoding::Der);
-    cert.tbs_certificate
-        .subject_public_key_info
-        .encode(&mut enc2)
-        .map_err(|e| CosignerError::Asn1(format!("encode SPKI: {e}")))?;
-    let spki_der = enc2
-        .finish()
-        .map_err(|e| CosignerError::Asn1(format!("finish SPKI DER: {e}")))?;
-
-    Ok((hash_alg_der, spki_der))
+/// Parse a dotted-decimal OID string and return the parsed `ObjectIdentifier`.
+fn parse_cosigner_oid(oid_str: &str) -> Result<synta::ObjectIdentifier, CosignerError> {
+    oid_str.parse().map_err(|e| {
+        CosignerError::Config(format!(
+            "parse cosigner_id.trust_anchor_id OID '{oid_str}': {e}"
+        ))
+    })
 }
 
 async fn start_tls_server(
     router: axum::Router,
     listen_addr: std::net::SocketAddr,
     tls_cfg: &akamu_cosigner::config::TlsConfig,
+    mut sigterm: tokio::signal::unix::Signal,
 ) -> Result<(), CosignerError> {
     use std::sync::Arc;
 
@@ -347,9 +311,6 @@ async fn start_tls_server(
         .map_err(|e| CosignerError::Config(format!("bind '{}': {e}", listen_addr)))?;
 
     tracing::info!("akamu-cosigner listening on {} with TLS", listen_addr);
-
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .expect("failed to install SIGTERM handler");
 
     loop {
         tokio::select! {
@@ -390,7 +351,7 @@ async fn start_tls_server(
                                     router
                                         .oneshot(req)
                                         .await
-                                        .expect("axum Router is infallible"),
+                                        .unwrap_or_else(|e| match e {}),
                                 )
                             }
                         },
@@ -416,14 +377,31 @@ fn extract_hostname(url: &str) -> String {
         .trim_start_matches("http://")
         .split('/')
         .next()
-        .unwrap_or("localhost");
+        .unwrap_or("");
+
+    if authority.is_empty() {
+        tracing::warn!(
+            url = %url,
+            "could not extract hostname from base_url; \
+             self-signed cert will use 'localhost' as SAN dNSName"
+        );
+        return "localhost".to_owned();
+    }
 
     if authority.starts_with('[') {
+        // IPv6 literal: "[::1]" or "[::1]:port"
         return authority
             .split(']')
             .next()
             .map(|s| format!("{s}]"))
-            .unwrap_or_else(|| "localhost".to_owned());
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    url = %url,
+                    "malformed IPv6 literal in base_url; \
+                     self-signed cert will use 'localhost' as SAN dNSName"
+                );
+                "localhost".to_owned()
+            });
     }
 
     authority
@@ -433,18 +411,21 @@ fn extract_hostname(url: &str) -> String {
         .to_owned()
 }
 
-fn now_unix() -> i64 {
+fn now_unix() -> Result<i64, CosignerError> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
+        .map(|d| d.as_secs() as i64)
+        .map_err(|e| CosignerError::Crypto(format!("system clock before UNIX epoch: {e}")))
 }
 
-fn unix_to_time_str(secs: i64) -> String {
-    let gt = synta::GeneralizedTime::from_unix(secs)
-        .unwrap_or_else(|| synta::GeneralizedTime::from_unix(0).unwrap());
-    format!(
+fn unix_to_time_str(secs: i64) -> Result<String, CosignerError> {
+    let gt = synta::GeneralizedTime::from_unix(secs).ok_or_else(|| {
+        CosignerError::Crypto(format!(
+            "unix timestamp {secs} out of GeneralizedTime range"
+        ))
+    })?;
+    Ok(format!(
         "{:04}{:02}{:02}{:02}{:02}{:02}Z",
         gt.year, gt.month, gt.day, gt.hour, gt.minute, gt.second
-    )
+    ))
 }

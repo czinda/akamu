@@ -60,8 +60,11 @@ pub struct AdminConfig {
     pub operators: Vec<OperatorConfig>,
 }
 
+/// Default admin session TTL in seconds (1 hour).
+pub const DEFAULT_SESSION_TTL_SECS: u64 = 3600;
+
 fn default_session_ttl() -> u64 {
-    3600
+    DEFAULT_SESSION_TTL_SECS
 }
 
 /// One operator entry from `[[admin.operators]]`.
@@ -125,17 +128,25 @@ fn default_hash_alg() -> String {
     "sha256".into()
 }
 
-/// Cosigner identity certificate.
+/// Cosigner identity certificate and `TrustAnchorID`.
 ///
-/// The issuer and serial from this certificate are embedded in every
-/// `SubtreeSignature.cosigner` field so that relying parties can match
-/// the signature back to a trusted cosigner.
+/// Per draft-ietf-plants-merkle-tree-certs-04 §4.1, `CosignerID` is an
+/// `OBJECT IDENTIFIER` (`TrustAnchorID`) assigned to the cosigner.
+/// `trust_anchor_id` (dotted-decimal) is embedded in every
+/// `SubtreeSignature.cosigner` field so that relying parties can identify
+/// the cosigner.
+///
+/// The X.509 certificate in `cert_file` is used by relying parties for
+/// cryptographic signature verification; it is not used to derive the OID.
 ///
 /// If `cert_file` is absent at startup and `[acme_bootstrap]` is not
 /// configured, a self-signed certificate is generated and written here.
 #[derive(Debug, Deserialize)]
 pub struct CosignerIdConfig {
     pub cert_file: String,
+    /// OID (dotted-decimal) that identifies this cosigner as a TrustAnchorID.
+    /// Example: `"1.3.6.1.4.1.44363.47.10.1"`
+    pub trust_anchor_id: String,
 }
 
 /// Optional ACME EAB bootstrap.
@@ -221,13 +232,26 @@ impl Config {
     /// Path of the cosigner-id cert; falls back to ACME bootstrap cert.
     pub fn effective_cosigner_id_cert(&self) -> &str {
         if Path::new(&self.cosigner_id.cert_file).exists() {
+            tracing::info!(
+                path = %self.cosigner_id.cert_file,
+                "using cosigner_id.cert_file as identity certificate"
+            );
             return &self.cosigner_id.cert_file;
         }
         if let Some(ref b) = self.acme_bootstrap {
             if Path::new(&b.cert_file).exists() {
+                tracing::info!(
+                    path = %b.cert_file,
+                    "cosigner_id.cert_file absent; falling back to ACME bootstrap cert"
+                );
                 return &b.cert_file;
             }
         }
+        tracing::info!(
+            path = %self.cosigner_id.cert_file,
+            "cosigner_id.cert_file and ACME bootstrap cert both absent; \
+             a self-signed certificate will be generated"
+        );
         &self.cosigner_id.cert_file
     }
 }

@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/akamu-jose", "crates/akamu-client", "crates/akamu-cli", "crates/akamu-cosigner", "crates/akamu-ldap", "crates/akamu-gssapi", "crates/akamuctl", "crates/akamu-seedgen", "crates/akamu-crdt"]
+members = [".", "crates/akamu-jose", "crates/akamu-client", "crates/akamu-cli", "crates/akamu-cosigner", "crates/akamu-ldap", "crates/akamu-gssapi", "crates/akamuctl", "crates/akamu-seedgen", "crates/akamu-crdt", "crates/akamu-mtc-wire"]
 resolver = "2"
 
 [package]
@@ -139,6 +139,7 @@ tokio = { version = "1", features = ["full", "test-util"] }
 tempfile = "3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 akamu-client = { path = "crates/akamu-client" }
+akamu-mtc-wire = { path = "crates/akamu-mtc-wire" }
 # (instant-acme 0.4 removed: it pulled hyper 0.14 as a transitive dependency,
 # which is not available in RHEL 10 / EPEL 10.  The acme_client_compat
 # integration test that used it has been removed along with this dependency.)

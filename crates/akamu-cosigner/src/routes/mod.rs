@@ -44,7 +44,10 @@ async fn acme_challenge_handler(
     Path(token): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    let guard = state.challenge_tokens.read().unwrap();
+    let guard = state.challenge_tokens.read().unwrap_or_else(|e| {
+        tracing::error!("challenge_tokens RwLock poisoned; recovering: {e}");
+        e.into_inner()
+    });
     match guard.get(&token) {
         Some(key_auth) => (StatusCode::OK, key_auth.clone()).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),

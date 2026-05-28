@@ -38,7 +38,7 @@ impl From<synta::Error> for CosignerError {
 
 impl From<akamu::error::AcmeError> for CosignerError {
     fn from(e: akamu::error::AcmeError) -> Self {
-        CosignerError::Crypto(e.to_string())
+        CosignerError::Acme(e.to_string())
     }
 }
 
