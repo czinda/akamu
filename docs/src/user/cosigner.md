@@ -43,7 +43,8 @@ key_type = "ec:P-256"
 hash_alg = "sha256"
 
 [cosigner_id]
-cert_file = "/var/lib/akamu/cosigner-id.crt"
+cert_file       = "/var/lib/akamu/cosigner-id.crt"
+trust_anchor_id = "1.3.6.1.4.1.44363.47.10.1"
 
 [acme_bootstrap]
 server_url    = "https://acme.example.com/acme/directory"
@@ -155,7 +156,7 @@ hash_alg = "sha256"
 
 ## `[cosigner_id]`
 
-The cosigner identity certificate.  Its issuer Name and serial number are embedded in every `SubtreeSignature.cosigner` field so that akamu servers and relying parties can identify which cosigner produced the signature.
+The cosigner identity configuration.  Per draft-ietf-plants-merkle-tree-certs-04 §4.1, `CosignerID` is now `TrustAnchorID ::= OBJECT IDENTIFIER`.  The `trust_anchor_id` OID is embedded in every `SubtreeSignature.cosigner` field so that akamu servers and relying parties can identify which cosigner produced the signature.  The certificate file is retained for cryptographic verification by relying parties.
 
 ### `cert_file`
 
@@ -165,9 +166,14 @@ The cosigner identity certificate.  Its issuer Name and serial number are embedd
 - If the file is absent and `[acme_bootstrap]` is configured and the bootstrap certificate exists, that certificate is used as the cosigner-id.
 - Otherwise, a self-signed certificate is auto-generated from the `[signing_key]` and written to this path.  The self-signed cert uses `base_url`'s hostname as its dNSName SAN and has 10-year validity.
 
+### `trust_anchor_id`
+
+**Required.**  The OID (dotted-decimal) that identifies this cosigner as a `TrustAnchorID`.  This value is embedded in every `SubtreeSignature.cosigner` field.  Operators must agree on this OID with log operators before deploying.  Example: `"1.3.6.1.4.1.44363.47.10.1"`.
+
 ```toml
 [cosigner_id]
-cert_file = "/var/lib/akamu/cosigner-id.crt"
+cert_file       = "/var/lib/akamu/cosigner-id.crt"
+trust_anchor_id = "1.3.6.1.4.1.44363.47.10.1"
 ```
 
 ---
@@ -257,7 +263,7 @@ csr_key_type   = "ec:P-256"
 
 Accepts a DER-encoded `Checkpoint` (`Content-Type: application/octet-stream`).  Returns a DER-encoded `SubtreeSignature` with HTTP 200.
 
-The `SubtreeSignature` covers the full checkpoint range `[0, tree_size)` and is signed with the `[signing_key]`.  The `cosigner` field in the response contains the issuer and serial extracted from the cosigner-id certificate.
+The `SubtreeSignature` covers the full checkpoint range `[0, tree_size)` and is signed with the `[signing_key]`.  The `cosigner` field in the response contains the `TrustAnchorID` OID configured in `[cosigner_id].trust_anchor_id`.
 
 ### `GET /.well-known/acme-challenge/:token`
 
@@ -273,6 +279,7 @@ Add a `[[mtc.cosigners]]` entry in the akamu server configuration for each `akam
 [[mtc.cosigners]]
 url                  = "https://cosigner.example.com/sign"
 cosigner_id_cert_pem = "/etc/akamu/cosigner-id.crt"
+trust_anchor_id      = "1.3.6.1.4.1.44363.47.10.1"   # optional; must match cosigner's [cosigner_id].trust_anchor_id
 ```
 
 See [Configuration Reference — `[[mtc.cosigners]]`](configuration.md#mtccosigners) for the full field reference.

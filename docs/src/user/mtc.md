@@ -100,6 +100,7 @@ After each checkpoint, Akāmu can POST the checkpoint to external cosigner serve
 [[mtc.cosigners]]
 url                  = "https://cosigner.example.com/sign"
 cosigner_id_cert_pem = "/etc/akamu/cosigner1.pem"  # optional; path to cosigner X.509 cert PEM
+trust_anchor_id      = "1.3.6.1.4.1.44363.47.10.1" # optional; expected TrustAnchorID OID
 ```
 
 Multiple `[[mtc.cosigners]]` entries are supported. For each entry:
@@ -109,7 +110,9 @@ Multiple `[[mtc.cosigners]]` entries are supported. For each entry:
 - Each request has a 30-second per-cosigner timeout.
 - Failures are logged and skipped — partial success is acceptable; the standalone certificate is still built with whatever signatures arrive.
 
-When `cosigner_id_cert_pem` is set, the PEM file is loaded at checkpoint time and added to the TLS trust store for that cosigner's connection, in addition to the system root CAs. This allows cosigners whose TLS certificate chains to an operator-provisioned CA to be used without installing that CA system-wide.
+When `cosigner_id_cert_pem` is set, the PEM file is loaded at startup and added to the TLS trust store for that cosigner's HTTPS connection, in addition to the system root CAs. The certificate's public key is also used for cryptographic verification of received `SubtreeSignature` values. This allows cosigners whose TLS certificate chains to an operator-provisioned CA to be used without installing that CA system-wide.
+
+When `trust_anchor_id` is set, the `SubtreeSignature.cosigner` OID in each response is compared against this value. Per draft-ietf-plants-merkle-tree-certs-04 §4.1, `CosignerID` is `TrustAnchorID ::= OBJECT IDENTIFIER`; a mismatch causes the signature to be rejected. Both `cosigner_id_cert_pem` and `trust_anchor_id` are optional and independent — either or both may be set.
 
 ## Querying the log index
 

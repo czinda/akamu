@@ -556,12 +556,12 @@ enabled = false
 When `issue_as = "mtc"` is set in a profile, the server builds a standalone certificate for each issued certificate. The standalone certificate is a standard X.509 v3 `Certificate` where:
 
 - `signatureAlgorithm` is `id-alg-mtcProof` (experimental OID `1.3.6.1.4.1.44363.47.0` from the Cloudflare PEN arc)
-- `signatureValue` carries a TLS-encoded `MTCProof` (inclusion proof + cosignature records)
+- `signatureValue` carries a TLS-encoded `MTCProof` (inclusion proof + cosignature records); per draft-04 §4.3, `MTCProof` has a leading `extensions` field (uint16 length-prefixed; empty = `\x00\x00`), `start`/`end` as uint48 (6-byte big-endian), and a uint8-prefixed `cosigner_id` in each `MtcSignature`
 - `serialNumber` encodes the log entry index per draft §6.1
 
-The `GET /acme/mtc/cert/{cert_id}/standalone` and `GET /acme/mtc/landmarks/{seq}/cert` endpoints return the DER-encoded certificate with `Content-Type: application/pkix-cert` and the `X-MTC-Version: draft-03` response header.
+The `GET /acme/mtc/cert/{cert_id}/standalone` and `GET /acme/mtc/landmarks/{seq}/cert` endpoints return the DER-encoded certificate with `Content-Type: application/pkix-cert` and the `X-MTC-Version: draft-04` response header.
 
-> **OID stability note:** The OIDs are experimental and pre-IANA. They will change when draft-ietf-plants-merkle-tree-certs is published as an RFC, requiring a coordinated update of the `synta-mtc` library and relying implementations.
+> **OID stability note:** The OIDs are experimental and pre-IANA. They will change when draft-ietf-plants-merkle-tree-certs is published as an RFC, requiring a coordinated update of the `synta-mtc` library and relying implementations. `synta-mtc` 0.2.4 also defines `id-pe-mtcCertificationAuthority` (experimental OID `1.3.6.1.4.1.44363.47.2`) for an X.509 extension that CA certificates may carry. Akāmu does not yet embed this extension in its CA certificates.
 
 ### `checkpoint_interval_secs`
 
@@ -666,12 +666,17 @@ Each entry has the following fields:
 
 #### `cosigner_id_cert_pem`
 
-**Optional.** Path to the cosigner's X.509 identity certificate PEM file. When set, the file is loaded at startup and added to the TLS trust store for that cosigner's HTTPS connection, in addition to the system root CAs. This allows cosigners whose TLS certificate chains to an operator-provisioned CA to be used without installing that CA system-wide.
+**Optional.** Path to the cosigner's X.509 identity certificate PEM file. When set, the file is loaded at startup and added to the TLS trust store for that cosigner's HTTPS connection, in addition to the system root CAs. This allows cosigners whose TLS certificate chains to an operator-provisioned CA to be used without installing that CA system-wide. The certificate is also used for cryptographic verification of received `SubtreeSignature` values.
+
+#### `trust_anchor_id`
+
+**Optional.** The expected `TrustAnchorID` OID of the cosigner in dotted-decimal notation (e.g. `"1.3.6.1.4.1.44363.47.10.1"`). Per draft-ietf-plants-merkle-tree-certs-04 §4.1, `CosignerID` is now an `OBJECT IDENTIFIER` (`TrustAnchorID ::= OBJECT IDENTIFIER`) rather than a SEQUENCE of hash algorithm and public key. When set, Akāmu verifies that the `SubtreeSignature.cosigner` OID in each response matches this value. When absent, the OID identity check is skipped; cryptographic verification via `cosigner_id_cert_pem` still applies when that field is set. Operators must agree on the OID value with their cosigner operator.
 
 ```toml
 [[mtc.cosigners]]
 url                  = "https://cosigner1.example.com/sign"
 cosigner_id_cert_pem = "/etc/akamu/cosigner1-id.pem"
+trust_anchor_id      = "1.3.6.1.4.1.44363.47.10.1"   # optional; TrustAnchorID OID
 
 [[mtc.cosigners]]
 url = "https://cosigner2.example.com/sign"
@@ -1893,7 +1898,7 @@ Beyond the core extension fields, each `builtin` profile supports four groups of
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `issue_as` | absent / `"x509"` | Set to `"mtc"` to issue a Merkle Tree Certificate standalone certificate instead of a PEM chain. Requires `[mtc]` to be enabled. The standalone certificate is a standard X.509 v3 `Certificate` where `signatureAlgorithm` is `id-alg-mtcProof` (OID `1.3.6.1.4.1.44363.47.0`, experimental pre-IANA) and `signatureValue` carries a TLS-encoded `MTCProof`. The OID will change when the draft is published as an RFC. |
+| `issue_as` | absent / `"x509"` | Set to `"mtc"` to issue a Merkle Tree Certificate standalone certificate instead of a PEM chain. Requires `[mtc]` to be enabled. The standalone certificate is a standard X.509 v3 `Certificate` where `signatureAlgorithm` is `id-alg-mtcProof` (OID `1.3.6.1.4.1.44363.47.0`, experimental pre-IANA) and `signatureValue` carries a TLS-encoded `MTCProof`. Per draft-04 §4.3, `MTCProof` contains a leading `extensions` field (uint16 length-prefixed; empty = `\x00\x00`), `start`/`end` as uint48 (6-byte big-endian), and a uint8-prefixed `cosigner_id` in each `MtcSignature`. The OID will change when the draft is published as an RFC. |
 
 *Per-profile authorization*
 
