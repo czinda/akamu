@@ -84,8 +84,9 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
             enforce_validity_cap: false,
             require_encrypted_key: false,
             key_password_file: None,
+            mtc: None,
         }],
-        mtc: MtcConfig {
+        mtc: Some(MtcConfig {
             log_path: mtc_log_path.clone(),
             enabled: true,
             signing_key: Some(MtcSigningKeyConfig {
@@ -99,7 +100,7 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
             max_active_landmarks: 100,
             checkpoint_retention_count: 1000,
             hash_alg: "sha256".into(),
-        },
+        }),
         server: ServerConfig::default(),
         tls: Default::default(),
         profiles: Default::default(),
@@ -138,6 +139,20 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
         aki_bytes: ca_aki_bytes,
         enforce_validity_cap: false,
         caa_identities: vec![],
+        mtc: Arc::new(MtcState {
+            log: Some(shared_log),
+            algorithm: HashAlgorithm::Sha256,
+            signing_key: Some(mtc_key),
+            signing_hash_alg: "sha256".into(),
+            cosigner_clients: vec![],
+            _log_lock: None,
+            checkpoint_interval_secs: 3600,
+            checkpoint_retention_count: 1000,
+            landmark_interval_secs: 86400,
+            max_active_landmarks: 100,
+            last_checkpoint: std::sync::atomic::AtomicI64::new(0),
+            last_landmark: std::sync::atomic::AtomicI64::new(0),
+        }),
     });
 
     Arc::new(AppState {
@@ -152,14 +167,6 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
             Arc::new(_ca_map)
         },
         default_ca_id: Arc::new("default".to_string()),
-        mtc: Arc::new(MtcState {
-            log: Some(shared_log),
-            algorithm: HashAlgorithm::Sha256,
-            signing_key: Some(mtc_key),
-            signing_hash_alg: "sha256".into(),
-            cosigner_clients: vec![],
-            _log_lock: None,
-        }),
         tls: None,
         spki_cache: Arc::new(RwLock::new(HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),
@@ -636,7 +643,7 @@ async fn tlog_tile_level0_full_returns_404_for_small_log() {
 
     // Peek at the internal log size to confirm it's 1.
     {
-        let log = state.mtc.log.as_ref().unwrap();
+        let log = state.default_ca().mtc.log.as_ref().unwrap();
         let size = log::tree_size(log).await.unwrap();
         assert_eq!(size, 1, "fresh log must have 1 null_entry leaf");
     }

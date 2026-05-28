@@ -295,8 +295,9 @@ async fn build_akamu_state(
             enforce_validity_cap: false,
             require_encrypted_key: false,
             key_password_file: None,
+            mtc: None,
         }],
-        mtc: MtcConfig {
+        mtc: Some(MtcConfig {
             log_path: mtc_log_path.clone(),
             enabled: true,
             signing_key: Some(MtcSigningKeyConfig {
@@ -314,7 +315,7 @@ async fn build_akamu_state(
             max_active_landmarks: 100,
             checkpoint_retention_count: 1000,
             hash_alg: "sha256".into(),
-        },
+        }),
         server: {
             let mut s = ServerConfig::default();
             s.http_validation_port = http01_port;
@@ -363,6 +364,20 @@ async fn build_akamu_state(
         crl_next_update_secs: 86400,
         enforce_validity_cap: false,
         caa_identities: vec![],
+        mtc: Arc::new(MtcState {
+            log: Some(shared_log),
+            algorithm: HashAlgorithm::Sha256,
+            signing_key: Some(mtc_key),
+            signing_hash_alg: "sha256".into(),
+            cosigner_clients: vec![cosigner_client],
+            _log_lock: None,
+            checkpoint_interval_secs: 3600,
+            checkpoint_retention_count: 1000,
+            landmark_interval_secs: 86400,
+            max_active_landmarks: 100,
+            last_checkpoint: std::sync::atomic::AtomicI64::new(0),
+            last_landmark: std::sync::atomic::AtomicI64::new(0),
+        }),
     });
 
     Arc::new(AppState {
@@ -377,14 +392,6 @@ async fn build_akamu_state(
             Arc::new(_cas)
         },
         default_ca_id: Arc::new("default".to_string()),
-        mtc: Arc::new(MtcState {
-            log: Some(shared_log),
-            algorithm: HashAlgorithm::Sha256,
-            signing_key: Some(mtc_key),
-            signing_hash_alg: "sha256".into(),
-            cosigner_clients: vec![cosigner_client],
-            _log_lock: None,
-        }),
         tls: None,
         spki_cache: Arc::new(RwLock::new(HashMap::new())),
         nonces: Arc::new(NonceBucket::new()),
@@ -572,7 +579,8 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
 
     // ── Phase 7: trigger MTC checkpoint ──────────────────────────────────────
     {
-        let mtc = &state.mtc;
+        let ca = state.default_ca();
+        let mtc = &ca.mtc;
         let log = mtc.log.as_ref().expect("MTC log");
         let signing_key = mtc.signing_key.as_ref().expect("MTC signing key");
 
@@ -582,6 +590,7 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
             &mtc.signing_hash_alg,
             mtc.algorithm,
             &state.db,
+            &ca.id,
             &mtc.cosigner_clients,
         )
         .await
