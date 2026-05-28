@@ -21,6 +21,7 @@ dependencies = [
  "akamu-jose",
  "akamu-ldap",
  "akamu-mtc-wire",
+ "akamu-util",
  "axum",
  "base64",
  "ciborium",
@@ -111,9 +112,9 @@ dependencies = [
 name = "akamu-cosigner"
 version = "0.1.0"
 dependencies = [
- "akamu",
  "akamu-client",
  "akamu-mtc-wire",
+ "akamu-util",
  "axum",
  "base64",
  "hyper",
@@ -219,6 +220,20 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "akamu-util"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "getrandom 0.2.17",
+ "native-ossl",
+ "rustls",
+ "subtle",
+ "synta-certificate",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

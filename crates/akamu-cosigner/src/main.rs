@@ -8,11 +8,13 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use tracing_subscriber::EnvFilter;
 
-use akamu::listen::{parse_listen_target, remove_stale_socket, uds_marker_layer, ListenTarget};
 use akamu_cosigner::config::Config;
 use akamu_cosigner::error::CosignerError;
 use akamu_cosigner::state::AppState;
 use akamu_cosigner::{acme, key, routes};
+use akamu_util::listen::{
+    parse_listen_target, remove_stale_socket, uds_marker_layer, ListenTarget,
+};
 
 #[tokio::main]
 async fn main() {
@@ -33,9 +35,7 @@ async fn main() {
 /// Installs the SIGTERM handler once so signal slots are not exhausted.
 /// Called from each `with_graceful_shutdown` closure; also used by
 /// `start_tls_server` which manages its own select loop.
-async fn shutdown_signal(
-    sigterm: &mut tokio::signal::unix::Signal,
-) {
+async fn shutdown_signal(sigterm: &mut tokio::signal::unix::Signal) {
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {},
         _ = sigterm.recv() => {},
@@ -126,9 +126,8 @@ async fn run() -> Result<(), CosignerError> {
     let router = routes::build_router(Arc::clone(&state));
 
     // ── Install signal handler once before branching ─────────────────────────
-    let mut sigterm =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .map_err(|e| CosignerError::Config(format!("install SIGTERM handler: {e}")))?;
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .map_err(|e| CosignerError::Config(format!("install SIGTERM handler: {e}")))?;
 
     // ── Start HTTP or HTTPS server ────────────────────────────────────────────
     // Try systemd socket activation first (listenfd), then fall back to config.
@@ -291,10 +290,10 @@ async fn start_tls_server(
 ) -> Result<(), CosignerError> {
     use std::sync::Arc;
 
-    let certs = akamu::tls::loader::load_server_cert_chain(&tls_cfg.cert_file)
-        .map_err(CosignerError::Tls)?;
-    let key = akamu::tls::loader::load_server_private_key(&tls_cfg.key_file)
-        .map_err(CosignerError::Tls)?;
+    let certs =
+        akamu_util::tls::load_server_cert_chain(&tls_cfg.cert_file).map_err(CosignerError::Tls)?;
+    let key =
+        akamu_util::tls::load_server_private_key(&tls_cfg.key_file).map_err(CosignerError::Tls)?;
 
     let server_cfg = rustls::ServerConfig::builder_with_provider(Arc::new(
         rustls_native_ossl::default_provider(),

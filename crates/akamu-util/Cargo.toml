@@ -1,0 +1,31 @@
+[package]
+name = "akamu-util"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Lightweight utility crate shared between akamu and akamu-cosigner (listen, TLS loader, auth primitives, sha256_hex)"
+
+[dependencies]
+# Axum middleware and extractors (uds_marker_layer, PeerClientCert)
+axum = { version = "0.8", features = ["http1"] }
+
+# TLS types (CertificateDer, PrivateKeyDer)
+rustls = { version = "0.23", default-features = false, features = ["std"] }
+
+# PEM/DER parsing and private key handling
+synta-certificate = { version = ">=0.2.0", features = ["std", "pqc"] }
+
+# SHA-256 fingerprint computation
+native-ossl = "0.1"
+
+# Constant-time byte comparison (find_session_token timing-attack defence)
+subtle = "2"
+
+# Cryptographically random token generation (generate_token)
+getrandom = "0.2"
+
+# Async runtime (remove_stale_socket, uds_marker_layer)
+tokio = { version = "1", features = ["fs"] }
+
+# Structured logging (tracing macros in listen / tls / auth)
+tracing = "0.1"

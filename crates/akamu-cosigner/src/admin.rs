@@ -28,7 +28,7 @@ use crate::state::{AppState, CosignerSession};
 
 // ── PeerClientCert extension (injected by TLS accept loop) ───────────────────
 
-pub use akamu::admin::auth::PeerClientCert;
+pub use akamu_util::auth::PeerClientCert;
 
 // ── Token and fingerprint helpers ─────────────────────────────────────────────
 
@@ -40,7 +40,7 @@ pub async fn create_session(
     role: CosignerRole,
     operator_id: i64,
 ) -> Result<String, String> {
-    let token = akamu::admin::auth::generate_token()?;
+    let token = akamu_util::auth::generate_token()?;
     let now = std::time::Instant::now();
     let mut sessions = state.admin_sessions.lock().await;
     // Evict oldest session if cap reached.
@@ -72,7 +72,7 @@ pub async fn lookup_session(state: &AppState, token: &str) -> Option<(String, Co
     let now = std::time::Instant::now();
     let mut sessions = state.admin_sessions.lock().await;
     sessions.retain(|_, s| now.duration_since(s.last_active_at) < ttl);
-    let key = akamu::admin::auth::find_session_token(&sessions, token)?;
+    let key = akamu_util::auth::find_session_token(&sessions, token)?;
     let s = sessions.get_mut(&key)?;
     s.last_active_at = now;
     Some((s.name.to_string(), s.role, s.operator_id))
@@ -127,7 +127,7 @@ where
 
         // Path 2: mTLS client certificate fingerprint.
         if let Some(ext) = parts.extensions.get::<PeerClientCert>() {
-            let fp = akamu::util::sha256_hex(&ext.0).map_err(|e| {
+            let fp = akamu_util::util::sha256_hex(&ext.0).map_err(|e| {
                 tracing::error!(error = %e, "cosigner admin: fingerprint computation failed");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -210,7 +210,9 @@ pub async fn post_session(
     let token = match operator.session_token {
         Some(t) => t,
         None => {
-            tracing::error!("BUG: authenticated OperatorContext has no session_token in post_session");
+            tracing::error!(
+                "BUG: authenticated OperatorContext has no session_token in post_session"
+            );
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };

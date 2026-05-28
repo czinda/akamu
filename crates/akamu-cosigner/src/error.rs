@@ -36,12 +36,6 @@ impl From<synta::Error> for CosignerError {
     }
 }
 
-impl From<akamu::error::AcmeError> for CosignerError {
-    fn from(e: akamu::error::AcmeError) -> Self {
-        CosignerError::Acme(e.to_string())
-    }
-}
-
 impl From<akamu_client::ClientError> for CosignerError {
     fn from(e: akamu_client::ClientError) -> Self {
         CosignerError::Acme(e.to_string())

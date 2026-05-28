@@ -11,11 +11,11 @@ use tower::ServiceExt;
 use synta::ObjectIdentifier;
 use synta_certificate::BackendPrivateKey;
 
-use akamu::util::sha256_hex;
 use akamu_cosigner::admin::PeerClientCert;
 use akamu_cosigner::config::CosignerRole;
 use akamu_cosigner::routes::build_router;
 use akamu_cosigner::state::{AppState, CosignerSession};
+use akamu_util::util::sha256_hex;
 
 fn build_state() -> Arc<AppState> {
     let signing_key = BackendPrivateKey::generate_ec("P-256")
@@ -171,10 +171,9 @@ async fn unauthenticated_request_returns_401() {
 async fn mtls_cert_issues_session_token() {
     use akamu_cosigner::config::OperatorConfig;
 
-    let signing_key = BackendPrivateKey::generate_ec("P-256")
-        .expect("generate P-256 key for mTLS test");
-    let op_key = BackendPrivateKey::generate_ec("P-256")
-        .expect("generate P-256 operator key");
+    let signing_key =
+        BackendPrivateKey::generate_ec("P-256").expect("generate P-256 key for mTLS test");
+    let op_key = BackendPrivateKey::generate_ec("P-256").expect("generate P-256 operator key");
 
     // Build a minimal cert DER and derive its SHA-256 fingerprint.
     use synta_certificate::{CertificateBuilder, NameBuilder, PrivateKey as _};
@@ -184,10 +183,9 @@ async fn mtls_cert_issues_session_token() {
         .expect("build test operator name DER");
     let pub_key = op_key.public_key().expect("operator public key");
     let spki_der = pub_key.spki_der().to_vec();
-    let not_before = synta_certificate::parse_time("20260101000000Z")
-        .expect("parse notBefore time");
-    let not_after = synta_certificate::parse_time("20360101000000Z")
-        .expect("parse notAfter time");
+    let not_before =
+        synta_certificate::parse_time("20260101000000Z").expect("parse notBefore time");
+    let not_after = synta_certificate::parse_time("20360101000000Z").expect("parse notAfter time");
     let cert_der = CertificateBuilder::new()
         .issuer_name(&name_der)
         .subject_name(&name_der)

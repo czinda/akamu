@@ -14,8 +14,10 @@ name = "akamu-cosigner"
 path = "src/main.rs"
 
 [dependencies]
-# Akamu library crate — key generation, TLS, CA utilities
-akamu = { path = "../..", default-features = false }
+# Lightweight shared utilities — listen, TLS loader, auth primitives, sha256_hex.
+# Replaces the previous full `akamu` library dependency to avoid pulling in
+# sqlx, DB migrations, gossip, CRDT, etc.
+akamu-util = { path = "../akamu-util" }
 
 # ACME client library — used for EAB bootstrap
 akamu-client = { path = "../akamu-client" }
@@ -63,3 +65,6 @@ base64 = "0.22"
 
 # Residual information protection (FDP_RIP.1)
 zeroize = "1"
+
+[dev-dependencies]
+akamu-util = { path = "../akamu-util" }
