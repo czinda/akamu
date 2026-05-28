@@ -29,20 +29,17 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Router;
-use synta::traits::Encode;
 use synta::types::primitive::Integer;
 use synta::types::string::OctetString;
-use synta::{BitString, Decoder, Encoder, Encoding};
+use synta::{BitString, Decoder, Encoding, ObjectIdentifier};
 use synta_certificate::owned::Certificate as OwnedCert;
 use synta_certificate::{
-    encode_key_usage, BackendPrivateKey, CertificateBuilder, CertificateSigner as _, NameBuilder,
-    PrivateKey as _, SubjectAlternativeNameBuilder, KEY_USAGE_DIGITAL_SIGNATURE,
+    BackendPrivateKey, CertificateSigner as _, NameBuilder, PrivateKey as _,
+    SubjectAlternativeNameBuilder,
 };
-use synta_certificate::{AlgorithmIdentifier, SubjectPublicKeyInfo};
 use synta_mtc::crypto::mtcproof::MtcProof;
 use synta_mtc::crypto::{hash_log_entry, verify_inclusion_proof, HashAlgorithm};
 use synta_mtc::types::constants::ID_ALG_MTC_PROOF_EXP;
-use synta_mtc::types::CosignerID;
 use synta_mtc::types::{Checkpoint, MerkleTreeCertEntry, Subtree, SubtreeSignature};
 use tokio::net::TcpListener;
 
@@ -59,91 +56,38 @@ use akamu_client::{AccountKey, AccountOptions, AcmeClient, Identifier};
 
 // ── Port utilities ────────────────────────────────────────────────────────────
 
-/// Bind to port 0 to let the OS pick a free port, then return it.
-///
-/// There is a small TOCTOU window between dropping the listener and the caller
-/// rebinding that port, but it is acceptable in a single-machine test context.
-fn free_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    l.local_addr().unwrap().port()
+/// Bind to port 0 to let the OS pick a free port, returning both the port and
+/// the bound listener so the binding is held continuously (no TOCTOU window).
+fn bind_free_port() -> (u16, std::net::TcpListener) {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind to port 0");
+    l.set_nonblocking(true).expect("set_nonblocking");
+    let port = l.local_addr().expect("local_addr").port();
+    (port, l)
 }
 
 // ── Inline cosigner ───────────────────────────────────────────────────────────
+
+/// OID used as `TrustAnchorID` for the inline test cosigner.
+/// Uses the experimental MTC arc: 1.3.6.1.4.1.44363.47.10.1
+const TEST_COSIGNER_OID: &str = "1.3.6.1.4.1.44363.47.10.1";
 
 /// Minimal shared state for the inline cosigner HTTP server.
 struct CosignerState {
     signing_key: BackendPrivateKey,
     hash_alg: String,
     sig_alg_der: Vec<u8>,
-    cosigner_hash_alg_der: Vec<u8>,
-    cosigner_spki_der: Vec<u8>,
+    /// DER-encoded `TrustAnchorID` ObjectIdentifier for this test cosigner.
+    cosigner_oid_der: Vec<u8>,
 }
 
-/// Build a self-signed cosigner-id certificate and return its DER.
-fn self_signed_cosigner_cert(signing_key: &BackendPrivateKey, hash_alg: &str) -> Vec<u8> {
-    let pub_key = signing_key.public_key().unwrap();
-    let spki_der = pub_key.spki_der().to_vec();
-
-    let name_der = NameBuilder::new()
-        .common_name("test-cosigner")
-        .build()
-        .unwrap();
-
-    let san_der = SubjectAlternativeNameBuilder::new()
-        .dns_name("localhost")
-        .build()
-        .unwrap();
-
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
-
-    let gt = |secs: i64| {
-        let gt = synta::GeneralizedTime::from_unix(secs).unwrap();
-        format!(
-            "{:04}{:02}{:02}{:02}{:02}{:02}Z",
-            gt.year, gt.month, gt.day, gt.hour, gt.minute, gt.second
-        )
-    };
-
-    let nb = synta_certificate::parse_time(&gt(now_secs)).unwrap();
-    let na = synta_certificate::parse_time(&gt(now_secs + 10 * 365 * 86400)).unwrap();
-
-    let ku_der = encode_key_usage(1 << KEY_USAGE_DIGITAL_SIGNATURE).unwrap();
-
-    let signer = signing_key.as_signer(hash_alg);
-    CertificateBuilder::new()
-        .issuer_name(&name_der)
-        .subject_name(&name_der)
-        .public_key_der(&spki_der)
-        .serial_number(synta::Integer::from_i64(1))
-        .not_valid_before(nb)
-        .not_valid_after(na)
-        .add_extension_oid(synta_certificate::oids::KEY_USAGE, true, &ku_der)
-        .add_extension_oid(synta_certificate::oids::SUBJECT_ALT_NAME, false, &san_der)
-        .sign(&signer)
-        .unwrap()
-}
-
-/// Parse `(hash_alg_der, spki_der)` from a DER-encoded cosigner-id certificate.
-fn parse_cosigner_id(cert_der: &[u8]) -> (Vec<u8>, Vec<u8>) {
-    use synta_certificate::owned::Certificate;
-
-    let cert: Certificate = Decoder::new(cert_der, Encoding::Der).decode().unwrap();
-
+/// DER-encode an OID from its dotted-decimal string representation.
+fn encode_oid_der(oid_str: &str) -> Vec<u8> {
+    use synta::traits::Encode;
+    use synta::{Encoder, Encoding};
+    let oid: ObjectIdentifier = oid_str.parse().expect("valid OID string");
     let mut enc = Encoder::new(Encoding::Der);
-    cert.tbs_certificate.signature.encode(&mut enc).unwrap();
-    let hash_alg_der = enc.finish().unwrap();
-
-    let mut enc2 = Encoder::new(Encoding::Der);
-    cert.tbs_certificate
-        .subject_public_key_info
-        .encode(&mut enc2)
-        .unwrap();
-    let spki_der = enc2.finish().unwrap();
-
-    (hash_alg_der, spki_der)
+    oid.encode(&mut enc).expect("encode OID");
+    enc.finish().expect("finish OID DER")
 }
 
 /// Derive the DER-encoded `AlgorithmIdentifier` for a key/hash combination.
@@ -180,21 +124,31 @@ async fn cosigner_sign(State(state): State<Arc<CosignerState>>, body: Bytes) -> 
         value: OctetString::from(root_bytes),
     };
 
-    // Reconstruct CosignerID per request from stored DER fields.
-    let cosigner_hash_alg: AlgorithmIdentifier =
-        Decoder::new(&state.cosigner_hash_alg_der, Encoding::Der)
-            .decode()
-            .unwrap();
-    let cosigner_spki: SubjectPublicKeyInfo = Decoder::new(&state.cosigner_spki_der, Encoding::Der)
-        .decode()
-        .unwrap();
-    let cosigner_id = CosignerID {
-        hash_algorithm: cosigner_hash_alg,
-        public_key: cosigner_spki,
-    };
+    // Decode the CosignerID (TrustAnchorID = ObjectIdentifier) from stored DER.
+    let cosigner_id: ObjectIdentifier =
+        match Decoder::new(&state.cosigner_oid_der, Encoding::Der).decode() {
+            Ok(oid) => oid,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("decode cosigner OID: {e}"),
+                )
+                    .into_response()
+            }
+        };
 
     // Build and sign the TLS-encoded CosignedMessage (spec §5.4.1).
-    let cosigned_msg = build_cosigned_message(&cosigner_id, &subtree, &checkpoint);
+    let cosigned_msg =
+        match akamu_mtc_wire::build_cosigned_message(&cosigner_id, &subtree, &checkpoint) {
+            Ok(msg) => msg,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("build CosignedMessage: {e}"),
+                )
+                    .into_response()
+            }
+        };
     let signer = state.signing_key.as_signer(&state.hash_alg);
     let sig_bytes = match signer.sign_tbs(&cosigned_msg) {
         Ok(s) => s,
@@ -202,9 +156,16 @@ async fn cosigner_sign(State(state): State<Arc<CosignerState>>, body: Bytes) -> 
     };
 
     let sig_alg: synta_certificate::AlgorithmIdentifier =
-        Decoder::new(&state.sig_alg_der, Encoding::Der)
-            .decode()
-            .unwrap();
+        match Decoder::new(&state.sig_alg_der, Encoding::Der).decode() {
+            Ok(alg) => alg,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("decode sig_alg: {e}"),
+                )
+                    .into_response()
+            }
+        };
 
     let sig = match BitString::new(sig_bytes, 0) {
         Ok(s) => s,
@@ -240,76 +201,42 @@ async fn cosigner_sign(State(state): State<Arc<CosignerState>>, body: Bytes) -> 
         .into_response()
 }
 
-/// Replicate the TLS-encoded `CosignedMessage` wire structure (spec §5.4.1).
-fn build_cosigned_message(
-    cosigner: &CosignerID<'_>,
-    subtree: &Subtree,
-    checkpoint: &Checkpoint<'_>,
-) -> Vec<u8> {
-    const LABEL: &[u8; 12] = b"subtree/v1\n\0";
-
-    let cosigner_name = format!("oid/{}", cosigner.hash_algorithm.algorithm);
-    let cosigner_name_bytes = cosigner_name.as_bytes();
-
-    let log_origin = format!("oid/{}", checkpoint.log_id.hash_algorithm.algorithm);
-    let log_origin_bytes = log_origin.as_bytes();
-
-    let unix_secs = checkpoint.timestamp.to_unix();
-    let timestamp: u64 = if unix_secs < 0 { 0 } else { unix_secs as u64 };
-
-    let start = subtree.start.as_u64().unwrap_or(0);
-    let end = subtree.end.as_u64().unwrap_or(0);
-    let subtree_hash = subtree.value.as_bytes();
-
-    let mut msg = Vec::new();
-    msg.extend_from_slice(LABEL);
-    msg.push(cosigner_name_bytes.len() as u8);
-    msg.extend_from_slice(cosigner_name_bytes);
-    msg.extend_from_slice(&timestamp.to_be_bytes());
-    msg.push(log_origin_bytes.len() as u8);
-    msg.extend_from_slice(log_origin_bytes);
-    msg.extend_from_slice(&start.to_be_bytes());
-    msg.extend_from_slice(&end.to_be_bytes());
-    msg.extend_from_slice(subtree_hash);
-    msg
-}
-
-/// Start the inline cosigner and return its URL and its cosigner-id cert DER.
-async fn start_cosigner(port: u16) -> (String, Vec<u8>) {
-    let signing_key = BackendPrivateKey::generate_ec("P-256").unwrap();
-    let hash_alg = "sha256".to_string();
-    let cert_der = self_signed_cosigner_cert(&signing_key, &hash_alg);
-    let (cosigner_hash_alg_der, cosigner_spki_der) = parse_cosigner_id(&cert_der);
+/// Start the inline cosigner on `std_listener` and return its URL.
+///
+/// The caller must have obtained `std_listener` via `bind_free_port()` to avoid
+/// the TOCTOU race that exists when a port is bound and then dropped before use.
+async fn start_cosigner(std_listener: std::net::TcpListener) -> String {
+    let port = std_listener.local_addr().expect("local_addr").port();
+    let signing_key = BackendPrivateKey::generate_ec("P-256").expect("generate cosigner key");
+    let hash_alg = "sha256".to_owned();
     let alg_der = sig_alg_der(&signing_key, &hash_alg);
+    let cosigner_oid_der = encode_oid_der(TEST_COSIGNER_OID);
 
     let state = Arc::new(CosignerState {
         signing_key,
         hash_alg,
         sig_alg_der: alg_der,
-        cosigner_hash_alg_der,
-        cosigner_spki_der,
+        cosigner_oid_der,
     });
 
     let app = Router::new()
         .route("/sign", post(cosigner_sign))
         .with_state(state);
 
-    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port)))
-        .await
-        .unwrap();
+    let listener = TcpListener::from_std(std_listener).expect("tokio TcpListener from std");
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
 
-    (format!("http://127.0.0.1:{port}/sign"), cert_der)
+    format!("http://127.0.0.1:{port}/sign")
 }
 
 // ── http-01 challenge solver ──────────────────────────────────────────────────
 
 type TokenStore = Arc<RwLock<HashMap<String, String>>>;
 
-/// Start a minimal http-01 challenge server and return the shared token store.
-async fn start_http01_solver(port: u16) -> TokenStore {
+/// Start a minimal http-01 challenge server on `std_listener` and return the token store.
+async fn start_http01_solver(std_listener: std::net::TcpListener) -> TokenStore {
     let store: TokenStore = Arc::new(RwLock::new(HashMap::new()));
     let store_clone = Arc::clone(&store);
 
@@ -321,9 +248,7 @@ async fn start_http01_solver(port: u16) -> TokenStore {
         }),
     );
 
-    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port)))
-        .await
-        .unwrap();
+    let listener = TcpListener::from_std(std_listener).expect("tokio TcpListener from std");
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
@@ -383,6 +308,7 @@ async fn build_akamu_state(
             cosigners: vec![CosignerConfig {
                 url: cosigner_url.into(),
                 cosigner_id_cert_pem: None,
+                trust_anchor_id: Some(TEST_COSIGNER_OID.into()),
             }],
             landmark_interval_secs: 86400,
             max_active_landmarks: 100,
@@ -522,25 +448,23 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
 
     let dir = tempfile::TempDir::new().unwrap();
 
-    // ── Phase 1: allocate ports ──────────────────────────────────────────────
-    let cosigner_port = free_port();
-    let akamu_port = free_port();
-    let http01_port = free_port();
+    // ── Phase 1: bind ports atomically (no TOCTOU window) ────────────────────
+    let (_, cosigner_std_listener) = bind_free_port();
+    let (akamu_port, akamu_std_listener) = bind_free_port();
+    let (http01_port, http01_std_listener) = bind_free_port();
 
     // ── Phase 2: start cosigner ──────────────────────────────────────────────
-    let (cosigner_url, _cosigner_cert_der) = start_cosigner(cosigner_port).await;
+    let cosigner_url = start_cosigner(cosigner_std_listener).await;
 
     // ── Phase 3: start http-01 solver ───────────────────────────────────────
-    let challenge_store = start_http01_solver(http01_port).await;
+    let challenge_store = start_http01_solver(http01_std_listener).await;
 
     // ── Phase 4: build and start akamu ───────────────────────────────────────
     let base_url = format!("http://127.0.0.1:{akamu_port}");
     let state = build_akamu_state(dir.path(), &base_url, http01_port, &cosigner_url).await;
     let router = routes::build_router(Arc::clone(&state), None);
 
-    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], akamu_port)))
-        .await
-        .unwrap();
+    let listener = TcpListener::from_std(akamu_std_listener).expect("tokio TcpListener from std");
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
@@ -700,8 +624,9 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
             .get("x-mtc-version")
             .and_then(|v| v.to_str().ok())
             .unwrap_or(""),
-        "draft-03",
-        "standalone endpoint must return X-MTC-Version: draft-03"
+        akamu::routes::mtc::MTC_DRAFT_VERSION,
+        "standalone endpoint must return X-MTC-Version: {}",
+        akamu::routes::mtc::MTC_DRAFT_VERSION
     );
 
     let body_bytes = http_body_util::BodyExt::collect(resp.into_body())
@@ -794,9 +719,15 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
     let server_root_hex = root_json["rootHash"]
         .as_str()
         .expect("rootHash field in JSON");
+    assert!(
+        server_root_hex.len() % 2 == 0,
+        "rootHash from server must have even hex length, got: {server_root_hex:?}"
+    );
     let server_root: Vec<u8> = (0..server_root_hex.len())
         .step_by(2)
-        .map(|i| u8::from_str_radix(&server_root_hex[i..i + 2], 16).unwrap())
+        .map(|i| {
+            u8::from_str_radix(&server_root_hex[i..i + 2], 16).expect("rootHash must be valid hex")
+        })
         .collect();
 
     // 9h. Verify the inclusion proof embedded in the MtcProof against the server root.

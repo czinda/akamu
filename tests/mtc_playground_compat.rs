@@ -706,7 +706,7 @@ async fn tlog_cosignature_endpoint_structure() {
 /// certificate that parses as a standard X.509 `Certificate` with
 /// `signatureAlgorithm = id-alg-mtcProof` and a decodable `MtcProof`.
 #[test]
-fn standalone_cert_format_conforms_to_draft03() {
+fn standalone_cert_format_conforms_to_draft04() {
     use synta::types::string::BitStringRef;
     use synta::{GeneralizedTime, Integer, ObjectIdentifier};
     use synta_certificate::owned::{

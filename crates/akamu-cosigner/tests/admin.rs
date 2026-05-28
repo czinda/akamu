@@ -8,6 +8,7 @@ use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
 use tower::ServiceExt;
 
+use synta::ObjectIdentifier;
 use synta_certificate::BackendPrivateKey;
 
 use akamu::util::sha256_hex;
@@ -17,13 +18,15 @@ use akamu_cosigner::routes::build_router;
 use akamu_cosigner::state::{AppState, CosignerSession};
 
 fn build_state() -> Arc<AppState> {
-    let signing_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+    let signing_key = BackendPrivateKey::generate_ec("P-256")
+        .expect("generate P-256 key for cosigner test state");
     Arc::new(AppState {
         signing_key,
-        hash_alg: "sha256".to_string(),
+        hash_alg: "sha256".to_owned(),
         sig_alg_der: vec![],
-        cosigner_hash_alg_der: vec![],
-        cosigner_spki_der: vec![],
+        cosigner_oid: "1.3.6.1.4.1.44363.47.10.1"
+            .parse::<ObjectIdentifier>()
+            .expect("parse test TrustAnchorID OID"),
         challenge_tokens: Arc::new(RwLock::new(HashMap::new())),
         admin_operators: vec![],
         admin_sessions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -168,16 +171,23 @@ async fn unauthenticated_request_returns_401() {
 async fn mtls_cert_issues_session_token() {
     use akamu_cosigner::config::OperatorConfig;
 
-    let signing_key = BackendPrivateKey::generate_ec("P-256").unwrap();
-    let op_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+    let signing_key = BackendPrivateKey::generate_ec("P-256")
+        .expect("generate P-256 key for mTLS test");
+    let op_key = BackendPrivateKey::generate_ec("P-256")
+        .expect("generate P-256 operator key");
 
     // Build a minimal cert DER and derive its SHA-256 fingerprint.
     use synta_certificate::{CertificateBuilder, NameBuilder, PrivateKey as _};
-    let name_der = NameBuilder::new().common_name("test-op").build().unwrap();
-    let pub_key = op_key.public_key().unwrap();
+    let name_der = NameBuilder::new()
+        .common_name("test-op")
+        .build()
+        .expect("build test operator name DER");
+    let pub_key = op_key.public_key().expect("operator public key");
     let spki_der = pub_key.spki_der().to_vec();
-    let not_before = synta_certificate::parse_time("20260101000000Z").unwrap();
-    let not_after = synta_certificate::parse_time("20360101000000Z").unwrap();
+    let not_before = synta_certificate::parse_time("20260101000000Z")
+        .expect("parse notBefore time");
+    let not_after = synta_certificate::parse_time("20360101000000Z")
+        .expect("parse notAfter time");
     let cert_der = CertificateBuilder::new()
         .issuer_name(&name_der)
         .subject_name(&name_der)
@@ -186,19 +196,21 @@ async fn mtls_cert_issues_session_token() {
         .not_valid_before(not_before)
         .not_valid_after(not_after)
         .sign(&signing_key.as_signer("sha256"))
-        .unwrap();
+        .expect("sign test operator cert");
 
-    let fingerprint = sha256_hex(&cert_der).unwrap();
+    let fingerprint = sha256_hex(&cert_der).expect("compute cert fingerprint");
 
     let state = Arc::new(AppState {
-        signing_key: BackendPrivateKey::generate_ec("P-256").unwrap(),
-        hash_alg: "sha256".to_string(),
+        signing_key: BackendPrivateKey::generate_ec("P-256")
+            .expect("generate P-256 key for mTLS test state"),
+        hash_alg: "sha256".to_owned(),
         sig_alg_der: vec![],
-        cosigner_hash_alg_der: vec![],
-        cosigner_spki_der: vec![],
+        cosigner_oid: "1.3.6.1.4.1.44363.47.10.1"
+            .parse::<ObjectIdentifier>()
+            .expect("parse test TrustAnchorID OID"),
         challenge_tokens: Arc::new(RwLock::new(HashMap::new())),
         admin_operators: vec![OperatorConfig {
-            name: "mtls-op".to_string(),
+            name: "mtls-op".to_owned(),
             role: CosignerRole::Auditor,
             cert_fingerprint: Some(fingerprint),
             gssapi_principal: None,
