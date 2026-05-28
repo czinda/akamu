@@ -767,6 +767,7 @@ fn standalone_cert_format_conforms_to_draft03() {
 
     // Build a minimal MtcProof with one fake cosignature.
     let proof = MtcProof {
+        extensions: vec![],
         start: 0,
         end: 4,
         inclusion_proof: vec![0xABu8; 64], // two 32-byte sibling hashes

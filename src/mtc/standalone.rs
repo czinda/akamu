@@ -78,6 +78,7 @@ pub fn build_standalone_der(p: StandaloneParams<'_>) -> Result<Vec<u8>, AcmeErro
     let inclusion_proof_bytes: Vec<u8> = proof.into_iter().flatten().collect();
 
     let mtc_proof = MtcProof {
+        extensions: vec![],
         start: 0,
         end: tree_size,
         inclusion_proof: inclusion_proof_bytes,
