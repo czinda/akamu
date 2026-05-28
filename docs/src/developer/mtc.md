@@ -71,10 +71,12 @@ After each checkpoint is produced, `src/mtc/cosign.rs` contacts all configured e
 
 The `CosignerClient` struct (one per `[[mtc.cosigners]]` entry) is built once at server startup. This surfaces misconfigured cosigners at startup rather than silently at checkpoint time, and preserves the HTTP connection pool across checkpoint intervals.
 
-When `cosigner_id_cert_pem` or `trust_anchor_id` is set for a cosigner, an `AkamuCosignerVerifier` is built at startup and stored inside the `CosignerClient`. At checkpoint time, the received `SubtreeSignature` is verified before being stored:
+When `cosigner_id_cert_pem` is set for a cosigner, an `AkamuCosignerVerifier` is built at startup and stored inside the `CosignerClient`. At checkpoint time, the received `SubtreeSignature` is verified before being stored:
 
-- **OID identity check**: When `trust_anchor_id` is configured, the `SubtreeSignature.cosigner` field (a `TrustAnchorID ::= OBJECT IDENTIFIER` per draft-04 §4.1) is compared against the expected OID. A mismatch causes the signature to be rejected.
-- **Cryptographic check**: When `cosigner_id_cert_pem` is configured, the public key is extracted from the PEM and used for signature verification. Verification uses `synta_mtc::cosignature::validate_cosignature_quorum_with_crypto`, which builds the TLS-framed `CosignedMessage` (per §5.4.1 of the MTC draft) internally from the checkpoint and signature fields, then delegates the actual signature check to `OpensslSignatureVerifier`.
+- **OID identity check**: When `trust_anchor_id` is also configured, the `SubtreeSignature.cosigner` field (a `TrustAnchorID ::= OBJECT IDENTIFIER` per draft-04 §4.1) is compared against the expected OID. A mismatch causes the signature to be rejected.
+- **Cryptographic check**: The public key is extracted from the `cosigner_id_cert_pem` PEM and used for signature verification. Verification uses `synta_mtc::cosignature::validate_cosignature_quorum_with_crypto`, which builds the TLS-framed `CosignedMessage` (per §5.4.1 of the MTC draft) internally from the checkpoint and signature fields, then delegates the actual signature check to `OpensslSignatureVerifier`.
+
+Setting `trust_anchor_id` without `cosigner_id_cert_pem` is a hard startup error: OID-only verification provides no cryptographic assurance. When neither field is set, cosignatures are accepted without verification and a warning is logged.
 
 Each `SubtreeSignature` is stored in the `mtc_cosignatures` table, keyed by checkpoint sequence number and cosigner URL.
 

@@ -317,6 +317,8 @@ HTTPS server for operator access.  The admin listener is independent of the
 signing endpoint and supports the same mTLS and session-token authentication
 model as the main akamu server.
 
+When the `[admin]` section is absent, all admin endpoints return `401 Unauthorized` and a warning is logged at startup.
+
 ### Configuration
 
 Add an `[admin]` section and one or more `[[admin.operators]]` entries to

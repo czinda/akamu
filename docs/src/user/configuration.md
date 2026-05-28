@@ -672,6 +672,8 @@ Each entry has the following fields:
 
 **Optional.** The expected `TrustAnchorID` OID of the cosigner in dotted-decimal notation (e.g. `"1.3.6.1.4.1.44363.47.10.1"`). Per draft-ietf-plants-merkle-tree-certs-04 §4.1, `CosignerID` is now an `OBJECT IDENTIFIER` (`TrustAnchorID ::= OBJECT IDENTIFIER`) rather than a SEQUENCE of hash algorithm and public key. When set, Akāmu verifies that the `SubtreeSignature.cosigner` OID in each response matches this value. When absent, the OID identity check is skipped; cryptographic verification via `cosigner_id_cert_pem` still applies when that field is set. Operators must agree on the OID value with their cosigner operator.
 
+> **Security constraint:** Setting `trust_anchor_id` without also setting `cosigner_id_cert_pem` is a hard startup error. OID-only verification provides no cryptographic assurance — anyone who knows the OID could forge a cosignature. Both fields must be set together to enable verified cosignature acceptance.
+
 ```toml
 [[mtc.cosigners]]
 url                  = "https://cosigner1.example.com/sign"

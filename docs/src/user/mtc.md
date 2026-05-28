@@ -112,7 +112,9 @@ Multiple `[[mtc.cosigners]]` entries are supported. For each entry:
 
 When `cosigner_id_cert_pem` is set, the PEM file is loaded at startup and added to the TLS trust store for that cosigner's HTTPS connection, in addition to the system root CAs. The certificate's public key is also used for cryptographic verification of received `SubtreeSignature` values. This allows cosigners whose TLS certificate chains to an operator-provisioned CA to be used without installing that CA system-wide.
 
-When `trust_anchor_id` is set, the `SubtreeSignature.cosigner` OID in each response is compared against this value. Per draft-ietf-plants-merkle-tree-certs-04 §4.1, `CosignerID` is `TrustAnchorID ::= OBJECT IDENTIFIER`; a mismatch causes the signature to be rejected. Both `cosigner_id_cert_pem` and `trust_anchor_id` are optional and independent — either or both may be set.
+When `trust_anchor_id` is set, the `SubtreeSignature.cosigner` OID in each response is compared against this value. Per draft-ietf-plants-merkle-tree-certs-04 §4.1, `CosignerID` is `TrustAnchorID ::= OBJECT IDENTIFIER`; a mismatch causes the signature to be rejected.
+
+> **Security constraint:** Setting `trust_anchor_id` without also setting `cosigner_id_cert_pem` is a hard startup error. OID-only verification provides no cryptographic assurance — anyone who knows the OID could forge a cosignature. Both fields must be set together to enable verified cosignature acceptance. When neither field is set, cosignatures are accepted without any verification and a warning is logged at startup.
 
 ## Querying the log index
 
