@@ -23,9 +23,10 @@ use super::{acme_prefix, json_response, parse_jws, CaId};
 pub async fn list_delegations(
     State(state): State<Arc<AppState>>,
     ca_id: CaId,
-    Path(account_id): Path<String>,
+    Path(params): Path<std::collections::HashMap<String, String>>,
     body: Bytes,
 ) -> Result<Response, AcmeError> {
+    let account_id = params.get("account_id").ok_or(AcmeError::NotFound)?.clone();
     if !state.config.server.delegation_enabled {
         return Err(AcmeError::NotFound);
     }
@@ -65,9 +66,10 @@ pub async fn list_delegations(
 pub async fn get_delegation(
     State(state): State<Arc<AppState>>,
     ca_id: CaId,
-    Path(id): Path<String>,
+    Path(params): Path<std::collections::HashMap<String, String>>,
     body: Bytes,
 ) -> Result<Response, AcmeError> {
+    let id = params.get("id").ok_or(AcmeError::NotFound)?.clone();
     if !state.config.server.delegation_enabled {
         return Err(AcmeError::NotFound);
     }

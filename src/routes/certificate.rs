@@ -20,9 +20,10 @@ use super::{acme_prefix, parse_jws, CaId};
 /// Serve the certificate chain as PEM (unauthenticated GET).
 pub async fn download_cert(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
+    Path(params): Path<std::collections::HashMap<String, String>>,
 ) -> Result<Response, AcmeError> {
-    let cert = db::certs::get_by_id(&state.db_ro, &id)
+    let id = params.get("id").ok_or(AcmeError::NotFound)?;
+    let cert = db::certs::get_by_id(&state.db_ro, id)
         .await?
         .ok_or(AcmeError::NotFound)?;
     Ok(cert_pem_response(cert))

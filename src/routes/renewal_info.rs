@@ -16,8 +16,9 @@ use super::{fmt_time, unix_now, CaId};
 pub async fn get_renewal_info(
     State(state): State<Arc<AppState>>,
     ca_id: CaId,
-    Path(cert_id): Path<String>,
+    Path(params): Path<std::collections::HashMap<String, String>>,
 ) -> Result<Response, AcmeError> {
+    let cert_id = params.get("cert_id").ok_or(AcmeError::NotFound)?.clone();
     let ca = state
         .get_ca(&ca_id.0)
         .ok_or_else(|| AcmeError::Internal(format!("no CA for id '{}'", ca_id.0)))?;

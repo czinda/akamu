@@ -37,8 +37,9 @@ use crate::util::extract_ca_subject_der;
 pub async fn get_ocsp(
     State(state): State<Arc<AppState>>,
     ca_id: CaId,
-    Path(request): Path<String>,
+    Path(params): Path<std::collections::HashMap<String, String>>,
 ) -> Result<Response, AcmeError> {
+    let request = params.get("request").ok_or(AcmeError::NotFound)?;
     let ca = state
         .get_ca(&ca_id.0)
         .ok_or_else(|| AcmeError::Internal(format!("no CA for id '{}'", ca_id.0)))?;
