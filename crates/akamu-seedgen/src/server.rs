@@ -13,11 +13,11 @@ use indexmap::IndexMap;
 use akamu::{
     audit::{AuditPolicy, AuditState},
     ca::init::{compute_aki_from_spki, load_or_generate},
-    config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig},
+    config::{CaConfig, Config, DatabaseConfig, ServerConfig},
     db,
     profiles::ProfileRegistry,
     routes,
-    state::{AppState, CaState, MtcState, NonceBucket},
+    state::{AppState, CaState, NonceBucket},
 };
 use akamu_crdt::AkaCrdt;
 
@@ -73,6 +73,7 @@ pub async fn start(
                 enforce_validity_cap: false,
                 require_encrypted_key: false,
                 key_password_file: None,
+                mtc: None,
             }
         })
         .collect();
@@ -92,17 +93,7 @@ pub async fn start(
             require_tls: false,
         },
         cas: ca_configs.clone(),
-        mtc: MtcConfig {
-            log_path: "/dev/null".into(),
-            enabled: false,
-            signing_key: None,
-            checkpoint_interval_secs: 3600,
-            cosigners: vec![],
-            landmark_interval_secs: 86400,
-            max_active_landmarks: 100,
-            checkpoint_retention_count: 1000,
-            hash_alg: "sha256".to_string(),
-        },
+        mtc: None,
         server: ServerConfig {
             http_validation_port: challenge_port,
             http_validation_allow_private_ips: true,
@@ -151,6 +142,7 @@ pub async fn start(
             enforce_validity_cap: false,
             crl_next_update_secs: 86400,
             caa_identities: vec![],
+            mtc: Arc::new(akamu::state::MtcState::disabled()),
         });
 
         if spec.is_default {
@@ -206,14 +198,6 @@ pub async fn start(
         cas: Arc::clone(&cas),
         default_ca_id: Arc::new(default_ca_id),
         profiles,
-        mtc: Arc::new(MtcState {
-            log: None,
-            algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
-            signing_key: None,
-            signing_hash_alg: "sha256".into(),
-            cosigner_clients: vec![],
-            _log_lock: None,
-        }),
         tls: None,
         crl_caches,
         spki_cache: Arc::new(RwLock::new(HashMap::new())),

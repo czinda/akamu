@@ -1,6 +1,8 @@
 //! Read-only HTTP endpoints for the MTC transparency log.
 //!
-//! All endpoints return 404 when MTC logging is disabled.
+//! All endpoints return 404 when MTC logging is disabled for the resolved CA.
+
+use std::collections::HashMap;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -12,6 +14,8 @@ use crate::db;
 use crate::error::AcmeError;
 use crate::mtc::{log, tlog};
 use crate::state::AppState;
+
+use super::{acme_prefix, CaId};
 
 /// X-MTC-Version header value for draft-04 responses.
 pub const MTC_DRAFT_VERSION: &str = "draft-04";
@@ -25,16 +29,24 @@ fn hex(bytes: &[u8]) -> String {
     s
 }
 
-/// GET /acme/mtc/tree-size
-pub async fn get_tree_size(State(state): State<Arc<AppState>>) -> Result<Response, AcmeError> {
-    let shared_log = state.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
+/// GET /acme/mtc/tree-size  or  GET /acme/{ca_id}/mtc/tree-size
+pub async fn get_tree_size(
+    State(state): State<Arc<AppState>>,
+    ca_id: CaId,
+) -> Result<Response, AcmeError> {
+    let ca = state.get_ca(&ca_id.0).ok_or(AcmeError::NotFound)?;
+    let shared_log = ca.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
     let size = log::tree_size(shared_log).await?;
     Ok((StatusCode::OK, axum::Json(json!({ "treeSize": size }))).into_response())
 }
 
-/// GET /acme/mtc/root
-pub async fn get_root(State(state): State<Arc<AppState>>) -> Result<Response, AcmeError> {
-    let shared_log = state.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
+/// GET /acme/mtc/root  or  GET /acme/{ca_id}/mtc/root
+pub async fn get_root(
+    State(state): State<Arc<AppState>>,
+    ca_id: CaId,
+) -> Result<Response, AcmeError> {
+    let ca = state.get_ca(&ca_id.0).ok_or(AcmeError::NotFound)?;
+    let shared_log = ca.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
     let (size, root) = log::tree_size_and_root(shared_log).await?;
     Ok((
         StatusCode::OK,
@@ -43,20 +55,22 @@ pub async fn get_root(State(state): State<Arc<AppState>>) -> Result<Response, Ac
         .into_response())
 }
 
-/// GET /acme/mtc/inclusion-proof/{cert_id}
+/// GET /acme/mtc/inclusion-proof/{cert_id}  or  GET /acme/{ca_id}/mtc/inclusion-proof/{cert_id}
 pub async fn get_inclusion_proof(
     State(state): State<Arc<AppState>>,
-    Path(cert_id): Path<String>,
+    ca_id: CaId,
+    Path(params): Path<HashMap<String, String>>,
 ) -> Result<Response, AcmeError> {
-    let shared_log = state.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
+    let cert_id = params.get("cert_id").ok_or(AcmeError::NotFound)?;
+    let ca = state.get_ca(&ca_id.0).ok_or(AcmeError::NotFound)?;
+    let shared_log = ca.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
 
-    let cert = db::certs::get_by_id(&state.db, &cert_id)
+    let cert = db::certs::get_by_id(&state.db, cert_id)
         .await?
         .ok_or(AcmeError::NotFound)?;
 
     let leaf_index = cert.mtc_log_index.ok_or(AcmeError::NotFound)? as u64;
 
-    // Fetch proof and tree size under one lock to prevent TOCTOU.
     let (proof_hashes, size) = log::proof_and_tree_size(shared_log, leaf_index).await?;
     let proof: Vec<_> = proof_hashes
         .into_iter()
@@ -74,19 +88,17 @@ pub async fn get_inclusion_proof(
         .into_response())
 }
 
-/// GET /acme/mtc/cert/{cert_id}/standalone
-///
-/// Returns the DER-encoded X.509 standalone MTC certificate for the given
-/// certificate (Content-Type: application/pkix-cert), or 404 if the certificate
-/// is not found, has no MTC log index, or its standalone cert has not yet been
-/// built (waiting for the next checkpoint).
+/// GET /acme/mtc/cert/{cert_id}/standalone  or  GET /acme/{ca_id}/mtc/cert/{cert_id}/standalone
 pub async fn get_standalone(
     State(state): State<Arc<AppState>>,
-    Path(cert_id): Path<String>,
+    ca_id: CaId,
+    Path(params): Path<HashMap<String, String>>,
 ) -> Result<Response, AcmeError> {
-    state.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
+    let cert_id = params.get("cert_id").ok_or(AcmeError::NotFound)?;
+    let ca = state.get_ca(&ca_id.0).ok_or(AcmeError::NotFound)?;
+    ca.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
 
-    let der = db::certs::get_mtc_standalone_der(&state.db, &cert_id)
+    let der = db::certs::get_mtc_standalone_der(&state.db, cert_id)
         .await?
         .ok_or(AcmeError::NotFound)?;
 
@@ -107,13 +119,15 @@ pub async fn get_standalone(
         .into_response())
 }
 
-/// GET /acme/mtc/landmarks
-///
-/// Returns a JSON array of all allocated landmarks ordered by sequence number.
-pub async fn get_landmarks(State(state): State<Arc<AppState>>) -> Result<Response, AcmeError> {
-    state.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
+/// GET /acme/mtc/landmarks  or  GET /acme/{ca_id}/mtc/landmarks
+pub async fn get_landmarks(
+    State(state): State<Arc<AppState>>,
+    ca_id: CaId,
+) -> Result<Response, AcmeError> {
+    let ca = state.get_ca(&ca_id.0).ok_or(AcmeError::NotFound)?;
+    ca.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
 
-    let landmarks = db::landmarks::list(&state.db).await?;
+    let landmarks = db::landmarks::list(&state.db, &ca_id.0).await?;
     let body: Vec<_> = landmarks
         .iter()
         .map(|l| {
@@ -128,17 +142,20 @@ pub async fn get_landmarks(State(state): State<Arc<AppState>>) -> Result<Respons
     Ok((StatusCode::OK, axum::Json(body)).into_response())
 }
 
-/// GET /acme/mtc/landmarks/{seq}/cert
-///
-/// Returns the DER-encoded `LandmarkCertificate` for the landmark with the
-/// given sequence number, or 404 if not found or not yet built.
+/// GET /acme/mtc/landmarks/{seq}/cert  or  GET /acme/{ca_id}/mtc/landmarks/{seq}/cert
 pub async fn get_landmark_cert(
     State(state): State<Arc<AppState>>,
-    Path(seq): Path<i64>,
+    ca_id: CaId,
+    Path(params): Path<HashMap<String, String>>,
 ) -> Result<Response, AcmeError> {
-    state.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
+    let seq: i64 = params
+        .get("seq")
+        .and_then(|s| s.parse().ok())
+        .ok_or(AcmeError::NotFound)?;
+    let ca = state.get_ca(&ca_id.0).ok_or(AcmeError::NotFound)?;
+    ca.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
 
-    let landmark = db::landmarks::get_by_seq(&state.db, seq)
+    let landmark = db::landmarks::get_by_seq(&state.db, &ca_id.0, seq)
         .await?
         .ok_or(AcmeError::NotFound)?;
 
@@ -163,26 +180,22 @@ pub async fn get_landmark_cert(
 
 // ── C2SP tlog-tiles API ───────────────────────────────────────────────────────
 
-/// GET /acme/mtc/tlog/checkpoint
-///
-/// Returns the current C2SP signed-note checkpoint for the MTC transparency
-/// log.  The note is signed by the MTC signing key (Ed25519 → type 0x01,
-/// ECDSA → type 0x02).
-///
-/// Returns 404 when MTC logging is disabled and 503 when no signing key is
-/// configured.
+/// GET /acme/mtc/tlog/checkpoint  or  GET /acme/{ca_id}/mtc/tlog/checkpoint
 pub async fn get_tlog_checkpoint(
     State(state): State<Arc<AppState>>,
+    ca_id: CaId,
 ) -> Result<Response, AcmeError> {
-    let shared_log = state.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
+    let ca = state.get_ca(&ca_id.0).ok_or(AcmeError::NotFound)?;
+    let shared_log = ca.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
     let key =
-        state.mtc.signing_key.as_ref().ok_or_else(|| {
+        ca.mtc.signing_key.as_ref().ok_or_else(|| {
             AcmeError::ServiceUnavailable("MTC signing key not configured".into())
         })?;
 
-    let origin = format!("{}/acme/mtc/tlog", state.config.base_url);
+    let pfx = acme_prefix(&state.config.base_url, &ca_id.0, &state.default_ca_id);
+    let origin = format!("{pfx}/mtc/tlog");
     let key_name = origin.clone();
-    let hash_alg = &state.mtc.signing_hash_alg;
+    let hash_alg = &ca.mtc.signing_hash_alg;
 
     let note =
         tlog::produce_operator_checkpoint(shared_log, &key_name, key, hash_alg, &origin).await?;
@@ -204,25 +217,16 @@ pub async fn get_tlog_checkpoint(
         .into_response())
 }
 
-/// GET /acme/mtc/tlog/tile/{*path}
-///
-/// Serves a C2SP tlog-tiles hash tile.  The path component encodes:
-/// `{level}/{tile_index_path}[.p/{width}]`
-///
-/// Level-0 tiles contain raw leaf hashes (32 bytes each for SHA-256).
-/// Level-L tiles contain MTH subtree roots (covering 256^L leaves each).
-/// Partial tiles (`.p/{width}`) contain fewer than 256 entries.
-///
-/// Returns 404 for tiles beyond the current log size or when MTC is disabled.
-/// Returns 501 for entry bundle requests (`tile/entries/…`) because Akāmu
-/// stores only leaf hashes, not the raw entry data.
+/// GET /acme/mtc/tlog/tile/{*path}  or  GET /acme/{ca_id}/mtc/tlog/tile/{*path}
 pub async fn get_tlog_tile(
     State(state): State<Arc<AppState>>,
-    Path(path): Path<String>,
+    ca_id: CaId,
+    Path(params): Path<HashMap<String, String>>,
 ) -> Result<Response, AcmeError> {
-    let shared_log = state.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
+    let path = params.get("path").ok_or(AcmeError::NotFound)?;
+    let ca = state.get_ca(&ca_id.0).ok_or(AcmeError::NotFound)?;
+    let shared_log = ca.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
 
-    // Entry bundles are served at `tile/entries/…` — Akāmu stores hashes only.
     if path.starts_with("entries/") {
         return Ok((
             StatusCode::NOT_IMPLEMENTED,
@@ -231,11 +235,9 @@ pub async fn get_tlog_tile(
             .into_response());
     }
 
-    let tile = tlog::parse_tile_path(&path)?;
-    let bytes = tlog::get_tile_bytes(shared_log, state.mtc.algorithm, &tile).await?;
+    let tile = tlog::parse_tile_path(path)?;
+    let bytes = tlog::get_tile_bytes(shared_log, ca.mtc.algorithm, &tile).await?;
 
-    // Full tiles are append-only and never change once written — cache aggressively.
-    // Partial tiles grow as the log grows and must not be cached.
     let cache = if tile.partial_width.is_some() {
         axum::http::HeaderValue::from_static("no-store")
     } else {
@@ -256,30 +258,22 @@ pub async fn get_tlog_tile(
     Ok(resp)
 }
 
-/// GET /acme/mtc/tlog/cosignature
-///
-/// Returns a C2SP cosignature for the current checkpoint produced by Akāmu's
-/// MTC signing key acting as a cosigner (Ed25519 → type 0x04, ML-DSA-44 →
-/// type 0x06).
-///
-/// This endpoint allows Akāmu to act as a transparency-log cosigner for its
-/// own log (e.g. when it also holds a separate cosigner key).  The timestamp
-/// embedded in the cosignature blob is the current POSIX time.
-///
-/// Returns 404 when MTC logging is disabled and 503 when no signing key is
-/// configured or the key type does not support the cosignature role.
+/// GET /acme/mtc/tlog/cosignature  or  GET /acme/{ca_id}/mtc/tlog/cosignature
 pub async fn get_tlog_cosignature(
     State(state): State<Arc<AppState>>,
+    ca_id: CaId,
 ) -> Result<Response, AcmeError> {
-    let shared_log = state.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
+    let ca = state.get_ca(&ca_id.0).ok_or(AcmeError::NotFound)?;
+    let shared_log = ca.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
     let key =
-        state.mtc.signing_key.as_ref().ok_or_else(|| {
+        ca.mtc.signing_key.as_ref().ok_or_else(|| {
             AcmeError::ServiceUnavailable("MTC signing key not configured".into())
         })?;
 
-    let origin = format!("{}/acme/mtc/tlog", state.config.base_url);
+    let pfx = acme_prefix(&state.config.base_url, &ca_id.0, &state.default_ca_id);
+    let origin = format!("{pfx}/mtc/tlog");
     let key_name = origin.clone();
-    let hash_alg = &state.mtc.signing_hash_alg;
+    let hash_alg = &ca.mtc.signing_hash_alg;
 
     let note =
         tlog::produce_cosigner_checkpoint(shared_log, &key_name, key, hash_alg, &origin).await?;

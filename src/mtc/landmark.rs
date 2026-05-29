@@ -32,16 +32,21 @@ use crate::state::AppState;
 /// When all three guards pass, the landmark row is inserted and its certificate
 /// built inside a write transaction so that `sequence_no` assignment is
 /// serialised even under concurrent access.
+pub struct LandmarkAllocationParams<'a> {
+    pub log: &'a SharedLog,
+    pub signing_key: &'a BackendPrivateKey,
+    pub signing_hash_alg: &'a str,
+    pub log_algorithm: HashAlgorithm,
+    pub db: &'a Db,
+    pub db_kind: DbKind,
+    pub ca_id: &'a str,
+    pub keep_count: u32,
+}
+
 pub async fn maybe_allocate_landmark(
-    log: &SharedLog,
-    signing_key: &BackendPrivateKey,
-    signing_hash_alg: &str,
-    log_algorithm: HashAlgorithm,
-    db: &Db,
-    db_kind: DbKind,
-    keep_count: u32,
+    params: &LandmarkAllocationParams<'_>,
 ) -> Result<(), AcmeError> {
-    let tree_size = crate::mtc::log::tree_size(log).await?;
+    let tree_size = crate::mtc::log::tree_size(params.log).await?;
 
     if tree_size == 0 {
         return Ok(());
@@ -49,7 +54,7 @@ pub async fn maybe_allocate_landmark(
 
     // Fast path: skip without acquiring a write transaction if we already have
     // a landmark for this tree size.
-    if let Some(latest) = db::landmarks::get_latest(db).await? {
+    if let Some(latest) = db::landmarks::get_latest(params.db, params.ca_id).await? {
         if latest.tree_size as u64 >= tree_size {
             tracing::debug!(tree_size, "landmark up to date; skipping");
             return Ok(());
@@ -59,7 +64,8 @@ pub async fn maybe_allocate_landmark(
     // Fetch a representative certificate before writing the landmark row.
     // If no cert exists yet, skip: inserting a landmark row with cert_der = NULL
     // would leave it permanently uncertified (nothing retries NULL rows).
-    let Some(cert_row) = db::certs::get_representative_for_landmark(db, tree_size as i64).await?
+    let Some(cert_row) =
+        db::certs::get_representative_for_landmark(params.db, tree_size as i64).await?
     else {
         tracing::debug!(
             tree_size,
@@ -73,12 +79,12 @@ pub async fn maybe_allocate_landmark(
     // Atomically insert the landmark row inside a write transaction so that
     // sequence_no assignment is serialised even under concurrent access.
     let landmark = {
-        let mut tx = db::begin_write(db, db_kind).await?;
-        if !db::landmarks::insert(&mut *tx, tree_size as i64, now_unix).await? {
+        let mut tx = db::begin_write(params.db, params.db_kind).await?;
+        if !db::landmarks::insert(&mut *tx, params.ca_id, tree_size as i64, now_unix).await? {
             // Another writer inserted a landmark for this tree_size first.
             return Ok(());
         }
-        let Some(lm) = db::landmarks::get_latest(&mut *tx).await? else {
+        let Some(lm) = db::landmarks::get_latest(&mut *tx, params.ca_id).await? else {
             return Ok(());
         };
         tx.commit()
@@ -87,9 +93,10 @@ pub async fn maybe_allocate_landmark(
         lm
     };
 
-    let key = signing_key.clone();
-    let hash_alg_str = signing_hash_alg.to_string();
-    let log_clone = Arc::clone(log);
+    let key = params.signing_key.clone();
+    let hash_alg_str = params.signing_hash_alg.to_string();
+    let log_clone = Arc::clone(params.log);
+    let log_algorithm = params.log_algorithm;
     let leaf_index = cert_row
         .mtc_log_index
         .ok_or_else(|| AcmeError::Mtc("representative cert has no mtc_log_index".into()))?
@@ -132,7 +139,7 @@ pub async fn maybe_allocate_landmark(
     .await
     .map_err(|e| AcmeError::Mtc(format!("landmark blocking task panicked: {e}")))??;
 
-    db::landmarks::set_cert_der(db, landmark.id, &landmark_cert_der).await?;
+    db::landmarks::set_cert_der(params.db, landmark.id, &landmark_cert_der).await?;
     tracing::info!(
         sequence_no = landmark.sequence_no,
         tree_size,
@@ -140,7 +147,7 @@ pub async fn maybe_allocate_landmark(
     );
 
     // Prune oldest landmarks to stay within the configured retention window.
-    if let Err(e) = db::landmarks::prune_oldest(db, keep_count).await {
+    if let Err(e) = db::landmarks::prune_oldest(params.db, params.ca_id, params.keep_count).await {
         tracing::warn!("prune old MTC landmarks: {e}");
     }
 
@@ -247,29 +254,35 @@ fn build_landmark_cert_der(
 /// The returned `JoinHandle` should be retained by the caller; dropping it
 /// detaches the task silently, making panics undetectable.
 pub fn spawn_landmark_task(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
-    let interval_secs = state.config.mtc.landmark_interval_secs;
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         interval.tick().await; // skip immediate first tick
         loop {
             interval.tick().await;
-            let mtc = &state.mtc;
-            let (Some(log), Some(signing_key)) = (mtc.log.as_ref(), mtc.signing_key.as_ref())
-            else {
-                continue;
-            };
-            if let Err(e) = maybe_allocate_landmark(
-                log,
-                signing_key,
-                &mtc.signing_hash_alg,
-                mtc.algorithm,
-                &state.db,
-                state.db_kind,
-                state.config.mtc.max_active_landmarks,
-            )
-            .await
-            {
-                tracing::error!("MTC landmark allocation failed: {e}");
+            let now = crate::util::unix_now();
+            for (ca_id, ca) in state.cas.iter() {
+                let mtc = &ca.mtc;
+                let (Some(log), Some(signing_key)) = (mtc.log.as_ref(), mtc.signing_key.as_ref())
+                else {
+                    continue;
+                };
+                if now - mtc.last_landmark_at() < mtc.landmark_interval_secs as i64 {
+                    continue;
+                }
+                let params = LandmarkAllocationParams {
+                    log,
+                    signing_key,
+                    signing_hash_alg: &mtc.signing_hash_alg,
+                    log_algorithm: mtc.algorithm,
+                    db: &state.db,
+                    db_kind: state.db_kind,
+                    ca_id,
+                    keep_count: mtc.max_active_landmarks,
+                };
+                if let Err(e) = maybe_allocate_landmark(&params).await {
+                    tracing::error!(ca_id, "MTC landmark allocation failed: {e}");
+                }
+                mtc.touch_landmark();
             }
         }
     })

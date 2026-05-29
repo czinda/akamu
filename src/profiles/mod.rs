@@ -490,7 +490,7 @@ async fn load_all_providers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::CaState;
+    use crate::state::{CaState, MtcState};
 
     fn make_ca() -> CaState {
         CaState {
@@ -506,6 +506,7 @@ mod tests {
             enforce_validity_cap: false,
             crl_next_update_secs: 86400,
             caa_identities: vec![],
+            mtc: Arc::new(MtcState::disabled()),
         }
     }
 

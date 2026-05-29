@@ -439,6 +439,7 @@ mod tests {
             enforce_validity_cap: false,
             require_encrypted_key: false,
             key_password_file: None,
+            mtc: None,
         }
     }
 

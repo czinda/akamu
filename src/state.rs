@@ -158,7 +158,6 @@ pub struct AppState {
     pub cas: Arc<IndexMap<String, Arc<CaState>>>,
     /// The CA designated as the default for legacy `/acme/…` routes.
     pub default_ca_id: Arc<String>,
-    pub mtc: Arc<MtcState>,
     /// Certificate profile registry.  Profiles are cached in memory and
     /// refreshed periodically by a background task started via
     /// [`ProfileRegistry::spawn_refresh_task`]; no external system is
@@ -410,6 +409,8 @@ pub struct CaState {
     pub crl_next_update_secs: u64,
     /// Per-CA CAA identities (falls back to `server.caa_identities` when empty).
     pub caa_identities: Vec<String>,
+    /// Per-CA MTC transparency log state.
+    pub mtc: Arc<MtcState>,
 }
 
 /// Cached account key material stored in `AppState::spki_cache`.
@@ -423,7 +424,7 @@ pub struct CachedAccount {
     pub status: String,
 }
 
-/// MTC transparency log state.
+/// MTC transparency log state for a single CA.
 pub struct MtcState {
     /// Shared, mutex-guarded disk-backed log.  `None` when MTC is disabled.
     pub log: Option<SharedLog>,
@@ -442,6 +443,18 @@ pub struct MtcState {
     /// `None` when MTC is disabled.  Keeping the `File` here ensures the lock
     /// is not released prematurely.
     pub _log_lock: Option<std::fs::File>,
+    /// How often to produce a checkpoint (seconds).
+    pub checkpoint_interval_secs: u64,
+    /// Maximum number of checkpoints to retain.
+    pub checkpoint_retention_count: u32,
+    /// How often to allocate a landmark (seconds).
+    pub landmark_interval_secs: u64,
+    /// Maximum number of active landmarks to retain.
+    pub max_active_landmarks: u32,
+    /// Unix timestamp of the last checkpoint production (for per-CA scheduling).
+    pub last_checkpoint: std::sync::atomic::AtomicI64,
+    /// Unix timestamp of the last landmark allocation (for per-CA scheduling).
+    pub last_landmark: std::sync::atomic::AtomicI64,
 }
 
 impl MtcState {
@@ -453,6 +466,52 @@ impl MtcState {
     /// Return `true` when checkpoint production is enabled (log + signing key).
     pub fn can_checkpoint(&self) -> bool {
         self.log.is_some() && self.signing_key.is_some()
+    }
+
+    /// Unix timestamp of the last checkpoint production.
+    pub fn last_checkpoint_at(&self) -> i64 {
+        self.last_checkpoint
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Record that a checkpoint was just produced.
+    pub fn touch_checkpoint(&self) {
+        self.last_checkpoint.store(
+            crate::util::unix_now(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    /// Unix timestamp of the last landmark allocation.
+    pub fn last_landmark_at(&self) -> i64 {
+        self.last_landmark
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Record that a landmark was just allocated.
+    pub fn touch_landmark(&self) {
+        self.last_landmark.store(
+            crate::util::unix_now(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    /// Build a disabled MTC state (no log, no key, default intervals).
+    pub fn disabled() -> Self {
+        MtcState {
+            log: None,
+            algorithm: HashAlgorithm::Sha256,
+            signing_key: None,
+            signing_hash_alg: "sha256".into(),
+            cosigner_clients: vec![],
+            _log_lock: None,
+            checkpoint_interval_secs: 3600,
+            checkpoint_retention_count: 1000,
+            landmark_interval_secs: 86400,
+            max_active_landmarks: 100,
+            last_checkpoint: std::sync::atomic::AtomicI64::new(0),
+            last_landmark: std::sync::atomic::AtomicI64::new(0),
+        }
     }
 }
 

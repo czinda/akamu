@@ -236,6 +236,34 @@ pub fn build_router(state: Arc<AppState>, static_dir: Option<&std::path::Path>) 
             "/acme/{ca_id}/renewal-info/{cert_id}",
             get(renewal_info::get_renewal_info),
         )
+        // Per-CA MTC endpoints
+        .route("/acme/{ca_id}/mtc/tree-size", get(mtc::get_tree_size))
+        .route("/acme/{ca_id}/mtc/root", get(mtc::get_root))
+        .route(
+            "/acme/{ca_id}/mtc/inclusion-proof/{cert_id}",
+            get(mtc::get_inclusion_proof),
+        )
+        .route(
+            "/acme/{ca_id}/mtc/cert/{cert_id}/standalone",
+            get(mtc::get_standalone),
+        )
+        .route("/acme/{ca_id}/mtc/landmarks", get(mtc::get_landmarks))
+        .route(
+            "/acme/{ca_id}/mtc/landmarks/{seq}/cert",
+            get(mtc::get_landmark_cert),
+        )
+        .route(
+            "/acme/{ca_id}/mtc/tlog/checkpoint",
+            get(mtc::get_tlog_checkpoint),
+        )
+        .route(
+            "/acme/{ca_id}/mtc/tlog/cosignature",
+            get(mtc::get_tlog_cosignature),
+        )
+        .route(
+            "/acme/{ca_id}/mtc/tlog/tile/{*path}",
+            get(mtc::get_tlog_tile),
+        )
         .layer(axum::middleware::from_fn_with_state(
             Arc::clone(&state),
             halt_check,

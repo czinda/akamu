@@ -1163,11 +1163,14 @@ mod tests {
         verify, RevocationChecks,
     };
 
+    use std::sync::Arc;
+
     use super::{
         hex_encode, ip_string_to_bytes, issue_certificate, issue_with_params,
         permitted_sig_algs_with_composite, permitted_spki_algs_with_composite, IssueCertParams,
     };
     use crate::ca::csr::{validate_csr, SanEntry, ValidatedCsr};
+    use crate::state::MtcState;
     use synta_certificate::oids;
 
     /// Build a minimal self-signed CA certificate DER for testing.
@@ -1660,6 +1663,7 @@ mod tests {
             enforce_validity_cap: true,
             crl_next_update_secs: 86400,
             caa_identities: vec![],
+            mtc: Arc::new(MtcState::disabled()),
         };
 
         let params = crate::profiles::CertificateParameters {
@@ -1719,6 +1723,7 @@ mod tests {
             enforce_validity_cap: true,
             crl_next_update_secs: 86400,
             caa_identities: vec![],
+            mtc: Arc::new(MtcState::disabled()),
         };
 
         let params = crate::profiles::CertificateParameters {

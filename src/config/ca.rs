@@ -91,6 +91,10 @@ pub struct CaConfig {
     /// filesystem path (not a PKCS#11 URI).  The file is read once at startup;
     /// trailing newlines are stripped.
     pub key_password_file: Option<String>,
+    /// Per-CA MTC transparency log configuration.  When absent, this CA does
+    /// not participate in an MTC log.  Falls back to the global `[mtc]` section
+    /// when that exists and this field is `None`.
+    pub mtc: Option<super::mtc::MtcConfig>,
 }
 
 pub(super) fn default_key_type() -> String {

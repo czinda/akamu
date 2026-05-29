@@ -674,7 +674,7 @@ mod tests {
     #[cfg(test)]
     async fn make_verify_state() -> (Arc<crate::state::AppState>, String, String, String, String) {
         use crate::ca;
-        use crate::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
+        use crate::config::{CaConfig, Config, DatabaseConfig, ServerConfig};
         use crate::db;
         use crate::db::schema::{AccountRow, AuthorizationRow, ChallengeRow};
         use crate::state::{AppState, CaState, MtcState, NonceBucket};
@@ -707,18 +707,9 @@ mod tests {
                 enforce_validity_cap: false,
                 require_encrypted_key: false,
                 key_password_file: None,
+                mtc: None,
             }],
-            mtc: MtcConfig {
-                log_path: "/dev/null".into(),
-                enabled: false,
-                signing_key: None,
-                checkpoint_interval_secs: 3600,
-                cosigners: vec![],
-                landmark_interval_secs: 86400,
-                max_active_landmarks: 100,
-                checkpoint_retention_count: 1000,
-                hash_alg: "sha256".into(),
-            },
+            mtc: None,
             server: ServerConfig::default(),
             tls: Default::default(),
             profiles: Default::default(),
@@ -745,6 +736,7 @@ mod tests {
             enforce_validity_cap: false,
             crl_next_update_secs: 604800,
             caa_identities: vec![],
+            mtc: Arc::new(MtcState::disabled()),
         });
 
         let acc_id = "acc-vr-001".to_string();
@@ -866,14 +858,6 @@ mod tests {
                 Arc::new(map)
             },
             default_ca_id: Arc::new("default".to_string()),
-            mtc: Arc::new(MtcState {
-                log: None,
-                algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
-                signing_key: None,
-                signing_hash_alg: "sha256".into(),
-                cosigner_clients: vec![],
-                _log_lock: None,
-            }),
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
             nonces: Arc::new(NonceBucket::new()),

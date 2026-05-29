@@ -33,6 +33,7 @@ pub async fn produce_checkpoint(
     signing_hash_alg: &str,
     log_algorithm: HashAlgorithm,
     db: &Db,
+    ca_id: &str,
     cosigners: &[CosignerClient],
 ) -> Result<(), AcmeError> {
     let tree_size = crate::mtc::log::tree_size(log).await?;
@@ -42,7 +43,7 @@ pub async fn produce_checkpoint(
     }
 
     // Skip when the latest checkpoint already covers this tree size.
-    if let Some(latest) = db::checkpoints::get_latest(db).await? {
+    if let Some(latest) = db::checkpoints::get_latest(db, ca_id).await? {
         if latest.tree_size as u64 >= tree_size {
             tracing::debug!(tree_size, "MTC checkpoint up to date; skipping");
             return Ok(());
@@ -134,10 +135,18 @@ pub async fn produce_checkpoint(
 
     // Store checkpoint and resolve its DB row ID for cosignature FK.
     let root_hex: String = root_bytes.iter().map(|b| format!("{b:02x}")).collect();
-    db::checkpoints::upsert(db, actual_tree_size as i64, &root_hex, &signature, now_unix).await?;
+    db::checkpoints::upsert(
+        db,
+        ca_id,
+        actual_tree_size as i64,
+        &root_hex,
+        &signature,
+        now_unix,
+    )
+    .await?;
     tracing::info!(actual_tree_size, root_hex, "MTC checkpoint produced");
     // Query by tree_size (UNIQUE) — safe against concurrent checkpoint inserts.
-    let checkpoint_id = db::checkpoints::get_by_tree_size(db, actual_tree_size as i64)
+    let checkpoint_id = db::checkpoints::get_by_tree_size(db, ca_id, actual_tree_size as i64)
         .await?
         .map(|r| r.id);
 
@@ -195,7 +204,8 @@ pub async fn produce_checkpoint(
     // Persist cosignatures.
     if let Some(chk_id) = checkpoint_id {
         for (url, der) in cosig_results {
-            if let Err(e) = db::cosignatures::upsert(db, chk_id, &url, &der, now_unix).await {
+            if let Err(e) = db::cosignatures::upsert(db, ca_id, chk_id, &url, &der, now_unix).await
+            {
                 tracing::warn!(url = %url, "store cosignature: {e}");
             }
         }
@@ -253,34 +263,42 @@ fn build_checkpoint_der(
 /// The returned `JoinHandle` should be retained by the caller; dropping it
 /// detaches the task silently, making panics undetectable.
 pub fn spawn_checkpoint_task(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
-    let interval_secs = state.config.mtc.checkpoint_interval_secs;
-    let retention_count = state.config.mtc.checkpoint_retention_count;
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         interval.tick().await; // skip the immediate first tick
         loop {
             interval.tick().await;
-            let mtc = &state.mtc;
-            let (Some(log), Some(signing_key)) = (mtc.log.as_ref(), mtc.signing_key.as_ref())
-            else {
-                continue;
-            };
-            if let Err(e) = produce_checkpoint(
-                log,
-                signing_key,
-                &mtc.signing_hash_alg,
-                mtc.algorithm,
-                &state.db,
-                &mtc.cosigner_clients,
-            )
-            .await
-            {
-                tracing::error!("MTC checkpoint failed: {e}");
-                continue;
-            }
-            // Prune old checkpoints; CASCADE deletes their cosignatures automatically.
-            if let Err(e) = db::checkpoints::prune_oldest(&state.db, retention_count).await {
-                tracing::warn!("prune old MTC checkpoints: {e}");
+            let now = crate::util::unix_now();
+            for (ca_id, ca) in state.cas.iter() {
+                let mtc = &ca.mtc;
+                let (Some(log), Some(signing_key)) = (mtc.log.as_ref(), mtc.signing_key.as_ref())
+                else {
+                    continue;
+                };
+                if now - mtc.last_checkpoint_at() < mtc.checkpoint_interval_secs as i64 {
+                    continue;
+                }
+                if let Err(e) = produce_checkpoint(
+                    log,
+                    signing_key,
+                    &mtc.signing_hash_alg,
+                    mtc.algorithm,
+                    &state.db,
+                    ca_id,
+                    &mtc.cosigner_clients,
+                )
+                .await
+                {
+                    tracing::error!(ca_id, "MTC checkpoint failed: {e}");
+                    continue;
+                }
+                mtc.touch_checkpoint();
+                if let Err(e) =
+                    db::checkpoints::prune_oldest(&state.db, ca_id, mtc.checkpoint_retention_count)
+                        .await
+                {
+                    tracing::warn!(ca_id, "prune old MTC checkpoints: {e}");
+                }
             }
         }
     })

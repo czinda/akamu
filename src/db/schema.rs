@@ -109,6 +109,7 @@ pub struct ChallengeRow {
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct LandmarkRow {
     pub id: i64,
+    pub ca_id: String,
     pub sequence_no: i64,
     pub tree_size: i64,
     pub cert_der: Option<Vec<u8>>,
@@ -127,6 +128,7 @@ pub struct CosignatureRow {
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct CheckpointRow {
     pub id: i64,
+    pub ca_id: String,
     pub tree_size: i64,
     pub root_hex: String,
     pub signature: Vec<u8>,

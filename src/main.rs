@@ -78,6 +78,66 @@ fn load_or_generate_mtc_key(
     }
 }
 
+fn init_mtc_for_ca(
+    ca_id: &str,
+    mtc_cfg: &akamu::config::MtcConfig,
+) -> Result<Arc<MtcState>, String> {
+    use std::sync::atomic::AtomicI64;
+
+    let mtc_algorithm: synta_mtc::crypto::HashAlgorithm = mtc_cfg
+        .hash_alg
+        .parse()
+        .map_err(|e| format!("CA '{ca_id}': invalid mtc.hash_alg: {e}"))?;
+
+    let (mtc_signing_key, mtc_signing_hash_alg) = if let Some(ref sk_cfg) = mtc_cfg.signing_key {
+        tracing::info!(ca_id, "loading MTC signing key from '{}'", sk_cfg.key_file);
+        let key = load_or_generate_mtc_key(sk_cfg)?;
+        (Some(key), sk_cfg.hash_alg.clone())
+    } else {
+        (None, "sha256".to_string())
+    };
+
+    let cosigner_clients: Vec<_> = mtc_cfg
+        .cosigners
+        .iter()
+        .filter_map(|c| match mtc::cosign::build_cosigner_client(c) {
+            Ok(client) => Some(client),
+            Err(e) => {
+                tracing::warn!(ca_id, url = %c.url, "build cosigner client: {e}");
+                None
+            }
+        })
+        .collect();
+
+    tracing::info!(ca_id, "opening MTC log at '{}'", mtc_cfg.log_path);
+    let log_lock = mtc::log::acquire_log_lock(&mtc_cfg.log_path).map_err(|e| format!("{e}"))?;
+    let log = mtc::log::open_or_create(&mtc_cfg.log_path, mtc_algorithm)
+        .map_err(|e| format!("CA '{ca_id}': MTC log init: {e}"))?;
+    let file_alg = log.algorithm();
+    if file_alg != mtc_algorithm {
+        return Err(format!(
+            "CA '{ca_id}': MTC log file '{}' was created with {} but config specifies {}; \
+             delete the log file to recreate with the new algorithm",
+            mtc_cfg.log_path, file_alg, mtc_algorithm,
+        ));
+    }
+    let shared = Arc::new(tokio::sync::Mutex::new(log));
+    Ok(Arc::new(MtcState {
+        log: Some(shared),
+        algorithm: mtc_algorithm,
+        signing_key: mtc_signing_key,
+        signing_hash_alg: mtc_signing_hash_alg,
+        cosigner_clients,
+        _log_lock: Some(log_lock),
+        checkpoint_interval_secs: mtc_cfg.checkpoint_interval_secs,
+        checkpoint_retention_count: mtc_cfg.checkpoint_retention_count,
+        landmark_interval_secs: mtc_cfg.landmark_interval_secs,
+        max_active_landmarks: mtc_cfg.max_active_landmarks,
+        last_checkpoint: AtomicI64::new(0),
+        last_landmark: AtomicI64::new(0),
+    }))
+}
+
 fn derive_crdt_db_url(main_url: &str) -> String {
     if main_url.contains(":memory:") {
         return "sqlite::memory:".to_string();
@@ -471,6 +531,18 @@ async fn run() -> Result<(), String> {
             }
         });
 
+        // Per-CA MTC init: use [ca.mtc] if present, else fall back to global [mtc].
+        let effective_mtc = ca_cfg.mtc.as_ref().or(config.mtc.as_ref());
+        let ca_mtc = if let Some(mtc_cfg) = effective_mtc {
+            if mtc_cfg.enabled {
+                init_mtc_for_ca(&ca_cfg.id, mtc_cfg)?
+            } else {
+                Arc::new(MtcState::disabled())
+            }
+        } else {
+            Arc::new(MtcState::disabled())
+        };
+
         let ca_state = Arc::new(CaState {
             id: ca_cfg.id.clone(),
             key_type: ca_cfg.key_type.clone(),
@@ -484,6 +556,7 @@ async fn run() -> Result<(), String> {
             enforce_validity_cap: ca_cfg.enforce_validity_cap,
             crl_next_update_secs: ca_cfg.crl_next_update_secs,
             caa_identities: ca_cfg.caa_identities.clone(),
+            mtc: ca_mtc,
         });
         crl_caches_map.insert(ca_cfg.id.clone(), Default::default());
         cas_map.insert(ca_cfg.id.clone(), ca_state);
@@ -533,72 +606,17 @@ async fn run() -> Result<(), String> {
             .map_err(|e| format!("admin operator bootstrap: {e}"))?;
     }
 
-    // ── MTC transparency log ──────────────────────────────────────────────────
-    let mtc_algorithm: synta_mtc::crypto::HashAlgorithm = config
-        .mtc
-        .hash_alg
-        .parse()
-        .map_err(|e| format!("invalid mtc.hash_alg: {e}"))?;
-
-    // Load or generate the MTC signing key (distinct from the CA key per §5.5).
-    let (mtc_signing_key, mtc_signing_hash_alg) = if let Some(ref sk_cfg) = config.mtc.signing_key {
-        tracing::info!("loading MTC signing key from '{}'", sk_cfg.key_file);
-        let key = load_or_generate_mtc_key(sk_cfg)?;
-        (Some(key), sk_cfg.hash_alg.clone())
-    } else {
-        (None, "sha256".to_string())
-    };
-
-    // Pre-build cosigner HTTPS clients so TLS config errors surface at startup
-    // rather than silently at checkpoint time, and to avoid re-reading PEM files
-    // on every checkpoint interval.
-    let cosigner_clients: Vec<_> = config
-        .mtc
-        .cosigners
-        .iter()
-        .filter_map(|c| match mtc::cosign::build_cosigner_client(c) {
-            Ok(client) => Some(client),
-            Err(e) => {
-                tracing::warn!(url = %c.url, "build cosigner client at startup: {e}");
-                None
-            }
-        })
-        .collect();
-
-    let mtc = if config.mtc.enabled {
-        tracing::info!("opening MTC log at '{}'", config.mtc.log_path);
-        let log_lock =
-            mtc::log::acquire_log_lock(&config.mtc.log_path).map_err(|e| format!("{e}"))?;
-        let log = mtc::log::open_or_create(&config.mtc.log_path, mtc_algorithm)
-            .map_err(|e| format!("MTC log init: {e}"))?;
-        let file_alg = log.algorithm();
-        if file_alg != mtc_algorithm {
-            return Err(format!(
-                "MTC log file at '{}' was created with {} but config specifies {}; \
-                 delete the log file to recreate with the new algorithm",
-                config.mtc.log_path, file_alg, mtc_algorithm,
-            ));
+    // Deprecation warning for global [mtc] section.
+    if config.mtc.is_some() {
+        let any_per_ca = config.cas.iter().any(|c| c.mtc.is_some());
+        if !any_per_ca {
+            tracing::warn!(
+                "global [mtc] section is deprecated; move MTC config into each [[ca]] \
+                 block as [ca.mtc].  The global section is used as a fallback for CAs \
+                 without [ca.mtc]."
+            );
         }
-        let shared = Arc::new(tokio::sync::Mutex::new(log));
-        Arc::new(MtcState {
-            log: Some(shared),
-            algorithm: mtc_algorithm,
-            signing_key: mtc_signing_key,
-            signing_hash_alg: mtc_signing_hash_alg,
-            cosigner_clients,
-            _log_lock: Some(log_lock),
-        })
-    } else {
-        tracing::info!("MTC logging disabled");
-        Arc::new(MtcState {
-            log: None,
-            algorithm: mtc_algorithm,
-            signing_key: mtc_signing_key,
-            signing_hash_alg: mtc_signing_hash_alg,
-            cosigner_clients,
-            _log_lock: None,
-        })
-    };
+    }
 
     // ── TLS state (lean; heavy OwnedStore lives inside SyntaClientCertVerifier) ─
     let tls_state = if config.tls.enabled {
@@ -778,7 +796,6 @@ async fn run() -> Result<(), String> {
         db_kind,
         cas: Arc::new(cas_map),
         default_ca_id: Arc::new(default_ca_id),
-        mtc,
         profiles: profile_registry.clone(),
         tls: tls_state,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),

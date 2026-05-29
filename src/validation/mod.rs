@@ -644,7 +644,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use crate::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
+    use crate::config::{CaConfig, Config, DatabaseConfig, ServerConfig};
     use crate::state::{AppState, CaState, MtcState, NonceBucket};
     use crate::{ca, db};
 
@@ -676,18 +676,9 @@ mod tests {
                 enforce_validity_cap: false,
                 require_encrypted_key: false,
                 key_password_file: None,
+                mtc: None,
             }],
-            mtc: MtcConfig {
-                log_path: "/dev/null".into(),
-                enabled: false,
-                signing_key: None,
-                checkpoint_interval_secs: 3600,
-                cosigners: vec![],
-                landmark_interval_secs: 86400,
-                max_active_landmarks: 100,
-                checkpoint_retention_count: 1000,
-                hash_alg: "sha256".into(),
-            },
+            mtc: None,
             server: ServerConfig::default(),
             tls: Default::default(),
             profiles: Default::default(),
@@ -716,6 +707,7 @@ mod tests {
             enforce_validity_cap: false,
             crl_next_update_secs: 604800,
             caa_identities: vec![],
+            mtc: Arc::new(MtcState::disabled()),
         });
         Arc::new(AppState {
             config: Arc::clone(&config),
@@ -732,14 +724,6 @@ mod tests {
             },
 
             default_ca_id: Arc::new("default".to_string()),
-            mtc: Arc::new(MtcState {
-                log: None,
-                algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
-                signing_key: None,
-                signing_hash_alg: "sha256".into(),
-                cosigner_clients: vec![],
-                _log_lock: None,
-            }),
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
             nonces: Arc::new(NonceBucket::new()),
@@ -1233,18 +1217,9 @@ mod tests {
                 enforce_validity_cap: false,
                 require_encrypted_key: false,
                 key_password_file: None,
+                mtc: None,
             }],
-            mtc: MtcConfig {
-                log_path: "/dev/null".into(),
-                enabled: false,
-                signing_key: None,
-                checkpoint_interval_secs: 3600,
-                cosigners: vec![],
-                landmark_interval_secs: 86400,
-                max_active_landmarks: 100,
-                checkpoint_retention_count: 1000,
-                hash_alg: "sha256".into(),
-            },
+            mtc: None,
             server: ServerConfig {
                 http_validation_port: addr.port(),
                 http_validation_allow_private_ips: true,
@@ -1275,6 +1250,7 @@ mod tests {
             enforce_validity_cap: false,
             crl_next_update_secs: 604800,
             caa_identities: vec![],
+            mtc: Arc::new(MtcState::disabled()),
         });
         let state = Arc::new(AppState {
             config: Arc::clone(&config),
@@ -1291,14 +1267,6 @@ mod tests {
             },
 
             default_ca_id: Arc::new("default".to_string()),
-            mtc: Arc::new(MtcState {
-                log: None,
-                algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
-                signing_key: None,
-                signing_hash_alg: "sha256".into(),
-                cosigner_clients: vec![],
-                _log_lock: None,
-            }),
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
             nonces: Arc::new(NonceBucket::new()),
@@ -1572,8 +1540,8 @@ mod tests {
 
     /// Helper to build a state backed by a given db pool.
     async fn make_state_with_db(db: crate::db::Db) -> Arc<AppState> {
-        use crate::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
-        use crate::state::{AppState, CaState, MtcState, NonceBucket};
+        use crate::config::{CaConfig, Config, DatabaseConfig, ServerConfig};
+        use crate::state::{CaState, MtcState, NonceBucket};
         let dir = tempfile::TempDir::new().unwrap();
         let config = Arc::new(Config {
             listen_addr: "127.0.0.1:0".into(),
@@ -1601,18 +1569,9 @@ mod tests {
                 enforce_validity_cap: false,
                 require_encrypted_key: false,
                 key_password_file: None,
+                mtc: None,
             }],
-            mtc: MtcConfig {
-                log_path: "/dev/null".into(),
-                enabled: false,
-                signing_key: None,
-                checkpoint_interval_secs: 3600,
-                cosigners: vec![],
-                landmark_interval_secs: 86400,
-                max_active_landmarks: 100,
-                checkpoint_retention_count: 1000,
-                hash_alg: "sha256".into(),
-            },
+            mtc: None,
             server: ServerConfig::default(),
             tls: Default::default(),
             profiles: Default::default(),
@@ -1637,6 +1596,7 @@ mod tests {
             enforce_validity_cap: false,
             crl_next_update_secs: 604800,
             caa_identities: vec![],
+            mtc: Arc::new(MtcState::disabled()),
         });
         let crdt_pool = db.clone();
         Arc::new(AppState {
@@ -1654,14 +1614,6 @@ mod tests {
             },
 
             default_ca_id: Arc::new("default".to_string()),
-            mtc: Arc::new(MtcState {
-                log: None,
-                algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
-                signing_key: None,
-                signing_hash_alg: "sha256".into(),
-                cosigner_clients: vec![],
-                _log_lock: None,
-            }),
             tls: None,
             spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
             nonces: Arc::new(NonceBucket::new()),

@@ -91,7 +91,7 @@ pub async fn get_config(operator: OperatorContext, State(state): State<Arc<AppSt
         Json(json!({
             "base_url": cfg.base_url,
             "db_url": "***",
-            "mtc_enabled": state.mtc.is_enabled(),
+            "mtc_enabled": state.cas.values().any(|ca| ca.mtc.is_enabled()),
             "caa_identities": cfg.server.caa_identities,
             "validate_dnssec": cfg.server.validate_dnssec,
             "cas": cas,

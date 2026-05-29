@@ -36,7 +36,11 @@ pub struct Config {
     pub database: DatabaseConfig,
     #[serde(rename = "ca", deserialize_with = "deserialize_ca_array")]
     pub cas: Vec<CaConfig>,
-    pub mtc: MtcConfig,
+    /// Global MTC configuration (deprecated — use per-CA `[ca.mtc]` instead).
+    /// When present and a CA has no `[ca.mtc]`, the global section is used as
+    /// a fallback for backward compatibility.
+    #[serde(default)]
+    pub mtc: Option<MtcConfig>,
     #[serde(default)]
     pub server: ServerConfig,
     /// Server-side TLS. Absent or `enabled = false` → plain HTTP, no behavior change.
@@ -593,12 +597,17 @@ impl Config {
             }
         }
 
-        if let Err(e) = self
-            .mtc
-            .hash_alg
-            .parse::<synta_mtc::crypto::HashAlgorithm>()
-        {
-            return Err(format!("[mtc].hash_alg: {e}"));
+        if let Some(ref mtc_cfg) = self.mtc {
+            if let Err(e) = mtc_cfg.hash_alg.parse::<synta_mtc::crypto::HashAlgorithm>() {
+                return Err(format!("[mtc].hash_alg: {e}"));
+            }
+        }
+        for ca_cfg in &self.cas {
+            if let Some(ref mtc_cfg) = ca_cfg.mtc {
+                if let Err(e) = mtc_cfg.hash_alg.parse::<synta_mtc::crypto::HashAlgorithm>() {
+                    return Err(format!("[ca.mtc].hash_alg for CA '{}': {e}", ca_cfg.id));
+                }
+            }
         }
 
         let is_unix = self.listen_addr.starts_with("unix:") || self.listen_addr.starts_with('/');
@@ -733,8 +742,9 @@ enabled = false
         let ca = cfg.default_ca();
         assert_eq!(ca.key_file, "/tmp/ca.key");
         assert_eq!(ca.cert_file, "/tmp/ca.crt");
-        assert_eq!(cfg.mtc.log_path, "/tmp/mtc.log");
-        assert!(!cfg.mtc.enabled);
+        let mtc = cfg.mtc.as_ref().expect("global mtc section");
+        assert_eq!(mtc.log_path, "/tmp/mtc.log");
+        assert!(!mtc.enabled);
     }
 
     #[test]
@@ -865,7 +875,7 @@ max_body_bytes = 131072
         assert_eq!(ca.crl_url.as_deref(), Some("http://crl.example.org/ca.crl"));
         assert_eq!(ca.ocsp_url.as_deref(), Some("http://ocsp.example.org"));
         assert_eq!(ca.ca_validity_years, 5);
-        assert!(cfg.mtc.enabled);
+        assert!(cfg.mtc.as_ref().unwrap().enabled);
         assert_eq!(
             cfg.server.terms_of_service_url.as_deref(),
             Some("https://example.org/tos")

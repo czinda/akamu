@@ -35,10 +35,7 @@ pub async fn finalize_order(
     Path(params): Path<std::collections::HashMap<String, String>>,
     body: Bytes,
 ) -> Result<Response, AcmeError> {
-    let id = params
-        .get("id")
-        .ok_or(AcmeError::NotFound)?
-        .clone();
+    let id = params.get("id").ok_or(AcmeError::NotFound)?.clone();
     let pfx = acme_prefix(&state.config.base_url, &ca_id.0, &state.default_ca_id);
     let url = format!("{pfx}/order/{id}/finalize");
     let ctx = parse_jws(&state, body, &url).await?;
@@ -456,14 +453,15 @@ pub async fn finalize_order(
     // TBSCertificate + an MTC Merkle inclusion proof.  This is done synchronously
     // before the DB transaction so the mtc_log_index is available at insert time.
     let (final_cert_der, final_cert_pem, final_mtc_index) = if cert_params.issue_as_mtc {
-        let Some(log) = &state.mtc.log else {
+        let ca_mtc = &order_ca.mtc;
+        let Some(log) = &ca_mtc.log else {
             return Err(AcmeError::InvalidProfile(
-                "profile 'issue_as = \"mtc\"' requires [mtc] to be enabled".into(),
+                "profile 'issue_as = \"mtc\"' requires [ca.mtc] to be enabled".into(),
             ));
         };
 
         let idx =
-            crate::mtc::log::append_cert_to_log(log, issued.cert_der.clone(), state.mtc.algorithm)
+            crate::mtc::log::append_cert_to_log(log, issued.cert_der.clone(), ca_mtc.algorithm)
                 .await
                 .map_err(|e| AcmeError::Mtc(format!("MTC log append for MTC-profile cert: {e}")))?;
 
@@ -473,9 +471,10 @@ pub async fn finalize_order(
                 AcmeError::Mtc(format!("MTC inclusion proof for cert {}: {e}", issued.id))
             })?;
 
-        let mtc_signing_key = state.mtc.signing_key.as_ref().ok_or_else(|| {
+        let mtc_signing_key = ca_mtc.signing_key.as_ref().ok_or_else(|| {
             AcmeError::InvalidProfile(
-                "profile 'issue_as = \"mtc\"' requires [mtc.signing_key] to be configured".into(),
+                "profile 'issue_as = \"mtc\"' requires [ca.mtc.signing_key] to be configured"
+                    .into(),
             )
         })?;
         let spki_der = mtc_signing_key
@@ -490,7 +489,7 @@ pub async fn finalize_order(
                 proof,
                 tree_size,
                 spki_der: &spki_der,
-                log_algorithm: state.mtc.algorithm,
+                log_algorithm: ca_mtc.algorithm,
                 cosignature_ders: &[],
             },
         )?;
@@ -609,14 +608,14 @@ pub async fn finalize_order(
 
     // Optionally append to the MTC log.  Skip when the profile already handled
     // this synchronously above (MTC issuance profiles set final_mtc_index).
-    if state.mtc.is_enabled() && !cert_params.issue_as_mtc {
-        if let Some(log) = &state.mtc.log {
+    if order_ca.mtc.is_enabled() && !cert_params.issue_as_mtc {
+        if let Some(log) = &order_ca.mtc.log {
             let cert_der = issued.cert_der.clone();
             let log = Arc::clone(log);
             let db = state.db.clone();
             let cert_id = issued.id.clone();
             let cert_id_for_log = issued.id.clone();
-            let algorithm = state.mtc.algorithm;
+            let algorithm = order_ca.mtc.algorithm;
             let handle = tokio::spawn(async move {
                 match crate::mtc::log::append_cert_to_log(&log, cert_der, algorithm).await {
                     Ok(index) => {

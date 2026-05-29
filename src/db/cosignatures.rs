@@ -8,6 +8,7 @@ use crate::error::AcmeError;
 /// which does not support `ON CONFLICT … DO UPDATE SET`.
 pub async fn upsert(
     pool: &sqlx::AnyPool,
+    ca_id: &str,
     checkpoint_id: i64,
     cosigner_url: &str,
     signature_der: &[u8],
@@ -27,13 +28,14 @@ pub async fn upsert(
 
     if updated == 0 {
         super::query(
-            "INSERT INTO mtc_cosignatures (checkpoint_id, cosigner_url, signature_der, created)
-             SELECT ?, ?, ?, ?
+            "INSERT INTO mtc_cosignatures (ca_id, checkpoint_id, cosigner_url, signature_der, created)
+             SELECT ?, ?, ?, ?, ?
              WHERE NOT EXISTS (
                  SELECT 1 FROM mtc_cosignatures
                  WHERE checkpoint_id = ? AND cosigner_url = ?
              )",
         )
+        .bind(ca_id)
         .bind(checkpoint_id)
         .bind(cosigner_url)
         .bind(signature_der)
@@ -85,21 +87,32 @@ mod tests {
         crate::db::open("sqlite::memory:", 1, false).await.unwrap()
     }
 
-    async fn insert_checkpoint(db: &crate::db::Db, tree_size: i64) -> i64 {
-        checkpoints::upsert(db, tree_size, "aabb", b"sig", tree_size * 100)
+    async fn insert_checkpoint(db: &crate::db::Db, ca_id: &str, tree_size: i64) -> i64 {
+        checkpoints::upsert(db, ca_id, tree_size, "aabb", b"sig", tree_size * 100)
             .await
             .unwrap();
-        checkpoints::get_latest(db).await.unwrap().unwrap().id
+        checkpoints::get_latest(db, ca_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .id
     }
 
     #[tokio::test]
     async fn upsert_and_retrieve() {
         let db = open_db().await;
-        let chk_id = insert_checkpoint(&db, 10).await;
+        let chk_id = insert_checkpoint(&db, "ca1", 10).await;
 
-        upsert(&db, chk_id, "https://cosigner.example", b"cosig1", 1000)
-            .await
-            .unwrap();
+        upsert(
+            &db,
+            "ca1",
+            chk_id,
+            "https://cosigner.example",
+            b"cosig1",
+            1000,
+        )
+        .await
+        .unwrap();
 
         let rows = get_by_checkpoint(&db, chk_id).await.unwrap();
         assert_eq!(rows.len(), 1);
@@ -110,12 +123,12 @@ mod tests {
     #[tokio::test]
     async fn upsert_updates_existing_signature() {
         let db = open_db().await;
-        let chk_id = insert_checkpoint(&db, 10).await;
+        let chk_id = insert_checkpoint(&db, "ca1", 10).await;
 
-        upsert(&db, chk_id, "https://cosigner.example", b"old", 1000)
+        upsert(&db, "ca1", chk_id, "https://cosigner.example", b"old", 1000)
             .await
             .unwrap();
-        upsert(&db, chk_id, "https://cosigner.example", b"new", 2000)
+        upsert(&db, "ca1", chk_id, "https://cosigner.example", b"new", 2000)
             .await
             .unwrap();
 
@@ -128,15 +141,13 @@ mod tests {
     async fn cosignatures_cascade_on_checkpoint_prune() {
         let db = open_db().await;
 
-        // Insert two checkpoints; attach a cosignature to the older one.
-        let old_id = insert_checkpoint(&db, 10).await;
-        insert_checkpoint(&db, 20).await;
-        upsert(&db, old_id, "https://cosigner.example", b"sig", 1000)
+        let old_id = insert_checkpoint(&db, "ca1", 10).await;
+        insert_checkpoint(&db, "ca1", 20).await;
+        upsert(&db, "ca1", old_id, "https://cosigner.example", b"sig", 1000)
             .await
             .unwrap();
 
-        // Pruning checkpoints (keep newest 1) cascades to remove the cosignature.
-        checkpoints::prune_oldest(&db, 1).await.unwrap();
+        checkpoints::prune_oldest(&db, "ca1", 1).await.unwrap();
         assert!(
             get_by_checkpoint(&db, old_id).await.unwrap().is_empty(),
             "cosignature should be removed by cascade"
@@ -147,15 +158,14 @@ mod tests {
     async fn prune_orphaned_is_noop_when_cascade_cleaned() {
         let db = open_db().await;
 
-        let old_id = insert_checkpoint(&db, 10).await;
-        insert_checkpoint(&db, 20).await;
-        upsert(&db, old_id, "https://cosigner.example", b"sig", 1000)
+        let old_id = insert_checkpoint(&db, "ca1", 10).await;
+        insert_checkpoint(&db, "ca1", 20).await;
+        upsert(&db, "ca1", old_id, "https://cosigner.example", b"sig", 1000)
             .await
             .unwrap();
 
-        checkpoints::prune_oldest(&db, 1).await.unwrap();
+        checkpoints::prune_oldest(&db, "ca1", 1).await.unwrap();
 
-        // CASCADE already removed the cosignature; prune_orphaned has nothing left.
         let deleted = prune_orphaned(&db).await.unwrap();
         assert_eq!(deleted, 0, "cascade already cleaned up the cosignature");
     }

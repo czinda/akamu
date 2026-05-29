@@ -49,7 +49,7 @@ pub struct CosignerConfig {
     pub trust_anchor_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct MtcConfig {
     /// Path to the MTC disk-backed log file.
     pub log_path: String,
