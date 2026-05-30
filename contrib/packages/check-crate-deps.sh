@@ -11,6 +11,7 @@
 #   ./check-crate-deps.sh path/to/Cargo.lock
 #   ./check-crate-deps.sh --align path/to/Cargo.lock
 #   ./check-crate-deps.sh --align --apply path/to/Cargo.lock
+#   ./check-crate-deps.sh --unused path/to/Cargo.lock
 #
 # Options:
 #   --align       print 'cargo update --precise' commands that would bring
@@ -19,6 +20,8 @@
 #   --apply       execute the alignment commands, patching Cargo.toml files
 #                 when 'cargo update --precise' alone is insufficient
 #                 (implies --align)
+#   --unused      scan workspace Cargo.toml files for dependencies that do
+#                 not appear to be used in the crate's source code
 #   --help, -h    show this help
 #
 # Exit codes:
@@ -32,6 +35,7 @@ set -euo pipefail
 
 ALIGN=0
 APPLY=0
+UNUSED=0
 LOCKFILE=""
 
 usage() {
@@ -42,6 +46,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --align|-a) ALIGN=1; shift ;;
         --apply)    APPLY=1; ALIGN=1; shift ;;
+        --unused)   UNUSED=1; shift ;;
         --help|-h)  usage; exit 0 ;;
         --)         shift; break ;;
         -*)         printf 'error: unknown option: %s\n' "$1" >&2; exit 2 ;;
@@ -317,6 +322,145 @@ if [[ "$ALIGN" -eq 1 ]] && [[ "${#mismatch_pairs[@]}" -gt 0 ]]; then
         if [[ "$align_failed" -gt 0 ]]; then
             printf '\nInspect the failures above and align those crates manually.\n'
         fi
+    fi
+fi
+
+# ── 6. Unused dependency detection ────────────────────────────────────────────
+# When --unused is given, scan each workspace member's Cargo.toml for
+# [dependencies] entries whose crate name (hyphens → underscores) never appears
+# in the crate's src/*.rs files.  This mirrors what `cargo machete` does.
+#
+# Re-exported crates (e.g. rustls-pki-types consumed as rustls::pki_types)
+# are detected automatically by trying every hyphen-split of the dep name.
+#
+# Known false positives:
+#   - Proc-macro crates used only via #[derive(…)] without an explicit `use`
+#   - Feature-only deps that gate conditional compilation in other crates
+
+# _extract_dep_names TOML_FILE
+# Prints one dependency name per line from the [dependencies] section
+# (and [dependencies.NAME] subsections) of a Cargo.toml file.
+_extract_dep_names() {
+    awk '
+        # [dependencies] section — inline key = value entries
+        /^\[dependencies\][[:space:]]*$/ { in_deps = 1; next }
+
+        # [dependencies.NAME] subsection — the name is in the header
+        /^\[dependencies\.[a-zA-Z0-9_-]+\]/ {
+            name = $0
+            sub(/^\[dependencies\./, "", name)
+            sub(/\][[:space:]]*$/, "", name)
+            print name
+            in_deps = 0
+            next
+        }
+
+        # Any other section header ends [dependencies]
+        /^\[/ { in_deps = 0; next }
+
+        # Inside [dependencies]: the key before "=" is the crate name
+        in_deps && /^[[:space:]]*[a-zA-Z0-9_-]+[[:space:]]*=/ {
+            name = $0
+            sub(/[[:space:]]*=.*/, "", name)
+            sub(/^[[:space:]]*/, "", name)
+            print name
+        }
+    ' "$1"
+}
+
+if [[ "$UNUSED" -eq 1 ]]; then
+    REPOROOT="$(dirname "$(realpath "$LOCKFILE")")"
+
+    printf '\n── Scanning for potentially unused dependencies ──\n\n'
+
+    unused_total=0
+
+    while IFS= read -r member_toml; do
+        member_dir="$(dirname "$member_toml")"
+
+        # Extract the [package] name.
+        member_name="$(awk '
+            /^\[package\]/ { in_pkg = 1; next }
+            /^\[/          { in_pkg = 0; next }
+            in_pkg && /^name[[:space:]]*=/ {
+                sub(/^name[[:space:]]*=[[:space:]]*"/, "")
+                sub(/".*/, "")
+                print
+                exit
+            }
+        ' "$member_toml")"
+        [[ -z "$member_name" ]] && continue
+
+        src_dir="$member_dir/src"
+        [[ -d "$src_dir" ]] || continue
+
+        readarray -t deps < <(_extract_dep_names "$member_toml")
+        [[ ${#deps[@]} -eq 0 ]] && continue
+
+        member_unused=()
+
+        for dep in "${deps[@]}"; do
+            # Rust identifiers use underscores where crate names use hyphens.
+            use_name="${dep//-/_}"
+
+            # grep -rqw: word-boundary match prevents "synta" from matching
+            # "synta_certificate".  Stops at first hit (-q).
+            if grep -rqw --include='*.rs' "$use_name" "$src_dir" 2>/dev/null; then
+                continue
+            fi
+
+            # Re-export detection: crate "foo-bar-baz" may be consumed via
+            # a parent crate's re-export as "foo::bar_baz" or "foo_bar::baz".
+            # Try every hyphen-split position; if the prefix is itself a
+            # dependency of this crate and prefix::suffix appears in source,
+            # the dep is used via re-export — not unused.
+            found_via_reexport=0
+            if [[ "$dep" == *-* ]]; then
+                remaining="$dep"
+                prefix=""
+                while [[ "$remaining" == *-* ]]; do
+                    seg="${remaining%%-*}"
+                    remaining="${remaining#*-}"
+                    [[ -n "$prefix" ]] && prefix+="-"
+                    prefix+="$seg"
+
+                    prefix_use="${prefix//-/_}"
+                    suffix_use="${remaining//-/_}"
+
+                    if printf '%s\n' "${deps[@]}" | grep -qxF "$prefix"; then
+                        if grep -rqF --include='*.rs' \
+                               "${prefix_use}::${suffix_use}" \
+                               "$src_dir" 2>/dev/null; then
+                            found_via_reexport=1
+                            break
+                        fi
+                    fi
+                done
+            fi
+
+            if [[ "$found_via_reexport" -eq 0 ]]; then
+                member_unused+=( "$dep" )
+            fi
+        done
+
+        if [[ ${#member_unused[@]} -gt 0 ]]; then
+            printf '  %s (%s):\n' "$member_name" "${member_toml#"$REPOROOT"/}"
+            for u in "${member_unused[@]}"; do
+                printf '    ? %s\n' "$u"
+                unused_total=$(( unused_total + 1 ))
+            done
+        fi
+    done < <(find "$REPOROOT" -name "Cargo.toml" \
+                 -not -path "*/vendor/*" \
+                 -not -path "*/.git/*" \
+                 -not -path "*/target/*" | sort)
+
+    if [[ "$unused_total" -eq 0 ]]; then
+        printf '  No potentially unused dependencies found.\n'
+    else
+        printf '\n%d potentially unused dependency(ies) found.\n' "$unused_total"
+        printf 'Note: proc-macro crates and feature-only deps may be false\n'
+        printf 'positives. Verify before removing.\n'
     fi
 fi
 
