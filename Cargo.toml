@@ -103,9 +103,6 @@ indexmap = "2"
 # POSIX file locking (flock) for MTC log exclusion
 libc = "0.2"
 
-# Lightweight shared utilities (listen, TLS loader, auth primitives, sha256_hex)
-akamu-util = { path = "crates/akamu-util" }
-
 # JWK/JWS primitives (extracted from server; no axum/rusqlite dependency)
 akamu-jose = { path = "crates/akamu-jose" }
 

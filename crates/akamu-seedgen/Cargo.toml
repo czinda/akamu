@@ -13,11 +13,9 @@ path = "src/main.rs"
 akamu = { path = "../..", features = ["backend-sqlite"] }
 akamu-client = { path = "../akamu-client" }
 akamu-crdt = { path = "../akamu-crdt" }
-akamu-jose = { path = "../akamu-jose" }
 
 axum = { version = "0.8", features = ["http1", "macros"] }
 tokio = { version = "1", features = ["full"] }
-sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio"] }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -34,12 +32,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 indexmap = "2"
-tempfile = "3"
 
 synta-certificate = { version = ">=0.2.0", features = ["std"] }
-synta-mtc = { version = ">=0.2.0", features = ["std"] }
 reqwest = { version = "0.12", default-features = false }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "rustls-native-certs", "ring"] }
 hyper-util = { version = "0.1", features = ["tokio", "client-legacy"] }
-hyper = { version = "1", features = ["client", "http1"] }
-http-body-util = "0.1"

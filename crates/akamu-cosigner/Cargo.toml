@@ -29,7 +29,6 @@ akamu-mtc-wire = { path = "../akamu-mtc-wire" }
 synta-certificate = { version = ">=0.2.4", features = ["std", "pqc"] }
 synta-mtc         = { version = ">=0.2.4", features = ["std"] }
 synta             = { version = ">=0.2.4", default-features = false, features = ["std", "derive"] }
-native-ossl       = "0.1"
 
 # HTTP server
 axum = { version = "0.8", features = ["http1"] }
