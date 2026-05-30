@@ -12,7 +12,7 @@ path = "src/main.rs"
 [dependencies]
 akamu-client = { path = "../akamu-client" }
 base64 = "0.22"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", default-features = false, features = ["std", "help", "usage", "error-context", "derive"] }
 serde_json = "1"
 toml = "1"
 tokio = { version = "1", features = ["full"] }

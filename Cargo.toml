@@ -144,7 +144,7 @@ akamu-mtc-wire = { path = "crates/akamu-mtc-wire" }
 # which is not available in RHEL 10 / EPEL 10.  The acme_client_compat
 # integration test that used it has been removed along with this dependency.)
 # CLI argument parsing for the acme-bench standalone benchmark binary.
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", default-features = false, features = ["std", "help", "usage", "error-context", "derive"] }
 # Native Rust OpenSSL bindings — used by gossip_bootstrap integration test
 # to generate ML-KEM-768 and ECDSA P-256 node keys without the full server binary.
 native-ossl = "0.1"
