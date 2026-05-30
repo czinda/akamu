@@ -890,8 +890,9 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
             enforce_validity_cap: false,
             require_encrypted_key: false,
             key_password_file: None,
+            mtc: None,
         }],
-        mtc: MtcConfig {
+        mtc: Some(MtcConfig {
             log_path: "/dev/null".into(),
             enabled: false,
             signing_key: None,
@@ -901,7 +902,7 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
             max_active_landmarks: 100,
             checkpoint_retention_count: 1000,
             hash_alg: "sha256".into(),
-        },
+        }),
         server: ServerConfig {
             http_validation_port: infra.http_validation_port,
             dns_persist_issuer_domains: infra.issuer_domain.clone().into_iter().collect(),
@@ -967,6 +968,7 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
         enforce_validity_cap: false,
         crl_next_update_secs: 86400,
         caa_identities: vec![],
+        mtc: Arc::new(MtcState::disabled()),
     });
     let default_ca_id = Arc::new("bench".to_string());
     let cas: Arc<IndexMap<String, Arc<CaState>>> =
@@ -1018,14 +1020,6 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
         profiles: akamu::profiles::ProfileRegistry::empty(&ca),
         cas,
         default_ca_id,
-        mtc: Arc::new(MtcState {
-            log: None,
-            algorithm: synta_mtc::crypto::HashAlgorithm::Sha256,
-            signing_key: None,
-            signing_hash_alg: "sha256".into(),
-            cosigner_clients: vec![],
-            _log_lock: None,
-        }),
         tls: None,
         crl_caches,
         spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
@@ -2521,6 +2515,7 @@ async fn main() {
             enforce_validity_cap: false,
             require_encrypted_key: false,
             key_password_file: None,
+            mtc: None,
         };
         ca::init::load_or_generate(&ca_cfg).unwrap();
         Some(d)
