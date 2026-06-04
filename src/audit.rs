@@ -399,7 +399,7 @@ pub fn record_pair(
     Ok(())
 }
 
-pub async fn record_or_log_pair(
+pub fn record_or_log_pair(
     journal: &JournalWriter,
     state: &AuditState,
     policy: &AuditPolicy,
@@ -435,7 +435,7 @@ pub async fn record_or_log_pair(
     }
 }
 
-pub async fn record_or_log(
+pub fn record_or_log(
     journal: &JournalWriter,
     state: &AuditState,
     policy: &AuditPolicy,

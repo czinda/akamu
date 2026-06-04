@@ -334,22 +334,28 @@ impl AppState {
         }
     }
 
-    /// Record an audit event, logging (but not propagating) any DB error.
+    /// Record an audit event, logging (but not propagating) any journal error.
     ///
     /// Convenience wrapper over [`crate::audit::record_or_log`] that bundles
     /// the three audit-related `AppState` fields so call sites pass only the
     /// event.
+    ///
+    /// Marked `async` for API compatibility with callers that `.await` it,
+    /// even though the body contains no `.await` points.  Removing `async`
+    /// would be a breaking change for all call sites.
     pub async fn record_audit(&self, ev: crate::audit::AuditEvent) {
-        crate::audit::record_or_log(&self.journal, &self.audit, &self.audit_policy, ev).await;
+        crate::audit::record_or_log(&self.journal, &self.audit, &self.audit_policy, ev);
     }
 
+    /// Record two audit events, logging (but not propagating) any journal error.
+    ///
+    /// See [`Self::record_audit`] for why this is `async`.
     pub async fn record_audit_pair(
         &self,
         ev1: crate::audit::AuditEvent,
         ev2: crate::audit::AuditEvent,
     ) {
-        crate::audit::record_or_log_pair(&self.journal, &self.audit, &self.audit_policy, ev1, ev2)
-            .await;
+        crate::audit::record_or_log_pair(&self.journal, &self.audit, &self.audit_policy, ev1, ev2);
     }
 
     /// Return a point-in-time snapshot of the CRDT (cheap clone under read lock).
