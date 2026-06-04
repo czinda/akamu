@@ -1,30 +1,28 @@
 //! Structured audit trail (PP CA v2.1 FAU family).
 //!
 //! All ACME and administrative operations that must be logged for CC evaluation
-//! call [`record`].  The function inserts one row into `audit_events`, enforces
-//! the overflow policy (FAU_STG.4), and maintains the rolling SecurityViolation
-//! counter for the alarm response (FAU_ARP.1).
+//! call [`record`].  The function writes a structured journal entry to the
+//! `akamu` journal namespace, enforces the in-memory overflow counter
+//! (FAU_STG.4), and maintains the rolling SecurityViolation counter for the
+//! alarm response (FAU_ARP.1).
 //!
 //! # Design notes
 //!
-//! * The `audit_events` table is append-only at the application level
-//!   (FAU_STG.1(1)).  Only [`crate::db::audit::delete_oldest`] issues a DELETE,
-//!   and only when the overflow policy is `drop_oldest`.
+//! * Audit events are written to a dedicated systemd journal namespace via
+//!   [`crate::journal::JournalWriter`].  When the namespace socket is
+//!   unavailable (dev, CI), events are logged via `tracing` as a fallback.
 //! * [`AuditState`] lives in `AppState` and survives the lifetime of the server
-//!   process.  It holds no DB handles; callers pass the pool explicitly so the
-//!   same state type can be used from any async context.
+//!   process.
 
 use std::collections::VecDeque;
 use std::sync::{
-    atomic::{AtomicBool, AtomicI64, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     Mutex,
 };
 use std::time::{Duration, Instant};
 
-use crate::db::Db;
 use crate::error::AcmeError;
-
-pub use crate::db::audit::{AuditEventRow, AuditQuery};
+use crate::journal::JournalWriter;
 
 // ── Event taxonomy ─────────────────────────────────────────────────────────────
 
@@ -111,7 +109,7 @@ pub enum AuditOutcome {
 }
 
 impl AuditOutcome {
-    /// Return the string representation stored in the database (`"success"` or `"failure"`).
+    /// Return the string representation (`"success"` or `"failure"`).
     pub fn as_str(self) -> &'static str {
         match self {
             AuditOutcome::Success => "success",
@@ -178,12 +176,12 @@ impl AuditEvent {
 
 // ── Policy types ───────────────────────────────────────────────────────────────
 
-/// What to do when the audit store reaches `max_rows` (FAU_STG.4).
+/// What to do when the audit event count reaches `max_events` (FAU_STG.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverflowPolicy {
     /// Refuse new requests until an administrator intervenes.
     Halt,
-    /// Delete the oldest rows to make room (rolling window).
+    /// Continue recording; journald manages its own retention.
     DropOldest,
 }
 
@@ -199,9 +197,9 @@ pub enum AlarmAction {
 /// Audit overflow and alarm policy, extracted from `AdminConfig` at startup.
 #[derive(Debug, Clone)]
 pub struct AuditPolicy {
-    /// Maximum number of `audit_events` rows.  `None` = unlimited.
-    pub max_rows: Option<i64>,
-    /// Action to take when `max_rows` is reached.
+    /// Maximum audit events (since startup) before overflow action.  `None` = unlimited.
+    pub max_events: Option<u64>,
+    /// Action to take when `max_events` is reached.
     pub overflow: OverflowPolicy,
     /// Number of `SecurityViolation` events in a rolling 5-minute window that
     /// triggers the FAU_ARP.1 alarm response.
@@ -214,7 +212,7 @@ impl AuditPolicy {
     /// Construct from the `[admin]` TOML config block.
     pub fn from_admin_config(cfg: &crate::config::AdminConfig) -> Self {
         Self {
-            max_rows: cfg.audit_max_rows,
+            max_events: cfg.audit_max_rows.map(|v| v.max(0) as u64),
             overflow: if cfg.audit_overflow == "halt" {
                 OverflowPolicy::Halt
             } else {
@@ -233,7 +231,7 @@ impl AuditPolicy {
 impl Default for AuditPolicy {
     fn default() -> Self {
         Self {
-            max_rows: None,
+            max_events: None,
             overflow: OverflowPolicy::DropOldest,
             alarm_threshold: 10,
             alarm_action: AlarmAction::Syslog,
@@ -252,14 +250,11 @@ pub struct AuditState {
     /// Set to `true` when a halt condition has been triggered (overflow or alarm).
     /// Checked by the request dispatcher before accepting new work.
     pub should_halt: AtomicBool,
-    /// Approximate total row count in `audit_events`.  Seeded once at startup by
-    /// [`AuditState::seed_row_count`] and maintained via atomic increments and
-    /// decrements to avoid `SELECT COUNT(*)` on every insert.  A value of `-1`
-    /// means "not yet seeded"; `record` falls back to a DB count query in that case.
-    pub row_count: AtomicI64,
-    /// Consecutive audit insert failures (FAU_STG.1).  Reset to 0 on success;
+    /// Total audit events recorded since this process started.
+    pub event_count: AtomicU64,
+    /// Consecutive audit write failures (FAU_STG.1).  Reset to 0 on success;
     /// when this reaches `alarm_threshold`, `should_halt` is set.
-    pub consecutive_insert_failures: std::sync::atomic::AtomicU32,
+    pub consecutive_insert_failures: AtomicU32,
 }
 
 impl AuditState {
@@ -267,17 +262,9 @@ impl AuditState {
         Self {
             violation_times: Mutex::new(VecDeque::new()),
             should_halt: AtomicBool::new(false),
-            row_count: AtomicI64::new(-1),
-            consecutive_insert_failures: std::sync::atomic::AtomicU32::new(0),
+            event_count: AtomicU64::new(0),
+            consecutive_insert_failures: AtomicU32::new(0),
         }
-    }
-
-    /// Seed the in-memory row count from the database.  Call once at startup
-    /// after opening the connection pool.
-    pub async fn seed_row_count(&self, db: &Db) -> Result<(), AcmeError> {
-        let count = crate::db::audit::count(db).await?;
-        self.row_count.store(count, Ordering::Release);
-        Ok(())
     }
 }
 
@@ -309,203 +296,98 @@ fn handle_alarm(state: &AuditState, policy: &AuditPolicy) {
     }
 }
 
-/// Persist one audit event, enforce the overflow policy, and update the
-/// FAU_ARP.1 alarm counter.
-///
-/// # Errors
-///
-/// Returns `AcmeError::Database` if the INSERT fails.  Overflow-policy errors
-/// (failed `delete_oldest`) are also propagated.
-pub async fn record(
-    db: &Db,
-    db_kind: crate::db::DbKind,
+fn check_violation(state: &AuditState, policy: &AuditPolicy) {
+    let threshold_exceeded = {
+        let mut times = state.violation_times.lock().unwrap_or_else(|e| {
+            tracing::error!(
+                "violation_times mutex poisoned — FAU_ARP.1 alarm state may be inconsistent"
+            );
+            e.into_inner()
+        });
+        let cutoff = Instant::now() - Duration::from_secs(300);
+        times.retain(|&t| t >= cutoff);
+        times.push_back(Instant::now());
+        times.len() as u32 >= policy.alarm_threshold
+    };
+    if threshold_exceeded {
+        handle_alarm(state, policy);
+    }
+}
+
+/// Write one audit event to the journal namespace and enforce the in-memory
+/// overflow counter (FAU_STG.4) and alarm (FAU_ARP.1).
+pub fn record(
+    journal: &JournalWriter,
     state: &AuditState,
     policy: &AuditPolicy,
     ev: AuditEvent,
 ) -> Result<(), AcmeError> {
     let is_violation = ev.event_type == AuditEventType::SecurityViolation;
-    let occurred_at = crate::util::rfc3339_now();
 
-    // Fast path: when there is no row cap the overflow check is never needed,
-    // so we can skip the explicit BEGIN/COMMIT and let SQLite handle the INSERT
-    // as a single auto-committed statement.  This reduces the audit DB cost
-    // from 3 round-trips (BEGIN + INSERT + COMMIT) to 1 (INSERT only).
-    if policy.max_rows.is_none() {
-        crate::db::audit::insert(
-            db,
-            &occurred_at,
-            ev.event_type.as_str(),
-            ev.subject.as_deref(),
-            ev.principal.as_deref(),
-            ev.outcome.as_str(),
-            ev.detail.as_deref(),
-        )
-        .await?;
+    let priority = match ev.outcome {
+        AuditOutcome::Success => "6",
+        AuditOutcome::Failure => "4",
+    };
 
-        if is_violation {
-            let threshold_exceeded = {
-                let mut times = state.violation_times.lock().unwrap_or_else(|e| {
-                    tracing::error!(
-                        "violation_times mutex poisoned — FAU_ARP.1 alarm state may be inconsistent"
-                    );
-                    e.into_inner()
-                });
-                let cutoff = Instant::now() - Duration::from_secs(300);
-                times.retain(|&t| t >= cutoff);
-                times.push_back(Instant::now());
-                times.len() as u32 >= policy.alarm_threshold
-            };
-            if threshold_exceeded {
-                handle_alarm(state, policy);
-            }
-        }
-        return Ok(());
+    let mut fields: Vec<(&str, &str)> = vec![
+        ("SYSLOG_IDENTIFIER", "akamu-audit"),
+        ("PRIORITY", priority),
+        ("AKAMU_EVENT_TYPE", ev.event_type.as_str()),
+        ("AKAMU_OUTCOME", ev.outcome.as_str()),
+    ];
+    if let Some(ref s) = ev.subject {
+        fields.push(("AKAMU_SUBJECT", s));
+    }
+    if let Some(ref p) = ev.principal {
+        fields.push(("AKAMU_PRINCIPAL", p));
+    }
+    if let Some(ref d) = ev.detail {
+        fields.push(("AKAMU_DETAIL", d));
     }
 
-    // FAU_STG.1 / FAU_STG.4: INSERT and overflow enforcement must be atomic so
-    // that concurrent writes cannot interleave between the COUNT and DELETE and
-    // leave the table over the configured cap.
-    let mut tx = crate::db::begin_write(db, db_kind).await?;
+    journal
+        .send(&fields)
+        .map_err(|e| AcmeError::Database(format!("journal send: {e}")))?;
 
-    crate::db::audit::insert(
-        &mut *tx,
-        &occurred_at,
-        ev.event_type.as_str(),
-        ev.subject.as_deref(),
-        ev.principal.as_deref(),
-        ev.outcome.as_str(),
-        ev.detail.as_deref(),
-    )
-    .await?;
+    let count = state.event_count.fetch_add(1, Ordering::AcqRel) + 1;
 
-    // FAU_STG.4: overflow enforcement (inside the same transaction).
-    if let Some(max_rows) = policy.max_rows {
-        // Use the atomic counter to avoid a COUNT(*) round-trip on every insert.
-        // Seed it lazily on first use if not yet initialised (count = -1).
-        let count = {
-            let prev = state.row_count.fetch_add(1, Ordering::AcqRel);
-            if prev < 0 {
-                // Not seeded yet — fall back to a DB count and seed the atomic.
-                let db_count = crate::db::audit::count(&mut *tx).await?;
-                state.row_count.store(db_count, Ordering::Release);
-                db_count
-            } else {
-                prev + 1
-            }
-        };
-        if count >= max_rows {
-            // The atomic gives an approximation; concurrent callers can all
-            // cross the threshold simultaneously and would each delete based on
-            // their (stale) atomic value, over-deleting the table.  Re-count
-            // inside the transaction so the delete quantity is authoritative.
-            let db_count = crate::db::audit::count(&mut *tx).await?;
-            state.row_count.store(db_count, Ordering::Release);
-            if db_count >= max_rows {
-                match policy.overflow {
-                    OverflowPolicy::Halt => {
-                        tracing::error!(
-                            max_rows,
-                            count = db_count,
-                            "AUDIT OVERFLOW: halting server (FAU_STG.4)"
-                        );
-                        state.should_halt.store(true, Ordering::Release);
-                    }
-                    OverflowPolicy::DropOldest => {
-                        // Drop enough to stay below the cap; cap the single-pass
-                        // deletion at 1 000 rows to bound the DELETE latency.
-                        let excess = db_count - max_rows + 1;
-                        let n = excess.clamp(1, 1000);
-                        tracing::warn!(
-                            dropping = n,
-                            "audit store full; dropping oldest rows (FAU_STG.4)"
-                        );
-                        crate::db::audit::delete_oldest(&mut *tx, n).await?;
-                        state.row_count.fetch_sub(n, Ordering::AcqRel);
-                    }
+    // FAU_STG.4: overflow enforcement.
+    if let Some(max) = policy.max_events {
+        if count >= max {
+            match policy.overflow {
+                OverflowPolicy::Halt => {
+                    tracing::error!(
+                        max_events = max,
+                        count,
+                        "AUDIT OVERFLOW: halting server (FAU_STG.4)"
+                    );
+                    state.should_halt.store(true, Ordering::Release);
+                }
+                OverflowPolicy::DropOldest => {
+                    // journald manages its own retention — nothing to do
                 }
             }
         }
     }
 
-    if let Err(e) = tx.commit().await {
-        // Transaction failed — decrement the counter that was incremented optimistically
-        // above so it does not permanently drift ahead of the actual DB row count.
-        if state.row_count.load(Ordering::Acquire) > 0 {
-            state.row_count.fetch_sub(1, Ordering::AcqRel);
-        }
-        return Err(AcmeError::Database(format!(
-            "commit audit transaction: {e}"
-        )));
-    }
-
     // FAU_ARP.1: rolling-window alarm for repeated SecurityViolation events.
     if is_violation {
-        let threshold_exceeded = {
-            let mut times = state
-                .violation_times
-                .lock()
-                .expect("violation_times mutex poisoned — FAU_ARP.1 alarm state is corrupt");
-            let cutoff = Instant::now() - Duration::from_secs(300);
-            times.retain(|&t| t >= cutoff);
-            times.push_back(Instant::now());
-            times.len() as u32 >= policy.alarm_threshold
-        };
-        if threshold_exceeded {
-            handle_alarm(state, policy);
-        }
+        check_violation(state, policy);
     }
 
     Ok(())
 }
 
-/// Like [`record`] but logs errors instead of propagating them.
-///
-/// Tracks consecutive insert failures; when they reach `alarm_threshold`,
-/// sets `should_halt` (FAU_STG.1 — audit store unavailable).
-/// Record two audit events in a single DB round-trip when the fast path is available.
-///
-/// Fast path (max_rows = None, no SecurityViolation): uses a single two-row INSERT.
-/// Slow path: falls back to two sequential `record` calls with full overflow enforcement.
-pub async fn record_pair(
-    db: &Db,
-    db_kind: crate::db::DbKind,
+/// Record two audit events sequentially.
+pub fn record_pair(
+    journal: &JournalWriter,
     state: &AuditState,
     policy: &AuditPolicy,
     ev1: AuditEvent,
     ev2: AuditEvent,
 ) -> Result<(), AcmeError> {
-    let is_viol1 = ev1.event_type == AuditEventType::SecurityViolation;
-    let is_viol2 = ev2.event_type == AuditEventType::SecurityViolation;
-
-    if policy.max_rows.is_none() && !is_viol1 && !is_viol2 {
-        let occurred_at = crate::util::rfc3339_now();
-        crate::db::audit::insert_two(
-            db,
-            (
-                &occurred_at,
-                ev1.event_type.as_str(),
-                ev1.subject.as_deref(),
-                ev1.principal.as_deref(),
-                ev1.outcome.as_str(),
-                ev1.detail.as_deref(),
-            ),
-            (
-                &occurred_at,
-                ev2.event_type.as_str(),
-                ev2.subject.as_deref(),
-                ev2.principal.as_deref(),
-                ev2.outcome.as_str(),
-                ev2.detail.as_deref(),
-            ),
-        )
-        .await?;
-        return Ok(());
-    }
-
-    // Attempt both inserts regardless of individual failures so that a failed
-    // ev1 does not silently drop ev2.  Return the first error encountered.
-    let err1 = record(db, db_kind, state, policy, ev1).await.err();
-    let err2 = record(db, db_kind, state, policy, ev2).await.err();
+    let err1 = record(journal, state, policy, ev1).err();
+    let err2 = record(journal, state, policy, ev2).err();
     if let Some(e) = err1 {
         return Err(e);
     }
@@ -516,8 +398,7 @@ pub async fn record_pair(
 }
 
 pub async fn record_or_log_pair(
-    db: &Db,
-    db_kind: crate::db::DbKind,
+    journal: &JournalWriter,
     state: &AuditState,
     policy: &AuditPolicy,
     ev1: AuditEvent,
@@ -525,7 +406,7 @@ pub async fn record_or_log_pair(
 ) {
     let ev1_type = ev1.event_type.as_str();
     let ev2_type = ev2.event_type.as_str();
-    if let Err(e) = record_pair(db, db_kind, state, policy, ev1, ev2).await {
+    if let Err(e) = record_pair(journal, state, policy, ev1, ev2) {
         let n = state
             .consecutive_insert_failures
             .fetch_add(1, Ordering::AcqRel)
@@ -553,15 +434,14 @@ pub async fn record_or_log_pair(
 }
 
 pub async fn record_or_log(
-    db: &Db,
-    db_kind: crate::db::DbKind,
+    journal: &JournalWriter,
     state: &AuditState,
     policy: &AuditPolicy,
     ev: AuditEvent,
 ) {
     let ev_type = ev.event_type.as_str();
     let ev_outcome = ev.outcome.as_str();
-    if let Err(e) = record(db, db_kind, state, policy, ev).await {
+    if let Err(e) = record(journal, state, policy, ev) {
         let n = state
             .consecutive_insert_failures
             .fetch_add(1, Ordering::AcqRel)
@@ -588,115 +468,201 @@ pub async fn record_or_log(
     }
 }
 
+// ── Journal query types (for admin endpoint) ──────────────────────────────────
+
+/// A single audit event row returned from a journal query.
+#[derive(Debug, Clone)]
+pub struct AuditEventRow {
+    pub occurred_at: String,
+    pub event_type: String,
+    pub subject: Option<String>,
+    pub principal: Option<String>,
+    pub outcome: String,
+    pub detail: Option<String>,
+}
+
+/// Parameters for [`query_journal`].
+pub struct AuditQuery {
+    pub event_type: Option<String>,
+    pub subject: Option<String>,
+    pub from: Option<String>,
+    pub until: Option<String>,
+    pub outcome: Option<String>,
+    pub limit: u32,
+    pub offset: u32,
+}
+
+/// Query the journal for audit events.
+///
+/// When the journal writer has a built-in daemon (in-memory store), queries
+/// it directly.  Otherwise shells out to `journalctl`.
+pub async fn query_journal(
+    journal: &JournalWriter,
+    q: &AuditQuery,
+) -> Result<Vec<AuditEventRow>, AcmeError> {
+    if journal.has_store() {
+        return Ok(journal.query(q));
+    }
+
+    let namespace = journal.namespace();
+    let mut cmd = tokio::process::Command::new("journalctl");
+    cmd.arg(format!("--namespace={namespace}"));
+    cmd.arg("--output=json");
+    cmd.arg("--no-pager");
+    cmd.arg("--reverse");
+    cmd.arg("SYSLOG_IDENTIFIER=akamu-audit");
+
+    if let Some(ref t) = q.event_type {
+        cmd.arg(format!("AKAMU_EVENT_TYPE={t}"));
+    }
+    if let Some(ref s) = q.subject {
+        cmd.arg(format!("AKAMU_SUBJECT={s}"));
+    }
+    if let Some(ref o) = q.outcome {
+        cmd.arg(format!("AKAMU_OUTCOME={o}"));
+    }
+    if let Some(ref from) = q.from {
+        cmd.arg(format!("--since={from}"));
+    }
+    if let Some(ref until) = q.until {
+        cmd.arg(format!("--until={until}"));
+    }
+
+    let fetch = q.limit.saturating_add(q.offset);
+    cmd.arg(format!("--lines={fetch}"));
+
+    let output = cmd.output().await.map_err(|e| {
+        AcmeError::Database(format!("failed to run journalctl: {e}"))
+    })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Exit code 1 with empty output means "no matching entries"
+        if output.status.code() == Some(1) && stderr.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        return Err(AcmeError::Database(format!(
+            "journalctl failed (exit {}): {stderr}",
+            output.status
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut rows = Vec::new();
+
+    for line in stdout.lines().skip(q.offset as usize) {
+        if rows.len() >= q.limit as usize {
+            break;
+        }
+        let Ok(obj) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let occurred_at = obj
+            .get("__REALTIME_TIMESTAMP")
+            .and_then(|v| v.as_str())
+            .and_then(|us_str| us_str.parse::<u64>().ok())
+            .map(|us| crate::util::unix_to_rfc3339((us / 1_000_000) as i64))
+            .unwrap_or_default();
+
+        rows.push(AuditEventRow {
+            occurred_at,
+            event_type: obj
+                .get("AKAMU_EVENT_TYPE")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned(),
+            subject: obj
+                .get("AKAMU_SUBJECT")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_owned()),
+            principal: obj
+                .get("AKAMU_PRINCIPAL")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_owned()),
+            outcome: obj
+                .get("AKAMU_OUTCOME")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned(),
+            detail: obj
+                .get("AKAMU_DETAIL")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_owned()),
+        });
+    }
+
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::Db;
-    use std::sync::Arc;
 
-    const TEST_DB_URL: &str = "sqlite::memory:";
-
-    async fn open_db() -> (Db, crate::db::DbKind) {
-        crate::db::install_drivers();
-        let db = crate::db::open(TEST_DB_URL, 1, false).await.unwrap();
-        (db, crate::db::DbKind::from_url(TEST_DB_URL))
-    }
-
-    #[tokio::test]
-    async fn record_inserts_event() {
-        let (db, db_kind) = open_db().await;
-        let state = AuditState::new();
-        let policy = AuditPolicy::default();
-        let ev = AuditEvent::success(AuditEventType::CertIssue)
-            .with_subject("acc-123")
-            .with_principal("alice");
-        record(&db, db_kind, &state, &policy, ev).await.unwrap();
-        assert_eq!(crate::db::audit::count(&db).await.unwrap(), 1);
-    }
-
-    #[tokio::test]
-    async fn overflow_drop_oldest_enforced() {
-        let (db, db_kind) = open_db().await;
+    #[test]
+    fn overflow_halt_sets_flag() {
+        let journal = JournalWriter::disconnected();
         let state = AuditState::new();
         let policy = AuditPolicy {
-            max_rows: Some(3),
+            max_events: Some(1),
+            overflow: OverflowPolicy::Halt,
+            ..Default::default()
+        };
+        record(
+            &journal,
+            &state,
+            &policy,
+            AuditEvent::success(AuditEventType::CertIssue),
+        )
+        .unwrap();
+        assert!(state.should_halt.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn overflow_drop_oldest_does_not_halt() {
+        let journal = JournalWriter::disconnected();
+        let state = AuditState::new();
+        let policy = AuditPolicy {
+            max_events: Some(1),
             overflow: OverflowPolicy::DropOldest,
             ..Default::default()
         };
         for _ in 0..5 {
             record(
-                &db,
-                db_kind,
+                &journal,
                 &state,
                 &policy,
                 AuditEvent::success(AuditEventType::CertIssue),
             )
-            .await
             .unwrap();
         }
-        // After 5 inserts with max_rows=3, excess rows should have been trimmed.
-        let n = crate::db::audit::count(&db).await.unwrap();
-        assert!(n <= 3, "expected ≤3 rows, got {n}");
+        assert!(!state.should_halt.load(Ordering::SeqCst));
+        assert_eq!(state.event_count.load(Ordering::SeqCst), 5);
     }
 
-    #[tokio::test]
-    async fn overflow_halt_sets_flag() {
-        let (db, db_kind) = open_db().await;
-        let state = Arc::new(AuditState::new());
+    #[test]
+    fn alarm_fires_after_threshold() {
+        let journal = JournalWriter::disconnected();
+        let state = AuditState::new();
         let policy = AuditPolicy {
-            max_rows: Some(1),
-            overflow: OverflowPolicy::Halt,
-            ..Default::default()
-        };
-        // First event — inserts fine.
-        record(
-            &db,
-            db_kind,
-            &state,
-            &policy,
-            AuditEvent::success(AuditEventType::CertIssue),
-        )
-        .await
-        .unwrap();
-        // Second event — triggers overflow halt.
-        record(
-            &db,
-            db_kind,
-            &state,
-            &policy,
-            AuditEvent::success(AuditEventType::CertIssue),
-        )
-        .await
-        .unwrap();
-        assert!(state.should_halt.load(Ordering::SeqCst));
-    }
-
-    #[tokio::test]
-    async fn alarm_fires_after_threshold() {
-        let (db, db_kind) = open_db().await;
-        let state = Arc::new(AuditState::new());
-        let policy = AuditPolicy {
-            max_rows: None,
+            max_events: None,
             alarm_threshold: 3,
             alarm_action: AlarmAction::Halt,
             ..Default::default()
         };
         for _ in 0..3 {
             record(
-                &db,
-                db_kind,
+                &journal,
                 &state,
                 &policy,
                 AuditEvent::failure(AuditEventType::SecurityViolation),
             )
-            .await
             .unwrap();
         }
         assert!(state.should_halt.load(Ordering::SeqCst));
     }
 
-    #[tokio::test]
-    async fn audit_event_builder_methods() {
+    #[test]
+    fn audit_event_builder_methods() {
         let ev = AuditEvent::failure(AuditEventType::AuthJwsFail)
             .with_subject("thumb-abc")
             .with_principal("acme:thumb-abc")
@@ -705,5 +671,22 @@ mod tests {
         assert_eq!(ev.outcome, AuditOutcome::Failure);
         assert_eq!(ev.subject.as_deref(), Some("thumb-abc"));
         assert_eq!(ev.principal.as_deref(), Some("acme:thumb-abc"));
+    }
+
+    #[test]
+    fn event_count_increments() {
+        let journal = JournalWriter::disconnected();
+        let state = AuditState::new();
+        let policy = AuditPolicy::default();
+        for _ in 0..3 {
+            record(
+                &journal,
+                &state,
+                &policy,
+                AuditEvent::success(AuditEventType::CaStart),
+            )
+            .unwrap();
+        }
+        assert_eq!(state.event_count.load(Ordering::SeqCst), 3);
     }
 }

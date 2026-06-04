@@ -1075,7 +1075,7 @@ audit_overflow = "delete"
     fn admin_config_audit_policy_drop_oldest() {
         let cfg: Config = toml::from_str(&admin_toml_base()).unwrap();
         let policy = crate::audit::AuditPolicy::from_admin_config(&cfg.admin.unwrap());
-        assert!(policy.max_rows.is_none());
+        assert!(policy.max_events.is_none());
         assert_eq!(policy.overflow, crate::audit::OverflowPolicy::DropOldest);
         assert_eq!(policy.alarm_threshold, 10);
         assert_eq!(policy.alarm_action, crate::audit::AlarmAction::Syslog);
@@ -1095,7 +1095,7 @@ audit_alarm_action    = "halt"
         );
         let cfg: Config = toml::from_str(&toml).unwrap();
         let policy = crate::audit::AuditPolicy::from_admin_config(&cfg.admin.unwrap());
-        assert_eq!(policy.max_rows, Some(500_000));
+        assert_eq!(policy.max_events, Some(500_000));
         assert_eq!(policy.overflow, crate::audit::OverflowPolicy::Halt);
         assert_eq!(policy.alarm_threshold, 5);
         assert_eq!(policy.alarm_action, crate::audit::AlarmAction::Halt);
