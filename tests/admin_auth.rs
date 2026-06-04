@@ -145,7 +145,7 @@ async fn build_state(
             session_ttl_secs,
             session_lock_secs: 900,
             auth_rate_limit,
-            audit_max_rows: None,
+            audit_max_events: None,
             audit_overflow: "drop_oldest".into(),
             audit_alarm_threshold: 10,
             audit_alarm_action: "syslog".into(),

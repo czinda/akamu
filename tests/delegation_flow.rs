@@ -313,7 +313,7 @@ async fn build_delegation_state() -> (
             session_ttl_secs: 3600,
             session_lock_secs: 900,
             auth_rate_limit: 100,
-            audit_max_rows: None,
+            audit_max_events: None,
             audit_overflow: "drop_oldest".into(),
             audit_alarm_threshold: 10,
             audit_alarm_action: "syslog".into(),

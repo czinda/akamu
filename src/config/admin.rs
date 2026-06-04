@@ -48,8 +48,9 @@ pub struct AdminConfig {
     #[serde(default = "default_lockout_duration_secs")]
     pub lockout_duration_secs: u64,
     /// Maximum audit events since startup (FAU_STG.4).  Absent = unlimited.
-    pub audit_max_rows: Option<i64>,
-    /// Overflow policy when `audit_max_rows` is reached (FAU_STG.4).
+    #[serde(alias = "audit_max_rows")]
+    pub audit_max_events: Option<i64>,
+    /// Overflow policy when `audit_max_events` is reached (FAU_STG.4).
     /// `"halt"` — refuse new requests.  `"drop_oldest"` — continue (journald manages retention).
     /// Default: `"drop_oldest"`.
     #[serde(default = "default_audit_overflow")]

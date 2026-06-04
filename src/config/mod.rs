@@ -1032,7 +1032,7 @@ max_body_bytes = 131072
         assert_eq!(admin.audit_overflow, "drop_oldest");
         assert_eq!(admin.audit_alarm_threshold, 10);
         assert_eq!(admin.audit_alarm_action, "syslog");
-        assert!(admin.audit_max_rows.is_none());
+        assert!(admin.audit_max_events.is_none());
     }
 
     #[test]
