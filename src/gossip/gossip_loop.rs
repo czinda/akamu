@@ -21,7 +21,7 @@ use akamu_crdt::{AkaCrdt, Merge, CRDT_GENERATION};
 use crate::gossip::crypto::{random_nonce, sign_and_seal, verify_and_open, SealRecipient};
 use crate::gossip::envelope::GossipEnvelope;
 use crate::state::AppState;
-use crate::util::{unix_now, unix_to_rfc3339};
+use crate::util::unix_now;
 
 struct PreparedPeer {
     url: String,
@@ -165,12 +165,9 @@ pub async fn run(state: Arc<AppState>) {
         if last_gc.elapsed() >= gc_interval {
             last_gc = std::time::Instant::now();
             let cutoff = now - tombstone_ttl_secs as i64;
-            let audit_cutoff_str = unix_to_rfc3339(cutoff);
             {
                 let mut crdt = state.crdt.write().await;
                 crdt.purge_old_tombstones(cutoff);
-                crdt.audit_events
-                    .retain(|e| e.occurred_at.as_str() >= audit_cutoff_str.as_str());
             }
             tracing::info!(
                 cutoff_secs = cutoff,

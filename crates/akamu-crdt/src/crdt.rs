@@ -1,15 +1,14 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    grow_set::GrowSet,
     lww_map::LwwMap,
     lww_register::LwwRegister,
     merge::Merge,
     or_map::OrMap,
     types::{
-        AccountEntry, AkaNodeEntry, AuditEventEntry, AuthzEntry, CertEntry, ChallengeEntry,
-        DelegationEntry, EabKeyEntry, MtcCheckpointEntry, MtcCosigEntry, MtcWriter, OperatorEntry,
-        OrderEntry, OrderOwner,
+        AccountEntry, AkaNodeEntry, AuthzEntry, CertEntry, ChallengeEntry, DelegationEntry,
+        EabKeyEntry, MtcCheckpointEntry, MtcCosigEntry, MtcWriter, OperatorEntry, OrderEntry,
+        OrderOwner,
     },
 };
 
@@ -30,7 +29,6 @@ pub struct AkaCrdtCounts {
     pub delegations: usize,
     pub mtc_checkpoints: usize,
     pub mtc_cosignatures: usize,
-    pub audit_events: usize,
 }
 
 /// Top-level CRDT for Akamu cluster state.
@@ -50,7 +48,6 @@ pub struct AkaCrdt {
     pub delegations: OrMap<String, DelegationEntry>,
     pub mtc_checkpoints: LwwMap<u64, MtcCheckpointEntry>,
     pub mtc_cosignatures: LwwMap<CosigKey, MtcCosigEntry>,
-    pub audit_events: GrowSet<AuditEventEntry>,
     /// Gossip-consensus ownership: order_id → owning node + claim timestamp.
     /// Access via `claim_order` / `is_order_owner`; not directly writable externally.
     pub(crate) order_owners: LwwMap<String, OrderOwner>,
@@ -74,7 +71,6 @@ impl AkaCrdt {
             delegations: self.delegations.delta_since(gen),
             mtc_checkpoints: self.mtc_checkpoints.delta_since(gen),
             mtc_cosignatures: self.mtc_cosignatures.delta_since(gen),
-            audit_events: self.audit_events.delta_since(gen),
             order_owners: self.order_owners.delta_since(gen),
             mtc_writer: self.mtc_writer.delta_since(gen).unwrap_or_default(),
         }
@@ -94,7 +90,6 @@ impl AkaCrdt {
             delegations: self.delegations.delta_range(since, until),
             mtc_checkpoints: self.mtc_checkpoints.delta_range(since, until),
             mtc_cosignatures: self.mtc_cosignatures.delta_range(since, until),
-            audit_events: self.audit_events.delta_range(since, until),
             order_owners: self.order_owners.delta_range(since, until),
             mtc_writer: self
                 .mtc_writer
@@ -134,7 +129,6 @@ impl AkaCrdt {
         max = max.max(self.delegations.max_local_gen());
         max = max.max(self.mtc_checkpoints.max_local_gen());
         max = max.max(self.mtc_cosignatures.max_local_gen());
-        max = max.max(self.audit_events.max_local_gen());
         max = max.max(self.order_owners.max_local_gen());
         max = max.max(self.mtc_writer.local_gen());
         max
@@ -154,7 +148,6 @@ impl AkaCrdt {
             delegations: self.delegations.count_live(),
             mtc_checkpoints: self.mtc_checkpoints.count_live(),
             mtc_cosignatures: self.mtc_cosignatures.count_live(),
-            audit_events: self.audit_events.len(),
         }
     }
 
@@ -233,7 +226,6 @@ impl Merge for AkaCrdt {
         self.delegations.merge(other.delegations);
         self.mtc_checkpoints.merge(other.mtc_checkpoints);
         self.mtc_cosignatures.merge(other.mtc_cosignatures);
-        self.audit_events.merge(other.audit_events);
         self.order_owners.merge(other.order_owners);
         self.mtc_writer.merge(other.mtc_writer);
     }
@@ -351,16 +343,6 @@ mod tests {
             now,
             "node-1",
         );
-        c.audit_events.insert(AuditEventEntry {
-            event_id: "evt-1".to_owned(),
-            occurred_at: "2024-01-01T00:00:00Z".to_owned(),
-            event_type: "account.created".to_owned(),
-            outcome: "success".to_owned(),
-            node_id: "node-1".to_owned(),
-            subject: None,
-            principal: None,
-            detail: None,
-        });
         c
     }
 
@@ -376,7 +358,6 @@ mod tests {
         assert!(decoded.orders.get("ord-1").is_some());
         assert!(decoded.certificates.get("cert-1").is_some());
         assert_eq!(decoded.mtc_cosignatures.count_live(), 1);
-        assert_eq!(decoded.audit_events.len(), 1);
     }
 
     #[test]

@@ -444,7 +444,6 @@ pub async fn gossip_status(
             "delegations": counts.delegations,
             "mtc_checkpoints": counts.mtc_checkpoints,
             "mtc_cosignatures": counts.mtc_cosignatures,
-            "audit_events": counts.audit_events,
         }
     }))
     .into_response()

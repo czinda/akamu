@@ -136,19 +136,6 @@ pub struct MtcCosigEntry {
     pub signed_at: i64,
 }
 
-/// Identity for AuditEventEntry in GrowSet: event_id is unique per event.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct AuditEventEntry {
-    pub event_id: String,
-    pub occurred_at: String,
-    pub event_type: String,
-    pub subject: Option<String>,
-    pub principal: Option<String>,
-    pub outcome: String,
-    pub detail: Option<String>,
-    pub node_id: String,
-}
-
 /// Gossip-consensus ownership: which node claimed processing rights for an order.
 /// Ownership lapses when `claimed_at + ownership_ttl_secs < now`.
 #[derive(Debug, Clone, Serialize, Deserialize)]

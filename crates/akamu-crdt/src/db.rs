@@ -310,9 +310,8 @@ struct NodeKeysLoad {
 /// are read from `crdt_pool` with their stored `local_gen`, so delta gossip
 /// resumes from the correct generation without a full push after restart.
 ///
-/// `audit_events` and `mtc_cosignatures` GrowSets are intentionally not loaded:
-/// the DB schema stores them with integer PKs incompatible with the CRDT entry
-/// types.  They are repopulated via gossip on first sync after restart.
+/// `mtc_cosignatures` is intentionally not loaded: the DB schema stores them
+/// with composite PKs that are repopulated via gossip on first sync after restart.
 pub async fn load_from_db(
     main_pool: &AnyPool,
     crdt_pool: &AnyPool,
