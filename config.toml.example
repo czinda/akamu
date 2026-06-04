@@ -310,9 +310,11 @@ validate_dnssec = true
 # Prevents audit-log floods. Default: 20.
 # auth_rate_limit = 20
 #
-# Audit log overflow policy (FAU_STG.4).
-# audit_max_rows = 1000000        # absent = unlimited
-# audit_overflow = "drop_oldest"  # "drop_oldest" or "halt"
+# Audit event overflow policy (FAU_STG.4).  Events are written to a systemd
+# journal namespace (see contrib/systemd/journald@akamu.conf); the counter
+# tracks events since startup.  journald manages its own disk retention.
+# audit_max_rows = 1000000        # absent = unlimited (events since startup)
+# audit_overflow = "drop_oldest"  # "drop_oldest" (continue) or "halt"
 #
 # Security alarm (FAU_ARP.1): fires when this many SecurityViolation events occur
 # within a rolling 5-minute window.

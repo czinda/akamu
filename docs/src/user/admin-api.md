@@ -248,7 +248,6 @@ Results are ordered newest-first.
 {
   "events": [
     {
-      "id": 42,
       "occurred_at": "2026-05-02T08:30:00Z",
       "event_type": "cert.issue",
       "subject": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
@@ -257,6 +256,7 @@ Results are ordered newest-first.
       "detail": "{\"profile\":\"tlsserver\"}"
     }
   ],
+  "total_since_startup": 5000,
   "limit": 100,
   "offset": 0
 }
@@ -731,7 +731,7 @@ Return live server statistics.  All authenticated roles may call this endpoint.
   "accounts": { "total": 42, "active": 40 },
   "certs":    { "total": 200, "active": 180, "revoked": 20 },
   "eab_keys": { "total": 10, "used": 8, "unused": 2 },
-  "audit_events": { "total": 5000 }
+  "audit_events": { "since_startup": 5000 }
 }
 ```
 
@@ -981,7 +981,7 @@ Delete a delegation object. Returns `409 Conflict` when one or more orders still
 
 ### Audit events
 
-Every write operation emits a structured audit event persisted to the `audit_events` table:
+Every write operation emits a structured audit event to the systemd journal namespace (`journalctl --namespace=akamu`):
 
 | Operation | Event type |
 |-----------|------------|
@@ -1000,19 +1000,40 @@ reference including flags and examples.
 
 ## Audit trail
 
-Every admin operation is persisted to the `audit_events` database table.
-The table is append-only at the application level.  Records include the
-timestamp, event type, subject (the resource being acted on), principal (the
-authenticated operator or ACME account), outcome (`success` or `failure`), and
-a JSON `detail` object with operation-specific fields.
+Every admin operation is written to a dedicated systemd journal namespace.
+When running under systemd with `LogNamespace=akamu` (see
+`contrib/systemd/akamu.service`), events are stored in
+`/var/log/journal/<machine-id>.akamu/`.  In tests or development without
+systemd, an in-process store is used automatically.
+
+Each journal entry carries structured fields:
+
+| Journal field | Content |
+|---------------|---------|
+| `AKAMU_EVENT_TYPE` | Event type string (e.g. `cert.issue`, `admin.login`) |
+| `AKAMU_SUBJECT` | Resource identifier (account UUID, certificate serial, etc.) |
+| `AKAMU_PRINCIPAL` | Authenticated operator name or `acme:<jwk_thumbprint>` |
+| `AKAMU_OUTCOME` | `success` or `failure` |
+| `AKAMU_DETAIL` | JSON object with operation-specific fields |
+
+Query examples:
+
+```bash
+journalctl --namespace=akamu                              # all audit events
+journalctl --namespace=akamu AKAMU_EVENT_TYPE=cert.issue   # by type
+journalctl --namespace=akamu AKAMU_OUTCOME=failure         # failures only
+```
+
+Retention is managed by journald itself (see `contrib/systemd/journald@akamu.conf`
+for default settings: 500 MB disk, 1 year max age).
 
 ### Overflow policy (FAU_STG.4)
 
-When `audit_max_rows` is set and the table reaches the limit, the
-`audit_overflow` policy determines what happens.  The default is
-`"drop_oldest"`, which deletes the oldest rows to make room.  The alternative
-`"halt"` refuses all new requests until an administrator manually prunes the
-table.
+When `audit_max_rows` is set, the server tracks an in-memory event count
+since startup.  The `audit_overflow` policy determines what happens when
+the count reaches the limit.  The default is `"drop_oldest"`, which is
+effectively a no-op (journald manages its own retention).  The alternative
+`"halt"` refuses all new requests until the server is restarted.
 
 ### Alarm response (FAU_ARP.1)
 

@@ -199,7 +199,7 @@ src/
     mod.rs         Database initialization (open, migrations, WAL mode)
     schema.rs      Row types mirroring database columns
     accounts.rs    CRUD for accounts table
-    audit.rs       Append-only CRUD for audit_events table (insert, count, query, delete_oldest)
+    (audit.rs removed — audit events are now written to the systemd journal namespace via src/journal.rs)
     authz.rs       CRUD for authorizations table
     certs.rs       CRUD for certificates table (includes mtc_standalone_der column)
     challenges.rs  CRUD for challenges table

@@ -229,7 +229,7 @@ All integration test files live under `tests/`.  Each builds a full `AppState` w
 | File | What it covers |
 |---|---|
 | `tests/acme_flow.rs` | Core ACME lifecycle: account creation, order creation, challenge signaling, status transitions, and certificate download |
-| `tests/admin_auth.rs` | Admin authentication paths: Bearer token, mTLS client-certificate, and expired-token rejection; operator deactivation purges live sessions; audit event end-to-end (insert via `db::audit::insert`, query via `GET /admin/audit`) |
+| `tests/admin_auth.rs` | Admin authentication paths: Bearer token, mTLS client-certificate, and expired-token rejection; operator deactivation purges live sessions; audit event end-to-end (write via `JournalWriter`, query via `GET /admin/audit`) |
 | `tests/admin_rbac.rs` | Table-driven RBAC: for every `(route, method)` pair and each of the four operator roles, verifies allowed roles are not 403 and disallowed roles get exactly 403 |
 | `tests/ari_flow.rs` | ACME Renewal Information (RFC 9773) query and renewal window logic |
 | `tests/dns_persist_flow.rs` | Full dns-persist-01 challenge flow against a local DNS stub server |

@@ -32,6 +32,11 @@ ReadWritePaths=/etc/akamu
 # Environment
 Environment=RUST_LOG=info
 
+# Direct all journal output from this unit to a dedicated journal namespace.
+# Audit events are written as structured entries with AKAMU_* fields.
+# Query with: journalctl --namespace=akamu
+LogNamespace=akamu
+
 # Set file creation mask so the Unix socket is created with mode 0660
 # (group-readable for the reverse proxy process).
 UMask=0117

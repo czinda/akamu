@@ -2024,7 +2024,7 @@ bootstrap_operator_gssapi_principal = "admin@EXAMPLE.COM"
 
 **Optional. Default: `20`.**
 
-Maximum credential presentations (Bearer session token, mTLS client certificate, or GSSAPI token) accepted from a single source IP in a rolling 5-minute window before that source receives `429 Too Many Requests`. This limits audit-log floods that could otherwise trigger the `audit_alarm_action` or, when `audit_overflow = "halt"`, refuse all new requests.
+Maximum credential presentations (Bearer session token, mTLS client certificate, or GSSAPI token) accepted from a single source IP in a rolling 5-minute window before that source receives `429 Too Many Requests`. This limits audit-event floods that could otherwise trigger the `audit_alarm_action` or, when `audit_overflow = "halt"`, refuse all new requests.
 
 ```toml
 auth_rate_limit = 20
@@ -2083,7 +2083,7 @@ lockout_duration_secs = 1800
 
 **Optional. Default: absent (unlimited).**
 
-Maximum number of rows to retain in the `audit_events` database table. When the limit is reached, the `audit_overflow` policy determines what happens.
+Maximum number of audit events since startup before the `audit_overflow` policy triggers. Audit events are written to a dedicated systemd journal namespace (`journalctl --namespace=akamu`), not to the database. The counter is in-memory and resets on restart. Journald manages its own disk retention independently (see `contrib/systemd/journald@akamu.conf`).
 
 ```toml
 audit_max_rows = 500000
@@ -2097,8 +2097,8 @@ Policy applied when `audit_max_rows` is reached. Accepted values:
 
 | Value | Behaviour |
 |-------|-----------|
-| `"drop_oldest"` | Delete the oldest audit rows to make room for new events (default). |
-| `"halt"` | Refuse new requests until audit rows are pruned manually. |
+| `"drop_oldest"` | Continue recording events; journald manages its own retention (default). This is effectively a no-op. |
+| `"halt"` | Refuse new requests until the server is restarted. |
 
 ```toml
 audit_overflow = "drop_oldest"

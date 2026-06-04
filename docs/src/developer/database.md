@@ -254,26 +254,9 @@ ALTER TABLE eab_keys  ADD COLUMN profile_grants TEXT;
 
 `profile_grants` is a JSON array of profile IDs (e.g. `'["tls-server","mtc-tls"]'`). `NULL` means no restriction. When an EAB key has grants set, they are copied to the account at registration time.
 
-### Migration 0008 — Audit events (PostgreSQL/MariaDB: 0007)
+### Migration 0008 — Audit events (PostgreSQL/MariaDB: 0007) — DROPPED
 
-PP CA v2.1 FAU structured audit trail. Records are append-only (never `UPDATE`ed or `DELETE`d):
-
-```sql
-CREATE TABLE audit_events (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    occurred_at TEXT    NOT NULL,     -- RFC 3339
-    event_type  TEXT    NOT NULL,
-    subject     TEXT,                 -- JWK thumbprint, account UUID, cert serial, etc.
-    principal   TEXT,                 -- operator name or "acme:<jwk_thumbprint>"
-    outcome     TEXT    NOT NULL CHECK(outcome IN ('success','failure')),
-    detail      TEXT                  -- JSON object with event-specific fields
-);
-CREATE INDEX audit_idx_type      ON audit_events(event_type);
-CREATE INDEX audit_idx_subj      ON audit_events(subject);
-CREATE INDEX audit_idx_time      ON audit_events(occurred_at);
-CREATE INDEX audit_idx_principal ON audit_events(principal);
-CREATE INDEX audit_idx_outcome   ON audit_events(outcome);
-```
+This migration originally created the `audit_events` database table for the PP CA v2.1 FAU structured audit trail. The table has been **dropped** by migration 0031 (SQLite) / 0032 (MariaDB) / 0033 (PostgreSQL). Audit events are now written to a dedicated systemd journal namespace (`journalctl --namespace=akamu`) via `src/journal.rs`. See `contrib/systemd/journald@akamu.conf` for retention settings.
 
 ### Migration 0009 — Operators (PostgreSQL/MariaDB: 0008)
 
@@ -470,7 +453,7 @@ Each table has its own submodule in `src/db/`:
 | `db::eab` | `insert`, `get_by_kid`, `mark_used`, `list`, `delete` |
 | `db::nonces` | `insert`, `consume`, `sweep_expired` |
 | `db::operators` | `insert`, `insert_if_absent`, `is_empty`, `get_by_id`, `get_by_fingerprint`, `get_by_principal`, `list`, `update`, `set_active`, `update_last_seen`, `increment_failed`, `reset_failed`, `unlock`, `is_locked` |
-| `db::audit` | `insert`, `list` |
+| ~~`db::audit`~~ | Removed — audit events are now written to the systemd journal namespace via `src/journal.rs` and `src/audit.rs` |
 
 ### `CertSearchParams`
 
@@ -571,7 +554,7 @@ Multi-table writes use explicit transactions to ensure atomicity:
 
 ## Schema diagram
 
-The entity-relationship diagram below shows the ACME core tables and their foreign-key relationships. MTC tables (`mtc_checkpoints`, `mtc_cosignatures`, `mtc_landmarks`) and the standalone `nonces` and `audit_events` tables are omitted for readability.
+The entity-relationship diagram below shows the ACME core tables and their foreign-key relationships. MTC tables (`mtc_checkpoints`, `mtc_cosignatures`, `mtc_landmarks`) and the standalone `nonces` table are omitted for readability. The `audit_events` table has been dropped; audit events are now written to the systemd journal namespace.
 
 ```mermaid
 erDiagram
