@@ -9,6 +9,7 @@ use tracing_subscriber::EnvFilter;
 
 use akamu::audit::AuditState;
 use akamu::config::{Config, MtcSigningKeyConfig};
+use akamu::journal::JournalWriter;
 use akamu::listen::{parse_listen_target, remove_stale_socket, uds_marker_layer, ListenTarget};
 use akamu::state::{AppState, CaState, CrlCache, MtcState, NonceBucket, TlsState};
 use akamu::{ca, db, delegation_upstream, mtc, routes, star};
@@ -822,6 +823,7 @@ async fn run() -> Result<(), String> {
                 .map(akamu::audit::AuditPolicy::from_admin_config)
                 .unwrap_or_default(),
         ),
+        journal: Arc::new(JournalWriter::new("akamu")),
         admin_sessions: config
             .admin
             .as_ref()
@@ -853,11 +855,6 @@ async fn run() -> Result<(), String> {
         claim_encoder_registry,
         jwks_cache,
     });
-
-    // ── Seed audit row counter ────────────────────────────────────────────────
-    if let Err(e) = state.audit.seed_row_count(&state.db).await {
-        tracing::warn!(error = %e, "could not seed audit row count; will fall back to COUNT(*) on first overflow check");
-    }
 
     // ── Startup audit records ─────────────────────────────────────────────────
     let key_file_exists = std::path::Path::new(&config.default_ca().key_file).exists();

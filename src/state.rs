@@ -25,6 +25,7 @@ use synta_mtc::crypto::HashAlgorithm;
 use crate::audit::{AuditPolicy, AuditState};
 use crate::config::Config;
 use crate::db::DbKind;
+use crate::journal::JournalWriter;
 use crate::mtc::cosign::CosignerClient;
 use crate::mtc::log::SharedLog;
 use crate::profiles::ProfileRegistry;
@@ -221,6 +222,8 @@ pub struct AppState {
     /// Audit policy extracted from `[admin]` at startup.  Default when `[admin]`
     /// is absent.
     pub audit_policy: Arc<AuditPolicy>,
+    /// Journal writer for the audit namespace.
+    pub journal: Arc<JournalWriter>,
     /// Admin operator session store (FTA_SSL.3/4/EXT.1).
     ///
     /// Maps opaque 32-byte hex session token → `AdminSession`.  Checked on
@@ -337,8 +340,7 @@ impl AppState {
     /// the three audit-related `AppState` fields so call sites pass only the
     /// event.
     pub async fn record_audit(&self, ev: crate::audit::AuditEvent) {
-        crate::audit::record_or_log(&self.db, self.db_kind, &self.audit, &self.audit_policy, ev)
-            .await;
+        crate::audit::record_or_log(&self.journal, &self.audit, &self.audit_policy, ev).await;
     }
 
     pub async fn record_audit_pair(
@@ -346,15 +348,8 @@ impl AppState {
         ev1: crate::audit::AuditEvent,
         ev2: crate::audit::AuditEvent,
     ) {
-        crate::audit::record_or_log_pair(
-            &self.db,
-            self.db_kind,
-            &self.audit,
-            &self.audit_policy,
-            ev1,
-            ev2,
-        )
-        .await;
+        crate::audit::record_or_log_pair(&self.journal, &self.audit, &self.audit_policy, ev1, ev2)
+            .await;
     }
 
     /// Return a point-in-time snapshot of the CRDT (cheap clone under read lock).
