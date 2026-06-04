@@ -59,7 +59,7 @@ pub async fn get_stats(operator: OperatorContext, State(state): State<Arc<AppSta
                 "free": counts.eab_total - counts.eab_used - counts.eab_bound,
             },
             "audit_events": {
-                "total": counts.audit_total,
+                "since_startup": state.audit.event_count.load(std::sync::atomic::Ordering::Relaxed),
             },
         })),
     )
