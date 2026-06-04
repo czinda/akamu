@@ -37,10 +37,12 @@ migration 0007 onward:
 | 0024   | 0026/0025          | crdt_cluster_nodes, crdt_order_owners, crdt_mtc_writer |
 | 0025   | 0027/0026          | delegation_ca_id              |
 | 0026   | 0028/0027          | tkauth (RFC 9447 JTI cache + challenge fields) |
+| 0027–0030 | 0029–0032/0028–0031 | account_kerberos_principal, tkauth, tkauth_tkvalue, tkauth_ca_flag, mtc_per_ca |
+| 0031   | 0033/0032          | drop audit_events (moved to journald namespace) |
 
 **Rule for future migrations:**
-- SQLite: use the next number in `migrations/sqlite/` (currently `0027_…`)
-- Postgres: use the next number in `migrations/postgres/` (currently `0029_…`)
-- MariaDB: use the next number in `migrations/mariadb/` (currently `0028_…`)
+- SQLite: use the next number in `migrations/sqlite/` (currently `0032_…`)
+- Postgres: use the next number in `migrations/postgres/` (currently `0034_…`)
+- MariaDB: use the next number in `migrations/mariadb/` (currently `0033_…`)
 
 The divergence is intentional and permanent.  Do not attempt to renumber.

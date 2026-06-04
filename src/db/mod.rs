@@ -2,8 +2,7 @@
 //!
 //! Each submodule corresponds to one logical table or domain: accounts,
 //! operators, orders, authorizations, challenges, certificates, EAB keys,
-//! audit events, nonces, MTC checkpoints and cosignatures, and database
-//! landmarks.
+//! nonces, MTC checkpoints and cosignatures, and database landmarks.
 //!
 //! The shared connection pool type [`Db`] is a runtime-dispatch `AnyPool`
 //! that supports SQLite, PostgreSQL, and MariaDB via sqlx.  All write
@@ -11,7 +10,6 @@
 //! `pool.begin()` to avoid `SQLITE_BUSY_SNAPSHOT` in WAL mode.
 
 pub mod accounts;
-pub mod audit;
 pub mod authz;
 pub mod certs;
 pub mod challenges;

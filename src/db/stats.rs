@@ -13,7 +13,6 @@ pub struct StatsRow {
     /// Keys pre-allocated to a principal (bound_principal IS NOT NULL) but not
     /// yet consumed in an ACME new-account exchange (used_at IS NULL).
     pub eab_bound: i64,
-    pub audit_total: i64,
 }
 
 pub async fn summary(
@@ -21,14 +20,13 @@ pub async fn summary(
     ca_id_filter: Option<&str>,
 ) -> Result<StatsRow, AcmeError> {
     // Global counts that are never scoped to a single CA.
-    let global: (i64, i64, i64, i64, i64, i64) = super::query_as(
+    let global: (i64, i64, i64, i64, i64) = super::query_as(
         "SELECT \
            (SELECT COUNT(*) FROM accounts), \
            (SELECT COUNT(*) FROM accounts WHERE status = 'valid'), \
            (SELECT COUNT(*) FROM eab_keys), \
            (SELECT COUNT(*) FROM eab_keys WHERE used_at IS NOT NULL), \
-           (SELECT COUNT(*) FROM eab_keys WHERE bound_principal IS NOT NULL AND used_at IS NULL), \
-           (SELECT COUNT(*) FROM audit_events)",
+           (SELECT COUNT(*) FROM eab_keys WHERE bound_principal IS NOT NULL AND used_at IS NULL)",
     )
     .fetch_one(pool)
     .await?;
@@ -71,6 +69,5 @@ pub async fn summary(
         eab_total: global.2,
         eab_used: global.3,
         eab_bound: global.4,
-        audit_total: global.5,
     })
 }
