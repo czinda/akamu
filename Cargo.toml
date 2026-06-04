@@ -86,6 +86,9 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Temporary directories for the built-in journal daemon
+tempfile = "3"
+
 # Cryptographically random nonces/tokens
 getrandom = "0.2"
 

@@ -16,6 +16,7 @@ pub mod error;
 pub mod extract;
 pub mod gossip;
 pub mod jose;
+pub mod journal;
 pub mod listen;
 pub mod mtc;
 pub mod profiles;
