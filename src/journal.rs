@@ -3,7 +3,31 @@ use std::io;
 use std::os::unix::net::UnixDatagram;
 use std::sync::{Arc, Mutex};
 
-use crate::audit::{AuditEventRow, AuditQuery};
+// ── Query types ──────────────────────────────────────────────────────────────
+// Defined here (not in audit.rs) so that journal is a leaf dependency — audit
+// imports journal, but journal does not import audit.
+
+/// A single audit event row returned from a journal query.
+#[derive(Debug, Clone)]
+pub struct AuditEventRow {
+    pub occurred_at: String,
+    pub event_type: String,
+    pub subject: Option<String>,
+    pub principal: Option<String>,
+    pub outcome: String,
+    pub detail: Option<String>,
+}
+
+/// Parameters for audit journal queries.
+pub struct AuditQuery {
+    pub event_type: Option<String>,
+    pub subject: Option<String>,
+    pub from: Option<String>,
+    pub until: Option<String>,
+    pub outcome: Option<String>,
+    pub limit: u32,
+    pub offset: u32,
+}
 
 /// A received journal entry stored by the built-in daemon.
 #[derive(Debug, Clone)]

@@ -24,6 +24,8 @@ use std::time::{Duration, Instant};
 use crate::error::AcmeError;
 use crate::journal::JournalWriter;
 
+pub use crate::journal::{AuditEventRow, AuditQuery};
+
 // ── Event taxonomy ─────────────────────────────────────────────────────────────
 
 /// Every auditable operation the server can perform.
@@ -468,29 +470,7 @@ pub async fn record_or_log(
     }
 }
 
-// ── Journal query types (for admin endpoint) ──────────────────────────────────
-
-/// A single audit event row returned from a journal query.
-#[derive(Debug, Clone)]
-pub struct AuditEventRow {
-    pub occurred_at: String,
-    pub event_type: String,
-    pub subject: Option<String>,
-    pub principal: Option<String>,
-    pub outcome: String,
-    pub detail: Option<String>,
-}
-
-/// Parameters for [`query_journal`].
-pub struct AuditQuery {
-    pub event_type: Option<String>,
-    pub subject: Option<String>,
-    pub from: Option<String>,
-    pub until: Option<String>,
-    pub outcome: Option<String>,
-    pub limit: u32,
-    pub offset: u32,
-}
+// ── Journal query ─────────────────────────────────────────────────────────────
 
 /// Query the journal for audit events.
 ///
