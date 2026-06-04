@@ -62,7 +62,7 @@ pub async fn get_audit(
                     })
                 })
                 .collect();
-            let total = state.audit.event_count.load(Ordering::Relaxed);
+            let total = state.audit.event_count.load(Ordering::Acquire);
             (
                 StatusCode::OK,
                 Json(json!({
@@ -75,12 +75,22 @@ pub async fn get_audit(
                 .into_response()
         }
         Err(e) => {
-            tracing::error!(error = %e, "get_audit: journal query error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "journal query error"})),
-            )
-                .into_response()
+            let msg = e.to_string();
+            if msg.contains("invalid") && msg.contains("timestamp") {
+                tracing::warn!(error = %e, "get_audit: invalid timestamp parameter");
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"status": 400, "detail": msg})),
+                )
+                    .into_response()
+            } else {
+                tracing::error!(error = %e, "get_audit: journal query error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"status": 500, "detail": "journal query error"})),
+                )
+                    .into_response()
+            }
         }
     }
 }
