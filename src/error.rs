@@ -118,6 +118,9 @@ pub enum AcmeError {
     #[error("database error: {0}")]
     Database(String),
 
+    #[error("journal error: {0}")]
+    Journal(String),
+
     #[error("crypto error: {0}")]
     Crypto(String),
 

@@ -347,7 +347,7 @@ pub fn record(
 
     journal
         .send(&fields)
-        .map_err(|e| AcmeError::Database(format!("journal send: {e}")))?;
+        .map_err(|e| AcmeError::Journal(format!("journal send: {e}")))?;
 
     let count = state.event_count.fetch_add(1, Ordering::AcqRel) + 1;
 
