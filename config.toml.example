@@ -114,6 +114,12 @@ enabled = false
 
 # ── ACME server behaviour ─────────────────────────────────────────────────────
 [server]
+# Path to a JSONL audit log file (for non-journald environments).
+# When set, audit events are written as append-only JSON Lines to this file
+# instead of the systemd journal namespace.  When absent, the server writes
+# to the "akamu" journal namespace (see contrib/systemd/journald@akamu.conf).
+# audit_log_file = "/var/log/akamu/audit.jsonl"
+
 # Optional Terms of Service URL advertised in /acme/directory.
 # terms_of_service_url = "https://acme.example.com/tos.html"
 

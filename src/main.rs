@@ -823,7 +823,11 @@ async fn run() -> Result<(), String> {
                 .map(akamu::audit::AuditPolicy::from_admin_config)
                 .unwrap_or_default(),
         ),
-        journal: Arc::new(JournalWriter::new("akamu")),
+        journal: Arc::new(if let Some(ref path) = config.server.audit_log_file {
+            JournalWriter::with_file(path).map_err(|e| format!("audit log file '{path}': {e}"))?
+        } else {
+            JournalWriter::new("akamu")
+        }),
         admin_sessions: config
             .admin
             .as_ref()

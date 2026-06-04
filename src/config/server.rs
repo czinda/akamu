@@ -175,6 +175,15 @@ pub struct ServerConfig {
     /// static_dir = "/usr/share/akamu/webui"
     /// ```
     pub webui: Option<WebUiConfig>,
+    /// Path to a JSONL audit log file for non-journald environments.
+    ///
+    /// When set, audit events are written as append-only JSON Lines to this file
+    /// instead of the systemd journal namespace socket.  Each line is a JSON
+    /// object with `occurred_at`, `AKAMU_EVENT_TYPE`, `AKAMU_OUTCOME`, and
+    /// optional `AKAMU_SUBJECT`, `AKAMU_PRINCIPAL`, `AKAMU_DETAIL` fields.
+    ///
+    /// When absent (default), the server writes to the `akamu` journal namespace.
+    pub audit_log_file: Option<String>,
 }
 
 fn default_http_validation_port() -> u16 {
@@ -287,6 +296,7 @@ impl Default for ServerConfig {
             gssapi: None,
             eab_master_secret: None,
             webui: None,
+            audit_log_file: None,
         }
     }
 }
