@@ -192,7 +192,7 @@ fn der_sequence(content: &[u8]) -> Vec<u8> {
     der_tag(0x30, content)
 }
 
-/// Context-specific constructed explicit tag [N].
+/// Context-specific constructed explicit tag \[N\].
 fn der_context_explicit(tag_num: u8, content: &[u8]) -> Vec<u8> {
     der_tag(0xA0 | tag_num, content)
 }
