@@ -473,6 +473,11 @@ pub fn record_or_log(
 
 // ── Journal query ─────────────────────────────────────────────────────────────
 
+/// RFC 3339 timestamp pattern: YYYY-MM-DDTHH:MM:SS (with optional fractional seconds and Z/offset).
+fn is_rfc3339_like(s: &str) -> bool {
+    s.len() >= 20 && s.as_bytes()[4] == b'-' && s.as_bytes()[10] == b'T'
+}
+
 /// Query the journal for audit events.
 ///
 /// When the journal writer has a built-in daemon (in-memory store), queries
@@ -487,6 +492,7 @@ pub async fn query_journal(
 
     let namespace = journal.namespace();
     let mut cmd = tokio::process::Command::new("journalctl");
+    cmd.env_clear();
     cmd.arg(format!("--namespace={namespace}"));
     cmd.arg("--output=json");
     cmd.arg("--no-pager");
@@ -503,26 +509,36 @@ pub async fn query_journal(
         cmd.arg(format!("AKAMU_OUTCOME={o}"));
     }
     if let Some(ref from) = q.from {
+        if !is_rfc3339_like(from) {
+            return Err(AcmeError::Journal(
+                "invalid 'from' timestamp: expected RFC 3339 format".into(),
+            ));
+        }
         cmd.arg(format!("--since={from}"));
     }
     if let Some(ref until) = q.until {
+        if !is_rfc3339_like(until) {
+            return Err(AcmeError::Journal(
+                "invalid 'until' timestamp: expected RFC 3339 format".into(),
+            ));
+        }
         cmd.arg(format!("--until={until}"));
     }
 
     let fetch = q.limit.saturating_add(q.offset);
     cmd.arg(format!("--lines={fetch}"));
 
-    let output = cmd.output().await.map_err(|e| {
-        AcmeError::Database(format!("failed to run journalctl: {e}"))
-    })?;
+    let output = tokio::time::timeout(Duration::from_secs(30), cmd.output())
+        .await
+        .map_err(|_| AcmeError::Journal("journalctl timed out after 30s".into()))?
+        .map_err(|e| AcmeError::Journal(format!("failed to run journalctl: {e}")))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // Exit code 1 with empty output means "no matching entries"
         if output.status.code() == Some(1) && stderr.trim().is_empty() {
             return Ok(Vec::new());
         }
-        return Err(AcmeError::Database(format!(
+        return Err(AcmeError::Journal(format!(
             "journalctl failed (exit {}): {stderr}",
             output.status
         )));
@@ -669,5 +685,14 @@ mod tests {
             .unwrap();
         }
         assert_eq!(state.event_count.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn rfc3339_validation() {
+        assert!(is_rfc3339_like("2026-06-04T12:00:00Z"));
+        assert!(is_rfc3339_like("2026-06-04T12:00:00.123Z"));
+        assert!(!is_rfc3339_like("yesterday"));
+        assert!(!is_rfc3339_like("-5min"));
+        assert!(!is_rfc3339_like("short"));
     }
 }
