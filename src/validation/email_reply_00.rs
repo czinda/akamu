@@ -891,6 +891,7 @@ mod tests {
             eab_master_secret: None,
             audit: Arc::new(crate::audit::AuditState::new()),
             audit_policy: Arc::new(crate::audit::AuditPolicy::default()),
+            journal: Arc::new(crate::journal::JournalWriter::with_daemon()),
             admin_sessions: None,
             admin_auth_limiter: None,
             eab_session_nonces: None,

@@ -1040,6 +1040,7 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
         eab_master_secret: None,
         audit: Arc::new(akamu::audit::AuditState::new()),
         audit_policy: Arc::new(akamu::audit::AuditPolicy::default()),
+        journal: std::sync::Arc::new(akamu::journal::JournalWriter::with_daemon()),
         admin_sessions: None,
         admin_auth_limiter: None,
         admin_gss_cred: None,

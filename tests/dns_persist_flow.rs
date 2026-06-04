@@ -264,6 +264,7 @@ async fn build_state(
         }),
         audit: std::sync::Arc::new(akamu::audit::AuditState::new()),
         audit_policy: std::sync::Arc::new(akamu::audit::AuditPolicy::default()),
+        journal: std::sync::Arc::new(akamu::journal::JournalWriter::with_daemon()),
         admin_sessions: None,
         admin_auth_limiter: None,
         eab_session_nonces: None,

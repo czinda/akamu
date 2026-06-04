@@ -208,6 +208,7 @@ pub async fn start(
         eab_master_secret: None,
         audit: Arc::new(AuditState::new()),
         audit_policy: Arc::new(AuditPolicy::default()),
+        journal: Arc::new(akamu::journal::JournalWriter::with_daemon()),
         admin_sessions: None,
         admin_auth_limiter: None,
         eab_session_nonces: None,

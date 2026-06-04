@@ -407,6 +407,7 @@ async fn build_delegation_state() -> (
         }),
         audit: Arc::new(akamu::audit::AuditState::new()),
         audit_policy: Arc::new(akamu::audit::AuditPolicy::default()),
+        journal: std::sync::Arc::new(akamu::journal::JournalWriter::with_daemon()),
         admin_sessions: Some(Arc::clone(&sessions)),
         admin_auth_limiter: Some(Arc::new(tokio::sync::Mutex::new(
             std::collections::HashMap::new(),
@@ -1378,6 +1379,7 @@ async fn delegation_disabled_returns_404() {
         }),
         audit: Arc::new(akamu::audit::AuditState::new()),
         audit_policy: Arc::new(akamu::audit::AuditPolicy::default()),
+        journal: std::sync::Arc::new(akamu::journal::JournalWriter::with_daemon()),
         admin_sessions: None,
         admin_auth_limiter: None,
         eab_session_nonces: None,

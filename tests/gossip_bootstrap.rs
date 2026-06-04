@@ -287,6 +287,7 @@ async fn spawn_node(params: SpawnParams) -> NodeHandle {
         crl_caches: Arc::new(crl_caches),
         audit: Arc::new(akamu::audit::AuditState::new()),
         audit_policy: Arc::new(akamu::audit::AuditPolicy::default()),
+        journal: std::sync::Arc::new(akamu::journal::JournalWriter::with_daemon()),
         admin_sessions: None,
         admin_auth_limiter: None,
         eab_session_nonces: None,

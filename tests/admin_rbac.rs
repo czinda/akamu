@@ -167,6 +167,7 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         }),
         audit: Arc::new(akamu::audit::AuditState::new()),
         audit_policy: Arc::new(akamu::audit::AuditPolicy::default()),
+        journal: std::sync::Arc::new(akamu::journal::JournalWriter::with_daemon()),
         admin_sessions: Some(Arc::clone(&sessions)),
         admin_auth_limiter: None,
         eab_session_nonces: None,

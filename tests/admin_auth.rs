@@ -8,7 +8,7 @@
 //!
 //! T-3: Operator deactivation purges live sessions immediately.
 //!
-//! T-5: Audit event end-to-end: insert an event via db::audit::insert,
+//! T-5: Audit event end-to-end: record an event via audit::record,
 //!      then query GET /admin/audit?type=<type> and assert the row is present.
 
 use std::collections::HashMap;
@@ -230,6 +230,7 @@ async fn build_state(
         }),
         audit: Arc::new(akamu::audit::AuditState::new()),
         audit_policy: Arc::new(akamu::audit::AuditPolicy::default()),
+        journal: std::sync::Arc::new(akamu::journal::JournalWriter::with_daemon()),
         admin_sessions: Some(Arc::clone(&sessions)),
         admin_auth_limiter: Some(Arc::new(tokio::sync::Mutex::new(
             std::collections::HashMap::new(),
@@ -496,20 +497,19 @@ async fn audit_event_visible_via_admin_api() {
         },
     );
 
-    // Insert a synthetic account.create audit event directly into the DB.
-    akamu::db::audit::insert(
-        &state.db,
-        "2026-05-02T10:00:00Z",
-        "account.create",
-        Some("acme:test-account-id"),
-        Some("acme:test-account-id"),
-        "success",
-        None,
-    )
-    .await
-    .unwrap();
+    // Record a synthetic account.create audit event via the built-in daemon.
+    state
+        .record_audit(
+            akamu::audit::AuditEvent::success(akamu::audit::AuditEventType::AccountCreate)
+                .with_subject("acme:test-account-id")
+                .with_principal("acme:test-account-id"),
+        )
+        .await;
 
-    // Query the audit log via the admin API.
+    // Give the daemon thread a moment to receive the datagram.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Query the audit log via the admin API — uses the in-memory store.
     let req = Request::builder()
         .method(Method::GET)
         .uri("/admin/audit?type=account.create")
@@ -716,7 +716,10 @@ async fn login_via_handler_emits_audit_event() {
         "POST /admin/session must succeed"
     );
 
-    // Query GET /admin/audit?type=admin.login via the API.
+    // Give the daemon thread a moment to receive the datagram.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Query the in-memory journal store via the admin API.
     let query_req = Request::builder()
         .method(Method::GET)
         .uri("/admin/audit?type=admin.login")
