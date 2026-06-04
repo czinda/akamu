@@ -11,7 +11,6 @@ pub mod types;
 
 pub use crdt::{AkaCrdt, AkaCrdtCounts};
 pub use generation::CRDT_GENERATION;
-pub use grow_set::GrowSet;
 pub use lww_map::LwwMap;
 pub use lww_register::LwwRegister;
 pub use merge::Merge;
