@@ -390,13 +390,14 @@ pub fn record_pair(
 ) -> Result<(), AcmeError> {
     let err1 = record(journal, state, policy, ev1).err();
     let err2 = record(journal, state, policy, ev2).err();
-    if let Some(e) = err1 {
-        return Err(e);
+    match (err1, err2) {
+        (Some(e1), Some(e2)) => Err(AcmeError::Journal(format!(
+            "journal send pair: {}; {}",
+            e1, e2
+        ))),
+        (Some(e), None) | (None, Some(e)) => Err(e),
+        (None, None) => Ok(()),
     }
-    if let Some(e) = err2 {
-        return Err(e);
-    }
-    Ok(())
 }
 
 pub fn record_or_log_pair(
