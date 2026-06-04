@@ -36,13 +36,16 @@ struct JournalEntry {
     fields: HashMap<String, String>,
 }
 
+const DAEMON_STORE_CAP: usize = 100_000;
+
 /// Writer for the systemd journal native datagram protocol.
 ///
 /// Connects to a journal namespace socket at
 /// `/run/systemd/journal.{namespace}/socket`.  When the socket is unavailable
-/// (development, CI, non-systemd hosts), [`with_daemon`] spawns a lightweight
+/// (development, CI, non-systemd hosts), [`Self::with_daemon`] spawns a lightweight
 /// in-process listener that stores entries in memory and supports filtered
 /// queries without requiring `journalctl`.
+#[derive(Debug)]
 pub struct JournalWriter {
     socket: Option<UnixDatagram>,
     namespace: String,
@@ -84,13 +87,14 @@ impl JournalWriter {
     ///
     /// Spawns a background thread that receives datagrams on a temporary Unix
     /// socket and stores them in memory.  The entries are queryable via
-    /// [`query`].  Use this in tests and development environments where
+    /// [`Self::query`].  Use this in tests and development environments where
     /// systemd-journald is not available.
     pub fn with_daemon() -> Self {
         let tmpdir = tempfile::tempdir().expect("failed to create temp dir for journal daemon");
         let socket_path = tmpdir.path().join("socket");
 
-        let server = UnixDatagram::bind(&socket_path).expect("failed to bind journal daemon socket");
+        let server =
+            UnixDatagram::bind(&socket_path).expect("failed to bind journal daemon socket");
 
         let store = Arc::new(Mutex::new(Vec::<JournalEntry>::new()));
         let store_clone = Arc::clone(&store);
@@ -100,10 +104,18 @@ impl JournalWriter {
             while let Ok(n) = server.recv(&mut buf) {
                 let fields = parse_journal_datagram(&buf[..n]);
                 let occurred_at = crate::util::rfc3339_now();
-                store_clone
-                    .lock()
-                    .unwrap()
-                    .push(JournalEntry { occurred_at, fields });
+                let mut entries = store_clone.lock().unwrap_or_else(|e| {
+                    tracing::error!("journal daemon store mutex poisoned");
+                    e.into_inner()
+                });
+                if entries.len() >= DAEMON_STORE_CAP {
+                    let drain_n = DAEMON_STORE_CAP / 10;
+                    entries.drain(..drain_n);
+                }
+                entries.push(JournalEntry {
+                    occurred_at,
+                    fields,
+                });
             }
         });
 
@@ -136,7 +148,7 @@ impl JournalWriter {
     }
 
     /// Returns `true` when entries are stored in memory and queryable via
-    /// [`query`] (i.e., the built-in daemon is active).
+    /// [`Self::query`] (i.e., the built-in daemon is active).
     pub fn has_store(&self) -> bool {
         self.store.is_some()
     }
@@ -183,9 +195,12 @@ impl JournalWriter {
         let Some(ref store) = self.store else {
             return Vec::new();
         };
-        let entries = store.lock().unwrap();
+        let entries = store.lock().unwrap_or_else(|e| {
+            tracing::error!("journal store mutex poisoned — returning recovered state");
+            e.into_inner()
+        });
 
-        let filtered: Vec<&JournalEntry> = entries
+        entries
             .iter()
             .rev()
             .filter(|e| {
@@ -218,10 +233,6 @@ impl JournalWriter {
             })
             .skip(q.offset as usize)
             .take(q.limit as usize)
-            .collect();
-
-        filtered
-            .into_iter()
             .map(|e| AuditEventRow {
                 occurred_at: e.occurred_at.clone(),
                 event_type: e
@@ -231,11 +242,7 @@ impl JournalWriter {
                     .unwrap_or_default(),
                 subject: e.fields.get("AKAMU_SUBJECT").cloned(),
                 principal: e.fields.get("AKAMU_PRINCIPAL").cloned(),
-                outcome: e
-                    .fields
-                    .get("AKAMU_OUTCOME")
-                    .cloned()
-                    .unwrap_or_default(),
+                outcome: e.fields.get("AKAMU_OUTCOME").cloned().unwrap_or_default(),
                 detail: e.fields.get("AKAMU_DETAIL").cloned(),
             })
             .collect()
@@ -280,7 +287,6 @@ fn parse_journal_datagram(data: &[u8]) -> HashMap<String, String> {
     let mut pos = 0;
 
     while pos < data.len() {
-        // Find the next newline or '=' — whichever comes first.
         let key_end = data[pos..]
             .iter()
             .position(|&b| b == b'=' || b == b'\n')
@@ -294,7 +300,6 @@ fn parse_journal_datagram(data: &[u8]) -> HashMap<String, String> {
         let key = String::from_utf8_lossy(&data[pos..key_end]).into_owned();
 
         if data[key_end] == b'=' {
-            // Simple encoding: KEY=VALUE\n
             let val_start = key_end + 1;
             let val_end = data[val_start..]
                 .iter()
@@ -310,8 +315,10 @@ fn parse_journal_datagram(data: &[u8]) -> HashMap<String, String> {
             if len_start + 8 > data.len() {
                 break;
             }
-            let value_len =
-                u64::from_le_bytes(data[len_start..len_start + 8].try_into().unwrap()) as usize;
+            let raw_len = u64::from_le_bytes(data[len_start..len_start + 8].try_into().unwrap());
+            let Some(value_len) = usize::try_from(raw_len).ok() else {
+                break;
+            };
             let val_start = len_start + 8;
             let val_end = val_start + value_len;
             if val_end > data.len() {
@@ -319,7 +326,6 @@ fn parse_journal_datagram(data: &[u8]) -> HashMap<String, String> {
             }
             let value = String::from_utf8_lossy(&data[val_start..val_end]).into_owned();
             fields.insert(key, value);
-            // Skip trailing \n after value
             pos = if val_end < data.len() && data[val_end] == b'\n' {
                 val_end + 1
             } else {
@@ -369,7 +375,6 @@ mod tests {
         ])
         .unwrap();
 
-        // Give the daemon thread a moment to process.
         std::thread::sleep(std::time::Duration::from_millis(50));
 
         let all = w.query(&AuditQuery {
