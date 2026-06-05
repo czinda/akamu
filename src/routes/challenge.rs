@@ -31,10 +31,9 @@ pub async fn respond_challenge(
         .account_id
         .ok_or(AcmeError::Unauthorized("kid required".into()))?;
 
-    // Two-step approach: one autocommit SELECT to validate ownership and get
-    // challenge data, then one autocommit conditional UPDATE to flip the
-    // challenge to "processing" atomically.  This avoids the overhead of an
-    // explicit BEGIN/COMMIT pair (saving 2 DB round-trips vs a 4-RT transaction).
+    // Two-step approach: one read-only SELECT (via db_ro) to validate ownership
+    // and get challenge data, then one autocommit conditional UPDATE to flip the
+    // challenge to "processing" atomically.
     //
     // The conditional UPDATE (`WHERE status = 'pending'`) handles concurrent
     // duplicate requests: if two requests arrive simultaneously, only one
@@ -84,7 +83,6 @@ pub async fn respond_challenge(
         }
         (authz, challenge)
     };
-    // challenge.status was "pending" — the DB has now flipped it to "processing".
     crdt_hooks::on_challenge_set(
         &state,
         crdt_hooks::ChallengeSetParams {
@@ -188,9 +186,6 @@ pub async fn respond_challenge(
 
     // Spawn background validation task. The JoinHandle is observed so that a
     // panic inside the task is logged rather than silently swallowed.
-    //
-    // `authz.order_id` is passed to avoid a redundant
-    // `SELECT order_id FROM authorizations` inside the on_valid transaction.
     let state_clone = Arc::clone(&state);
     let challenge_id = challenge.id.clone();
     let order_id = authz.order_id.clone();
@@ -219,14 +214,12 @@ pub async fn respond_challenge(
         .await;
     });
 
-    // Detach but watch for panics: spawn a lightweight observer task.
     tokio::spawn(async move {
         if let Err(e) = handle.await {
             tracing::error!("challenge {challenge_id_for_log}: validation task panicked: {e:?}");
         }
     });
 
-    // Return immediately with processing state.
     let mut updated = challenge.clone();
     updated.status = "processing".into();
     challenge_response(&state, &updated, &pfx, &ca_id.0, &ctx.next_nonce)

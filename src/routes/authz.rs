@@ -156,7 +156,7 @@ pub async fn new_authz(
 
     // Check for an existing valid unexpired authorization for this account+identifier.
     if let Some(existing_authz) = db::authz::find_valid_by_account_and_identifier(
-        &state.db,
+        &state.db_ro,
         &account_id,
         &identifier_json,
         &ca_id.0,
@@ -165,7 +165,7 @@ pub async fn new_authz(
     .await?
     {
         // Return the existing authorization.
-        let (authz, challenges) = db::authz::get_with_challenges(&state.db, &existing_authz.id)
+        let (authz, challenges) = db::authz::get_with_challenges(&state.db_ro, &existing_authz.id)
             .await?
             .ok_or(AcmeError::NotFound)?;
         let location = format!("{pfx}/authz/{}", authz.id);
@@ -265,7 +265,7 @@ pub async fn new_authz(
     }
 
     // Fetch the freshly inserted authorization and its challenges for the response.
-    let (authz, chall_rows) = db::authz::get_with_challenges(&state.db, &authz_id)
+    let (authz, chall_rows) = db::authz::get_with_challenges(&state.db_ro, &authz_id)
         .await?
         .ok_or(AcmeError::NotFound)?;
 

@@ -259,7 +259,7 @@ pub async fn new_order(
 
     // Validate the optional `replaces` cert_id (RFC 9773 §5).
     let validated_replaces: Option<String> = if let Some(ref cert_id) = payload.replaces {
-        let pred = db::certs::get_by_cert_id(&state.db, cert_id)
+        let pred = db::certs::get_by_cert_id(&state.db_ro, cert_id)
             .await?
             .ok_or(AcmeError::NotFound)?;
         if pred.account_id != account_id {

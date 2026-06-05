@@ -544,7 +544,7 @@ pub(crate) async fn parse_jws(
                 }
                 acc
             } else {
-                let account = db::accounts::get_by_id(&state.db, &id)
+                let account = db::accounts::get_by_id(&state.db_ro, &id)
                     .await?
                     .ok_or_else(|| AcmeError::Unauthorized("account not found".into()))?;
                 if account.status != "valid" {
