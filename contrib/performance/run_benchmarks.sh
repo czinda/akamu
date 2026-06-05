@@ -200,9 +200,13 @@ bench() {
         fi
     fi
 
+    # Extra args for spawn mode (e.g. SPAWN_MODE="--spawn process").
+    local spawn_args=()
+    [[ -n "${SPAWN_MODE:-}" ]] && read -ra spawn_args <<< "$SPAWN_MODE"
+
     local json
     if [[ -n "$BENCH_EXE" ]]; then
-        if ! json=$("$BENCH_EXE" "${db_args[@]}" "$@" --output json 2>/dev/null); then
+        if ! json=$("$BENCH_EXE" "${spawn_args[@]}" "${db_args[@]}" "$@" --output json 2>/dev/null); then
             echo "  FAILED" >&2
             return
         fi
@@ -210,7 +214,7 @@ bench() {
         local cargo_features=()
         [[ -n "$PG_URL" ]] && cargo_features=(--features backend-postgres)
         if ! json=$(cargo bench "${cargo_features[@]}" --bench acme_bench -- \
-                        "${db_args[@]}" "$@" --output json 2>/dev/null); then
+                        "${spawn_args[@]}" "${db_args[@]}" "$@" --output json 2>/dev/null); then
             echo "  FAILED" >&2
             return
         fi
