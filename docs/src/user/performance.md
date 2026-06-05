@@ -43,11 +43,11 @@ under higher concurrency as queue depth grows.
 
 | Clients | Throughput (iss/s) | Mean (ms) | p99 (ms) | new_order | authz | challenge | finalize | download |
 |--------:|-------------------:|----------:|---------:|----------:|------:|----------:|---------:|---------:|
-|   1     |     95             |   10.5    |   15.1   |   1.3     |  1.0  |   4.4     |    3.3   |   0.5    |
-|   5     |    725             |    6.8    |    9.7   |   0.9     |  0.4  |   3.0     |    2.3   |   0.2    |
-|  10     |    745             |   13.0    |   34.2   |   2.0     |  0.5  |   4.6     |    5.8   |   0.2    |
-|  25     |    658             |   32.5    |   63.2   |   5.7     |  0.5  |   9.9     |   16.2   |   0.2    |
-|  50     |    620             |   68.9    |   94.2   |  12.2     |  0.5  |  24.0     |   32.0   |   0.2    |
+|   1     |    100             |   10.2    |   13.7   |   1.3     |  1.0  |   4.3     |    3.4   |   0.4    |
+|   5     |    975             |    5.0    |    6.3   |   0.6     |  0.4  |   2.6     |    1.2   |   0.2    |
+|  10     |  1,098             |    8.7    |   14.7   |   1.6     |  0.6  |   4.0     |    2.2   |   0.3    |
+|  25     |  1,208             |   19.0    |   24.3   |   4.6     |  0.5  |   8.2     |    5.4   |   0.3    |
+|  50     |  1,015             |   34.5    |   73.7   |   9.2     |  0.5  |  17.7     |    6.9   |   0.2    |
 
 ### Inprocess mode
 
@@ -61,12 +61,13 @@ under higher concurrency as queue depth grows.
 
 Phase columns show mean milliseconds per ACME step.
 
-Both modes peak at c=5–10 (**725–745 iss/s** process, **686–696 iss/s**
-inprocess) with sub-15 ms mean latency.  Process mode shows lower download
-times (0.2 ms vs 1–7 ms) because certificate delivery bypasses the
-shared-process HTTP stack.  Inprocess mode shows higher authz and download
-overhead at high concurrency due to Tokio task contention within the single
-runtime.
+Process mode peaks at c=5–10 (**975–1,098 iss/s**) with sub-9 ms mean
+latency, driven by read-only pool separation, crypto caching, and
+`spawn_blocking` for certificate signing.  Inprocess mode peaks at c=5–10
+(**686–696 iss/s**).  Process mode shows lower download times (0.2 ms vs
+1–7 ms) because certificate delivery bypasses the shared-process HTTP stack.
+Inprocess mode shows higher authz and download overhead at high concurrency
+due to Tokio task contention within the single runtime.
 
 ---
 
@@ -336,9 +337,9 @@ Single-node throughput for ec:P-256 keys, http-01, SQLite `:memory:`:
 | Target throughput | Configuration | Expected mean latency | Notes |
 |:-----------------:|:--------------|:---------------------:|:------|
 | ≤100 iss/s        | 1 client, pool=1   | ~10 ms           | Minimal deployment |
-| ≤700 iss/s        | 5–10 clients       | 7–13 ms          | Sweet spot: low latency, high throughput |
+| ≤1,000 iss/s      | 5–10 clients       | 5–9 ms           | Sweet spot: low latency, high throughput |
+| ≤1,200 iss/s      | 25 clients         | ~19 ms           | Near single-writer ceiling |
 | ≤900 iss/s        | 10 clients, pool=4, ro=1 | ~11 ms    | RO split + pool tuning (inprocess) |
-| ≤620 iss/s        | 50 clients         | ~70 ms           | High concurrency, higher latency |
 
 Figures assume ec:P-256 keys, http-01 challenge, and SQLite `:memory:`.
 RSA or ML-DSA keys lower throughput proportionally.
