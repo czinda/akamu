@@ -515,14 +515,47 @@ pub fn issue_with_params(
     extra_other_names: &[Vec<u8>],
     extra_dns_names: &[String],
 ) -> Result<IssuedCert, AcmeError> {
-    // ── Extract CA name and SPKI DER ─────────────────────────────────────────
-    let ca_name_der = extract_ca_subject_der(&ca.cert_der)?;
-    let ca_spki_der = ca
-        .key
-        .public_key()
-        .map_err(|e| AcmeError::Crypto(format!("CA public key: {e}")))?
-        .spki_der()
-        .to_vec();
+    // ── Extract CA name, SPKI DER, AKI DER (cached per CA cert) ────────
+    struct CaCachedDer {
+        cert_der: Vec<u8>,
+        name_der: Vec<u8>,
+        spki_der: Vec<u8>,
+        aki_der: Vec<u8>,
+    }
+
+    let (ca_name_der, _ca_spki_der, ca_aki_der) = {
+        use std::sync::Mutex;
+        static CACHE: Mutex<Option<CaCachedDer>> = Mutex::new(None);
+        let mut guard = CACHE.lock().unwrap();
+        match &*guard {
+            Some(c) if c.cert_der == ca.cert_der => {
+                (c.name_der.clone(), c.spki_der.clone(), c.aki_der.clone())
+            }
+            _ => {
+                let name = extract_ca_subject_der(&ca.cert_der)?;
+                let spki = ca
+                    .key
+                    .public_key()
+                    .map_err(|e| AcmeError::Crypto(format!("CA public key: {e}")))?
+                    .spki_der()
+                    .to_vec();
+                let hasher = default_key_id_hasher();
+                let aki = encode_authority_key_identifier(
+                    &spki,
+                    KeyIdMethod::Rfc7093Method1Sha256,
+                    &hasher,
+                )
+                .ok_or_else(|| AcmeError::Builder("AKI encode".into()))?;
+                *guard = Some(CaCachedDer {
+                    cert_der: ca.cert_der.clone(),
+                    name_der: name.clone(),
+                    spki_der: spki.clone(),
+                    aki_der: aki.clone(),
+                });
+                (name, spki, aki)
+            }
+        }
+    };
 
     // ── Random serial ────────────────────────────────────────────────────────
     let mut serial_bytes = [0u8; 16];
@@ -583,8 +616,10 @@ pub fn issue_with_params(
     // ── Extensions ───────────────────────────────────────────────────────────
     let hasher = default_key_id_hasher();
 
-    let bc_der = encode_basic_constraints(false, None)
-        .ok_or_else(|| AcmeError::Builder("BasicConstraints encode".into()))?;
+    static BC_DER: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    let bc_der = BC_DER
+        .get_or_init(|| encode_basic_constraints(false, None).expect("BasicConstraints encode"))
+        .clone();
 
     // KeyUsage from profile parameters (zero bits → omit the extension).
     let ku_der = if params.key_usage_bits != 0 {
@@ -606,9 +641,7 @@ pub fn issue_with_params(
     let ski_der =
         encode_subject_key_identifier(&csr.spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
             .ok_or_else(|| AcmeError::Builder("SKI encode".into()))?;
-    let aki_der =
-        encode_authority_key_identifier(&ca_spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
-            .ok_or_else(|| AcmeError::Builder("AKI encode".into()))?;
+    let aki_der = ca_aki_der;
 
     let mut san_has_entries = false;
     let mut san_builder = SubjectAlternativeNameBuilder::new();
@@ -916,9 +949,27 @@ pub fn sign_admin_cert(
 ///
 /// Returns `AcmeError::Internal` if any check fails.
 fn lint_issued_cert(cert_der: &[u8], ca_cert_der: &[u8], now: i64) -> Result<(), AcmeError> {
-    // Build a trust store containing the single CA trust anchor.
-    let store = OwnedStore::try_new(std::iter::once(ca_cert_der))
-        .map_err(|e| AcmeError::Internal(format!("lint: parse CA cert: {e}")))?;
+    use std::sync::Mutex;
+
+    static STORE_CACHE: Mutex<Option<(Vec<u8>, std::sync::Arc<OwnedStore>)>> =
+        Mutex::new(None);
+
+    let store = {
+        let mut guard = STORE_CACHE.lock().unwrap();
+        match &*guard {
+            Some((cached_der, store)) if cached_der == ca_cert_der => {
+                std::sync::Arc::clone(store)
+            }
+            _ => {
+                let s = std::sync::Arc::new(
+                    OwnedStore::try_new(std::iter::once(ca_cert_der))
+                        .map_err(|e| AcmeError::Internal(format!("lint: parse CA cert: {e}")))?,
+                );
+                *guard = Some((ca_cert_der.to_vec(), std::sync::Arc::clone(&s)));
+                s
+            }
+        }
+    };
 
     // Parse the just-issued leaf.
     let mut dec = Decoder::new(cert_der, Encoding::Der);
