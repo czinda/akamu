@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufWriter, Write};
 use std::os::unix::net::UnixDatagram;
@@ -21,6 +21,7 @@ pub struct AuditEventRow {
 }
 
 /// Parameters for audit journal queries.
+#[derive(Debug)]
 pub struct AuditQuery {
     pub event_type: Option<String>,
     pub subject: Option<String>,
@@ -40,6 +41,10 @@ struct JournalEntry {
 
 const DAEMON_STORE_CAP: usize = 100_000;
 
+/// Maximum number of JSONL lines scanned per file query to prevent unbounded
+/// reads on a file that has not been rotated.
+const MAX_QUERY_LINES: usize = 500_000;
+
 /// Writer for the systemd journal native datagram protocol, with optional
 /// file-based JSONL backend for non-journald environments.
 ///
@@ -51,9 +56,12 @@ const DAEMON_STORE_CAP: usize = 100_000;
 pub struct JournalWriter {
     socket: Option<UnixDatagram>,
     namespace: String,
-    store: Option<Arc<Mutex<Vec<JournalEntry>>>>,
+    store: Option<Arc<Mutex<VecDeque<JournalEntry>>>>,
     log_file: Option<Mutex<BufWriter<File>>>,
     log_file_path: Option<PathBuf>,
+    /// Held to keep the temporary directory alive for the daemon socket.
+    /// Requires `tempfile` as a non-dev dependency because `TempDir` is a
+    /// struct field, not just used in tests.
     _tmpdir: Option<tempfile::TempDir>,
 }
 
@@ -94,6 +102,10 @@ impl JournalWriter {
     /// Each event is a single-line JSON object flushed immediately after write
     /// (FAU_STG.1 — durable on each event).  The file is opened in append mode
     /// and created if it does not exist.
+    ///
+    /// The file grows without bound; external log rotation (e.g. `logrotate(8)`
+    /// with `copytruncate`) is expected for long-running deployments.  Queries
+    /// scan at most 500 000 lines from the file to bound read cost.
     pub fn with_file(path: &str) -> io::Result<Self> {
         let file = OpenOptions::new().create(true).append(true).open(path)?;
         tracing::info!(path, "opened audit log file (JSONL append mode)");
@@ -120,7 +132,7 @@ impl JournalWriter {
         let server =
             UnixDatagram::bind(&socket_path).expect("failed to bind journal daemon socket");
 
-        let store = Arc::new(Mutex::new(Vec::<JournalEntry>::new()));
+        let store = Arc::new(Mutex::new(VecDeque::<JournalEntry>::new()));
         let store_clone = Arc::clone(&store);
 
         std::thread::spawn(move || {
@@ -134,9 +146,14 @@ impl JournalWriter {
                 });
                 if entries.len() >= DAEMON_STORE_CAP {
                     let drain_n = DAEMON_STORE_CAP / 10;
+                    tracing::warn!(
+                        evicted = drain_n,
+                        cap = DAEMON_STORE_CAP,
+                        "daemon store full — evicting oldest entries"
+                    );
                     entries.drain(..drain_n);
                 }
-                entries.push(JournalEntry {
+                entries.push_back(JournalEntry {
                     occurred_at,
                     fields,
                 });
@@ -171,6 +188,28 @@ impl JournalWriter {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn broken() -> Self {
+        let tmpdir = tempfile::tempdir().expect("tempdir");
+        let socket_path = tmpdir.path().join("socket");
+        let server = UnixDatagram::bind(&socket_path).expect("bind");
+        let client = UnixDatagram::unbound().expect("client");
+        client.connect(&socket_path).expect("connect");
+        drop(server);
+        std::fs::remove_file(&socket_path).expect("remove");
+        // Give the kernel time to process the peer close so that subsequent
+        // sends reliably return ECONNREFUSED instead of buffering.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        Self {
+            socket: Some(client),
+            namespace: String::new(),
+            store: None,
+            log_file: None,
+            log_file_path: None,
+            _tmpdir: Some(tmpdir),
+        }
+    }
+
     pub fn is_connected(&self) -> bool {
         self.socket.is_some() || self.log_file.is_some()
     }
@@ -189,6 +228,10 @@ impl JournalWriter {
     ///
     /// Dispatches to the appropriate backend: journal socket, JSONL file, or
     /// tracing fallback.
+    ///
+    /// Uses synchronous I/O intentionally: local Unix datagram sends and file
+    /// writes are sub-microsecond on local filesystems and do not warrant the
+    /// overhead of `spawn_blocking` or async I/O.
     pub fn send(&self, fields: &[(&str, &str)]) -> io::Result<()> {
         if let Some(ref sock) = self.socket {
             let mut buf = Vec::with_capacity(512);
@@ -248,14 +291,14 @@ impl JournalWriter {
 
     /// Query for audit events.  Dispatches to the in-memory daemon store or
     /// the JSONL file backend depending on which is active.
-    pub fn query(&self, q: &AuditQuery) -> Vec<AuditEventRow> {
+    pub fn query(&self, q: &AuditQuery) -> Result<Vec<AuditEventRow>, io::Error> {
         if self.store.is_some() {
-            return self.query_store(q);
+            return Ok(self.query_store(q));
         }
         if let Some(ref path) = self.log_file_path {
             return self.query_file(path, q);
         }
-        Vec::new()
+        Ok(Vec::new())
     }
 
     fn query_store(&self, q: &AuditQuery) -> Vec<AuditEventRow> {
@@ -263,7 +306,7 @@ impl JournalWriter {
             return Vec::new();
         };
         let entries = store.lock().unwrap_or_else(|e| {
-            tracing::error!("journal store mutex poisoned — returning recovered state");
+            tracing::error!("journal daemon store mutex poisoned");
             e.into_inner()
         });
 
@@ -277,20 +320,43 @@ impl JournalWriter {
             .collect()
     }
 
-    fn query_file(&self, path: &Path, q: &AuditQuery) -> Vec<AuditEventRow> {
-        let file = match File::open(path) {
-            Ok(f) => f,
-            Err(e) => {
-                tracing::error!(error = %e, "failed to open audit log for reading");
-                return Vec::new();
-            }
-        };
+    fn query_file(&self, path: &Path, q: &AuditQuery) -> Result<Vec<AuditEventRow>, io::Error> {
+        // Flush the write buffer before reading to avoid partial-line races.
+        if let Some(ref log_file) = self.log_file {
+            let mut writer = log_file.lock().unwrap_or_else(|e| {
+                tracing::error!("audit log file mutex poisoned");
+                e.into_inner()
+            });
+            writer.flush()?;
+        }
+
+        let file = File::open(path)?;
         let reader = io::BufReader::new(file);
+        let mut skipped: usize = 0;
         let mut all: Vec<AuditEventRow> = reader
             .lines()
-            .filter_map(|line| {
-                let line = line.ok()?;
-                let obj: serde_json::Value = serde_json::from_str(&line).ok()?;
+            .take(MAX_QUERY_LINES)
+            .enumerate()
+            .filter_map(|(line_no, line)| {
+                let line = match line {
+                    Ok(l) => l,
+                    Err(e) => {
+                        tracing::warn!(line = line_no + 1, error = %e, "skipping unreadable JSONL line");
+                        skipped += 1;
+                        return None;
+                    }
+                };
+                if line.is_empty() {
+                    return None;
+                }
+                let obj: serde_json::Value = match serde_json::from_str(&line) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(line = line_no + 1, error = %e, "skipping malformed JSONL line");
+                        skipped += 1;
+                        return None;
+                    }
+                };
                 let map = obj.as_object()?;
                 let occurred_at = map
                     .get("occurred_at")
@@ -309,11 +375,16 @@ impl JournalWriter {
             })
             .collect();
 
+        if skipped > 0 {
+            tracing::warn!(skipped, "JSONL query skipped malformed/unreadable lines");
+        }
+
         all.reverse();
-        all.into_iter()
+        Ok(all
+            .into_iter()
             .skip(q.offset as usize)
             .take(q.limit as usize)
-            .collect()
+            .collect())
     }
 
     fn fallback(&self, fields: &[(&str, &str)]) {
@@ -481,40 +552,46 @@ mod tests {
 
         std::thread::sleep(std::time::Duration::from_millis(50));
 
-        let all = w.query(&AuditQuery {
-            event_type: None,
-            subject: None,
-            from: None,
-            until: None,
-            outcome: None,
-            limit: 100,
-            offset: 0,
-        });
+        let all = w
+            .query(&AuditQuery {
+                event_type: None,
+                subject: None,
+                from: None,
+                until: None,
+                outcome: None,
+                limit: 100,
+                offset: 0,
+            })
+            .unwrap();
         assert_eq!(all.len(), 2, "expected 2 entries, got {}", all.len());
 
-        let certs = w.query(&AuditQuery {
-            event_type: Some("cert.issue".to_owned()),
-            subject: None,
-            from: None,
-            until: None,
-            outcome: None,
-            limit: 100,
-            offset: 0,
-        });
+        let certs = w
+            .query(&AuditQuery {
+                event_type: Some("cert.issue".to_owned()),
+                subject: None,
+                from: None,
+                until: None,
+                outcome: None,
+                limit: 100,
+                offset: 0,
+            })
+            .unwrap();
         assert_eq!(certs.len(), 1);
         assert_eq!(certs[0].event_type, "cert.issue");
         assert_eq!(certs[0].subject.as_deref(), Some("serial-abc"));
         assert_eq!(certs[0].principal.as_deref(), Some("acme:thumb"));
 
-        let failures = w.query(&AuditQuery {
-            event_type: None,
-            subject: None,
-            from: None,
-            until: None,
-            outcome: Some("failure".to_owned()),
-            limit: 100,
-            offset: 0,
-        });
+        let failures = w
+            .query(&AuditQuery {
+                event_type: None,
+                subject: None,
+                from: None,
+                until: None,
+                outcome: Some("failure".to_owned()),
+                limit: 100,
+                offset: 0,
+            })
+            .unwrap();
         assert_eq!(failures.len(), 1);
         assert_eq!(failures[0].event_type, "auth.jws.fail");
     }
@@ -532,15 +609,17 @@ mod tests {
 
         std::thread::sleep(std::time::Duration::from_millis(50));
 
-        let rows = w.query(&AuditQuery {
-            event_type: Some("admin.action".to_owned()),
-            subject: None,
-            from: None,
-            until: None,
-            outcome: None,
-            limit: 100,
-            offset: 0,
-        });
+        let rows = w
+            .query(&AuditQuery {
+                event_type: Some("admin.action".to_owned()),
+                subject: None,
+                from: None,
+                until: None,
+                outcome: None,
+                limit: 100,
+                offset: 0,
+            })
+            .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].detail.as_deref(), Some("line1\nline2"));
     }
@@ -575,41 +654,47 @@ mod tests {
         ])
         .unwrap();
 
-        let all = w.query(&AuditQuery {
-            event_type: None,
-            subject: None,
-            from: None,
-            until: None,
-            outcome: None,
-            limit: 100,
-            offset: 0,
-        });
+        let all = w
+            .query(&AuditQuery {
+                event_type: None,
+                subject: None,
+                from: None,
+                until: None,
+                outcome: None,
+                limit: 100,
+                offset: 0,
+            })
+            .unwrap();
         assert_eq!(all.len(), 3);
         // newest first
         assert_eq!(all[0].event_type, "cert.revoke");
         assert_eq!(all[2].event_type, "cert.issue");
 
-        let certs = w.query(&AuditQuery {
-            event_type: Some("cert.issue".to_owned()),
-            subject: None,
-            from: None,
-            until: None,
-            outcome: None,
-            limit: 100,
-            offset: 0,
-        });
+        let certs = w
+            .query(&AuditQuery {
+                event_type: Some("cert.issue".to_owned()),
+                subject: None,
+                from: None,
+                until: None,
+                outcome: None,
+                limit: 100,
+                offset: 0,
+            })
+            .unwrap();
         assert_eq!(certs.len(), 1);
         assert_eq!(certs[0].subject.as_deref(), Some("serial-123"));
 
-        let failures = w.query(&AuditQuery {
-            event_type: None,
-            subject: None,
-            from: None,
-            until: None,
-            outcome: Some("failure".to_owned()),
-            limit: 100,
-            offset: 0,
-        });
+        let failures = w
+            .query(&AuditQuery {
+                event_type: None,
+                subject: None,
+                from: None,
+                until: None,
+                outcome: Some("failure".to_owned()),
+                limit: 100,
+                offset: 0,
+            })
+            .unwrap();
         assert_eq!(failures.len(), 1);
         assert_eq!(failures[0].event_type, "auth.jws.fail");
 
@@ -621,6 +706,304 @@ mod tests {
             assert!(obj.get("occurred_at").is_some());
             assert!(obj.get("AKAMU_EVENT_TYPE").is_some());
         }
+    }
+
+    #[test]
+    fn new_falls_back_when_no_socket() {
+        let w = JournalWriter::new("nonexistent-test-namespace-12345");
+        assert!(!w.is_connected());
+        assert!(!w.has_store());
+        assert_eq!(w.namespace(), "nonexistent-test-namespace-12345");
+        // send should use tracing fallback, not error
+        w.send(&[
+            ("AKAMU_EVENT_TYPE", "ca.start"),
+            ("AKAMU_OUTCOME", "success"),
+        ])
+        .unwrap();
+    }
+
+    #[test]
+    fn query_on_disconnected_returns_empty() {
+        let w = JournalWriter::disconnected();
+        let rows = w
+            .query(&AuditQuery {
+                event_type: None,
+                subject: None,
+                from: None,
+                until: None,
+                outcome: None,
+                limit: 100,
+                offset: 0,
+            })
+            .unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn file_backend_offset_and_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let w = JournalWriter::with_file(path.to_str().unwrap()).unwrap();
+
+        for i in 0..5 {
+            w.send(&[
+                ("AKAMU_EVENT_TYPE", "cert.issue"),
+                ("AKAMU_OUTCOME", "success"),
+                ("AKAMU_SUBJECT", &format!("serial-{i}")),
+            ])
+            .unwrap();
+        }
+
+        let page = w
+            .query(&AuditQuery {
+                event_type: None,
+                subject: None,
+                from: None,
+                until: None,
+                outcome: None,
+                limit: 2,
+                offset: 1,
+            })
+            .unwrap();
+        assert_eq!(page.len(), 2);
+        // newest first, skip 1 → serial-3, serial-2
+        assert_eq!(page[0].subject.as_deref(), Some("serial-3"));
+        assert_eq!(page[1].subject.as_deref(), Some("serial-2"));
+    }
+
+    #[test]
+    fn daemon_query_by_subject() {
+        let w = JournalWriter::with_daemon();
+        w.send(&[
+            ("AKAMU_EVENT_TYPE", "cert.issue"),
+            ("AKAMU_OUTCOME", "success"),
+            ("AKAMU_SUBJECT", "serial-a"),
+        ])
+        .unwrap();
+        w.send(&[
+            ("AKAMU_EVENT_TYPE", "cert.issue"),
+            ("AKAMU_OUTCOME", "success"),
+            ("AKAMU_SUBJECT", "serial-b"),
+        ])
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let rows = w
+            .query(&AuditQuery {
+                event_type: None,
+                subject: Some("serial-a".to_owned()),
+                from: None,
+                until: None,
+                outcome: None,
+                limit: 100,
+                offset: 0,
+            })
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].subject.as_deref(), Some("serial-a"));
+    }
+
+    #[test]
+    fn file_query_by_subject_and_outcome() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let w = JournalWriter::with_file(path.to_str().unwrap()).unwrap();
+        w.send(&[
+            ("AKAMU_EVENT_TYPE", "cert.issue"),
+            ("AKAMU_OUTCOME", "success"),
+            ("AKAMU_SUBJECT", "serial-a"),
+        ])
+        .unwrap();
+        w.send(&[
+            ("AKAMU_EVENT_TYPE", "cert.revoke"),
+            ("AKAMU_OUTCOME", "failure"),
+            ("AKAMU_SUBJECT", "serial-b"),
+        ])
+        .unwrap();
+
+        let by_subject = w
+            .query(&AuditQuery {
+                event_type: None,
+                subject: Some("serial-b".to_owned()),
+                from: None,
+                until: None,
+                outcome: None,
+                limit: 100,
+                offset: 0,
+            })
+            .unwrap();
+        assert_eq!(by_subject.len(), 1);
+        assert_eq!(by_subject[0].event_type, "cert.revoke");
+
+        let by_outcome = w
+            .query(&AuditQuery {
+                event_type: None,
+                subject: None,
+                from: None,
+                until: None,
+                outcome: Some("failure".to_owned()),
+                limit: 100,
+                offset: 0,
+            })
+            .unwrap();
+        assert_eq!(by_outcome.len(), 1);
+    }
+
+    #[test]
+    fn file_query_by_time_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        // Write entries with explicit timestamps by writing raw JSONL
+        let content = r#"{"occurred_at":"2026-01-01T00:00:00Z","AKAMU_EVENT_TYPE":"cert.issue","AKAMU_OUTCOME":"success"}
+{"occurred_at":"2026-06-15T12:00:00Z","AKAMU_EVENT_TYPE":"cert.revoke","AKAMU_OUTCOME":"success"}
+{"occurred_at":"2026-12-31T23:59:59Z","AKAMU_EVENT_TYPE":"admin.login","AKAMU_OUTCOME":"success"}
+"#;
+        std::fs::write(&path, content).unwrap();
+        let w = JournalWriter::with_file(path.to_str().unwrap()).unwrap();
+
+        let rows = w
+            .query(&AuditQuery {
+                event_type: None,
+                subject: None,
+                from: Some("2026-06-01T00:00:00Z".to_owned()),
+                until: Some("2026-07-01T00:00:00Z".to_owned()),
+                outcome: None,
+                limit: 100,
+                offset: 0,
+            })
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].event_type, "cert.revoke");
+    }
+
+    #[test]
+    fn daemon_query_by_time_range() {
+        let w = JournalWriter::with_daemon();
+        w.send(&[
+            ("AKAMU_EVENT_TYPE", "cert.issue"),
+            ("AKAMU_OUTCOME", "success"),
+        ])
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let now_ish = crate::util::rfc3339_now();
+        let rows = w
+            .query(&AuditQuery {
+                event_type: None,
+                subject: None,
+                from: None,
+                until: Some(now_ish),
+                outcome: None,
+                limit: 100,
+                offset: 0,
+            })
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+
+        // future from filter should exclude the event
+        let rows = w
+            .query(&AuditQuery {
+                event_type: None,
+                subject: None,
+                from: Some("2099-01-01T00:00:00Z".to_owned()),
+                until: None,
+                outcome: None,
+                limit: 100,
+                offset: 0,
+            })
+            .unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn file_query_empty_file_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.jsonl");
+        let w = JournalWriter::with_file(path.to_str().unwrap()).unwrap();
+        let rows = w
+            .query(&AuditQuery {
+                event_type: None,
+                subject: None,
+                from: None,
+                until: None,
+                outcome: None,
+                limit: 100,
+                offset: 0,
+            })
+            .unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn file_query_deleted_file_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let w = JournalWriter::with_file(path.to_str().unwrap()).unwrap();
+        w.send(&[
+            ("AKAMU_EVENT_TYPE", "cert.issue"),
+            ("AKAMU_OUTCOME", "success"),
+        ])
+        .unwrap();
+        // Delete the file to trigger the open-error path in query_file
+        std::fs::remove_file(&path).unwrap();
+        let result = w.query(&AuditQuery {
+            event_type: None,
+            subject: None,
+            from: None,
+            until: None,
+            outcome: None,
+            limit: 100,
+            offset: 0,
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_binary_value_without_trailing_newline() {
+        let value = "hello";
+        let mut data = Vec::new();
+        data.extend_from_slice(b"KEY");
+        data.push(b'\n');
+        data.extend_from_slice(&(value.len() as u64).to_le_bytes());
+        data.extend_from_slice(value.as_bytes());
+        // no trailing \n — parser should still work
+        let fields = parse_journal_datagram(&data);
+        assert_eq!(fields.get("KEY").unwrap(), "hello");
+    }
+
+    #[test]
+    fn parse_empty_datagram() {
+        let fields = parse_journal_datagram(b"");
+        assert!(fields.is_empty());
+    }
+
+    #[test]
+    fn parse_key_only_no_separator() {
+        let fields = parse_journal_datagram(b"KEYONLY");
+        assert!(fields.is_empty());
+    }
+
+    #[test]
+    fn parse_truncated_binary_header() {
+        // Binary field with insufficient bytes for length header
+        let mut data = Vec::new();
+        data.extend_from_slice(b"KEY");
+        data.push(b'\n');
+        data.extend_from_slice(&[0u8; 4]); // only 4 bytes, need 8
+        let fields = parse_journal_datagram(&data);
+        assert!(fields.is_empty());
+    }
+
+    #[test]
+    fn parse_truncated_binary_value() {
+        // Binary field where length exceeds available data
+        let mut data = Vec::new();
+        data.extend_from_slice(b"KEY");
+        data.push(b'\n');
+        data.extend_from_slice(&100u64.to_le_bytes()); // claims 100 bytes
+        data.extend_from_slice(b"short"); // only 5 bytes
+        let fields = parse_journal_datagram(&data);
+        assert!(fields.is_empty());
     }
 
     #[test]
