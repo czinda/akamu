@@ -44,7 +44,7 @@ pub async fn finalize_order(
         .account_id
         .ok_or(AcmeError::Unauthorized("kid required".into()))?;
 
-    let order = db::orders::get_by_id(&state.db, &id)
+    let order = db::orders::get_by_id(&state.db_ro, &id)
         .await?
         .ok_or(AcmeError::NotFound)?;
 
@@ -142,7 +142,7 @@ pub async fn finalize_order(
     // Option C: the hook may return extra OtherName DERs via stdout JSON.
     let mut extra_other_names: Vec<Vec<u8>> = if let Some(profile_name) = effective_profile {
         crate::profiles::auth::check_profile_auth(
-            &state.db,
+            &state.db_ro,
             &account_id,
             profile_name,
             &cert_params,
@@ -170,7 +170,7 @@ pub async fn finalize_order(
     if !effective_caa.is_empty() {
         // Build identifier → authz_id map to look up the validated challenge type
         // for each authorization (RFC 8657 validationmethods check).
-        let authz_rows = db::authz::list_by_order(&state.db, &id).await?;
+        let authz_rows = db::authz::list_by_order(&state.db_ro, &id).await?;
         let mut identifier_to_authz: std::collections::HashMap<(String, String), String> =
             std::collections::HashMap::new();
         for authz in &authz_rows {
@@ -192,7 +192,7 @@ pub async fn finalize_order(
                 let challenge_type = if let Some(authz_id) =
                     identifier_to_authz.get(&(id_type.to_string(), id_value.to_string()))
                 {
-                    db::challenges::get_validated_type(&state.db, authz_id)
+                    db::challenges::get_validated_type(&state.db_ro, authz_id)
                         .await?
                         .ok_or_else(|| {
                             AcmeError::Internal(format!(
@@ -248,7 +248,7 @@ pub async fn finalize_order(
     // Option B: account-stored Kerberos principal injected as KPN OtherName SAN.
     if cert_params.inject_account_kpn {
         if let Some(principal) =
-            db::accounts::get_kerberos_principal(&state.db, &account_id).await?
+            db::accounts::get_kerberos_principal(&state.db_ro, &account_id).await?
         {
             extra_other_names.push(
                 crate::ca::krb5_san::encode_principal_str_other_name(&principal)
@@ -273,7 +273,7 @@ pub async fn finalize_order(
     let mut extra_dns_names: Vec<String> = vec![];
     let mut tkauth_authz_ids: Vec<String> = vec![];
     {
-        let authz_rows = db::authz::list_by_order(&state.db, &id).await?;
+        let authz_rows = db::authz::list_by_order(&state.db_ro, &id).await?;
 
         if let Some(registry) = &state.claim_encoder_registry {
             for authz in &authz_rows {
@@ -293,7 +293,7 @@ pub async fn finalize_order(
                 {
                     id_obj["value"].as_str().map(str::to_string)
                 } else {
-                    db::tkauth::get_tkvalue_for_authz(&state.db, &authz.id)
+                    db::tkauth::get_tkvalue_for_authz(&state.db_ro, &authz.id)
                         .await
                         .map_err(|e| {
                             AcmeError::Internal(format!("tkauth finalize: tkvalue lookup: {e}"))
@@ -407,7 +407,7 @@ pub async fn finalize_order(
     {
         let tkauth_ca = if !tkauth_authz_ids.is_empty() {
             let refs: Vec<&str> = tkauth_authz_ids.iter().map(String::as_str).collect();
-            db::tkauth::get_any_ca_flag_for_authzs(&state.db, &refs).await?
+            db::tkauth::get_any_ca_flag_for_authzs(&state.db_ro, &refs).await?
         } else {
             false
         };
@@ -429,7 +429,7 @@ pub async fn finalize_order(
     // identifiers and encoder-backed identifiers such as dns) and cap not_after.
     let not_after = if !tkauth_authz_ids.is_empty() {
         let refs: Vec<&str> = tkauth_authz_ids.iter().map(String::as_str).collect();
-        match db::tkauth::get_min_exp_for_authzs(&state.db, &refs).await? {
+        match db::tkauth::get_min_exp_for_authzs(&state.db_ro, &refs).await? {
             Some(min_exp) => Some(order.not_after.map_or(min_exp, |t| t.min(min_exp))),
             None => order.not_after,
         }
@@ -437,17 +437,20 @@ pub async fn finalize_order(
         order.not_after
     };
 
-    // Issue the certificate using the resolved parameters.  akamu's own CA
-    // signs in all cases; the profile only governs extension content and validity.
-    let issued = ca::issue::issue_with_params(
-        order_ca,
-        &validated_csr,
-        &cert_params,
-        order.not_before,
-        not_after,
-        &extra_other_names,
-        &extra_dns_names,
-    )?;
+    // Issue the certificate on the blocking pool so the CPU-bound crypto
+    // (signing + lint verification) does not stall async worker threads.
+    let ca_arc = Arc::clone(order_ca);
+    let csr_owned = validated_csr.clone();
+    let params_owned = cert_params.clone();
+    let nb = order.not_before;
+    let na = not_after;
+    let on = extra_other_names.clone();
+    let dn = extra_dns_names.clone();
+    let issued = tokio::task::spawn_blocking(move || {
+        ca::issue::issue_with_params(&ca_arc, &csr_owned, &params_owned, nb, na, &on, &dn)
+    })
+    .await
+    .map_err(|e| AcmeError::Internal(format!("issue task: {e}")))??;
 
     // For MTC issuance profiles, build a StandaloneCertificate from the issued
     // TBSCertificate + an MTC Merkle inclusion proof.  This is done synchronously
@@ -515,7 +518,7 @@ pub async fn finalize_order(
     // If this order carries a `replaces` cert_id, resolve the predecessor UUID
     // before entering the DB transaction (we need an async call for this).
     let pred_cert_uuid: Option<String> = if let Some(ref cid) = order.replaces {
-        db::certs::get_by_cert_id(&state.db, cid)
+        db::certs::get_by_cert_id(&state.db_ro, cid)
             .await?
             .map(|c| c.id)
     } else {
@@ -527,11 +530,9 @@ pub async fn finalize_order(
     // inconsistent.
     let cert_id = issued.id.clone();
 
-    // The transaction returns (authz_ids, pred_already_replaced) so we can signal
-    // a concurrent alreadyReplaced conflict (RFC 9773 §5) without a separate
-    // DB round-trip.  The bool is true when the predecessor's replaced_by was
-    // already set by another concurrent finalization.
-    let (authz_ids, pred_already_replaced) = {
+    // The bool is true when the predecessor's replaced_by was already set by
+    // another concurrent finalization (RFC 9773 §5).
+    let pred_already_replaced = {
         let mut tx = db::begin_write(&state.db, state.db_kind).await?;
 
         db::certs::insert(
@@ -581,12 +582,10 @@ pub async fn finalize_order(
             db::orders::set_star_csr(&mut *tx, &id, csr_der.clone()).await?;
         }
 
-        // Fetch authz IDs within the same transaction to avoid a separate round-trip.
-        let authz_ids = db::orders::list_authz_ids(&mut *tx, &id).await?;
-
         tx.commit().await.map_err(AcmeError::from)?;
-        (authz_ids, pred_already_replaced)
+        pred_already_replaced
     };
+    let authz_ids = db::orders::list_authz_ids(&state.db_ro, &id).await?;
 
     let principal = format!("acme:{}", ctx.jwk_thumbprint.as_deref().unwrap_or(""));
     state

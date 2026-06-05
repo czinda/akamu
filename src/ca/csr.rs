@@ -22,7 +22,7 @@ pub struct SanEntry {
 }
 
 /// A validated CSR ready for certificate issuance.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ValidatedCsr {
     /// SPKI DER from the CSR (for inclusion in the issued certificate).
     pub spki_der: Vec<u8>,
