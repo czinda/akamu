@@ -3,6 +3,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufWriter, Write};
 use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 // ── Query types ──────────────────────────────────────────────────────────────
@@ -45,6 +46,16 @@ const DAEMON_STORE_CAP: usize = 100_000;
 /// reads on a file that has not been rotated.
 const MAX_QUERY_LINES: usize = 500_000;
 
+enum FileCmd {
+    Write {
+        occurred_at: String,
+        fields: Vec<(String, String)>,
+    },
+    Flush {
+        ack: mpsc::Sender<()>,
+    },
+}
+
 /// Writer for the systemd journal native datagram protocol, with optional
 /// file-based JSONL backend for non-journald environments.
 ///
@@ -57,7 +68,7 @@ pub struct JournalWriter {
     socket: Option<UnixDatagram>,
     namespace: String,
     store: Option<Arc<Mutex<VecDeque<JournalEntry>>>>,
-    log_file: Option<Mutex<BufWriter<File>>>,
+    file_tx: Option<mpsc::Sender<FileCmd>>,
     log_file_path: Option<PathBuf>,
     /// Held to keep the temporary directory alive for the daemon socket.
     /// Requires `tempfile` as a non-dev dependency because `TempDir` is a
@@ -91,7 +102,7 @@ impl JournalWriter {
             socket,
             namespace: namespace.to_owned(),
             store: None,
-            log_file: None,
+            file_tx: None,
             log_file_path: None,
             _tmpdir: None,
         }
@@ -99,21 +110,29 @@ impl JournalWriter {
 
     /// Create a writer that appends audit events as JSON Lines to a file.
     ///
-    /// Each event is a single-line JSON object flushed immediately after write
-    /// (FAU_STG.1 — durable on each event).  The file is opened in append mode
-    /// and created if it does not exist.
+    /// A background thread receives events via an unbounded channel and writes
+    /// them sequentially, flushing after each event (FAU_STG.1 — durable on
+    /// each event).  `send()` returns as soon as the event is enqueued, so
+    /// audit I/O does not block the request path.
     ///
+    /// The file is opened in append mode and created if it does not exist.
     /// The file grows without bound; external log rotation (e.g. `logrotate(8)`
     /// with `copytruncate`) is expected for long-running deployments.  Queries
     /// scan at most 500 000 lines from the file to bound read cost.
     pub fn with_file(path: &str) -> io::Result<Self> {
         let file = OpenOptions::new().create(true).append(true).open(path)?;
         tracing::info!(path, "opened audit log file (JSONL append mode)");
+
+        let (tx, rx) = mpsc::channel::<FileCmd>();
+        std::thread::spawn(move || {
+            file_writer_loop(rx, file);
+        });
+
         Ok(Self {
             socket: None,
             namespace: String::new(),
             store: None,
-            log_file: Some(Mutex::new(BufWriter::new(file))),
+            file_tx: Some(tx),
             log_file_path: Some(PathBuf::from(path)),
             _tmpdir: None,
         })
@@ -169,7 +188,7 @@ impl JournalWriter {
             socket: Some(client),
             namespace: String::new(),
             store: Some(store),
-            log_file: None,
+            file_tx: None,
             log_file_path: None,
             _tmpdir: Some(tmpdir),
         }
@@ -182,7 +201,7 @@ impl JournalWriter {
             socket: None,
             namespace: String::new(),
             store: None,
-            log_file: None,
+            file_tx: None,
             log_file_path: None,
             _tmpdir: None,
         }
@@ -204,14 +223,14 @@ impl JournalWriter {
             socket: Some(client),
             namespace: String::new(),
             store: None,
-            log_file: None,
+            file_tx: None,
             log_file_path: None,
             _tmpdir: Some(tmpdir),
         }
     }
 
     pub fn is_connected(&self) -> bool {
-        self.socket.is_some() || self.log_file.is_some()
+        self.socket.is_some() || self.file_tx.is_some()
     }
 
     /// Returns `true` when entries are queryable in-process (daemon store or
@@ -253,39 +272,21 @@ impl JournalWriter {
             return Ok(());
         }
 
-        if let Some(ref log_file) = self.log_file {
-            return self.write_jsonl(log_file, fields);
+        if let Some(ref tx) = self.file_tx {
+            let occurred_at = crate::util::rfc3339_now();
+            let owned: Vec<(String, String)> = fields
+                .iter()
+                .map(|&(k, v)| (k.to_owned(), v.to_owned()))
+                .collect();
+            tx.send(FileCmd::Write {
+                occurred_at,
+                fields: owned,
+            })
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "audit writer thread gone"))?;
+            return Ok(());
         }
 
         self.fallback(fields);
-        Ok(())
-    }
-
-    fn write_jsonl(
-        &self,
-        log_file: &Mutex<BufWriter<File>>,
-        fields: &[(&str, &str)],
-    ) -> io::Result<()> {
-        let occurred_at = crate::util::rfc3339_now();
-        let mut obj = serde_json::Map::new();
-        obj.insert(
-            "occurred_at".to_owned(),
-            serde_json::Value::String(occurred_at),
-        );
-        for &(key, value) in fields {
-            obj.insert(key.to_owned(), serde_json::Value::String(value.to_owned()));
-        }
-
-        let line =
-            serde_json::to_string(&serde_json::Value::Object(obj)).map_err(io::Error::other)?;
-
-        let mut writer = log_file.lock().unwrap_or_else(|e| {
-            tracing::error!("audit log file mutex poisoned");
-            e.into_inner()
-        });
-        writer.write_all(line.as_bytes())?;
-        writer.write_all(b"\n")?;
-        writer.flush()?;
         Ok(())
     }
 
@@ -321,13 +322,15 @@ impl JournalWriter {
     }
 
     fn query_file(&self, path: &Path, q: &AuditQuery) -> Result<Vec<AuditEventRow>, io::Error> {
-        // Flush the write buffer before reading to avoid partial-line races.
-        if let Some(ref log_file) = self.log_file {
-            let mut writer = log_file.lock().unwrap_or_else(|e| {
-                tracing::error!("audit log file mutex poisoned");
-                e.into_inner()
-            });
-            writer.flush()?;
+        // Drain the background writer before reading to avoid partial-line races.
+        if let Some(ref tx) = self.file_tx {
+            let (ack_tx, ack_rx) = mpsc::channel();
+            tx.send(FileCmd::Flush { ack: ack_tx }).map_err(|_| {
+                io::Error::new(io::ErrorKind::BrokenPipe, "audit writer thread gone")
+            })?;
+            ack_rx.recv().map_err(|_| {
+                io::Error::new(io::ErrorKind::BrokenPipe, "audit writer thread gone")
+            })?;
         }
 
         let file = File::open(path)?;
@@ -415,6 +418,37 @@ impl JournalWriter {
             "audit event (journal fallback)",
         );
     }
+}
+
+fn file_writer_loop(rx: mpsc::Receiver<FileCmd>, file: File) {
+    let mut writer = BufWriter::new(file);
+    while let Ok(cmd) = rx.recv() {
+        match cmd {
+            FileCmd::Write {
+                occurred_at,
+                fields,
+            } => {
+                let mut obj = serde_json::Map::new();
+                obj.insert(
+                    "occurred_at".to_owned(),
+                    serde_json::Value::String(occurred_at),
+                );
+                for (key, value) in fields {
+                    obj.insert(key, serde_json::Value::String(value));
+                }
+                if let Ok(line) = serde_json::to_string(&serde_json::Value::Object(obj)) {
+                    let _ = writer.write_all(line.as_bytes());
+                    let _ = writer.write_all(b"\n");
+                    let _ = writer.flush();
+                }
+            }
+            FileCmd::Flush { ack } => {
+                let _ = writer.flush();
+                let _ = ack.send(());
+            }
+        }
+    }
+    let _ = writer.flush();
 }
 
 fn filter_entry(occurred_at: &str, fields: &HashMap<String, String>, q: &AuditQuery) -> bool {
