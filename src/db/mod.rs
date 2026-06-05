@@ -371,6 +371,8 @@ pub async fn open(url: &str, max_connections: u32, require_tls: bool) -> Result<
             ("PRAGMA foreign_keys=ON", true),
             ("PRAGMA mmap_size=134217728", false),
             ("PRAGMA cache_size=-65536", false),
+            ("PRAGMA temp_store=MEMORY", false),
+            ("PRAGMA wal_autocheckpoint=10000", false),
         ] {
             if let Err(e) = sqlx::query(pragma).execute(&pool).await {
                 if *critical {
