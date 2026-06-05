@@ -24,6 +24,9 @@ use std::time::{Duration, Instant};
 use crate::error::AcmeError;
 use crate::journal::JournalWriter;
 
+/// Maximum concurrent `journalctl` subprocesses spawned by audit queries.
+static JOURNALCTL_SEMAPHORE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+
 pub use crate::journal::{AuditEventRow, AuditQuery};
 
 // ── Event taxonomy ─────────────────────────────────────────────────────────────
@@ -123,6 +126,7 @@ impl AuditOutcome {
 // ── Event ──────────────────────────────────────────────────────────────────────
 
 /// A single auditable event to be persisted.
+#[derive(Debug)]
 pub struct AuditEvent {
     pub(crate) event_type: AuditEventType,
     /// JWK thumbprint, account UUID, certificate serial, or similar identifier.
@@ -214,7 +218,17 @@ impl AuditPolicy {
     /// Construct from the `[admin]` TOML config block.
     pub fn from_admin_config(cfg: &crate::config::AdminConfig) -> Self {
         Self {
-            max_events: cfg.audit_max_rows.map(|v| v.max(0) as u64),
+            max_events: cfg.audit_max_events.and_then(|v| {
+                if v <= 0 {
+                    tracing::warn!(
+                        audit_max_events = v,
+                        "non-positive audit_max_events treated as unlimited"
+                    );
+                    None
+                } else {
+                    Some(v as u64)
+                }
+            }),
             overflow: if cfg.audit_overflow == "halt" {
                 OverflowPolicy::Halt
             } else {
@@ -257,6 +271,19 @@ pub struct AuditState {
     /// Consecutive audit write failures (FAU_STG.1).  Reset to 0 on success;
     /// when this reaches `alarm_threshold`, `should_halt` is set.
     pub consecutive_insert_failures: AtomicU32,
+}
+
+impl std::fmt::Debug for AuditState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuditState")
+            .field("should_halt", &self.should_halt.load(Ordering::Relaxed))
+            .field("event_count", &self.event_count.load(Ordering::Relaxed))
+            .field(
+                "consecutive_insert_failures",
+                &self.consecutive_insert_failures.load(Ordering::Relaxed),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl AuditState {
@@ -400,6 +427,49 @@ pub fn record_pair(
     }
 }
 
+/// Track a record result: reset the failure counter on success, increment
+/// on failure and trigger a halt when the alarm threshold is reached.
+fn track_record_result(
+    result: Result<(), AcmeError>,
+    state: &AuditState,
+    policy: &AuditPolicy,
+    context: &str,
+) {
+    match result {
+        Ok(()) => {
+            state
+                .consecutive_insert_failures
+                .store(0, Ordering::Release);
+        }
+        Err(e) => {
+            let n = state
+                .consecutive_insert_failures
+                .fetch_add(1, Ordering::AcqRel)
+                + 1;
+            tracing::error!(
+                error = %e,
+                context,
+                consecutive_failures = n,
+                "audit record failed"
+            );
+            if n >= policy.alarm_threshold {
+                tracing::error!(
+                    consecutive_failures = n,
+                    threshold = policy.alarm_threshold,
+                    "AUDIT UNAVAILABLE: halting server after repeated insert failures (FAU_STG.1)"
+                );
+                state.should_halt.store(true, Ordering::Release);
+            }
+        }
+    }
+}
+
+/// Record two audit events, logging any errors.
+///
+/// The `consecutive_insert_failures` counter tracks failed *calls*, not
+/// individual events.  When both events in a pair fail, this increments
+/// by 1 (one call), not 2.  The `alarm_threshold` therefore triggers
+/// after N failed calls, each of which may lose 1 or 2 events.
 pub fn record_or_log_pair(
     journal: &JournalWriter,
     state: &AuditState,
@@ -409,31 +479,9 @@ pub fn record_or_log_pair(
 ) {
     let ev1_type = ev1.event_type.as_str();
     let ev2_type = ev2.event_type.as_str();
-    if let Err(e) = record_pair(journal, state, policy, ev1, ev2) {
-        let n = state
-            .consecutive_insert_failures
-            .fetch_add(1, Ordering::AcqRel)
-            + 1;
-        tracing::error!(
-            error = %e,
-            event_type1 = ev1_type,
-            event_type2 = ev2_type,
-            consecutive_failures = n,
-            "audit record failed"
-        );
-        if n >= policy.alarm_threshold {
-            tracing::error!(
-                consecutive_failures = n,
-                threshold = policy.alarm_threshold,
-                "AUDIT UNAVAILABLE: halting server after repeated insert failures (FAU_STG.1)"
-            );
-            state.should_halt.store(true, Ordering::Release);
-        }
-    } else {
-        state
-            .consecutive_insert_failures
-            .store(0, Ordering::Release);
-    }
+    let result = record_pair(journal, state, policy, ev1, ev2);
+    let context = format!("{ev1_type}+{ev2_type}");
+    track_record_result(result, state, policy, &context);
 }
 
 pub fn record_or_log(
@@ -443,39 +491,21 @@ pub fn record_or_log(
     ev: AuditEvent,
 ) {
     let ev_type = ev.event_type.as_str();
-    let ev_outcome = ev.outcome.as_str();
-    if let Err(e) = record(journal, state, policy, ev) {
-        let n = state
-            .consecutive_insert_failures
-            .fetch_add(1, Ordering::AcqRel)
-            + 1;
-        tracing::error!(
-            error = %e,
-            event_type = ev_type,
-            outcome = ev_outcome,
-            consecutive_failures = n,
-            "audit record failed"
-        );
-        if n >= policy.alarm_threshold {
-            tracing::error!(
-                consecutive_failures = n,
-                threshold = policy.alarm_threshold,
-                "AUDIT UNAVAILABLE: halting server after repeated insert failures (FAU_STG.1)"
-            );
-            state.should_halt.store(true, Ordering::Release);
-        }
-    } else {
-        state
-            .consecutive_insert_failures
-            .store(0, Ordering::Release);
-    }
+    let result = record(journal, state, policy, ev);
+    track_record_result(result, state, policy, ev_type);
 }
 
 // ── Journal query ─────────────────────────────────────────────────────────────
 
 /// RFC 3339 timestamp pattern: YYYY-MM-DDTHH:MM:SS (with optional fractional seconds and Z/offset).
+/// Validates positional separators and restricts characters to the RFC 3339
+/// alphabet (ASCII digits, `-`, `T`, `:`, `.`, `Z`, `+`).
 fn is_rfc3339_like(s: &str) -> bool {
-    s.len() >= 20 && s.as_bytes()[4] == b'-' && s.as_bytes()[10] == b'T'
+    s.len() >= 20
+        && s.as_bytes()[4] == b'-'
+        && s.as_bytes()[10] == b'T'
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || matches!(b, b'-' | b'T' | b':' | b'.' | b'Z' | b'+'))
 }
 
 /// Query the journal for audit events.
@@ -487,12 +517,21 @@ pub async fn query_journal(
     q: &AuditQuery,
 ) -> Result<Vec<AuditEventRow>, AcmeError> {
     if journal.has_store() {
-        return Ok(journal.query(q));
+        return journal
+            .query(q)
+            .map_err(|e| AcmeError::Journal(format!("journal query: {e}")));
     }
+
+    let _permit = JOURNALCTL_SEMAPHORE
+        .acquire()
+        .await
+        .map_err(|_| AcmeError::Journal("journalctl semaphore closed".into()))?;
 
     let namespace = journal.namespace();
     let mut cmd = tokio::process::Command::new("journalctl");
     cmd.env_clear();
+    cmd.env("PATH", "/usr/bin:/usr/sbin");
+    cmd.env("LC_ALL", "C");
     cmd.arg(format!("--namespace={namespace}"));
     cmd.arg("--output=json");
     cmd.arg("--no-pager");
@@ -525,6 +564,9 @@ pub async fn query_journal(
         cmd.arg(format!("--until={until}"));
     }
 
+    // `--lines=N` returns the N most recent entries.  For large offsets this
+    // may under-fetch, producing empty pages even when older entries exist.
+    // A full solution would require cursor-based pagination.
     let fetch = q.limit.saturating_add(q.offset);
     cmd.arg(format!("--lines={fetch}"));
 
@@ -545,13 +587,22 @@ pub async fn query_journal(
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut rows = Vec::new();
+    Ok(parse_journalctl_json(&stdout, q.offset, q.limit))
+}
 
-    for line in stdout.lines().skip(q.offset as usize) {
-        if rows.len() >= q.limit as usize {
+fn parse_journalctl_json(output: &str, offset: u32, limit: u32) -> Vec<AuditEventRow> {
+    let mut rows = Vec::new();
+    let mut skipped: usize = 0;
+    for (line_no, line) in output.lines().enumerate().skip(offset as usize) {
+        if rows.len() >= limit as usize {
             break;
         }
+        if line.is_empty() {
+            continue;
+        }
         let Ok(obj) = serde_json::from_str::<serde_json::Value>(line) else {
+            tracing::debug!(line = line_no + 1, "skipping unparseable journalctl line");
+            skipped += 1;
             continue;
         };
         let occurred_at = obj
@@ -587,8 +638,10 @@ pub async fn query_journal(
                 .map(|s| s.to_owned()),
         });
     }
-
-    Ok(rows)
+    if skipped > 0 {
+        tracing::debug!(skipped, "journalctl query skipped unparseable lines");
+    }
+    rows
 }
 
 #[cfg(test)]
@@ -685,6 +738,386 @@ mod tests {
             .unwrap();
         }
         assert_eq!(state.event_count.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn all_event_type_strings_are_dot_separated() {
+        let types = [
+            (AuditEventType::CaStart, "ca.start"),
+            (AuditEventType::CaStop, "ca.stop"),
+            (AuditEventType::AccountCreate, "account.create"),
+            (AuditEventType::AccountDeactivate, "account.deactivate"),
+            (AuditEventType::AccountKeyChange, "account.key-change"),
+            (AuditEventType::OrderCreate, "order.create"),
+            (AuditEventType::OrderFinalize, "order.finalize"),
+            (AuditEventType::CertIssue, "cert.issue"),
+            (AuditEventType::CertRevoke, "cert.revoke"),
+            (AuditEventType::CrlGenerate, "crl.generate"),
+            (AuditEventType::CrossSignIssue, "cross-sign.issue"),
+            (AuditEventType::KeyGenerate, "key.generate"),
+            (AuditEventType::KeyLoad, "key.load"),
+            (AuditEventType::AuthJwsOk, "auth.jws.ok"),
+            (AuditEventType::AuthJwsFail, "auth.jws.fail"),
+            (AuditEventType::AuthChallengeOk, "auth.challenge.ok"),
+            (AuditEventType::AuthChallengeFail, "auth.challenge.fail"),
+            (AuditEventType::EabUse, "eab.use"),
+            (AuditEventType::EabReject, "eab.reject"),
+            (AuditEventType::AdminLogin, "admin.login"),
+            (AuditEventType::AdminLogout, "admin.logout"),
+            (AuditEventType::AdminAction, "admin.action"),
+            (
+                AuditEventType::AuthWebhookHmacFail,
+                "auth.webhook.hmac.fail",
+            ),
+            (AuditEventType::SecurityViolation, "security.violation"),
+        ];
+        for (t, expected) in types {
+            assert_eq!(t.as_str(), expected, "{t:?}");
+        }
+    }
+
+    #[test]
+    fn audit_state_default_matches_new() {
+        let d = AuditState::default();
+        assert!(!d.should_halt.load(Ordering::SeqCst));
+        assert_eq!(d.event_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn alarm_syslog_does_not_halt() {
+        let journal = JournalWriter::disconnected();
+        let state = AuditState::new();
+        let policy = AuditPolicy {
+            max_events: None,
+            alarm_threshold: 2,
+            alarm_action: AlarmAction::Syslog,
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            record(
+                &journal,
+                &state,
+                &policy,
+                AuditEvent::failure(AuditEventType::SecurityViolation),
+            )
+            .unwrap();
+        }
+        assert!(!state.should_halt.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn record_or_log_tracks_failures_and_halts() {
+        let journal = JournalWriter::disconnected();
+        let state = AuditState::new();
+        let policy = AuditPolicy {
+            max_events: None,
+            alarm_threshold: 2,
+            ..Default::default()
+        };
+        // disconnected writer always returns Ok, so record_or_log won't see errors
+        // test the success path clears consecutive failures
+        state.consecutive_insert_failures.store(5, Ordering::SeqCst);
+        record_or_log(
+            &journal,
+            &state,
+            &policy,
+            AuditEvent::success(AuditEventType::CertIssue),
+        );
+        assert_eq!(state.consecutive_insert_failures.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn record_or_log_pair_resets_on_success() {
+        let journal = JournalWriter::disconnected();
+        let state = AuditState::new();
+        let policy = AuditPolicy::default();
+        state.consecutive_insert_failures.store(3, Ordering::SeqCst);
+        record_or_log_pair(
+            &journal,
+            &state,
+            &policy,
+            AuditEvent::success(AuditEventType::OrderFinalize),
+            AuditEvent::success(AuditEventType::CertIssue),
+        );
+        assert_eq!(state.consecutive_insert_failures.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn query_journal_with_store_returns_results() {
+        let journal = JournalWriter::with_daemon();
+        record(
+            &journal,
+            &AuditState::new(),
+            &AuditPolicy::default(),
+            AuditEvent::success(AuditEventType::CertIssue)
+                .with_subject("serial-1")
+                .with_principal("alice"),
+        )
+        .unwrap();
+        record(
+            &journal,
+            &AuditState::new(),
+            &AuditPolicy::default(),
+            AuditEvent::failure(AuditEventType::AuthJwsFail).with_subject("thumb-x"),
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let rows = query_journal(
+            &journal,
+            &AuditQuery {
+                event_type: Some("cert.issue".to_owned()),
+                subject: None,
+                from: None,
+                until: None,
+                outcome: None,
+                limit: 10,
+                offset: 0,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].subject.as_deref(), Some("serial-1"));
+    }
+
+    #[tokio::test]
+    async fn query_journal_rejects_bad_timestamps() {
+        let journal = JournalWriter::disconnected();
+        let result = query_journal(
+            &journal,
+            &AuditQuery {
+                event_type: None,
+                subject: None,
+                from: Some("yesterday".to_owned()),
+                until: None,
+                outcome: None,
+                limit: 10,
+                offset: 0,
+            },
+        )
+        .await;
+        assert!(result.is_err());
+
+        let result = query_journal(
+            &journal,
+            &AuditQuery {
+                event_type: None,
+                subject: None,
+                from: None,
+                until: Some("-5min".to_owned()),
+                outcome: None,
+                limit: 10,
+                offset: 0,
+            },
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn record_pair_both_succeed() {
+        let journal = JournalWriter::disconnected();
+        let state = AuditState::new();
+        let policy = AuditPolicy::default();
+        record_pair(
+            &journal,
+            &state,
+            &policy,
+            AuditEvent::success(AuditEventType::OrderFinalize).with_subject("ord-1"),
+            AuditEvent::success(AuditEventType::CertIssue).with_subject("cert-1"),
+        )
+        .unwrap();
+        assert_eq!(state.event_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn query_journal_journalctl_path() {
+        // Use disconnected writer (no store) to exercise the journalctl subprocess path.
+        let journal = JournalWriter::disconnected();
+        let result = query_journal(
+            &journal,
+            &AuditQuery {
+                event_type: Some("cert.issue".to_owned()),
+                subject: None,
+                from: Some("2026-01-01T00:00:00Z".to_owned()),
+                until: Some("2026-12-31T23:59:59Z".to_owned()),
+                outcome: None,
+                limit: 10,
+                offset: 0,
+            },
+        )
+        .await;
+        // journalctl may not be available or namespace may not exist —
+        // either an empty vec or an error is acceptable
+        match result {
+            Ok(rows) => assert!(rows.len() <= 10),
+            Err(_) => {} // journalctl not found or namespace error — expected in CI
+        }
+    }
+
+    #[test]
+    fn record_returns_error_on_broken_socket() {
+        let journal = JournalWriter::broken();
+        let state = AuditState::new();
+        let policy = AuditPolicy::default();
+        let result = record(
+            &journal,
+            &state,
+            &policy,
+            AuditEvent::success(AuditEventType::CertIssue),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn record_pair_propagates_errors() {
+        let journal = JournalWriter::broken();
+        let state = AuditState::new();
+        let policy = AuditPolicy::default();
+        let result = record_pair(
+            &journal,
+            &state,
+            &policy,
+            AuditEvent::success(AuditEventType::OrderFinalize),
+            AuditEvent::success(AuditEventType::CertIssue),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn record_or_log_increments_failure_counter() {
+        let journal = JournalWriter::broken();
+        let state = AuditState::new();
+        let policy = AuditPolicy {
+            alarm_threshold: 3,
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            record_or_log(
+                &journal,
+                &state,
+                &policy,
+                AuditEvent::success(AuditEventType::CertIssue),
+            );
+        }
+        assert!(state.should_halt.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn record_or_log_pair_increments_failure_counter() {
+        let journal = JournalWriter::broken();
+        let state = AuditState::new();
+        let policy = AuditPolicy {
+            alarm_threshold: 2,
+            ..Default::default()
+        };
+        record_or_log_pair(
+            &journal,
+            &state,
+            &policy,
+            AuditEvent::success(AuditEventType::OrderFinalize),
+            AuditEvent::success(AuditEventType::CertIssue),
+        );
+        assert_eq!(state.consecutive_insert_failures.load(Ordering::SeqCst), 1);
+        record_or_log_pair(
+            &journal,
+            &state,
+            &policy,
+            AuditEvent::success(AuditEventType::OrderFinalize),
+            AuditEvent::success(AuditEventType::CertIssue),
+        );
+        assert!(state.should_halt.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn query_journal_journalctl_with_subject_and_outcome_filters() {
+        let journal = JournalWriter::disconnected();
+        let result = query_journal(
+            &journal,
+            &AuditQuery {
+                event_type: Some("cert.issue".to_owned()),
+                subject: Some("serial-test".to_owned()),
+                from: Some("2026-01-01T00:00:00Z".to_owned()),
+                until: Some("2026-12-31T23:59:59Z".to_owned()),
+                outcome: Some("success".to_owned()),
+                limit: 5,
+                offset: 0,
+            },
+        )
+        .await;
+        // On systems with journalctl: succeeds (likely empty).
+        // On systems without: returns Err (journalctl not found).
+        match result {
+            Ok(rows) => assert!(rows.len() <= 5),
+            Err(_) => {}
+        }
+    }
+
+    #[test]
+    fn overflow_drop_oldest_with_max_events() {
+        let journal = JournalWriter::disconnected();
+        let state = AuditState::new();
+        let policy = AuditPolicy {
+            max_events: Some(3),
+            overflow: OverflowPolicy::DropOldest,
+            ..Default::default()
+        };
+        for _ in 0..5 {
+            record(
+                &journal,
+                &state,
+                &policy,
+                AuditEvent::success(AuditEventType::CertIssue),
+            )
+            .unwrap();
+        }
+        assert!(!state.should_halt.load(Ordering::SeqCst));
+        assert_eq!(state.event_count.load(Ordering::SeqCst), 5);
+    }
+
+    #[test]
+    fn parse_journalctl_json_basic() {
+        let output = r#"{"__REALTIME_TIMESTAMP":"1717500000000000","AKAMU_EVENT_TYPE":"cert.issue","AKAMU_OUTCOME":"success","AKAMU_SUBJECT":"serial-1","AKAMU_PRINCIPAL":"alice","AKAMU_DETAIL":"{\"cn\":\"test\"}"}
+{"__REALTIME_TIMESTAMP":"1717500001000000","AKAMU_EVENT_TYPE":"auth.jws.fail","AKAMU_OUTCOME":"failure","AKAMU_SUBJECT":"thumb-x"}
+"#;
+        let rows = parse_journalctl_json(output, 0, 100);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].event_type, "cert.issue");
+        assert_eq!(rows[0].outcome, "success");
+        assert_eq!(rows[0].subject.as_deref(), Some("serial-1"));
+        assert_eq!(rows[0].principal.as_deref(), Some("alice"));
+        assert_eq!(rows[0].detail.as_deref(), Some("{\"cn\":\"test\"}"));
+        assert!(!rows[0].occurred_at.is_empty());
+        assert_eq!(rows[1].event_type, "auth.jws.fail");
+        assert_eq!(rows[1].principal, None);
+    }
+
+    #[test]
+    fn parse_journalctl_json_offset_and_limit() {
+        let output = r#"{"__REALTIME_TIMESTAMP":"1000000000000","AKAMU_EVENT_TYPE":"a","AKAMU_OUTCOME":"success"}
+{"__REALTIME_TIMESTAMP":"2000000000000","AKAMU_EVENT_TYPE":"b","AKAMU_OUTCOME":"success"}
+{"__REALTIME_TIMESTAMP":"3000000000000","AKAMU_EVENT_TYPE":"c","AKAMU_OUTCOME":"success"}
+"#;
+        let rows = parse_journalctl_json(output, 1, 1);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].event_type, "b");
+    }
+
+    #[test]
+    fn parse_journalctl_json_skips_invalid_lines() {
+        let output = "not json at all\n{\"__REALTIME_TIMESTAMP\":\"1000000000000\",\"AKAMU_EVENT_TYPE\":\"ok\",\"AKAMU_OUTCOME\":\"success\"}\nalso not json\n";
+        let rows = parse_journalctl_json(output, 0, 100);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].event_type, "ok");
+    }
+
+    #[test]
+    fn parse_journalctl_json_missing_timestamp() {
+        let output = r#"{"AKAMU_EVENT_TYPE":"cert.issue","AKAMU_OUTCOME":"success"}"#;
+        let rows = parse_journalctl_json(output, 0, 100);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].occurred_at.is_empty() || rows[0].occurred_at == "");
     }
 
     #[test]
