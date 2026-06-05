@@ -453,7 +453,7 @@ Each table has its own submodule in `src/db/`:
 | `db::eab` | `insert`, `get_by_kid`, `mark_used`, `list`, `delete` |
 | `db::nonces` | `insert`, `consume`, `sweep_expired` |
 | `db::operators` | `insert`, `insert_if_absent`, `is_empty`, `get_by_id`, `get_by_fingerprint`, `get_by_principal`, `list`, `update`, `set_active`, `update_last_seen`, `increment_failed`, `reset_failed`, `unlock`, `is_locked` |
-| ~~`db::audit`~~ | Removed — audit events are now written to the systemd journal namespace via `src/journal.rs` and `src/audit.rs` |
+| ~~`db::audit`~~ | Removed — audit events are now written to the configured audit backend (systemd journal namespace, JSONL file, or in-process store) via `src/journal.rs` and `src/audit.rs` |
 
 ### `CertSearchParams`
 
@@ -554,7 +554,7 @@ Multi-table writes use explicit transactions to ensure atomicity:
 
 ## Schema diagram
 
-The entity-relationship diagram below shows the ACME core tables and their foreign-key relationships. MTC tables (`mtc_checkpoints`, `mtc_cosignatures`, `mtc_landmarks`) and the standalone `nonces` table are omitted for readability. The `audit_events` table has been dropped; audit events are now written to the systemd journal namespace.
+The entity-relationship diagram below shows the ACME core tables and their foreign-key relationships. MTC tables (`mtc_checkpoints`, `mtc_cosignatures`, `mtc_landmarks`) and the standalone `nonces` table are omitted for readability. The `audit_events` table has been dropped; audit events are now written to the configured audit backend (systemd journal namespace, JSONL file, or in-process store).
 
 ```mermaid
 erDiagram

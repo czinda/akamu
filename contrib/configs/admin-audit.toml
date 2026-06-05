@@ -42,9 +42,10 @@ lockout_duration_secs = 3600
 # ── Audit storage (FAU_STG.4) ─────────────────────────────────────────────────
 
 # Maximum audit events since startup before overflow policy triggers.
-# Audit events are written to the systemd journal namespace (journalctl
-# --namespace=akamu); journald manages its own disk retention separately.
-audit_max_rows = 5000000
+# Audit events are written to the configured audit backend (systemd journal
+# namespace, JSONL file, or in-process store); the backend manages its own
+# disk retention separately.  Backward-compatible alias: audit_max_rows.
+audit_max_events = 5000000
 
 # Halt the server rather than continuing when the event count is reached.
 audit_overflow = "halt"

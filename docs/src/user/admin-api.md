@@ -262,6 +262,13 @@ Results are ordered newest-first.
 }
 ```
 
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400 Bad Request` | The `from` or `until` parameter is not a valid RFC 3339 timestamp. The response body includes a `detail` field describing the error. |
+| `500 Internal Server Error` | The audit backend (journal namespace socket, JSONL file, or journalctl subprocess) is inaccessible. The response body includes `{"status": 500, "detail": "journal query error"}`. |
+
 ### `GET /admin/profiles`
 
 List all loaded certificate profiles with their parameters.
@@ -981,7 +988,7 @@ Delete a delegation object. Returns `409 Conflict` when one or more orders still
 
 ### Audit events
 
-Every write operation emits a structured audit event to the systemd journal namespace (`journalctl --namespace=akamu`):
+Every write operation emits a structured audit event to the configured audit backend (systemd journal namespace, JSONL file, or in-process store):
 
 | Operation | Event type |
 |-----------|------------|
@@ -1000,11 +1007,18 @@ reference including flags and examples.
 
 ## Audit trail
 
-Every admin operation is written to a dedicated systemd journal namespace.
-When running under systemd with `LogNamespace=akamu` (see
-`contrib/systemd/akamu.service`), events are stored in
-`/var/log/journal/<machine-id>.akamu/`.  In tests or development without
-systemd, an in-process store is used automatically.
+Every admin operation is written to a structured audit backend.  Three
+backends are available:
+
+1. **Systemd journal namespace** (default) — when running under systemd with
+   `LogNamespace=akamu` (see `contrib/systemd/akamu.service`), events are
+   stored in `/var/log/journal/<machine-id>.akamu/`.
+2. **JSONL file** — when `[server].audit_log_file` is set, events are written
+   as append-only JSON Lines to the specified file.  External `logrotate(8)`
+   with `copytruncate` is expected for rotation.  Each query scans at most
+   500,000 lines to prevent unbounded reads on unrotated files.
+3. **In-process store** — in tests or development without systemd and without
+   a configured file, an in-memory store is used automatically.
 
 Each journal entry carries structured fields:
 
@@ -1029,10 +1043,11 @@ for default settings: 500 MB disk, 1 year max age).
 
 ### Overflow policy (FAU_STG.4)
 
-When `audit_max_rows` is set, the server tracks an in-memory event count
-since startup.  The `audit_overflow` policy determines what happens when
-the count reaches the limit.  The default is `"drop_oldest"`, which is
-effectively a no-op (journald manages its own retention).  The alternative
+When `audit_max_events` is set (backward-compatible alias: `audit_max_rows`),
+the server tracks an in-memory event count since startup.  The
+`audit_overflow` policy determines what happens when the count reaches the
+limit.  The default is `"drop_oldest"`, which is effectively a no-op
+(journald or the file backend manages its own retention).  The alternative
 `"halt"` refuses all new requests until the server is restarted.
 
 ### Alarm response (FAU_ARP.1)

@@ -180,8 +180,9 @@ src/
   state.rs         Shared application state (AppState, CaState, MtcState, NonceBucket,
                    CrlCache, TlsState, CachedAccount, OperatorRole, AdminSession, …)
   error.rs         AcmeError enum with HTTP mapping and problem+json serialization
-  audit.rs         Structured audit trail (FAU family): AuditEvent, AuditState,
-                   AuditPolicy, record_or_log, overflow handling (FAU_STG.4)
+  audit.rs         Structured audit trail (FAU family): AuditEvent, AuditState
+                   (VecDeque-backed violation window), AuditPolicy, record_or_log,
+                   track_record_result, overflow handling (FAU_STG.4)
   dns.rs           Thin DNS query helper (hickory-resolver; optional DNS-over-TLS)
   eab_derivation.rs HKDF-SHA-256 (RFC 5869) credential derivation for /acme/eab
   extract.rs       Axum extractors: RemoteUser (proxy header or standalone GSSAPI)
@@ -356,7 +357,8 @@ Defined in `src/state.rs`. Every axum handler receives an `Arc<AppState>` via ax
 - `gss_cred: Option<Arc<GssServerCred>>` — server-side GSSAPI credential for standalone SPNEGO authentication. `None` when `[server.gssapi]` is absent.
 - `admin_gss_cred: Option<Arc<GssServerCred>>` — admin-specific GSSAPI credential from `[admin.gssapi]`; takes precedence over `gss_cred` for admin SPNEGO. `None` when `[admin.gssapi]` is absent.
 - `eab_master_secret: Option<Arc<Zeroizing<Vec<u8>>>>` — decoded master secret for HKDF-based EAB key derivation. `None` when `[server].eab_master_secret` is absent.
-- `audit: Arc<AuditState>` — shared in-memory audit state (overflow flag, FAU_ARP.1 alarm counter). Always present.
+- `journal: Arc<JournalWriter>` — audit event writer. Connects to the systemd journal namespace socket, writes to a JSONL file (`[server].audit_log_file`), or uses an in-process store (development/CI). Always present.
+- `audit: Arc<AuditState>` — shared in-memory audit state (overflow flag, FAU_ARP.1 alarm counter, `VecDeque`-backed violation timestamp window). Always present.
 - `audit_policy: Arc<AuditPolicy>` — audit policy extracted from `[admin]` at startup.
 - `admin_sessions: Option<Arc<tokio::sync::Mutex<HashMap<String, AdminSession>>>>` — opaque session token store for admin operator sessions. `None` when `[admin]` is absent.
 - `admin_auth_limiter: Option<AdminAuthLimiter>` — per-source-IP credential-attempt timestamps for admin auth rate-limiting. `None` when `[admin]` is absent.

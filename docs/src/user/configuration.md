@@ -690,6 +690,21 @@ url = "https://cosigner2.example.com/sign"
 
 The `[server]` section is optional. When omitted entirely, all fields take their default values.
 
+### `audit_log_file`
+
+**Optional. Default: absent (use systemd journal namespace).**
+
+Path to a JSONL (JSON Lines) audit log file. When set, audit events are written as append-only JSON Lines to this file instead of the systemd journal namespace socket. Each line is a JSON object with `occurred_at`, `AKAMU_EVENT_TYPE`, `AKAMU_OUTCOME`, and optional `AKAMU_SUBJECT`, `AKAMU_PRINCIPAL`, `AKAMU_DETAIL` fields.
+
+When absent (the default), the server writes to the `akamu` journal namespace (see `contrib/systemd/journald@akamu.conf`). Use this option on systems without systemd or when journal namespace sockets are not available.
+
+External `logrotate(8)` with `copytruncate` is expected for log rotation. Each audit query scans at most 500,000 lines to prevent unbounded reads on unrotated files.
+
+```toml
+[server]
+audit_log_file = "/var/log/akamu/audit.jsonl"
+```
+
 ### `terms_of_service_url`
 
 **Optional. Default: absent.**
@@ -2079,21 +2094,23 @@ cleared; an administrator may also clear it early with `operator unlock`.
 lockout_duration_secs = 1800
 ```
 
-### `audit_max_rows`
+### `audit_max_events`
 
-**Optional. Default: absent (unlimited).**
+**Optional. Default: absent (unlimited). Backward-compatible alias: `audit_max_rows`.**
 
-Maximum number of audit events since startup before the `audit_overflow` policy triggers. Audit events are written to a dedicated systemd journal namespace (`journalctl --namespace=akamu`), not to the database. The counter is in-memory and resets on restart. Journald manages its own disk retention independently (see `contrib/systemd/journald@akamu.conf`).
+Maximum number of audit events since startup before the `audit_overflow` policy triggers. Audit events are written to the configured audit backend (systemd journal namespace, JSONL file, or in-process store), not to the database. The counter is in-memory and resets on restart. The audit backend manages its own disk retention independently (see `contrib/systemd/journald@akamu.conf` for journald, or external `logrotate(8)` for the file backend).
+
+Negative values are treated as unlimited (with a startup warning). Zero is also treated as unlimited.
 
 ```toml
-audit_max_rows = 500000
+audit_max_events = 500000
 ```
 
 ### `audit_overflow`
 
 **Optional. Default: `"drop_oldest"`.**
 
-Policy applied when `audit_max_rows` is reached. Accepted values:
+Policy applied when `audit_max_events` is reached. Accepted values:
 
 | Value | Behaviour |
 |-------|-----------|

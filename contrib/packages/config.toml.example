@@ -282,7 +282,7 @@ validate_dnssec = true
 # auth_rate_limit = 20
 #
 # Audit log overflow policy (FAU_STG.4).
-# audit_max_rows = 1000000        # absent = unlimited
+# audit_max_events = 1000000      # absent = unlimited (alias: audit_max_rows)
 # audit_overflow = "drop_oldest"  # "drop_oldest" or "halt"
 #
 # Security alarm (FAU_ARP.1): fires when this many SecurityViolation events occur
