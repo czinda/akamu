@@ -214,7 +214,7 @@ pub fn issue_certificate(params: IssueCertParams<'_>) -> Result<IssuedCert, Acme
 
     // ── Generate a random 16-byte positive serial number ─────────────────────
     let mut serial_bytes = [0u8; 16];
-    getrandom::getrandom(&mut serial_bytes)
+    native_ossl::rand::Rand::fill(&mut serial_bytes)
         .map_err(|e| AcmeError::Internal(format!("random serial: {e}")))?;
     // Clear the sign bit (positive) and set the low bit so the first byte is
     // always in 0x01..0x7f — DER INTEGER must be minimal (no unnecessary leading
@@ -559,7 +559,7 @@ pub fn issue_with_params(
 
     // ── Random serial ────────────────────────────────────────────────────────
     let mut serial_bytes = [0u8; 16];
-    getrandom::getrandom(&mut serial_bytes)
+    native_ossl::rand::Rand::fill(&mut serial_bytes)
         .map_err(|e| AcmeError::Internal(format!("random serial: {e}")))?;
     serial_bytes[0] = (serial_bytes[0] & 0x7f) | 0x01;
     let serial = synta::Integer::from_bytes(&serial_bytes);
@@ -785,7 +785,7 @@ pub fn sign_server_cert(
 
     // Random 16-byte positive serial.
     let mut serial_bytes = [0u8; 16];
-    getrandom::getrandom(&mut serial_bytes)
+    native_ossl::rand::Rand::fill(&mut serial_bytes)
         .map_err(|e| AcmeError::Internal(format!("random serial: {e}")))?;
     serial_bytes[0] = (serial_bytes[0] & 0x7f) | 0x01; // positive, non-zero first byte
     let serial = synta::Integer::from_bytes(&serial_bytes);
@@ -883,7 +883,7 @@ pub fn sign_admin_cert(
         .to_vec();
 
     let mut serial_bytes = [0u8; 16];
-    getrandom::getrandom(&mut serial_bytes)
+    native_ossl::rand::Rand::fill(&mut serial_bytes)
         .map_err(|e| AcmeError::Internal(format!("random serial: {e}")))?;
     serial_bytes[0] = (serial_bytes[0] & 0x7f) | 0x01;
     let serial = synta::Integer::from_bytes(&serial_bytes);
@@ -951,15 +951,12 @@ pub fn sign_admin_cert(
 fn lint_issued_cert(cert_der: &[u8], ca_cert_der: &[u8], now: i64) -> Result<(), AcmeError> {
     use std::sync::Mutex;
 
-    static STORE_CACHE: Mutex<Option<(Vec<u8>, std::sync::Arc<OwnedStore>)>> =
-        Mutex::new(None);
+    static STORE_CACHE: Mutex<Option<(Vec<u8>, std::sync::Arc<OwnedStore>)>> = Mutex::new(None);
 
     let store = {
         let mut guard = STORE_CACHE.lock().unwrap();
         match &*guard {
-            Some((cached_der, store)) if cached_der == ca_cert_der => {
-                std::sync::Arc::clone(store)
-            }
+            Some((cached_der, store)) if cached_der == ca_cert_der => std::sync::Arc::clone(store),
             _ => {
                 let s = std::sync::Arc::new(
                     OwnedStore::try_new(std::iter::once(ca_cert_der))
@@ -1119,7 +1116,7 @@ pub fn issue_ca_cert(
 
     // Generate a random 16-byte positive serial.
     let mut serial_bytes = [0u8; 16];
-    getrandom::getrandom(&mut serial_bytes)
+    native_ossl::rand::Rand::fill(&mut serial_bytes)
         .map_err(|e| AcmeError::Internal(format!("random serial: {e}")))?;
     serial_bytes[0] = (serial_bytes[0] & 0x7f) | 0x01;
     let serial = synta::Integer::from_bytes(&serial_bytes);

@@ -631,7 +631,8 @@ pub(crate) fn new_nonce(state: &AppState) -> Result<String, AcmeError> {
 /// When `prefix` is empty (single-node mode) the returned nonce is plain base64url.
 fn gen_nonce(prefix: &str) -> Result<String, AcmeError> {
     let mut bytes = [0u8; 16];
-    getrandom::getrandom(&mut bytes).map_err(|e| AcmeError::Internal(format!("nonce rng: {e}")))?;
+    native_ossl::rand::Rand::fill(&mut bytes)
+        .map_err(|e| AcmeError::Internal(format!("nonce rng: {e}")))?;
     let random = URL_SAFE_NO_PAD.encode(bytes);
     if prefix.is_empty() {
         Ok(random)

@@ -320,7 +320,7 @@ async fn run() -> Result<(), String> {
                 .map_err(|e| format!("X509Name add CN: {e}"))?;
             let serial: i64 = {
                 let mut buf = [0u8; 7]; // 7 bytes → 56-bit positive i64
-                getrandom::getrandom(&mut buf)
+                native_ossl::rand::Rand::fill(&mut buf)
                     .map_err(|e| format!("getrandom for cert serial: {e}"))?;
                 buf.iter().fold(0i64, |acc, &b| (acc << 8) | i64::from(b))
             };

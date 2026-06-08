@@ -386,7 +386,7 @@ fn build_authz_json<'a>(
 /// Generate a random base64url-encoded token (32 bytes, no padding).
 fn gen_token() -> Result<String, AcmeError> {
     let mut bytes = [0u8; 32];
-    getrandom::getrandom(&mut bytes)
+    native_ossl::rand::Rand::fill(&mut bytes)
         .map_err(|e| AcmeError::Internal(format!("CSPRNG failure: {e}")))?;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;

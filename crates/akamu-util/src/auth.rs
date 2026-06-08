@@ -19,7 +19,7 @@ pub struct PeerClientCert(pub Vec<u8>);
 /// Generate a cryptographically random 32-byte hex-encoded session token.
 pub fn generate_token() -> Result<String, String> {
     let mut bytes = [0u8; 32];
-    getrandom::getrandom(&mut bytes).map_err(|e| format!("getrandom: {e}"))?;
+    native_ossl::rand::Rand::fill(&mut bytes).map_err(|e| format!("getrandom: {e}"))?;
     Ok(native_ossl::util::hex_encode(bytes))
 }
 

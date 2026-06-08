@@ -759,7 +759,7 @@ fn generate_node_identity() -> NodeIdentity {
         .expect("CN");
     let serial: i64 = {
         let mut buf = [0u8; 7];
-        getrandom::getrandom(&mut buf).expect("getrandom serial");
+        native_ossl::rand::Rand::fill(&mut buf).expect("getrandom serial");
         buf.iter().fold(0i64, |acc, &b| (acc << 8) | i64::from(b))
     };
     let sign_cert_der = native_ossl::x509::X509Builder::new()

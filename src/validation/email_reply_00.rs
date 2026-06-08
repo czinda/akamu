@@ -60,7 +60,7 @@ pub async fn send_challenge_email(
 
     // Generate token-part1: 20 random bytes → base64url (160 bits, ≥128-bit requirement).
     let mut raw = [0u8; 20];
-    getrandom::getrandom(&mut raw)
+    native_ossl::rand::Rand::fill(&mut raw)
         .map_err(|e| AcmeError::Internal(format!("email token-part1 random: {e}")))?;
     let token_part1_b64 = URL_SAFE_NO_PAD.encode(raw);
 
@@ -908,6 +908,7 @@ mod tests {
             tkauth_trust_anchors: None,
             claim_encoder_registry: None,
             jwks_cache: None,
+            write_coalescer: None,
         });
 
         (
