@@ -70,8 +70,12 @@ pub async fn respond_challenge(
             .ok_or(AcmeError::NotFound)?;
 
         let already_processing = if challenge.status == "pending" {
-            let affected =
-                db::challenges::set_processing_if_pending(&state.db, &challenge.id, now).await?;
+            let affected = if let Some(ref coal) = state.write_coalescer {
+                coal.submit_set_processing(challenge.id.clone(), now)
+                    .await?
+            } else {
+                db::challenges::set_processing_if_pending(&state.db, &challenge.id, now).await?
+            };
             affected == 0 // race: another request beat us to it
         } else {
             true // already processing / valid

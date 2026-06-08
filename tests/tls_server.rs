@@ -556,6 +556,7 @@ async fn start_tls_server() -> TlsTestServer {
         tkauth_trust_anchors: None,
         claim_encoder_registry: None,
         jwks_cache: None,
+        write_coalescer: None,
     });
 
     let router = routes::build_router(Arc::clone(&state), None);

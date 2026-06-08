@@ -429,6 +429,7 @@ async fn build_delegation_state() -> (
         tkauth_trust_anchors: None,
         claim_encoder_registry: None,
         jwks_cache: None,
+        write_coalescer: None,
     });
 
     let acme_router = routes::build_router(Arc::clone(&state), None);
@@ -1399,6 +1400,7 @@ async fn delegation_disabled_returns_404() {
         tkauth_trust_anchors: None,
         claim_encoder_registry: None,
         jwks_cache: None,
+        write_coalescer: None,
     });
 
     let acme = routes::build_router(Arc::clone(&state), None);

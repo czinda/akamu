@@ -342,62 +342,66 @@ async fn on_valid(
     // - (false, false): concurrent caller already committed; no DB changes made.
     // - (true, false):  challenge and authz marked valid; order has more pending authz.
     // - (true, true):   challenge and authz marked valid; order advanced to "ready".
-    let result: Result<(bool, bool), sqlx::Error> = async {
-        let mut tx = crate::db::begin_write(&state.db, state.db_kind)
-            .await
-            .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
-        crate::db::pg_local_async_commit(&mut tx, state.db_kind).await?;
-
-        // 1. Mark challenge valid only if still in 'processing' state.
-        // The AND status = 'processing' guard prevents duplicate on_valid calls
-        // (e.g. concurrent webhook delivery retries) from double-committing.
-        let chall_rows = crate::db::query(
-            "UPDATE challenges SET status = 'valid', validated = ?, updated = ?
-             WHERE id = ? AND status = 'processing'",
+    let result: Result<(bool, bool), sqlx::Error> = if let Some(ref coal) = state.write_coalescer {
+        coal.submit_on_valid(
+            challenge_id.to_string(),
+            authz_id.to_string(),
+            order_id.to_string(),
+            now,
         )
-        .bind(now)
-        .bind(now)
-        .bind(challenge_id)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
+        .await
+        .map_err(|e| sqlx::Error::Protocol(e.to_string()))
+    } else {
+        async {
+            let mut tx = crate::db::begin_write(&state.db, state.db_kind)
+                .await
+                .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+            crate::db::pg_local_async_commit(&mut tx, state.db_kind).await?;
 
-        if chall_rows == 0 {
-            // Already validated by a concurrent caller; nothing more to do.
-            tx.commit().await?;
-            return Ok((false, false));
-        }
+            let chall_rows = crate::db::query(
+                "UPDATE challenges SET status = 'valid', validated = ?, updated = ?
+                     WHERE id = ? AND status = 'processing'",
+            )
+            .bind(now)
+            .bind(now)
+            .bind(challenge_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
 
-        // 2. Mark authorization valid.
-        crate::db::query("UPDATE authorizations SET status = 'valid', updated = ? WHERE id = ?")
+            if chall_rows == 0 {
+                tx.commit().await?;
+                return Ok((false, false));
+            }
+
+            crate::db::query(
+                "UPDATE authorizations SET status = 'valid', updated = ? WHERE id = ?",
+            )
             .bind(now)
             .bind(authz_id)
             .execute(&mut *tx)
             .await?;
 
-        // 3. Advance order to 'ready' only when all its authorizations are now
-        // valid.  A single conditional UPDATE replaces the previous
-        // SELECT COUNT(*) + conditional UPDATE — saves one DB round-trip on
-        // the common (single-identifier) path.
-        let rows = crate::db::query(
-            "UPDATE orders SET status = 'ready', error = NULL, updated = ?
-             WHERE id = ?
-               AND NOT EXISTS (
-                   SELECT 1 FROM authorizations
-                   WHERE order_id = ? AND status != 'valid'
-               )",
-        )
-        .bind(now)
-        .bind(order_id)
-        .bind(order_id)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
+            let rows = crate::db::query(
+                "UPDATE orders SET status = 'ready', error = NULL, updated = ?
+                     WHERE id = ?
+                       AND NOT EXISTS (
+                           SELECT 1 FROM authorizations
+                           WHERE order_id = ? AND status != 'valid'
+                       )",
+            )
+            .bind(now)
+            .bind(order_id)
+            .bind(order_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
 
-        tx.commit().await?;
-        Ok((true, rows > 0))
-    }
-    .await;
+            tx.commit().await?;
+            Ok((true, rows > 0))
+        }
+        .await
+    };
 
     match result {
         Ok((true, order_advanced)) => {
@@ -546,65 +550,73 @@ async fn on_invalid_with_order(
 
     let authz_id_log = authz_id.to_string();
 
-    let result: Result<bool, sqlx::Error> = async {
-        let mut tx = crate::db::begin_write(&state.db, state.db_kind)
-            .await
-            .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
-        crate::db::pg_local_async_commit(&mut tx, state.db_kind).await?;
-
-        // 1. Mark challenge invalid only if still in 'processing' state.
-        // The AND guard mirrors on_valid's idempotency guard: a concurrent
-        // on_valid that already committed 'valid' must not be overwritten.
-        let chall_rows = crate::db::query(
-            "UPDATE challenges SET status = 'invalid', error = ?, updated = ?
-             WHERE id = ? AND status = 'processing'",
+    let result: Result<bool, sqlx::Error> = if let Some(ref coal) = state.write_coalescer {
+        coal.submit_on_invalid(
+            challenge_id.to_string(),
+            authz_id.to_string(),
+            order_id.map(|s| s.to_string()),
+            error_json.clone(),
+            now,
         )
-        .bind(&error_json)
-        .bind(now)
-        .bind(challenge_id)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
+        .await
+        .map_err(|e| sqlx::Error::Protocol(e.to_string()))
+    } else {
+        async {
+            let mut tx = crate::db::begin_write(&state.db, state.db_kind)
+                .await
+                .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+            crate::db::pg_local_async_commit(&mut tx, state.db_kind).await?;
 
-        if chall_rows == 0 {
-            // Already transitioned (concurrent on_valid or duplicate on_invalid); nothing more to do.
-            tx.commit().await?;
-            return Ok(false);
-        }
+            let chall_rows = crate::db::query(
+                "UPDATE challenges SET status = 'invalid', error = ?, updated = ?
+                     WHERE id = ? AND status = 'processing'",
+            )
+            .bind(&error_json)
+            .bind(now)
+            .bind(challenge_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
 
-        // 2. Mark authorization invalid.
-        crate::db::query("UPDATE authorizations SET status = 'invalid', updated = ? WHERE id = ?")
+            if chall_rows == 0 {
+                tx.commit().await?;
+                return Ok(false);
+            }
+
+            crate::db::query(
+                "UPDATE authorizations SET status = 'invalid', updated = ? WHERE id = ?",
+            )
             .bind(now)
             .bind(authz_id)
             .execute(&mut *tx)
             .await?;
 
-        // 3. Mark the parent order invalid.  Use the caller-supplied order_id
-        // when available; fall back to a SELECT to avoid a JOIN.
-        let oid: Option<String> = if let Some(oid) = order_id {
-            Some(oid.to_owned())
-        } else {
-            crate::db::query_as::<(String,)>("SELECT order_id FROM authorizations WHERE id = ?")
-                .bind(authz_id)
-                .fetch_optional(&mut *tx)
-                .await?
-                .map(|(s,)| s)
-        };
+            let oid: Option<String> = if let Some(oid) = order_id {
+                Some(oid.to_owned())
+            } else {
+                crate::db::query_as::<(String,)>("SELECT order_id FROM authorizations WHERE id = ?")
+                    .bind(authz_id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .map(|(s,)| s)
+            };
 
-        if let Some(oid) = oid {
-            crate::db::query(
-                "UPDATE orders SET status = 'invalid', error = NULL, updated = ? WHERE id = ?",
-            )
-            .bind(now)
-            .bind(&oid)
-            .execute(&mut *tx)
-            .await?;
+            if let Some(oid) = oid {
+                crate::db::query(
+                    "UPDATE orders SET status = 'invalid', error = ?, updated = ? WHERE id = ?",
+                )
+                .bind(&error_json)
+                .bind(now)
+                .bind(&oid)
+                .execute(&mut *tx)
+                .await?;
+            }
+
+            tx.commit().await?;
+            Ok(true)
         }
-
-        tx.commit().await?;
-        Ok(true)
-    }
-    .await;
+        .await
+    };
 
     match result {
         Ok(true) => {
@@ -774,6 +786,7 @@ mod tests {
             tkauth_trust_anchors: None,
             claim_encoder_registry: None,
             jwks_cache: None,
+            write_coalescer: None,
         })
     }
 
@@ -1318,6 +1331,7 @@ mod tests {
             tkauth_trust_anchors: None,
             claim_encoder_registry: None,
             jwks_cache: None,
+            write_coalescer: None,
         });
 
         // The identifier is just the IP address — no port embedded.
@@ -1666,6 +1680,7 @@ mod tests {
             tkauth_trust_anchors: None,
             claim_encoder_registry: None,
             jwks_cache: None,
+            write_coalescer: None,
         })
     }
 

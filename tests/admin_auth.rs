@@ -252,6 +252,7 @@ async fn build_state(
         tkauth_trust_anchors: None,
         claim_encoder_registry: None,
         jwks_cache: None,
+        write_coalescer: None,
     });
 
     (state, sessions, dir)

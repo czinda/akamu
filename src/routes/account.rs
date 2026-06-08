@@ -202,27 +202,30 @@ pub async fn new_account(
     // Insert the new account — atomically consume the EAB key if one was verified.
     // Both paths use a transaction so the insert is atomic with any EAB mark.
     {
-        let mut tx = db::begin_write(&state.db, state.db_kind).await?;
-        db::accounts::insert(
-            &mut *tx,
-            AccountRow {
-                id: id.clone(),
-                status: "valid".into(),
-                contact: contact_json.clone(),
-                public_key: ctx.spki_der,
-                jwk_thumbprint: thumbprint,
-                created: now,
-                updated: now,
-                profile_grants: eab_profile_grants,
-                ca_id: String::new(),
-                kerberos_principal: eab_kerberos_principal,
-            },
-        )
-        .await?;
-        if let Some((eab_kid, _, _)) = verified_eab {
-            db::eab::mark_used(&mut *tx, &eab_kid, now).await?;
+        let eab_kid_for_coal = verified_eab.as_ref().map(|(kid, _, _)| kid.clone());
+        let account_row = AccountRow {
+            id: id.clone(),
+            status: "valid".into(),
+            contact: contact_json.clone(),
+            public_key: ctx.spki_der,
+            jwk_thumbprint: thumbprint,
+            created: now,
+            updated: now,
+            profile_grants: eab_profile_grants,
+            ca_id: String::new(),
+            kerberos_principal: eab_kerberos_principal,
+        };
+        if let Some(ref coal) = state.write_coalescer {
+            coal.submit_new_account(account_row, eab_kid_for_coal, now)
+                .await?;
+        } else {
+            let mut tx = db::begin_write(&state.db, state.db_kind).await?;
+            db::accounts::insert(&mut *tx, account_row).await?;
+            if let Some((eab_kid, _, _)) = verified_eab {
+                db::eab::mark_used(&mut *tx, &eab_kid, now).await?;
+            }
+            tx.commit().await.map_err(AcmeError::from)?;
         }
-        tx.commit().await.map_err(AcmeError::from)?;
         crdt_hooks::on_account_upsert(
             &state,
             crdt_hooks::AccountUpsertParams {

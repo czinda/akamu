@@ -224,6 +224,7 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
         tkauth_trust_anchors: None,
         claim_encoder_registry: None,
         jwks_cache: None,
+        write_coalescer: None,
     })
 }
 

@@ -300,6 +300,8 @@ pub struct AppState {
     /// Keyed by JWKS endpoint URL; entries are refreshed after 5 minutes.
     /// `None` when tkauth is disabled.
     pub jwks_cache: Option<JwksCache>,
+    /// Write coalescer for SQLite hot-path writes.  `None` for PostgreSQL/MariaDB.
+    pub write_coalescer: Option<std::sync::Arc<crate::db::coalescer::WriteCoalescer>>,
 }
 
 impl AppState {

@@ -535,75 +535,95 @@ pub async fn new_order(
     // Write everything inside a single transaction so a partial failure
     // cannot leave orphaned orders, authorizations, or challenges.
     {
-        let mut tx = db::begin_write(&state.db, state.db_kind).await?;
-        db::pg_local_async_commit(&mut tx, state.db_kind).await?;
-
-        db::orders::insert(
-            &mut *tx,
-            OrderRow {
-                id: order_id.clone(),
-                account_id: account_id.clone(),
-                status: initial_status.to_string(),
-                expires: Some(expiry),
-                identifiers: identifiers_json.clone(),
-                not_before: order_not_before,
-                not_after: order_not_after,
-                error: None,
-                certificate_id: None,
-                replaces: validated_replaces.clone(),
-                created: now,
-                updated: now,
-                star_start_date,
-                star_end_date,
-                star_lifetime_secs,
-                star_lifetime_adjust_secs,
-                star_allow_cert_get,
-                star_canceled_at: None,
-                star_csr_der: None,
-                profile: order_profile.clone(),
-                ca_id: ca_id.0.clone(),
-                delegation_id: delegation_id.clone(),
-                allow_cert_get: order_allow_cert_get,
-                upstream_order_url: None,
-                upstream_cert_url: None,
-            },
-        )
-        .await?;
-
-        for plan in &authz_plans {
-            db::authz::insert(
-                &mut *tx,
-                AuthorizationRow {
-                    id: plan.authz_id.clone(),
-                    order_id: order_id.clone(),
-                    account_id: account_id.clone(),
-                    status: "pending".to_string(),
-                    identifier: plan.identifier_json.clone(),
-                    expires: Some(authz_expiry),
-                    wildcard: i64::from(plan.wildcard),
-                    subdomain_auth_allowed: i64::from(plan.subdomain_auth_allowed),
-                    created: now,
-                    updated: now,
-                    ca_id: ca_id.0.clone(),
-                },
-            )
-            .await?;
-
-            db::challenges::insert_batch(
-                &mut *tx,
-                &plan.authz_id,
-                &plan.challenges,
-                &plan.token,
-                now,
-                state
-                    .config
-                    .tkauth
-                    .as_ref()
-                    .and_then(|t| t.token_authority_url.as_deref()),
-            )
-            .await?;
+        let order_row = OrderRow {
+            id: order_id.clone(),
+            account_id: account_id.clone(),
+            status: initial_status.to_string(),
+            expires: Some(expiry),
+            identifiers: identifiers_json.clone(),
+            not_before: order_not_before,
+            not_after: order_not_after,
+            error: None,
+            certificate_id: None,
+            replaces: validated_replaces.clone(),
+            created: now,
+            updated: now,
+            star_start_date,
+            star_end_date,
+            star_lifetime_secs,
+            star_lifetime_adjust_secs,
+            star_allow_cert_get,
+            star_canceled_at: None,
+            star_csr_der: None,
+            profile: order_profile.clone(),
+            ca_id: ca_id.0.clone(),
+            delegation_id: delegation_id.clone(),
+            allow_cert_get: order_allow_cert_get,
+            upstream_order_url: None,
+            upstream_cert_url: None,
+        };
+        let tkauth_url = state
+            .config
+            .tkauth
+            .as_ref()
+            .and_then(|t| t.token_authority_url.clone());
+        if let Some(ref coal) = state.write_coalescer {
+            let coal_plans: Vec<db::coalescer::CoalescerAuthzPlan> = authz_plans
+                .iter()
+                .map(|p| db::coalescer::CoalescerAuthzPlan {
+                    authz: AuthorizationRow {
+                        id: p.authz_id.clone(),
+                        order_id: order_id.clone(),
+                        account_id: account_id.clone(),
+                        status: "pending".to_string(),
+                        identifier: p.identifier_json.clone(),
+                        expires: Some(authz_expiry),
+                        wildcard: i64::from(p.wildcard),
+                        subdomain_auth_allowed: i64::from(p.subdomain_auth_allowed),
+                        created: now,
+                        updated: now,
+                        ca_id: ca_id.0.clone(),
+                    },
+                    challenges: p.challenges.clone(),
+                    token: p.token.clone(),
+                })
+                .collect();
+            coal.submit_new_order(order_row, coal_plans, tkauth_url)
+                .await?;
+        } else {
+            let mut tx = db::begin_write(&state.db, state.db_kind).await?;
+            db::pg_local_async_commit(&mut tx, state.db_kind).await?;
+            db::orders::insert(&mut *tx, order_row).await?;
+            for plan in &authz_plans {
+                db::authz::insert(
+                    &mut *tx,
+                    AuthorizationRow {
+                        id: plan.authz_id.clone(),
+                        order_id: order_id.clone(),
+                        account_id: account_id.clone(),
+                        status: "pending".to_string(),
+                        identifier: plan.identifier_json.clone(),
+                        expires: Some(authz_expiry),
+                        wildcard: i64::from(plan.wildcard),
+                        subdomain_auth_allowed: i64::from(plan.subdomain_auth_allowed),
+                        created: now,
+                        updated: now,
+                        ca_id: ca_id.0.clone(),
+                    },
+                )
+                .await?;
+                db::challenges::insert_batch(
+                    &mut *tx,
+                    &plan.authz_id,
+                    &plan.challenges,
+                    &plan.token,
+                    now,
+                    tkauth_url.as_deref(),
+                )
+                .await?;
+            }
+            tx.commit().await.map_err(AcmeError::from)?;
         }
-        tx.commit().await.map_err(AcmeError::from)?;
     }
 
     // Build a temporary OrderRow so we can reuse order_json() and get replaces for free.
@@ -963,7 +983,7 @@ pub(crate) fn is_valid_email(value: &str) -> bool {
 
 fn gen_token() -> Result<String, AcmeError> {
     let mut bytes = [0u8; 32];
-    getrandom::getrandom(&mut bytes)
+    native_ossl::rand::Rand::fill(&mut bytes)
         .map_err(|e| AcmeError::Internal(format!("CSPRNG failure: {e}")))?;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;

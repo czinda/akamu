@@ -221,6 +221,7 @@ async fn build_two_ca_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir
         tkauth_trust_anchors: None,
         claim_encoder_registry: None,
         jwks_cache: None,
+        write_coalescer: None,
     });
 
     (state, dir)
@@ -737,6 +738,7 @@ async fn admin_cas_list_returns_both_cas() {
         tkauth_trust_anchors: None,
         claim_encoder_registry: None,
         jwks_cache: None,
+        write_coalescer: None,
     });
 
     let admin_router = routes::build_router(Arc::clone(&state), None);
@@ -1017,6 +1019,7 @@ async fn build_two_ca_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         tkauth_trust_anchors: None,
         claim_encoder_registry: None,
         jwks_cache: None,
+        write_coalescer: None,
     });
 
     (state, dir)

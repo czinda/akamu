@@ -532,36 +532,39 @@ pub async fn finalize_order(
 
     // The bool is true when the predecessor's replaced_by was already set by
     // another concurrent finalization (RFC 9773 §5).
-    let pred_already_replaced = {
+    let cert_row = CertificateRow {
+        id: issued.id.clone(),
+        order_id: id.clone(),
+        account_id: account_id.clone(),
+        serial_number: issued.serial_hex.clone(),
+        status: "valid".to_string(),
+        der: final_cert_der,
+        pem: final_cert_pem,
+        not_before: issued.not_before,
+        not_after: issued.not_after,
+        revoked_at: None,
+        revocation_reason: None,
+        mtc_log_index: final_mtc_index,
+        created: now,
+        suggested_window_start: None,
+        suggested_window_end: None,
+        replaced_by: None,
+        subject_dn,
+        ca_id: order.ca_id.clone(),
+    };
+    let star_csr = if order.star_end_date.is_some() {
+        Some(csr_der.clone())
+    } else {
+        None
+    };
+    let pred_already_replaced = if let Some(ref coal) = state.write_coalescer {
+        coal.submit_finalize(cert_row, id.clone(), now, pred_cert_uuid.clone(), star_csr)
+            .await?
+    } else {
         let mut tx = db::begin_write(&state.db, state.db_kind).await?;
 
-        db::certs::insert(
-            &mut *tx,
-            CertificateRow {
-                id: issued.id.clone(),
-                order_id: id.clone(),
-                account_id: account_id.clone(),
-                serial_number: issued.serial_hex.clone(),
-                status: "valid".to_string(),
-                der: final_cert_der,
-                pem: final_cert_pem,
-                not_before: issued.not_before,
-                not_after: issued.not_after,
-                revoked_at: None,
-                revocation_reason: None,
-                mtc_log_index: final_mtc_index,
-                created: now,
-                suggested_window_start: None,
-                suggested_window_end: None,
-                replaced_by: None,
-                subject_dn,
-                ca_id: order.ca_id.clone(),
-            },
-        )
-        .await?;
+        db::certs::insert(&mut *tx, cert_row).await?;
 
-        // Conflict means a concurrent finalization already committed this
-        // order to 'valid'; surface as OrderNotReady per RFC 8555 §7.4.
         db::orders::set_certificate(&mut *tx, &id, &cert_id, now)
             .await
             .map_err(|e| match e {
@@ -569,17 +572,14 @@ pub async fn finalize_order(
                 other => other,
             })?;
 
-        // Mark predecessor certificate as replaced (RFC 9773 §5).
         let pred_already_replaced = if let Some(ref pred_uuid) = pred_cert_uuid {
             !db::certs::mark_replaced(&mut *tx, pred_uuid, &id).await?
         } else {
             false
         };
 
-        // For STAR orders, persist the CSR DER atomically with the cert insert
-        // so the background reissuance task can never see a valid order without a CSR.
-        if order.star_end_date.is_some() {
-            db::orders::set_star_csr(&mut *tx, &id, csr_der.clone()).await?;
+        if let Some(csr) = star_csr {
+            db::orders::set_star_csr(&mut *tx, &id, csr).await?;
         }
 
         tx.commit().await.map_err(AcmeError::from)?;

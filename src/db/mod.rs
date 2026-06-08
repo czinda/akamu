@@ -14,6 +14,7 @@ pub mod authz;
 pub mod certs;
 pub mod challenges;
 pub mod checkpoints;
+pub mod coalescer;
 pub mod cosignatures;
 pub mod cross_certs;
 pub mod delegations;

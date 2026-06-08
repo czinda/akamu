@@ -245,6 +245,22 @@ async fn run() -> Result<(), String> {
         None => db.clone(),
     };
 
+    let write_coalescer =
+        if db_kind == db::DbKind::Sqlite && !config.database.url.contains(":memory:") {
+            match db::coalescer::WriteCoalescer::new(&config.database.url).await {
+                Ok(c) => {
+                    tracing::info!("write coalescer active (SQLite batching)");
+                    Some(std::sync::Arc::new(c))
+                }
+                Err(e) => {
+                    tracing::warn!("write coalescer init failed, using pool: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
     // Sweep DB nonces older than 24 h at startup (best-effort; handles any
     // nonces written by a previous process that used the DB-backed store).
     let _ = db::nonces::sweep_expired(&db, 86400).await;
@@ -858,6 +874,7 @@ async fn run() -> Result<(), String> {
         tkauth_trust_anchors,
         claim_encoder_registry,
         jwks_cache,
+        write_coalescer,
     });
 
     // ── Startup audit records ─────────────────────────────────────────────────

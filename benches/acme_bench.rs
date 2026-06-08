@@ -944,6 +944,17 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
     } else {
         db_conn.clone()
     };
+    let write_coalescer = if db_kind == db::DbKind::Sqlite && !db_url.contains(":memory:") {
+        match db::coalescer::WriteCoalescer::new(&db_url).await {
+            Ok(c) => Some(std::sync::Arc::new(c)),
+            Err(e) => {
+                eprintln!("warning: write coalescer init failed: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
     akamu_crdt::db::init_db_kind(false, false);
     let crdt_db_url = if db_url.contains(":memory:") {
         "sqlite::memory:".to_string()
@@ -1060,6 +1071,7 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
         tkauth_trust_anchors: None,
         claim_encoder_registry: None,
         jwks_cache: None,
+        write_coalescer,
     });
 
     if state.config.gossip.is_some() {
