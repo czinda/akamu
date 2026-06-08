@@ -214,7 +214,7 @@ pub struct AppState {
     pub admin_gss_cred: Option<Arc<akamu_gssapi::GssServerCred>>,
     /// Decoded master secret for HKDF-based EAB key derivation.
     /// `None` when `[server].eab_master_secret` is absent.
-    pub eab_master_secret: Option<Arc<zeroize::Zeroizing<Vec<u8>>>>,
+    pub eab_master_secret: Option<Arc<akamu_util::SecretBuffer>>,
     /// Shared in-memory audit state (overflow flag, FAU_ARP.1 alarm counter).
     /// Always present; operations before the admin config is loaded use the
     /// default `AuditPolicy` (no limit, `drop_oldest`, threshold=10, `syslog`).
@@ -577,11 +577,11 @@ pub enum AdminAuthMethod {
 
 /// An active admin operator session stored in `AppState::admin_sessions`.
 ///
-/// Implements [`Drop`] to zeroize the operator name, satisfying FDP_RIP.1
-/// (residual information protection).
+/// The operator name is held in a [`akamu_util::SecretBuffer`] that zeroes
+/// memory on drop via `OPENSSL_cleanse`, satisfying FDP_RIP.1.
 pub struct AdminSession {
     pub operator_id: i64,
-    pub name: zeroize::Zeroizing<String>,
+    pub name: akamu_util::SecretBuffer,
     pub role: OperatorRole,
     /// CA scope for `ca_ra` (required) and `ca_operations` (optional) operators.
     /// Empty string means server-wide access (administrator, auditor, unscoped ca_operations).

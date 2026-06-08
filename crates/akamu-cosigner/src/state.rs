@@ -54,8 +54,8 @@ pub struct AppState {
 /// Stores operator identity and timing data for TTL enforcement and for
 /// audit event attribution.
 pub struct CosignerSession {
-    /// Operator name, zeroed on drop (FDP_RIP.1).
-    pub name: zeroize::Zeroizing<String>,
+    /// Operator name, zeroed on drop via `OPENSSL_cleanse` (FDP_RIP.1).
+    pub name: akamu_util::SecretBuffer,
     /// Role governing which admin endpoints this session may access.
     pub role: CosignerRole,
     /// Position of the operator in `AppState::admin_operators` (0-based, cast to i64).

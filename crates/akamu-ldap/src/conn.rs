@@ -224,8 +224,9 @@ impl LdapConnection {
     pub fn bind(&mut self, auth: &Auth) -> Result<(), LdapError> {
         match auth {
             Auth::Simple { bind_dn, password } => {
-                tracing::trace!(bind_dn, "LDAP simple bind");
-                self.bind_simple(bind_dn, password)
+                let dn = bind_dn.to_string_lossy();
+                tracing::trace!(bind_dn = %dn, "LDAP simple bind");
+                self.bind_simple(&dn, &password.to_string_lossy())
             }
             Auth::Gssapi => {
                 debug!("LDAP GSSAPI bind");

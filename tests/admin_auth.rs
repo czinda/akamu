@@ -281,7 +281,7 @@ async fn bearer_token_grants_access() {
         "test-bearer-token".to_string(),
         AdminSession {
             operator_id: 1,
-            name: zeroize::Zeroizing::new("bearer-operator".to_string()),
+            name: akamu_util::SecretBuffer::from_string("bearer-operator".to_string()),
             role: OperatorRole::Auditor,
             created_at: Instant::now(),
             last_active_at: Instant::now(),
@@ -373,7 +373,7 @@ async fn expired_token_returns_401() {
         "stale-token".to_string(),
         AdminSession {
             operator_id: 1,
-            name: zeroize::Zeroizing::new("stale-operator".to_string()),
+            name: akamu_util::SecretBuffer::from_string("stale-operator".to_string()),
             role: OperatorRole::Auditor,
             created_at: stale_instant,
             last_active_at: stale_instant,
@@ -402,7 +402,7 @@ async fn operator_deactivation_purges_sessions() {
         "admin-token".to_string(),
         AdminSession {
             operator_id: 1,
-            name: zeroize::Zeroizing::new("admin-operator".to_string()),
+            name: akamu_util::SecretBuffer::from_string("admin-operator".to_string()),
             role: OperatorRole::Administrator,
             created_at: Instant::now(),
             last_active_at: Instant::now(),
@@ -436,7 +436,7 @@ async fn operator_deactivation_purges_sessions() {
         "victim-token".to_string(),
         AdminSession {
             operator_id: victim_id,
-            name: zeroize::Zeroizing::new("victim-operator".to_string()),
+            name: akamu_util::SecretBuffer::from_string("victim-operator".to_string()),
             role: OperatorRole::Auditor,
             created_at: Instant::now(),
             last_active_at: Instant::now(),
@@ -489,7 +489,7 @@ async fn audit_event_visible_via_admin_api() {
         "tok-auditor".to_string(),
         AdminSession {
             operator_id: 1,
-            name: zeroize::Zeroizing::new("audit-operator".to_string()),
+            name: akamu_util::SecretBuffer::from_string("audit-operator".to_string()),
             role: OperatorRole::Auditor,
             created_at: Instant::now(),
             last_active_at: Instant::now(),
@@ -572,7 +572,7 @@ async fn create_session_sweeps_expired_entries() {
                 format!("stale-{i}"),
                 AdminSession {
                     operator_id: i,
-                    name: zeroize::Zeroizing::new(format!("stale-op-{i}")),
+                    name: akamu_util::SecretBuffer::from_string(format!("stale-op-{i}")),
                     role: OperatorRole::Auditor,
                     created_at: stale,
                     last_active_at: stale,
@@ -636,7 +636,7 @@ async fn bearer_lookup_refreshes_last_active_at() {
         "sliding-token".to_string(),
         AdminSession {
             operator_id: 1,
-            name: zeroize::Zeroizing::new("slide-op".to_string()),
+            name: akamu_util::SecretBuffer::from_string("slide-op".to_string()),
             role: OperatorRole::Auditor,
             created_at: before,
             last_active_at: before,
@@ -678,7 +678,7 @@ async fn login_via_handler_emits_audit_event() {
         "auditor-tok".to_string(),
         AdminSession {
             operator_id: 999,
-            name: zeroize::Zeroizing::new("audit-reader".to_string()),
+            name: akamu_util::SecretBuffer::from_string("audit-reader".to_string()),
             role: OperatorRole::Auditor,
             created_at: Instant::now(),
             last_active_at: Instant::now(),

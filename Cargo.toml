@@ -89,14 +89,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Temporary directories for the built-in journal daemon
 tempfile = "3"
 
-# Cryptographically random nonces/tokens
-getrandom = "0.2"
-
 # Constant-time byte comparison (session token lookup defense against timing attacks)
 subtle = "2"
-
-# Secure memory wiping on drop (FDP_RIP.1 — residual information protection)
-zeroize = { version = "1", features = ["zeroize_derive"] }
 
 # Regular expressions (profile identifier authorization)
 regex = { version = "1", default-features = false, features = ["std", "unicode-bool"] }
@@ -117,6 +111,9 @@ akamu-client = { path = "crates/akamu-client" }
 
 # LDAP client (OpenLDAP FFI with simple-bind and GSSAPI/Kerberos support)
 akamu-ldap = { path = "crates/akamu-ldap" }
+
+# Shared utilities (SecretBuffer, listen helpers, TLS loading, auth primitives)
+akamu-util = { path = "crates/akamu-util" }
 
 # Base ASN.1 library (needed for Decoder/Encoder and Integer type)
 synta = { version = ">=0.2.4", default-features = false, features = ["std", "derive"] }

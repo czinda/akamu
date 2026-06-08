@@ -19,7 +19,6 @@ use tower::ServiceExt;
 use akamu::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
 use akamu::state::{AppState, CaState, MtcState, NonceBucket};
 use akamu::{ca, db, routes};
-use zeroize;
 
 // ── Two-CA test state ─────────────────────────────────────────────────────────
 
@@ -682,7 +681,7 @@ async fn admin_cas_list_returns_both_cas() {
         token.to_string(),
         AdminSession {
             operator_id: 1,
-            name: zeroize::Zeroizing::new("admin".to_string()),
+            name: akamu_util::SecretBuffer::from_string("admin".to_string()),
             role: OperatorRole::Administrator,
             created_at: Instant::now(),
             last_active_at: Instant::now(),
@@ -950,7 +949,7 @@ async fn build_two_ca_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
             "tok-admin".to_string(),
             AdminSession {
                 operator_id: 1,
-                name: zeroize::Zeroizing::new("admin".to_string()),
+                name: akamu_util::SecretBuffer::from_string("admin".to_string()),
                 role: OperatorRole::Administrator,
                 created_at: Instant::now(),
                 last_active_at: Instant::now(),
@@ -962,7 +961,7 @@ async fn build_two_ca_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
             "tok-caops-rsa".to_string(),
             AdminSession {
                 operator_id: 2,
-                name: zeroize::Zeroizing::new("caops-rsa".to_string()),
+                name: akamu_util::SecretBuffer::from_string("caops-rsa".to_string()),
                 role: OperatorRole::CaOperations,
                 created_at: Instant::now(),
                 last_active_at: Instant::now(),

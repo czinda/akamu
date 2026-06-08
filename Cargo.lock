@@ -21,11 +21,11 @@ dependencies = [
  "akamu-jose",
  "akamu-ldap",
  "akamu-mtc-wire",
+ "akamu-util",
  "axum",
  "base64",
  "ciborium",
  "clap",
- "getrandom 0.2.17",
  "hickory-resolver",
  "http-body-util",
  "hyper",
@@ -61,7 +61,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
- "zeroize",
  "zstd",
 ]
 
@@ -132,7 +131,6 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
- "zeroize",
 ]
 
 [[package]]
@@ -172,11 +170,11 @@ dependencies = [
 name = "akamu-ldap"
 version = "0.1.0"
 dependencies = [
+ "akamu-util",
  "libc",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "zeroize",
 ]
 
 [[package]]
@@ -218,7 +216,6 @@ name = "akamu-util"
 version = "0.1.0"
 dependencies = [
  "axum",
- "getrandom 0.2.17",
  "native-ossl",
  "rustls",
  "subtle",
@@ -3845,20 +3842,6 @@ name = "zeroize"
 version = "1.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b97154e67e32c85465826e8bcc1c59429aaaf107c1e4a9e53c8d8ccd5eff88d0"
-dependencies = [
- "zeroize_derive",
-]
-
-[[package]]
-name = "zeroize_derive"
-version = "1.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85a5b4158499876c763cb03bc4e49185d3cccbabb15b33c627f7884f43db852e"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
 
 [[package]]
 name = "zerotrie"

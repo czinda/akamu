@@ -70,7 +70,7 @@ pub struct PeerClientCert(pub Vec<u8>);
 /// Generate a cryptographically random 32-byte hex-encoded session token.
 pub fn generate_token() -> Result<String, String> {
     let mut bytes = [0u8; 32];
-    getrandom::getrandom(&mut bytes).map_err(|e| format!("getrandom: {e}"))?;
+    native_ossl::rand::Rand::fill(&mut bytes).map_err(|e| format!("getrandom: {e}"))?;
     Ok(native_ossl::util::hex_encode(bytes))
 }
 
@@ -108,7 +108,7 @@ pub async fn create_session(
     let token = generate_token().map_err(crate::error::AcmeError::Internal)?;
     let session = AdminSession {
         operator_id,
-        name: zeroize::Zeroizing::new(name),
+        name: akamu_util::SecretBuffer::from_string(name),
         role,
         ca_id,
         created_at: Instant::now(),
@@ -186,7 +186,7 @@ async fn lookup_session(state: &AppState, token: &str) -> SessionLookup {
     session.last_active_at = Instant::now();
     SessionLookup::Active(
         session.operator_id,
-        String::clone(&session.name),
+        session.name.to_string_lossy(),
         session.role,
         session.ca_id.clone(),
         session.auth_method,

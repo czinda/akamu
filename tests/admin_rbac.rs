@@ -204,7 +204,7 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
                 token.to_string(),
                 AdminSession {
                     operator_id: 1,
-                    name: zeroize::Zeroizing::new(format!("test-{}", role.as_str())),
+                    name: akamu_util::SecretBuffer::from_string(format!("test-{}", role.as_str())),
                     role,
                     created_at: Instant::now(),
                     last_active_at: Instant::now(),
@@ -218,7 +218,7 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
             "tok-caops-scoped".to_string(),
             AdminSession {
                 operator_id: 2,
-                name: zeroize::Zeroizing::new("test-caops-scoped".to_string()),
+                name: akamu_util::SecretBuffer::from_string("test-caops-scoped".to_string()),
                 role: OperatorRole::CaOperations,
                 created_at: Instant::now(),
                 last_active_at: Instant::now(),
@@ -484,7 +484,10 @@ async fn admin_rbac_table() {
                     token.to_string(),
                     akamu::state::AdminSession {
                         operator_id: 1,
-                        name: zeroize::Zeroizing::new(format!("test-{}", role.as_str())),
+                        name: akamu_util::SecretBuffer::from_string(format!(
+                            "test-{}",
+                            role.as_str()
+                        )),
                         role,
                         created_at: Instant::now(),
                         last_active_at: Instant::now(),

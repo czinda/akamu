@@ -53,8 +53,8 @@ pub(crate) async fn load_profiles_from_ldap(
             .trim_end_matches('\r')
             .to_owned();
         Auth::Simple {
-            bind_dn: bind_dn.to_owned(),
-            password: bind_password,
+            bind_dn: akamu_util::SecretBuffer::from_string(bind_dn.to_owned()),
+            password: akamu_util::SecretBuffer::from_string(bind_password),
         }
     };
 

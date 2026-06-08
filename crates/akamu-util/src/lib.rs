@@ -16,5 +16,8 @@
 
 pub mod auth;
 pub mod listen;
+mod secret_buffer;
 pub mod tls;
 pub mod util;
+
+pub use secret_buffer::SecretBuffer;

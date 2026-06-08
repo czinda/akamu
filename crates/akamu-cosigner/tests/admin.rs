@@ -40,7 +40,7 @@ async fn seed_session(state: &Arc<AppState>, token: &str, role: CosignerRole) {
     state.admin_sessions.lock().await.insert(
         token.to_string(),
         CosignerSession {
-            name: zeroize::Zeroizing::new("test-op".to_string()),
+            name: akamu_util::SecretBuffer::from_string("test-op".to_string()),
             role,
             operator_id: 0,
             created_at: Instant::now(),

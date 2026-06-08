@@ -731,7 +731,7 @@ async fn run() -> Result<(), String> {
                  /acme/eab will return full credentials",
                 bytes.len()
             );
-            Some(Arc::new(zeroize::Zeroizing::new(bytes)))
+            Some(Arc::new(akamu_util::SecretBuffer::from_bytes(&bytes)))
         }
     };
 

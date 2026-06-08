@@ -25,7 +25,6 @@ use synta_certificate::{
     SubjectAlternativeNameBuilder,
 };
 use tower::ServiceExt;
-use zeroize::Zeroizing;
 
 use akamu::config::{AdminConfig, CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
 use akamu::state::{
@@ -356,7 +355,7 @@ async fn build_delegation_state() -> (
         admin_token.clone(),
         AdminSession {
             operator_id: 1,
-            name: Zeroizing::new("test-admin".to_string()),
+            name: akamu_util::SecretBuffer::from_string("test-admin".to_string()),
             role: OperatorRole::Administrator,
             ca_id: String::new(),
             created_at: Instant::now(),
