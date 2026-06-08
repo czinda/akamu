@@ -53,19 +53,19 @@ under higher concurrency as queue depth grows.
 
 | Clients | Throughput (iss/s) | Mean (ms) | p99 (ms) | new_order | authz | challenge | finalize | download |
 |--------:|-------------------:|----------:|---------:|----------:|------:|----------:|---------:|---------:|
-|   1     |    107             |    9.4    |   14.9   |   1.2     |  0.9  |   4.0     |    2.9   |   0.3    |
-|   5     |    696             |    7.1    |    9.7   |   0.7     |  0.6  |   3.1     |    2.2   |   0.4    |
-|  10     |    686             |   14.3    |   20.4   |   1.6     |  1.4  |   5.0     |    5.0   |   1.3    |
-|  25     |    676             |   33.1    |   42.4   |   3.8     |  3.4  |   8.3     |   14.2   |   3.3    |
-|  50     |    592             |   74.0    |   95.6   |   8.4     |  7.2  |  22.5     |   28.3   |   7.4    |
+|   1     |    120             |    8.3    |   13.1   |   1.1     |  0.8  |   3.7     |    2.4   |   0.3    |
+|   5     |    818             |    6.1    |    8.0   |   0.6     |  0.5  |   2.8     |    1.8   |   0.3    |
+|  10     |    854             |   11.5    |   13.9   |   1.2     |  1.1  |   4.3     |    4.1   |   0.8    |
+|  25     |    889             |   27.5    |   36.3   |   3.2     |  3.2  |   8.1     |   11.1   |   1.9    |
+|  50     |    681             |   67.0    |   80.5   |   7.5     |  7.0  |  20.1     |   26.6   |   5.7    |
 
 Phase columns show mean milliseconds per ACME step.
 
 Process mode peaks at c=5–10 (**975–1,098 iss/s**) with sub-9 ms mean
 latency, driven by read-only pool separation, crypto caching, and
-`spawn_blocking` for certificate signing.  Inprocess mode peaks at c=5–10
-(**686–696 iss/s**).  Process mode shows lower download times (0.2 ms vs
-1–7 ms) because certificate delivery bypasses the shared-process HTTP stack.
+`spawn_blocking` for certificate signing.  Inprocess mode peaks at c=5–25
+(**818–889 iss/s**).  Process mode shows lower download times (0.2 ms vs
+1–6 ms) because certificate delivery bypasses the shared-process HTTP stack.
 Inprocess mode shows higher authz and download overhead at high concurrency
 due to Tokio task contention within the single runtime.
 
@@ -74,7 +74,8 @@ due to Tokio task contention within the single runtime.
 ## Client key type
 
 The client key type is the largest single determinant of per-issuance latency.
-All runs use 25 concurrent clients and ec:P-256 CA.
+All runs use ec:P-256 CA; process mode uses 25 concurrent clients, inprocess
+mode uses 50.
 
 ### Process mode
 
@@ -93,14 +94,14 @@ All runs use 25 concurrent clients and ec:P-256 CA.
 
 | CSR key type | Throughput (iss/s) | Mean (ms) | p99 (ms) | Finalize (ms) | Alloc/iss |
 |:-------------|-------------------:|----------:|---------:|--------------:|----------:|
-| ec:P-256     |    604             |   30.4    |   55.5   |   12.8        |  467 KB   |
-| ML-DSA-44    |    482             |   42.2    |   55.4   |   17.8        |  611 KB   |
-| ed25519      |    469             |   40.6    |   64.0   |   17.6        |  440 KB   |
-| ML-DSA-65    |    422             |   43.1    |   77.8   |   19.7        |  635 KB   |
-| ML-DSA-87    |    414             |   48.0    |   70.6   |   27.0        |  742 KB   |
-| ec:P-384     |    354             |   55.8    |   75.3   |   32.0        |  473 KB   |
-| rsa:2048     |    129             |  145.0    |  334.3   |  116.2        |  469 KB   |
-| rsa:4096     |     11             | 1175.5    | 2187.9   | 1033.3        |  617 KB   |
+| ec:P-256     |    770             |   54.6    |   70.0   |   20.7        |  434 KB   |
+| ed25519      |    742             |   54.1    |   72.8   |   20.2        |  432 KB   |
+| ML-DSA-44    |    685             |   60.4    |   75.0   |   24.0        |  575 KB   |
+| ML-DSA-65    |    589             |   69.9    |   98.8   |   30.0        |  624 KB   |
+| ML-DSA-87    |    540             |   77.3    |   99.9   |   34.7        |  696 KB   |
+| ec:P-384     |    487             |   85.7    |   97.3   |   46.3        |  438 KB   |
+| rsa:2048     |    157             |  279.7    |  554.2   |  165.1        |  454 KB   |
+| rsa:4096     |     15             | 2506.9    | 4099.1   | 1496.2        |  531 KB   |
 
 In process mode ed25519 and ec:P-256 are effectively tied (~33 ms, 556–561
 iss/s).  ML-DSA variants perform well: ML-DSA-44 at 523 iss/s is only 6%
@@ -133,13 +134,13 @@ improves throughput while latency grows linearly.
 
 | Clients | Throughput (iss/s) | Mean (ms) | p99 (ms) | Finalize (ms) |
 |--------:|-------------------:|----------:|---------:|--------------:|
-|   1     |      3             |   407     |  1,341   |    403        |
-|  10     |     11             |   695     |  2,033   |    690        |
-|  25     |     14             | 1,443     |  3,433   |  1,219        |
-|  50     |     14             | 2,623     |  4,730   |  1,601        |
+|   1     |      3             |   357     |    922   |    353        |
+|  10     |     14             |   651     |  2,817   |    647        |
+|  25     |     14             | 1,340     |  4,501   |  1,155        |
+|  50     |     13             | 2,804     |  4,441   |  1,749        |
 
-Throughput saturates at ~14–15 iss/s regardless of concurrency or mode.  At
-c=50, p99 reaches 4.7–4.8 seconds.  This is entirely client-side key
+Throughput saturates at ~13–15 iss/s regardless of concurrency or mode.  At
+c=50, p99 reaches 4.4–4.8 seconds.  This is entirely client-side key
 generation; the server is idle waiting for CSRs.
 
 ---
@@ -147,8 +148,8 @@ generation; the server is idle waiting for CSRs.
 ## CA key type
 
 CA signing is server-side.  The CA key type directly affects the finalize
-phase; other phases are unaffected.  All runs use 25 concurrent clients and
-ec:P-256 client keys.
+phase; other phases are unaffected.  All runs use ec:P-256 client keys;
+process mode uses 25 concurrent clients, inprocess mode uses 50.
 
 ### Process mode
 
@@ -164,17 +165,17 @@ ec:P-256 client keys.
 
 | CA key     | Throughput (iss/s) | Mean (ms) | p99 (ms) | Finalize (ms) |
 |:-----------|-------------------:|----------:|---------:|--------------:|
-| ec:P-256   |    513             |   36.4    |   61.4   |   14.4        |
-| ec:P-384   |    344             |   54.5    |   91.1   |   30.4        |
-| rsa:2048   |    335             |   55.6    |   81.3   |   29.9        |
-| rsa:3072   |    238             |   86.8    |   99.3   |   62.1        |
-| rsa:4096   |    154             |  134.0    |  154.9   |  105.8        |
+| ec:P-256   |    729             |   58.3    |   68.4   |   22.8        |
+| ec:P-384   |    663             |   63.1    |   75.0   |   25.7        |
+| rsa:2048   |    643             |   64.5    |   82.7   |   26.9        |
+| rsa:3072   |    598             |   69.3    |   81.5   |   31.7        |
+| rsa:4096   |    518             |   80.4    |   99.6   |   38.5        |
 
 EC P-256 is the fastest CA key type and the recommended default.  In process
 mode, RSA 2048 CA (466 iss/s) outperforms EC P-384 CA (307 iss/s) because
-OpenSSL's RSA 2048 signing is faster than ECDSA P-384; in inprocess mode the
-gap narrows due to shared-runtime contention.  RSA 4096 as CA reduces
-throughput to 154–183 iss/s (3.4–3.3× penalty vs ec:P-256).
+OpenSSL's RSA 2048 signing is faster than ECDSA P-384; in inprocess mode
+RSA 2048 and EC P-384 are close (643 vs 663 iss/s).  RSA 4096 as CA reduces
+throughput to 183–518 iss/s.
 
 ---
 
@@ -183,7 +184,7 @@ throughput to 154–183 iss/s (3.4–3.3× penalty vs ec:P-256).
 Akāmu supports ML-DSA (FIPS 204 / RFC 9881) CA keys at three NIST security
 levels.  The table measures a full post-quantum chain (matching ML-DSA CA +
 ML-DSA client keys, with `--verify-cert`) and compares to an ec:P-256
-baseline.  All runs use 25 concurrent clients.
+baseline.  Process mode uses 25 concurrent clients, inprocess mode uses 50.
 
 ### Process mode
 
@@ -198,16 +199,16 @@ baseline.  All runs use 25 concurrent clients.
 
 | CA + client  | NIST cat. | Throughput (iss/s) | Mean (ms) | p99 (ms) | Finalize (ms) | vs P-256 | Alloc/iss |
 |:-------------|:---------:|-------------------:|----------:|---------:|--------------:|---------:|----------:|
-| ec:P-256     |     —     |    516             |   36.0    |   55.3   |   14.1        |    —     |  464 KB   |
-| ML-DSA-44    |     2     |    289             |   67.2    |  118.2   |   35.9        |  +87%    |  714 KB   |
-| ML-DSA-65    |     3     |    267             |   74.0    |  110.2   |   46.2        | +106%    |  815 KB   |
-| ML-DSA-87    |     5     |    249             |   80.7    |  102.8   |   54.3        | +124%    |  968 KB   |
+| ec:P-256     |     —     |    730             |   56.0    |   68.2   |   21.9        |    —     |  438 KB   |
+| ML-DSA-44    |     2     |    637             |   64.1    |   84.3   |   28.4        |  +14%    |  671 KB   |
+| ML-DSA-65    |     3     |    551             |   75.6    |   89.5   |   32.3        |  +35%    |  770 KB   |
+| ML-DSA-87    |     5     |    508             |   83.8    |   96.9   |   40.3        |  +50%    |  914 KB   |
 
-ML-DSA-44 shows a smaller overhead in process mode (+52% vs +87%) because the
-server's larger ML-DSA signature is generated out-of-process without competing
-for the client's Tokio runtime.  Allocation pressure in inprocess mode
-(714–968 KB) reflects both client and server heap usage; process mode
-(257–385 KB) reflects client-side only.
+ML-DSA-44 shows a smaller overhead in process mode (+52% vs +14% inprocess)
+because the server's larger ML-DSA signature is generated out-of-process
+without competing for the client's Tokio runtime.  Allocation pressure in
+inprocess mode (671–914 KB) reflects both client and server heap usage;
+process mode (257–385 KB) reflects client-side only.
 
 ML-DSA requires OpenSSL 3.5 or later.  Akāmu will report a startup error if
 the requested key type is unavailable on the installed OpenSSL version.
@@ -216,7 +217,8 @@ the requested key type is unavailable on the installed OpenSSL version.
 
 ## Challenge type
 
-All runs use 25 concurrent clients, ec:P-256 keys, SQLite `:memory:`.
+All runs use ec:P-256 keys and SQLite `:memory:`; process mode uses 25
+concurrent clients, inprocess mode uses 50.
 
 ### Process mode
 
@@ -229,11 +231,11 @@ All runs use 25 concurrent clients, ec:P-256 keys, SQLite `:memory:`.
 
 | Challenge      | Throughput (iss/s) | Mean (ms) | p99 (ms) | Challenge phase (ms) |
 |:---------------|-------------------:|----------:|---------:|---------------------:|
-| http-01        |    519             |   36.5    |   83.4   |    9.4               |
-| dns-persist-01 |    447             |   47.9    |   55.4   |   17.6               |
+| http-01        |    746             |   57.3    |   65.3   |   17.7               |
+| dns-persist-01 |    623             |   67.8    |   83.7   |   26.7               |
 
-`dns-persist-01` adds 5–8 ms to the challenge phase, reducing throughput by
-12–14% in both modes.  Both challenge types deliver zero errors across all
+`dns-persist-01` adds 5–9 ms to the challenge phase, reducing throughput by
+12–16% in both modes.  Both challenge types deliver zero errors across all
 runs.
 
 ---
@@ -242,19 +244,24 @@ runs.
 
 SQLite `:memory:` versus a tmpfs-backed WAL file (`/dev/shm`), sweeping
 concurrency with ec:P-256 keys and http-01.  Inprocess mode only — process
-mode always uses `:memory:`.
+mode always uses `:memory:`.  The tmpfs backend uses a write coalescer that
+batches concurrent writes through a single connection, eliminating `BEGIN
+IMMEDIATE` contention.
 
-| Clients | :memory: (iss/s) | :memory: mean (ms) | tmpfs (iss/s) | tmpfs mean (ms) | Overhead |
-|--------:|-----------------:|-------------------:|--------------:|----------------:|---------:|
-|   1     |    107           |    9.3             |    100        |   10.0          |   −7%    |
-|   5     |    651           |    7.6             |    599        |    8.3          |   −8%    |
-|  10     |    698           |   14.2             |    682        |   14.5          |   −2%    |
-|  25     |    651           |   33.1             |    588        |   37.0          |  −10%    |
-|  50     |    597           |   71.5             |    561        |   75.6          |   −6%    |
+| Clients | :memory: (iss/s) | :memory: mean (ms) | tmpfs (iss/s) | tmpfs mean (ms) | Delta |
+|--------:|-----------------:|-------------------:|--------------:|----------------:|------:|
+|   1     |    114           |    8.7             |    110        |    9.1          |   −4% |
+|   5     |    746           |    6.7             |    845        |    5.9          |  +13% |
+|  10     |    836           |   11.8             |  1,112        |    8.9          |  +33% |
+|  25     |    872           |   28.1             |  1,030        |   23.6          |  +18% |
+|  50     |    747           |   60.6             |    910        |   48.7          |  +22% |
+|  75     |    681           |   96.8             |    932        |   68.6          |  +37% |
 
-Tmpfs WAL is within 6–10% of `:memory:` at all concurrency levels.  The
-overhead comes from WAL write and fsync, not from read amplification.  Tmpfs
-WAL is a viable choice for deployments that need crash-recoverable state
+With the write coalescer, tmpfs WAL **outperforms** `:memory:` at c≥5: the
+coalescer serialises writes on a dedicated connection, avoiding contention
+that `:memory:` still experiences through the pool.  Peak tmpfs throughput is
+1,112 iss/s at c=10 versus 872 iss/s for `:memory:` at c=25.  Tmpfs WAL is
+the recommended backend for deployments that need crash-recoverable state
 without the complexity of PostgreSQL.
 
 ---
@@ -262,57 +269,60 @@ without the complexity of PostgreSQL.
 ## Connection pool
 
 Connection pool sizing affects throughput when multiple concurrent clients
-contend for database writes.  Inprocess mode with tmpfs WAL backend — process
-mode ignores pool settings.
+contend for database reads.  The write coalescer handles all writes through a
+dedicated connection, so the pool primarily serves read operations.  Inprocess
+mode with tmpfs WAL backend — process mode ignores pool settings.
 
 | Pool | c=1 (iss/s) | c=5 (iss/s) | c=10 (iss/s) | c=25 (iss/s) | c=50 (iss/s) |
 |-----:|------------:|------------:|-------------:|-------------:|-------------:|
-|    1 |    104      |    561      |     635      |     544      |     499      |
-|    2 |    105      |    755      |     799      |     656      |     640      |
-|    4 |    102      |    670      |     916      |     731      |     704      |
-|    8 |    103      |    587      |     837      |     651      |     676      |
+|    1 |    129      |    917      |   1,074      |   1,168      |     934      |
+|    2 |    134      |    954      |   1,407      |   1,175      |   1,141      |
+|    4 |    117      |    970      |   1,075      |   1,588      |   1,295      |
+|    8 |    114      |    942      |   1,106      |   1,531      |   1,127      |
 
-At c=1 pool size is irrelevant.  At c=10, pool=4 delivers the best throughput
-(916 iss/s) — a **44% improvement** over pool=1 (635 iss/s).  Pool=2 is the
-best all-round choice: it delivers strong gains at every concurrency level
-without the p99 tail-latency spikes that appear at pool=8 under moderate load.
+At c=1 pool size is irrelevant.  At c=25, pool=4 delivers the best throughput
+(**1,588 iss/s**) — a **36% improvement** over pool=1 (1,168 iss/s).  Pool=4
+is the recommended choice: it delivers the highest peak throughput while
+maintaining reasonable p99 latency (22.8 ms at c=25).
 
-Pool sizes above 4 show diminishing returns and increased p99 variance as
-SQLite's single-writer constraint causes contention on `BEGIN IMMEDIATE`.
+Pool sizes above 4 show diminishing returns; pool=8 at c=25 reaches 1,531
+iss/s (−4% vs pool=4) with slightly higher p99 variance.
 
 ---
 
 ## Read-only pool split
 
 Splitting read-only handlers (get_order, get_authz, download_cert, star_cert,
-renewal_info, ocsp) onto a separate `?mode=ro` connection pool frees the write
-connection for write-path handlers.  Inprocess mode with tmpfs WAL — process
+renewal_info, ocsp) onto a separate `?mode=ro` connection pool frees the
+write pool for write-path handlers.  Inprocess mode with tmpfs WAL — process
 mode ignores pool settings.
 
 | Clients | No split (iss/s) | Split ro=4 (iss/s) | Improvement |
 |--------:|-----------------:|-------------------:|------------:|
-|   1     |    108           |     111            |     +3%     |
-|   5     |    628           |     830            |    +32%     |
-|  10     |    606           |     866            |    +43%     |
-|  25     |    603           |     723            |    +20%     |
-|  50     |    562           |     661            |    +18%     |
+|   1     |    113           |     110            |     −3%     |
+|   5     |    894           |     990            |    +11%     |
+|  10     |  1,253           |   1,154            |     −8%     |
+|  25     |  1,197           |   1,548            |    +29%     |
+|  50     |  1,009           |   1,430            |    +42%     |
 
-The split delivers significant gains at c≥5.  Peak improvement is **+43%** at
-c=10 (866 vs 606 iss/s).  Even at c=50 the split adds 18%.
+The split delivers significant gains at c≥25 where read contention competes
+with the write coalescer.  Peak improvement is **+42%** at c=50 (1,430 vs
+1,009 iss/s).  At lower concurrency the overhead of managing a separate pool
+can slightly reduce throughput.
 
 ### RO connection sweep at c=10
 
 | ro-connections | Throughput (iss/s) | Mean (ms) | p99 (ms) |
 |---------------:|-------------------:|----------:|---------:|
-|   1            |    898             |   10.9    |   15.4   |
-|   2            |    869             |   11.2    |   15.6   |
-|   4            |    872             |   11.3    |   15.3   |
-|   8            |    845             |   11.4    |   18.6   |
-|  16            |    719             |   13.5    |   17.7   |
+|   1            |  1,201             |    8.2    |   12.8   |
+|   2            |  1,207             |    8.1    |   13.2   |
+|   4            |  1,149             |    8.6    |   14.8   |
+|   8            |  1,121             |    8.8    |   15.6   |
+|  16            |  1,223             |    8.1    |   14.3   |
 
-At c=10, even a single RO connection (ro=1) captures most of the benefit
-(898 iss/s).  Beyond ro=4, connection overhead starts to reduce throughput.
-**ro=1 or ro=2 is the recommended setting** for typical deployments.
+At c=10, all RO connection counts perform similarly (1,121–1,223 iss/s).
+**ro=1 or ro=2 is the recommended setting** for typical deployments; higher
+counts add connection overhead without meaningful throughput gain.
 
 ---
 
@@ -332,22 +342,23 @@ At c=10, even a single RO connection (ro=1) captures most of the benefit
 
 ## Capacity planning
 
-Single-node throughput for ec:P-256 keys, http-01, SQLite `:memory:`:
+Single-node throughput for ec:P-256 keys, http-01:
 
 | Target throughput | Configuration | Expected mean latency | Notes |
 |:-----------------:|:--------------|:---------------------:|:------|
-| ≤100 iss/s        | 1 client, pool=1   | ~10 ms           | Minimal deployment |
-| ≤1,000 iss/s      | 5–10 clients       | 5–9 ms           | Sweet spot: low latency, high throughput |
-| ≤1,200 iss/s      | 25 clients         | ~19 ms           | Near single-writer ceiling |
-| ≤900 iss/s        | 10 clients, pool=4, ro=1 | ~11 ms    | RO split + pool tuning (inprocess) |
+| ≤100 iss/s        | 1 client, pool=1   | ~9 ms            | Minimal deployment |
+| ≤1,000 iss/s      | 5–10 clients       | 6–12 ms          | Sweet spot: low latency, high throughput |
+| ≤1,200 iss/s      | 25 clients         | ~20 ms           | Near `:memory:` ceiling |
+| ≤1,600 iss/s      | 25 clients, pool=4, tmpfs WAL | ~14 ms | Coalescer + pool tuning |
 
-Figures assume ec:P-256 keys, http-01 challenge, and SQLite `:memory:`.
-RSA or ML-DSA keys lower throughput proportionally.
+Figures assume ec:P-256 keys and http-01 challenge.  RSA or ML-DSA keys
+lower throughput proportionally.
 
 For the database backend: SQLite `:memory:` suits nodes with no persistent
 state requirement (accounts, orders, and certificates are lost on restart).
-Tmpfs WAL (`/dev/shm`) provides crash-recoverable state with only 6–10%
-overhead.  For persistent deployments, PostgreSQL is recommended; use a
+Tmpfs WAL (`/dev/shm`) with the write coalescer outperforms `:memory:` under
+concurrency (up to 1,588 iss/s vs ~889 iss/s) and provides crash-recoverable
+state.  For persistent deployments, PostgreSQL is recommended; use a
 connection pool of 20–25 (`[database] pool_connections = 25`).
 
 ---
@@ -379,16 +390,16 @@ separate process); in inprocess mode it includes both client and server.
 
 | Configuration                               | Per-issuance alloc |
 |:--------------------------------------------|:------------------:|
-| ec:P-256 CA + ec:P-256 client, c=1          | 412 KB             |
-| ec:P-256 CA + ec:P-256 client, c=5          | 412 KB             |
-| ec:P-256 CA + ec:P-256 client, c=10         | 414 KB             |
-| ec:P-256 CA + ec:P-256 client, c=50         | 432 KB             |
-| ec:P-256 CA + rsa:4096 client, c=25         | 617 KB             |
-| ML-DSA-44 CA + ML-DSA-44 client, c=25       | 714 KB             |
-| ML-DSA-65 CA + ML-DSA-65 client, c=25       | 815 KB             |
-| ML-DSA-87 CA + ML-DSA-87 client, c=25       | 968 KB             |
+| ec:P-256 CA + ec:P-256 client, c=1          | 416 KB             |
+| ec:P-256 CA + ec:P-256 client, c=5          | 416 KB             |
+| ec:P-256 CA + ec:P-256 client, c=10         | 417 KB             |
+| ec:P-256 CA + ec:P-256 client, c=50         | 426 KB             |
+| ec:P-256 CA + rsa:4096 client, c=50         | 531 KB             |
+| ML-DSA-44 CA + ML-DSA-44 client, c=50       | 671 KB             |
+| ML-DSA-65 CA + ML-DSA-65 client, c=50       | 770 KB             |
+| ML-DSA-87 CA + ML-DSA-87 client, c=50       | 914 KB             |
 
-The difference between modes (e.g. 412 KB − 134 KB = 278 KB for ec:P-256)
+The difference between modes (e.g. 416 KB − 134 KB = 282 KB for ec:P-256)
 represents the server-side allocation per issuance: certificate construction,
 DER encoding, audit logging, and database writes.
 
