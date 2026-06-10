@@ -454,6 +454,18 @@ pub struct MtcState {
     pub landmark_interval_secs: u64,
     /// Maximum number of active landmarks to retain.
     pub max_active_landmarks: u32,
+    /// Log number for serialNumber encoding (draft-04 §6.1).
+    pub log_number: u16,
+    /// Minimum valid entry index for Checkpoint (§5.2.3 log pruning).
+    pub tree_minimum_index: Option<u64>,
+    /// DER-encoded CA TrustAnchorID OID for the mandatory self-cosigner (§5.4).
+    /// `None` when the CA does not produce a self-cosignature.
+    pub trust_anchor_id_der: Option<Vec<u8>>,
+    /// DER-encoded LogID issuer DN for leaf hash computation.
+    /// Pre-computed at startup so `append_cert_to_log` can build the same
+    /// `TBSCertificateLogEntry` that a verifier will derive from the standalone
+    /// cert's TBS.  `None` when MTC signing key is not configured.
+    pub logid_issuer_dn_der: Option<Vec<u8>>,
     /// Unix timestamp of the last checkpoint production (for per-CA scheduling).
     pub last_checkpoint: std::sync::atomic::AtomicI64,
     /// Unix timestamp of the last landmark allocation (for per-CA scheduling).
@@ -512,6 +524,10 @@ impl MtcState {
             checkpoint_retention_count: 1000,
             landmark_interval_secs: 86400,
             max_active_landmarks: 100,
+            log_number: 1,
+            tree_minimum_index: None,
+            trust_anchor_id_der: None,
+            logid_issuer_dn_der: None,
             last_checkpoint: std::sync::atomic::AtomicI64::new(0),
             last_landmark: std::sync::atomic::AtomicI64::new(0),
         }

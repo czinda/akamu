@@ -84,6 +84,21 @@ pub struct MtcConfig {
     /// and recreating it; the algorithm is stored in the log's file header.
     #[serde(default = "default_hash_alg")]
     pub hash_alg: String,
+    /// Log number for serialNumber encoding per draft-04 §6.1.
+    /// Serial = `(log_number << 48) | entry_index`.  Default: `1`.
+    /// Consecutive from 1; each CA log gets a unique number.
+    #[serde(default = "default_log_number")]
+    pub log_number: u16,
+    /// Minimum valid entry index (§5.2.3 log pruning).
+    /// When set, included in Checkpoint.treeMinimumIndex and entries below this
+    /// index may have been pruned from the log.
+    #[serde(default)]
+    pub tree_minimum_index: Option<u64>,
+    /// CA's own TrustAnchorID OID (dotted-decimal) for the mandatory CA
+    /// cosigner (§5.4: "Each CA MUST operate a CA cosigner whose cosigner ID
+    /// is the same as its CA ID").  When set, a self-cosignature is produced
+    /// alongside any external cosignatures during checkpoint production.
+    pub trust_anchor_id: Option<String>,
 }
 
 fn default_checkpoint_interval_secs() -> u64 {
@@ -100,4 +115,8 @@ fn default_max_active_landmarks() -> u32 {
 
 fn default_checkpoint_retention_count() -> u32 {
     1000
+}
+
+fn default_log_number() -> u16 {
+    1
 }
