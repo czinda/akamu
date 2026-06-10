@@ -22,7 +22,7 @@ A brand-new log is immediately seeded with a `null_entry` at index 0 (required b
 Appending a certificate leaf involves:
 
 1. Parsing the DER-encoded certificate to extract the `TBSCertificate`.
-2. Converting the `TBSCertificate` to a `TBSCertificateLogEntry` using `synta_mtc::integration::tbs_certificate_to_log_entry`.
+2. Building a `TBSCertificateLogEntry` manually from the parsed TBS fields, substituting the **LogID issuer DN** for the original CA issuer DN. The LogID issuer DN is pre-computed at startup by `build_logid_issuer_dn_der` (in `src/mtc/standalone.rs`) and passed to `append_cert_to_log` as the `logid_issuer_dn_der` parameter. This substitution ensures the Merkle leaf hash matches what a verifier computes from the standalone certificate's TBS (which has the LogID as its issuer, not the CA DN).
 3. Wrapping the entry as a `MerkleTreeCertEntry::TbsCertEntry` and computing the Merkle leaf hash via `hash_log_entry(algorithm, &entry)`. This function TLS wire-encodes the entry (per spec §4.2) and then hashes it with the `\x00` domain separation prefix.
 4. Appending the fixed-size leaf hash (32, 48, or 64 bytes depending on `[mtc].hash_alg`) to the log file under a `tokio::sync::Mutex` guard.
 
@@ -138,6 +138,9 @@ The following read-only endpoints are served under `/acme/mtc/` and return 404 w
 | `GET /acme/mtc/tlog/checkpoint` | `mtc::get_tlog_checkpoint` |
 | `GET /acme/mtc/tlog/tile/{*path}` | `mtc::get_tlog_tile` |
 | `GET /acme/mtc/tlog/cosignature` | `mtc::get_tlog_cosignature` |
+| `GET /acme/mtc/consistency-proof` | `mtc::get_consistency_proof` |
+| `GET /acme/mtc/subtree-root` | `mtc::get_subtree_root` |
+| `GET /acme/mtc/revoked-ranges` | `mtc::get_revoked_ranges` |
 
 ## C2SP tlog-tiles module (`src/mtc/tlog.rs`)
 

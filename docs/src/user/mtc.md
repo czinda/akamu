@@ -75,6 +75,9 @@ checkpoint_interval_secs = 3600    # default: 3600 (1 hour)
 landmark_interval_secs   = 86400   # default: 86400 (1 day)
 max_active_landmarks     = 100     # default: 100
 hash_alg                 = "sha256"  # leaf hash algorithm: sha256 | sha384 | sha512 | sha3-256 | sha3-384 | sha3-512
+log_number               = 1        # serial encoding: (log_number << 48) | entry_index
+# tree_minimum_index     = 0        # §5.2.3 log pruning; absent = no pruning
+# trust_anchor_id        = "1.3.6.1.4.1.44363.47.10.1"  # CA self-cosigner OID (§5.4)
 
 [mtc.signing_key]
 key_file = "/var/lib/akamu/mtc-signing.key"   # auto-generated if absent
@@ -131,7 +134,7 @@ A NULL index means the certificate was either issued before MTC logging was enab
 
 ## HTTP API
 
-Three read-only endpoints expose the log state. All return 404 when MTC is disabled (`enabled = false`).
+The following read-only endpoints expose the log state. All return 404 when MTC is disabled (`enabled = false`).
 
 ### `GET /acme/mtc/tree-size`
 
@@ -199,6 +202,43 @@ Returns 404 when:
 - MTC is disabled
 - No landmark with that sequence number exists
 - The landmark certificate has not yet been built
+
+### `GET /acme/mtc/consistency-proof?from={old_size}&to={new_size}`
+
+Returns the Merkle roots at two tree sizes so a monitor can verify that the tree at `to` extends the tree at `from`.
+
+```json
+{
+  "fromSize": 10,
+  "toSize": 42,
+  "fromRoot": "a1b2c3...",
+  "toRoot": "d4e5f6..."
+}
+```
+
+Both `from` and `to` must be positive integers with `from < to` and `to <= current tree size`. Returns 400 for invalid parameters.
+
+### `GET /acme/mtc/subtree-root?start={start}&end={end}`
+
+Returns the Merkle root hash for the subtree `[start, end)`. The subtree must satisfy the alignment constraint from draft-04 §4.3.1 (`start` is a multiple of `BIT_CEIL(end - start)`).
+
+```json
+{
+  "start": 0,
+  "end": 256,
+  "rootHash": "e3b0c442..."
+}
+```
+
+### `GET /acme/mtc/revoked-ranges`
+
+Returns a JSON array of `[start, end]` pairs representing revoked log entry index ranges (draft-04 §5.6). Relying parties use these to reject standalone certificates whose serial number falls within a revoked range.
+
+```json
+[[10, 15], [100, 120]]
+```
+
+Returns 404 when MTC is disabled.
 
 ## C2SP tlog-tiles API
 

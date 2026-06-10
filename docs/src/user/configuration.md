@@ -38,6 +38,9 @@ ocsp_url             = "http://acme.example.com/ca/ocsp"
 [mtc]
 log_path = "/var/lib/akamu/mtc.log"
 enabled  = false
+# log_number = 1
+# tree_minimum_index = 0
+# trust_anchor_id = "1.3.6.1.4.1.44363.47.10.1"
 
 [server]
 terms_of_service_url        = "https://acme.example.com/tos.html"
@@ -561,7 +564,7 @@ When `issue_as = "mtc"` is set in a profile, the server builds a standalone cert
 
 The `GET /acme/mtc/cert/{cert_id}/standalone` and `GET /acme/mtc/landmarks/{seq}/cert` endpoints return the DER-encoded certificate with `Content-Type: application/pkix-cert` and the `X-MTC-Version: draft-04` response header.
 
-> **OID stability note:** The OIDs are experimental and pre-IANA. They will change when draft-ietf-plants-merkle-tree-certs is published as an RFC, requiring a coordinated update of the `synta-mtc` library and relying implementations. `synta-mtc` 0.2.4 also defines `id-pe-mtcCertificationAuthority` (experimental OID `1.3.6.1.4.1.44363.47.2`) for an X.509 extension that CA certificates may carry. Akāmu does not yet embed this extension in its CA certificates.
+> **OID stability note:** The OIDs are experimental and pre-IANA. They will change when draft-ietf-plants-merkle-tree-certs is published as an RFC, requiring a coordinated update of the `synta-mtc` library and relying implementations. When `[mtc]` is enabled and `[mtc.signing_key]` is configured, the auto-generated CA certificate includes the `id-pe-mtcCertificationAuthority` extension (experimental OID `1.3.6.1.4.1.44363.47.2`), identifying the CA as an MTC-capable issuer.
 
 ### `checkpoint_interval_secs`
 
@@ -623,6 +626,41 @@ The algorithm is stored in the log file's header at creation time and cannot be 
 ```toml
 [mtc]
 hash_alg = "sha256"
+```
+
+### `log_number`
+
+**Optional. Default: `1`.**
+
+Log number for `serialNumber` encoding per draft-04 §6.1. The serial number of each standalone certificate is computed as `(log_number << 48) | entry_index`. Each CA log should receive a unique, consecutive-from-1 log number.
+
+```toml
+[mtc]
+log_number = 1
+```
+
+### `tree_minimum_index`
+
+**Optional. Default: absent.**
+
+Minimum valid entry index (§5.2.3 log pruning). When set, the value is included in the `Checkpoint.treeMinimumIndex` field, indicating that entries below this index may have been pruned from the log. Relying parties should not attempt to verify inclusion proofs for entries below this index.
+
+```toml
+[mtc]
+tree_minimum_index = 100
+```
+
+### `trust_anchor_id`
+
+**Optional. Default: absent.**
+
+The CA's own `TrustAnchorID` OID in dotted-decimal notation. Per draft-04 §5.4, each CA MUST operate a CA cosigner whose cosigner ID is the same as its CA ID. When set, a self-cosignature is produced alongside any external cosignatures during checkpoint production. The signing key configured in `[mtc.signing_key]` is used for the self-cosignature.
+
+When absent, no self-cosignature is produced.
+
+```toml
+[mtc]
+trust_anchor_id = "1.3.6.1.4.1.44363.47.10.1"
 ```
 
 ### `[mtc.signing_key]`
