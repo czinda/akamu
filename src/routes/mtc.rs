@@ -4,9 +4,10 @@
 
 use std::collections::HashMap;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -293,4 +294,127 @@ pub async fn get_tlog_cosignature(
         note,
     )
         .into_response())
+}
+
+#[derive(Deserialize)]
+pub struct ConsistencyParams {
+    pub from: u64,
+    pub to: u64,
+}
+
+/// GET /acme/mtc/consistency-proof?from={old_size}&to={new_size}
+///
+/// Returns the Merkle roots at both tree sizes so a monitor can verify
+/// that the tree at `to` extends the tree at `from`.
+pub async fn get_consistency_proof(
+    State(state): State<Arc<AppState>>,
+    ca_id: CaId,
+    Query(params): Query<ConsistencyParams>,
+) -> Result<Response, AcmeError> {
+    let ca = state.get_ca(&ca_id.0).ok_or(AcmeError::NotFound)?;
+    let shared_log = ca.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
+
+    if params.from == 0 || params.to == 0 {
+        return Err(AcmeError::BadRequest("from and to must be positive".into()));
+    }
+    if params.from >= params.to {
+        return Err(AcmeError::BadRequest("from must be less than to".into()));
+    }
+
+    let current_size = log::tree_size(shared_log).await?;
+    if params.to > current_size {
+        return Err(AcmeError::BadRequest(format!(
+            "to ({}) exceeds current tree size ({})",
+            params.to, current_size
+        )));
+    }
+
+    let from_root = log::compute_root_at_size(shared_log, ca.mtc.algorithm, params.from).await?;
+    let to_root = log::compute_root_at_size(shared_log, ca.mtc.algorithm, params.to).await?;
+
+    Ok((
+        StatusCode::OK,
+        axum::Json(json!({
+            "fromSize": params.from,
+            "toSize": params.to,
+            "fromRoot": hex(&from_root),
+            "toRoot": hex(&to_root),
+        })),
+    )
+        .into_response())
+}
+
+#[derive(Deserialize)]
+pub struct SubtreeRootParams {
+    pub start: u64,
+    pub end: u64,
+}
+
+/// GET /acme/mtc/subtree-root?start={start}&end={end}
+///
+/// Returns the Merkle root hash for the subtree `[start, end)`.  The subtree
+/// must satisfy the alignment constraint from §4.3.1 (`start` is a multiple
+/// of `BIT_CEIL(end - start)`).
+pub async fn get_subtree_root(
+    State(state): State<Arc<AppState>>,
+    ca_id: CaId,
+    Query(params): Query<SubtreeRootParams>,
+) -> Result<Response, AcmeError> {
+    let ca = state.get_ca(&ca_id.0).ok_or(AcmeError::NotFound)?;
+    let shared_log = ca.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
+
+    if params.start >= params.end {
+        return Err(AcmeError::BadRequest("start must be less than end".into()));
+    }
+
+    let size = params.end - params.start;
+    let alignment = size.next_power_of_two();
+    if !params.start.is_multiple_of(alignment) {
+        return Err(AcmeError::BadRequest(format!(
+            "start {} is not aligned to BIT_CEIL({}) = {} (§4.3.1)",
+            params.start, size, alignment
+        )));
+    }
+
+    let current_size = log::tree_size(shared_log).await?;
+    if params.end > current_size {
+        return Err(AcmeError::BadRequest(format!(
+            "end ({}) exceeds current tree size ({})",
+            params.end, current_size
+        )));
+    }
+
+    let hashes = log::read_hash_range(
+        shared_log,
+        params.start,
+        (params.end - params.start) as usize,
+    )
+    .await?;
+    let subtree_root = synta_mtc::crypto::generate_subtree_hash(ca.mtc.algorithm, &hashes)
+        .map_err(|e| AcmeError::Mtc(format!("generate_subtree_hash: {e}")))?;
+
+    Ok((
+        StatusCode::OK,
+        axum::Json(json!({
+            "start": params.start,
+            "end": params.end,
+            "rootHash": hex(&subtree_root),
+        })),
+    )
+        .into_response())
+}
+
+/// GET /acme/mtc/revoked-ranges  or  GET /acme/{ca_id}/mtc/revoked-ranges
+///
+/// Returns a JSON array of `[start, end]` pairs representing revoked log entry
+/// index ranges (§5.6).  Relying parties use these to reject standalone
+/// certificates whose serial number falls within a revoked range.
+pub async fn get_revoked_ranges(
+    State(state): State<Arc<AppState>>,
+    ca_id: CaId,
+) -> Result<Response, AcmeError> {
+    let _ca = state.get_ca(&ca_id.0).ok_or(AcmeError::NotFound)?;
+    let rows = db::revoked_ranges::get_all(&state.db_ro, &ca_id.0).await?;
+    let ranges: Vec<_> = rows.iter().map(|r| [r.range_start, r.range_end]).collect();
+    Ok((StatusCode::OK, axum::Json(json!(ranges))).into_response())
 }

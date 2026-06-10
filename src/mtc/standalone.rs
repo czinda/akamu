@@ -14,6 +14,45 @@ use synta_mtc::types::{LogID, SubtreeSignature};
 
 use crate::error::AcmeError;
 
+/// Pre-compute the DER encoding of the LogID issuer DN.
+///
+/// Returns the DER-encoded X.509 `Name` that `MtcX509CertificateBuilder` uses
+/// as the standalone cert's issuer.  The same issuer must be used when computing
+/// the Merkle leaf hash so that log entry verification matches.
+pub fn build_logid_issuer_dn_der(
+    spki_der: &[u8],
+    log_algorithm: HashAlgorithm,
+) -> Result<Vec<u8>, AcmeError> {
+    use synta::types::string::OctetStringRef;
+    use synta::{ObjectIdentifier, SetOf};
+    use synta_certificate::owned::{AttributeTypeAndValue, Name};
+
+    let log_id = build_log_id(spki_der, log_algorithm)?;
+
+    let mut log_id_enc = Encoder::new(Encoding::Der);
+    log_id
+        .encode(&mut log_id_enc)
+        .map_err(|e| AcmeError::Mtc(format!("encode LogID: {e}")))?;
+    let log_id_der = log_id_enc
+        .finish()
+        .map_err(|e| AcmeError::Mtc(format!("finish LogID DER: {e}")))?;
+
+    let attr_type = ObjectIdentifier::new(synta_mtc::types::constants::ID_RDNA_TRUST_ANCHOR_ID_EXP)
+        .map_err(|_| AcmeError::Mtc("invalid trustAnchorID OID".into()))?;
+
+    let atv = AttributeTypeAndValue {
+        r#type: attr_type,
+        value: Element::OctetString(OctetStringRef::new(&log_id_der)),
+    };
+    let name = Name::RdnSequence(vec![SetOf::from_vec(vec![atv])]);
+
+    let mut enc = Encoder::new(Encoding::Der);
+    name.encode(&mut enc)
+        .map_err(|e| AcmeError::Mtc(format!("encode LogID issuer DN: {e}")))?;
+    enc.finish()
+        .map_err(|e| AcmeError::Mtc(format!("finish LogID issuer DN DER: {e}")))
+}
+
 /// All inputs required to build a standalone MTC certificate.
 ///
 /// `proof` must have been generated against a Merkle tree of exactly `tree_size`
@@ -39,6 +78,11 @@ pub struct StandaloneParams<'a> {
     /// `(cosigner_url, DER)` pairs.  The URL is used only for diagnostic logging
     /// on decode failure; an empty string is acceptable when no URL is available.
     pub cosignature_ders: &'a [(String, Vec<u8>)],
+    /// Log number for serialNumber encoding (draft-04 §6.1).
+    pub log_number: u16,
+    /// Start of the subtree range for the inclusion proof.
+    /// `0` means the proof covers the full tree `[0, tree_size)`.
+    pub subtree_start: u64,
 }
 
 /// Build and DER-encode an X.509 standalone MTC certificate.
@@ -59,6 +103,8 @@ pub fn build_standalone_der(p: StandaloneParams<'_>) -> Result<Vec<u8>, AcmeErro
         spki_der,
         log_algorithm,
         cosignature_ders,
+        log_number,
+        subtree_start,
     } = p;
 
     let log_id = build_log_id(spki_der, log_algorithm)?;
@@ -66,7 +112,20 @@ pub fn build_standalone_der(p: StandaloneParams<'_>) -> Result<Vec<u8>, AcmeErro
     let mut signatures: Vec<MtcSignature> = Vec::new();
     for (i, (url, der)) in cosignature_ders.iter().enumerate() {
         match extract_mtc_signature(der) {
-            Ok(sig) => signatures.push(sig),
+            Ok((sig, cosig_start, cosig_end)) => {
+                if cosig_start == subtree_start && cosig_end == tree_size {
+                    signatures.push(sig);
+                } else {
+                    tracing::debug!(
+                        cosig_start,
+                        cosig_end,
+                        subtree_start,
+                        tree_size,
+                        cosigner_url = %url,
+                        "skipping cosignature: subtree range mismatch"
+                    );
+                }
+            }
             Err(e) => tracing::warn!(
                 index = i,
                 cosigner_url = %url,
@@ -74,19 +133,22 @@ pub fn build_standalone_der(p: StandaloneParams<'_>) -> Result<Vec<u8>, AcmeErro
             ),
         }
     }
-    if signatures.len() < cosignature_ders.len() {
-        tracing::warn!(
-            expected = cosignature_ders.len(),
-            embedded = signatures.len(),
-            "some cosignatures could not be decoded and were excluded from the standalone cert"
-        );
-    }
+
+    // §6.1: signatures MUST be ordered by cosigner_id (shorter first, then lex)
+    // and MUST have unique cosigner IDs.
+    signatures.sort_by(|a, b| {
+        a.cosigner_id
+            .len()
+            .cmp(&b.cosigner_id.len())
+            .then_with(|| a.cosigner_id.cmp(&b.cosigner_id))
+    });
+    signatures.dedup_by(|a, b| a.cosigner_id == b.cosigner_id);
 
     let inclusion_proof_bytes: Vec<u8> = proof.into_iter().flatten().collect();
 
     let mtc_proof = MtcProof {
         extensions: vec![],
-        start: 0,
+        start: subtree_start,
         end: tree_size,
         inclusion_proof: inclusion_proof_bytes,
         signatures,
@@ -109,6 +171,7 @@ pub fn build_standalone_der(p: StandaloneParams<'_>) -> Result<Vec<u8>, AcmeErro
         .original_tbs_der(&tbs_der)
         .log_id(log_id)
         .log_entry_index(leaf_index)
+        .log_number(log_number)
         .mtc_proof(mtc_proof)
         .build()
         .map_err(|e| AcmeError::Mtc(format!("build MtcX509 standalone cert: {e}")))
@@ -138,14 +201,26 @@ pub(crate) fn build_log_id(
     })
 }
 
-/// Extract an `MtcSignature` record from a DER-encoded `SubtreeSignature`.
+/// Extract an `MtcSignature` plus the cosignature's subtree range from a
+/// DER-encoded `SubtreeSignature`.
 ///
-/// `cosigner_id` is produced by DER-encoding `subtree_sig.cosigner`;
-/// `signature_value` is the raw bytes of `subtree_sig.signature`.
-fn extract_mtc_signature(cosig_der: &[u8]) -> Result<MtcSignature, AcmeError> {
+/// Returns `(signature, subtree_start, subtree_end)` so callers can filter
+/// cosignatures by subtree range.
+fn extract_mtc_signature(cosig_der: &[u8]) -> Result<(MtcSignature, u64, u64), AcmeError> {
     let sig: SubtreeSignature<'_> = Decoder::new(cosig_der, Encoding::Der)
         .decode()
         .map_err(|e| AcmeError::Mtc(format!("decode SubtreeSignature: {e}")))?;
+
+    let cosig_start: u64 = sig
+        .subtree
+        .start
+        .as_u64()
+        .map_err(|e| AcmeError::Mtc(format!("subtree start: {e}")))?;
+    let cosig_end: u64 = sig
+        .subtree
+        .end
+        .as_u64()
+        .map_err(|e| AcmeError::Mtc(format!("subtree end: {e}")))?;
 
     let mut enc = Encoder::new(Encoding::Der);
     sig.cosigner
@@ -157,8 +232,12 @@ fn extract_mtc_signature(cosig_der: &[u8]) -> Result<MtcSignature, AcmeError> {
 
     let signature_value = sig.signature.as_bytes().to_vec();
 
-    Ok(MtcSignature {
-        cosigner_id: cosigner_id_der,
-        signature_value,
-    })
+    Ok((
+        MtcSignature {
+            cosigner_id: cosigner_id_der,
+            signature_value,
+        },
+        cosig_start,
+        cosig_end,
+    ))
 }

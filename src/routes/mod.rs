@@ -184,6 +184,15 @@ pub fn build_router(state: Arc<AppState>, static_dir: Option<&std::path::Path>) 
         .route("/acme/mtc/tlog/checkpoint", get(mtc::get_tlog_checkpoint))
         .route("/acme/mtc/tlog/cosignature", get(mtc::get_tlog_cosignature))
         .route("/acme/mtc/tlog/tile/{*path}", get(mtc::get_tlog_tile))
+        // Consistency proof for monitors
+        .route(
+            "/acme/mtc/consistency-proof",
+            get(mtc::get_consistency_proof),
+        )
+        // Subtree root hash
+        .route("/acme/mtc/subtree-root", get(mtc::get_subtree_root))
+        // Revoked ranges
+        .route("/acme/mtc/revoked-ranges", get(mtc::get_revoked_ranges))
         // EAB identity — returns authenticated principal (proxy header or GSSAPI)
         .route("/acme/eab", get(eab_identity::get_eab_identity))
         .layer(axum::middleware::from_fn_with_state(
@@ -263,6 +272,15 @@ pub fn build_router(state: Arc<AppState>, static_dir: Option<&std::path::Path>) 
         .route(
             "/acme/{ca_id}/mtc/tlog/tile/{*path}",
             get(mtc::get_tlog_tile),
+        )
+        .route(
+            "/acme/{ca_id}/mtc/consistency-proof",
+            get(mtc::get_consistency_proof),
+        )
+        .route("/acme/{ca_id}/mtc/subtree-root", get(mtc::get_subtree_root))
+        .route(
+            "/acme/{ca_id}/mtc/revoked-ranges",
+            get(mtc::get_revoked_ranges),
         )
         .layer(axum::middleware::from_fn_with_state(
             Arc::clone(&state),

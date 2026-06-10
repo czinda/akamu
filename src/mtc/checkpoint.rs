@@ -18,6 +18,20 @@ use crate::mtc::cosign::CosignerClient;
 use crate::mtc::log::SharedLog;
 use crate::state::AppState;
 
+/// Parameters for [`produce_checkpoint`].
+pub struct CheckpointParams<'a> {
+    pub log: &'a SharedLog,
+    pub signing_key: &'a BackendPrivateKey,
+    pub signing_hash_alg: &'a str,
+    pub log_algorithm: HashAlgorithm,
+    pub db: &'a Db,
+    pub ca_id: &'a str,
+    pub cosigners: &'a [CosignerClient],
+    pub log_number: u16,
+    pub tree_minimum_index: Option<u64>,
+    pub trust_anchor_id_der: Option<&'a [u8]>,
+}
+
 /// Produce and persist a checkpoint for the current log state.
 ///
 /// After the checkpoint is stored:
@@ -27,28 +41,37 @@ use crate::state::AppState;
 ///
 /// No-op when the log is empty or when the latest stored checkpoint already
 /// covers the current tree size.
-pub async fn produce_checkpoint(
-    log: &SharedLog,
-    signing_key: &BackendPrivateKey,
-    signing_hash_alg: &str,
-    log_algorithm: HashAlgorithm,
-    db: &Db,
-    ca_id: &str,
-    cosigners: &[CosignerClient],
-) -> Result<(), AcmeError> {
+pub async fn produce_checkpoint(params: CheckpointParams<'_>) -> Result<(), AcmeError> {
+    let CheckpointParams {
+        log,
+        signing_key,
+        signing_hash_alg,
+        log_algorithm,
+        db,
+        ca_id,
+        cosigners,
+        log_number,
+        tree_minimum_index,
+        trust_anchor_id_der,
+    } = params;
     let tree_size = crate::mtc::log::tree_size(log).await?;
 
     if tree_size == 0 {
         return Ok(());
     }
 
-    // Skip when the latest checkpoint already covers this tree size.
-    if let Some(latest) = db::checkpoints::get_latest(db, ca_id).await? {
-        if latest.tree_size as u64 >= tree_size {
-            tracing::debug!(tree_size, "MTC checkpoint up to date; skipping");
-            return Ok(());
+    // Capture previous checkpoint tree size for subtree-relative proofs,
+    // and skip when the latest checkpoint already covers this tree size.
+    let prev_tree_size = match db::checkpoints::get_latest(db, ca_id).await? {
+        Some(latest) => {
+            if latest.tree_size as u64 >= tree_size {
+                tracing::debug!(tree_size, "MTC checkpoint up to date; skipping");
+                return Ok(());
+            }
+            latest.tree_size as u64
         }
-    }
+        None => 0,
+    };
 
     let now_unix = crate::util::unix_now();
 
@@ -68,13 +91,30 @@ pub async fn produce_checkpoint(
         cert_der: Vec<u8>,
         leaf_index: u64,
         proof: Vec<Vec<u8>>,
+        subtree_start: u64,
+    }
+
+    // Subtree info produced by Phase 1: which range [start, end) the proofs cover,
+    // and the Merkle root of that subtree's leaf hashes.
+    struct SubtreeInfo {
+        start: u64,
+        root: Vec<u8>,
     }
 
     // ── Phase 1 (blocking): compute root, generate proofs, build + sign checkpoint ──
-    type Phase1Result = Result<(u64, Vec<u8>, Vec<u8>, Vec<u8>, Vec<CertProofEntry>), AcmeError>;
-    let (actual_tree_size, root_bytes, checkpoint_der, signature, cert_proofs) =
+    type Phase1Result = Result<
+        (
+            u64,
+            Vec<u8>,
+            Vec<u8>,
+            Vec<u8>,
+            Vec<CertProofEntry>,
+            SubtreeInfo,
+        ),
+        AcmeError,
+    >;
+    let (actual_tree_size, root_bytes, checkpoint_der, signature, cert_proofs, subtree_info) =
         tokio::task::spawn_blocking(move || -> Phase1Result {
-            // Obtain the signing key's SubjectPublicKeyInfo DER.
             let spki_der = key
                 .public_key()
                 .map_err(|e| AcmeError::Crypto(format!("MTC signing key public: {e}")))?
@@ -83,39 +123,100 @@ pub async fn produce_checkpoint(
 
             // Lock the log ONCE for tree_size, compute_root, and generate_proof so
             // that the checkpoint covers the exact tree state at the root computation.
-            // Reading tree_size outside this guard (as an early-exit hint) is fine;
-            // the value here is the authoritative size embedded in the checkpoint DER.
-            let (actual_tree_size, root_bytes, cert_proofs) = {
+            let (actual_tree_size, root_bytes, cert_proofs, subtree_info) = {
                 let mut guard = log_clone.blocking_lock();
                 let actual_tree_size = guard.tree_size()?;
-                // compute_root also warms the CachedLog root cache.
                 let root = guard.compute_root()?;
+
+                // Decide whether subtree-relative proofs are feasible for this batch.
+                // Requirements: (1) a prior checkpoint exists, (2) all pending certs
+                // are in the new range, (3) subtree alignment per §4.3.1.
+                let subtree_size = actual_tree_size.saturating_sub(prev_tree_size);
+                let use_subtree = prev_tree_size > 0
+                    && subtree_size > 0
+                    && prev_tree_size % subtree_size.next_power_of_two() == 0
+                    && pending_certs
+                        .iter()
+                        .all(|c| (c.mtc_log_index as u64) >= prev_tree_size);
+
+                tracing::debug!(
+                    use_subtree,
+                    prev_tree_size,
+                    actual_tree_size,
+                    subtree_size,
+                    "subtree proof decision"
+                );
+
                 let mut proofs: Vec<CertProofEntry> = Vec::new();
-                for cert in &pending_certs {
-                    match guard.generate_proof(cert.mtc_log_index as u64) {
-                        Ok(proof) => proofs.push(CertProofEntry {
-                            cert_id: cert.id.clone(),
-                            cert_der: cert.der.clone(),
-                            leaf_index: cert.mtc_log_index as u64,
-                            proof,
-                        }),
-                        Err(e) => tracing::error!(
-                            cert_id = %cert.id,
-                            "generate_proof for standalone cert: {e}"
-                        ),
+
+                if use_subtree {
+                    let subtree_hashes =
+                        guard.read_hash_range(prev_tree_size, subtree_size as usize)?;
+                    let subtree_root =
+                        synta_mtc::crypto::generate_subtree_hash(log_algorithm, &subtree_hashes)
+                            .map_err(|e| AcmeError::Mtc(format!("subtree root: {e}")))?;
+
+                    for cert in &pending_certs {
+                        let leaf_index = cert.mtc_log_index as u64;
+                        let relative_index = leaf_index - prev_tree_size;
+                        match synta_mtc::crypto::generate_inclusion_proof(
+                            log_algorithm,
+                            relative_index,
+                            &subtree_hashes,
+                        ) {
+                            Ok(proof) => proofs.push(CertProofEntry {
+                                cert_id: cert.id.clone(),
+                                cert_der: cert.der.clone(),
+                                leaf_index,
+                                proof,
+                                subtree_start: prev_tree_size,
+                            }),
+                            Err(e) => tracing::error!(
+                                cert_id = %cert.id,
+                                "generate subtree proof: {e}"
+                            ),
+                        }
                     }
+
+                    let info = SubtreeInfo {
+                        start: prev_tree_size,
+                        root: subtree_root,
+                    };
+                    (actual_tree_size, root, proofs, info)
+                } else {
+                    for cert in &pending_certs {
+                        let leaf_index = cert.mtc_log_index as u64;
+                        match guard.generate_proof(leaf_index) {
+                            Ok(proof) => proofs.push(CertProofEntry {
+                                cert_id: cert.id.clone(),
+                                cert_der: cert.der.clone(),
+                                leaf_index,
+                                proof,
+                                subtree_start: 0,
+                            }),
+                            Err(e) => tracing::error!(
+                                cert_id = %cert.id,
+                                "generate full-tree proof: {e}"
+                            ),
+                        }
+                    }
+
+                    let info = SubtreeInfo {
+                        start: 0,
+                        root: root.clone(),
+                    };
+                    (actual_tree_size, root, proofs, info)
                 }
-                (actual_tree_size, root, proofs)
             };
             // Log mutex released here.
 
-            // Build and sign the DER-encoded Checkpoint structure.
             let checkpoint_der = build_checkpoint_der(
                 &spki_der,
                 actual_tree_size,
                 &root_bytes,
                 now_unix,
                 log_algorithm,
+                tree_minimum_index,
             )?;
             let signer = key.as_signer(&hash_alg_str);
             let signature = signer
@@ -128,6 +229,7 @@ pub async fn produce_checkpoint(
                 checkpoint_der,
                 signature,
                 cert_proofs,
+                subtree_info,
             ))
         })
         .await
@@ -150,16 +252,32 @@ pub async fn produce_checkpoint(
         .await?
         .map(|r| r.id);
 
+    // ── CA self-cosignature (§5.4) ──────────────────────────────────────────────
+    let mut cosig_ders: Vec<(String, Vec<u8>)> = Vec::new();
+    if let Some(ta_der) = trust_anchor_id_der {
+        match crate::mtc::cosign::build_ca_self_cosignature(
+            signing_key,
+            signing_hash_alg,
+            ta_der,
+            &checkpoint_der,
+            subtree_info.start,
+            actual_tree_size,
+            &subtree_info.root,
+        ) {
+            Ok(der) => {
+                tracing::debug!("CA self-cosignature produced");
+                cosig_ders.push(("self".to_string(), der));
+            }
+            Err(e) => tracing::error!("CA self-cosignature failed: {e}"),
+        }
+    }
+
     // ── Async: gather cosignatures from external cosigners ────────────────────
-    let cosig_results = if cosigners.is_empty() {
-        Vec::new()
-    } else {
-        crate::mtc::cosign::gather_cosignatures(&checkpoint_der, cosigners).await
-    };
-    let cosig_ders: Vec<(String, Vec<u8>)> = cosig_results
-        .iter()
-        .map(|(u, d)| (u.clone(), d.clone()))
-        .collect();
+    if !cosigners.is_empty() {
+        let external = crate::mtc::cosign::gather_cosignatures(&checkpoint_der, cosigners).await;
+        cosig_ders.extend(external);
+    }
+    let cosig_results: Vec<(String, Vec<u8>)> = cosig_ders.clone();
 
     // Compute SPKI DER once for LogID construction inside build_standalone_der.
     let spki_der: Vec<u8> = signing_key
@@ -181,6 +299,8 @@ pub async fn produce_checkpoint(
                     spki_der: &spki_der,
                     log_algorithm,
                     cosignature_ders: &cosig_ders,
+                    log_number,
+                    subtree_start: entry.subtree_start,
                 },
             ) {
                 Ok(der) => out.push((entry.cert_id, der)),
@@ -226,6 +346,7 @@ fn build_checkpoint_der(
     root_bytes: &[u8],
     now_unix: i64,
     log_algorithm: HashAlgorithm,
+    tree_minimum_index: Option<u64>,
 ) -> Result<Vec<u8>, AcmeError> {
     use synta::traits::Encode;
     use synta::types::string::OctetString;
@@ -241,7 +362,7 @@ fn build_checkpoint_der(
     let checkpoint = Checkpoint {
         log_id,
         tree_size: Integer::from(tree_size),
-        tree_minimum_index: None,
+        tree_minimum_index: tree_minimum_index.map(Integer::from),
         root_value: OctetString::from(root_bytes.to_vec()),
         timestamp,
     };
@@ -278,15 +399,18 @@ pub fn spawn_checkpoint_task(state: Arc<AppState>) -> tokio::task::JoinHandle<()
                 if now - mtc.last_checkpoint_at() < mtc.checkpoint_interval_secs as i64 {
                     continue;
                 }
-                if let Err(e) = produce_checkpoint(
+                if let Err(e) = produce_checkpoint(CheckpointParams {
                     log,
                     signing_key,
-                    &mtc.signing_hash_alg,
-                    mtc.algorithm,
-                    &state.db,
+                    signing_hash_alg: &mtc.signing_hash_alg,
+                    log_algorithm: mtc.algorithm,
+                    db: &state.db,
                     ca_id,
-                    &mtc.cosigner_clients,
-                )
+                    cosigners: &mtc.cosigner_clients,
+                    log_number: mtc.log_number,
+                    tree_minimum_index: mtc.tree_minimum_index,
+                    trust_anchor_id_der: mtc.trust_anchor_id_der.as_deref(),
+                })
                 .await
                 {
                     tracing::error!(ca_id, "MTC checkpoint failed: {e}");

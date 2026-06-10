@@ -15,9 +15,11 @@
 //! | 0x02 | ECDSA P-256/P-384/P-521 | `SHA-256(SPKI_DER)[:4]` |
 //! | 0x04 | Timestamped Ed25519 cosignature | `SHA-256(name \|\| LF \|\| 0x04 \|\| 32-byte pubkey)[:4]` |
 //! | 0x05 | RFC 6962 TreeHeadSignature | per c2sp.org/static-ct-api |
-//! | 0x06 | Timestamped ML-DSA-44 cosignature | `SHA-256(name \|\| LF \|\| 0x06 \|\| 1312-byte pubkey)[:4]` |
+//! | 0x06 | ML-DSA-44 (operator and cosigner) | `SHA-256(name \|\| LF \|\| 0x06 \|\| 1312-byte pubkey)[:4]` |
 //!
 //! Types 0x01 and 0x02 are for the **primary log operator**.
+//! Type 0x06 is used for **both** operator and cosigner roles: C2SP
+//! tlog-checkpoint recommends ML-DSA-44 cosignatures for operator signing.
 //! Types 0x04 and 0x06 are for **cosigners** (including Akāmu acting as a
 //! cosigner for another log via `sign_as_cosigner`).
 //! Type 0x05 is a CT-log compatibility type; its key ID and signature format
@@ -57,8 +59,11 @@ const NOTE_TYPE_ED25519_OPERATOR: u8 = 0x01;
 const NOTE_TYPE_ECDSA: u8 = 0x02;
 /// Timestamped Ed25519 cosignature (type 0x04).
 const NOTE_TYPE_ED25519_COSIGNER: u8 = 0x04;
-/// Timestamped ML-DSA-44 cosignature (type 0x06).
-const NOTE_TYPE_ML_DSA_44_COSIGNER: u8 = 0x06;
+/// ML-DSA-44 (type 0x06).  Used for both operator and cosigner roles per
+/// C2SP tlog-checkpoint ("Logs SHOULD use ML-DSA-44 cosignatures to sign the
+/// checkpoint") and tlog-cosignature specs.  The cosigned_message format
+/// binds the signer name cryptographically, so a single type byte suffices.
+const NOTE_TYPE_ML_DSA_44: u8 = 0x06;
 
 // ── Signing role ──────────────────────────────────────────────────────────────
 
@@ -70,7 +75,7 @@ const NOTE_TYPE_ML_DSA_44_COSIGNER: u8 = 0x06;
 /// |------------|-------------------|-----------------|
 /// | Ed25519    | 0x01              | 0x04            |
 /// | ECDSA      | 0x02              | 0x02 (same)     |
-/// | ML-DSA-44  | (unsupported)     | 0x06            |
+/// | ML-DSA-44  | 0x06              | 0x06 (same)     |
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum NoteSigningRole {
     /// Primary log operator; signs the checkpoint note body directly.
@@ -117,10 +122,10 @@ fn key_id_from_bytes(
 /// - Ed25519 + `LogOperator`  → `(NOTE_TYPE_ED25519_OPERATOR, SHA-256(name||LF||0x01||pubkey)[:4])`
 /// - Ed25519 + `Cosigner`     → `(NOTE_TYPE_ED25519_COSIGNER, SHA-256(name||LF||0x04||pubkey)[:4])`
 /// - ECDSA (any role)         → `(NOTE_TYPE_ECDSA, SHA-256(SPKI_DER)[:4])`
-/// - ML-DSA-44 + `Cosigner`  → `(NOTE_TYPE_ML_DSA_44_COSIGNER, SHA-256(name||LF||0x06||pubkey)[:4])`
+/// - ML-DSA-44 (any role)    → `(NOTE_TYPE_ML_DSA_44, SHA-256(name||LF||0x06||pubkey)[:4])`
 ///
-/// Returns an error for Ed448, RSA, ML-DSA-44 as `LogOperator`, or any other
-/// key type without a defined C2SP signed-note type byte.
+/// Returns an error for Ed448, RSA, or any other key type without a defined
+/// C2SP signed-note type byte.
 pub fn compute_key_id(
     key_name: &str,
     key: &synta_certificate::BackendPrivateKey,
@@ -170,7 +175,11 @@ pub fn compute_key_id(
                 .map_err(|_| AcmeError::Mtc("key ID conversion failed".into()))?;
             Ok((NOTE_TYPE_ECDSA, key_id))
         }
-        ("ml-dsa-44", NoteSigningRole::Cosigner) => {
+        ("ml-dsa-44", _) => {
+            // Type 0x06 for both operator and cosigner roles.  The
+            // cosigned_message format cryptographically binds the signer name,
+            // so a single type byte suffices (unlike Ed25519 which needs 0x01
+            // vs 0x04).
             let raw = raw_pubkey_from_spki(spki_der)?;
             if raw.len() != ML_DSA_44_PUBKEY_LEN {
                 return Err(AcmeError::Mtc(format!(
@@ -180,15 +189,10 @@ pub fn compute_key_id(
                 )));
             }
             Ok((
-                NOTE_TYPE_ML_DSA_44_COSIGNER,
-                key_id_from_bytes(key_name, NOTE_TYPE_ML_DSA_44_COSIGNER, &raw)?,
+                NOTE_TYPE_ML_DSA_44,
+                key_id_from_bytes(key_name, NOTE_TYPE_ML_DSA_44, &raw)?,
             ))
         }
-        ("ml-dsa-44", NoteSigningRole::LogOperator) => Err(AcmeError::Mtc(
-            "ML-DSA-44 is not a valid primary log operator key type in C2SP signed-note; \
-             use Cosigner role (type 0x06) or switch to Ed25519 / ECDSA P-256"
-                .into(),
-        )),
         ("ed448", _) => Err(AcmeError::Mtc(
             "Ed448 has no assigned C2SP signed-note type byte; \
              use Ed25519 (type 0x01/0x04) or ECDSA P-256 (type 0x02)"
@@ -231,7 +235,11 @@ fn raw_sign(
 }
 
 /// Produce a complete C2SP signed-note for a checkpoint, signed by the **log
-/// operator** (types 0x01 for Ed25519, 0x02 for ECDSA).
+/// operator**.
+///
+/// - Ed25519 (0x01) / ECDSA (0x02): signs the note body directly.
+/// - ML-DSA-44 (0x06): uses the `cosigned_message` format from C2SP
+///   tlog-cosignature, as recommended by the tlog-checkpoint spec.
 ///
 /// Returned format:
 /// ```text
@@ -239,7 +247,7 @@ fn raw_sign(
 /// <tree_size>
 /// <base64(root_hash)>
 ///
-/// — <key_name> <base64(key_id || signature)>
+/// — <key_name> <base64(signature_blob)>
 /// ```
 pub fn sign_checkpoint_as_operator(
     key_name: &str,
@@ -251,18 +259,59 @@ pub fn sign_checkpoint_as_operator(
 ) -> Result<String, AcmeError> {
     let body = checkpoint_note_body(origin, tree_size, root_hash);
     let (type_byte, key_id) = compute_key_id(key_name, key, NoteSigningRole::LogOperator)?;
-    let sig = raw_sign(key, hash_alg, body.as_bytes())?;
 
-    // Wire format: type_byte(1) || key_id(4) || signature
-    let mut blob = Vec::with_capacity(1 + 4 + sig.len());
-    blob.push(type_byte);
-    blob.extend_from_slice(&key_id);
-    blob.extend_from_slice(&sig);
+    if key.key_type() == "ml-dsa-44" {
+        // C2SP tlog-checkpoint: "Logs SHOULD use ML-DSA-44 cosignatures to
+        // sign the checkpoint."  Uses the cosigned_message format (type 0x06)
+        // with the operator's key_name as the signer identity.
+        let timestamp_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
 
-    Ok(format!(
-        "{body}\n\u{2014} {key_name} {}\n",
-        BASE64.encode(&blob)
-    ))
+        let msg = build_ml_dsa_cosigned_message(
+            key_name,
+            timestamp_unix,
+            origin,
+            0,
+            tree_size,
+            root_hash,
+        )?;
+        let sig = raw_sign(key, hash_alg, &msg)?;
+        if sig.len() != ML_DSA_44_SIG_LEN {
+            return Err(AcmeError::Mtc(format!(
+                "ML-DSA-44 signature length {} ≠ expected {}",
+                sig.len(),
+                ML_DSA_44_SIG_LEN
+            )));
+        }
+
+        // Wire format: type_byte(1) || key_id(4) || timestamp_be(8) || sig(2420)
+        let mut blob = Vec::with_capacity(1 + 4 + 8 + sig.len());
+        blob.push(type_byte);
+        blob.extend_from_slice(&key_id);
+        blob.extend_from_slice(&timestamp_unix.to_be_bytes());
+        blob.extend_from_slice(&sig);
+
+        Ok(format!(
+            "{body}\n\u{2014} {key_name} {}\n",
+            BASE64.encode(&blob)
+        ))
+    } else {
+        // Ed25519 / ECDSA: sign the note body directly
+        let sig = raw_sign(key, hash_alg, body.as_bytes())?;
+
+        // Wire format: type_byte(1) || key_id(4) || signature
+        let mut blob = Vec::with_capacity(1 + 4 + sig.len());
+        blob.push(type_byte);
+        blob.extend_from_slice(&key_id);
+        blob.extend_from_slice(&sig);
+
+        Ok(format!(
+            "{body}\n\u{2014} {key_name} {}\n",
+            BASE64.encode(&blob)
+        ))
+    }
 }
 
 // ── Cosignature production ────────────────────────────────────────────────────
@@ -640,7 +689,7 @@ pub async fn get_tile_bytes(
 // ── Async checkpoint helpers ──────────────────────────────────────────────────
 
 /// Compute the current checkpoint and return it as a C2SP signed note (log
-/// operator signature, types 0x01 / 0x02 depending on key type).
+/// operator signature, types 0x01 / 0x02 / 0x06 depending on key type).
 pub async fn produce_operator_checkpoint(
     log: &SharedLog,
     key_name: &str,
@@ -797,9 +846,12 @@ mod tests {
     }
 
     #[test]
-    fn compute_key_id_mldsa44_as_operator_fails() {
+    fn compute_key_id_mldsa44_as_operator() {
         let key = BackendPrivateKey::generate_ml_dsa("ML-DSA-44").unwrap();
-        assert!(compute_key_id("log.example.com", &key, NoteSigningRole::LogOperator).is_err());
+        let (type_byte, id) =
+            compute_key_id("log.example.com", &key, NoteSigningRole::LogOperator).unwrap();
+        assert_eq!(type_byte, NOTE_TYPE_ML_DSA_44);
+        assert_eq!(id.len(), 4);
     }
 
     #[test]
@@ -807,7 +859,7 @@ mod tests {
         let key = BackendPrivateKey::generate_ml_dsa("ML-DSA-44").unwrap();
         let (type_byte, id) =
             compute_key_id("cosigner.example.com", &key, NoteSigningRole::Cosigner).unwrap();
-        assert_eq!(type_byte, NOTE_TYPE_ML_DSA_44_COSIGNER);
+        assert_eq!(type_byte, NOTE_TYPE_ML_DSA_44);
         assert_eq!(id.len(), 4);
     }
 
@@ -895,7 +947,7 @@ mod tests {
         let blob = BASE64.decode(b64).unwrap();
         // blob = type_byte(1) || key_id(4) || timestamp_be(8) || sig(2420) = 2433 bytes
         assert_eq!(blob.len(), 1 + 4 + 8 + ML_DSA_44_SIG_LEN);
-        assert_eq!(blob[0], NOTE_TYPE_ML_DSA_44_COSIGNER);
+        assert_eq!(blob[0], NOTE_TYPE_ML_DSA_44);
         let ts_bytes: [u8; 8] = blob[5..13].try_into().unwrap();
         assert_eq!(u64::from_be_bytes(ts_bytes), ts);
     }

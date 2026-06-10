@@ -122,6 +122,44 @@ fn init_mtc_for_ca(
             mtc_cfg.log_path, file_alg, mtc_algorithm,
         ));
     }
+    let trust_anchor_id_der = mtc_cfg
+        .trust_anchor_id
+        .as_deref()
+        .map(|oid_str| {
+            use synta::traits::Encode;
+            let oid: synta::ObjectIdentifier = oid_str.parse().map_err(|e| {
+                format!("CA '{ca_id}': invalid mtc.trust_anchor_id OID '{oid_str}': {e}")
+            })?;
+            let mut enc = synta::Encoder::new(synta::Encoding::Der);
+            oid.encode(&mut enc)
+                .map_err(|e| format!("CA '{ca_id}': encode trust_anchor_id OID: {e}"))?;
+            enc.finish()
+                .map_err(|e| format!("CA '{ca_id}': finish trust_anchor_id OID DER: {e}"))
+        })
+        .transpose()?;
+
+    let logid_issuer_dn_der = if let Some(ref key) = mtc_signing_key {
+        let spki_der = key
+            .public_key()
+            .map_err(|e| format!("CA '{ca_id}': MTC signing key SPKI: {e}"))?
+            .spki_der()
+            .to_vec();
+        Some(
+            mtc::standalone::build_logid_issuer_dn_der(&spki_der, mtc_algorithm)
+                .map_err(|e| format!("CA '{ca_id}': build LogID issuer DN: {e}"))?,
+        )
+    } else {
+        None
+    };
+
+    if trust_anchor_id_der.is_none() && mtc_cfg.enabled {
+        tracing::warn!(
+            ca_id,
+            "MTC enabled but mtc.trust_anchor_id is not set; \
+             CA self-cosignature will not be produced (§5.4 requires it)"
+        );
+    }
+
     let shared = Arc::new(tokio::sync::Mutex::new(log));
     Ok(Arc::new(MtcState {
         log: Some(shared),
@@ -134,6 +172,10 @@ fn init_mtc_for_ca(
         checkpoint_retention_count: mtc_cfg.checkpoint_retention_count,
         landmark_interval_secs: mtc_cfg.landmark_interval_secs,
         max_active_landmarks: mtc_cfg.max_active_landmarks,
+        log_number: mtc_cfg.log_number,
+        tree_minimum_index: mtc_cfg.tree_minimum_index,
+        trust_anchor_id_der,
+        logid_issuer_dn_der,
         last_checkpoint: AtomicI64::new(0),
         last_landmark: AtomicI64::new(0),
     }))

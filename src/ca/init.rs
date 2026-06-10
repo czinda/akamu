@@ -20,6 +20,9 @@ use synta_certificate::{
     KEY_USAGE_KEY_CERT_SIGN,
 };
 
+use synta_mtc::builder::ca_extension::{build_mtc_ca_extension_from_hash, MTC_CA_EXTENSION_OID};
+use synta_mtc::crypto::HashAlgorithm;
+
 use crate::config::CaConfig;
 use crate::error::AcmeError;
 
@@ -151,7 +154,7 @@ fn generate(config: &CaConfig) -> Result<(BackendPrivateKey, Vec<u8>), AcmeError
             .ok_or_else(|| AcmeError::Builder("encode AKI".into()))?;
 
     let signer = backend_key.as_signer(&config.hash_alg);
-    let cert_der = CertificateBuilder::new()
+    let mut builder = CertificateBuilder::new()
         .issuer_name(&name_der)
         .subject_name(&name_der)
         .public_key_der(&spki_der)
@@ -161,7 +164,15 @@ fn generate(config: &CaConfig) -> Result<(BackendPrivateKey, Vec<u8>), AcmeError
         .add_extension_oid(oids::BASIC_CONSTRAINTS, true, &bc_der)
         .add_extension_oid(oids::KEY_USAGE, true, &ku_der)
         .add_extension_oid(oids::SUBJECT_KEY_IDENTIFIER, false, &ski_der)
-        .add_extension_oid(oids::AUTHORITY_KEY_IDENTIFIER, false, &aki_der)
+        .add_extension_oid(oids::AUTHORITY_KEY_IDENTIFIER, false, &aki_der);
+
+    if let Some(ref mtc_cfg) = config.mtc {
+        if let Some((ext_der, critical)) = build_mtc_extension_der(mtc_cfg)? {
+            builder = builder.add_extension_oid(MTC_CA_EXTENSION_OID, critical, &ext_der);
+        }
+    }
+
+    let cert_der = builder
         .sign(&signer)
         .map_err(|e| AcmeError::Builder(format!("sign CA cert: {}", e)))?;
 
@@ -247,7 +258,7 @@ fn generate_cert_for_hsm_key(
             .ok_or_else(|| AcmeError::Builder("encode AKI".into()))?;
 
     let signer = backend_key.as_signer(&config.hash_alg);
-    let cert_der = CertificateBuilder::new()
+    let mut builder = CertificateBuilder::new()
         .issuer_name(&name_der)
         .subject_name(&name_der)
         .public_key_der(&spki_der)
@@ -257,7 +268,15 @@ fn generate_cert_for_hsm_key(
         .add_extension_oid(oids::BASIC_CONSTRAINTS, true, &bc_der)
         .add_extension_oid(oids::KEY_USAGE, true, &ku_der)
         .add_extension_oid(oids::SUBJECT_KEY_IDENTIFIER, false, &ski_der)
-        .add_extension_oid(oids::AUTHORITY_KEY_IDENTIFIER, false, &aki_der)
+        .add_extension_oid(oids::AUTHORITY_KEY_IDENTIFIER, false, &aki_der);
+
+    if let Some(ref mtc_cfg) = config.mtc {
+        if let Some((ext_der, critical)) = build_mtc_extension_der(mtc_cfg)? {
+            builder = builder.add_extension_oid(MTC_CA_EXTENSION_OID, critical, &ext_der);
+        }
+    }
+
+    let cert_der = builder
         .sign(&signer)
         .map_err(|e| AcmeError::Builder(format!("sign CA cert: {}", e)))?;
 
@@ -312,6 +331,68 @@ pub fn compute_aki_from_spki(spki_der: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     Some(ski_val[hash_start..hash_start + hash_len].to_vec())
+}
+
+/// Map a `(key_type, hash_alg)` pair to the corresponding signature
+/// `AlgorithmIdentifier` for the MTC CA extension.
+fn mtc_sig_algorithm_id(
+    key_type: &str,
+    hash_alg: &str,
+) -> Result<synta_certificate::AlgorithmIdentifier<'static>, AcmeError> {
+    use synta::types::constructed::Element;
+    use synta::types::primitive::Null;
+    use synta::ObjectIdentifier;
+
+    let oid_components: &[u32] = match (key_type, hash_alg) {
+        ("ec:P-256" | "P-256", "sha256") => oids::ECDSA_WITH_SHA256,
+        ("ec:P-384" | "P-384", "sha384") => oids::ECDSA_WITH_SHA384,
+        ("ec:P-521" | "P-521", "sha512") => oids::ECDSA_WITH_SHA512,
+        ("ed25519", _) => oids::ED25519,
+        ("ed448", _) => oids::ED448,
+        ("ml-dsa-44" | "ML-DSA-44", _) => oids::ML_DSA_44,
+        ("ml-dsa-65" | "ML-DSA-65", _) => oids::ML_DSA_65,
+        ("ml-dsa-87" | "ML-DSA-87", _) => oids::ML_DSA_87,
+        _ => {
+            return Err(AcmeError::Internal(format!(
+                "cannot derive MTC sigAlg for key_type='{key_type}', hash_alg='{hash_alg}'"
+            )));
+        }
+    };
+
+    let oid = ObjectIdentifier::new(oid_components)
+        .map_err(|e| AcmeError::Internal(format!("invalid sigAlg OID: {e}")))?;
+
+    Ok(synta_certificate::AlgorithmIdentifier {
+        algorithm: oid,
+        parameters: Some(Element::Null(Null)),
+    })
+}
+
+/// Build the `id-pe-mtcCertificationAuthority` extension DER from MTC config.
+///
+/// Returns `None` when MTC is disabled or the signing key is not configured.
+fn build_mtc_extension_der(
+    mtc_cfg: &crate::config::MtcConfig,
+) -> Result<Option<(Vec<u8>, bool)>, AcmeError> {
+    if !mtc_cfg.enabled {
+        return Ok(None);
+    }
+    let sk = match mtc_cfg.signing_key {
+        Some(ref sk) => sk,
+        None => return Ok(None),
+    };
+
+    let sig_alg = mtc_sig_algorithm_id(&sk.key_type, &sk.hash_alg)?;
+    let log_hash: HashAlgorithm = mtc_cfg
+        .hash_alg
+        .parse()
+        .map_err(|e| AcmeError::Internal(format!("MTC hash_alg parse: {e}")))?;
+    let min_serial = (mtc_cfg.log_number as u64) << 48 | 1;
+
+    let (der, critical) = build_mtc_ca_extension_from_hash(log_hash, &sig_alg, min_serial)
+        .map_err(|e| AcmeError::Builder(format!("build MTCCertificationAuthority: {e}")))?;
+
+    Ok(Some((der, critical)))
 }
 
 /// Generate a `BackendPrivateKey` using the synta-certificate crypto backend.

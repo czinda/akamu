@@ -9,14 +9,16 @@ use std::fs;
 use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
 
+use synta::types::string::OctetString;
 use synta::{Decoder, Encoding};
 use synta_certificate::Certificate;
 use synta_mtc::{
     builder::IssuanceLogBuilder,
     crypto::{hash_log_entry, HashAlgorithm},
-    integration::tbs_certificate_to_log_entry,
+    integration::{hash_subject_public_key, parse_extensions, parse_raw_name},
     storage::DiskBackedLog,
     types::MerkleTreeCertEntry,
+    types::TBSCertificateLogEntry,
 };
 use tokio::sync::Mutex;
 
@@ -205,6 +207,7 @@ pub fn acquire_log_lock(path: &str) -> Result<fs::File, AcmeError> {
 pub async fn append_cert_to_log(
     log: &SharedLog,
     cert_der: Vec<u8>,
+    logid_issuer_dn_der: Vec<u8>,
     algorithm: HashAlgorithm,
 ) -> Result<u64, AcmeError> {
     // DER parsing and encoding is CPU-only — run in a blocking thread.
@@ -215,13 +218,39 @@ pub async fn append_cert_to_log(
             .decode()
             .map_err(|e| AcmeError::Mtc(format!("parse cert for MTC: {e}")))?;
 
-        // Build the log entry from the TBS certificate.
-        let log_entry = tbs_certificate_to_log_entry(&cert.tbs_certificate, algorithm)
-            .map_err(|e| AcmeError::Mtc(format!("build log entry: {e}")))?;
+        let tbs = &cert.tbs_certificate;
+
+        // Build the log entry using the LogID issuer DN rather than the original
+        // CA DN.  The standalone cert's TBS (produced by MtcX509CertificateBuilder)
+        // has the LogID as issuer, so the leaf hash must match what a verifier
+        // computes from that TBS.
+        let issuer = parse_raw_name(&logid_issuer_dn_der)
+            .map_err(|e| AcmeError::Mtc(format!("parse LogID issuer DN: {e}")))?;
+        let subject = parse_raw_name(tbs.subject.as_bytes())
+            .map_err(|e| AcmeError::Mtc(format!("parse subject DN: {e}")))?;
+        let pk_hash = hash_subject_public_key(tbs, algorithm)
+            .map_err(|e| AcmeError::Mtc(format!("hash subject public key: {e}")))?;
+        let extensions = tbs
+            .extensions
+            .map(|raw| parse_extensions(raw.as_bytes()))
+            .transpose()
+            .map_err(|e| AcmeError::Mtc(format!("parse extensions: {e}")))?;
+
+        let log_entry = TBSCertificateLogEntry {
+            version: None,
+            issuer,
+            validity: tbs.validity.clone(),
+            subject,
+            subject_public_key_algorithm: tbs.subject_public_key_info.algorithm.clone(),
+            subject_public_key_info_hash: OctetString::from(pk_hash),
+            issuer_unique_id: tbs.issuer_unique_id.as_ref().map(|b| b.to_owned()),
+            subject_unique_id: tbs.subject_unique_id.as_ref().map(|b| b.to_owned()),
+            extensions,
+        };
 
         // Hash via TLS wire encoding (spec §4.2); direction bits are implicit.
         let entry = MerkleTreeCertEntry::TbsCertEntry(log_entry);
-        hash_log_entry(algorithm, &entry)
+        hash_log_entry(algorithm, &entry, &[])
             .map_err(|e| AcmeError::Mtc(format!("hash_log_entry: {e}")))
     })
     .await
@@ -317,6 +346,26 @@ pub async fn read_hash_range(
         .map_err(|e| AcmeError::Mtc(format!("spawn_blocking panicked: {e}")))?
 }
 
+/// Compute the Merkle root for a prefix of the log (the first `size` leaves).
+pub async fn compute_root_at_size(
+    log: &SharedLog,
+    algorithm: HashAlgorithm,
+    size: u64,
+) -> Result<Vec<u8>, AcmeError> {
+    let log_clone = Arc::clone(log);
+    tokio::task::spawn_blocking(move || {
+        let mut guard = log_clone.blocking_lock();
+        let hashes = guard.read_hash_range(0, size as usize)?;
+        if hashes.is_empty() {
+            return Err(AcmeError::Mtc("cannot compute root of empty tree".into()));
+        }
+        synta_mtc::crypto::hash::compute_root(algorithm, hashes)
+            .map_err(|e| AcmeError::Mtc(format!("compute_root_at_size: {e}")))
+    })
+    .await
+    .map_err(|e| AcmeError::Mtc(format!("spawn_blocking panicked: {e}")))?
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -327,6 +376,13 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::{append_cert_to_log, open_or_create, tree_size};
+
+    fn test_logid_issuer_dn_der() -> Vec<u8> {
+        use synta_certificate::BackendPrivateKey;
+        let key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let spki = key.public_key().unwrap().spki_der().to_vec();
+        crate::mtc::standalone::build_logid_issuer_dn_der(&spki, HashAlgorithm::Sha256).unwrap()
+    }
 
     /// A minimal valid DER-encoded certificate.
     ///
@@ -384,19 +440,20 @@ mod tests {
 
         let log = open_or_create(&path, algorithm).unwrap();
         let shared = Arc::new(Mutex::new(log));
+        let logid_dn = test_logid_issuer_dn_der();
 
         // A fresh log already has the null_entry at index 0 (§5.3).
         assert_eq!(tree_size(&shared).await.unwrap(), 1);
 
         let cert_der = test_cert_der();
-        let idx = append_cert_to_log(&shared, cert_der.clone(), algorithm)
+        let idx = append_cert_to_log(&shared, cert_der.clone(), logid_dn.clone(), algorithm)
             .await
             .unwrap();
         assert_eq!(idx, 1);
         assert_eq!(tree_size(&shared).await.unwrap(), 2);
 
         // Append a second leaf.
-        let idx2 = append_cert_to_log(&shared, cert_der, algorithm)
+        let idx2 = append_cert_to_log(&shared, cert_der, logid_dn, algorithm)
             .await
             .unwrap();
         assert_eq!(idx2, 2);
@@ -414,7 +471,8 @@ mod tests {
             let log = open_or_create(&path, algorithm).unwrap();
             let shared = Arc::new(Mutex::new(log));
             let cert_der = test_cert_der();
-            append_cert_to_log(&shared, cert_der, algorithm)
+            let logid_dn = test_logid_issuer_dn_der();
+            append_cert_to_log(&shared, cert_der, logid_dn, algorithm)
                 .await
                 .unwrap();
         }
@@ -437,7 +495,8 @@ mod tests {
 
         // Append a leaf so the tree is non-empty.
         let cert_der = test_cert_der();
-        append_cert_to_log(&shared, cert_der, algorithm)
+        let logid_dn = test_logid_issuer_dn_der();
+        append_cert_to_log(&shared, cert_der, logid_dn, algorithm)
             .await
             .unwrap();
 

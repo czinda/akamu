@@ -463,10 +463,15 @@ pub async fn finalize_order(
             ));
         };
 
-        let idx =
-            crate::mtc::log::append_cert_to_log(log, issued.cert_der.clone(), ca_mtc.algorithm)
-                .await
-                .map_err(|e| AcmeError::Mtc(format!("MTC log append for MTC-profile cert: {e}")))?;
+        let logid_dn = ca_mtc.logid_issuer_dn_der.clone().unwrap_or_default();
+        let idx = crate::mtc::log::append_cert_to_log(
+            log,
+            issued.cert_der.clone(),
+            logid_dn,
+            ca_mtc.algorithm,
+        )
+        .await
+        .map_err(|e| AcmeError::Mtc(format!("MTC log append for MTC-profile cert: {e}")))?;
 
         let (proof, tree_size) = crate::mtc::log::proof_and_tree_size(log, idx)
             .await
@@ -494,6 +499,8 @@ pub async fn finalize_order(
                 spki_der: &spki_der,
                 log_algorithm: ca_mtc.algorithm,
                 cosignature_ders: &[],
+                log_number: ca_mtc.log_number,
+                subtree_start: 0,
             },
         )?;
 
@@ -610,13 +617,15 @@ pub async fn finalize_order(
     if order_ca.mtc.is_enabled() && !cert_params.issue_as_mtc {
         if let Some(log) = &order_ca.mtc.log {
             let cert_der = issued.cert_der.clone();
+            let logid_dn = order_ca.mtc.logid_issuer_dn_der.clone().unwrap_or_default();
             let log = Arc::clone(log);
             let db = state.db.clone();
             let cert_id = issued.id.clone();
             let cert_id_for_log = issued.id.clone();
             let algorithm = order_ca.mtc.algorithm;
             let handle = tokio::spawn(async move {
-                match crate::mtc::log::append_cert_to_log(&log, cert_der, algorithm).await {
+                match crate::mtc::log::append_cert_to_log(&log, cert_der, logid_dn, algorithm).await
+                {
                     Ok(index) => {
                         if let Err(e) =
                             db::certs::set_mtc_log_index(&db, &cert_id, index as i64).await
