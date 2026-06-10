@@ -100,6 +100,9 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
             max_active_landmarks: 100,
             checkpoint_retention_count: 1000,
             hash_alg: "sha256".into(),
+            log_number: 1,
+            tree_minimum_index: None,
+            trust_anchor_id: None,
         }),
         server: ServerConfig::default(),
         tls: Default::default(),
@@ -152,6 +155,10 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
             max_active_landmarks: 100,
             last_checkpoint: std::sync::atomic::AtomicI64::new(0),
             last_landmark: std::sync::atomic::AtomicI64::new(0),
+            log_number: 1,
+            tree_minimum_index: None,
+            trust_anchor_id_der: None,
+            logid_issuer_dn_der: None,
         }),
     });
 

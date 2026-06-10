@@ -902,6 +902,9 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
             max_active_landmarks: 100,
             checkpoint_retention_count: 1000,
             hash_alg: "sha256".into(),
+            log_number: 1,
+            tree_minimum_index: None,
+            trust_anchor_id: None,
         }),
         server: ServerConfig {
             http_validation_port: infra.http_validation_port,
