@@ -197,6 +197,16 @@ pub struct CrlEntry {
     pub revocation_reason: Option<i64>,
 }
 
+/// MTC revoked range: a contiguous range of log entry indices marked as revoked (§5.6).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct RevokedRangeRow {
+    pub id: i64,
+    pub ca_id: String,
+    pub range_start: i64,
+    pub range_end: i64,
+    pub created: i64,
+}
+
 /// RFC 9115 delegation configuration object (NDC-facing).
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct DelegationRow {

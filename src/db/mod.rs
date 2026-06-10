@@ -23,6 +23,7 @@ pub mod landmarks;
 pub mod nonces;
 pub mod operators;
 pub mod orders;
+pub mod revoked_ranges;
 pub mod schema;
 pub mod stats;
 pub mod tkauth;
