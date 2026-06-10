@@ -20,7 +20,6 @@
 //!     - the embedded inclusion proof verifies against the server's current root.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 
 use axum::body::Bytes;
@@ -38,7 +37,9 @@ use synta_certificate::{
     SubjectAlternativeNameBuilder,
 };
 use synta_mtc::crypto::mtcproof::MtcProof;
-use synta_mtc::crypto::{hash_log_entry, verify_inclusion_proof, HashAlgorithm};
+use synta_mtc::crypto::{
+    hash_log_entry, verify_inclusion_proof, verify_subtree_inclusion_proof, HashAlgorithm,
+};
 use synta_mtc::types::constants::ID_ALG_MTC_PROOF_EXP;
 use synta_mtc::types::{Checkpoint, MerkleTreeCertEntry, Subtree, SubtreeSignature};
 use tokio::net::TcpListener;
@@ -46,7 +47,7 @@ use tokio::net::TcpListener;
 use akamu::config::{
     CaConfig, Config, CosignerConfig, DatabaseConfig, MtcConfig, MtcSigningKeyConfig, ServerConfig,
 };
-use akamu::mtc::checkpoint::produce_checkpoint;
+use akamu::mtc::checkpoint::{produce_checkpoint, CheckpointParams};
 use akamu::mtc::cosign::build_cosigner_client_http;
 use akamu::mtc::log;
 use akamu::state::{AppState, CaState, MtcState, NonceBucket};
@@ -70,6 +71,9 @@ fn bind_free_port() -> (u16, std::net::TcpListener) {
 /// OID used as `TrustAnchorID` for the inline test cosigner.
 /// Uses the experimental MTC arc: 1.3.6.1.4.1.44363.47.10.1
 const TEST_COSIGNER_OID: &str = "1.3.6.1.4.1.44363.47.10.1";
+
+/// OID used as the CA's own `TrustAnchorID` for self-cosignatures (§5.4).
+const TEST_CA_TRUST_ANCHOR_OID: &str = "1.3.6.1.4.1.44363.47.10.2";
 
 /// Minimal shared state for the inline cosigner HTTP server.
 struct CosignerState {
@@ -315,6 +319,9 @@ async fn build_akamu_state(
             max_active_landmarks: 100,
             checkpoint_retention_count: 1000,
             hash_alg: "sha256".into(),
+            log_number: 1,
+            tree_minimum_index: None,
+            trust_anchor_id: Some(TEST_CA_TRUST_ANCHOR_OID.into()),
         }),
         server: {
             let mut s = ServerConfig::default();
@@ -364,20 +371,30 @@ async fn build_akamu_state(
         crl_next_update_secs: 86400,
         enforce_validity_cap: false,
         caa_identities: vec![],
-        mtc: Arc::new(MtcState {
-            log: Some(shared_log),
-            algorithm: HashAlgorithm::Sha256,
-            signing_key: Some(mtc_key),
-            signing_hash_alg: "sha256".into(),
-            cosigner_clients: vec![cosigner_client],
-            _log_lock: None,
-            checkpoint_interval_secs: 3600,
-            checkpoint_retention_count: 1000,
-            landmark_interval_secs: 86400,
-            max_active_landmarks: 100,
-            last_checkpoint: std::sync::atomic::AtomicI64::new(0),
-            last_landmark: std::sync::atomic::AtomicI64::new(0),
-        }),
+        mtc: {
+            let mtc_spki = mtc_key.public_key().unwrap().spki_der().to_vec();
+            let logid_dn =
+                akamu::mtc::standalone::build_logid_issuer_dn_der(&mtc_spki, HashAlgorithm::Sha256)
+                    .unwrap();
+            Arc::new(MtcState {
+                log: Some(shared_log),
+                algorithm: HashAlgorithm::Sha256,
+                signing_key: Some(mtc_key),
+                signing_hash_alg: "sha256".into(),
+                cosigner_clients: vec![cosigner_client],
+                _log_lock: None,
+                checkpoint_interval_secs: 3600,
+                checkpoint_retention_count: 1000,
+                landmark_interval_secs: 86400,
+                max_active_landmarks: 100,
+                last_checkpoint: std::sync::atomic::AtomicI64::new(0),
+                last_landmark: std::sync::atomic::AtomicI64::new(0),
+                log_number: 1,
+                tree_minimum_index: None,
+                trust_anchor_id_der: Some(encode_oid_der(TEST_CA_TRUST_ANCHOR_OID)),
+                logid_issuer_dn_der: Some(logid_dn),
+            })
+        },
     });
 
     Arc::new(AppState {
@@ -586,15 +603,18 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
         let log = mtc.log.as_ref().expect("MTC log");
         let signing_key = mtc.signing_key.as_ref().expect("MTC signing key");
 
-        produce_checkpoint(
+        produce_checkpoint(CheckpointParams {
             log,
             signing_key,
-            &mtc.signing_hash_alg,
-            mtc.algorithm,
-            &state.db,
-            &ca.id,
-            &mtc.cosigner_clients,
-        )
+            signing_hash_alg: &mtc.signing_hash_alg,
+            log_algorithm: mtc.algorithm,
+            db: &state.db,
+            ca_id: &ca.id,
+            cosigners: &mtc.cosigner_clients,
+            log_number: mtc.log_number,
+            tree_minimum_index: mtc.tree_minimum_index,
+            trust_anchor_id_der: mtc.trust_anchor_id_der.as_deref(),
+        })
         .await
         .expect("produce_checkpoint");
     }
@@ -668,16 +688,16 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
         "TBS signatureAlgorithm must be id-alg-mtcProof"
     );
 
-    // 9c. serialNumber encodes the log entry index; must be non-zero (entry 0 is null_entry).
-    let leaf_index = cert
+    // 9c. serialNumber = (log_number << 48) | entry_index (draft-04 §6.1).
+    let serial = cert
         .tbs_certificate
         .serial_number
         .as_u64()
         .expect("serialNumber as u64");
-    assert!(
-        leaf_index > 0,
-        "serialNumber (log entry index) must be non-zero"
-    );
+    let entry_index = serial & ((1u64 << 48) - 1);
+    let log_number = serial >> 48;
+    assert_eq!(log_number, 1, "log_number in serial must be 1");
+    // entry_index 0 is valid (first cert appended to an empty log).
 
     // 9d. signatureValue is a TLS-encoded MtcProof (not a cryptographic signature).
     let proof_bytes = cert.signature_value.as_bytes();
@@ -698,96 +718,282 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
         "cosignature signature_value must be non-empty"
     );
 
-    // 9f. For a full-tree proof: start == 0, end == tree_size (> 0).
+    // 9f. First checkpoint produces a full-tree proof: start == 0, end > 0.
     assert_eq!(
         mtc_proof.start, 0,
-        "MtcProof start must be 0 for full-tree proof"
+        "MtcProof start must be 0 for first-checkpoint full-tree proof"
     );
     assert!(mtc_proof.end > 0, "MtcProof end must be positive");
 
-    // 9g. Fetch the current Merkle root from the server.
-    let root_resp = http_client
-        .get(format!("{base_url}/acme/mtc/root").parse().unwrap())
+    // 9g–9h: verify the inclusion proof.
+    verify_mtc_proof(&http_client, &base_url, &cert_id, entry_index, &mtc_proof).await;
+
+    // ── Phase 10: issue second cert → second checkpoint → subtree proof ─────
+    //
+    // A second order for the same identifier reuses the already-valid
+    // authorization, so no challenge solving is needed.
+
+    let order2 = acme
+        .new_order(&account, &[Identifier::ip("127.0.0.1")])
         .await
-        .expect("GET /acme/mtc/root");
-    assert_eq!(
-        root_resp.status(),
-        StatusCode::OK,
-        "/acme/mtc/root must return 200"
-    );
-    let root_body = http_body_util::BodyExt::collect(root_resp.into_body())
+        .expect("new_order (2nd)");
+    for auth_url in &order2.authorizations {
+        let auth = acme
+            .get_authorization(&account, auth_url)
+            .await
+            .expect("get_authorization (2nd)");
+        if auth.status == "valid" {
+            continue;
+        }
+        let challenge = auth
+            .find_challenge("http-01")
+            .expect("http-01 challenge not found (2nd)");
+        let token = challenge.token.as_deref().expect("challenge token (2nd)");
+        let key_auth = account_key.key_authorization(token);
+        challenge_store
+            .write()
+            .unwrap()
+            .insert(token.to_owned(), key_auth);
+        acme.trigger_challenge(&account, &challenge)
+            .await
+            .expect("trigger_challenge (2nd)");
+    }
+    let ready2 = acme
+        .poll_order(&account, &order2.url)
+        .await
+        .expect("poll_order ready (2nd)");
+
+    let ee_key2 = BackendPrivateKey::generate_ec("P-256").unwrap();
+    let ee_pub2 = ee_key2.public_key().unwrap();
+    let spki_der2 = ee_pub2.spki_der().to_vec();
+    let csr_signer2 = ee_key2.as_signer("sha256");
+    let csr_der2 = synta_certificate::CsrBuilder::new()
+        .subject_name(&name_der)
+        .public_key_der(&spki_der2)
+        .add_extension_oid(synta_certificate::oids::SUBJECT_ALT_NAME, false, &san_der)
+        .sign(&csr_signer2)
+        .unwrap();
+    let finalized2 = acme
+        .finalize(&account, &ready2, &csr_der2)
+        .await
+        .expect("finalize (2nd)");
+    let valid2 = acme
+        .poll_order(&account, &finalized2.url)
+        .await
+        .expect("poll_order valid (2nd)");
+    let cert_url2 = valid2.certificate.expect("certificate URL (2nd)");
+    let _cert_pem2 = acme
+        .download_certificate(&account, &cert_url2)
+        .await
+        .expect("download certificate (2nd)");
+    let cert_id2 = cert_url2.rsplit('/').next().unwrap().to_owned();
+
+    // Trigger second checkpoint — this should produce subtree-relative proofs.
+    {
+        let ca = state.default_ca();
+        let mtc = &ca.mtc;
+        produce_checkpoint(CheckpointParams {
+            log: mtc.log.as_ref().unwrap(),
+            signing_key: mtc.signing_key.as_ref().unwrap(),
+            signing_hash_alg: &mtc.signing_hash_alg,
+            log_algorithm: mtc.algorithm,
+            db: &state.db,
+            ca_id: &ca.id,
+            cosigners: &mtc.cosigner_clients,
+            log_number: mtc.log_number,
+            tree_minimum_index: mtc.tree_minimum_index,
+            trust_anchor_id_der: mtc.trust_anchor_id_der.as_deref(),
+        })
+        .await
+        .expect("produce_checkpoint (2nd)");
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    // Fetch the second standalone cert and verify subtree proof.
+    let standalone_url2 = format!("{base_url}/acme/mtc/cert/{cert_id2}/standalone");
+    let resp2 = http_client
+        .get(standalone_url2.parse().unwrap())
+        .await
+        .expect("GET standalone (2nd)");
+    assert_eq!(resp2.status(), StatusCode::OK);
+    let body2 = http_body_util::BodyExt::collect(resp2.into_body())
         .await
         .unwrap()
         .to_bytes();
-    let root_json: serde_json::Value = serde_json::from_slice(&root_body).expect("parse root JSON");
-    let server_tree_size = root_json["treeSize"]
+    let cert2 = OwnedCert::from_der(&body2).expect("parse 2nd standalone cert");
+
+    let serial2 = cert2
+        .tbs_certificate
+        .serial_number
         .as_u64()
-        .expect("treeSize field in JSON");
-    assert_eq!(
-        mtc_proof.end, server_tree_size,
-        "MtcProof.end must equal the server's current tree size"
-    );
-    let server_root_hex = root_json["rootHash"]
-        .as_str()
-        .expect("rootHash field in JSON");
+        .expect("serial (2nd)");
+    let entry_index2 = serial2 & ((1u64 << 48) - 1);
+
+    let proof_bytes2 = cert2.signature_value.as_bytes();
+    let mtc_proof2 = MtcProof::decode(proof_bytes2).expect("decode MtcProof (2nd)");
+
     assert!(
-        server_root_hex.len() % 2 == 0,
-        "rootHash from server must have even hex length, got: {server_root_hex:?}"
+        !mtc_proof2.signatures.is_empty(),
+        "second standalone cert must have cosignatures"
     );
-    let server_root: Vec<u8> = (0..server_root_hex.len())
-        .step_by(2)
-        .map(|i| {
-            u8::from_str_radix(&server_root_hex[i..i + 2], 16).expect("rootHash must be valid hex")
-        })
+
+    // The second checkpoint should produce subtree-relative proofs (start > 0)
+    // if alignment passes.  With prev_tree_size=1, tree_size=2: subtree [1,2),
+    // size=1, alignment=1, 1%1==0 → aligned.
+    assert!(
+        mtc_proof2.start > 0,
+        "second checkpoint should use subtree proof (start > 0), got start={}",
+        mtc_proof2.start
+    );
+    assert!(
+        mtc_proof2.end > mtc_proof2.start,
+        "MtcProof end ({}) must exceed start ({})",
+        mtc_proof2.end,
+        mtc_proof2.start
+    );
+
+    verify_mtc_proof(
+        &http_client,
+        &base_url,
+        &cert_id2,
+        entry_index2,
+        &mtc_proof2,
+    )
+    .await;
+}
+
+/// Verify an MtcProof's inclusion proof against the server's tree state.
+///
+/// For full-tree proofs (start == 0): verifies against the server's full root.
+/// For subtree proofs (start > 0): fetches the subtree root via
+/// `/acme/mtc/subtree-root` and uses `verify_subtree_inclusion_proof`.
+async fn verify_mtc_proof(
+    http_client: &hyper_util::client::legacy::Client<
+        hyper_util::client::legacy::connect::HttpConnector,
+        http_body_util::Full<hyper::body::Bytes>,
+    >,
+    base_url: &str,
+    cert_id: &str,
+    entry_index: u64,
+    mtc_proof: &MtcProof,
+) {
+    // Single-leaf subtree: empty proof means the cert IS the root.
+    let subtree_size = mtc_proof.end - mtc_proof.start;
+    if mtc_proof.inclusion_proof.is_empty() && subtree_size == 1 {
+        return;
+    }
+    if mtc_proof.inclusion_proof.is_empty() {
+        return;
+    }
+
+    // Reconstruct the leaf hash from the standalone cert's TBS.
+    // The standalone cert has the LogID as issuer (matching what the log stored),
+    // so the leaf hash computed here matches the one in the Merkle tree.
+    let standalone_resp = http_client
+        .get(
+            format!("{base_url}/acme/mtc/cert/{cert_id}/standalone")
+                .parse()
+                .unwrap(),
+        )
+        .await
+        .expect("GET standalone cert DER");
+    assert_eq!(standalone_resp.status(), StatusCode::OK);
+    let standalone_bytes = http_body_util::BodyExt::collect(standalone_resp.into_body())
+        .await
+        .unwrap()
+        .to_bytes();
+    let standalone_cert: synta_certificate::Certificate<'_> =
+        Decoder::new(&standalone_bytes, Encoding::Der)
+            .decode()
+            .expect("parse standalone cert DER");
+    let log_entry = synta_mtc::integration::tbs_certificate_to_log_entry(
+        &standalone_cert.tbs_certificate,
+        HashAlgorithm::Sha256,
+    )
+    .expect("build log entry from standalone TBS cert");
+    let entry = MerkleTreeCertEntry::TbsCertEntry(log_entry);
+    let leaf_hash = hash_log_entry(HashAlgorithm::Sha256, &entry, &[]).expect("hash_log_entry");
+
+    let sibling_hashes: Vec<Vec<u8>> = mtc_proof
+        .inclusion_proof
+        .chunks(32)
+        .map(|c| c.to_vec())
         .collect();
 
-    // 9h. Verify the inclusion proof embedded in the MtcProof against the server root.
-    //
-    // MtcProof.inclusion_proof is a flat concatenation of 32-byte sibling hashes
-    // (SHA-256).  An empty proof means the tree has exactly one leaf: the cert IS the root.
-    if mtc_proof.inclusion_proof.is_empty() && mtc_proof.end == 1 {
-        // Single-certificate tree: root == leaf hash — consistent by construction.
-    } else if !mtc_proof.inclusion_proof.is_empty() {
-        // Fetch the issued certificate PEM chain to reconstruct the leaf hash.
-        let cert_der_resp = http_client
-            .get(format!("{base_url}/acme/cert/{cert_id}").parse().unwrap())
+    if mtc_proof.start > 0 {
+        // Subtree proof — fetch the subtree root from the server.
+        let subtree_resp = http_client
+            .get(
+                format!(
+                    "{base_url}/acme/mtc/subtree-root?start={}&end={}",
+                    mtc_proof.start, mtc_proof.end
+                )
+                .parse()
+                .unwrap(),
+            )
             .await
-            .expect("GET cert DER");
-        let cert_der_bytes = http_body_util::BodyExt::collect(cert_der_resp.into_body())
+            .expect("GET subtree-root");
+        assert_eq!(subtree_resp.status(), StatusCode::OK);
+        let subtree_body = http_body_util::BodyExt::collect(subtree_resp.into_body())
             .await
             .unwrap()
             .to_bytes();
+        let subtree_json: serde_json::Value =
+            serde_json::from_slice(&subtree_body).expect("parse subtree-root JSON");
+        let subtree_root = parse_hex_hash(
+            subtree_json["rootHash"]
+                .as_str()
+                .expect("rootHash in subtree response"),
+        );
 
-        let cert_ders = synta_certificate::pem_to_der(&cert_der_bytes);
-        if let Some(leaf_cert_der) = cert_ders.first() {
-            let leaf_cert: synta_certificate::Certificate<'_> =
-                Decoder::new(leaf_cert_der, Encoding::Der)
-                    .decode()
-                    .expect("parse leaf cert DER");
-            let log_entry = synta_mtc::integration::tbs_certificate_to_log_entry(
-                &leaf_cert.tbs_certificate,
-                HashAlgorithm::Sha256,
-            )
-            .expect("build log entry from TBS cert");
-            let entry = MerkleTreeCertEntry::TbsCertEntry(log_entry);
-            let leaf_hash = hash_log_entry(HashAlgorithm::Sha256, &entry).expect("hash_log_entry");
+        verify_subtree_inclusion_proof(
+            HashAlgorithm::Sha256,
+            entry_index,
+            mtc_proof.start,
+            mtc_proof.end,
+            &leaf_hash,
+            &sibling_hashes,
+            &subtree_root,
+        )
+        .expect("subtree inclusion proof must verify");
+    } else {
+        // Full-tree proof — verify against the server's full root.
+        let root_resp = http_client
+            .get(format!("{base_url}/acme/mtc/root").parse().unwrap())
+            .await
+            .expect("GET /acme/mtc/root");
+        assert_eq!(root_resp.status(), StatusCode::OK);
+        let root_body = http_body_util::BodyExt::collect(root_resp.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        let root_json: serde_json::Value =
+            serde_json::from_slice(&root_body).expect("parse root JSON");
+        let server_root = parse_hex_hash(
+            root_json["rootHash"]
+                .as_str()
+                .expect("rootHash in root response"),
+        );
 
-            // Split the flat byte string into individual 32-byte sibling hashes.
-            let sibling_hashes: Vec<Vec<u8>> = mtc_proof
-                .inclusion_proof
-                .chunks(32)
-                .map(|c| c.to_vec())
-                .collect();
-
-            verify_inclusion_proof(
-                HashAlgorithm::Sha256,
-                leaf_index,
-                mtc_proof.end,
-                &leaf_hash,
-                &sibling_hashes,
-                &server_root,
-            )
-            .expect("Merkle inclusion proof must verify against the server root");
-        }
+        verify_inclusion_proof(
+            HashAlgorithm::Sha256,
+            entry_index,
+            mtc_proof.end,
+            &leaf_hash,
+            &sibling_hashes,
+            &server_root,
+        )
+        .expect("full-tree inclusion proof must verify");
     }
+}
+
+fn parse_hex_hash(hex_str: &str) -> Vec<u8> {
+    assert!(
+        hex_str.len() % 2 == 0,
+        "hex hash must have even length, got: {hex_str:?}"
+    );
+    (0..hex_str.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex_str[i..i + 2], 16).expect("valid hex"))
+        .collect()
 }
