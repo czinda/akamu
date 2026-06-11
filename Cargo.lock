@@ -2736,9 +2736,9 @@ dependencies = [
 
 [[package]]
 name = "synta-x509-verification"
-version = "0.2.4"
+version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5dc2e0f48cdbca1e1372d1de790746604eaa8588c5a8321f38b366f72aae4c7e"
+checksum = "a9e95bde937b9568383a242ffffdeca20f27f109f1819c6701459b276a80dd3b"
 dependencies = [
  "openssl",
  "synta",
