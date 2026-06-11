@@ -455,7 +455,7 @@ pub async fn finalize_order(
     // For MTC issuance profiles, build a StandaloneCertificate from the issued
     // TBSCertificate + an MTC Merkle inclusion proof.  This is done synchronously
     // before the DB transaction so the mtc_log_index is available at insert time.
-    let (final_cert_der, final_cert_pem, final_mtc_index) = if cert_params.issue_as_mtc {
+    let (final_cert_der, final_cert_pem, mut final_mtc_index) = if cert_params.issue_as_mtc {
         let ca_mtc = &order_ca.mtc;
         let Some(log) = &ca_mtc.log else {
             return Err(AcmeError::InvalidProfile(
@@ -463,7 +463,9 @@ pub async fn finalize_order(
             ));
         };
 
-        let logid_dn = ca_mtc.logid_issuer_dn_der.clone().unwrap_or_default();
+        let logid_dn = ca_mtc.logid_issuer_dn_der.clone().ok_or_else(|| {
+            AcmeError::Mtc("logid_issuer_dn_der not configured; MTC signing key required".into())
+        })?;
         let idx = crate::mtc::log::append_cert_to_log(
             log,
             issued.cert_der.clone(),
@@ -510,6 +512,24 @@ pub async fn finalize_order(
         (standalone_der, pem, Some(idx as i64))
     } else {
         (issued.cert_der.clone(), issued.cert_pem.clone(), None)
+    };
+
+    // MTC sequencing for regular (non-MTC) profiles: best-effort.
+    // If log append fails, the X.509 cert is still valid — MTC is an enhancement,
+    // not a requirement for this profile. The error is logged for operator awareness.
+    let mtc_standalone_pending = if order_ca.mtc.is_enabled() && !cert_params.issue_as_mtc {
+        match append_and_build_standalone(&order_ca.mtc, &issued).await {
+            Ok((idx, standalone)) => {
+                final_mtc_index = Some(idx);
+                standalone
+            }
+            Err(e) => {
+                tracing::error!(cert_id = %issued.id, "MTC sequencing: {e}");
+                None
+            }
+        }
+    } else {
+        None
     };
 
     // Extract subject DN from the leaf cert for searchability (FAU_SCR_EXT.1).
@@ -612,39 +632,14 @@ pub async fn finalize_order(
         return Err(AcmeError::CertAlreadyReplaced);
     }
 
-    // Optionally append to the MTC log.  Skip when the profile already handled
-    // this synchronously above (MTC issuance profiles set final_mtc_index).
-    if order_ca.mtc.is_enabled() && !cert_params.issue_as_mtc {
-        if let Some(log) = &order_ca.mtc.log {
-            let cert_der = issued.cert_der.clone();
-            let logid_dn = order_ca.mtc.logid_issuer_dn_der.clone().unwrap_or_default();
-            let log = Arc::clone(log);
-            let db = state.db.clone();
-            let cert_id = issued.id.clone();
-            let cert_id_for_log = issued.id.clone();
-            let algorithm = order_ca.mtc.algorithm;
-            let handle = tokio::spawn(async move {
-                match crate::mtc::log::append_cert_to_log(&log, cert_der, logid_dn, algorithm).await
-                {
-                    Ok(index) => {
-                        if let Err(e) =
-                            db::certs::set_mtc_log_index(&db, &cert_id, index as i64).await
-                        {
-                            tracing::warn!(
-                                "cert {cert_id}: MTC log index {index} not saved to DB: {e}"
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!(cert_id, error = %e, "MTC log append failed — certificate not included in log");
-                    }
-                }
-            });
-            tokio::spawn(async move {
-                if let Err(e) = handle.await {
-                    tracing::error!("cert {cert_id_for_log}: MTC log task panicked: {e:?}");
-                }
-            });
+    // Persist standalone DER built by the synchronous MTC sequencing path.
+    // This is separate from the DB transaction because set_mtc_standalone_der
+    // is a non-critical update — the cert row already has the log index.
+    if let Some(standalone_der) = mtc_standalone_pending {
+        if let Err(e) =
+            db::certs::set_mtc_standalone_der(&state.db, &cert_id, &standalone_der).await
+        {
+            tracing::error!(cert_id = %cert_id, "store standalone DER: {e}");
         }
     }
 
@@ -707,4 +702,30 @@ pub async fn finalize_order(
         order_json(&updated_order, &authz_urls, &order_pfx),
         &ctx.next_nonce,
     )
+}
+
+/// Synchronously append a certificate to the MTC log (§9 sequencing).
+///
+/// Returns the log index.  The standalone DER is not built here; it is built
+/// by `produce_checkpoint` so that cosignatures from configured cosigners are
+/// included.  Building it eagerly with `cosignature_ders: &[]` would cause the
+/// standalone DER to be stored without cosignatures and then skipped by
+/// `produce_checkpoint`'s `mtc_standalone_der IS NULL` filter.
+async fn append_and_build_standalone(
+    mtc: &crate::state::MtcState,
+    issued: &crate::ca::issue::IssuedCert,
+) -> Result<(i64, Option<Vec<u8>>), AcmeError> {
+    let log = mtc
+        .log
+        .as_ref()
+        .ok_or_else(|| AcmeError::Mtc("MTC log not configured".into()))?;
+    let logid_dn = mtc.logid_issuer_dn_der.clone().ok_or_else(|| {
+        AcmeError::Mtc("logid_issuer_dn_der not configured; MTC signing key required".into())
+    })?;
+    let idx =
+        crate::mtc::log::append_cert_to_log(log, issued.cert_der.clone(), logid_dn, mtc.algorithm)
+            .await
+            .map_err(|e| AcmeError::Mtc(format!("MTC log append: {e}")))?;
+
+    Ok((idx as i64, None))
 }
