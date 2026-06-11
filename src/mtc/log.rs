@@ -181,6 +181,8 @@ pub fn acquire_log_lock(path: &str) -> Result<fs::File, AcmeError> {
         .truncate(false)
         .open(&lock_path)
         .map_err(|e| AcmeError::Mtc(format!("open MTC lock file '{lock_path}': {e}")))?;
+    // SAFETY: `file` was just opened successfully, so `as_raw_fd()` returns a valid
+    // file descriptor. `flock` is a POSIX system call; flags are compile-time constants.
     let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if rc != 0 {
         let err = std::io::Error::last_os_error();

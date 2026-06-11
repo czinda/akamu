@@ -51,7 +51,7 @@ cleanup() {
     echo
     echo "[demo] Cleaning up..."
     [[ -n "${AKAMU_PID:-}" ]] && kill "$AKAMU_PID" 2>/dev/null || true
-    sleep 1
+    wait "$AKAMU_PID" 2>/dev/null || true
     echo "[demo] Done."
 }
 trap cleanup EXIT INT TERM
@@ -107,22 +107,27 @@ echo "[demo] All prerequisites found."
 # ── build ─────────────────────────────────────────────────────────────────────
 
 echo "[demo] Building akamu, akamu-cli, and synta-tool (this may take a while)..."
-(cd "$REPO_ROOT" && cargo build --all-features --quiet -p akamu -p akamu-cli 2>&1) | tail -5
+if ! (cd "$REPO_ROOT" && cargo build --all-features --quiet -p akamu -p akamu-cli); then
+    die "cargo build failed — see output above"
+fi
 AKAMU_BIN="$REPO_ROOT/target/debug/akamu"
 AKAMU_CLI="$REPO_ROOT/target/debug/akamu-cli"
 [[ -x "$AKAMU_BIN" ]] || die "akamu binary not found after build"
 [[ -x "$AKAMU_CLI" ]] || die "akamu-cli binary not found after build"
 
 echo "[demo] Installing synta-tools >=0.2.5..."
-cargo install --quiet synta-tools --version '>=0.2.5' 2>&1 | tail -3
+if ! cargo install --quiet synta-tools --version '>=0.2.5'; then
+    die "cargo install synta-tools failed — see output above"
+fi
 SYNTA_TOOL="$(command -v synta-tool)"
 # cargo install may place the binary under ~/.cargo/bin; prefer the newest one.
 [[ -x "${HOME}/.cargo/bin/synta-tool" ]] && SYNTA_TOOL="${HOME}/.cargo/bin/synta-tool"
-"$SYNTA_TOOL" --version | grep -q '0\.2\.' || die "synta-tool >=0.2.5 required"
+"$SYNTA_TOOL" --version >/dev/null 2>&1 || die "synta-tool not functional; install synta-tools >=0.2.5"
 echo "[demo] Build complete."
 
 # ── testdir ───────────────────────────────────────────────────────────────────
 
+[[ "$TESTDIR" == */akamu-demo-mtc ]] || die "TESTDIR sanity check failed: $TESTDIR"
 rm -rf "$TESTDIR"
 mkdir -p "$TESTDIR"
 echo "[demo] Working directory: $TESTDIR"
@@ -253,26 +258,26 @@ echo "[demo] ================================================"
 echo
 
 echo "[demo] GET /acme/mtc/tree-size"
-curl -s --cacert "$CA_CERT" \
+curl -sf --cacert "$CA_CERT" \
     "https://127.0.0.1:${AKAMU_PORT}/acme/mtc/tree-size"
 echo
 echo
 
 echo "[demo] GET /acme/mtc/root"
-ROOT_JSON=$(curl -s --cacert "$CA_CERT" \
+ROOT_JSON=$(curl -sf --cacert "$CA_CERT" \
     "https://127.0.0.1:${AKAMU_PORT}/acme/mtc/root")
 echo "$ROOT_JSON"
 echo
 echo
 
 echo "[demo] GET /acme/mtc/tlog/checkpoint (C2SP signed-note format)"
-CHECKPOINT=$(curl -s --cacert "$CA_CERT" \
+CHECKPOINT=$(curl -sf --cacert "$CA_CERT" \
     "https://127.0.0.1:${AKAMU_PORT}/acme/mtc/tlog/checkpoint")
 echo "$CHECKPOINT"
 echo
 
 echo "[demo] GET /acme/mtc/landmarks"
-curl -s --cacert "$CA_CERT" \
+curl -sf --cacert "$CA_CERT" \
     "https://127.0.0.1:${AKAMU_PORT}/acme/mtc/landmarks"
 echo
 echo
@@ -280,7 +285,10 @@ echo
 # ── verify MTC inclusion proof ───────────────────────────────────────────────
 
 # Extract the root hash from the JSON response for proof verification.
-ROOT_HASH=$(echo "$ROOT_JSON" | grep -oP '"rootHash"\s*:\s*"\K[0-9a-f]+')
+ROOT_HASH=$(python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('rootHash',''))" <<< "$ROOT_JSON")
+if [[ -z "$ROOT_HASH" ]]; then
+    echo "[demo] WARNING: could not extract rootHash from /acme/mtc/root response" >&2
+fi
 if [[ -n "$ROOT_HASH" ]]; then
     echo "[demo] ================================================"
     echo "[demo] Verifying MTC inclusion proof against root hash..."
@@ -304,7 +312,7 @@ echo "[demo] ================================================"
 echo
 if $INTERACTIVE; then
     echo "[demo] Demo complete. Press Ctrl-C to stop the akamu server."
-    sleep infinity
+    while true; do sleep 86400; done
 else
     echo "[demo] Demo complete."
 fi
