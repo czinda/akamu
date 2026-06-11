@@ -498,7 +498,8 @@ pub fn mth(hashes: &[Vec<u8>], algorithm: HashAlgorithm) -> Result<Vec<u8>, Acme
             let k = 1usize << (usize::BITS - 1 - (n - 1).leading_zeros()) as usize;
             let left = mth(&hashes[..k], algorithm)?;
             let right = mth(&hashes[k..], algorithm)?;
-            Ok(hash_interior(algorithm, &left, &right))
+            hash_interior(algorithm, &left, &right)
+                .map_err(|e| AcmeError::Mtc(format!("hash_interior: {e}")))
         }
     }
 }
@@ -972,7 +973,7 @@ mod tests {
     fn mth_two_leaves_uses_interior_hash() {
         let left = vec![0u8; 32];
         let right = vec![1u8; 32];
-        let expected = hash_interior(HashAlgorithm::Sha256, &left, &right);
+        let expected = hash_interior(HashAlgorithm::Sha256, &left, &right).unwrap();
         let result = mth(&[left, right], HashAlgorithm::Sha256).unwrap();
         assert_eq!(result, expected);
     }

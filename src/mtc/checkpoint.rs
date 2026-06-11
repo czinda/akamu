@@ -78,6 +78,12 @@ pub async fn produce_checkpoint(params: CheckpointParams<'_>) -> Result<(), Acme
     // Fetch certs covered by this checkpoint that still need a standalone DER.
     // Must happen before spawn_blocking so we can do async DB I/O.
     let pending_certs = db::certs::get_pending_standalone(db, tree_size as i64).await?;
+    if pending_certs.len() == 500 {
+        tracing::warn!(
+            ca_id,
+            "checkpoint: batch limit reached (500); remaining certs deferred to next cycle"
+        );
+    }
 
     // Clone the key so it can be moved into spawn_blocking.
     // BackendPrivateKey is Clone + Send (OpenSSL Pkey<Private> is ref-counted).
@@ -134,7 +140,9 @@ pub async fn produce_checkpoint(params: CheckpointParams<'_>) -> Result<(), Acme
                 let subtree_size = actual_tree_size.saturating_sub(prev_tree_size);
                 let use_subtree = prev_tree_size > 0
                     && subtree_size > 0
-                    && prev_tree_size % subtree_size.next_power_of_two() == 0
+                    && prev_tree_size
+                        % subtree_size.checked_next_power_of_two().unwrap_or(u64::MAX)
+                        == 0
                     && pending_certs
                         .iter()
                         .all(|c| (c.mtc_log_index as u64) >= prev_tree_size);
@@ -148,8 +156,9 @@ pub async fn produce_checkpoint(params: CheckpointParams<'_>) -> Result<(), Acme
                 );
 
                 let mut proofs: Vec<CertProofEntry> = Vec::new();
+                let mut skipped = 0u32;
 
-                if use_subtree {
+                let result = if use_subtree {
                     let subtree_hashes =
                         guard.read_hash_range(prev_tree_size, subtree_size as usize)?;
                     let subtree_root =
@@ -171,10 +180,13 @@ pub async fn produce_checkpoint(params: CheckpointParams<'_>) -> Result<(), Acme
                                 proof,
                                 subtree_start: prev_tree_size,
                             }),
-                            Err(e) => tracing::error!(
-                                cert_id = %cert.id,
-                                "generate subtree proof: {e}"
-                            ),
+                            Err(e) => {
+                                tracing::error!(
+                                    cert_id = %cert.id,
+                                    "generate subtree proof: {e}"
+                                );
+                                skipped += 1;
+                            }
                         }
                     }
 
@@ -194,10 +206,13 @@ pub async fn produce_checkpoint(params: CheckpointParams<'_>) -> Result<(), Acme
                                 proof,
                                 subtree_start: 0,
                             }),
-                            Err(e) => tracing::error!(
-                                cert_id = %cert.id,
-                                "generate full-tree proof: {e}"
-                            ),
+                            Err(e) => {
+                                tracing::error!(
+                                    cert_id = %cert.id,
+                                    "generate full-tree proof: {e}"
+                                );
+                                skipped += 1;
+                            }
                         }
                     }
 
@@ -206,7 +221,18 @@ pub async fn produce_checkpoint(params: CheckpointParams<'_>) -> Result<(), Acme
                         root: root.clone(),
                     };
                     (actual_tree_size, root, proofs, info)
+                };
+
+                if skipped > 0 {
+                    tracing::warn!(
+                        skipped,
+                        total = pending_certs.len(),
+                        "proof generation: {skipped}/{} certs skipped; will retry next checkpoint",
+                        pending_certs.len()
+                    );
                 }
+
+                result
             };
             // Log mutex released here.
 
@@ -274,10 +300,27 @@ pub async fn produce_checkpoint(params: CheckpointParams<'_>) -> Result<(), Acme
 
     // ── Async: gather cosignatures from external cosigners ────────────────────
     if !cosigners.is_empty() {
-        let external = crate::mtc::cosign::gather_cosignatures(&checkpoint_der, cosigners).await;
+        let log_origin = format!("oid/{}", log_algorithm.to_oid());
+        let external =
+            crate::mtc::cosign::gather_cosignatures(&checkpoint_der, cosigners, &log_origin).await;
         cosig_ders.extend(external);
     }
-    let cosig_results: Vec<(String, Vec<u8>)> = cosig_ders.clone();
+    // Persist cosignatures before Phase 2 so cosig_ders can be moved (not
+    // cloned) into the spawn_blocking closure.
+    if let Some(chk_id) = checkpoint_id {
+        for (url, der) in &cosig_ders {
+            if let Err(e) = db::cosignatures::upsert(db, ca_id, chk_id, url, der, now_unix).await {
+                tracing::warn!(url = %url, "store cosignature: {e}");
+            }
+        }
+    } else if !cosig_ders.is_empty() {
+        tracing::error!(
+            ca_id,
+            tree_size = actual_tree_size,
+            count = cosig_ders.len(),
+            "checkpoint row not found after upsert; cosignatures will not be stored"
+        );
+    }
 
     // Compute SPKI DER once for LogID construction inside build_standalone_der.
     let spki_der: Vec<u8> = signing_key
@@ -287,8 +330,10 @@ pub async fn produce_checkpoint(params: CheckpointParams<'_>) -> Result<(), Acme
         .to_vec();
 
     // ── Phase 2 (blocking): build standalone DERs with proofs + cosignatures ──
+    let cert_proofs_total = cert_proofs.len();
     let standalone_defs: Vec<(String, Vec<u8>)> = tokio::task::spawn_blocking(move || {
         let mut out = Vec::new();
+        let mut skipped = 0u32;
         for entry in cert_proofs {
             match crate::mtc::standalone::build_standalone_der(
                 crate::mtc::standalone::StandaloneParams {
@@ -304,8 +349,18 @@ pub async fn produce_checkpoint(params: CheckpointParams<'_>) -> Result<(), Acme
                 },
             ) {
                 Ok(der) => out.push((entry.cert_id, der)),
-                Err(e) => tracing::error!(cert_id = %entry.cert_id, "build standalone cert: {e}"),
+                Err(e) => {
+                    tracing::error!(cert_id = %entry.cert_id, "build standalone cert: {e}");
+                    skipped += 1;
+                }
             }
+        }
+        if skipped > 0 {
+            tracing::warn!(
+                skipped,
+                total = cert_proofs_total,
+                "standalone DER: {skipped}/{cert_proofs_total} certs skipped; will retry next checkpoint",
+            );
         }
         out
     })
@@ -319,21 +374,6 @@ pub async fn produce_checkpoint(params: CheckpointParams<'_>) -> Result<(), Acme
         } else {
             tracing::debug!(cert_id = %cert_id, "MTC standalone certificate stored");
         }
-    }
-
-    // Persist cosignatures.
-    if let Some(chk_id) = checkpoint_id {
-        for (url, der) in cosig_results {
-            if let Err(e) = db::cosignatures::upsert(db, ca_id, chk_id, &url, &der, now_unix).await
-            {
-                tracing::warn!(url = %url, "store cosignature: {e}");
-            }
-        }
-    } else if !cosig_results.is_empty() {
-        tracing::error!(
-            count = cosig_results.len(),
-            "checkpoint row not found after upsert; cosignatures will not be stored"
-        );
     }
 
     Ok(())

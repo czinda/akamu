@@ -79,8 +79,12 @@ pub fn build_ca_self_cosignature(
         value: OctetString::from(subtree_root_bytes.to_vec()),
     };
 
-    let cosigned_msg = akamu_mtc_wire::build_cosigned_message(&cosigner_oid, &subtree, &checkpoint)
-        .map_err(|e| AcmeError::Mtc(format!("build CosignedMessage for self-cosig: {e}")))?;
+    // log_origin per §5.3.1: "oid/<log TrustAnchorID>" as a dotted-decimal OID string.
+    let log_origin = format!("oid/{}", checkpoint.log_id.hash_algorithm.algorithm);
+
+    let cosigned_msg =
+        akamu_mtc_wire::build_cosigned_message(&cosigner_oid, &subtree, &checkpoint, &log_origin)
+            .map_err(|e| AcmeError::Mtc(format!("build CosignedMessage for self-cosig: {e}")))?;
 
     let signer = signing_key.as_signer(signing_hash_alg);
     let sig_bytes = signer
@@ -146,10 +150,11 @@ impl MtcCosignerVerifier for AkamuCosignerVerifier {
         use synta_mtc::Error;
 
         // Callers must not build a verifier with no checks configured.
-        debug_assert!(
-            self.expected_cosigner_oid.is_some() || !self.spki_der.is_empty(),
-            "AkamuCosignerVerifier must have at least one check configured"
-        );
+        if self.expected_cosigner_oid.is_none() && self.spki_der.is_empty() {
+            return Err(Error::invalid_input(
+                "AkamuCosignerVerifier has no identity or key check configured",
+            ));
+        }
 
         // Identity check: TrustAnchorID OID must match when configured.
         if let Some(ref expected) = self.expected_cosigner_oid {
@@ -310,17 +315,20 @@ fn load_cosigner_verifier(
 /// Uses `validate_cosignature_quorum_with_crypto` which builds the TLS-encoded
 /// `CosignedMessage` (spec §5.4.1) internally and delegates cryptographic
 /// verification to `AkamuCosignerVerifier::verify_cosignature`.
-fn verify_subtree_signature(response_der: &[u8], v: &AkamuCosignerVerifier) -> Result<(), String> {
+fn verify_subtree_signature(
+    response_der: &[u8],
+    v: &AkamuCosignerVerifier,
+    log_origin: &str,
+) -> Result<(), String> {
     let sig = SubtreeSignature::from_der(response_der)
         .map_err(|e| format!("parse SubtreeSignature: {e}"))?;
 
-    let policy = CosignaturePolicy {
-        min_cosignatures: 1,
-        max_cosignatures: 1,
-        allow_duplicate_cosigners: false,
-    };
+    let mut policy = CosignaturePolicy::default();
+    policy.min_cosignatures = 1;
+    policy.max_cosignatures = 1;
+    policy.allow_duplicate_cosigners = false;
 
-    validate_cosignature_quorum_with_crypto(&[sig], &policy, v)
+    validate_cosignature_quorum_with_crypto(&[sig], &policy, v, log_origin)
         .map_err(|e| format!("cosignature verification failed: {e}"))
 }
 
@@ -371,6 +379,7 @@ fn build_tls_config(cosigner_ca_pem_path: Option<&str>) -> Result<ClientConfig, 
 pub async fn gather_cosignatures(
     checkpoint_der: &[u8],
     cosigners: &[CosignerClient],
+    log_origin: &str,
 ) -> Vec<(String, Vec<u8>)> {
     if cosigners.is_empty() {
         return Vec::new();
@@ -385,7 +394,8 @@ pub async fn gather_cosignatures(
             let client = cosigner.client.clone();
             let body = body_bytes.clone();
             let verifier = cosigner.verifier.clone();
-            tokio::spawn(async move { post_to_cosigner(url, client, body, verifier).await })
+            let origin = log_origin.to_string();
+            tokio::spawn(async move { post_to_cosigner(url, client, body, verifier, origin).await })
         })
         .collect();
 
@@ -405,6 +415,7 @@ async fn post_to_cosigner(
     client: HttpsClient,
     body_bytes: Bytes,
     verifier: Option<AkamuCosignerVerifier>,
+    log_origin: String,
 ) -> Option<(String, Vec<u8>)> {
     let req = match Request::builder()
         .method(Method::POST)
@@ -474,7 +485,7 @@ async fn post_to_cosigner(
     }
 
     if let Some(ref v) = verifier {
-        if let Err(e) = verify_subtree_signature(&der, v) {
+        if let Err(e) = verify_subtree_signature(&der, v, &log_origin) {
             tracing::warn!(url = %url, "cosignature rejected: {e}");
             return None;
         }
