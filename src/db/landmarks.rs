@@ -51,6 +51,24 @@ pub async fn get_by_seq(
     Ok(row)
 }
 
+/// Return the first landmark whose `tree_size > log_index` for a given CA.
+pub async fn get_covering(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    ca_id: &str,
+    log_index: i64,
+) -> Result<Option<LandmarkRow>, AcmeError> {
+    let row = super::query_as::<LandmarkRow>(
+        "SELECT id, ca_id, sequence_no, tree_size, cert_der, created
+         FROM mtc_landmarks WHERE ca_id = ? AND tree_size > ?
+         ORDER BY tree_size ASC LIMIT 1",
+    )
+    .bind(ca_id)
+    .bind(log_index)
+    .fetch_optional(executor)
+    .await?;
+    Ok(row)
+}
+
 /// Allocate a new landmark at the given tree size for a given CA.
 ///
 /// Returns `true` if the row was inserted, `false` if a landmark for this
