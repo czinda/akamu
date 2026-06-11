@@ -343,15 +343,20 @@ fn mtc_sig_algorithm_id(
     use synta::types::primitive::Null;
     use synta::ObjectIdentifier;
 
-    let oid_components: &[u32] = match (key_type, hash_alg) {
-        ("ec:P-256" | "P-256", "sha256") => oids::ECDSA_WITH_SHA256,
-        ("ec:P-384" | "P-384", "sha384") => oids::ECDSA_WITH_SHA384,
-        ("ec:P-521" | "P-521", "sha512") => oids::ECDSA_WITH_SHA512,
-        ("ed25519", _) => oids::ED25519,
-        ("ed448", _) => oids::ED448,
-        ("ml-dsa-44" | "ML-DSA-44", _) => oids::ML_DSA_44,
-        ("ml-dsa-65" | "ML-DSA-65", _) => oids::ML_DSA_65,
-        ("ml-dsa-87" | "ML-DSA-87", _) => oids::ML_DSA_87,
+    // Determine OID and whether the parameters field must be NULL or absent.
+    // RFC 4055: RSA → parameters MUST be NULL.
+    // RFC 5754 §3.2: ECDSA → parameters MUST be absent.
+    // RFC 8410: Ed25519/Ed448 → parameters MUST be absent.
+    // FIPS 204: ML-DSA → parameters SHOULD be absent.
+    let (oid_components, params_null): (&[u32], bool) = match (key_type, hash_alg) {
+        ("ec:P-256" | "P-256", "sha256") => (oids::ECDSA_WITH_SHA256, false),
+        ("ec:P-384" | "P-384", "sha384") => (oids::ECDSA_WITH_SHA384, false),
+        ("ec:P-521" | "P-521", "sha512") => (oids::ECDSA_WITH_SHA512, false),
+        ("ed25519", _) => (oids::ED25519, false),
+        ("ed448", _) => (oids::ED448, false),
+        ("ml-dsa-44" | "ML-DSA-44", _) => (oids::ML_DSA_44, false),
+        ("ml-dsa-65" | "ML-DSA-65", _) => (oids::ML_DSA_65, false),
+        ("ml-dsa-87" | "ML-DSA-87", _) => (oids::ML_DSA_87, false),
         _ => {
             return Err(AcmeError::Internal(format!(
                 "cannot derive MTC sigAlg for key_type='{key_type}', hash_alg='{hash_alg}'"
@@ -362,9 +367,15 @@ fn mtc_sig_algorithm_id(
     let oid = ObjectIdentifier::new(oid_components)
         .map_err(|e| AcmeError::Internal(format!("invalid sigAlg OID: {e}")))?;
 
+    let parameters = if params_null {
+        Some(Element::Null(Null))
+    } else {
+        None
+    };
+
     Ok(synta_certificate::AlgorithmIdentifier {
         algorithm: oid,
-        parameters: Some(Element::Null(Null)),
+        parameters,
     })
 }
 
