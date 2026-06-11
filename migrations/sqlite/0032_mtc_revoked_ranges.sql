@@ -5,5 +5,6 @@ CREATE TABLE IF NOT EXISTS mtc_revoked_ranges (
     range_start INTEGER NOT NULL,
     range_end   INTEGER NOT NULL,
     created     INTEGER NOT NULL,
-    UNIQUE(ca_id, range_start, range_end)
+    UNIQUE(ca_id, range_start, range_end),
+    CHECK(range_start <= range_end)
 );
