@@ -141,18 +141,26 @@ async fn cosigner_sign(State(state): State<Arc<CosignerState>>, body: Bytes) -> 
             }
         };
 
+    // log_origin per §5.3.1: should be "oid/<log TrustAnchorID>".
+    // Uses hash algorithm OID to match synta-mtc's internal computation.
+    let log_origin = format!("oid/{}", checkpoint.log_id.hash_algorithm.algorithm);
+
     // Build and sign the TLS-encoded CosignedMessage (spec §5.4.1).
-    let cosigned_msg =
-        match akamu_mtc_wire::build_cosigned_message(&cosigner_id, &subtree, &checkpoint) {
-            Ok(msg) => msg,
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("build CosignedMessage: {e}"),
-                )
-                    .into_response()
-            }
-        };
+    let cosigned_msg = match akamu_mtc_wire::build_cosigned_message(
+        &cosigner_id,
+        &subtree,
+        &checkpoint,
+        &log_origin,
+    ) {
+        Ok(msg) => msg,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("build CosignedMessage: {e}"),
+            )
+                .into_response()
+        }
+    };
     let signer = state.signing_key.as_signer(&state.hash_alg);
     let sig_bytes = match signer.sign_tbs(&cosigned_msg) {
         Ok(s) => s,
@@ -879,10 +887,11 @@ async fn verify_mtc_proof(
 ) {
     // Single-leaf subtree: empty proof means the cert IS the root.
     let subtree_size = mtc_proof.end - mtc_proof.start;
-    if mtc_proof.inclusion_proof.is_empty() && subtree_size == 1 {
-        return;
-    }
     if mtc_proof.inclusion_proof.is_empty() {
+        assert!(
+            subtree_size <= 1,
+            "inclusion proof is empty but subtree has {subtree_size} leaves"
+        );
         return;
     }
 

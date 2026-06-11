@@ -261,7 +261,7 @@ fn rfc9162_leaf_hash_domain_separation() {
 fn rfc9162_interior_hash_domain_separation() {
     let left = vec![0xaau8; 32];
     let right = vec![0xbbu8; 32];
-    let interior = hash_interior(HashAlgorithm::Sha256, &left, &right);
+    let interior = hash_interior(HashAlgorithm::Sha256, &left, &right).unwrap();
 
     // Manually construct expected: SHA-256(0x01 || left || right)
     let hasher = default_data_hasher();
@@ -293,7 +293,7 @@ fn rfc9162_two_leaf_mth() {
     let left = hash_leaf(HashAlgorithm::Sha256, b"L");
     let right = hash_leaf(HashAlgorithm::Sha256, b"R");
     let result = tlog::mth(&[left.clone(), right.clone()], HashAlgorithm::Sha256).unwrap();
-    let expected = hash_interior(HashAlgorithm::Sha256, &left, &right);
+    let expected = hash_interior(HashAlgorithm::Sha256, &left, &right).unwrap();
     assert_eq!(result, expected);
 }
 
