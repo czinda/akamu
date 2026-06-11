@@ -45,8 +45,14 @@ pub async fn post_sign(
     let cosigner_id = state.cosigner_oid.clone();
 
     // ── 4. Build TLS-encoded CosignedMessage (spec §5.4.1) ───────────────────
-    let cosigned_msg = akamu_mtc_wire::build_cosigned_message(&cosigner_id, &subtree, &checkpoint)
-        .map_err(|e| CosignerError::Asn1(format!("build CosignedMessage: {e}")))?;
+    // log_origin per §5.3.1: should be "oid/<log TrustAnchorID>".
+    // TODO: once synta-mtc's validate_cosignature_quorum_with_crypto accepts
+    // log_origin as a parameter, switch to oid/{log_trust_anchor_id}.
+    let log_origin = format!("oid/{}", checkpoint.log_id.hash_algorithm.algorithm);
+
+    let cosigned_msg =
+        akamu_mtc_wire::build_cosigned_message(&cosigner_id, &subtree, &checkpoint, &log_origin)
+            .map_err(|e| CosignerError::Asn1(format!("build CosignedMessage: {e}")))?;
 
     // ── 5. Sign the CosignedMessage ───────────────────────────────────────────
     let signer = state.signing_key.as_signer(&state.hash_alg);

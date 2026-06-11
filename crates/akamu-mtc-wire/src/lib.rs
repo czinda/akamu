@@ -23,14 +23,17 @@ use synta_mtc::types::{Checkpoint, Subtree};
 /// } CosignedMessage;
 /// ```
 ///
-/// Both `cosigner_name` and `log_origin` are `"oid/{dotted-decimal-OID}"` strings.
-/// Per draft-04, `cosigner_name` uses the `TrustAnchorID` OID of the cosigner.
+/// `cosigner_name` is `"oid/{dotted-decimal-OID}"` using the cosigner's
+/// `TrustAnchorID` OID.  `log_origin` should be `"oid/{log-TrustAnchorID}"` per
+/// §5.3.1; currently callers pass `"oid/{hash-algorithm-OID}"` for compatibility
+/// with `synta-mtc`'s internal `validate_cosignature_quorum_with_crypto`.
 /// The `timestamp` is the Unix seconds from the checkpoint's `GeneralizedTime`
 /// (0 when the checkpoint carries no time information or for pre-epoch dates).
 pub fn build_cosigned_message(
     cosigner: &ObjectIdentifier,
     subtree: &Subtree,
     checkpoint: &Checkpoint<'_>,
+    log_origin: &str,
 ) -> Result<Vec<u8>, String> {
     const LABEL: &[u8; 12] = b"subtree/v1\n\0";
 
@@ -40,7 +43,6 @@ pub fn build_cosigned_message(
         return Err("cosigner_name too long for CosignedMessage".into());
     }
 
-    let log_origin = format!("oid/{}", checkpoint.log_id.hash_algorithm.algorithm);
     let log_origin_bytes = log_origin.as_bytes();
     if log_origin_bytes.len() > 255 {
         return Err("log_origin too long for CosignedMessage".into());
