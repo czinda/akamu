@@ -46,6 +46,7 @@
 
 - [Architecture](developer/architecture.md)
 - [Database](developer/database.md)
+- [Gossip Replication Protocol](developer/gossip-replication.md)
 - [Certificate Authority](developer/ca.md)
 - [Challenge Validation](developer/validation.md)
 - [MTC Implementation](developer/mtc.md)
