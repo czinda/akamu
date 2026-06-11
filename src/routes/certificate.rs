@@ -8,8 +8,10 @@ use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
-use axum::http::{HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 
 use crate::db;
 use crate::error::AcmeError;
@@ -17,16 +19,38 @@ use crate::state::AppState;
 
 use super::{acme_prefix, parse_jws, CaId};
 
+const PROPERTIES_CT: &str = "application/pem-certificate-chain-with-properties";
+
 /// Serve the certificate chain as PEM (unauthenticated GET).
 pub async fn download_cert(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(params): Path<std::collections::HashMap<String, String>>,
 ) -> Result<Response, AcmeError> {
     let id = params.get("id").ok_or(AcmeError::NotFound)?;
     let cert = db::certs::get_by_id(&state.db_ro, id)
         .await?
         .ok_or(AcmeError::NotFound)?;
-    Ok(cert_pem_response(cert))
+    let (standalone_der, link_alternate, trust_anchor_id) = if cert.mtc_log_index.is_some() {
+        let pfx = acme_prefix(&state.config.base_url, &cert.ca_id, &state.default_ca_id);
+        let ta_id = state
+            .get_ca(&cert.ca_id)
+            .and_then(|ca| ca.mtc.trust_anchor_id_der.clone());
+        (
+            db::certs::get_mtc_standalone_der(&state.db_ro, id).await?,
+            Some(format!("{pfx}/mtc/cert/{id}/landmark")),
+            ta_id,
+        )
+    } else {
+        (None, None, None)
+    };
+    let wants_properties = accepts_properties(&headers);
+    Ok(cert_pem_response(
+        cert,
+        standalone_der,
+        link_alternate,
+        wants_properties.then_some(trust_anchor_id).flatten(),
+    ))
 }
 
 /// POST-as-GET handler for certificate download (RFC 8555 §6.3 + §7.4.2).
@@ -38,6 +62,7 @@ pub async fn download_cert(
 pub async fn download_cert_post(
     State(state): State<Arc<AppState>>,
     ca_id: CaId,
+    headers: HeaderMap,
     Path(params): Path<std::collections::HashMap<String, String>>,
     body: Bytes,
 ) -> Result<Response, AcmeError> {
@@ -76,26 +101,89 @@ pub async fn download_cert_post(
         ));
     }
 
-    Ok(cert_pem_response(cert))
+    let (standalone_der, link_alternate, trust_anchor_id) = if cert.mtc_log_index.is_some() {
+        let ta_id = state
+            .get_ca(&cert.ca_id)
+            .and_then(|ca| ca.mtc.trust_anchor_id_der.clone());
+        (
+            db::certs::get_mtc_standalone_der(&state.db_ro, &id).await?,
+            Some(format!("{pfx}/mtc/cert/{id}/landmark")),
+            ta_id,
+        )
+    } else {
+        (None, None, None)
+    };
+    let wants_properties = accepts_properties(&headers);
+    Ok(cert_pem_response(
+        cert,
+        standalone_der,
+        link_alternate,
+        wants_properties.then_some(trust_anchor_id).flatten(),
+    ))
 }
 
-fn cert_pem_response(cert: crate::db::schema::CertificateRow) -> Response {
-    if cert
-        .pem
-        .starts_with("-----BEGIN STANDALONE MTC CERTIFICATE-----")
-    {
-        // MTC StandaloneCertificate — serve the raw DER stored in the `der` column.
-        let mut resp = (StatusCode::OK, cert.der).into_response();
+fn cert_pem_response(
+    cert: crate::db::schema::CertificateRow,
+    standalone_der: Option<Vec<u8>>,
+    link_alternate: Option<String>,
+    trust_anchor_id_der: Option<Vec<u8>>,
+) -> Response {
+    // §9: when the client accepts properties and we have a trust anchor ID,
+    // serve the PEM with TrustAnchorIdentifier property.
+    let mtc_der = standalone_der.or_else(|| {
+        cert.pem
+            .starts_with("-----BEGIN STANDALONE MTC CERTIFICATE-----")
+            .then(|| cert.der.clone())
+    });
+
+    if let Some(der) = mtc_der {
+        if let Some(ta_der) = trust_anchor_id_der {
+            let pem = synta_certificate::der_to_pem("STANDALONE MTC CERTIFICATE", &der);
+            let ta_b64 = STANDARD.encode(&ta_der);
+            let body = format!(
+                "{}\nTrustAnchorIdentifier = {ta_b64}\n",
+                String::from_utf8_lossy(&pem),
+            );
+            let mut resp = (StatusCode::OK, body.into_bytes()).into_response();
+            resp.headers_mut().insert(
+                axum::http::header::CONTENT_TYPE,
+                HeaderValue::from_static(PROPERTIES_CT),
+            );
+            add_link_header(&mut resp, &link_alternate);
+            return resp;
+        }
+
+        let mut resp = (StatusCode::OK, der).into_response();
         resp.headers_mut().insert(
             axum::http::header::CONTENT_TYPE,
             HeaderValue::from_static("application/pkix-cert"),
         );
+        add_link_header(&mut resp, &link_alternate);
         return resp;
     }
+
     let mut resp = (StatusCode::OK, cert.pem.into_bytes()).into_response();
     resp.headers_mut().insert(
         axum::http::header::CONTENT_TYPE,
         HeaderValue::from_static("application/pem-certificate-chain"),
     );
     resp
+}
+
+fn accepts_properties(headers: &HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|accept| accept.contains(PROPERTIES_CT))
+}
+
+fn add_link_header(resp: &mut Response, link_alternate: &Option<String>) {
+    if let Some(url) = link_alternate {
+        match HeaderValue::from_str(&format!("<{url}>; rel=\"alternate\"")) {
+            Ok(val) => {
+                resp.headers_mut().insert(axum::http::header::LINK, val);
+            }
+            Err(e) => tracing::warn!(url = %url, "could not set Link header: {e}"),
+        }
+    }
 }
