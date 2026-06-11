@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
@@ -28,6 +28,26 @@ fn hex(bytes: &[u8]) -> String {
         let _ = write!(s, "{b:02x}");
     }
     s
+}
+
+fn service_unavailable_with_retry(retry_secs: u64, detail: &str) -> Response {
+    let body = serde_json::json!({
+        "type": "urn:ietf:params:acme:error:serverInternal",
+        "detail": detail
+    });
+    let mut resp = (
+        StatusCode::SERVICE_UNAVAILABLE,
+        serde_json::to_string(&body).expect("static JSON"),
+    )
+        .into_response();
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        HeaderValue::from_static("application/problem+json"),
+    );
+    if let Ok(val) = HeaderValue::from_str(&retry_secs.to_string()) {
+        resp.headers_mut().insert("retry-after", val);
+    }
+    resp
 }
 
 /// GET /acme/mtc/tree-size  or  GET /acme/{ca_id}/mtc/tree-size
@@ -66,7 +86,7 @@ pub async fn get_inclusion_proof(
     let ca = state.get_ca(&ca_id.0).ok_or(AcmeError::NotFound)?;
     let shared_log = ca.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
 
-    let cert = db::certs::get_by_id(&state.db, cert_id)
+    let cert = db::certs::get_by_id(&state.db_ro, cert_id)
         .await?
         .ok_or(AcmeError::NotFound)?;
 
@@ -99,7 +119,7 @@ pub async fn get_standalone(
     let ca = state.get_ca(&ca_id.0).ok_or(AcmeError::NotFound)?;
     ca.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
 
-    let der = db::certs::get_mtc_standalone_der(&state.db, cert_id)
+    let der = db::certs::get_mtc_standalone_der(&state.db_ro, cert_id)
         .await?
         .ok_or(AcmeError::NotFound)?;
 
@@ -120,6 +140,61 @@ pub async fn get_standalone(
         .into_response())
 }
 
+/// GET /acme/mtc/cert/{cert_id}/landmark  or  GET /acme/{ca_id}/mtc/cert/{cert_id}/landmark
+///
+/// Serves the landmark-relative MTC certificate for the given cert, i.e. the
+/// first landmark whose tree_size covers the cert's log index.
+pub async fn get_landmark_for_cert(
+    State(state): State<Arc<AppState>>,
+    ca_id: CaId,
+    Path(params): Path<HashMap<String, String>>,
+) -> Result<Response, AcmeError> {
+    let cert_id = params.get("cert_id").ok_or(AcmeError::NotFound)?;
+    let ca = state.get_ca(&ca_id.0).ok_or(AcmeError::NotFound)?;
+    ca.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
+
+    let cert = db::certs::get_by_id(&state.db_ro, cert_id)
+        .await?
+        .ok_or(AcmeError::NotFound)?;
+    let log_index = cert.mtc_log_index.ok_or(AcmeError::NotFound)?;
+
+    let landmark = db::landmarks::get_covering(&state.db_ro, &ca_id.0, log_index).await?;
+
+    match landmark {
+        Some(lm) => match lm.cert_der {
+            Some(der) => Ok((
+                StatusCode::OK,
+                [
+                    (
+                        axum::http::header::CONTENT_TYPE,
+                        axum::http::HeaderValue::from_static("application/pkix-cert"),
+                    ),
+                    (
+                        axum::http::HeaderName::from_static("x-mtc-version"),
+                        axum::http::HeaderValue::from_static(MTC_DRAFT_VERSION),
+                    ),
+                ],
+                der,
+            )
+                .into_response()),
+            None => {
+                let retry = ca.mtc.checkpoint_interval_secs.max(60);
+                Ok(service_unavailable_with_retry(
+                    retry,
+                    "landmark certificate not yet available",
+                ))
+            }
+        },
+        None => {
+            let retry = ca.mtc.checkpoint_interval_secs.max(60);
+            Ok(service_unavailable_with_retry(
+                retry,
+                "no landmark covers this certificate yet",
+            ))
+        }
+    }
+}
+
 /// GET /acme/mtc/landmarks  or  GET /acme/{ca_id}/mtc/landmarks
 pub async fn get_landmarks(
     State(state): State<Arc<AppState>>,
@@ -128,7 +203,7 @@ pub async fn get_landmarks(
     let ca = state.get_ca(&ca_id.0).ok_or(AcmeError::NotFound)?;
     ca.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
 
-    let landmarks = db::landmarks::list(&state.db, &ca_id.0).await?;
+    let landmarks = db::landmarks::list(&state.db_ro, &ca_id.0).await?;
     let body: Vec<_> = landmarks
         .iter()
         .map(|l| {
@@ -156,11 +231,17 @@ pub async fn get_landmark_cert(
     let ca = state.get_ca(&ca_id.0).ok_or(AcmeError::NotFound)?;
     ca.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
 
-    let landmark = db::landmarks::get_by_seq(&state.db, &ca_id.0, seq)
+    let landmark = db::landmarks::get_by_seq(&state.db_ro, &ca_id.0, seq)
         .await?
         .ok_or(AcmeError::NotFound)?;
 
-    let der = landmark.cert_der.ok_or(AcmeError::NotFound)?;
+    let Some(der) = landmark.cert_der else {
+        let retry = ca.mtc.checkpoint_interval_secs.max(60);
+        return Ok(service_unavailable_with_retry(
+            retry,
+            "landmark certificate not yet available",
+        ));
+    };
 
     Ok((
         StatusCode::OK,
@@ -368,7 +449,7 @@ pub async fn get_subtree_root(
     }
 
     let size = params.end - params.start;
-    let alignment = size.next_power_of_two();
+    let alignment = size.checked_next_power_of_two().unwrap_or(u64::MAX);
     if !params.start.is_multiple_of(alignment) {
         return Err(AcmeError::BadRequest(format!(
             "start {} is not aligned to BIT_CEIL({}) = {} (§4.3.1)",

@@ -175,6 +175,10 @@ pub fn build_router(state: Arc<AppState>, static_dir: Option<&std::path::Path>) 
             "/acme/mtc/cert/{cert_id}/standalone",
             get(mtc::get_standalone),
         )
+        .route(
+            "/acme/mtc/cert/{cert_id}/landmark",
+            get(mtc::get_landmark_for_cert),
+        )
         .route("/acme/mtc/landmarks", get(mtc::get_landmarks))
         .route(
             "/acme/mtc/landmarks/{seq}/cert",
@@ -255,6 +259,10 @@ pub fn build_router(state: Arc<AppState>, static_dir: Option<&std::path::Path>) 
         .route(
             "/acme/{ca_id}/mtc/cert/{cert_id}/standalone",
             get(mtc::get_standalone),
+        )
+        .route(
+            "/acme/{ca_id}/mtc/cert/{cert_id}/landmark",
+            get(mtc::get_landmark_for_cert),
         )
         .route("/acme/{ca_id}/mtc/landmarks", get(mtc::get_landmarks))
         .route(
