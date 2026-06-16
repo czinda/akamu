@@ -39,6 +39,7 @@ networks or behind a reverse proxy, and works with any standards-compliant ACME 
 | `akamu-jose` | JWK / JWS / thumbprint primitives (RFC 7517/7515, ML-DSA) |
 | `akamu-client` | Async ACME client library (tokio + hyper) |
 | `akamu-cli` | Command-line ACME client (`akamu-cli`) |
+| `akamu-mtc-validator` | MTC test vector validation tool (draft-ietf-plants-merkle-tree-certs-04 compliance) |
 
 ---
 

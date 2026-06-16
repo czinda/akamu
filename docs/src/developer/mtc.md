@@ -175,3 +175,128 @@ The three tlog-tiles endpoints are registered in `src/routes/mod.rs` and dispatc
 | `GET /acme/mtc/tlog/cosignature` | `mtc::get_tlog_cosignature` |
 
 The log origin string used in checkpoint notes is `{base_url}/acme/mtc/tlog`.
+
+## MTC validator and test vector tooling
+
+The `akamu-mtc-validator` workspace crate (`crates/akamu-mtc-validator/`) is a
+standalone tool for verifying that Akāmu's MTC leaf hashing, Merkle tree construction,
+and proof generation are byte-for-byte compatible with the reference Go implementation
+of draft-ietf-plants-merkle-tree-certs-04.
+
+### Test vector corpus
+
+`contrib/test-vectors/mtc/mtc.json` is a 2036-entry plants-04 test vector corpus
+(version `plants-04`). Its schema mirrors the Go demo tool's `config.go`: each
+entry in `Entries` may be a null entry or a TBS-certificate entry with key usage,
+extended key usage, SANs, BasicConstraints, and subtree/checkpoint bindings.
+
+Pre-generated Go reference artifacts live under `contrib/test-vectors/mtc/reference/`:
+
+| Path | Contents |
+|------|---------|
+| `ca_cert.pem` | CA certificate used by the Go demo tool |
+| `cert_*.pem` | Individual standalone certificates from the Go demo |
+| `tile/0/000`–`007.p/244` | Level-0 leaf hash tiles (256 × 32-byte hashes per full tile) |
+| `tile/1/000.p/7` | Level-1 interior hash tile |
+| `tile/entries/000`–`007.p/244` | TLS-encoded entry tiles |
+| `checkpoint` | Go signed-note checkpoint: origin, tree size, base64 root, signature |
+
+To regenerate these artifacts after a spec update, run:
+
+```bash
+contrib/test-vectors/mtc/regen.sh
+```
+
+This script clones the `ietf-plants-wg/merkle-tree-certs` repo at `HEAD`, builds
+the Go demo tool, runs it against `mtc.json`, and overwrites the files under
+`reference/`.
+
+### Two-layer validation model
+
+The validator distinguishes two validation layers:
+
+**Layer B — internal consistency** (always available, no Go reference needed):
+
+| Check | What it verifies |
+|-------|-----------------|
+| B1: tree_size | Expanded entry count matches expected total |
+| B2: leaf_hash_length | Every leaf hash is exactly 32 bytes (SHA-256) |
+| B3: null_entry_hashes | Null entries hash to `hash_leaf(SHA-256, 0x00000000)` |
+| B4: root_computation | Merkle root computation completes without error |
+| B5: subtree_alignment | For every cert, `start % next_power_of_two(size) == 0` per §4.3.1 |
+| B6: subtree_in_bounds | Every subtree end ≤ tree size |
+| B7: leaf_in_subtree | Every cert's leaf index falls within its subtree `[start, end)` |
+| B8: inclusion_proofs | Every inclusion proof verifies against its subtree root |
+| B9: subtrees_for_interval | Checkpoint-resolved subtrees satisfy `SubtreesForInterval` alignment |
+| B10: root_all_leaves | Two independent root computations produce identical results |
+
+**Layer A — byte-for-byte comparison** (requires `contrib/test-vectors/mtc/reference/`):
+
+| Check | What it verifies |
+|-------|-----------------|
+| A1: reference_tile_read | All level-0 tile files are readable and correctly sized |
+| A2: leaf_hash_count | Rust implementation produces same count as Go |
+| A3: leaf_hash_values | Every leaf hash matches the Go reference byte-for-byte |
+| A4: root_match | Merkle root matches the root in the Go signed-note checkpoint |
+
+### CLI usage
+
+```bash
+# Run all 14 checks (B1–B10 + A1–A4) with bundled test vectors
+cargo run -p akamu-mtc-validator -- check
+
+# Run Layer B checks only (offline, no reference directory needed)
+cargo run -p akamu-mtc-validator -- check \
+  --vectors contrib/test-vectors/mtc/mtc.json
+
+# Run Layer B + A with explicit reference directory
+cargo run -p akamu-mtc-validator -- check \
+  --vectors contrib/test-vectors/mtc/mtc.json \
+  --reference contrib/test-vectors/mtc/reference
+
+# Generate artifacts to an output directory for inspection
+cargo run -p akamu-mtc-validator -- generate \
+  --vectors contrib/test-vectors/mtc/mtc.json \
+  --outdir /tmp/generated
+
+# Run only Layer A comparison (generated vs reference)
+cargo run -p akamu-mtc-validator -- validate \
+  --vectors contrib/test-vectors/mtc/mtc.json \
+  --reference contrib/test-vectors/mtc/reference
+```
+
+Adding `--fail-fast` to `check` causes the binary to exit with a non-zero code
+when any check fails, which is useful in CI pipelines.
+
+### Cargo integration test
+
+`crates/akamu-mtc-validator/tests/mtc_vectors_compat.rs` runs the Layer B suite
+as a standard `cargo test` target. It requires no external tools or network access:
+
+```bash
+cargo test -p akamu-mtc-validator
+```
+
+### Key correctness decisions captured in code
+
+Three encoding details were discovered and fixed during Layer A comparison against
+the Go reference (commit `1de25893c`):
+
+1. **Issuer DN carries the TrustAnchorID, not the LogID.** The issuer DN in each
+   `TBSCertificateLogEntry` encodes the CA's `TrustAnchorID` (e.g. `"32473.1"`)
+   rather than the full `LogID` (e.g. `"32473.1.0.1"`). `LogID` additionally
+   encodes the log number arc and is used for the log's own identity, not the
+   per-entry issuer substitution.
+
+2. **Subject commonName uses PrintableString, not UTF8String.** Go's `crypto/x509`
+   emits `PrintableString` (tag `0x13`) for printable-charset subject CN values.
+   `NameBuilder::common_name()` in `synta-certificate` always produces
+   `UTF8String` (tag `0x0c`). `generate.rs` replicates Go's behaviour by choosing
+   `PrintableStringRef` when the value is in the PrintableString character set and
+   falling back to `Utf8StringRef` otherwise, matching Go's output byte-for-byte.
+
+3. **BasicConstraints is marked `critical: true` when `cA=true`.** RFC 5280
+   §4.2.1.9 states the BasicConstraints extension SHOULD be marked critical when
+   `cA=true`. Go follows this recommendation; Akāmu's `encode_basic_constraints`
+   helper does not set the critical flag unconditionally, so `generate.rs` sets
+   it explicitly when `is_ca` is true.

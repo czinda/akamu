@@ -29,6 +29,7 @@ This page documents every RFC that is relevant to `Akāmu`, explaining what each
 | [RFC 9448](#rfc-9448--acme-tnauthlist-authority-token) | ACME TNAuthList Authority Token | Full |
 | [draft-ietf-acme-authority-token-jwtclaimcon](#draft-ietf-acme-authority-token-jwtclaimcon) | ACME Authority Token: JWTClaimConstraints | Full |
 | [RFC 9538](#rfc-9538--acme-delegation-metadata-for-cdni) | ACME Delegation Metadata for CDNI | Not implemented |
+| [draft-ietf-plants-merkle-tree-certs-04](#draft-ietf-plants-merkle-tree-certs-04--merkle-tree-certificates) | Merkle Tree Certificates (MTC) | Partial |
 | [RFC 9891](#rfc-9891--acme-dtn-node-id-validation-experimental) | ACME DTN Node ID Validation (Experimental) | Not considered |
 
 ---
@@ -1106,6 +1107,57 @@ When a `new-order` request contains a `TNAuthList` identifier, Akāmu creates a 
 The `tkauth-01` validation is identical to RFC 9448 — the only differences are the identifier type string (`"JWTClaimConstraints"`) and the corresponding `atc.tktype` value in the authority token. Akāmu validates these generically; no separate configuration is required beyond enabling `[tkauth]`.
 
 An order may contain both `TNAuthList` and `JWTClaimConstraints` identifiers simultaneously. Each gets its own authorization and `tkauth-01` challenge; all authorizations must be valid before the order may be finalized.
+
+---
+
+## draft-ietf-plants-merkle-tree-certs-04 — Merkle Tree Certificates
+
+**[draft-ietf-plants-merkle-tree-certs-04](https://davidben.github.io/merkle-tree-certs/)** defines Merkle Tree Certificates (MTC): a transparency-log-backed certificate format in which certificate validity is anchored to a signed Merkle tree rather than an individual CA signature. Relying parties verify a Merkle inclusion proof against a periodically published, cosigned checkpoint rather than fetching OCSP or CRL data.
+
+The format uses experimental OIDs (pre-IANA). OID arcs will change when the draft is published as an RFC; until then, deployments must treat the OIDs as provisional.
+
+### Coverage status
+
+| Section | Feature | Status |
+|---------|---------|--------|
+| §4.2 | TLS-encoded `TBSCertificateLogEntry` wire format | Yes — via `synta-mtc` |
+| §4.3.1 | Subtree alignment (`start % BIT_CEIL(size) == 0`) | Yes — enforced in validator and server |
+| §5.3 | Null entry at log index 0 | Yes — server seeds each new log with a `null_entry` |
+| §5.4 | Checkpoint signing (`Ed25519`, `ECDSA`, `ML-DSA-44`) | Yes — background checkpoint task |
+| §5.4.1 | Cosignature gathering and `CosignedMessage` framing | Yes — external cosigner HTTP client |
+| §5.4.2 | `TrustAnchorID` OID identity check on cosignatures | Yes — when `trust_anchor_id` is configured |
+| §5.5 | Signing key distinct from CA key | Yes — enforced at startup |
+| §5.6 | Revoked log entry index ranges | Yes — `GET /acme/mtc/revoked-ranges` |
+| §6.1 | `StandaloneCertificate` construction | Yes — checkpoint-driven and profile-driven paths |
+| §6.2 | Checkpoint DER encoding and storage | Yes — `mtc_checkpoints` database table |
+| §6.3.1 | `LandmarkCertificate` construction | Yes — landmark background task |
+| §7 | Relying-party verification (server side) | Not applicable — Akāmu is the log operator |
+| C2SP tlog-tiles | Hash tile serving (`tile/0/…`, `tile/1/…`) | Yes — `GET /acme/mtc/tlog/tile/{*path}` |
+| C2SP tlog-tiles | Signed-note checkpoint | Yes — `GET /acme/mtc/tlog/checkpoint` |
+| C2SP tlog-tiles | `tile/entries/…` | Not implemented — Akāmu stores only leaf hashes |
+
+### Compliance testing
+
+Byte-for-byte compatibility with the Go reference implementation is verified by the `akamu-mtc-validator` tool (`crates/akamu-mtc-validator/`). It runs 14 checks in two layers:
+
+- **Layer B** (10 checks, offline): internal consistency of leaf hashes, subtree alignment, inclusion proofs, and the Merkle root over 2036 test-vector entries from `contrib/test-vectors/mtc/mtc.json`.
+- **Layer A** (4 checks): byte-for-byte comparison of every leaf hash and the tree root against pre-generated Go reference artifacts in `contrib/test-vectors/mtc/reference/`.
+
+```bash
+# Run all 14 checks
+cargo run -p akamu-mtc-validator -- check
+
+# Run with explicit paths
+cargo run -p akamu-mtc-validator -- check \
+  --vectors contrib/test-vectors/mtc/mtc.json \
+  --reference contrib/test-vectors/mtc/reference
+```
+
+See [MTC Implementation — MTC validator and test vector tooling](../developer/mtc.md#mtc-validator-and-test-vector-tooling) for the full check list and encoding correctness details.
+
+### Stability note
+
+All OIDs used by the MTC format (including `id-pe-mtcCertificationAuthority` at `1.3.6.1.4.1.44363.47.2`) are experimental and pre-IANA. They will change when the draft advances to RFC status, requiring a coordinated update of the `synta-mtc` library, the server, and any relying implementations.
 
 ---
 

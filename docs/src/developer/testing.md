@@ -36,11 +36,14 @@ cargo test -- --nocapture
 Each library crate ships its own unit tests:
 
 ```bash
-cargo test -p akamu-jose    # 66 tests: JWK parsing, JWS sign/verify, ML-DSA
-cargo test -p akamu-client  # 25 tests: AccountKey, EAB, CSR, challenge helpers
+cargo test -p akamu-jose             # 66 tests: JWK parsing, JWS sign/verify, ML-DSA
+cargo test -p akamu-client           # 25 tests: AccountKey, EAB, CSR, challenge helpers
+cargo test -p akamu-mtc-validator    # Layer B internal consistency checks against bundled mtc.json vectors
 ```
 
 `akamu-jose` tests cover every key type including ML-DSA-44/65/87 round-trip sign/verify. `akamu-client` tests use real OpenSSL key generation (no mocking). See `crates/akamu-jose/src/` and `crates/akamu-client/src/` for test modules.
+
+`akamu-mtc-validator` ships one integration test (`tests/mtc_vectors_compat.rs`) that loads `contrib/test-vectors/mtc/mtc.json` and runs all 10 Layer B checks (tree size, leaf hash lengths, null entry hashes, root computation, subtree alignment, subtree bounds, leaf-in-subtree, inclusion proofs, subtrees-for-interval, root-over-all-leaves). It does not require the Go reference artifacts and passes offline.
 
 ## Test dependencies
 
@@ -237,6 +240,7 @@ All integration test files live under `tests/`.  Each builds a full `AppState` w
 | `tests/multi_ca.rs` | Multi-CA routing: per-CA directory and CRL endpoints, legacy path falls through to default CA, unknown CA ID returns 404, CRL isolation across CAs, order CA isolation |
 | `tests/tls_server.rs` | Helper module providing a local TLS server for tls-alpn-01 integration tests |
 | `tests/mtc_playground_compat.rs` | Wire-compatibility tests for the C2SP tlog-tiles and signed-note implementation (RFC 9162 Merkle hashing, tile path encoding, checkpoint/cosignature note format, live HTTP endpoint smoke tests); optional DigiCert playground integration gated behind `MTC_PLAYGROUND_DIR` env var and `--ignored` |
+| `crates/akamu-mtc-validator/tests/mtc_vectors_compat.rs` | Layer B internal consistency suite against `contrib/test-vectors/mtc/mtc.json` (plants-04, 2036 entries); runs offline without Go reference artifacts |
 
 ## Adding new tests
 
