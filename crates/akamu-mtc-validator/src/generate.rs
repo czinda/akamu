@@ -8,20 +8,19 @@
 
 use std::collections::HashMap;
 
-use synta::{Boolean, Decoder, Encoding, ObjectIdentifier};
-use synta::types::string::OctetString;
 use synta::types::primitive::{Integer, Null};
+use synta::types::string::{OctetString, PrintableStringRef, Utf8StringRef};
+use synta::{Boolean, Decoder, Encoder, Encoding, ObjectIdentifier};
 use synta_certificate::{
-    encode_basic_constraints, encode_key_usage, parse_time,
-    ExtendedKeyUsageBuilder, NameBuilder, SubjectPublicKeyInfo, Validity,
-    KEY_USAGE_DATA_ENCIPHERMENT, KEY_USAGE_DECIPHER_ONLY,
-    KEY_USAGE_DIGITAL_SIGNATURE, KEY_USAGE_ENCIPHER_ONLY,
-    KEY_USAGE_KEY_AGREEMENT, KEY_USAGE_KEY_CERT_SIGN, KEY_USAGE_KEY_ENCIPHERMENT,
-    KEY_USAGE_NON_REPUDIATION, KEY_USAGE_C_RLSIGN, SubjectAlternativeNameBuilder, oids,
+    encode_basic_constraints, encode_key_usage, oids, parse_time, ExtendedKeyUsageBuilder,
+    NameBuilder, SubjectAlternativeNameBuilder, SubjectPublicKeyInfo, Validity, KEY_USAGE_C_RLSIGN,
+    KEY_USAGE_DATA_ENCIPHERMENT, KEY_USAGE_DECIPHER_ONLY, KEY_USAGE_DIGITAL_SIGNATURE,
+    KEY_USAGE_ENCIPHER_ONLY, KEY_USAGE_KEY_AGREEMENT, KEY_USAGE_KEY_CERT_SIGN,
+    KEY_USAGE_KEY_ENCIPHERMENT, KEY_USAGE_NON_REPUDIATION,
 };
 use synta_mtc::crypto::{compute_root, MtcDigest, Sha256Digest};
 use synta_mtc::{
-    crypto::hash::{hash_leaf, HashAlgorithm, tls_encode_entry},
+    crypto::hash::{hash_leaf, tls_encode_entry, HashAlgorithm},
     integration::parse_raw_name,
     types::{Extension, MerkleTreeCertEntry, TBSCertificateLogEntry},
 };
@@ -106,11 +105,13 @@ impl GeneratedArtifacts {
 
 /// Build all MTC artifacts from the test vectors.
 pub fn build_artifacts(vectors: &MtcVectors) -> Result<GeneratedArtifacts> {
-    let log_id_str = vectors.log_id_string();
+    // The issuer DN carries the TrustAnchorID (the CA identifier), not the
+    // LogID (which additionally encodes the log number).
+    let trust_anchor_id_str = &vectors.id;
 
     // Build the issuer DN DER once — shared by all entries.
     let issuer_dn_der = NameBuilder::new()
-        .add_attr(OID_TRUST_ANCHOR_ID, &log_id_str)
+        .add_attr(OID_TRUST_ANCHOR_ID, trust_anchor_id_str)
         .build()
         .map_err(|e| Error::Parse(format!("build issuer DN: {e}")))?;
 
@@ -162,10 +163,10 @@ pub fn build_artifacts(vectors: &MtcVectors) -> Result<GeneratedArtifacts> {
                         cosigner_ids: cert_cfg.cosigners.clone(),
                         bit_flip_proof: cert_cfg.bit_flip_proof,
                     });
-                    awaiting.entry(seq.clone()).or_default().push(PendingCert {
-                        cert_idx,
-                        prev,
-                    });
+                    awaiting
+                        .entry(seq.clone())
+                        .or_default()
+                        .push(PendingCert { cert_idx, prev });
                 } else {
                     return Err(Error::Parse(format!(
                         "entry {entry_config_idx} cert {cert_config_idx}: \
@@ -182,7 +183,11 @@ pub fn build_artifacts(vectors: &MtcVectors) -> Result<GeneratedArtifacts> {
                         let cert = &certs[p.cert_idx];
                         let (s1, e1, s2, e2) = subtrees_for_interval(p.prev, new_size)?;
                         let idx = cert.leaf_index as usize;
-                        let (start, end) = if idx < e1 as usize { (s1, e1) } else { (s2, e2) };
+                        let (start, end) = if idx < e1 as usize {
+                            (s1, e1)
+                        } else {
+                            (s2, e2)
+                        };
                         certs[p.cert_idx].subtree_start = start;
                         certs[p.cert_idx].subtree_end = end;
                     }
@@ -207,7 +212,11 @@ pub fn build_artifacts(vectors: &MtcVectors) -> Result<GeneratedArtifacts> {
 
     let tree_size = leaf_hashes.len() as u64;
 
-    Ok(GeneratedArtifacts { leaf_hashes, certs, tree_size })
+    Ok(GeneratedArtifacts {
+        leaf_hashes,
+        certs,
+        tree_size,
+    })
 }
 
 /// Encode one log entry to the TLS wire format used for leaf hashing.
@@ -222,21 +231,25 @@ fn encode_entry(entry: &EntryConfig, issuer_dn_der: &[u8]) -> Result<Vec<u8>> {
             .map_err(|e| Error::Crypto(format!("tls_encode_entry(null): {e}")));
     }
 
-    let spki = entry.public_key.as_deref().ok_or_else(|| {
-        Error::Parse("non-null entry missing PublicKey".into())
-    })?;
+    let spki = entry
+        .public_key
+        .as_deref()
+        .ok_or_else(|| Error::Parse("non-null entry missing PublicKey".into()))?;
 
     // Parse issuer from DER bytes (built once per log).
-    let issuer = parse_raw_name(issuer_dn_der)
-        .map_err(|e| Error::Parse(format!("parse issuer DN: {e}")))?;
+    let issuer =
+        parse_raw_name(issuer_dn_der).map_err(|e| Error::Parse(format!("parse issuer DN: {e}")))?;
 
     // Build subject Name.
     let subject_der = build_subject_der(entry.subject.as_ref())?;
-    let subject = parse_raw_name(&subject_der)
-        .map_err(|e| Error::Parse(format!("parse subject DN: {e}")))?;
+    let subject =
+        parse_raw_name(&subject_der).map_err(|e| Error::Parse(format!("parse subject DN: {e}")))?;
 
     // Parse validity from ISO 8601 strings.
-    let not_before_str = entry.not_before.as_deref().unwrap_or("2020-01-01T00:00:00Z");
+    let not_before_str = entry
+        .not_before
+        .as_deref()
+        .unwrap_or("2020-01-01T00:00:00Z");
     let not_after_str = entry.not_after.as_deref().unwrap_or("2030-12-31T23:59:59Z");
     let validity = Validity {
         not_before: parse_time(&iso8601_to_rfc5280(not_before_str)?)
@@ -246,10 +259,9 @@ fn encode_entry(entry: &EntryConfig, issuer_dn_der: &[u8]) -> Result<Vec<u8>> {
     };
 
     // Parse SPKI to extract algorithm (borrows from `spki` for its lifetime).
-    let spki_parsed: SubjectPublicKeyInfo =
-        Decoder::new(spki, Encoding::Der)
-            .decode()
-            .map_err(|e| Error::Parse(format!("parse SPKI: {e}")))?;
+    let spki_parsed: SubjectPublicKeyInfo = Decoder::new(spki, Encoding::Der)
+        .decode()
+        .map_err(|e| Error::Parse(format!("parse SPKI: {e}")))?;
     let algorithm = spki_parsed.algorithm.clone();
 
     // Hash the SPKI bytes (plain SHA-256, no domain separation).
@@ -257,7 +269,11 @@ fn encode_entry(entry: &EntryConfig, issuer_dn_der: &[u8]) -> Result<Vec<u8>> {
 
     // Build extensions.
     let extensions = build_extensions(entry)?;
-    let extensions_field = if extensions.is_empty() { None } else { Some(extensions) };
+    let extensions_field = if extensions.is_empty() {
+        None
+    } else {
+        Some(extensions)
+    };
 
     // Go demo always includes the version field (v3 = integer 2).
     let log_entry = TBSCertificateLogEntry {
@@ -273,22 +289,79 @@ fn encode_entry(entry: &EntryConfig, issuer_dn_der: &[u8]) -> Result<Vec<u8>> {
     };
 
     let mtc_entry = MerkleTreeCertEntry::TbsCertEntry(log_entry);
-    tls_encode_entry(&mtc_entry, &[])
-        .map_err(|e| Error::Crypto(format!("tls_encode_entry: {e}")))
+    tls_encode_entry(&mtc_entry, &[]).map_err(|e| Error::Crypto(format!("tls_encode_entry: {e}")))
 }
 
 /// Build the DER-encoded Name for the subject field.
+///
+/// Go's crypto/x509 uses PrintableString for printable-charset commonNames.
+/// `NameBuilder::common_name()` always produces UTF8String, so for CN we
+/// replicate the same three-step pattern (encode OID + value, wrap in
+/// SEQUENCE/SET/SEQUENCE) but use `PrintableStringRef` when the value is
+/// in the PrintableString character set and `Utf8StringRef` otherwise.
 fn build_subject_der(subject: Option<&SubjectConfig>) -> Result<Vec<u8>> {
     match subject {
-        None => NameBuilder::new().build().map_err(|e| Error::Parse(format!("empty subject: {e}"))),
-        Some(s) if !s.common_name.is_empty() => NameBuilder::new()
-            .common_name(&s.common_name)
-            .build()
-            .map_err(|e| Error::Parse(format!("subject CN: {e}"))),
-        Some(_) => NameBuilder::new()
+        None => NameBuilder::new()
             .build()
             .map_err(|e| Error::Parse(format!("empty subject: {e}"))),
+        Some(s) if s.common_name.is_empty() => NameBuilder::new()
+            .build()
+            .map_err(|e| Error::Parse(format!("empty subject: {e}"))),
+        Some(s) => build_cn_name_der(&s.common_name),
     }
+}
+
+const OID_COMMON_NAME: &[u32] = &[2, 5, 4, 3];
+
+/// Build a single-CN Name DER using PrintableString when possible, UTF8String otherwise.
+fn build_cn_name_der(cn: &str) -> Result<Vec<u8>> {
+    let oid = ObjectIdentifier::new(OID_COMMON_NAME)
+        .map_err(|e| Error::Parse(format!("commonName OID: {e}")))?;
+    let mut oid_enc = Encoder::new(Encoding::Der);
+    oid_enc
+        .encode(&oid)
+        .map_err(|e| Error::Parse(format!("encode OID: {e}")))?;
+    let oid_bytes = oid_enc
+        .finish()
+        .map_err(|e| Error::Parse(format!("finish OID enc: {e}")))?;
+
+    let val_bytes = if let Ok(ps) = PrintableStringRef::new(cn) {
+        let mut enc = Encoder::new(Encoding::Der);
+        enc.encode(&ps)
+            .map_err(|e| Error::Parse(format!("encode PS: {e}")))?;
+        enc.finish()
+            .map_err(|e| Error::Parse(format!("finish PS enc: {e}")))?
+    } else {
+        let us = Utf8StringRef::new(cn);
+        let mut enc = Encoder::new(Encoding::Der);
+        enc.encode(&us)
+            .map_err(|e| Error::Parse(format!("encode US: {e}")))?;
+        enc.finish()
+            .map_err(|e| Error::Parse(format!("finish US enc: {e}")))?
+    };
+
+    let mut atv = Vec::with_capacity(oid_bytes.len() + val_bytes.len());
+    atv.extend_from_slice(&oid_bytes);
+    atv.extend_from_slice(&val_bytes);
+    let atv = der_wrap(0x30, &atv);
+    let rdn = der_wrap(0x31, &atv);
+    Ok(der_wrap(0x30, &rdn))
+}
+
+/// Wrap `content` in a DER TLV with the given `tag`.
+fn der_wrap(tag: u8, content: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + content.len());
+    out.push(tag);
+    let len = content.len();
+    if len < 128 {
+        out.push(len as u8);
+    } else if len < 256 {
+        out.extend_from_slice(&[0x81, len as u8]);
+    } else {
+        out.extend_from_slice(&[0x82, (len >> 8) as u8, (len & 0xff) as u8]);
+    }
+    out.extend_from_slice(content);
+    out
 }
 
 /// Convert ISO 8601 "YYYY-MM-DDTHH:MM:SSZ" to "YYYYMMDDHHMMSSZ" for `parse_time`.
@@ -314,8 +387,8 @@ fn build_extensions(entry: &EntryConfig) -> Result<Vec<Extension>> {
 
     if !entry.key_usage.is_empty() {
         let bits = parse_key_usage(&entry.key_usage);
-        let value = encode_key_usage(bits)
-            .ok_or_else(|| Error::Parse("encode_key_usage failed".into()))?;
+        let value =
+            encode_key_usage(bits).ok_or_else(|| Error::Parse("encode_key_usage failed".into()))?;
         exts.push(Extension {
             extn_id: ObjectIdentifier::new(oids::KEY_USAGE)
                 .map_err(|e| Error::Parse(format!("KEY_USAGE OID: {e}")))?,
@@ -329,7 +402,9 @@ fn build_extensions(entry: &EntryConfig) -> Result<Vec<Extension>> {
         for name in &entry.ext_key_usage {
             b = eku_add(b, name)?;
         }
-        let value = b.build().map_err(|e| Error::Parse(format!("ExtKeyUsage: {e}")))?;
+        let value = b
+            .build()
+            .map_err(|e| Error::Parse(format!("ExtKeyUsage: {e}")))?;
         exts.push(Extension {
             extn_id: ObjectIdentifier::new(oids::EXTENDED_KEY_USAGE)
                 .map_err(|e| Error::Parse(format!("EXTENDED_KEY_USAGE OID: {e}")))?,
@@ -360,7 +435,12 @@ fn build_extensions(entry: &EntryConfig) -> Result<Vec<Extension>> {
         exts.push(Extension {
             extn_id: ObjectIdentifier::new(oids::BASIC_CONSTRAINTS)
                 .map_err(|e| Error::Parse(format!("BASIC_CONSTRAINTS OID: {e}")))?,
-            critical: None,
+            // Go marks basicConstraints critical when cA=true (per RFC 5280 §4.2.1.9 SHOULD).
+            critical: if is_ca {
+                Some(Boolean::new(true))
+            } else {
+                None
+            },
             extn_value: OctetString::from(value),
         });
     }
@@ -374,7 +454,9 @@ fn parse_key_usage(names: &[String]) -> u16 {
     for name in names {
         let bit = match name.as_str() {
             "DigitalSignature" | "digitalSignature" => KEY_USAGE_DIGITAL_SIGNATURE,
-            "ContentCommitment" | "contentCommitment" | "NonRepudiation" => KEY_USAGE_NON_REPUDIATION,
+            "ContentCommitment" | "contentCommitment" | "NonRepudiation" => {
+                KEY_USAGE_NON_REPUDIATION
+            }
             "KeyEncipherment" | "keyEncipherment" => KEY_USAGE_KEY_ENCIPHERMENT,
             "DataEncipherment" | "dataEncipherment" => KEY_USAGE_DATA_ENCIPHERMENT,
             "KeyAgreement" | "keyAgreement" => KEY_USAGE_KEY_AGREEMENT,
