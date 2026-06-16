@@ -1,0 +1,30 @@
+[package]
+name = "akamu-mtc-validator"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "MTC RFC draft validation and test vector tool for akamu"
+
+[[bin]]
+name = "akamu-mtc-validator"
+path = "src/main.rs"
+
+[dependencies]
+# MTC crypto: leaf hashing, Merkle tree, inclusion proofs, subtree hashes
+synta-mtc = { version = ">=0.2.6", features = ["std"] }
+# X.509 / DER building for log entry construction
+synta-certificate = { version = ">=0.2.6", features = ["std", "pqc"] }
+synta = { version = ">=0.2.6", default-features = false, features = ["std", "derive"] }
+
+# Test vector format
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+
+# CLI
+clap = { version = "4", default-features = false, features = ["std", "help", "usage", "error-context", "derive"] }
+
+# Error handling
+thiserror = "2"
+
+[dev-dependencies]

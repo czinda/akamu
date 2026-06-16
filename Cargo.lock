@@ -178,6 +178,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "akamu-mtc-validator"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "clap",
+ "serde",
+ "serde_json",
+ "synta",
+ "synta-certificate",
+ "synta-mtc",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "akamu-mtc-wire"
 version = "0.1.0"
 dependencies = [
