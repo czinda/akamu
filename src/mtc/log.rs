@@ -239,7 +239,7 @@ pub async fn append_cert_to_log(
             .map_err(|e| AcmeError::Mtc(format!("parse extensions: {e}")))?;
 
         let log_entry = TBSCertificateLogEntry {
-            version: None,
+            version: tbs.version.clone(),
             issuer,
             validity: tbs.validity.clone(),
             subject,

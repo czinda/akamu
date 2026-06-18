@@ -915,11 +915,14 @@ async fn verify_mtc_proof(
         Decoder::new(&standalone_bytes, Encoding::Der)
             .decode()
             .expect("parse standalone cert DER");
-    let log_entry = synta_mtc::integration::tbs_certificate_to_log_entry(
+    let mut log_entry = synta_mtc::integration::tbs_certificate_to_log_entry(
         &standalone_cert.tbs_certificate,
         HashAlgorithm::Sha256,
     )
     .expect("build log entry from standalone TBS cert");
+    // synta-mtc 0.2.6 hardcodes version: None but the server includes the
+    // actual version field (draft-ietf-plants-merkle-tree-certs-04).
+    log_entry.version = standalone_cert.tbs_certificate.version.clone();
     let entry = MerkleTreeCertEntry::TbsCertEntry(log_entry);
     let leaf_hash = hash_log_entry(HashAlgorithm::Sha256, &entry, &[]).expect("hash_log_entry");
 
