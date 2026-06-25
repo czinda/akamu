@@ -251,6 +251,34 @@ scenarios.
 %doc contrib/configs
 
 
+# ── Subpackage: container and Kubernetes deployment ──────────────────────────
+%package -n akamu-containers
+Summary:        Hardened Containerfiles, Kubernetes manifests, and deployment tooling
+License:        GPL-3.0-or-later
+BuildArch:      noarch
+
+%description -n akamu-containers
+Container and Kubernetes deployment assets for akamu, including hardened
+multi-stage Containerfiles (Hummingbird base images), a podman-compose stack
+with network segmentation, nginx TLS proxy configuration, a restricted
+seccomp profile, Kustomize manifests with dev/staging/production overlays,
+and test/lifecycle scripts for the hardened deployment.
+
+%files -n akamu-containers
+%license LICENSE
+%{_datadir}/akamu/containers/Containerfile
+%{_datadir}/akamu/containers/Containerfile.cosigner
+%{_datadir}/akamu/containers/Containerfile.cli
+%{_datadir}/akamu/containers/Containerfile.akamuctl
+%{_datadir}/akamu/containers/Containerfile.proxy
+%{_datadir}/akamu/containers/podman-compose.yml
+%{_datadir}/akamu/containers/entrypoint.sh
+%{_datadir}/akamu/containers/configs/
+%{_datadir}/akamu/containers/seccomp/
+%{_datadir}/akamu/containers/scripts/
+%{_datadir}/akamu/kubernetes/
+
+
 # ── Subpackage: management web UI ─────────────────────────────────────────────
 %if %{with webui}
 %package -n akamu-webui
@@ -379,6 +407,24 @@ install -Dpm 0644 akamuctl.1.gz       %{buildroot}%{_mandir}/man1/akamuctl.1.gz
 
 # Create the cosigner configuration directory
 install -dm 0755 %{buildroot}%{_sysconfdir}/akamu-cosigner
+
+# Hardened container deployment assets → %{_datadir}/akamu/containers/
+install -dm 0755 %{buildroot}%{_datadir}/akamu/containers/configs
+install -dm 0755 %{buildroot}%{_datadir}/akamu/containers/seccomp
+install -dm 0755 %{buildroot}%{_datadir}/akamu/containers/scripts
+install -Dpm 0644 Containerfile                               %{buildroot}%{_datadir}/akamu/containers/Containerfile
+install -Dpm 0644 contrib/containers/Containerfile.cosigner   %{buildroot}%{_datadir}/akamu/containers/Containerfile.cosigner
+install -Dpm 0644 contrib/containers/Containerfile.cli        %{buildroot}%{_datadir}/akamu/containers/Containerfile.cli
+install -Dpm 0644 contrib/containers/Containerfile.akamuctl   %{buildroot}%{_datadir}/akamu/containers/Containerfile.akamuctl
+install -Dpm 0644 contrib/containers/Containerfile.proxy      %{buildroot}%{_datadir}/akamu/containers/Containerfile.proxy
+install -Dpm 0644 podman-compose.yml                          %{buildroot}%{_datadir}/akamu/containers/podman-compose.yml
+install -Dpm 0755 contrib/containers/entrypoint.sh            %{buildroot}%{_datadir}/akamu/containers/entrypoint.sh
+install -Dpm 0644 contrib/containers/configs/*.toml           %{buildroot}%{_datadir}/akamu/containers/configs/
+install -Dpm 0644 contrib/containers/configs/nginx.conf       %{buildroot}%{_datadir}/akamu/containers/configs/nginx.conf
+install -Dpm 0644 contrib/containers/seccomp/akamu.json       %{buildroot}%{_datadir}/akamu/containers/seccomp/akamu.json
+install -Dpm 0755 contrib/containers/scripts/*.sh             %{buildroot}%{_datadir}/akamu/containers/scripts/
+# Kubernetes / Kustomize manifests → %{_datadir}/akamu/kubernetes/
+cp -a contrib/kubernetes %{buildroot}%{_datadir}/akamu/kubernetes
 
 # Management web UI static assets → %{_datadir}/akamu/webui/
 %if %{with webui}
