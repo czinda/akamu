@@ -22,6 +22,30 @@ b64url() {
     openssl base64 -e -A | tr '+/' '-_' | tr -d '='
 }
 
+# Convert DER-encoded ECDSA signature to raw R||S (RFC 7518 §3.4).
+# OpenSSL outputs DER (ASN.1 SEQUENCE of INTEGERs), ACME/JWS needs raw 64 bytes.
+der_to_raw_es256() {
+    python3 -c "
+import sys, struct
+der = sys.stdin.buffer.read()
+# Parse ASN.1: SEQUENCE { INTEGER r, INTEGER s }
+assert der[0] == 0x30
+i = 2
+# r
+assert der[i] == 0x02; i += 1
+r_len = der[i]; i += 1
+r = der[i:i+r_len]; i += r_len
+# s
+assert der[i] == 0x02; i += 1
+s_len = der[i]; i += 1
+s = der[i:i+s_len]
+# Pad/trim to 32 bytes each
+r = r[-32:].rjust(32, b'\x00')
+s = s[-32:].rjust(32, b'\x00')
+sys.stdout.buffer.write(r + s)
+"
+}
+
 section "Setup"
 
 # Generate an EC P-256 account key
@@ -79,14 +103,14 @@ PAYLOAD=$(printf '{"termsOfServiceAgreed":true}' | b64url)
 # Sign
 SIGNING_INPUT="${PROTECTED}.${PAYLOAD}"
 SIG=$(printf '%s' "$SIGNING_INPUT" | \
-    openssl dgst -sha256 -sign "$WORKDIR/account.key" -binary | b64url)
+    openssl dgst -sha256 -sign "$WORKDIR/account.key" -binary | der_to_raw_es256 | b64url)
 
 # POST
-ACCT_RESP=$(curl -sf -X POST \
+ACCT_RESP=$(curl -s -X POST \
     -H 'Content-Type: application/jose+json' \
     -D "$WORKDIR/acct_headers.txt" \
     -d "{\"protected\":\"$PROTECTED\",\"payload\":\"$PAYLOAD\",\"signature\":\"$SIG\"}" \
-    "$NEW_ACCOUNT" 2>/dev/null) || ACCT_RESP=""
+    "$NEW_ACCOUNT" 2>/dev/null || true)
 
 ACCT_STATUS=$(grep -i 'HTTP/' "$WORKDIR/acct_headers.txt" 2>/dev/null | tail -1 | tr -d '\r')
 ACCT_LOCATION=$(grep -i 'location:' "$WORKDIR/acct_headers.txt" 2>/dev/null | tr -d '\r' | cut -d' ' -f2)
@@ -118,13 +142,13 @@ if [ -n "$ACCT_LOCATION" ] && [ -n "$ACCT_NONCE" ]; then
 
     SIGNING_INPUT2="${PROTECTED2}.${ORDER_PAYLOAD}"
     SIG2=$(printf '%s' "$SIGNING_INPUT2" | \
-        openssl dgst -sha256 -sign "$WORKDIR/account.key" -binary | b64url)
+        openssl dgst -sha256 -sign "$WORKDIR/account.key" -binary | der_to_raw_es256 | b64url)
 
-    ORDER_RESP=$(curl -sf -X POST \
+    ORDER_RESP=$(curl -s -X POST \
         -H 'Content-Type: application/jose+json' \
         -D "$WORKDIR/order_headers.txt" \
         -d "{\"protected\":\"$PROTECTED2\",\"payload\":\"$ORDER_PAYLOAD\",\"signature\":\"$SIG2\"}" \
-        "$NEW_ORDER" 2>/dev/null) || ORDER_RESP=""
+        "$NEW_ORDER" 2>/dev/null || true)
 
     ORDER_STATUS=$(grep -i 'HTTP/' "$WORKDIR/order_headers.txt" 2>/dev/null | tail -1 | tr -d '\r')
 
@@ -161,8 +185,8 @@ fi
 section "5. Error Handling"
 
 # Test malformed request
-ERR1=$(curl -sf -X POST -H 'Content-Type: application/jose+json' \
-    -d '{"not":"acme"}' "$NEW_ACCOUNT" 2>/dev/null) || ERR1=""
+ERR1=$(curl -s -X POST -H 'Content-Type: application/jose+json' \
+    -d '{"not":"acme"}' "$NEW_ACCOUNT" 2>/dev/null || true)
 if echo "$ERR1" | grep -qi '"type"'; then
     pass "Malformed JWS returns RFC 7807 problem document"
 else
@@ -170,9 +194,9 @@ else
 fi
 
 # Test wrong content type
-ERR2_STATUS=$(curl -sf -o /dev/null -w '%{http_code}' -X POST \
+ERR2_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
     -H 'Content-Type: application/json' \
-    -d '{}' "$NEW_ACCOUNT" 2>/dev/null) || ERR2_STATUS="000"
+    -d '{}' "$NEW_ACCOUNT" 2>/dev/null || echo "000")
 if [ "$ERR2_STATUS" = "415" ] || [ "$ERR2_STATUS" = "400" ]; then
     pass "Wrong Content-Type returns $ERR2_STATUS"
 else
@@ -180,7 +204,7 @@ else
 fi
 
 # Test GET on POST-only endpoint
-ERR3_STATUS=$(curl -sf -o /dev/null -w '%{http_code}' "$NEW_ACCOUNT" 2>/dev/null) || ERR3_STATUS="000"
+ERR3_STATUS=$(curl -s -o /dev/null -w '%{http_code}' "$NEW_ACCOUNT" 2>/dev/null || echo "000")
 if [ "$ERR3_STATUS" = "405" ] || [ "$ERR3_STATUS" = "400" ]; then
     pass "GET on POST-only endpoint returns $ERR3_STATUS"
 else
