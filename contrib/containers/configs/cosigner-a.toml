@@ -1,0 +1,14 @@
+# cosigner-a.toml — MTC cosigner A for local podman-compose deployment.
+
+[server]
+listen_addr = "0.0.0.0:8080"
+base_url    = "http://cosigner-a:8080"
+
+[signing_key]
+key_file = "/app/data/signing.key"
+key_type = "ec:P-256"
+hash_alg = "sha256"
+
+[cosigner_id]
+cert_file       = "/app/data/cosigner-id.crt"
+trust_anchor_id = "1.3.6.1.4.1.44363.47.10.1"

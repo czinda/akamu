@@ -1,0 +1,20 @@
+# Minimal RBAC for Akamu — no cluster-level access needed.
+# The service account has no permissions by default (automountServiceAccountToken: false).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: akamu
+  namespace: akamu
+  labels:
+    app.kubernetes.io/name: akamu
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: akamu-cosigner
+  namespace: akamu
+  labels:
+    app.kubernetes.io/name: akamu
+    app.kubernetes.io/component: cosigner
+automountServiceAccountToken: false

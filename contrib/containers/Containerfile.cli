@@ -1,0 +1,44 @@
+# Hardened ACME client CLI for health checks, testing, and certificate management.
+# ── Stage 1: Build ────────────────────────────────────────────────────────────
+FROM quay.io/hummingbird/rust:latest-builder AS builder
+
+RUN dnf install -y \
+        git \
+        clang \
+        openssl-devel \
+        sqlite-devel \
+    && dnf clean all
+
+WORKDIR /build/akamu
+COPY . .
+
+RUN CARGO_NET_GIT_FETCH_WITH_CLI=true \
+    cargo build --release -p akamu-cli
+
+# ── Stage 2: Hardened Runtime ─────────────────────────────────────────────────
+FROM quay.io/hummingbird/core-runtime:latest-openssl
+
+LABEL org.opencontainers.image.title="Akamu CLI" \
+      org.opencontainers.image.description="Hardened ACME client CLI for Akamu" \
+      org.opencontainers.image.licenses="GPL-3.0-or-later"
+
+RUN dnf install -y --setopt=install_weak_deps=False \
+        openssl-libs \
+        ca-certificates \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf /var/log/dnf* /var/log/hawkey*
+
+RUN find / -xdev -perm /6000 -type f -exec chmod a-s {} + 2>/dev/null || true
+
+RUN groupadd -g 1001 akamu && \
+    useradd -u 1001 -g akamu -s /sbin/nologin -d /app akamu
+
+RUN mkdir -p /app/data && chown -R akamu:akamu /app
+
+COPY --from=builder --chown=akamu:akamu \
+    /build/akamu/target/release/akamu-cli /app/akamu-cli
+
+USER akamu
+WORKDIR /app
+
+ENTRYPOINT ["/app/akamu-cli"]

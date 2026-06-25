@@ -1,0 +1,58 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: akamu-config
+  namespace: akamu
+  labels:
+    app.kubernetes.io/name: akamu
+    app.kubernetes.io/component: server
+data:
+  config.toml: |
+    listen_addr = "0.0.0.0:8080"
+    base_url    = "https://acme.example.com"
+
+    [database]
+    url = "sqlite:///app/data/acme.db"
+
+    [ca]
+    key_file  = "/app/conf/ca.key.pem"
+    cert_file = "/app/conf/ca.cert.pem"
+    key_type  = "ec:P-384"
+    hash_alg  = "sha384"
+    enforce_validity_cap = true
+    validity_days = 90
+
+    [mtc]
+    log_path = "/app/data/mtc.log"
+    enabled  = true
+    checkpoint_interval_secs = 3600
+
+    [mtc.signing_key]
+    key_file = "/app/data/mtc-signing.key"
+    key_type = "ec:P-384"
+
+    [[mtc.cosigners]]
+    url = "http://cosigner.akamu.svc.cluster.local:8080/sign"
+
+    [server]
+    validate_dnssec = true
+
+    [admin]
+    listen_addr = "127.0.0.1:9443"
+    audit_overflow = "halt"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cosigner-config
+  namespace: akamu
+  labels:
+    app.kubernetes.io/name: akamu
+    app.kubernetes.io/component: cosigner
+data:
+  cosigner.toml: |
+    listen_addr = "0.0.0.0:8080"
+
+    [signing_key]
+    key_file = "/app/data/cosigner.key"
+    key_type = "ec:P-384"

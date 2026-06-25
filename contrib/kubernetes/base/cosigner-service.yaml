@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: cosigner
+  namespace: akamu
+  labels:
+    app.kubernetes.io/name: akamu
+    app.kubernetes.io/component: cosigner
+spec:
+  selector:
+    app.kubernetes.io/name: akamu
+    app.kubernetes.io/component: cosigner
+  ports:
+    - name: cosigner
+      port: 8080
+      targetPort: cosigner
+      protocol: TCP
+  type: ClusterIP

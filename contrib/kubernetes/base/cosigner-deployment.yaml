@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cosigner
+  namespace: akamu
+  labels:
+    app.kubernetes.io/name: akamu
+    app.kubernetes.io/component: cosigner
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: akamu
+      app.kubernetes.io/component: cosigner
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: akamu
+        app.kubernetes.io/component: cosigner
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: cosigner
+          image: quay.io/akamu/akamu-cosigner:latest
+          ports:
+            - name: cosigner
+              containerPort: 8080
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            limits:
+              cpu: "1"
+              memory: "256Mi"
+              ephemeral-storage: "64Mi"
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: config
+              mountPath: /app/conf
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            tcpSocket:
+              port: cosigner
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            tcpSocket:
+              port: cosigner
+            initialDelaySeconds: 3
+            periodSeconds: 5
+      volumes:
+        - name: data
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: config
+          configMap:
+            name: cosigner-config
+        - name: tmp
+          emptyDir:
+            sizeLimit: 32Mi

@@ -1,0 +1,47 @@
+# Hardened admin CLI for Akamu server management.
+# ── Stage 1: Build ────────────────────────────────────────────────────────────
+FROM quay.io/hummingbird/rust:latest-builder AS builder
+
+RUN dnf install -y \
+        git \
+        clang \
+        openssl-devel \
+        sqlite-devel \
+    && dnf clean all
+
+WORKDIR /build/akamu
+COPY . .
+
+RUN CARGO_NET_GIT_FETCH_WITH_CLI=true \
+    cargo build --release -p akamuctl
+
+# ── Stage 2: Hardened Runtime ─────────────────────────────────────────────────
+FROM quay.io/hummingbird/core-runtime:latest-openssl
+
+LABEL org.opencontainers.image.title="akamuctl" \
+      org.opencontainers.image.description="Hardened admin CLI for Akamu ACME server" \
+      org.opencontainers.image.licenses="GPL-3.0-or-later"
+
+RUN dnf install -y --setopt=install_weak_deps=False \
+        openssl-libs \
+        krb5-libs \
+        ca-certificates \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf /var/log/dnf* /var/log/hawkey*
+
+RUN find / -xdev -perm /6000 -type f -exec chmod a-s {} + 2>/dev/null || true
+
+RUN groupadd -g 1001 akamu && \
+    useradd -u 1001 -g akamu -s /sbin/nologin -d /app akamu
+
+RUN mkdir -p /app/conf && chown -R akamu:akamu /app
+
+COPY --from=builder --chown=akamu:akamu \
+    /build/akamu/target/release/akamuctl /app/akamuctl
+
+USER akamu
+WORKDIR /app
+
+VOLUME ["/app/conf"]
+
+ENTRYPOINT ["/app/akamuctl"]

@@ -1,0 +1,101 @@
+# Hardened deployment with HSM-backed CA key via PKCS#11.
+#
+# The CA private key is stored in a hardware security module (HSM) and accessed
+# via the PKCS#11 interface.  The key never leaves the HSM boundary.
+#
+# Prerequisites:
+#   - HSM driver and PKCS#11 module installed on the host / in the container
+#   - pkcs11-provider or p11-kit configured for OpenSSL 3.x
+#   - CA signing key provisioned in the HSM with the label shown below
+
+listen_addr = "0.0.0.0:8080"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "postgres://akamu@postgres:5432/akamu?sslmode=verify-full&sslrootcert=/app/conf/pg-ca.pem"
+require_tls     = true
+max_connections = 20
+
+[ca]
+# PKCS#11 URI — the CA private key lives in the HSM, not on disk.
+key_file  = "pkcs11:token=akamu-ca;object=ca-signing-key;type=private"
+cert_file = "/app/conf/ca.cert.pem"
+
+# Post-quantum composite: ML-DSA-65 primary + ECDSA P-384 fallback.
+key_type = "ml-dsa-65"
+hash_alg = "sha384"
+
+# With PKCS#11, require_encrypted_key is moot (the key is in the HSM),
+# but we set it true to reject any accidental fallback to plaintext PEM.
+require_encrypted_key = true
+
+enforce_validity_cap = true
+validity_days        = 90
+ca_validity_years    = 10
+
+common_name  = "Example ACME CA"
+organization = "Example Org"
+
+crl_url  = "https://acme.example.com/ca/crl"
+ocsp_url = "https://acme.example.com/ca/ocsp"
+
+[mtc]
+log_path = "/app/data/mtc.log"
+enabled  = true
+checkpoint_interval_secs = 3600
+
+[mtc.signing_key]
+key_file = "/app/data/mtc-signing.key"
+key_type = "ec:P-384"
+hash_alg = "sha384"
+
+[[mtc.cosigners]]
+url = "https://cosigner-a.akamu-internal:8080/sign"
+
+[[mtc.cosigners]]
+url = "https://cosigner-b.akamu-internal:8080/sign"
+
+[server]
+validate_dnssec            = true
+external_account_required  = true
+caa_identities             = ["acme.example.com"]
+max_body_bytes             = 65536
+http_validation_port       = 80
+http_validation_allow_private_ips = false
+
+[tls]
+enabled   = true
+cert_file = "/app/conf/server.pem"
+key_file  = "/app/conf/server.key"
+protocols = ["TLSv1.3"]
+
+[tls.client_auth]
+required           = true
+ca_files           = ["/app/conf/client-ca.pem"]
+profile            = "rfc5280"
+allow_post_quantum = true
+max_chain_depth    = 4
+minimum_rsa_modulus = 3072
+
+[admin]
+listen_addr = "0.0.0.0:9443"
+cert_file   = "/app/conf/admin-tls.pem"
+key_file    = "/app/conf/admin-tls-key.pem"
+ca_certs    = ["/app/conf/operator-ca.pem"]
+
+session_ttl_secs      = 3600
+session_lock_secs     = 900
+max_failed_auth       = 5
+lockout_duration_secs = 1800
+auth_rate_limit       = 20
+audit_max_rows        = 1000000
+audit_overflow        = "halt"
+audit_alarm_threshold = 10
+audit_alarm_action    = "syslog"
+
+[gossip]
+peers = [
+    "https://akamu-1.akamu-internal:9443",
+    "https://akamu-2.akamu-internal:9443",
+]
+interval_secs = 15

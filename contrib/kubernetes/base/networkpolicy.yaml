@@ -1,0 +1,123 @@
+# ── Default deny all ──────────────────────────────────────────────────────────
+# Baseline: deny all ingress and egress.  Subsequent policies whitelist traffic.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: akamu
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# ── Akamu server ──────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: akamu-server
+  namespace: akamu
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: akamu
+      app.kubernetes.io/component: server
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Accept traffic from the Ingress controller (labeled).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 8080
+          protocol: TCP
+    # Accept gossip traffic from other akamu server pods.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: akamu
+              app.kubernetes.io/component: server
+      ports:
+        - port: 9443
+          protocol: TCP
+  egress:
+    # → Cosigners (MTC checkpoint signing).
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: akamu
+              app.kubernetes.io/component: cosigner
+      ports:
+        - port: 8080
+          protocol: TCP
+    # → PostgreSQL (when using external database).
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: akamu
+              app.kubernetes.io/component: postgres
+      ports:
+        - port: 5432
+          protocol: TCP
+    # → Other akamu server pods (gossip replication).
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: akamu
+              app.kubernetes.io/component: server
+      ports:
+        - port: 9443
+          protocol: TCP
+    # → DNS (required for ACME challenge validation and CAA checks).
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+        - port: 853
+          protocol: TCP
+    # → HTTP/HTTPS (http-01 challenge validation, OCSP, CRL fetch).
+    - to: []
+      ports:
+        - port: 80
+          protocol: TCP
+        - port: 443
+          protocol: TCP
+---
+# ── Cosigner ──────────────────────────────────────────────────────────────────
+# Cosigners accept signing requests from akamu servers only.
+# They need no outbound access at all.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: akamu-cosigner
+  namespace: akamu
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: akamu
+      app.kubernetes.io/component: cosigner
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: akamu
+              app.kubernetes.io/component: server
+      ports:
+        - port: 8080
+          protocol: TCP
+  egress:
+    # DNS only (needed for name resolution within the cluster).
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
