@@ -154,7 +154,7 @@ for ctr in "${CONTAINERS[@]}"; do
     if echo "$TMP_MOUNT" | grep -q 'tmpfs'; then
         pass "[$ctr] /tmp is tmpfs"
     else
-        info "[$ctr] /tmp mount: $TMP_MOUNT"
+        warn "[$ctr] /tmp mount: $TMP_MOUNT"
     fi
 done
 
