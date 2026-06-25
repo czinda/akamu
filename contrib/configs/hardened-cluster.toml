@@ -1,0 +1,96 @@
+# Hardened multi-node cluster deployment with PostgreSQL, gossip replication,
+# MTC transparency logging, and post-quantum cryptography.
+#
+# Deploy one instance of this config per cluster node, adjusting:
+#   - base_url (per-node FQDN or shared via load balancer)
+#   - database.url (each node gets its own database)
+#   - gossip.peers (list all other nodes)
+
+listen_addr = "0.0.0.0:8080"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "postgres://akamu@postgres:5432/akamu?sslmode=verify-full&sslrootcert=/app/conf/pg-ca.pem"
+require_tls     = true
+max_connections = 20
+
+[ca]
+key_file  = "/app/conf/ca.key.pem"
+cert_file = "/app/conf/ca.cert.pem"
+# Post-quantum CA signing key (FIPS 204).
+key_type  = "ml-dsa-65"
+hash_alg  = "sha384"
+
+require_encrypted_key  = true
+key_password_file      = "/app/conf/ca-key-passphrase"
+enforce_validity_cap   = true
+validity_days          = 90
+ca_validity_years      = 10
+
+common_name  = "Example ACME CA"
+organization = "Example Org"
+
+crl_url  = "https://acme.example.com/ca/crl"
+ocsp_url = "https://acme.example.com/ca/ocsp"
+
+[mtc]
+log_path = "/app/data/mtc.log"
+enabled  = true
+checkpoint_interval_secs = 3600
+landmark_interval_secs   = 86400
+max_active_landmarks     = 100
+checkpoint_retention_count = 1000
+
+[mtc.signing_key]
+key_file = "/app/data/mtc-signing.key"
+key_type = "ec:P-384"
+hash_alg = "sha384"
+
+[[mtc.cosigners]]
+url = "https://cosigner-a.akamu-internal:8080/sign"
+
+[[mtc.cosigners]]
+url = "https://cosigner-b.akamu-internal:8080/sign"
+
+[server]
+validate_dnssec            = true
+external_account_required  = true
+caa_identities             = ["acme.example.com"]
+max_body_bytes             = 65536
+http_validation_port       = 80
+http_validation_allow_private_ips = false
+
+[tls]
+enabled   = true
+cert_file = "/app/conf/server.pem"
+key_file  = "/app/conf/server.key"
+protocols = ["TLSv1.3"]
+
+[tls.client_auth]
+required           = false
+ca_files           = ["/app/conf/client-ca.pem"]
+allow_post_quantum = true
+
+[admin]
+listen_addr = "0.0.0.0:9443"
+cert_file   = "/app/conf/admin-tls.pem"
+key_file    = "/app/conf/admin-tls-key.pem"
+ca_certs    = ["/app/conf/operator-ca.pem"]
+
+session_ttl_secs      = 3600
+session_lock_secs     = 900
+max_failed_auth       = 5
+lockout_duration_secs = 1800
+auth_rate_limit       = 20
+audit_overflow        = "halt"
+audit_alarm_threshold = 10
+audit_alarm_action    = "syslog"
+
+[gossip]
+peers = [
+    "https://akamu-1.akamu-internal:9443",
+    "https://akamu-2.akamu-internal:9443",
+]
+interval_secs      = 15
+tombstone_ttl_secs = 604800
+ownership_ttl_secs = 150

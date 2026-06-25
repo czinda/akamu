@@ -1,0 +1,36 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+namePrefix: prod-
+
+patches:
+  # 3 replicas for production (full gossip cluster).
+  - target:
+      kind: Deployment
+      name: akamu
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 3
+  # 3 cosigner replicas for production.
+  - target:
+      kind: Deployment
+      name: cosigner
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 3
+  # Tighten resource limits for production.
+  - target:
+      kind: Deployment
+      name: akamu
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: "500m"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: "256Mi"

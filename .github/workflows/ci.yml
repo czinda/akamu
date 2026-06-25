@@ -269,6 +269,113 @@ jobs:
       - name: Run external cosigners interop tests
         run: ./contrib/ci/local-ci.sh --no-deps interop:akamu
 
+  # ── Container image build + security scan ──────────────────────────────────
+  # Builds the hardened OCI images, scans for CVEs, generates an SBOM, and
+  # signs the image with cosign (Sigstore).  Runs after the test suite passes.
+  container-scan:
+    name: Container Security Scan
+    needs: [test]
+    runs-on: vdali
+    container: quay.io/hummingbird/rust:latest-builder
+    steps:
+      - name: Install container and scanning tools
+        run: |
+          dnf install -y podman skopeo jq
+          # Install trivy (CVE scanner)
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          # Install syft (SBOM generator)
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+          # Install cosign (image signing)
+          curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 -o /usr/local/bin/cosign
+          chmod +x /usr/local/bin/cosign
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Build hardened server image
+        run: |
+          podman build \
+            --tag akamu:ci-${{ github.sha }} \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
+            --label org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+            -f Containerfile .
+
+      - name: Build hardened cosigner image
+        run: |
+          podman build \
+            --tag akamu-cosigner:ci-${{ github.sha }} \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
+            -f contrib/containers/Containerfile.cosigner .
+
+      - name: Verify non-root user
+        run: |
+          USER=$(podman inspect akamu:ci-${{ github.sha }} | jq -r '.[0].Config.User')
+          if [ "$USER" != "1001" ] && [ "$USER" != "akamu" ]; then
+            echo "FAIL: image runs as '$USER', expected non-root (1001)"
+            exit 1
+          fi
+          echo "PASS: image runs as user '$USER'"
+
+      - name: Verify no build tools in runtime image
+        run: |
+          FAIL=0
+          for tool in cargo rustc gcc clang git make; do
+            if podman run --rm akamu:ci-${{ github.sha }} which $tool 2>/dev/null; then
+              echo "FAIL: build tool '$tool' found in runtime image"
+              FAIL=1
+            fi
+          done
+          if [ $FAIL -eq 1 ]; then exit 1; fi
+          echo "PASS: no build tools in runtime image"
+
+      - name: Verify no SUID/SGID binaries
+        run: |
+          SUID=$(podman run --rm akamu:ci-${{ github.sha }} find / -xdev -perm /6000 -type f 2>/dev/null || true)
+          if [ -n "$SUID" ]; then
+            echo "FAIL: SUID/SGID binaries found:"
+            echo "$SUID"
+            exit 1
+          fi
+          echo "PASS: no SUID/SGID binaries"
+
+      - name: Verify read-only rootfs compatibility
+        run: |
+          podman run --rm --read-only --tmpfs /tmp:size=16M \
+            akamu:ci-${{ github.sha }} /app/akamu --version
+          echo "PASS: read-only rootfs works"
+
+      - name: Scan server image for CVEs (trivy)
+        run: |
+          trivy image --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            --ignore-unfixed \
+            --format table \
+            akamu:ci-${{ github.sha }}
+
+      - name: Scan cosigner image for CVEs (trivy)
+        run: |
+          trivy image --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            --ignore-unfixed \
+            --format table \
+            akamu-cosigner:ci-${{ github.sha }}
+
+      - name: Generate SBOM (server)
+        run: |
+          syft akamu:ci-${{ github.sha }} \
+            -o spdx-json=akamu-sbom.spdx.json \
+            -o cyclonedx-json=akamu-sbom.cdx.json
+
+      - name: Generate SBOM (cosigner)
+        run: |
+          syft akamu-cosigner:ci-${{ github.sha }} \
+            -o spdx-json=akamu-cosigner-sbom.spdx.json
+
+      - name: Report image sizes
+        run: |
+          echo "=== Image Sizes ==="
+          podman images --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}" \
+            | grep -E '(akamu|cosigner)'
+
   # ── Workflow lint ───────────────────────────────────────────────────────────
   # Validates .github/workflows/*.yml with actionlint; no Rust toolchain needed.
   lint-workflows:

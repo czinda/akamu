@@ -15,11 +15,8 @@ WORKDIR /build/akamu
 COPY . .
 
 RUN CARGO_NET_GIT_FETCH_WITH_CLI=true \
-    cargo build --release
+    cargo build --release -p akamu-cosigner
 
-RUN sed -i -e 's,/etc/akamu,/app/conf,g;s,/var/lib/akamu,/app/data,g' config.toml.example
-
-# Collect runtime shared libraries by known glob.
 RUN mkdir -p /runtime-libs && \
     cp -L /usr/lib64/libsqlite3.so*     /runtime-libs/ && \
     cp -L /usr/lib64/libldap.so*        /runtime-libs/ && \
@@ -33,49 +30,38 @@ RUN mkdir -p /runtime-libs && \
     cp -L /usr/lib64/libkeyutils.so*    /runtime-libs/ && \
     cp -L /usr/lib64/libresolv.so*      /runtime-libs/ && \
     cp -L /usr/lib64/libevent*.so*      /runtime-libs/ && \
-    cp -L /usr/lib64/libcrypt.so*       /runtime-libs/
-
-# Build passwd/group with the akamu user for the runtime stage.
-RUN cp /etc/passwd /runtime-libs/passwd && \
+    cp -L /usr/lib64/libcrypt.so*       /runtime-libs/ && \
+    cp /etc/passwd /runtime-libs/passwd && \
     echo 'akamu:x:1001:1001:akamu:/app:/sbin/nologin' >> /runtime-libs/passwd && \
     cp /etc/group /runtime-libs/group && \
     echo 'akamu:x:1001:' >> /runtime-libs/group
 
 # ── Stage 2: Hardened Runtime ─────────────────────────────────────────────────
-# core-runtime ships USER 65532 — switch to root for setup, then drop to 1001.
 FROM quay.io/hummingbird/core-runtime:latest-openssl
 
-LABEL org.opencontainers.image.title="Akamu ACME Server" \
-      org.opencontainers.image.description="Hardened ACME (RFC 8555) CA with PQC support" \
+LABEL org.opencontainers.image.title="Akamu MTC Cosigner" \
+      org.opencontainers.image.description="Hardened MTC checkpoint cosigner daemon for Akamu" \
       org.opencontainers.image.licenses="GPL-3.0-or-later" \
       org.opencontainers.image.source="https://github.com/akamu-dev/akamu"
 
 USER root
 
-# Runtime shared libraries (sqlite, ldap, krb5, sasl).
 COPY --from=builder /runtime-libs/*.so* /usr/lib64/
-
-# User database with akamu entry.
 COPY --from=builder /runtime-libs/passwd /etc/passwd
 COPY --from=builder /runtime-libs/group /etc/group
 
-# Remove SUID/SGID bits from all binaries.
 RUN find / -xdev -perm /6000 -type f -exec chmod a-s {} + 2>/dev/null || true
 
-# Runtime directories.
 RUN mkdir -p /app/conf /app/data && chown -R 1001:1001 /app
 
-COPY --from=builder --chown=1001:1001 /build/akamu/target/release/akamu /app/akamu
-COPY --from=builder --chown=1001:1001 /build/akamu/config.toml.example /app/conf/config.toml.example
-COPY --chown=1001:1001 contrib/containers/entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
+COPY --from=builder --chown=1001:1001 \
+    /build/akamu/target/release/akamu-cosigner /app/akamu-cosigner
 
-# Drop to non-root for runtime.
 USER 1001
 WORKDIR /app
 
 VOLUME ["/app/data", "/app/conf"]
 EXPOSE 8080
 
-ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["serve", "-c", "/app/conf/config.toml"]
+ENTRYPOINT ["/app/akamu-cosigner"]
+CMD ["/app/conf/cosigner.toml"]

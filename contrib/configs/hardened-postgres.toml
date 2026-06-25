@@ -1,0 +1,76 @@
+# Hardened single-node deployment with PostgreSQL.
+#
+# This profile uses PostgreSQL for production-grade storage with TLS-encrypted
+# database connections and full security hardening.
+
+listen_addr = "0.0.0.0:8080"
+base_url    = "https://acme.example.com"
+
+[database]
+url = "postgres://akamu@postgres:5432/akamu?sslmode=verify-full&sslrootcert=/app/conf/pg-ca.pem"
+require_tls     = true
+max_connections = 20
+
+[ca]
+key_file  = "/app/conf/ca.key.pem"
+cert_file = "/app/conf/ca.cert.pem"
+key_type  = "ec:P-384"
+hash_alg  = "sha384"
+
+require_encrypted_key  = true
+key_password_file      = "/app/conf/ca-key-passphrase"
+enforce_validity_cap   = true
+validity_days          = 90
+ca_validity_years      = 10
+
+common_name  = "Example ACME CA"
+organization = "Example Org"
+
+crl_url  = "https://acme.example.com/ca/crl"
+ocsp_url = "https://acme.example.com/ca/ocsp"
+
+[mtc]
+log_path = "/app/data/mtc.log"
+enabled  = true
+checkpoint_interval_secs = 3600
+landmark_interval_secs   = 86400
+
+[mtc.signing_key]
+key_file = "/app/data/mtc-signing.key"
+key_type = "ec:P-384"
+hash_alg = "sha384"
+
+[[mtc.cosigners]]
+url = "https://cosigner-a:8080/sign"
+
+[[mtc.cosigners]]
+url = "https://cosigner-b:8080/sign"
+
+[server]
+validate_dnssec            = true
+external_account_required  = true
+caa_identities             = ["acme.example.com"]
+max_body_bytes             = 65536
+http_validation_port       = 80
+http_validation_allow_private_ips = false
+
+[tls]
+enabled   = true
+cert_file = "/app/conf/server.pem"
+key_file  = "/app/conf/server.key"
+protocols = ["TLSv1.3"]
+
+[admin]
+listen_addr = "127.0.0.1:9443"
+cert_file   = "/app/conf/admin-tls.pem"
+key_file    = "/app/conf/admin-tls-key.pem"
+ca_certs    = ["/app/conf/operator-ca.pem"]
+
+session_ttl_secs      = 3600
+session_lock_secs     = 900
+max_failed_auth       = 5
+lockout_duration_secs = 1800
+auth_rate_limit       = 20
+audit_overflow        = "halt"
+audit_alarm_threshold = 10
+audit_alarm_action    = "syslog"

@@ -1,0 +1,44 @@
+# Build artifacts
+target/
+
+# Version control
+.git/
+.gitignore
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Documentation build output
+docs/book/
+
+# Web UI node_modules (built separately if needed)
+webui/node_modules/
+webui/dist/
+
+# CI and development files
+.github/
+contrib/ci/
+contrib/demo/
+contrib/performance/
+contrib/packages/
+
+# Secrets and local config (never include in build context)
+*.env
+*.env.*
+!*.env.example
+secrets/
+*.age
+*.pem
+*.key
+
+# Logs and runtime data
+*.log
+*.db
+
+# OS files
+.DS_Store
+Thumbs.db

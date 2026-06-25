@@ -1,0 +1,33 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+namePrefix: dev-
+
+patches:
+  # Single replica for dev.
+  - target:
+      kind: Deployment
+      name: akamu
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  # Relax resource limits for dev.
+  - target:
+      kind: Deployment
+      name: akamu
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: "1Gi"
+  # Single cosigner replica for dev.
+  - target:
+      kind: Deployment
+      name: cosigner
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 1

@@ -1,0 +1,30 @@
+# Hardened nginx reverse proxy for Akamu ACME CA.
+# Terminates TLS and forwards to the akamu server over the internal network.
+FROM quay.io/hummingbird/core-runtime:latest-openssl
+
+LABEL org.opencontainers.image.title="Akamu Reverse Proxy" \
+      org.opencontainers.image.description="Hardened nginx TLS-terminating proxy for Akamu" \
+      org.opencontainers.image.licenses="GPL-3.0-or-later"
+
+RUN dnf install -y --setopt=install_weak_deps=False \
+        nginx \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf /var/log/dnf* /var/log/hawkey*
+
+# Remove SUID/SGID bits.
+RUN find / -xdev -perm /6000 -type f -exec chmod a-s {} + 2>/dev/null || true
+
+# Non-root nginx user.
+RUN groupadd -g 101 nginx 2>/dev/null || true && \
+    useradd -u 101 -g nginx -s /sbin/nologin -d /var/lib/nginx nginx 2>/dev/null || true
+
+# Writable directories owned by nginx.
+RUN mkdir -p /var/cache/nginx /var/log/nginx /run && \
+    chown -R nginx:nginx /var/cache/nginx /var/log/nginx /run && \
+    chown -R nginx:nginx /etc/nginx
+
+USER nginx
+
+EXPOSE 8443 8080
+
+CMD ["nginx", "-g", "daemon off;"]
