@@ -2057,10 +2057,30 @@ bootstrap_operator_key_file = "/etc/akamu/admin-bootstrap-key.pem"
 
 **Optional. Default: `"admin"`.**
 
-Name recorded in the operators table for the auto-provisioned bootstrap administrator.
+Name recorded in the operators table for the auto-provisioned bootstrap administrator. This value is also used as the Common Name (CN) in the bootstrap client certificate's Subject DN, and determines the SubjectAltName (SAN) extension added to the certificate.
+
+The value may carry an optional type prefix to select the SAN type:
+
+| Prefix | SAN type | Example |
+|--------|----------|---------|
+| *(none)* | `directoryName` (copy of Subject DN) | `admin` |
+| `dn:` | `directoryName` (copy of Subject DN) | `dn:Operator` |
+| `dns:` | `dNSName` | `dns:admin.example.com` |
+| `email:` | `rfc822Name` | `email:admin@example.com` |
+| `ip:` | `iPAddress` | `ip:192.168.1.1` |
+| `uri:` | `uniformResourceIdentifier` | `uri:https://example.com/admin` |
+
+When a prefix is present, the portion after the colon is used as the CN. A bare name (no prefix) defaults to a `directoryName` SAN built from the Subject DN.
 
 ```toml
+# Bare name — CN="admin", SAN=directoryName (default)
 bootstrap_operator_name = "admin"
+
+# DNS SAN — CN="admin.example.com", SAN=dNSName
+# bootstrap_operator_name = "dns:admin.example.com"
+
+# Email SAN — CN="admin@example.com", SAN=rfc822Name
+# bootstrap_operator_name = "email:admin@example.com"
 ```
 
 ### `bootstrap_operator_gssapi_principal`

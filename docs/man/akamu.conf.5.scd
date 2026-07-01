@@ -717,8 +717,35 @@ the server exits at startup if neither is set.
 	Mutually exclusive with *bootstrap_operator_gssapi_principal*.
 
 *bootstrap_operator_name* = _string_
-	Display name for the bootstrap Administrator operator.  Used when
-	registering the initial operator on first run.  Default: *admin*.
+	Name for the bootstrap Administrator operator.  Sets the Common Name
+	(CN) in the client certificate's Subject DN and determines the
+	SubjectAltName (SAN) type.  An optional prefix selects the SAN type:
+
+	[[ *Prefix*
+	:[ *SAN type*
+	:[ *Example*
+	|  _(none)_
+	:  directoryName
+	:  admin
+	|  dn:
+	:  directoryName
+	:  dn:Operator
+	|  dns:
+	:  dNSName
+	:  dns:admin.example.com
+	|  email:
+	:  rfc822Name
+	:  email:admin@example.com
+	|  ip:
+	:  iPAddress
+	:  ip:192.168.1.1
+	|  uri:
+	:  uniformResourceIdentifier
+	:  uri:https://example.com/admin
+
+	When a prefix is present the portion after the colon is used as the
+	CN.  A bare name (no prefix) defaults to a directoryName SAN built
+	from the Subject DN.  Default: *admin*.
 
 *bootstrap_operator_gssapi_principal* = _principal_
 	Kerberos principal for the GSSAPI bootstrap Administrator operator
