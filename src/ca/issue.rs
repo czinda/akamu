@@ -532,7 +532,9 @@ pub fn issue_with_params(
     let (ca_name_der, _ca_spki_der, ca_aki_der) = {
         use std::sync::Mutex;
         static CACHE: Mutex<Option<CaCachedDer>> = Mutex::new(None);
-        let mut guard = CACHE.lock().unwrap();
+        let mut guard = CACHE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         match &*guard {
             Some(c) if c.cert_der == ca.cert_der => {
                 (c.name_der.clone(), c.spki_der.clone(), c.aki_der.clone())
@@ -1038,7 +1040,9 @@ fn lint_issued_cert(cert_der: &[u8], ca_cert_der: &[u8], now: i64) -> Result<(),
     static STORE_CACHE: Mutex<Option<(Vec<u8>, std::sync::Arc<OwnedStore>)>> = Mutex::new(None);
 
     let store = {
-        let mut guard = STORE_CACHE.lock().unwrap();
+        let mut guard = STORE_CACHE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         match &*guard {
             Some((cached_der, store)) if cached_der == ca_cert_der => std::sync::Arc::clone(store),
             _ => {
