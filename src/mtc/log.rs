@@ -59,9 +59,13 @@ impl CachedLog {
             .log
             .compute_root()
             .map_err(|e| AcmeError::Mtc(format!("compute_root: {e}")))?;
-        // Best-effort: if tree_size fails here we still return the root.
-        if let Ok(size) = self.log.tree_size() {
-            self.root_cache = Some((size, root.clone()));
+        match self.log.tree_size() {
+            Ok(size) => {
+                self.root_cache = Some((size, root.clone()));
+            }
+            Err(e) => {
+                tracing::warn!("compute_root: tree_size failed, cache not warmed: {e}");
+            }
         }
         Ok(root)
     }
