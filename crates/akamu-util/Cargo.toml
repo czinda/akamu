@@ -16,7 +16,7 @@ rustls = { version = "0.23", default-features = false, features = ["std"] }
 synta-certificate = { version = ">=0.2.6", features = ["std", "pqc"] }
 
 # SHA-256 fingerprint computation
-native-ossl = "0.1"
+native-ossl = { workspace = true }
 
 # Constant-time byte comparison (find_session_token timing-attack defence)
 subtle = "2"

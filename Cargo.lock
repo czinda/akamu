@@ -1587,9 +1587,9 @@ dependencies = [
 
 [[package]]
 name = "native-ossl"
-version = "0.1.9"
+version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ca5b1957d39efa121d6e5f825e4241e9e5cf3cf133035a11cffa9c112d63b54"
+checksum = "877ac4972cffe68dcfd00e736162fffc612fa060a66cf0234e035eeee23fc5ae"
 dependencies = [
  "log",
  "native-ossl-sys",
@@ -1597,9 +1597,9 @@ dependencies = [
 
 [[package]]
 name = "native-ossl-sys"
-version = "0.1.9"
+version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d498e4fca404802f2123f1d5f114116eefc69d2143de02d135806394580b985d"
+checksum = "095c746e0c42d47dc7da916d32185ade44be2012cb4b1205474f4ec6f3e316bc"
 dependencies = [
  "bindgen",
  "pkg-config",
