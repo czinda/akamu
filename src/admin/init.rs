@@ -19,7 +19,7 @@ use synta_certificate::{
 };
 
 use crate::ca::init::{generate_backend_key, unix_to_generalized_time};
-use crate::ca::issue::sign_admin_cert;
+use crate::ca::issue::{parse_operator_san, sign_admin_cert};
 use crate::config::AdminConfig;
 use crate::db::Db;
 use crate::error::AcmeError;
@@ -135,10 +135,13 @@ pub async fn bootstrap_operator_if_needed(
             )));
         }
 
+        let (display_name, _san_kind) = parse_operator_san(&cfg.bootstrap_operator_name)
+            .map_err(|e| AcmeError::Config(format!("invalid bootstrap_operator_name: {e}")))?;
+
         tracing::info!(
             "no operators found — generating bootstrap Administrator operator \
              (name='{}', pkcs12='{}', key_type='{}')",
-            cfg.bootstrap_operator_name,
+            display_name,
             p12_path,
             cfg.bootstrap_key_type,
         );
@@ -165,7 +168,7 @@ pub async fn bootstrap_operator_if_needed(
         let gssapi_principal = cfg.bootstrap_operator_gssapi_principal.as_deref();
         let inserted = crate::db::operators::insert_if_absent(
             db,
-            &cfg.bootstrap_operator_name,
+            display_name,
             "administrator",
             Some(&fingerprint),
             gssapi_principal,
@@ -177,7 +180,7 @@ pub async fn bootstrap_operator_if_needed(
         if inserted {
             tracing::info!(
                 "bootstrap Administrator '{}' registered (fingerprint prefix: {}…{})",
-                cfg.bootstrap_operator_name,
+                display_name,
                 &fingerprint[..16],
                 gssapi_principal
                     .map(|p| format!(", gssapi_principal='{p}'"))
@@ -186,7 +189,7 @@ pub async fn bootstrap_operator_if_needed(
         } else {
             tracing::warn!(
                 "bootstrap Administrator '{}' already exists (concurrent startup?); skipping",
-                cfg.bootstrap_operator_name,
+                display_name,
             );
         }
         return Ok(());
@@ -241,10 +244,13 @@ pub async fn bootstrap_operator_if_needed(
         )));
     }
 
+    let (display_name, _san_kind) = parse_operator_san(&cfg.bootstrap_operator_name)
+        .map_err(|e| AcmeError::Config(format!("invalid bootstrap_operator_name: {e}")))?;
+
     tracing::info!(
         "no operators found — generating bootstrap Administrator operator \
          (name='{}', cert='{}', key='{}', key_type='{}')",
-        cfg.bootstrap_operator_name,
+        display_name,
         cert_path,
         key_path,
         cfg.bootstrap_key_type,
@@ -273,15 +279,13 @@ pub async fn bootstrap_operator_if_needed(
 
     let now = unix_to_generalized_time(unix_now());
     let gssapi_principal = cfg.bootstrap_operator_gssapi_principal.as_deref();
-    // Use INSERT OR IGNORE semantics: if a concurrent startup already inserted
-    // the row, this is a no-op and we log a warning rather than failing.
     let inserted = crate::db::operators::insert_if_absent(
         db,
-        &cfg.bootstrap_operator_name,
+        display_name,
         "administrator",
         Some(&fingerprint),
         gssapi_principal,
-        "", // administrator is always server-wide
+        "",
         &now,
     )
     .await
@@ -290,7 +294,7 @@ pub async fn bootstrap_operator_if_needed(
     if inserted {
         tracing::info!(
             "bootstrap Administrator '{}' registered (fingerprint prefix: {}…{})",
-            cfg.bootstrap_operator_name,
+            display_name,
             &fingerprint[..16],
             gssapi_principal
                 .map(|p| format!(", gssapi_principal='{p}'"))
@@ -299,7 +303,7 @@ pub async fn bootstrap_operator_if_needed(
     } else {
         tracing::warn!(
             "bootstrap Administrator '{}' already exists (concurrent startup?); skipping",
-            cfg.bootstrap_operator_name,
+            display_name,
         );
     }
     Ok(())

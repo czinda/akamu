@@ -856,17 +856,76 @@ pub fn sign_server_cert(
         .map_err(|e| AcmeError::Builder(format!("sign server cert: {e}")))
 }
 
+/// SAN type for an admin operator certificate, derived from prefix parsing.
+#[derive(Debug)]
+pub(crate) enum OperatorSanKind {
+    Dns(String),
+    Email(String),
+    Ip(Vec<u8>),
+    Uri(String),
+    /// Reuse the Subject DN as a directoryName SAN.
+    DirectoryName,
+}
+
+/// Parse an operator name with an optional type prefix into a (CN, SAN kind).
+///
+/// Supported prefixes: `dns:`, `email:`, `ip:`, `uri:`, `dn:`.
+/// A bare name (no prefix) defaults to `DirectoryName`.
+pub(crate) fn parse_operator_san(name: &str) -> Result<(&str, OperatorSanKind), AcmeError> {
+    if name.is_empty() {
+        return Err(AcmeError::Builder("operator name must not be empty".into()));
+    }
+    if let Some(val) = name.strip_prefix("dns:") {
+        if val.is_empty() {
+            return Err(AcmeError::Builder("empty value after 'dns:' prefix".into()));
+        }
+        Ok((val, OperatorSanKind::Dns(val.to_owned())))
+    } else if let Some(val) = name.strip_prefix("email:") {
+        if val.is_empty() {
+            return Err(AcmeError::Builder(
+                "empty value after 'email:' prefix".into(),
+            ));
+        }
+        Ok((val, OperatorSanKind::Email(val.to_owned())))
+    } else if let Some(val) = name.strip_prefix("ip:") {
+        if val.is_empty() {
+            return Err(AcmeError::Builder("empty value after 'ip:' prefix".into()));
+        }
+        let bytes = ip_string_to_bytes(val)
+            .ok_or_else(|| AcmeError::Builder(format!("invalid IP in operator name: {val}")))?;
+        Ok((val, OperatorSanKind::Ip(bytes)))
+    } else if let Some(val) = name.strip_prefix("uri:") {
+        if val.is_empty() {
+            return Err(AcmeError::Builder("empty value after 'uri:' prefix".into()));
+        }
+        Ok((val, OperatorSanKind::Uri(val.to_owned())))
+    } else if let Some(val) = name.strip_prefix("dn:") {
+        if val.is_empty() {
+            return Err(AcmeError::Builder("empty value after 'dn:' prefix".into()));
+        }
+        Ok((val, OperatorSanKind::DirectoryName))
+    } else {
+        Ok((name, OperatorSanKind::DirectoryName))
+    }
+}
+
 /// Issue a CA-signed client certificate for an admin operator.
 ///
 /// Produces a certificate with `digitalSignature` KeyUsage and `clientAuth` EKU,
 /// suitable for mTLS client authentication against the admin listener.
 /// The SHA-256 fingerprint of the returned DER is the credential stored in
 /// the `operators` table.
+///
+/// `operator_name` may carry a type prefix (`dns:`, `email:`, `ip:`, `uri:`,
+/// `dn:`) to select the SubjectAltName type.  A bare name defaults to a
+/// directoryName SAN built from the Subject DN.
 pub fn sign_admin_cert(
     operator_name: &str,
     operator_key: &synta_certificate::BackendPrivateKey,
     ca: &CaState,
 ) -> Result<Vec<u8>, AcmeError> {
+    let (cn, san_kind) = parse_operator_san(operator_name)?;
+
     let ca_name_der = extract_ca_subject_der(&ca.cert_der)?;
 
     let spki_der = operator_key
@@ -897,7 +956,7 @@ pub fn sign_admin_cert(
         .map_err(|e| AcmeError::Builder(format!("notAfter: {e}")))?;
 
     let subject_der = NameBuilder::new()
-        .common_name(operator_name)
+        .common_name(cn)
         .build()
         .map_err(|e| AcmeError::Builder(format!("subject name: {e}")))?;
 
@@ -918,6 +977,18 @@ pub fn sign_admin_cert(
         encode_authority_key_identifier(&ca_spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
             .ok_or_else(|| AcmeError::Builder("AKI".into()))?;
 
+    let san_der = match &san_kind {
+        OperatorSanKind::Dns(name) => SubjectAlternativeNameBuilder::new().dns_name(name),
+        OperatorSanKind::Email(addr) => SubjectAlternativeNameBuilder::new().rfc822_name(addr),
+        OperatorSanKind::Ip(bytes) => SubjectAlternativeNameBuilder::new().ip_address(bytes),
+        OperatorSanKind::Uri(uri) => SubjectAlternativeNameBuilder::new().uri(uri),
+        OperatorSanKind::DirectoryName => {
+            SubjectAlternativeNameBuilder::new().directory_name(&subject_der)
+        }
+    }
+    .build()
+    .map_err(|e| AcmeError::Builder(format!("SAN: {e}")))?;
+
     let signer = ca.key.as_signer(&ca.hash_alg);
     CertificateBuilder::new()
         .issuer_name(&ca_name_der)
@@ -931,6 +1002,7 @@ pub fn sign_admin_cert(
         .add_extension_oid(oids::EXTENDED_KEY_USAGE, false, &eku_der)
         .add_extension_oid(oids::SUBJECT_KEY_IDENTIFIER, false, &ski_der)
         .add_extension_oid(oids::AUTHORITY_KEY_IDENTIFIER, false, &aki_der)
+        .add_extension_oid(oids::SUBJECT_ALT_NAME, false, &san_der)
         .sign(&signer)
         .map_err(|e| AcmeError::Builder(format!("sign admin cert: {e}")))
 }
@@ -1214,8 +1286,9 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        hex_encode, ip_string_to_bytes, issue_certificate, issue_with_params,
-        permitted_sig_algs_with_composite, permitted_spki_algs_with_composite, IssueCertParams,
+        hex_encode, ip_string_to_bytes, issue_certificate, issue_with_params, parse_operator_san,
+        permitted_sig_algs_with_composite, permitted_spki_algs_with_composite, sign_admin_cert,
+        IssueCertParams, OperatorSanKind,
     };
     use crate::ca::csr::{validate_csr, SanEntry, ValidatedCsr};
     use crate::state::MtcState;
@@ -1839,5 +1912,320 @@ mod tests {
                 "composite sig alg sub-arc {sub_arc} missing from permitted_spki_algorithms"
             );
         }
+    }
+
+    // ── parse_operator_san unit tests ──────────────────────────────────
+
+    #[test]
+    fn parse_operator_san_bare_name_defaults_to_directory() {
+        let (cn, kind) = parse_operator_san("admin").unwrap();
+        assert_eq!(cn, "admin");
+        assert!(matches!(kind, OperatorSanKind::DirectoryName));
+    }
+
+    #[test]
+    fn parse_operator_san_dn_prefix() {
+        let (cn, kind) = parse_operator_san("dn:Operator").unwrap();
+        assert_eq!(cn, "Operator");
+        assert!(matches!(kind, OperatorSanKind::DirectoryName));
+    }
+
+    #[test]
+    fn parse_operator_san_dns_prefix() {
+        let (cn, kind) = parse_operator_san("dns:foo.example.com").unwrap();
+        assert_eq!(cn, "foo.example.com");
+        assert!(matches!(kind, OperatorSanKind::Dns(ref s) if s == "foo.example.com"));
+    }
+
+    #[test]
+    fn parse_operator_san_email_prefix() {
+        let (cn, kind) = parse_operator_san("email:a@b.com").unwrap();
+        assert_eq!(cn, "a@b.com");
+        assert!(matches!(kind, OperatorSanKind::Email(ref s) if s == "a@b.com"));
+    }
+
+    #[test]
+    fn parse_operator_san_ip_v4() {
+        let (cn, kind) = parse_operator_san("ip:192.168.1.1").unwrap();
+        assert_eq!(cn, "192.168.1.1");
+        assert!(matches!(kind, OperatorSanKind::Ip(ref b) if b == &[192, 168, 1, 1]));
+    }
+
+    #[test]
+    fn parse_operator_san_ip_v6() {
+        let (cn, kind) = parse_operator_san("ip:::1").unwrap();
+        assert_eq!(cn, "::1");
+        match kind {
+            OperatorSanKind::Ip(ref b) => {
+                assert_eq!(b.len(), 16);
+                assert_eq!(b[15], 1);
+            }
+            _ => panic!("expected Ip variant"),
+        }
+    }
+
+    #[test]
+    fn parse_operator_san_ip_invalid() {
+        let result = parse_operator_san("ip:not-an-ip");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_operator_san_uri_prefix() {
+        let (cn, kind) = parse_operator_san("uri:https://example.com/admin").unwrap();
+        assert_eq!(cn, "https://example.com/admin");
+        assert!(matches!(kind, OperatorSanKind::Uri(ref s) if s == "https://example.com/admin"));
+    }
+
+    // ── sign_admin_cert integration tests ─────────────────────────────
+
+    fn make_test_ca_state() -> crate::state::CaState {
+        let (ca_key, ca_cert_der) = make_test_ca();
+        crate::state::CaState {
+            id: "test".into(),
+            key_type: "ec:P-256".into(),
+            key: ca_key,
+            cert_der: ca_cert_der,
+            hash_alg: "sha256".into(),
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            aki_bytes: vec![],
+            enforce_validity_cap: false,
+            crl_next_update_secs: 86400,
+            caa_identities: vec![],
+            mtc: Arc::new(MtcState::disabled()),
+        }
+    }
+
+    #[test]
+    fn admin_cert_default_passes_client_verification() {
+        let ca = make_test_ca_state();
+        let op_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let cert_der = sign_admin_cert("admin", &op_key, &ca).unwrap();
+
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let ca_parsed: Certificate = Decoder::new(&ca.cert_der, Encoding::Der).decode().unwrap();
+        let ca_vcert = VerificationCertificate::new(ca_parsed, &ca.cert_der);
+        let store = Store::new(vec![ca_vcert]);
+
+        let leaf_parsed: Certificate = Decoder::new(&cert_der, Encoding::Der).decode().unwrap();
+        let leaf_vcert = VerificationCertificate::new(leaf_parsed, &cert_der);
+
+        let policy = PolicyDefinition::new_client(OpensslSignatureVerifier, now_unix);
+
+        verify(
+            &leaf_vcert,
+            &[],
+            &policy,
+            &store,
+            RevocationChecks::default(),
+        )
+        .expect("admin cert with directoryName SAN must pass client verification");
+    }
+
+    #[test]
+    fn admin_cert_dns_prefix_has_dns_san() {
+        let ca = make_test_ca_state();
+        let op_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let cert_der = sign_admin_cert("dns:admin.example.com", &op_key, &ca).unwrap();
+        let cert = synta_certificate::Certificate::from_der(&cert_der).unwrap();
+        let sans = cert.subject_alt_names();
+        assert!(
+            sans.iter().any(
+                |(tag, val)| *tag == synta_certificate::general_name::DNS_NAME
+                    && val == b"admin.example.com"
+            ),
+            "expected dNSName SAN 'admin.example.com', got: {sans:?}"
+        );
+    }
+
+    #[test]
+    fn admin_cert_email_prefix_has_rfc822_san() {
+        let ca = make_test_ca_state();
+        let op_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let cert_der = sign_admin_cert("email:admin@example.com", &op_key, &ca).unwrap();
+        let cert = synta_certificate::Certificate::from_der(&cert_der).unwrap();
+        let sans = cert.subject_alt_names();
+        assert!(
+            sans.iter().any(
+                |(tag, val)| *tag == synta_certificate::general_name::RFC822_NAME
+                    && val == b"admin@example.com"
+            ),
+            "expected rfc822Name SAN 'admin@example.com', got: {sans:?}"
+        );
+    }
+
+    #[test]
+    fn admin_cert_ip_prefix_has_ip_san() {
+        let ca = make_test_ca_state();
+        let op_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let cert_der = sign_admin_cert("ip:127.0.0.1", &op_key, &ca).unwrap();
+        let cert = synta_certificate::Certificate::from_der(&cert_der).unwrap();
+        let sans = cert.subject_alt_names();
+        assert!(
+            sans.iter().any(
+                |(tag, val)| *tag == synta_certificate::general_name::IP_ADDRESS
+                    && val == &[127, 0, 0, 1]
+            ),
+            "expected iPAddress SAN 127.0.0.1, got: {sans:?}"
+        );
+    }
+
+    #[test]
+    fn admin_cert_uri_prefix_has_uri_san() {
+        let ca = make_test_ca_state();
+        let op_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let cert_der = sign_admin_cert("uri:https://example.com/admin", &op_key, &ca).unwrap();
+        let cert = synta_certificate::Certificate::from_der(&cert_der).unwrap();
+        let sans = cert.subject_alt_names();
+        assert!(
+            sans.iter()
+                .any(|(tag, val)| *tag == synta_certificate::general_name::URI
+                    && val == b"https://example.com/admin"),
+            "expected URI SAN 'https://example.com/admin', got: {sans:?}"
+        );
+    }
+
+    #[test]
+    fn admin_cert_dn_prefix_has_directory_name_san() {
+        let ca = make_test_ca_state();
+        let op_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let cert_der = sign_admin_cert("dn:Operator", &op_key, &ca).unwrap();
+        let cert = synta_certificate::Certificate::from_der(&cert_der).unwrap();
+        let sans = cert.subject_alt_names();
+        assert!(
+            sans.iter()
+                .any(|(tag, _)| *tag == synta_certificate::general_name::DIRECTORY_NAME),
+            "expected directoryName SAN, got: {sans:?}"
+        );
+    }
+
+    #[test]
+    fn admin_cert_invalid_ip_returns_error() {
+        let ca = make_test_ca_state();
+        let op_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let result = sign_admin_cert("ip:not-an-ip", &op_key, &ca);
+        let Err(err) = result else {
+            panic!("expected error for invalid IP")
+        };
+        assert!(
+            matches!(err, crate::error::AcmeError::Builder(ref msg) if msg.contains("invalid IP")),
+            "unexpected error: {err}"
+        );
+    }
+
+    // ── parse_operator_san empty-value edge cases ─────────────────────
+
+    #[test]
+    fn parse_operator_san_empty_string_rejected() {
+        let result = parse_operator_san("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_operator_san_empty_dns_rejected() {
+        let result = parse_operator_san("dns:");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_operator_san_empty_email_rejected() {
+        let result = parse_operator_san("email:");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_operator_san_empty_ip_rejected() {
+        let result = parse_operator_san("ip:");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_operator_san_empty_uri_rejected() {
+        let result = parse_operator_san("uri:");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_operator_san_empty_dn_rejected() {
+        let result = parse_operator_san("dn:");
+        assert!(result.is_err());
+    }
+
+    // ── CN verification in issued certificate ─────────────────────────
+
+    #[test]
+    fn admin_cert_dns_prefix_cn_is_stripped() {
+        let ca = make_test_ca_state();
+        let op_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let cert_der = sign_admin_cert("dns:admin.example.com", &op_key, &ca).unwrap();
+        let mut dec = Decoder::new(&cert_der, Encoding::Der);
+        let cert: Certificate = dec.decode().unwrap();
+        let subject_dn =
+            synta_certificate::name::format_dn(cert.tbs_certificate.subject.as_bytes());
+        assert!(
+            subject_dn.contains("admin.example.com"),
+            "CN must be the stripped value, not the prefixed name; got: {subject_dn}"
+        );
+        assert!(
+            !subject_dn.contains("dns:"),
+            "CN must not contain the prefix; got: {subject_dn}"
+        );
+    }
+
+    // ── IPv6 integration test ─────────────────────────────────────────
+
+    #[test]
+    fn admin_cert_ipv6_has_16_byte_san() {
+        let ca = make_test_ca_state();
+        let op_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let cert_der = sign_admin_cert("ip:::1", &op_key, &ca).unwrap();
+        let cert = synta_certificate::Certificate::from_der(&cert_der).unwrap();
+        let sans = cert.subject_alt_names();
+        assert!(
+            sans.iter().any(
+                |(tag, val)| *tag == synta_certificate::general_name::IP_ADDRESS
+                    && val.len() == 16
+                    && val[15] == 1
+            ),
+            "expected 16-byte iPAddress SAN for ::1, got: {sans:?}"
+        );
+    }
+
+    // ── Chain verification for DNS SAN type ───────────────────────────
+
+    #[test]
+    fn admin_cert_dns_passes_client_verification() {
+        let ca = make_test_ca_state();
+        let op_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let cert_der = sign_admin_cert("dns:admin.example.com", &op_key, &ca).unwrap();
+
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let ca_parsed: Certificate = Decoder::new(&ca.cert_der, Encoding::Der).decode().unwrap();
+        let ca_vcert = VerificationCertificate::new(ca_parsed, &ca.cert_der);
+        let store = Store::new(vec![ca_vcert]);
+
+        let leaf_parsed: Certificate = Decoder::new(&cert_der, Encoding::Der).decode().unwrap();
+        let leaf_vcert = VerificationCertificate::new(leaf_parsed, &cert_der);
+
+        let policy = PolicyDefinition::new_client(OpensslSignatureVerifier, now_unix);
+
+        verify(
+            &leaf_vcert,
+            &[],
+            &policy,
+            &store,
+            RevocationChecks::default(),
+        )
+        .expect("admin cert with dNSName SAN must pass client verification");
     }
 }
