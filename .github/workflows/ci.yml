@@ -8,6 +8,13 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   # System packages required to compile akamu and to run JavaScript-based
@@ -32,6 +39,7 @@ jobs:
   build:
     name: Build
     runs-on: vdali
+    timeout-minutes: 30
     container: quay.io/hummingbird/rust:latest-builder
     steps:
       - name: Install build dependencies
@@ -41,15 +49,15 @@ jobs:
           else
             dnf install -y $DNF_PACKAGES
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Restore cargo registry cache
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: ~/.cargo/registry
           key: cargo-registry-v1-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cargo-registry-v1-
       - name: Restore cargo git cache
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: ~/.cargo/git
           key: cargo-git-v1-${{ hashFiles('**/Cargo.lock') }}
@@ -59,9 +67,10 @@ jobs:
       - name: Prune incremental artifacts before caching
         run: rm -rf target/debug/incremental
       - name: Save debug build artifacts
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: |
+            target/debug/.fingerprint
             target/debug/deps
             target/debug/build
             target/debug/examples
@@ -73,6 +82,7 @@ jobs:
   fmt:
     name: Rustfmt
     runs-on: vdali
+    timeout-minutes: 10
     container: quay.io/hummingbird/rust:latest-builder
     steps:
       - name: Install build dependencies
@@ -82,7 +92,7 @@ jobs:
           else
             dnf install -y $DNF_PACKAGES
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Check formatting
         run: ./contrib/ci/local-ci.sh --no-deps fmt
 
@@ -91,6 +101,7 @@ jobs:
     name: Clippy
     needs: [build]
     runs-on: vdali
+    timeout-minutes: 20
     container: quay.io/hummingbird/rust:latest-builder
     steps:
       - name: Install build dependencies
@@ -100,17 +111,18 @@ jobs:
           else
             dnf install -y $DNF_PACKAGES
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Restore cargo registry cache
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: ~/.cargo/registry
           key: cargo-registry-v1-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cargo-registry-v1-
       - name: Restore debug build artifacts
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: |
+            target/debug/.fingerprint
             target/debug/deps
             target/debug/build
             target/debug/examples
@@ -123,6 +135,7 @@ jobs:
     name: Documentation
     needs: [build]
     runs-on: vdali
+    timeout-minutes: 20
     container: quay.io/hummingbird/rust:latest-builder
     steps:
       - name: Install build dependencies
@@ -132,17 +145,18 @@ jobs:
           else
             dnf install -y $DNF_PACKAGES
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Restore cargo registry cache
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: ~/.cargo/registry
           key: cargo-registry-v1-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cargo-registry-v1-
       - name: Restore debug build artifacts
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: |
+            target/debug/.fingerprint
             target/debug/deps
             target/debug/build
             target/debug/examples
@@ -155,6 +169,7 @@ jobs:
     name: Test Suite
     needs: [build]
     runs-on: vdali
+    timeout-minutes: 30
     container: quay.io/hummingbird/rust:latest-builder
     steps:
       - name: Install build dependencies
@@ -164,17 +179,18 @@ jobs:
           else
             dnf install -y $DNF_PACKAGES
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Restore cargo registry cache
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: ~/.cargo/registry
           key: cargo-registry-v1-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cargo-registry-v1-
       - name: Restore debug build artifacts
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: |
+            target/debug/.fingerprint
             target/debug/deps
             target/debug/build
             target/debug/examples
@@ -189,6 +205,7 @@ jobs:
     name: Benchmarks (compile only)
     needs: [build]
     runs-on: vdali
+    timeout-minutes: 20
     container: quay.io/hummingbird/rust:latest-builder
     steps:
       - name: Install build dependencies
@@ -198,17 +215,18 @@ jobs:
           else
             dnf install -y $DNF_PACKAGES
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Restore cargo registry cache
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: ~/.cargo/registry
           key: cargo-registry-v1-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cargo-registry-v1-
       - name: Restore debug build artifacts
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: |
+            target/debug/.fingerprint
             target/debug/deps
             target/debug/build
             target/debug/examples
@@ -221,6 +239,7 @@ jobs:
   lint-workflows:
     name: Lint Workflows
     runs-on: vdali
+    timeout-minutes: 5
     container: quay.io/hummingbird/rust:latest-builder
     steps:
       - name: Install build dependencies
@@ -230,6 +249,6 @@ jobs:
           else
             dnf install -y $DNF_PACKAGES
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Lint workflow files
         run: ./contrib/ci/local-ci.sh --no-deps lint-workflows
