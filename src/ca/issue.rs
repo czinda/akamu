@@ -332,6 +332,12 @@ pub fn issue_certificate(params: IssueCertParams<'_>) -> Result<IssuedCert, Acme
             }
         }
     }
+    if !san_has_entries && !csr.sans.is_empty() {
+        return Err(AcmeError::BadRequest(
+            "all requested SAN types are unrecognised; cannot issue certificate without SANs"
+                .into(),
+        ));
+    }
 
     // ── Assemble the certificate ──────────────────────────────────────────────
     let signer = ca_key.as_signer(hash_alg);
@@ -676,6 +682,12 @@ pub fn issue_with_params(
     for dns in extra_dns_names {
         san_builder = san_builder.dns_name(dns);
         san_has_entries = true;
+    }
+    if !san_has_entries && !csr.sans.is_empty() {
+        return Err(AcmeError::BadRequest(
+            "all requested SAN types are unrecognised; cannot issue certificate without SANs"
+                .into(),
+        ));
     }
 
     // ── Assemble certificate ─────────────────────────────────────────────────
