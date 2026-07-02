@@ -1892,6 +1892,7 @@ fn effective_uid() -> u32 {
     #[cfg(target_os = "linux")]
     {
         let Ok(status) = fs::read_to_string("/proc/self/status") else {
+            eprintln!("Warning: cannot read /proc/self/status; defaulting to system-mode installation");
             return 0;
         };
         for line in status.lines() {
@@ -1902,6 +1903,7 @@ fn effective_uid() -> u32 {
                 }
             }
         }
+        eprintln!("Warning: cannot determine effective UID from /proc/self/status; defaulting to system-mode installation");
         0
     }
     #[cfg(not(target_os = "linux"))]
