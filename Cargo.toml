@@ -161,3 +161,7 @@ harness = false
 [[test]]
 name = "mtc_cosigner_flow"
 required-features = ["test-utils"]
+
+[[test]]
+name = "multi_domain_flow"
+required-features = ["test-utils"]
