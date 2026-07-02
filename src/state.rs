@@ -7,7 +7,10 @@ use std::time::Instant;
 
 use indexmap::IndexMap;
 
-type AdminAuthLimiter = Arc<tokio::sync::Mutex<HashMap<IpAddr, VecDeque<Instant>>>>;
+pub type AdminAuthLimiter = Arc<tokio::sync::Mutex<HashMap<IpAddr, VecDeque<Instant>>>>;
+
+/// Seen gossip envelope nonces: nonce bytes → first-seen unix timestamp.
+pub type GossipNonceCache = Arc<std::sync::Mutex<std::collections::HashMap<Vec<u8>, i64>>>;
 
 /// Per-URL JWKS body cache: raw body bytes + fetch timestamp.
 ///
@@ -272,7 +275,7 @@ pub struct AppState {
     /// `gossip_envelope_max_age_secs` window.  Entries are evicted lazily once
     /// their timestamp falls outside the window.  Absent nonces (empty `Vec<u8>`)
     /// are not tracked so old peers that omit the field are still accepted.
-    pub gossip_nonce_cache: Arc<std::sync::Mutex<std::collections::HashMap<Vec<u8>, i64>>>,
+    pub gossip_nonce_cache: GossipNonceCache,
     /// Signalled after every CRDT write so the gossip loop can fire immediately
     /// rather than waiting out the full configured interval (typically 1–30 s).
     /// This bounds cross-node propagation latency to the gossip debounce window
@@ -363,6 +366,262 @@ impl AppState {
     /// Return a point-in-time snapshot of the CRDT (cheap clone under read lock).
     pub async fn crdt_snapshot(&self) -> akamu_crdt::AkaCrdt {
         self.crdt.read().await.clone()
+    }
+}
+
+// ── AppState builder ─────────────────────────────────────────────────────────
+
+pub fn default_validation_client() -> ValidationClient {
+    let https = hyper_rustls::HttpsConnectorBuilder::new()
+        .with_native_roots()
+        .expect("failed to load native root CAs for validation client")
+        .https_or_http()
+        .enable_http1()
+        .build();
+    hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new()).build(https)
+}
+
+pub struct AppStateBuilder {
+    config: Arc<Config>,
+    db: crate::db::Db,
+    db_ro: Option<crate::db::Db>,
+    db_kind: DbKind,
+    cas: Arc<IndexMap<String, Arc<CaState>>>,
+    default_ca_id: Arc<String>,
+    profiles: Option<Arc<ProfileRegistry>>,
+    tls: Option<Arc<TlsState>>,
+    spki_cache: Option<Arc<RwLock<HashMap<String, CachedAccount>>>>,
+    nonces: Option<Arc<NonceBucket>>,
+    link_headers: Option<Arc<HashMap<String, Arc<HeaderValue>>>>,
+    validation_client: Option<ValidationClient>,
+    crl_caches: Option<Arc<HashMap<String, CrlCache>>>,
+    gss_cred: Option<Arc<akamu_gssapi::GssServerCred>>,
+    admin_gss_cred: Option<Arc<akamu_gssapi::GssServerCred>>,
+    eab_master_secret: Option<Arc<akamu_util::SecretBuffer>>,
+    audit: Option<Arc<AuditState>>,
+    audit_policy: Option<Arc<AuditPolicy>>,
+    journal: Option<Arc<JournalWriter>>,
+    admin_sessions: Option<Arc<tokio::sync::Mutex<HashMap<String, AdminSession>>>>,
+    admin_auth_limiter: Option<AdminAuthLimiter>,
+    eab_session_nonces: Option<Arc<tokio::sync::Mutex<HashMap<String, i64>>>>,
+    startup_time: Option<Instant>,
+    crdt: Option<Arc<tokio::sync::RwLock<akamu_crdt::AkaCrdt>>>,
+    node_id: Option<Arc<String>>,
+    node_kem_priv: Option<Arc<Vec<u8>>>,
+    node_gossip_signing_priv: Option<Arc<Vec<u8>>>,
+    node_gossip_signing_cert: Option<Arc<Vec<u8>>>,
+    gossip_client: Option<Arc<reqwest::Client>>,
+    gossip_nonce_cache: Option<GossipNonceCache>,
+    write_notify: Option<Arc<tokio::sync::Notify>>,
+    crdt_db: Option<crate::db::Db>,
+    tkauth_trust_anchors: Option<Arc<synta_x509_verification::OwnedStore>>,
+    claim_encoder_registry: Option<Arc<crate::validation::claim_encoder::ClaimEncoderRegistry>>,
+    jwks_cache: Option<JwksCache>,
+    write_coalescer: Option<Arc<crate::db::coalescer::WriteCoalescer>>,
+}
+
+macro_rules! builder_setter {
+    ($name:ident, $ty:ty) => {
+        pub fn $name(mut self, v: $ty) -> Self {
+            self.$name = Some(v);
+            self
+        }
+    };
+}
+
+impl AppStateBuilder {
+    pub fn new(
+        config: Arc<Config>,
+        db: crate::db::Db,
+        db_kind: DbKind,
+        cas: Arc<IndexMap<String, Arc<CaState>>>,
+        default_ca_id: Arc<String>,
+    ) -> Self {
+        Self {
+            config,
+            db,
+            db_ro: None,
+            db_kind,
+            cas,
+            default_ca_id,
+            profiles: None,
+            tls: None,
+            spki_cache: None,
+            nonces: None,
+            link_headers: None,
+            validation_client: None,
+            crl_caches: None,
+            gss_cred: None,
+            admin_gss_cred: None,
+            eab_master_secret: None,
+            audit: None,
+            audit_policy: None,
+            journal: None,
+            admin_sessions: None,
+            admin_auth_limiter: None,
+            eab_session_nonces: None,
+            startup_time: None,
+            crdt: None,
+            node_id: None,
+            node_kem_priv: None,
+            node_gossip_signing_priv: None,
+            node_gossip_signing_cert: None,
+            gossip_client: None,
+            gossip_nonce_cache: None,
+            write_notify: None,
+            crdt_db: None,
+            tkauth_trust_anchors: None,
+            claim_encoder_registry: None,
+            jwks_cache: None,
+            write_coalescer: None,
+        }
+    }
+
+    builder_setter!(db_ro, crate::db::Db);
+    builder_setter!(profiles, Arc<ProfileRegistry>);
+    builder_setter!(tls, Arc<TlsState>);
+    builder_setter!(spki_cache, Arc<RwLock<HashMap<String, CachedAccount>>>);
+    builder_setter!(nonces, Arc<NonceBucket>);
+    builder_setter!(link_headers, Arc<HashMap<String, Arc<HeaderValue>>>);
+    builder_setter!(validation_client, ValidationClient);
+    builder_setter!(crl_caches, Arc<HashMap<String, CrlCache>>);
+    builder_setter!(gss_cred, Arc<akamu_gssapi::GssServerCred>);
+    builder_setter!(admin_gss_cred, Arc<akamu_gssapi::GssServerCred>);
+    builder_setter!(eab_master_secret, Arc<akamu_util::SecretBuffer>);
+    builder_setter!(audit, Arc<AuditState>);
+    builder_setter!(audit_policy, Arc<AuditPolicy>);
+    builder_setter!(journal, Arc<JournalWriter>);
+    builder_setter!(
+        admin_sessions,
+        Arc<tokio::sync::Mutex<HashMap<String, AdminSession>>>
+    );
+    builder_setter!(admin_auth_limiter, AdminAuthLimiter);
+    builder_setter!(
+        eab_session_nonces,
+        Arc<tokio::sync::Mutex<HashMap<String, i64>>>
+    );
+    builder_setter!(startup_time, Instant);
+    builder_setter!(crdt, Arc<tokio::sync::RwLock<akamu_crdt::AkaCrdt>>);
+    builder_setter!(node_id, Arc<String>);
+    builder_setter!(node_kem_priv, Arc<Vec<u8>>);
+    builder_setter!(node_gossip_signing_priv, Arc<Vec<u8>>);
+    builder_setter!(node_gossip_signing_cert, Arc<Vec<u8>>);
+    builder_setter!(gossip_client, Arc<reqwest::Client>);
+    builder_setter!(gossip_nonce_cache, GossipNonceCache);
+    builder_setter!(write_notify, Arc<tokio::sync::Notify>);
+    builder_setter!(crdt_db, crate::db::Db);
+    builder_setter!(
+        tkauth_trust_anchors,
+        Arc<synta_x509_verification::OwnedStore>
+    );
+    builder_setter!(
+        claim_encoder_registry,
+        Arc<crate::validation::claim_encoder::ClaimEncoderRegistry>
+    );
+    builder_setter!(jwks_cache, JwksCache);
+    builder_setter!(write_coalescer, Arc<crate::db::coalescer::WriteCoalescer>);
+
+    pub fn build(self) -> Arc<AppState> {
+        let db_ro = self.db_ro.unwrap_or_else(|| self.db.clone());
+        let crdt_db = self.crdt_db.unwrap_or_else(|| self.db.clone());
+
+        let profiles = self.profiles.unwrap_or_else(|| {
+            let ca = self
+                .cas
+                .get(self.default_ca_id.as_str())
+                .expect("default CA must be present in cas");
+            ProfileRegistry::empty(ca)
+        });
+
+        let nonces = self.nonces.unwrap_or_else(|| Arc::new(NonceBucket::new()));
+
+        let link_headers = self.link_headers.unwrap_or_else(|| {
+            let base_url = &self.config.base_url;
+            Arc::new(
+                self.cas
+                    .keys()
+                    .map(|id| {
+                        let dir_path = format!("/acme/{id}/directory");
+                        let val =
+                            HeaderValue::from_str(&format!("<{base_url}{dir_path}>;rel=\"index\""))
+                                .expect("link header value");
+                        (id.clone(), Arc::new(val))
+                    })
+                    .collect(),
+            )
+        });
+
+        let crl_caches = self.crl_caches.unwrap_or_else(|| {
+            Arc::new(
+                self.cas
+                    .keys()
+                    .map(|id| (id.clone(), CrlCache::default()))
+                    .collect(),
+            )
+        });
+
+        let validation_client = self
+            .validation_client
+            .unwrap_or_else(default_validation_client);
+
+        Arc::new(AppState {
+            config: self.config,
+            db: self.db,
+            db_ro,
+            db_kind: self.db_kind,
+            cas: self.cas,
+            default_ca_id: self.default_ca_id,
+            profiles,
+            tls: self.tls,
+            spki_cache: self
+                .spki_cache
+                .unwrap_or_else(|| Arc::new(RwLock::new(HashMap::new()))),
+            nonces,
+            link_headers,
+            validation_client,
+            crl_caches,
+            gss_cred: self.gss_cred,
+            admin_gss_cred: self.admin_gss_cred,
+            eab_master_secret: self.eab_master_secret,
+            audit: self.audit.unwrap_or_else(|| Arc::new(AuditState::new())),
+            audit_policy: self
+                .audit_policy
+                .unwrap_or_else(|| Arc::new(AuditPolicy::default())),
+            journal: self
+                .journal
+                .unwrap_or_else(|| Arc::new(JournalWriter::with_daemon())),
+            admin_sessions: self.admin_sessions,
+            admin_auth_limiter: self.admin_auth_limiter,
+            eab_session_nonces: self.eab_session_nonces,
+            startup_time: self.startup_time.unwrap_or_else(Instant::now),
+            crdt: self.crdt.unwrap_or_else(|| {
+                Arc::new(tokio::sync::RwLock::new(akamu_crdt::AkaCrdt::default()))
+            }),
+            node_id: self
+                .node_id
+                .unwrap_or_else(|| Arc::new("standalone".to_string())),
+            node_kem_priv: self.node_kem_priv.unwrap_or_else(|| Arc::new(vec![])),
+            node_gossip_signing_priv: self
+                .node_gossip_signing_priv
+                .unwrap_or_else(|| Arc::new(vec![])),
+            node_gossip_signing_cert: self
+                .node_gossip_signing_cert
+                .unwrap_or_else(|| Arc::new(vec![])),
+            gossip_client: self
+                .gossip_client
+                .unwrap_or_else(|| Arc::new(reqwest::Client::new())),
+            gossip_nonce_cache: self.gossip_nonce_cache.unwrap_or_else(|| {
+                Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()))
+            }),
+            write_notify: self
+                .write_notify
+                .unwrap_or_else(|| Arc::new(tokio::sync::Notify::new())),
+            crdt_db,
+            tkauth_trust_anchors: self.tkauth_trust_anchors,
+            claim_encoder_registry: self.claim_encoder_registry,
+            jwks_cache: self.jwks_cache,
+            write_coalescer: self.write_coalescer,
+        })
     }
 }
 
