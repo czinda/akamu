@@ -134,7 +134,9 @@ pub async fn issue_cert(
         }
 
         // Poll until all authorizations are valid (order becomes ready or valid).
-        let order = client.poll_order(account, &order_url).await?;
+        let order = client
+            .poll_order(account, &order_url, std::time::Duration::from_secs(30))
+            .await?;
 
         // Generate the leaf key; RSA/ML-DSA generation is CPU-intensive so run it
         // off the async executor via spawn_blocking (compatible with current_thread runtimes).
@@ -151,7 +153,9 @@ pub async fn issue_cert(
         let order = if order.status == "valid" {
             order
         } else {
-            client.poll_order(account, &order_url).await?
+            client
+                .poll_order(account, &order_url, std::time::Duration::from_secs(30))
+                .await?
         };
 
         let cert_url = order.certificate.ok_or_else(|| {

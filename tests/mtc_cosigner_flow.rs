@@ -562,7 +562,7 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
 
     // Poll until all authorizations are valid and order is ready.
     let ready_order = acme
-        .poll_order(&account, &order.url)
+        .poll_order(&account, &order.url, std::time::Duration::from_secs(30))
         .await
         .expect("poll_order ready");
 
@@ -591,7 +591,7 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
         .expect("finalize");
 
     let valid_order = acme
-        .poll_order(&account, &finalized.url)
+        .poll_order(&account, &finalized.url, std::time::Duration::from_secs(30))
         .await
         .expect("poll_order valid");
 
@@ -767,7 +767,7 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
             .expect("trigger_challenge (2nd)");
     }
     let ready2 = acme
-        .poll_order(&account, &order2.url)
+        .poll_order(&account, &order2.url, std::time::Duration::from_secs(30))
         .await
         .expect("poll_order ready (2nd)");
 
@@ -786,7 +786,7 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
         .await
         .expect("finalize (2nd)");
     let valid2 = acme
-        .poll_order(&account, &finalized2.url)
+        .poll_order(&account, &finalized2.url, std::time::Duration::from_secs(30))
         .await
         .expect("poll_order valid (2nd)");
     let cert_url2 = valid2.certificate.expect("certificate URL (2nd)");

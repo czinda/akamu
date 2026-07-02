@@ -391,7 +391,7 @@ async fn run_star_order(
 
         // Poll until ready — tokens must stay live in the responder until here.
         client
-            .poll_order(account, &star_url)
+            .poll_order(account, &star_url, std::time::Duration::from_secs(30))
             .await
             .map_err(|e| format!("[{}] star poll (ready): {e}", spec.name))
     }
@@ -430,7 +430,7 @@ async fn run_star_order(
         .map_err(|e| format!("[{}] star finalize: {e}", spec.name))?;
     if finalized.status != "valid" {
         client
-            .poll_order(account, &star_url)
+            .poll_order(account, &star_url, std::time::Duration::from_secs(30))
             .await
             .map_err(|e| format!("[{}] star poll (valid): {e}", spec.name))?;
     }

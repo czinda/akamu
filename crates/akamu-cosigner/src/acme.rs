@@ -285,7 +285,10 @@ async fn poll_order_until_ready(
     acct: &akamu_client::Account,
     order_url: &str,
 ) -> Result<akamu_client::Order, CosignerError> {
-    client.poll_order(acct, order_url).await.map_err(Into::into)
+    client
+        .poll_order(acct, order_url, std::time::Duration::from_secs(30))
+        .await
+        .map_err(Into::into)
 }
 
 /// Check whether the certificate at `cert_file` is expiring within `days` days.

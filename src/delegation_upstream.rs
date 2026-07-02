@@ -202,7 +202,7 @@ async fn drive_order(
 
     // ── Step 2: poll Order2 status ────────────────────────────────────────────
     let order2 = client
-        .poll_order(account, &upstream_order_url)
+        .poll_order(account, &upstream_order_url, Duration::from_secs(30))
         .await
         .map_err(|e| format!("poll_order: {e}"))?;
 
