@@ -616,15 +616,18 @@ impl AcmeClient {
 
     /// Poll an order URL until status is `"ready"` or `"valid"`.
     ///
-    /// Polls with exponential backoff (1 ms → doubles → cap 2 s), timeout 30 s.
+    /// Polls with exponential backoff (1 ms → doubles → cap 2 s).
     /// Respects the `Retry-After` header from the server when present.
-    pub async fn poll_order(&self, acct: &Account, order_url: &str) -> Result<Order, ClientError> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    pub async fn poll_order(
+        &self,
+        acct: &Account,
+        order_url: &str,
+        timeout: Duration,
+    ) -> Result<Order, ClientError> {
+        let deadline = tokio::time::Instant::now() + timeout;
         let mut delay_ms: u64 = 1;
 
         loop {
-            sleep(Duration::from_millis(delay_ms)).await;
-
             if tokio::time::Instant::now() > deadline {
                 return Err(ClientError::Http("timed out polling order".into()));
             }
@@ -642,7 +645,13 @@ impl AcmeClient {
                     };
                     return Err(ClientError::Http(format!("order invalid: {detail}")));
                 }
-                _ => {}
+                other => {
+                    tracing::debug!(
+                        order_url,
+                        status = other.unwrap_or("<missing>"),
+                        "poll_order: waiting (status not terminal)"
+                    );
+                }
             }
 
             // Use Retry-After if the server sent one, otherwise use exponential backoff.
@@ -652,7 +661,6 @@ impl AcmeClient {
                 .and_then(|s| s.parse::<u64>().ok());
             let sleep_ms = retry_after.map(|s| s * 1000).unwrap_or(delay_ms);
             sleep(Duration::from_millis(sleep_ms)).await;
-            // Only advance the backoff counter when Retry-After was absent.
             if retry_after.is_none() {
                 delay_ms = (delay_ms * 2).min(2000);
             }
