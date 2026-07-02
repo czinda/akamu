@@ -266,7 +266,13 @@ pub async fn run_bootstrap(
     }
 
     // Cleanup http-01 tokens.
-    challenge_tokens.write().unwrap().clear();
+    challenge_tokens
+        .write()
+        .unwrap_or_else(|e| {
+            tracing::error!("challenge_tokens RwLock poisoned during cleanup; recovering: {e}");
+            e.into_inner()
+        })
+        .clear();
 
     Ok(())
 }
@@ -296,16 +302,29 @@ async fn poll_order_until_ready(
 /// Returns `true` if the cert is absent, unparseable, or expires within the threshold.
 pub fn cert_needs_renewal(cert_file: &str, days: i64) -> bool {
     let Ok(pem) = std::fs::read(cert_file) else {
+        tracing::warn!(
+            cert_file,
+            "cert_needs_renewal: cannot read file; treating as needing renewal"
+        );
         return true;
     };
     let der = match synta_certificate::pem_to_der(&pem).into_iter().next() {
         Some(d) => d,
-        None => return true,
+        None => {
+            tracing::warn!(
+                cert_file,
+                "cert_needs_renewal: no certificate found in PEM; treating as needing renewal"
+            );
+            return true;
+        }
     };
     // Parse validity from the first cert in the chain.
     let not_after = match parse_not_after(&der) {
         Some(t) => t,
-        None => return true,
+        None => {
+            tracing::warn!(cert_file, "cert_needs_renewal: cannot parse certificate validity; treating as needing renewal");
+            return true;
+        }
     };
     let threshold_secs = days * 86400;
     let now_secs = std::time::SystemTime::now()
