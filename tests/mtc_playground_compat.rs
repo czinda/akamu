@@ -20,9 +20,8 @@
 //!   cargo test --test mtc_playground_compat digicert -- --ignored
 //! ```
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use synta_certificate::{default_data_hasher, BackendPrivateKey, DataHasher};
 use synta_mtc::crypto::{hash_interior, hash_leaf, HashAlgorithm};
@@ -33,7 +32,7 @@ use akamu::config::{
 };
 use akamu::mtc::tlog::NoteSigningRole;
 use akamu::mtc::{log, tlog};
-use akamu::state::{AppState, CaState, MtcState, NonceBucket};
+use akamu::state::{AppState, AppStateBuilder, CaState, MtcState};
 use akamu::{ca, db, routes};
 
 // ── Port utility ──────────────────────────────────────────────────────────────
@@ -162,77 +161,21 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
         }),
     });
 
-    Arc::new(AppState {
-        config: Arc::clone(&config),
-        db: db_conn.clone(),
-        db_ro: db_conn.clone(),
-        db_kind: db::DbKind::Sqlite,
-        profiles: akamu::profiles::ProfileRegistry::empty(&ca),
-        cas: {
-            let mut _ca_map = indexmap::IndexMap::new();
-            _ca_map.insert("default".to_string(), ca.clone());
-            Arc::new(_ca_map)
-        },
-        default_ca_id: Arc::new("default".to_string()),
-        tls: None,
-        spki_cache: Arc::new(RwLock::new(HashMap::new())),
-        nonces: Arc::new(NonceBucket::new()),
-        link_headers: Arc::new({
-            let mut _lh_map = std::collections::HashMap::new();
-            _lh_map.insert(
-                "default".to_string(),
-                Arc::new(
-                    axum::http::HeaderValue::from_str(&format!(
-                        "<{base_url}/acme/directory>;rel=\"index\""
-                    ))
-                    .unwrap(),
-                ),
-            );
-            _lh_map
-        }),
-        validation_client: {
-            use hyper_rustls::HttpsConnectorBuilder;
-            use hyper_util::client::legacy::Client;
-            use hyper_util::rt::TokioExecutor;
-            let https = HttpsConnectorBuilder::new()
-                .with_native_roots()
-                .expect("native roots for test validation client")
-                .https_or_http()
-                .enable_http1()
-                .build();
-            Client::builder(TokioExecutor::new()).build(https)
-        },
-        crl_caches: Arc::new({
-            let mut _crl_map = std::collections::HashMap::new();
+    let cas = {
+        let mut ca_map = indexmap::IndexMap::new();
+        ca_map.insert("default".to_string(), ca.clone());
+        Arc::new(ca_map)
+    };
 
-            _crl_map.insert("default".to_string(), Default::default());
-
-            _crl_map
-        }),
-        audit: std::sync::Arc::new(akamu::audit::AuditState::new()),
-        audit_policy: std::sync::Arc::new(akamu::audit::AuditPolicy::default()),
-        journal: std::sync::Arc::new(akamu::journal::JournalWriter::with_daemon()),
-        admin_sessions: None,
-        admin_auth_limiter: None,
-        eab_session_nonces: None,
-        startup_time: std::time::Instant::now(),
-        crdt: Arc::new(tokio::sync::RwLock::new(akamu_crdt::AkaCrdt::default())),
-        node_id: Arc::new("test".to_string()),
-        node_kem_priv: Arc::new(vec![]),
-        node_gossip_signing_priv: Arc::new(vec![]),
-        node_gossip_signing_cert: Arc::new(vec![]),
-        gossip_client: Arc::new(reqwest::Client::new()),
-        gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-        write_notify: Arc::new(tokio::sync::Notify::new()),
-        gss_cred: None,
-        admin_gss_cred: None,
-        eab_master_secret: None,
-        crdt_db: db_conn.clone(),
-        tkauth_trust_anchors: None,
-        claim_encoder_registry: None,
-        jwks_cache: None,
-        write_coalescer: None,
-    })
+    AppStateBuilder::new(
+        Arc::clone(&config),
+        db_conn.clone(),
+        db::DbKind::Sqlite,
+        cas,
+        Arc::new("default".to_string()),
+    )
+    .node_id(Arc::new("test".to_string()))
+    .build()
 }
 
 // ── RFC 9162 hash conformance ─────────────────────────────────────────────────

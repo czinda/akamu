@@ -3,23 +3,17 @@
 //! Mirrors the pattern from `benches/acme_bench.rs`: one `AppState`, one Axum
 //! router, one TCP listener — but extended to support multiple CAs.
 
-use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, RwLock};
-use std::time::Instant;
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 
 use akamu::{
-    audit::{AuditPolicy, AuditState},
     ca::init::{compute_aki_from_spki, load_or_generate},
     config::{CaConfig, Config, DatabaseConfig, ServerConfig},
-    db,
-    profiles::ProfileRegistry,
-    routes,
-    state::{AppState, CaState, NonceBucket},
+    db, routes,
+    state::{AppState, AppStateBuilder, CaState},
 };
-use akamu_crdt::AkaCrdt;
 
 use crate::spec::CaSpec;
 
@@ -153,81 +147,15 @@ pub async fn start(
 
     let cas = Arc::new(cas_map);
 
-    // Build per-CA CRL caches and Link headers.
-    let crl_caches = Arc::new(
-        cas.keys()
-            .map(|id| (id.clone(), akamu::state::CrlCache::default()))
-            .collect::<HashMap<String, _>>(),
-    );
-    let link_headers = Arc::new(
-        cas.keys()
-            .map(|id| {
-                // Non-default CAs use /acme/{id}/directory; the default CA uses /acme/directory
-                // (backward-compat alias) but also has its own per-CA path.
-                let dir_path = format!("/acme/{id}/directory");
-                let val = axum::http::HeaderValue::from_str(&format!(
-                    "<{base_url}{dir_path}>;rel=\"index\""
-                ))
-                .expect("link header value");
-                (id.clone(), Arc::new(val))
-            })
-            .collect::<HashMap<String, _>>(),
-    );
-
-    // Build the profile registry from the default CA (profiles are added later via setup.rs).
-    let default_ca = cas.get(&default_ca_id).expect("default CA in cas map");
-    let profiles = ProfileRegistry::empty(default_ca);
-
-    // Build the HTTPS validation client for http-01.
-    let validation_client = {
-        let https = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_native_roots()
-            .expect("native roots")
-            .https_or_http()
-            .enable_http1()
-            .build();
-        hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
-            .build(https)
-    };
-
-    let state = Arc::new(AppState {
-        config: Arc::clone(&config),
-        db: pool.clone(),
-        db_ro: pool.clone(),
-        db_kind: db::DbKind::Sqlite,
-        cas: Arc::clone(&cas),
-        default_ca_id: Arc::new(default_ca_id),
-        profiles,
-        tls: None,
-        crl_caches,
-        spki_cache: Arc::new(RwLock::new(HashMap::new())),
-        nonces: Arc::new(NonceBucket::new()),
-        link_headers,
-        validation_client,
-        gss_cred: None,
-        eab_master_secret: None,
-        audit: Arc::new(AuditState::new()),
-        audit_policy: Arc::new(AuditPolicy::default()),
-        journal: Arc::new(akamu::journal::JournalWriter::with_daemon()),
-        admin_sessions: None,
-        admin_auth_limiter: None,
-        eab_session_nonces: None,
-        admin_gss_cred: None,
-        startup_time: Instant::now(),
-        crdt: Arc::new(tokio::sync::RwLock::new(AkaCrdt::default())),
-        node_id: Arc::new("seedgen".to_string()),
-        node_kem_priv: Arc::new(vec![]),
-        node_gossip_signing_priv: Arc::new(vec![]),
-        node_gossip_signing_cert: Arc::new(vec![]),
-        gossip_client: Arc::new(reqwest::Client::new()),
-        gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-        write_notify: Arc::new(tokio::sync::Notify::new()),
-        crdt_db: pool.clone(),
-        tkauth_trust_anchors: None,
-        claim_encoder_registry: None,
-        jwks_cache: None,
-        write_coalescer: None,
-    });
+    let state = AppStateBuilder::new(
+        Arc::clone(&config),
+        pool.clone(),
+        db::DbKind::Sqlite,
+        Arc::clone(&cas),
+        Arc::new(default_ca_id),
+    )
+    .node_id(Arc::new("seedgen".to_string()))
+    .build();
 
     let router = routes::build_router(Arc::clone(&state), None);
     let tokio_listener = tokio::net::TcpListener::from_std(listener).expect("tokio listener");

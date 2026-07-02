@@ -28,7 +28,7 @@ use tower::ServiceExt;
 
 use akamu::config::{AdminConfig, CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
 use akamu::state::{
-    AdminAuthMethod, AdminSession, AppState, CaState, MtcState, NonceBucket, OperatorRole,
+    AdminAuthMethod, AdminSession, AppState, AppStateBuilder, CaState, MtcState, OperatorRole,
 };
 use akamu::{ca, db, routes};
 
@@ -367,72 +367,22 @@ async fn build_delegation_state() -> (
         },
     );
 
-    let state = Arc::new(AppState {
-        config: Arc::clone(&config),
-        db: db_conn.clone(),
-        db_ro: db_conn.clone(),
-        db_kind: db::DbKind::Sqlite,
-        profiles: akamu::profiles::ProfileRegistry::empty(&ca),
-        cas: {
+    let state = AppStateBuilder::new(
+        Arc::clone(&config),
+        db_conn.clone(),
+        db::DbKind::Sqlite,
+        {
             let mut m = indexmap::IndexMap::new();
             m.insert("default".to_string(), ca.clone());
             Arc::new(m)
         },
-        default_ca_id: Arc::new("default".to_string()),
-        tls: None,
-        spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-        nonces: Arc::new(NonceBucket::new()),
-        link_headers: Arc::new({
-            let mut m = std::collections::HashMap::new();
-            m.insert(
-                "default".to_string(),
-                Arc::new(axum::http::HeaderValue::from_static(
-                    "<https://acme.test/acme/directory>;rel=\"index\"",
-                )),
-            );
-            m
-        }),
-        validation_client: {
-            let https = hyper_rustls::HttpsConnectorBuilder::new()
-                .with_native_roots()
-                .expect("native roots")
-                .https_or_http()
-                .enable_http1()
-                .build();
-            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
-                .build(https)
-        },
-        crl_caches: Arc::new({
-            let mut m = std::collections::HashMap::new();
-            m.insert("default".to_string(), Default::default());
-            m
-        }),
-        audit: Arc::new(akamu::audit::AuditState::new()),
-        audit_policy: Arc::new(akamu::audit::AuditPolicy::default()),
-        journal: std::sync::Arc::new(akamu::journal::JournalWriter::with_daemon()),
-        admin_sessions: Some(Arc::clone(&sessions)),
-        admin_auth_limiter: Some(Arc::new(tokio::sync::Mutex::new(
-            std::collections::HashMap::new(),
-        ))),
-        eab_session_nonces: None,
-        startup_time: Instant::now(),
-        crdt: Arc::new(tokio::sync::RwLock::new(akamu_crdt::AkaCrdt::default())),
-        node_id: Arc::new("test".to_string()),
-        node_kem_priv: Arc::new(vec![]),
-        node_gossip_signing_priv: Arc::new(vec![]),
-        node_gossip_signing_cert: Arc::new(vec![]),
-        gossip_client: Arc::new(reqwest::Client::new()),
-        gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-        write_notify: Arc::new(tokio::sync::Notify::new()),
-        gss_cred: None,
-        admin_gss_cred: None,
-        eab_master_secret: None,
-        crdt_db: db_conn.clone(),
-        tkauth_trust_anchors: None,
-        claim_encoder_registry: None,
-        jwks_cache: None,
-        write_coalescer: None,
-    });
+        Arc::new("default".to_string()),
+    )
+    .admin_sessions(Arc::clone(&sessions))
+    .admin_auth_limiter(Arc::new(tokio::sync::Mutex::new(
+        std::collections::HashMap::new(),
+    )))
+    .build();
 
     let acme_router = routes::build_router(Arc::clone(&state), None);
     let admin_router = routes::build_router(Arc::clone(&state), None);
@@ -1352,61 +1302,19 @@ async fn delegation_disabled_returns_404() {
         mtc: Arc::new(MtcState::disabled()),
     });
 
-    let state = Arc::new(AppState {
-        config: Arc::clone(&config),
-        db: db_conn.clone(),
-        db_ro: db_conn.clone(),
-        db_kind: db::DbKind::Sqlite,
-        profiles: akamu::profiles::ProfileRegistry::empty(&ca),
-        cas: {
+    let state = AppStateBuilder::new(
+        Arc::clone(&config),
+        db_conn.clone(),
+        db::DbKind::Sqlite,
+        {
             let mut m = indexmap::IndexMap::new();
             m.insert("default".to_string(), ca);
             Arc::new(m)
         },
-        default_ca_id: Arc::new("default".to_string()),
-        tls: None,
-        spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-        nonces: Arc::new(NonceBucket::new()),
-        link_headers: Arc::new(std::collections::HashMap::new()),
-        validation_client: {
-            let https = hyper_rustls::HttpsConnectorBuilder::new()
-                .with_native_roots()
-                .expect("native roots")
-                .https_or_http()
-                .enable_http1()
-                .build();
-            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
-                .build(https)
-        },
-        crl_caches: Arc::new({
-            let mut m = std::collections::HashMap::new();
-            m.insert("default".to_string(), Default::default());
-            m
-        }),
-        audit: Arc::new(akamu::audit::AuditState::new()),
-        audit_policy: Arc::new(akamu::audit::AuditPolicy::default()),
-        journal: std::sync::Arc::new(akamu::journal::JournalWriter::with_daemon()),
-        admin_sessions: None,
-        admin_auth_limiter: None,
-        eab_session_nonces: None,
-        startup_time: Instant::now(),
-        crdt: Arc::new(tokio::sync::RwLock::new(akamu_crdt::AkaCrdt::default())),
-        node_id: Arc::new("test".to_string()),
-        node_kem_priv: Arc::new(vec![]),
-        node_gossip_signing_priv: Arc::new(vec![]),
-        node_gossip_signing_cert: Arc::new(vec![]),
-        gossip_client: Arc::new(reqwest::Client::new()),
-        gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-        write_notify: Arc::new(tokio::sync::Notify::new()),
-        gss_cred: None,
-        admin_gss_cred: None,
-        eab_master_secret: None,
-        crdt_db: db_conn.clone(),
-        tkauth_trust_anchors: None,
-        claim_encoder_registry: None,
-        jwks_cache: None,
-        write_coalescer: None,
-    });
+        Arc::new("default".to_string()),
+    )
+    .link_headers(Arc::new(std::collections::HashMap::new()))
+    .build();
 
     let acme = routes::build_router(Arc::clone(&state), None);
 

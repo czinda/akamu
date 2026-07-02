@@ -7,18 +7,14 @@ use std::sync::Arc;
 
 use tracing_subscriber::EnvFilter;
 
-use akamu::audit::AuditState;
 use akamu::config::{Config, MtcSigningKeyConfig};
 use akamu::journal::JournalWriter;
 use akamu::listen::{parse_listen_target, remove_stale_socket, uds_marker_layer, ListenTarget};
-use akamu::state::{AppState, CaState, CrlCache, MtcState, NonceBucket, TlsState};
+use akamu::state::{AppStateBuilder, CaState, CrlCache, MtcState, NonceBucket, TlsState};
 use akamu::{ca, db, delegation_upstream, mtc, routes, star};
 use indexmap::IndexMap;
 
 use akamu::gossip;
-use hyper_rustls::HttpsConnectorBuilder;
-use hyper_util::client::legacy::Client;
-use hyper_util::rt::TokioExecutor;
 
 #[tokio::main]
 async fn main() {
@@ -848,76 +844,80 @@ async fn run() -> Result<(), String> {
     );
     let nonce_prefix = node_id.get(..11).unwrap_or(&node_id).to_string();
     let nonces = Arc::new(NonceBucket::with_prefix(nonce_prefix));
-    let state = Arc::new(AppState {
-        config: Arc::clone(&config),
-        db: db.clone(),
-        db_ro,
-        db_kind,
-        cas: Arc::new(cas_map),
-        default_ca_id: Arc::new(default_ca_id),
-        profiles: profile_registry.clone(),
-        tls: tls_state,
-        spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-        nonces: Arc::clone(&nonces),
-        link_headers: Arc::new(link_headers_map),
-        validation_client: {
-            let https = HttpsConnectorBuilder::new()
-                .with_native_roots()
-                .expect("failed to load native root CAs for http-01 validation client")
-                .https_or_http()
-                .enable_http1()
-                .build();
-            Client::builder(TokioExecutor::new()).build(https)
-        },
-        crl_caches: Arc::new(crl_caches_map),
-        gss_cred,
-        admin_gss_cred,
-        eab_master_secret,
-        audit: Arc::new(AuditState::new()),
-        audit_policy: Arc::new(
-            config
-                .admin
-                .as_ref()
-                .map(akamu::audit::AuditPolicy::from_admin_config)
-                .unwrap_or_default(),
-        ),
-        journal: Arc::new(if let Some(ref path) = config.server.audit_log_file {
-            JournalWriter::with_file(path).map_err(|e| format!("audit log file '{path}': {e}"))?
-        } else {
-            JournalWriter::new("akamu")
-        }),
-        admin_sessions: config
-            .admin
-            .as_ref()
-            .map(|_| Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()))),
-        admin_auth_limiter: config
-            .admin
-            .as_ref()
-            .map(|_| Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()))),
-        eab_session_nonces: config
-            .admin
-            .as_ref()
-            .map(|_| Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()))),
-        startup_time: std::time::Instant::now(),
-        crdt,
-        node_id,
-        node_kem_priv: Arc::new(node_keys.kem_priv_pkcs8),
-        node_gossip_signing_priv: Arc::new(node_keys.sign_priv_pem),
-        node_gossip_signing_cert: Arc::new(node_keys.sign_cert_der),
-        gossip_client: Arc::new(
-            reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(10))
-                .build()
-                .expect("gossip reqwest client build failed"),
-        ),
-        gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-        write_notify: Arc::new(tokio::sync::Notify::new()),
-        crdt_db,
-        tkauth_trust_anchors,
-        claim_encoder_registry,
-        jwks_cache,
-        write_coalescer,
+    let journal = Arc::new(if let Some(ref path) = config.server.audit_log_file {
+        JournalWriter::with_file(path).map_err(|e| format!("audit log file '{path}': {e}"))?
+    } else {
+        JournalWriter::new("akamu")
     });
+    let mut builder = AppStateBuilder::new(
+        Arc::clone(&config),
+        db.clone(),
+        db_kind,
+        Arc::new(cas_map),
+        Arc::new(default_ca_id),
+    )
+    .db_ro(db_ro)
+    .profiles(profile_registry.clone())
+    .nonces(Arc::clone(&nonces))
+    .link_headers(Arc::new(link_headers_map))
+    .crl_caches(Arc::new(crl_caches_map))
+    .audit_policy(Arc::new(
+        config
+            .admin
+            .as_ref()
+            .map(akamu::audit::AuditPolicy::from_admin_config)
+            .unwrap_or_default(),
+    ))
+    .journal(journal)
+    .crdt(crdt)
+    .node_id(node_id)
+    .node_kem_priv(Arc::new(node_keys.kem_priv_pkcs8))
+    .node_gossip_signing_priv(Arc::new(node_keys.sign_priv_pem))
+    .node_gossip_signing_cert(Arc::new(node_keys.sign_cert_der))
+    .gossip_client(Arc::new(
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("gossip reqwest client build failed"),
+    ))
+    .crdt_db(crdt_db);
+    if let Some(tls) = tls_state {
+        builder = builder.tls(tls);
+    }
+    if let Some(gc) = gss_cred {
+        builder = builder.gss_cred(gc);
+    }
+    if let Some(agc) = admin_gss_cred {
+        builder = builder.admin_gss_cred(agc);
+    }
+    if let Some(ems) = eab_master_secret {
+        builder = builder.eab_master_secret(ems);
+    }
+    if config.admin.is_some() {
+        builder = builder
+            .admin_sessions(Arc::new(tokio::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )))
+            .admin_auth_limiter(Arc::new(tokio::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )))
+            .eab_session_nonces(Arc::new(tokio::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )));
+    }
+    if let Some(ta) = tkauth_trust_anchors {
+        builder = builder.tkauth_trust_anchors(ta);
+    }
+    if let Some(cr) = claim_encoder_registry {
+        builder = builder.claim_encoder_registry(cr);
+    }
+    if let Some(jc) = jwks_cache {
+        builder = builder.jwks_cache(jc);
+    }
+    if let Some(wc) = write_coalescer {
+        builder = builder.write_coalescer(wc);
+    }
+    let state = builder.build();
 
     // ── Startup audit records ─────────────────────────────────────────────────
     let key_file_exists = std::path::Path::new(&config.default_ca().key_file).exists();

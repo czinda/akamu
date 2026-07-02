@@ -677,7 +677,7 @@ mod tests {
         use crate::config::{CaConfig, Config, DatabaseConfig, ServerConfig};
         use crate::db;
         use crate::db::schema::{AccountRow, AuthorizationRow, ChallengeRow};
-        use crate::state::{AppState, CaState, MtcState, NonceBucket};
+        use crate::state::{AppStateBuilder, CaState, MtcState};
 
         let now = crate::util::unix_now();
         let dir = tempfile::TempDir::new().unwrap();
@@ -846,70 +846,17 @@ mod tests {
             .await
             .unwrap();
 
-        let state = Arc::new(AppState {
-            config: Arc::clone(&config),
-            db: db_conn.clone(),
-            db_ro: db_conn.clone(),
-            db_kind: crate::db::DbKind::Sqlite,
-            profiles: crate::profiles::ProfileRegistry::empty(&ca),
-            cas: {
-                let mut map = indexmap::IndexMap::new();
-                map.insert("default".to_string(), ca.clone());
-                Arc::new(map)
-            },
-            default_ca_id: Arc::new("default".to_string()),
-            tls: None,
-            spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-            nonces: Arc::new(NonceBucket::new()),
-            link_headers: {
-                let mut m = std::collections::HashMap::new();
-                m.insert(
-                    "default".to_string(),
-                    Arc::new(axum::http::HeaderValue::from_static(
-                        "<https://acme.test/acme/directory>;rel=\"index\"",
-                    )),
-                );
-                Arc::new(m)
-            },
-            validation_client: {
-                let https = hyper_rustls::HttpsConnectorBuilder::new()
-                    .with_native_roots()
-                    .expect("native roots")
-                    .https_or_http()
-                    .enable_http1()
-                    .build();
-                hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
-                    .build(https)
-            },
-            crl_caches: {
-                let mut m = std::collections::HashMap::new();
-                m.insert("default".to_string(), Default::default());
-                Arc::new(m)
-            },
-            gss_cred: None,
-            admin_gss_cred: None,
-            eab_master_secret: None,
-            audit: Arc::new(crate::audit::AuditState::new()),
-            audit_policy: Arc::new(crate::audit::AuditPolicy::default()),
-            journal: Arc::new(crate::journal::JournalWriter::with_daemon()),
-            admin_sessions: None,
-            admin_auth_limiter: None,
-            eab_session_nonces: None,
-            startup_time: std::time::Instant::now(),
-            crdt: Arc::new(tokio::sync::RwLock::new(akamu_crdt::AkaCrdt::default())),
-            node_id: Arc::new("test".to_string()),
-            node_kem_priv: Arc::new(vec![]),
-            node_gossip_signing_priv: Arc::new(vec![]),
-            node_gossip_signing_cert: Arc::new(vec![]),
-            gossip_client: Arc::new(reqwest::Client::new()),
-            gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-            write_notify: Arc::new(tokio::sync::Notify::new()),
-            crdt_db: db_conn.clone(),
-            tkauth_trust_anchors: None,
-            claim_encoder_registry: None,
-            jwks_cache: None,
-            write_coalescer: None,
-        });
+        let mut cas_map = indexmap::IndexMap::new();
+        cas_map.insert("default".to_string(), ca.clone());
+        let state = AppStateBuilder::new(
+            Arc::clone(&config),
+            db_conn.clone(),
+            crate::db::DbKind::Sqlite,
+            Arc::new(cas_map),
+            Arc::new("default".to_string()),
+        )
+        .node_id(Arc::new("test".to_string()))
+        .build();
 
         (
             state,

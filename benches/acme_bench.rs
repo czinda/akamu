@@ -55,7 +55,7 @@ use akamu::{
     ca,
     config::{CaConfig, Config, DatabaseConfig, GossipConfig, MtcConfig, ServerConfig},
     db, routes,
-    state::{AppState, CaState, CrlCache, MtcState, NonceBucket},
+    state::{AppState, AppStateBuilder, CaState, MtcState, NonceBucket},
 };
 use akamu_crdt::AkaNodeEntry;
 
@@ -987,9 +987,6 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
     let default_ca_id = Arc::new("bench".to_string());
     let cas: Arc<IndexMap<String, Arc<CaState>>> =
         Arc::new(IndexMap::from([("bench".to_string(), Arc::clone(&ca))]));
-    let mut crl_map: std::collections::HashMap<String, CrlCache> = std::collections::HashMap::new();
-    crl_map.insert("bench".to_string(), Default::default());
-    let crl_caches = Arc::new(crl_map);
     let link_headers: Arc<std::collections::HashMap<String, Arc<axum::http::HeaderValue>>> =
         Arc::new(std::collections::HashMap::from([(
             "bench".to_string(),
@@ -1026,56 +1023,25 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
         .get(..11)
         .unwrap_or(&identity.node_id)
         .to_string();
-    let state = Arc::new(AppState {
-        config: Arc::clone(&config),
-        db: db_conn,
-        db_ro: db_ro_conn,
-        db_kind,
-        profiles: akamu::profiles::ProfileRegistry::empty(&ca),
-        cas,
-        default_ca_id,
-        tls: None,
-        crl_caches,
-        spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-        nonces: Arc::new(NonceBucket::with_prefix(nonce_prefix)),
-        eab_session_nonces: None,
-        link_headers,
-        validation_client: {
-            let https = hyper_rustls::HttpsConnectorBuilder::new()
-                .with_native_roots()
-                .expect("native root CAs")
-                .https_or_http()
-                .enable_http1()
-                .build();
-            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
-                .build(https)
-        },
-        gss_cred: None,
-        eab_master_secret: None,
-        audit: Arc::new(akamu::audit::AuditState::new()),
-        audit_policy: Arc::new(akamu::audit::AuditPolicy::default()),
-        journal: std::sync::Arc::new(
-            akamu::journal::JournalWriter::with_file("/tmp/akamu-bench-audit.jsonl")
-                .expect("open audit log file"),
-        ),
-        admin_sessions: None,
-        admin_auth_limiter: None,
-        admin_gss_cred: None,
-        startup_time: std::time::Instant::now(),
-        crdt: Arc::new(tokio::sync::RwLock::new(crdt)),
-        node_id: Arc::new(identity.node_id),
-        node_kem_priv: Arc::new(identity.kem_priv_pkcs8),
-        node_gossip_signing_priv: Arc::new(identity.sign_priv_pem),
-        node_gossip_signing_cert: Arc::new(identity.sign_cert_der),
-        gossip_client: Arc::new(reqwest::Client::new()),
-        gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-        write_notify: Arc::new(tokio::sync::Notify::new()),
-        crdt_db,
-        tkauth_trust_anchors: None,
-        claim_encoder_registry: None,
-        jwks_cache: None,
-        write_coalescer,
-    });
+    let mut builder =
+        AppStateBuilder::new(Arc::clone(&config), db_conn, db_kind, cas, default_ca_id)
+            .db_ro(db_ro_conn)
+            .nonces(Arc::new(NonceBucket::with_prefix(nonce_prefix)))
+            .link_headers(link_headers)
+            .journal(std::sync::Arc::new(
+                akamu::journal::JournalWriter::with_file("/tmp/akamu-bench-audit.jsonl")
+                    .expect("open audit log file"),
+            ))
+            .crdt(Arc::new(tokio::sync::RwLock::new(crdt)))
+            .node_id(Arc::new(identity.node_id))
+            .node_kem_priv(Arc::new(identity.kem_priv_pkcs8))
+            .node_gossip_signing_priv(Arc::new(identity.sign_priv_pem))
+            .node_gossip_signing_cert(Arc::new(identity.sign_cert_der))
+            .crdt_db(crdt_db);
+    if let Some(wc) = write_coalescer {
+        builder = builder.write_coalescer(wc);
+    }
+    let state = builder.build();
 
     if state.config.gossip.is_some() {
         tokio::spawn(akamu::gossip::gossip_loop::run(Arc::clone(&state)));

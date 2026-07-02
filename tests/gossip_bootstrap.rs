@@ -23,7 +23,7 @@ use akamu::ca;
 use akamu::config::{CaConfig, Config, DatabaseConfig, GossipConfig, MtcConfig, ServerConfig};
 use akamu::db;
 use akamu::routes;
-use akamu::state::{AppState, CaState, CrlCache, MtcState, NonceBucket};
+use akamu::state::{AppState, AppStateBuilder, CaState, MtcState, NonceBucket};
 
 // ── Node identity helpers ─────────────────────────────────────────────────────
 
@@ -243,73 +243,23 @@ async fn spawn_node(params: SpawnParams) -> NodeHandle {
         .to_string();
     let nonces = Arc::new(NonceBucket::with_prefix(nonce_prefix));
 
-    let mut link_headers = std::collections::HashMap::new();
-    link_headers.insert(
-        "default".to_string(),
-        Arc::new(
-            axum::http::HeaderValue::from_str(&format!(
-                "<{base_url}/acme/directory>;rel=\"index\""
-            ))
-            .unwrap(),
-        ),
-    );
-
-    let mut crl_caches: std::collections::HashMap<String, CrlCache> =
-        std::collections::HashMap::new();
-    crl_caches.insert("default".to_string(), CrlCache::default());
-
     let mut ca_map = IndexMap::new();
     ca_map.insert("default".to_string(), ca.clone());
 
-    let validation_client = {
-        let https = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_native_roots()
-            .expect("native roots")
-            .https_or_http()
-            .enable_http1()
-            .build();
-        hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
-            .build(https)
-    };
-
-    let state = Arc::new(AppState {
-        config: Arc::clone(&config),
-        db: db_conn.clone(),
-        db_ro: db_conn.clone(),
-        db_kind: db::DbKind::Sqlite,
-        profiles: akamu::profiles::ProfileRegistry::empty(&ca),
-        cas: Arc::new(ca_map),
-        default_ca_id: Arc::new("default".to_string()),
-        tls: None,
-        spki_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-        nonces: Arc::clone(&nonces),
-        link_headers: Arc::new(link_headers),
-        validation_client,
-        crl_caches: Arc::new(crl_caches),
-        audit: Arc::new(akamu::audit::AuditState::new()),
-        audit_policy: Arc::new(akamu::audit::AuditPolicy::default()),
-        journal: std::sync::Arc::new(akamu::journal::JournalWriter::with_daemon()),
-        admin_sessions: None,
-        admin_auth_limiter: None,
-        eab_session_nonces: None,
-        startup_time: std::time::Instant::now(),
-        crdt: Arc::new(tokio::sync::RwLock::new(crdt)),
-        node_id: Arc::new(identity.node_id),
-        node_kem_priv: Arc::new(identity.kem_priv_pkcs8),
-        node_gossip_signing_priv: Arc::new(identity.sign_priv_pem),
-        node_gossip_signing_cert: Arc::new(identity.sign_cert_der),
-        gossip_client: Arc::new(reqwest::Client::new()),
-        gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-        write_notify: Arc::new(tokio::sync::Notify::new()),
-        gss_cred: None,
-        admin_gss_cred: None,
-        eab_master_secret: None,
-        crdt_db: db_conn.clone(),
-        tkauth_trust_anchors: None,
-        claim_encoder_registry: None,
-        jwks_cache: None,
-        write_coalescer: None,
-    });
+    let state = AppStateBuilder::new(
+        Arc::clone(&config),
+        db_conn.clone(),
+        db::DbKind::Sqlite,
+        Arc::new(ca_map),
+        Arc::new("default".to_string()),
+    )
+    .nonces(Arc::clone(&nonces))
+    .crdt(Arc::new(tokio::sync::RwLock::new(crdt)))
+    .node_id(Arc::new(identity.node_id))
+    .node_kem_priv(Arc::new(identity.kem_priv_pkcs8))
+    .node_gossip_signing_priv(Arc::new(identity.sign_priv_pem))
+    .node_gossip_signing_cert(Arc::new(identity.sign_cert_der))
+    .build();
 
     if state.config.gossip.is_some() {
         tokio::spawn(akamu::gossip::gossip_loop::run(Arc::clone(&state)));

@@ -9,8 +9,7 @@
 //! HTTP-01 challenges, polls the order once, finalizes, and verifies
 //! that the issued certificate contains all three SANs.
 
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use synta::{Decoder, Encoding};
 use synta_certificate::{
@@ -19,7 +18,7 @@ use synta_certificate::{
 use tokio::net::TcpListener;
 
 use akamu::config::{CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
-use akamu::state::{AppState, CaState, MtcState, NonceBucket};
+use akamu::state::{AppState, AppStateBuilder, CaState, MtcState};
 use akamu::{ca, db, routes};
 
 use akamu_client::{AccountKey, AccountOptions, AcmeClient, Identifier};
@@ -114,73 +113,19 @@ async fn build_test_state(
         mtc: Arc::new(MtcState::disabled()),
     });
 
-    Arc::new(AppState {
-        config: Arc::clone(&config),
-        db: db_conn.clone(),
-        db_ro: db_conn.clone(),
-        db_kind: db::DbKind::Sqlite,
-        profiles: akamu::profiles::ProfileRegistry::empty(&ca),
-        cas: {
+    AppStateBuilder::new(
+        Arc::clone(&config),
+        db_conn.clone(),
+        db::DbKind::Sqlite,
+        {
             let mut m = indexmap::IndexMap::new();
             m.insert("default".to_string(), ca.clone());
             Arc::new(m)
         },
-        default_ca_id: Arc::new("default".to_string()),
-        tls: None,
-        spki_cache: Arc::new(RwLock::new(HashMap::new())),
-        nonces: Arc::new(NonceBucket::new()),
-        link_headers: Arc::new({
-            let mut m = std::collections::HashMap::new();
-            m.insert(
-                "default".to_string(),
-                Arc::new(
-                    axum::http::HeaderValue::from_str(&format!(
-                        "<{base_url}/acme/directory>;rel=\"index\""
-                    ))
-                    .unwrap(),
-                ),
-            );
-            m
-        }),
-        validation_client: {
-            let https = hyper_rustls::HttpsConnectorBuilder::new()
-                .with_native_roots()
-                .expect("native roots")
-                .https_or_http()
-                .enable_http1()
-                .build();
-            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
-                .build(https)
-        },
-        crl_caches: Arc::new({
-            let mut m = std::collections::HashMap::new();
-            m.insert("default".to_string(), Default::default());
-            m
-        }),
-        audit: Arc::new(akamu::audit::AuditState::new()),
-        audit_policy: Arc::new(akamu::audit::AuditPolicy::default()),
-        journal: Arc::new(akamu::journal::JournalWriter::with_daemon()),
-        admin_sessions: None,
-        admin_auth_limiter: None,
-        eab_session_nonces: None,
-        startup_time: std::time::Instant::now(),
-        crdt: Arc::new(tokio::sync::RwLock::new(akamu_crdt::AkaCrdt::default())),
-        node_id: Arc::new("test".to_string()),
-        node_kem_priv: Arc::new(vec![]),
-        node_gossip_signing_priv: Arc::new(vec![]),
-        node_gossip_signing_cert: Arc::new(vec![]),
-        gossip_client: Arc::new(reqwest::Client::new()),
-        gossip_nonce_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-        write_notify: Arc::new(tokio::sync::Notify::new()),
-        gss_cred: None,
-        admin_gss_cred: None,
-        eab_master_secret: None,
-        crdt_db: db_conn.clone(),
-        tkauth_trust_anchors: None,
-        claim_encoder_registry: None,
-        jwks_cache: None,
-        write_coalescer: None,
-    })
+        Arc::new("default".to_string()),
+    )
+    .node_id(Arc::new("test".to_string()))
+    .build()
 }
 
 // ── The test ─────────────────────────────────────────────────────────────────
