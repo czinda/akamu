@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::write_private_file;
+use crate::helpers::write_private_file;
 
 /// Copy `src` to `dst` with mode 0o600 on the destination.
 fn copy_private_file(src: &Path, dst: &Path) -> Result<(), String> {
