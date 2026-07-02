@@ -307,10 +307,10 @@ struct KeyChangeArgs {
     new_key_type: String,
 }
 
-// ── issue ─────────────────────────────────────────────────────────────────────
+// ── common certificate args (shared by issue + renew) ────────────────────────
 
 #[derive(clap::Args)]
-struct IssueArgs {
+struct CommonCertArgs {
     /// ACME directory URL (or base URL when --ca is also provided)
     #[arg(long, default_value = "https://acme-v02.api.letsencrypt.org/directory")]
     server: String,
@@ -396,105 +396,34 @@ struct IssueArgs {
     eab: EabFlags,
 }
 
+// ── issue ─────────────────────────────────────────────────────────────────────
+
+#[derive(clap::Args)]
+struct IssueArgs {
+    #[command(flatten)]
+    common: CommonCertArgs,
+}
+
 // ── renew ─────────────────────────────────────────────────────────────────────
 
 #[derive(clap::Args)]
 struct RenewArgs {
-    /// ACME directory URL (or base URL when --ca is also provided)
-    #[arg(long, default_value = "https://acme-v02.api.letsencrypt.org/directory")]
-    server: String,
-
-    /// CA identifier for akamu multi-CA servers; derives directory URL as {server}/acme/{ca}/directory
-    #[arg(long, value_name = "CA_ID")]
-    ca: Option<String>,
-
-    /// Domain name; may be repeated (first domain → CN)
-    #[arg(long = "domain", short = 'd')]
-    domains: Vec<String>,
-
-    /// Account key type (used when generating a new account key)
-    #[arg(long, default_value = "ec:P-256")]
-    key_type: String,
-
-    /// PEM file for the account key (generated and saved if absent)
-    #[arg(long)]
-    account_key: PathBuf,
-
-    /// Certificate key type (used when generating the CSR signing key)
-    #[arg(long = "cert-key-type", default_value = "ec:P-256")]
-    cert_key_type: String,
-
-    /// Challenge type: http-01 | dns-01 | dns-persist-01 | tls-alpn-01 | onion-csr-01
-    #[arg(long = "challenge", default_value = "http-01")]
-    challenge_type: String,
-
-    /// Port to serve http-01 challenges on (default 80)
-    #[arg(long, default_value_t = 80)]
-    http_port: u16,
-
-    /// Port to serve tls-alpn-01 challenges on (default 443)
-    #[arg(long, default_value_t = 443)]
-    tls_port: u16,
-
-    /// Ed25519 hidden-service key PEM file for onion-csr-01 challenges
-    #[arg(long, value_name = "FILE")]
-    onion_key: Option<std::path::PathBuf>,
-
-    /// Write the PEM certificate chain to this file
-    #[arg(long)]
-    out: PathBuf,
+    #[command(flatten)]
+    common: CommonCertArgs,
 
     /// Existing certificate PEM to check ARI renewal window against
     #[arg(long)]
     cert: Option<PathBuf>,
 
-    /// Reuse an existing certificate private key file instead of generating a new one.
-    /// Required for operators who pin keys via HPKP or TLSA records.
-    #[arg(long, value_name = "FILE")]
-    cert_key: Option<PathBuf>,
-
     /// Renew unconditionally, skipping the ARI window check
     #[arg(long)]
     force: bool,
-
-    /// Maximum seconds to wait for order/challenge validation (default: 120)
-    #[arg(long, default_value_t = 120)]
-    poll_timeout: u64,
-
-    /// Hook script for DNS TXT record management (invoked as `<script> add|remove`
-    /// with values in AKAMU_DOMAIN / AKAMU_TOKEN / AKAMU_TXT / AKAMU_KEY_AUTH env vars)
-    #[arg(long, value_name = "CMD")]
-    dns_hook: Option<String>,
-
-    /// Certificate profile identifier (draft-aaron-acme-profiles-01)
-    #[arg(long)]
-    profile: Option<String>,
-
-    /// Token Authority URL for tkauth-01 challenges (RFC 9447)
-    #[arg(long, value_name = "URL")]
-    tkauth_url: Option<String>,
-
-    /// Keytab file for SPNEGO authentication to the Token Authority
-    #[arg(long, value_name = "FILE")]
-    tkauth_keytab: Option<PathBuf>,
-
-    /// Base64url-encoded JWTClaimConstraints blob for tkauth-01 orders.
-    #[arg(long, value_name = "B64URL")]
-    jwtcc: Option<String>,
-
-    /// PEM file of an extra CA certificate to trust for the ACME server's TLS connection.
-    /// Use when the server uses a private CA not in the system trust store.
-    #[arg(long, value_name = "FILE")]
-    server_ca: Option<PathBuf>,
 
     /// Load renewal configuration from a TOML file written by `akamu-cli issue`.
     /// When provided, all renewal parameters are taken from the file; other flags
     /// are ignored.
     #[arg(long, value_name = "FILE")]
     renewal_config: Option<PathBuf>,
-
-    #[command(flatten)]
-    eab: EabFlags,
 }
 
 // ── revoke ────────────────────────────────────────────────────────────────────
@@ -587,7 +516,7 @@ async fn run(cli: Cli) -> Result<(), String> {
             AccountCommands::Update(args) => cmd_update(args).await,
             AccountCommands::KeyChange(args) => cmd_key_change(args).await,
         },
-        Commands::Issue(args) => cmd_issue(args).await,
+        Commands::Issue(args) => cmd_issue(args.common).await,
         Commands::Renew(args) => cmd_renew(args).await,
         Commands::Revoke(args) => cmd_revoke(args).await,
         Commands::Import { source } => match source {
@@ -806,7 +735,7 @@ async fn poll_with_timeout(
 
 // ── issue ─────────────────────────────────────────────────────────────────────
 
-async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
+async fn cmd_issue(args: CommonCertArgs) -> Result<(), String> {
     let using_jwtcc = args.challenge_type == "tkauth-01" && args.jwtcc.is_some();
     if args.domains.is_empty() && !using_jwtcc {
         return Err("at least one --domain is required (or --jwtcc for tkauth-01)".into());
@@ -1455,7 +1384,7 @@ async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
             eab_alg: cfg.eab_alg,
             gssapi_keytab: cfg.gssapi_keytab,
         };
-        let issue_args = IssueArgs {
+        let common = CommonCertArgs {
             server: cfg.server,
             ca: cfg.ca,
             domains: cfg.domains.into_iter().map(|id| id.value).collect(),
@@ -1474,13 +1403,13 @@ async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
             tkauth_url: cfg.tkauth_url,
             tkauth_keytab: cfg.tkauth_keytab,
             jwtcc: cfg.jwtcc,
-            server_ca: args.server_ca.clone(),
+            server_ca: args.common.server_ca.clone(),
             eab,
         };
-        return cmd_issue(issue_args).await;
+        return cmd_issue(common).await;
     }
 
-    let dir_url = resolve_directory_url(&args.server, args.ca.as_deref());
+    let dir_url = resolve_directory_url(&args.common.server, args.common.ca.as_deref());
     if !args.force {
         if let Some(ref cert_path) = args.cert {
             if !check_ari_window(&dir_url, cert_path).await? {
@@ -1489,30 +1418,7 @@ async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
         }
     }
 
-    // Delegate to the issue flow by constructing IssueArgs.
-    let issue_args = IssueArgs {
-        server: args.server,
-        ca: args.ca,
-        domains: args.domains,
-        key_type: args.key_type,
-        account_key: args.account_key,
-        cert_key_type: args.cert_key_type,
-        challenge_type: args.challenge_type,
-        http_port: args.http_port,
-        tls_port: args.tls_port,
-        onion_key: args.onion_key,
-        out: args.out,
-        cert_key: args.cert_key,
-        poll_timeout: args.poll_timeout,
-        dns_hook: args.dns_hook,
-        profile: args.profile,
-        tkauth_url: args.tkauth_url,
-        tkauth_keytab: args.tkauth_keytab,
-        jwtcc: args.jwtcc,
-        server_ca: args.server_ca,
-        eab: args.eab,
-    };
-    cmd_issue(issue_args).await
+    cmd_issue(args.common).await
 }
 
 // ── revoke ────────────────────────────────────────────────────────────────────
