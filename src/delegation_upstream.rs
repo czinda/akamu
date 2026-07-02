@@ -349,13 +349,16 @@ async fn run_dns01_cleanup(
     order1_id: &str,
 ) {
     let Some(ch) = authz.find_challenge("dns-01") else {
+        tracing::debug!(order_id = %order1_id, "dns-01 cleanup: no dns-01 challenge in authorization");
         return;
     };
     let Some(token) = ch.token.as_deref() else {
+        tracing::warn!(order_id = %order1_id, "dns-01 cleanup: challenge has no token");
         return;
     };
     let key_auth = account.key_authorization(token);
     let Ok(txt) = akamu_client::challenge::Dns01Helper::txt_value(&key_auth) else {
+        tracing::warn!(order_id = %order1_id, "dns-01 cleanup: failed to compute TXT value");
         return;
     };
     let domain = bare_domain(&authz.identifier.value);
