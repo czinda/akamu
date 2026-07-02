@@ -23,7 +23,7 @@ use std::{
 };
 
 use akamu_client::{
-    fetch_eab_via_gssapi, AccountKey, AccountOptions, AcmeClient, ChallengeSolver as _,
+    fetch_eab_via_gssapi, AccountKey, AccountOptions, AcmeClient, Challenge, ChallengeSolver as _,
     Dns01Helper, DnsHookSolver, DnsPersist01Helper, EabOptions, Http01Solver, Identifier,
     RenewalConfig, TlsAlpn01Solver,
 };
@@ -794,13 +794,14 @@ async fn poll_with_timeout(
     order_url: &str,
     timeout_secs: u64,
 ) -> Result<akamu_client::Order, String> {
-    tokio::time::timeout(
-        tokio::time::Duration::from_secs(timeout_secs),
-        client.poll_order(account, order_url),
-    )
-    .await
-    .map_err(|_| format!("timed out after {timeout_secs}s waiting for order"))?
-    .map_err(|e| e.to_string())
+    client
+        .poll_order(
+            account,
+            order_url,
+            std::time::Duration::from_secs(timeout_secs),
+        )
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // ── issue ─────────────────────────────────────────────────────────────────────
@@ -947,6 +948,15 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
     let server_profile = order.profile.clone();
 
     // Satisfy all authorizations.
+    //
+    // Phase 1: prepare (present/deploy) and trigger each challenge.  Manual
+    // dns-01 / dns-persist-01 challenges prompt the user per-domain and defer
+    // triggering until all TXT records are in place.
+    let mut http01_tokens: Vec<String> = Vec::new();
+    let mut dns01_cleanups: Vec<(String, String, String)> = Vec::new();
+    let mut deferred_challenges: Vec<Challenge> = Vec::new();
+    let mut any_challenged = false;
+
     for authz_url in &order.authorizations {
         let authz = client
             .get_authorization(&account, authz_url)
@@ -956,13 +966,17 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
         if authz.status == "valid" {
             continue; // already satisfied
         }
+        any_challenged = true;
 
         match args.challenge_type.as_str() {
             "http-01" => {
-                let chall = authz.find_challenge("http-01").ok_or_else(|| {
+                let challenge = authz.find_challenge("http-01").ok_or_else(|| {
                     format!("no http-01 challenge for {}", authz.identifier.value)
                 })?;
-                let token = chall.token.as_deref().ok_or("challenge missing token")?;
+                let token = challenge
+                    .token
+                    .as_deref()
+                    .ok_or("challenge missing token")?;
                 let key_auth = account.key_authorization(token);
 
                 let s = solver.as_ref().unwrap();
@@ -971,51 +985,33 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                     .map_err(|e| e.to_string())?;
 
                 client
-                    .trigger_challenge(&account, chall)
+                    .trigger_challenge(&account, challenge)
                     .await
                     .map_err(|e| e.to_string())?;
 
-                let polled =
-                    poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
-                if polled.status == "invalid" {
-                    return Err(format!(
-                        "order invalid after http-01 challenge for {}",
-                        authz.identifier.value
-                    ));
-                }
-
-                s.cleanup(token).await.map_err(|e| e.to_string())?;
+                http01_tokens.push(token.to_string());
             }
             "dns-01" => {
-                let chall = authz
+                let challenge = authz
                     .find_challenge("dns-01")
                     .ok_or_else(|| format!("no dns-01 challenge for {}", authz.identifier.value))?;
-                let token = chall.token.as_deref().ok_or("challenge missing token")?;
+                let token = challenge
+                    .token
+                    .as_deref()
+                    .ok_or("challenge missing token")?;
                 let key_auth = account.key_authorization(token);
                 let base_domain = authz.identifier.value.trim_start_matches("*.");
 
                 if let Some(hook) = &args.dns_hook {
-                    let solver = DnsHookSolver::new(hook.clone());
-                    solver
-                        .deploy(base_domain, token, &key_auth)
+                    let s = DnsHookSolver::new(hook.clone());
+                    s.deploy(base_domain, token, &key_auth)
                         .await
                         .map_err(|e| format!("dns hook deploy: {e}"))?;
                     client
-                        .trigger_challenge(&account, chall)
+                        .trigger_challenge(&account, challenge)
                         .await
                         .map_err(|e| e.to_string())?;
-                    let polled =
-                        poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
-                    solver
-                        .clean(base_domain, token, &key_auth)
-                        .await
-                        .map_err(|e| format!("dns hook clean: {e}"))?;
-                    if polled.status == "invalid" {
-                        return Err(format!(
-                            "order invalid after dns-01 challenge for {}",
-                            authz.identifier.value
-                        ));
-                    }
+                    dns01_cleanups.push((base_domain.to_string(), token.to_string(), key_auth));
                 } else {
                     let txt_value = Dns01Helper::txt_value(&key_auth).map_err(|e| e.to_string())?;
                     eprintln!();
@@ -1037,25 +1033,14 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                     })
                     .await
                     .map_err(|e| format!("dns-01 stdin wait: {e}"))??;
-                    client
-                        .trigger_challenge(&account, chall)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    let polled =
-                        poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
-                    if polled.status == "invalid" {
-                        return Err(format!(
-                            "order invalid after dns-01 challenge for {}",
-                            authz.identifier.value
-                        ));
-                    }
+                    deferred_challenges.push(challenge.clone());
                 }
             }
             "dns-persist-01" => {
-                let chall = authz.find_challenge("dns-persist-01").ok_or_else(|| {
+                let challenge = authz.find_challenge("dns-persist-01").ok_or_else(|| {
                     format!("no dns-persist-01 challenge for {}", authz.identifier.value)
                 })?;
-                let issuer_domain = chall
+                let issuer_domain = challenge
                     .issuer_domain_names
                     .as_deref()
                     .and_then(|v| v.first())
@@ -1074,24 +1059,14 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                 };
 
                 if let Some(hook) = &args.dns_hook {
-                    let solver = DnsHookSolver::new(hook.clone());
-                    solver
-                        .deploy_persist(base_domain, &txt_record)
+                    let s = DnsHookSolver::new(hook.clone());
+                    s.deploy_persist(base_domain, &txt_record)
                         .await
                         .map_err(|e| format!("dns hook deploy: {e}"))?;
                     client
-                        .trigger_challenge(&account, chall)
+                        .trigger_challenge(&account, challenge)
                         .await
                         .map_err(|e| e.to_string())?;
-                    let polled =
-                        poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
-                    if polled.status == "invalid" {
-                        return Err(format!(
-                            "order invalid after dns-persist-01 challenge for {}",
-                            authz.identifier.value
-                        ));
-                    }
-                    // Record persists intentionally; do not call clean.
                 } else {
                     eprintln!();
                     eprintln!("DNS-persist-01 challenge for {}:", authz.identifier.value);
@@ -1115,25 +1090,17 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                     })
                     .await
                     .map_err(|e| format!("dns-persist-01 stdin wait: {e}"))??;
-                    client
-                        .trigger_challenge(&account, chall)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    let polled =
-                        poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
-                    if polled.status == "invalid" {
-                        return Err(format!(
-                            "order invalid after dns-persist-01 challenge for {}",
-                            authz.identifier.value
-                        ));
-                    }
+                    deferred_challenges.push(challenge.clone());
                 }
             }
             "tls-alpn-01" => {
-                let chall = authz.find_challenge("tls-alpn-01").ok_or_else(|| {
+                let challenge = authz.find_challenge("tls-alpn-01").ok_or_else(|| {
                     format!("no tls-alpn-01 challenge for {}", authz.identifier.value)
                 })?;
-                let token = chall.token.as_deref().ok_or("challenge missing token")?;
+                let token = challenge
+                    .token
+                    .as_deref()
+                    .ok_or("challenge missing token")?;
                 let key_auth = account.key_authorization(token);
 
                 tls_solver
@@ -1144,24 +1111,18 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                     .map_err(|e| format!("tls-alpn-01 present: {e}"))?;
 
                 client
-                    .trigger_challenge(&account, chall)
+                    .trigger_challenge(&account, challenge)
                     .await
                     .map_err(|e| format!("trigger tls-alpn-01: {e}"))?;
-
-                let polled =
-                    poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
-                if polled.status == "invalid" {
-                    return Err(format!(
-                        "order invalid after tls-alpn-01 challenge for {}",
-                        authz.identifier.value
-                    ));
-                }
             }
             "onion-csr-01" => {
-                let chall = authz.find_challenge("onion-csr-01").ok_or_else(|| {
+                let challenge = authz.find_challenge("onion-csr-01").ok_or_else(|| {
                     format!("no onion-csr-01 challenge for {}", authz.identifier.value)
                 })?;
-                let token = chall.token.as_deref().ok_or("challenge missing token")?;
+                let token = challenge
+                    .token
+                    .as_deref()
+                    .ok_or("challenge missing token")?;
                 let key_auth = account.key_authorization(token);
 
                 let onion_key_path = args.onion_key.as_ref().unwrap(); // guarded above
@@ -1172,21 +1133,12 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                         .map_err(|e| format!("build onion CSR: {e}"))?;
 
                 client
-                    .trigger_challenge_onion(&account, &chall.url, &csr_der)
+                    .trigger_challenge_onion(&account, &challenge.url, &csr_der)
                     .await
                     .map_err(|e| format!("trigger onion-csr-01: {e}"))?;
-
-                let polled =
-                    poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
-                if polled.status == "invalid" {
-                    return Err(format!(
-                        "order invalid after onion-csr-01 challenge for {}",
-                        authz.identifier.value
-                    ));
-                }
             }
             "tkauth-01" => {
-                let chall = authz.find_challenge("tkauth-01").ok_or_else(|| {
+                let challenge = authz.find_challenge("tkauth-01").ok_or_else(|| {
                     format!("no tkauth-01 challenge for {}", authz.identifier.value)
                 })?;
                 // tkvalue is the ACME identifier value (the JWTClaimConstraints blob),
@@ -1209,26 +1161,50 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
                 .map_err(|e| format!("fetch authority token: {e}"))?;
 
                 client
-                    .trigger_challenge_tkauth(&account, &chall.url, &jwt)
+                    .trigger_challenge_tkauth(&account, &challenge.url, &jwt)
                     .await
                     .map_err(|e| format!("trigger tkauth-01: {e}"))?;
-
-                let polled =
-                    poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
-                if polled.status == "invalid" {
-                    return Err(format!(
-                        "order invalid after tkauth-01 challenge for {}",
-                        authz.identifier.value
-                    ));
-                }
             }
             _ => unreachable!(),
         }
     }
 
+    // Phase 2 + 3: trigger deferred challenges and poll.  Wrapped so that
+    // Phase 4 cleanup always runs regardless of success or failure.
+    let poll_result: Result<(), String> = async {
+        // Phase 2: trigger deferred challenges (manual dns-01 / dns-persist-01).
+        for challenge in &deferred_challenges {
+            client
+                .trigger_challenge(&account, challenge)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+
+        // Phase 3: poll the order once, after all challenges have been triggered.
+        if any_challenged {
+            poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
+        }
+        Ok(())
+    }
+    .await;
+
+    // Phase 4: cleanup (always runs).
+    if let Some(s) = solver.as_ref() {
+        for token in &http01_tokens {
+            let _ = s.cleanup(token).await;
+        }
+    }
+    if let Some(hook) = &args.dns_hook {
+        let s = DnsHookSolver::new(hook.clone());
+        for (domain, token, key_auth) in &dns01_cleanups {
+            let _ = s.clean(domain, token, key_auth).await;
+        }
+    }
     if let Some(mut s) = tls_solver.take() {
         s.cleanup();
     }
+
+    poll_result?;
 
     // Load or generate the certificate private key.
     let cert_key_path: PathBuf = args.cert_key.clone().unwrap_or_else(|| {
@@ -1877,7 +1853,9 @@ fn effective_uid() -> u32 {
     #[cfg(target_os = "linux")]
     {
         let Ok(status) = fs::read_to_string("/proc/self/status") else {
-            eprintln!("Warning: cannot read /proc/self/status; defaulting to system-mode installation");
+            eprintln!(
+                "Warning: cannot read /proc/self/status; defaulting to system-mode installation"
+            );
             return 0;
         };
         for line in status.lines() {
