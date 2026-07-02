@@ -603,6 +603,37 @@ async fn run(cli: Cli) -> Result<(), String> {
     }
 }
 
+// ── GSSAPI EAB helper ────────────────────────────────────────────────────────
+
+async fn negotiate_gssapi_eab(
+    keytab: &Path,
+    dir_url: &str,
+) -> Result<Option<(String, Vec<u8>, String)>, String> {
+    let eab_url = derive_eab_url(dir_url)?;
+    let result = fetch_eab_via_gssapi(
+        &eab_url,
+        keytab.to_str().ok_or("keytab path is not valid UTF-8")?,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    eprintln!("GSSAPI authenticated as: {}", result.principal);
+    match (result.kid, result.hmac_key, result.alg) {
+        (Some(kid), Some(hmac_key_b64u), Some(alg)) => {
+            let hmac_key = URL_SAFE_NO_PAD
+                .decode(&hmac_key_b64u)
+                .map_err(|e| format!("EAB hmac_key decode: {e}"))?;
+            Ok(Some((kid, hmac_key, alg)))
+        }
+        _ => {
+            eprintln!(
+                "Note: server did not return EAB credentials \
+                 (eab_master_secret not configured); proceeding without EAB."
+            );
+            Ok(None)
+        }
+    }
+}
+
 // ── account register ──────────────────────────────────────────────────────────
 
 async fn cmd_register(args: RegisterArgs) -> Result<(), String> {
@@ -612,32 +643,9 @@ async fn cmd_register(args: RegisterArgs) -> Result<(), String> {
 
     let client = AcmeClient::new(&dir_url).await.map_err(|e| e.to_string())?;
 
-    let gssapi_eab = if let Some(ref keytab) = args.eab.gssapi_keytab {
-        let eab_url = derive_eab_url(&dir_url)?;
-        let result = fetch_eab_via_gssapi(
-            &eab_url,
-            keytab.to_str().ok_or("keytab path is not valid UTF-8")?,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-        eprintln!("GSSAPI authenticated as: {}", result.principal);
-        match (result.kid, result.hmac_key, result.alg) {
-            (Some(kid), Some(hmac_key_b64u), Some(alg)) => {
-                let hmac_key = URL_SAFE_NO_PAD
-                    .decode(&hmac_key_b64u)
-                    .map_err(|e| format!("EAB hmac_key decode: {e}"))?;
-                Some((kid, hmac_key, alg))
-            }
-            _ => {
-                eprintln!(
-                    "Note: server did not return EAB credentials \
-                     (eab_master_secret not configured); proceeding without EAB."
-                );
-                None
-            }
-        }
-    } else {
-        None
+    let gssapi_eab = match args.eab.gssapi_keytab.as_ref() {
+        Some(keytab) => negotiate_gssapi_eab(keytab, &dir_url).await?,
+        None => None,
     };
 
     let cli_eab = build_eab_options(&args.eab)?;
@@ -823,32 +831,9 @@ async fn cmd_issue(args: IssueArgs) -> Result<(), String> {
     let account = if let Ok(url) = load_account_url_for_ca(&args.account_key, args.ca.as_deref()) {
         akamu_client::Account::new(url, "valid".to_string(), vec![], Arc::clone(&key))
     } else {
-        let gssapi_eab = if let Some(ref keytab) = args.eab.gssapi_keytab {
-            let eab_url = derive_eab_url(&dir_url)?;
-            let result = fetch_eab_via_gssapi(
-                &eab_url,
-                keytab.to_str().ok_or("keytab path is not valid UTF-8")?,
-            )
-            .await
-            .map_err(|e| e.to_string())?;
-            eprintln!("GSSAPI authenticated as: {}", result.principal);
-            match (result.kid, result.hmac_key, result.alg) {
-                (Some(kid), Some(hmac_key_b64u), Some(alg)) => {
-                    let hmac_key = URL_SAFE_NO_PAD
-                        .decode(&hmac_key_b64u)
-                        .map_err(|e| format!("EAB hmac_key decode: {e}"))?;
-                    Some((kid, hmac_key, alg))
-                }
-                _ => {
-                    eprintln!(
-                        "Note: server did not return EAB credentials \
-                         (eab_master_secret not configured); proceeding without EAB."
-                    );
-                    None
-                }
-            }
-        } else {
-            None
+        let gssapi_eab = match args.eab.gssapi_keytab.as_ref() {
+            Some(keytab) => negotiate_gssapi_eab(keytab, &dir_url).await?,
+            None => None,
         };
         let cli_eab = build_eab_options(&args.eab)?;
         let eab = gssapi_eab.or(cli_eab);
