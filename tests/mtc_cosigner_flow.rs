@@ -23,10 +23,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::post;
 use axum::Router;
 use synta::types::primitive::Integer;
 use synta::types::string::OctetString;
@@ -55,16 +55,8 @@ use akamu::{ca, db, routes};
 
 use akamu_client::{AccountKey, AccountOptions, AcmeClient, Identifier};
 
-// ── Port utilities ────────────────────────────────────────────────────────────
-
-/// Bind to port 0 to let the OS pick a free port, returning both the port and
-/// the bound listener so the binding is held continuously (no TOCTOU window).
-fn bind_free_port() -> (u16, std::net::TcpListener) {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind to port 0");
-    l.set_nonblocking(true).expect("set_nonblocking");
-    let port = l.local_addr().expect("local_addr").port();
-    (port, l)
-}
+mod common;
+use common::bind_free_port;
 
 // ── Inline cosigner ───────────────────────────────────────────────────────────
 
@@ -243,30 +235,7 @@ async fn start_cosigner(std_listener: std::net::TcpListener) -> String {
     format!("http://127.0.0.1:{port}/sign")
 }
 
-// ── http-01 challenge solver ──────────────────────────────────────────────────
-
-type TokenStore = Arc<RwLock<HashMap<String, String>>>;
-
-/// Start a minimal http-01 challenge server on `std_listener` and return the token store.
-async fn start_http01_solver(std_listener: std::net::TcpListener) -> TokenStore {
-    let store: TokenStore = Arc::new(RwLock::new(HashMap::new()));
-    let store_clone = Arc::clone(&store);
-
-    let app = Router::new().route(
-        "/.well-known/acme-challenge/{token}",
-        get(move |Path(token): Path<String>| {
-            let s = Arc::clone(&store_clone);
-            async move { s.read().unwrap().get(&token).cloned().unwrap_or_default() }
-        }),
-    );
-
-    let listener = TcpListener::from_std(std_listener).expect("tokio TcpListener from std");
-    tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
-
-    store
-}
+use common::start_http01_solver;
 
 // ── akamu server setup ────────────────────────────────────────────────────────
 
@@ -786,7 +755,11 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
         .await
         .expect("finalize (2nd)");
     let valid2 = acme
-        .poll_order(&account, &finalized2.url, std::time::Duration::from_secs(30))
+        .poll_order(
+            &account,
+            &finalized2.url,
+            std::time::Duration::from_secs(30),
+        )
         .await
         .expect("poll_order valid (2nd)");
     let cert_url2 = valid2.certificate.expect("certificate URL (2nd)");
