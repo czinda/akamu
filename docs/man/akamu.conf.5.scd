@@ -416,7 +416,15 @@ present, akamu handles *Authorization: Negotiate* directly.
 
 *keytab_file* = _path_
 	Path to the HTTP service keytab file.  The akamu process must have
-	read access.  Required when using standalone GSSAPI.
+	read access.  Required when *gssproxy = false* (the default).
+	Must be absent when *gssproxy = true*.
+
+*gssproxy* = _boolean_
+	When *true*, GSSAPI credential acquisition is delegated to the
+	gssproxy daemon.  The akamu process must have a matching entry in
+	*/etc/gssproxy/conf.d/*.  The server sets *GSS_USE_PROXY=yes* in
+	the environment before the first GSSAPI call.
+	Default: *false*.
 
 *service_name* = _string_
 	Kerberos service name.  MIT Kerberos appends *@*_hostname_
@@ -620,9 +628,9 @@ all connecting TLS clients.
 
 # [admin]
 
-Admin endpoints (*/admin/*) are served on a dedicated TLS listener
-configured in this section.  When this section is absent, all admin
-endpoints return 404.
+Admin endpoints (*/admin/*) are served on the same listener as the
+main ACME API.  When this section is absent, all admin endpoints
+return 404.
 
 Operator authentication uses one or more of:
 
@@ -720,12 +728,26 @@ must be configured; the server exits at startup if none is set.
 	absent and the operators table is empty, a client certificate is
 	generated and the operator is registered automatically.  Both fields
 	must be set together.  Mutually exclusive with
-	*bootstrap_operator_gssapi_principal*.
+	*bootstrap_operator_pkcs12_file*.
 
 *bootstrap_operator_key_file* = _path_
 	Path where the bootstrap Administrator client private key is written
 	on first run.  Must be set alongside *bootstrap_operator_cert_file*.
-	Mutually exclusive with *bootstrap_operator_gssapi_principal*.
+	Mutually exclusive with *bootstrap_operator_pkcs12_file*.
+
+*bootstrap_operator_pkcs12_file* = _path_
+	Path where a PKCS#12 / PFX bundle (certificate + private key) is
+	written on first run.  When this file is absent and the operators
+	table is empty, a client certificate and key are generated, bundled
+	into a PKCS#12 file, and the operator is registered automatically.
+	Mutually exclusive with *bootstrap_operator_cert_file* /
+	*bootstrap_operator_key_file*.
+
+*bootstrap_operator_pkcs12_password* = _string_
+	Password for the PKCS#12 bundle written by
+	*bootstrap_operator_pkcs12_file*.  The key is still encrypted with
+	PBES2/AES-256-CBC; leave the password field blank or press Enter
+	when tools prompt for it.  Default: *""* (empty).
 
 *bootstrap_operator_name* = _string_
 	Name for the bootstrap Administrator operator.  Sets the Common Name
@@ -760,19 +782,30 @@ must be configured; the server exits at startup if none is set.
 
 *bootstrap_operator_gssapi_principal* = _principal_
 	Kerberos principal for the GSSAPI bootstrap Administrator operator
-	(e.g. _admin@EXAMPLE.COM_).  When set and the operators table is
-	empty at startup, the principal is registered as Administrator so
-	the first *akamuctl login --gssapi* succeeds without manual operator
-	registration.  Mutually exclusive with *bootstrap_operator_cert_file*
-	and *bootstrap_operator_key_file*.
+	(e.g. _admin@EXAMPLE.COM_).  When set and no cert bootstrap is
+	configured, an Administrator row with this principal is inserted at
+	startup (if the operators table is empty) so the first
+	*akamuctl login --gssapi* succeeds without manual operator
+	registration.  When set alongside *bootstrap_operator_cert_file* or
+	*bootstrap_operator_pkcs12_file*, the principal is stored on the
+	same bootstrapped operator row so the operator can authenticate via
+	either mTLS or GSSAPI.
 
 ## [admin.gssapi]
 
 GSSAPI/Kerberos authentication for admin operators.
 
 *keytab_file* = _path_
-	Path to the HTTP service keytab file.  Required when using
-	GSSAPI authentication for the admin API.
+	Path to the HTTP service keytab file.  Required when
+	*gssproxy = false* (the default).  Must be absent when
+	*gssproxy = true*.
+
+*gssproxy* = _boolean_
+	When *true*, GSSAPI credential acquisition is delegated to the
+	gssproxy daemon.  The akamu process must have a matching entry in
+	*/etc/gssproxy/conf.d/*.  The server sets *GSS_USE_PROXY=yes* in
+	the environment before the first GSSAPI call.
+	Default: *false*.
 
 *service_name* = _string_
 	Kerberos service name.  MIT Kerberos appends *@*_hostname_
