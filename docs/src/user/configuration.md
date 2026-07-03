@@ -1089,11 +1089,14 @@ validate_dnssec = true
 
 **Optional. Default: empty (proxy header mode disabled).**
 
-List of CIDR blocks (IPv4 or IPv6) whose connecting IP address is trusted to
-supply an `X-Remote-User` header. When a request arrives from one of these
-addresses, akamu reads the header value as the already-authenticated principal
-name — the reverse proxy is expected to have completed SPNEGO or another
-authentication step before forwarding the request.
+List of entries whose connecting IP address is trusted to supply an
+`X-Remote-User` header. Each entry is either a CIDR block (IPv4 or IPv6) or
+the special literal `"local addresses"` which expands at runtime to all IP
+addresses assigned to local network interfaces (via `getifaddrs`, refreshed
+every 30 seconds). When a request arrives from a matching address, akamu reads
+the header value as the already-authenticated principal name — the reverse
+proxy is expected to have completed SPNEGO or another authentication step
+before forwarding the request.
 
 Requests from addresses not in this list never have `X-Remote-User` honoured,
 regardless of what the header contains.
@@ -1104,7 +1107,11 @@ exits at startup with an error message.
 
 ```toml
 [server]
+# Explicit CIDRs
 trusted_proxies = ["127.0.0.1/32", "::1/128", "10.0.0.0/8"]
+
+# Or use "local addresses" when the proxy runs on the same host
+# trusted_proxies = ["local addresses"]
 ```
 
 Security note: keep this list tightly scoped to the IP addresses of your
@@ -1993,12 +2000,13 @@ See [Certificate Profiles](profiles.md) for detailed descriptions with examples.
 
 The `[admin]` section enables the server-side Admin API. Admin endpoints (`/admin/*`) are served on the same listener as the main ACME API — there is no separate admin listener. When this section is absent, all admin endpoints return 404. This is the default; no admin access is possible without explicit configuration.
 
-Operator authentication uses one or both of:
+Operator authentication uses one or more of:
 
 - **mTLS client certificates** — configure `[tls.client_auth]` with `required = false` and the operator CA(s); the connecting client presents a certificate signed by one of those CAs.
+- **Proxy-forwarded client certificates** — when Akamu runs behind a TLS-terminating reverse proxy (Nginx, Apache, Envoy), configure `[admin.proxy_auth]` so the proxy can forward the verified client certificate in an HTTP header.
 - **GSSAPI/Kerberos** — configure `[admin.gssapi]`; clients authenticate via a Kerberos service ticket without requiring a client certificate.
 
-At least one of `[tls.client_auth]` or `[admin.gssapi]` must be configured; the server exits at startup if neither is set.
+At least one of `[tls.client_auth]`, `[admin.proxy_auth]`, or `[admin.gssapi]` must be configured; the server exits at startup if none is set.
 
 ```toml
 # mTLS client authentication — operator CA(s) accepted for /admin/* requests.
@@ -2248,6 +2256,105 @@ Host-based service name. MIT Kerberos appends `@<local-hostname>` when no realm 
 
 ```toml
 service_name = "HTTP"
+```
+
+### `[admin.proxy_auth]`
+
+**Optional. When absent, proxy-forwarded client certificate authentication is disabled.**
+
+When Akamu runs behind a TLS-terminating reverse proxy, the TLS handshake
+happens at the proxy and the client certificate never reaches Akamu's TLS
+accept loop. This section configures Akamu to read the client certificate
+from an HTTP header injected by the proxy, gated on a trusted-proxy CIDR
+list to prevent header spoofing.
+
+Three header conventions are supported:
+
+| `header_format` | Header name | Cert encoding |
+|-----------------|-------------|---------------|
+| `"x-ssl-client-cert"` *(default)* | `X-SSL-Client-Cert` | URL-encoded PEM |
+| `"ssl-client-cert"` | `SSL_CLIENT_CERT` | URL-encoded PEM |
+| `"xfcc"` | `X-Forwarded-Client-Cert` | Envoy XFCC format; `Cert=` value is URL-encoded PEM |
+
+```toml
+[admin.proxy_auth]
+# Trusted proxies (required, must be non-empty).
+# Accepts CIDR ranges and the literal "local addresses" (all local IPs).
+trusted_proxies = ["127.0.0.1/32", "::1/128"]
+
+# Or when the proxy runs on the same host:
+# trusted_proxies = ["local addresses"]
+
+# Header convention: "x-ssl-client-cert" | "ssl-client-cert" | "xfcc"
+# Default: "x-ssl-client-cert"
+header_format = "x-ssl-client-cert"
+```
+
+**Security:** the proxy-forwarded certificate header is only read when the
+TCP peer address falls within one of the `trusted_proxies` ranges. Requests
+from untrusted IPs that include the header silently ignore it — the header
+is never parsed. Proxy-forwarded cert auth records `"method":"cert-proxy"`
+in audit events, distinguishing it from direct mTLS (`"method":"cert"`).
+
+#### `trusted_proxies`
+
+**Required when `[admin.proxy_auth]` is present.**
+
+List of reverse proxies allowed to inject the client certificate header.
+Must be non-empty. Each entry is either a CIDR range or the literal
+`"local addresses"` (all local interface IPs, refreshed every 30 seconds).
+
+```toml
+trusted_proxies = ["10.0.0.1/32", "fd00::/8"]
+
+# Or when the proxy runs on the same host:
+# trusted_proxies = ["local addresses"]
+```
+
+#### `header_format`
+
+**Optional. Default: `"x-ssl-client-cert"`.**
+
+Selects which HTTP header to read and how to parse it.
+
+- `"x-ssl-client-cert"` — Nginx convention. The proxy sets `X-SSL-Client-Cert`
+  to the URL-encoded PEM of the client certificate.
+- `"ssl-client-cert"` — Apache convention. The proxy sets `SSL_CLIENT_CERT`
+  to the URL-encoded PEM of the client certificate.
+- `"xfcc"` — Envoy convention. The proxy sets `X-Forwarded-Client-Cert`
+  to a semicolon-separated key-value list. Akamu extracts the `Cert=` value
+  from the last element (nearest proxy) and URL-decodes it as PEM.
+
+##### Nginx example
+
+```nginx
+server {
+    listen 443 ssl;
+    ssl_client_certificate /etc/nginx/operator-ca.pem;
+    ssl_verify_client optional;
+
+    location /admin/ {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header X-SSL-Client-Cert $ssl_client_escaped_cert;
+    }
+}
+```
+
+```toml
+[admin.proxy_auth]
+trusted_proxies = ["127.0.0.1/32"]
+header_format   = "x-ssl-client-cert"
+```
+
+##### Envoy example
+
+Envoy sets `X-Forwarded-Client-Cert` automatically when `forward_client_cert_details`
+is set to `APPEND_FORWARD` or `SANITIZE_SET` in the HTTP connection manager.
+
+```toml
+[admin.proxy_auth]
+trusted_proxies = ["10.0.0.0/8"]
+header_format   = "xfcc"
 ```
 
 **Admin endpoints and RBAC roles:**
