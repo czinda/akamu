@@ -393,6 +393,11 @@ Session tokens obtained after *login* are cached in
 	*--offset* _N_
 		Pagination offset (default: 0).
 
+*cross-cert show* _CROSS_CERT_ID_
+	Show cross-certificate metadata by UUID.  Returns the issuer CA ID,
+	subject CA ID (or null for external subjects), serial number,
+	validity window, creation timestamp, and the full PEM.
+
 *cross-cert download* _CROSS_CERT_ID_ [OPTIONS]
 	Download a cross-certificate by its UUID.
 
