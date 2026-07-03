@@ -968,6 +968,39 @@ max_body_bytes = 131072
     }
 
     #[test]
+    fn trusted_proxies_local_addresses_parses() {
+        let toml = format!(
+            "{}\n[server]\ntrusted_proxies = [\"local addresses\"]\n",
+            minimal_toml()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        assert_eq!(cfg.server.trusted_proxies.len(), 1);
+        assert_eq!(
+            cfg.server
+                .trusted_proxies
+                .iter()
+                .next()
+                .unwrap()
+                .to_string(),
+            "local addresses"
+        );
+    }
+
+    #[test]
+    fn trusted_proxies_mixed_cidr_and_local() {
+        let toml = format!(
+            "{}\n[server]\ntrusted_proxies = [\"local addresses\", \"10.0.0.0/8\"]\n",
+            minimal_toml()
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        assert_eq!(cfg.server.trusted_proxies.len(), 2);
+        assert!(cfg
+            .server
+            .trusted_proxies
+            .contains(&std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)));
+    }
+
+    #[test]
     fn gssapi_absent_is_none() {
         let cfg: Config = toml::from_str(minimal_toml()).unwrap();
         assert!(cfg.server.gssapi.is_none());

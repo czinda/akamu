@@ -24,5 +24,6 @@ pub mod routes;
 pub mod star;
 pub mod state;
 pub mod tls;
+pub mod trusted_proxy;
 pub mod util;
 pub mod validation;

@@ -109,23 +109,7 @@ where
                     .into_response());
             };
             {
-                let peer_ip = peer.ip();
-                // Map IPv4-mapped IPv6 addresses (::ffff:a.b.c.d) to plain IPv4
-                // so they match IPv4 CIDR entries in trusted_proxies.
-                let peer_ip = match peer_ip {
-                    std::net::IpAddr::V6(v6) => v6
-                        .to_ipv4_mapped()
-                        .map(std::net::IpAddr::V4)
-                        .unwrap_or(std::net::IpAddr::V6(v6)),
-                    v4 => v4,
-                };
-                let trusted = app
-                    .config
-                    .server
-                    .trusted_proxies
-                    .iter()
-                    .any(|net| net.contains(&peer_ip));
-                if trusted {
+                if app.config.server.trusted_proxies.contains(&peer.ip()) {
                     let user_hdr = parts.headers.get("x-remote-user");
                     return match user_hdr {
                         None => Err(unauthorized("X-Remote-User header required")),

@@ -142,10 +142,13 @@ pub struct ServerConfig {
     ///
     /// Example: `trusted_proxies = ["127.0.0.1/32", "::1/128", "10.0.0.0/8"]`
     ///
+    /// The special literal `"local addresses"` expands at runtime to all IP
+    /// addresses assigned to local network interfaces (via `getifaddrs`).
+    ///
     /// Requests from other source IPs never have `X-Remote-User` honoured,
     /// regardless of what the header contains.
     #[serde(default)]
-    pub trusted_proxies: Vec<ipnet::IpNet>,
+    pub trusted_proxies: crate::trusted_proxy::TrustedProxies,
     /// Standalone GSSAPI/SPNEGO configuration.
     ///
     /// When set, Akamu handles `Authorization: Negotiate` directly without a
@@ -292,7 +295,7 @@ impl Default for ServerConfig {
             eab_keys: std::collections::HashMap::new(),
             tor_connectivity_enabled: false,
             validate_dnssec: false,
-            trusted_proxies: vec![],
+            trusted_proxies: crate::trusted_proxy::TrustedProxies::default(),
             gssapi: None,
             eab_master_secret: None,
             webui: None,
