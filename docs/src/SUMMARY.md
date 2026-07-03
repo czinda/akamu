@@ -18,6 +18,7 @@
 - [Certificates](user/certificates.md)
 - [Certificate Profiles](user/profiles.md)
 - [CRL and OCSP](user/crl-ocsp.md)
+- [Cross-Signing](user/cross-signing.md)
 - [Merkle Tree Certificate Log](user/mtc.md)
 - [MTC Cosigner Daemon](user/cosigner.md)
 - [TLS Configuration](user/tls.md)
