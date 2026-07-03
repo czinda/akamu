@@ -15,7 +15,7 @@ configuration keys.
 
 ## Authentication
 
-Every request to the admin API must be authenticated.  Three mechanisms are
+Every request to the admin API must be authenticated.  Four mechanisms are
 supported.
 
 ### mTLS client certificate
@@ -25,6 +25,17 @@ the SHA-256 fingerprint of the DER-encoded leaf certificate and looks it up in
 the `operators` table.  On success, the server issues a session token and returns
 it in the response body under `session_token` and in the `X-Session-Token`
 response header.
+
+### Proxy-forwarded client certificate
+
+When Akamu runs behind a TLS-terminating reverse proxy, the proxy can forward
+the verified client certificate in an HTTP header.  Configure
+`[admin.proxy_auth]` with the trusted proxy CIDR ranges and the header
+convention (Nginx, Apache, or Envoy XFCC).  The server extracts the
+certificate from the header, computes the fingerprint, and issues a session
+token — identical to the direct mTLS path.  Audit events record this as
+`"method":"cert-proxy"`.  See [Configuration Reference](configuration.md#adminproxy_auth)
+for details.
 
 ### GSSAPI/Kerberos
 
@@ -37,7 +48,7 @@ mTLS path) and may include a GSSAPI continuation token in a
 
 ### Bearer session token
 
-After a successful mTLS or GSSAPI login, the client passes the returned token
+After a successful mTLS, proxy-forwarded cert, or GSSAPI login, the client passes the returned token
 as `Authorization: Bearer <token>` on subsequent requests.  The server looks up
 the token in its in-memory session store and refreshes the idle timer.  Tokens
 that have been idle for longer than `session_ttl_secs` (default 1 hour) are
