@@ -2017,11 +2017,15 @@ required = false   # allow GSSAPI-only clients that carry no cert
 [admin]
 session_ttl_secs = 3600
 
-# Bootstrap operator (mTLS) — generated and registered on first run when operators table is empty.
+# Bootstrap operator (mTLS, PEM) — generated and registered on first run when operators table is empty.
 # bootstrap_operator_cert_file = "/etc/akamu/admin-bootstrap.pem"
 # bootstrap_operator_key_file  = "/etc/akamu/admin-bootstrap-key.pem"
 
-# Bootstrap operator (GSSAPI) — mutually exclusive with cert bootstrap above.
+# Bootstrap operator (mTLS, PKCS#12) — alternative to PEM pair above.
+# bootstrap_operator_pkcs12_file     = "/etc/akamu/admin-bootstrap.p12"
+# bootstrap_operator_pkcs12_password = ""
+
+# Bootstrap operator (GSSAPI) — can be combined with cert bootstrap above.
 # When operators table is empty at startup, registers this principal as Administrator.
 # bootstrap_operator_gssapi_principal = "admin@EXAMPLE.COM"
 
@@ -2045,7 +2049,7 @@ bootstrap_key_type = "ec:P-256"
 
 **Optional.**
 
-Path where the bootstrap Administrator operator's client certificate will be written on first run. When this file (and `bootstrap_operator_key_file`) are absent and the operators table is empty, Akāmu generates a client certificate signed by the Akāmu CA and registers the operator automatically. Both fields must be set together.
+Path where the bootstrap Administrator operator's client certificate will be written on first run. When this file (and `bootstrap_operator_key_file`) are absent and the operators table is empty, Akāmu generates a client certificate signed by the Akāmu CA and registers the operator automatically. Both fields must be set together. Mutually exclusive with `bootstrap_operator_pkcs12_file`.
 
 ```toml
 bootstrap_operator_cert_file = "/etc/akamu/admin-bootstrap.pem"
@@ -2055,10 +2059,30 @@ bootstrap_operator_cert_file = "/etc/akamu/admin-bootstrap.pem"
 
 **Optional.**
 
-Path where the bootstrap Administrator operator's client private key will be written on first run. Must be set alongside `bootstrap_operator_cert_file`.
+Path where the bootstrap Administrator operator's client private key will be written on first run. Must be set alongside `bootstrap_operator_cert_file`. Mutually exclusive with `bootstrap_operator_pkcs12_file`.
 
 ```toml
 bootstrap_operator_key_file = "/etc/akamu/admin-bootstrap-key.pem"
+```
+
+### `bootstrap_operator_pkcs12_file`
+
+**Optional.**
+
+PKCS#12 / PFX file for the bootstrap Administrator operator's client certificate and private key. When set and the file is absent and the operators table is empty, Akāmu generates a client certificate and key, bundles them into a PKCS#12 file, and registers the operator automatically. Mutually exclusive with `bootstrap_operator_cert_file` / `bootstrap_operator_key_file`.
+
+```toml
+bootstrap_operator_pkcs12_file = "/etc/akamu/admin-bootstrap.p12"
+```
+
+### `bootstrap_operator_pkcs12_password`
+
+**Optional. Default: `""` (empty string).**
+
+Password for the PKCS#12 bundle written by `bootstrap_operator_pkcs12_file`. The key is still encrypted with PBES2/AES-256-CBC even with an empty password — leave the password field blank or press Enter when tools prompt for it.
+
+```toml
+bootstrap_operator_pkcs12_password = ""
 ```
 
 ### `bootstrap_operator_name`
@@ -2095,7 +2119,9 @@ bootstrap_operator_name = "admin"
 
 **Optional. Default: unset.**
 
-Kerberos principal for the GSSAPI bootstrap Administrator operator (e.g. `"admin@REALM"`). When set and the operators table is empty at startup, Akāmu inserts an Administrator row with this principal so that the first `akamuctl login --gssapi` succeeds without a prior `akamuctl operator add`. Mutually exclusive with `bootstrap_operator_cert_file` / `bootstrap_operator_key_file`.
+Kerberos principal for the GSSAPI bootstrap Administrator operator (e.g. `"admin@REALM"`). When set and no certificate bootstrap is configured, Akāmu inserts an Administrator row with this principal at startup (if the operators table is empty) so that the first `akamuctl login --gssapi` succeeds without a prior `akamuctl operator add`.
+
+When set alongside `bootstrap_operator_pkcs12_file` or `bootstrap_operator_cert_file` / `bootstrap_operator_key_file`, the principal is stored on the same bootstrapped operator row so that the operator can authenticate via either mTLS or GSSAPI.
 
 ```toml
 bootstrap_operator_gssapi_principal = "admin@EXAMPLE.COM"
