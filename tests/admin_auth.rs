@@ -20,10 +20,13 @@ use axum::http::{header, Method, Request, StatusCode};
 use tower::ServiceExt;
 
 use akamu::admin::auth::PeerClientCert;
-use akamu::config::{AdminConfig, CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig};
+use akamu::config::{
+    AdminConfig, AdminProxyAuthConfig, CaConfig, Config, DatabaseConfig, MtcConfig, ServerConfig,
+};
 use akamu::state::{
     AdminAuthMethod, AdminSession, AppState, AppStateBuilder, CaState, MtcState, OperatorRole,
 };
+use akamu::trusted_proxy::TrustedProxies;
 use akamu::{ca, db, routes};
 
 use synta_certificate::{BackendPrivateKey, CertificateBuilder, NameBuilder, PrivateKey as _};
@@ -144,6 +147,7 @@ async fn build_state(
             bootstrap_operator_pkcs12_password: "".into(),
             bootstrap_operator_name: "admin".into(),
             bootstrap_operator_gssapi_principal: None,
+            proxy_auth: None,
             gssapi: None,
             session_ttl_secs,
             session_lock_secs: 900,
@@ -767,5 +771,594 @@ async fn auth_rate_limit_returns_429_after_limit_exceeded() {
         resp.status(),
         StatusCode::TOO_MANY_REQUESTS,
         "a different source IP must not be affected by another IP's rate limit"
+    );
+}
+
+// ── Proxy-forwarded client certificate tests ─────────────────────────────────
+
+async fn build_state_with_proxy(
+    header_format: akamu::config::ProxyHeaderFormat,
+    trusted_cidrs: &[&str],
+) -> (
+    Arc<AppState>,
+    Arc<tokio::sync::Mutex<HashMap<String, AdminSession>>>,
+    tempfile::TempDir,
+) {
+    let dir = tempfile::TempDir::new().unwrap();
+    let json_arr = format!(
+        "[{}]",
+        trusted_cidrs
+            .iter()
+            .map(|c| format!("\"{c}\""))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let trusted_proxies: TrustedProxies = serde_json::from_str(&json_arr).unwrap();
+    let config = Arc::new(Config {
+        listen_addr: "127.0.0.1:0".into(),
+        base_url: "https://acme.test".into(),
+        database: DatabaseConfig {
+            url: "sqlite::memory:".into(),
+            max_connections: None,
+            require_tls: false,
+        },
+        cas: vec![CaConfig {
+            id: "default".to_owned(),
+            is_default: true,
+            caa_identities: vec![],
+            key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
+            cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
+            key_type: "ec:P-256".into(),
+            hash_alg: "sha256".into(),
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            common_name: "Auth Test CA".into(),
+            organization: "Test".into(),
+            ca_validity_years: 10,
+            crl_next_update_secs: 86400,
+            enforce_validity_cap: false,
+            require_encrypted_key: false,
+            key_password_file: None,
+            mtc: None,
+        }],
+        mtc: Some(MtcConfig {
+            log_path: "/dev/null".into(),
+            enabled: false,
+            signing_key: None,
+            checkpoint_interval_secs: 3600,
+            cosigners: vec![],
+            landmark_interval_secs: 86400,
+            max_active_landmarks: 100,
+            checkpoint_retention_count: 1000,
+            hash_alg: "sha256".into(),
+            log_number: 1,
+            tree_minimum_index: None,
+            trust_anchor_id: None,
+        }),
+        server: ServerConfig::default(),
+        tls: Default::default(),
+        profiles: Default::default(),
+        admin: Some(AdminConfig {
+            bootstrap_key_type: "ec:P-256".into(),
+            bootstrap_operator_cert_file: None,
+            bootstrap_operator_key_file: None,
+            bootstrap_operator_pkcs12_file: None,
+            bootstrap_operator_pkcs12_password: "".into(),
+            bootstrap_operator_name: "admin".into(),
+            bootstrap_operator_gssapi_principal: None,
+            proxy_auth: Some(AdminProxyAuthConfig {
+                trusted_proxies,
+                header_format,
+            }),
+            gssapi: None,
+            session_ttl_secs: 3600,
+            session_lock_secs: 900,
+            auth_rate_limit: 20,
+            audit_max_events: None,
+            audit_overflow: "drop_oldest".into(),
+            audit_alarm_threshold: 10,
+            audit_alarm_action: "syslog".into(),
+            max_failed_auth: 5,
+            lockout_duration_secs: 1800,
+        }),
+        email_challenge: None,
+        delegation_upstream: None,
+        gossip: None,
+        crdt_db_url: None,
+        tkauth: None,
+    });
+
+    let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
+    let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();
+    let ca_aki_bytes = ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
+    db::install_drivers();
+    let db_conn = db::open("sqlite::memory:", 1, false).await.unwrap();
+
+    let ca = Arc::new(CaState {
+        id: "default".into(),
+        key_type: "ec:P-256".into(),
+        crl_next_update_secs: 86400,
+        key: ca_key,
+        cert_der: ca_cert_der,
+        hash_alg: "sha256".into(),
+        validity_days: 90,
+        crl_url: None,
+        ocsp_url: None,
+        aki_bytes: ca_aki_bytes,
+        enforce_validity_cap: false,
+        caa_identities: vec![],
+        mtc: Arc::new(MtcState::disabled()),
+    });
+
+    let sessions: Arc<tokio::sync::Mutex<HashMap<String, AdminSession>>> =
+        Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+
+    let state = AppStateBuilder::new(
+        Arc::clone(&config),
+        db_conn.clone(),
+        db::DbKind::Sqlite,
+        {
+            let mut _ca_map = indexmap::IndexMap::new();
+            _ca_map.insert("default".to_string(), ca.clone());
+            Arc::new(_ca_map)
+        },
+        Arc::new("default".to_string()),
+    )
+    .admin_sessions(Arc::clone(&sessions))
+    .admin_auth_limiter(Arc::new(tokio::sync::Mutex::new(
+        std::collections::HashMap::new(),
+    )))
+    .build();
+
+    (state, sessions, dir)
+}
+
+fn cert_der_to_pem(der: &[u8]) -> String {
+    let pem_bytes = synta_certificate::der_to_pem("CERTIFICATE", der);
+    String::from_utf8(pem_bytes).unwrap()
+}
+
+/// Nginx `X-SSL-Client-Cert`: URL-encoded PEM from a trusted proxy → 200.
+#[tokio::test]
+async fn proxy_nginx_trusted_ip_issues_session() {
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    let (state, _sessions, _dir) = build_state_with_proxy(
+        akamu::config::ProxyHeaderFormat::XSslClientCert,
+        &["127.0.0.1/32"],
+    )
+    .await;
+    let router = routes::build_router(Arc::clone(&state), None);
+
+    let op_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+    let cert_der = generate_cert_der(&op_key);
+    let fingerprint = sha256_hex(&cert_der);
+    db::operators::insert(
+        &state.db,
+        "proxy-op",
+        "auditor",
+        Some(&fingerprint),
+        None,
+        "",
+        "2026-01-01T00:00:00Z",
+    )
+    .await
+    .unwrap();
+
+    let pem = cert_der_to_pem(&cert_der);
+    let encoded =
+        percent_encoding::utf8_percent_encode(&pem, percent_encoding::NON_ALPHANUMERIC).to_string();
+
+    let peer: SocketAddr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 55000);
+    let mut req = Request::builder()
+        .method(Method::POST)
+        .uri("/admin/session")
+        .header("X-SSL-Client-Cert", &encoded)
+        .body(Body::empty())
+        .unwrap();
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(peer));
+    let resp = router.clone().oneshot(req).await.unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "proxy-forwarded cert from trusted IP must issue a session"
+    );
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(
+        json["session_token"]
+            .as_str()
+            .is_some_and(|t| !t.is_empty()),
+        "session_token must be present and non-empty"
+    );
+}
+
+/// Untrusted IP with cert header → falls through to 401 (header ignored).
+#[tokio::test]
+async fn proxy_untrusted_ip_ignores_header() {
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    let (state, _sessions, _dir) = build_state_with_proxy(
+        akamu::config::ProxyHeaderFormat::XSslClientCert,
+        &["10.0.0.0/8"],
+    )
+    .await;
+    let router = routes::build_router(Arc::clone(&state), None);
+
+    let op_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+    let cert_der = generate_cert_der(&op_key);
+    let fingerprint = sha256_hex(&cert_der);
+    db::operators::insert(
+        &state.db,
+        "proxy-op",
+        "auditor",
+        Some(&fingerprint),
+        None,
+        "",
+        "2026-01-01T00:00:00Z",
+    )
+    .await
+    .unwrap();
+
+    let pem = cert_der_to_pem(&cert_der);
+    let encoded =
+        percent_encoding::utf8_percent_encode(&pem, percent_encoding::NON_ALPHANUMERIC).to_string();
+
+    // 192.168.1.1 is NOT in the trusted 10.0.0.0/8 range.
+    let peer: SocketAddr = SocketAddr::new(Ipv4Addr::new(192, 168, 1, 1).into(), 55000);
+    let mut req = Request::builder()
+        .method(Method::POST)
+        .uri("/admin/session")
+        .header("X-SSL-Client-Cert", &encoded)
+        .body(Body::empty())
+        .unwrap();
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(peer));
+    let resp = router.clone().oneshot(req).await.unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "proxy header from untrusted IP must be ignored, falling through to 401"
+    );
+}
+
+/// Apache `SSL_CLIENT_CERT`: raw PEM from a trusted proxy → 200.
+#[tokio::test]
+async fn proxy_apache_raw_pem_issues_session() {
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    let (state, _sessions, _dir) = build_state_with_proxy(
+        akamu::config::ProxyHeaderFormat::SslClientCert,
+        &["127.0.0.1/32"],
+    )
+    .await;
+    let router = routes::build_router(Arc::clone(&state), None);
+
+    let op_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+    let cert_der = generate_cert_der(&op_key);
+    let fingerprint = sha256_hex(&cert_der);
+    db::operators::insert(
+        &state.db,
+        "proxy-op",
+        "auditor",
+        Some(&fingerprint),
+        None,
+        "",
+        "2026-01-01T00:00:00Z",
+    )
+    .await
+    .unwrap();
+
+    let pem = cert_der_to_pem(&cert_der);
+    let encoded =
+        percent_encoding::utf8_percent_encode(&pem, percent_encoding::NON_ALPHANUMERIC).to_string();
+    let peer: SocketAddr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 55000);
+    let mut req = Request::builder()
+        .method(Method::POST)
+        .uri("/admin/session")
+        .header("SSL_CLIENT_CERT", &encoded)
+        .body(Body::empty())
+        .unwrap();
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(peer));
+    let resp = router.clone().oneshot(req).await.unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "Apache raw-PEM proxy cert from trusted IP must issue a session"
+    );
+}
+
+/// Envoy XFCC header with `Cert=` (URL-encoded PEM) from a trusted proxy → 200.
+#[tokio::test]
+async fn proxy_xfcc_cert_issues_session() {
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    let (state, _sessions, _dir) =
+        build_state_with_proxy(akamu::config::ProxyHeaderFormat::Xfcc, &["127.0.0.1/32"]).await;
+    let router = routes::build_router(Arc::clone(&state), None);
+
+    let op_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+    let cert_der = generate_cert_der(&op_key);
+    let fingerprint = sha256_hex(&cert_der);
+    db::operators::insert(
+        &state.db,
+        "proxy-op",
+        "auditor",
+        Some(&fingerprint),
+        None,
+        "",
+        "2026-01-01T00:00:00Z",
+    )
+    .await
+    .unwrap();
+
+    let pem = cert_der_to_pem(&cert_der);
+    let encoded_pem =
+        percent_encoding::utf8_percent_encode(&pem, percent_encoding::NON_ALPHANUMERIC).to_string();
+    let xfcc_value = format!("Hash=abc123;Cert={encoded_pem};Subject=\"CN=test\"");
+
+    let peer: SocketAddr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 55000);
+    let mut req = Request::builder()
+        .method(Method::POST)
+        .uri("/admin/session")
+        .header("X-Forwarded-Client-Cert", &xfcc_value)
+        .body(Body::empty())
+        .unwrap();
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(peer));
+    let resp = router.clone().oneshot(req).await.unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "XFCC Cert= from trusted proxy must issue a session"
+    );
+}
+
+/// XFCC without Cert= key → falls through (no cert), returns 401.
+#[tokio::test]
+async fn proxy_xfcc_no_cert_key_falls_through() {
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    let (state, _sessions, _dir) =
+        build_state_with_proxy(akamu::config::ProxyHeaderFormat::Xfcc, &["127.0.0.1/32"]).await;
+    let router = routes::build_router(Arc::clone(&state), None);
+
+    let peer: SocketAddr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 55000);
+    let mut req = Request::builder()
+        .method(Method::POST)
+        .uri("/admin/session")
+        .header("X-Forwarded-Client-Cert", "Hash=abc123;Subject=\"CN=test\"")
+        .body(Body::empty())
+        .unwrap();
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(peer));
+    let resp = router.clone().oneshot(req).await.unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "XFCC without Cert= key must fall through to 401"
+    );
+}
+
+/// Malformed PEM in proxy header from trusted IP → 400.
+#[tokio::test]
+async fn proxy_malformed_pem_returns_400() {
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    let (state, _sessions, _dir) = build_state_with_proxy(
+        akamu::config::ProxyHeaderFormat::XSslClientCert,
+        &["127.0.0.1/32"],
+    )
+    .await;
+    let router = routes::build_router(Arc::clone(&state), None);
+
+    let encoded = percent_encoding::utf8_percent_encode(
+        "not-a-certificate",
+        percent_encoding::NON_ALPHANUMERIC,
+    )
+    .to_string();
+
+    let peer: SocketAddr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 55000);
+    let mut req = Request::builder()
+        .method(Method::POST)
+        .uri("/admin/session")
+        .header("X-SSL-Client-Cert", &encoded)
+        .body(Body::empty())
+        .unwrap();
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(peer));
+    let resp = router.clone().oneshot(req).await.unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "malformed PEM from trusted proxy must return 400"
+    );
+}
+
+/// Rate limiter fires for proxy-forwarded cert presentations.
+#[tokio::test]
+async fn proxy_cert_rate_limited() {
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let config = Arc::new(Config {
+        listen_addr: "127.0.0.1:0".into(),
+        base_url: "https://acme.test".into(),
+        database: DatabaseConfig {
+            url: "sqlite::memory:".into(),
+            max_connections: None,
+            require_tls: false,
+        },
+        cas: vec![CaConfig {
+            id: "default".to_owned(),
+            is_default: true,
+            caa_identities: vec![],
+            key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
+            cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
+            key_type: "ec:P-256".into(),
+            hash_alg: "sha256".into(),
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            common_name: "Auth Test CA".into(),
+            organization: "Test".into(),
+            ca_validity_years: 10,
+            crl_next_update_secs: 86400,
+            enforce_validity_cap: false,
+            require_encrypted_key: false,
+            key_password_file: None,
+            mtc: None,
+        }],
+        mtc: Some(MtcConfig {
+            log_path: "/dev/null".into(),
+            enabled: false,
+            signing_key: None,
+            checkpoint_interval_secs: 3600,
+            cosigners: vec![],
+            landmark_interval_secs: 86400,
+            max_active_landmarks: 100,
+            checkpoint_retention_count: 1000,
+            hash_alg: "sha256".into(),
+            log_number: 1,
+            tree_minimum_index: None,
+            trust_anchor_id: None,
+        }),
+        server: ServerConfig::default(),
+        tls: Default::default(),
+        profiles: Default::default(),
+        admin: Some(AdminConfig {
+            bootstrap_key_type: "ec:P-256".into(),
+            bootstrap_operator_cert_file: None,
+            bootstrap_operator_key_file: None,
+            bootstrap_operator_pkcs12_file: None,
+            bootstrap_operator_pkcs12_password: "".into(),
+            bootstrap_operator_name: "admin".into(),
+            bootstrap_operator_gssapi_principal: None,
+            proxy_auth: Some(AdminProxyAuthConfig {
+                trusted_proxies: serde_json::from_str("[\"127.0.0.1/32\"]").unwrap(),
+                header_format: akamu::config::ProxyHeaderFormat::XSslClientCert,
+            }),
+            gssapi: None,
+            session_ttl_secs: 3600,
+            session_lock_secs: 900,
+            auth_rate_limit: 2,
+            audit_max_events: None,
+            audit_overflow: "drop_oldest".into(),
+            audit_alarm_threshold: 10,
+            audit_alarm_action: "syslog".into(),
+            max_failed_auth: 5,
+            lockout_duration_secs: 1800,
+        }),
+        email_challenge: None,
+        delegation_upstream: None,
+        gossip: None,
+        crdt_db_url: None,
+        tkauth: None,
+    });
+
+    let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
+    let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();
+    let ca_aki_bytes = ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
+    db::install_drivers();
+    let db_conn = db::open("sqlite::memory:", 1, false).await.unwrap();
+
+    let ca_state = Arc::new(CaState {
+        id: "default".into(),
+        key_type: "ec:P-256".into(),
+        crl_next_update_secs: 86400,
+        key: ca_key,
+        cert_der: ca_cert_der,
+        hash_alg: "sha256".into(),
+        validity_days: 90,
+        crl_url: None,
+        ocsp_url: None,
+        aki_bytes: ca_aki_bytes,
+        enforce_validity_cap: false,
+        caa_identities: vec![],
+        mtc: Arc::new(MtcState::disabled()),
+    });
+
+    let sessions: Arc<tokio::sync::Mutex<HashMap<String, AdminSession>>> =
+        Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+
+    let state = AppStateBuilder::new(
+        Arc::clone(&config),
+        db_conn.clone(),
+        db::DbKind::Sqlite,
+        {
+            let mut _ca_map = indexmap::IndexMap::new();
+            _ca_map.insert("default".to_string(), ca_state.clone());
+            Arc::new(_ca_map)
+        },
+        Arc::new("default".to_string()),
+    )
+    .admin_sessions(Arc::clone(&sessions))
+    .admin_auth_limiter(Arc::new(tokio::sync::Mutex::new(
+        std::collections::HashMap::new(),
+    )))
+    .build();
+
+    let router = routes::build_router(Arc::clone(&state), None);
+
+    let op_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+    let cert_der_bytes = generate_cert_der(&op_key);
+    let fingerprint = sha256_hex(&cert_der_bytes);
+    db::operators::insert(
+        &state.db,
+        "proxy-op",
+        "auditor",
+        Some(&fingerprint),
+        None,
+        "",
+        "2026-01-01T00:00:00Z",
+    )
+    .await
+    .unwrap();
+
+    let pem = cert_der_to_pem(&cert_der_bytes);
+    let encoded =
+        percent_encoding::utf8_percent_encode(&pem, percent_encoding::NON_ALPHANUMERIC).to_string();
+
+    let peer: SocketAddr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 55000);
+
+    // Send `limit` (2) requests — these should succeed, each consuming a rate-limit slot.
+    for _ in 0..2 {
+        let mut req = Request::builder()
+            .method(Method::POST)
+            .uri("/admin/session")
+            .header("X-SSL-Client-Cert", &encoded)
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(peer));
+        let resp = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // The 3rd request from the same IP must be rate-limited.
+    let mut req = Request::builder()
+        .method(Method::POST)
+        .uri("/admin/session")
+        .header("X-SSL-Client-Cert", &encoded)
+        .body(Body::empty())
+        .unwrap();
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(peer));
+    let resp = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "proxy cert auth must be rate-limited"
     );
 }

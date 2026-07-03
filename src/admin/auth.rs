@@ -33,6 +33,7 @@ use serde_json::json;
 use synta_certificate::HmacProvider as _;
 
 use crate::audit::{AuditEvent, AuditEventType};
+use crate::config::{AdminProxyAuthConfig, ProxyHeaderFormat};
 use crate::db;
 use crate::state::{AdminAuthMethod, AdminSession, AppState, OperatorRole};
 
@@ -200,6 +201,163 @@ pub async fn invalidate_session(state: &AppState, token: &str) {
     }
 }
 
+// ── Proxy-forwarded client certificate helpers ──────────────────────────────
+
+/// Extract the `Cert=` value from an Envoy XFCC header.
+///
+/// XFCC format: elements separated by `,`, key-value pairs within each
+/// element separated by `;`, key and value joined by `=`.  Values may be
+/// double-quoted (and quoted values may contain commas/semicolons).
+/// We take the **last** element (nearest proxy).
+fn parse_xfcc_cert(header_value: &str) -> Option<String> {
+    let elements = split_xfcc_elements(header_value);
+    let last_element = elements.last()?;
+    for pair in split_xfcc_pairs(last_element) {
+        let pair = pair.trim();
+        if let Some((key, value)) = pair.split_once('=') {
+            if key.trim().eq_ignore_ascii_case("Cert") {
+                let v = value.trim();
+                let v = v
+                    .strip_prefix('"')
+                    .and_then(|s| s.strip_suffix('"'))
+                    .unwrap_or(v);
+                return Some(v.to_owned());
+            }
+        }
+    }
+    None
+}
+
+/// Split XFCC header into elements on `,`, respecting double-quoted values.
+fn split_xfcc_elements(s: &str) -> Vec<String> {
+    split_respecting_quotes(s, ',')
+}
+
+/// Split a single XFCC element into key-value pairs on `;`, respecting quotes.
+fn split_xfcc_pairs(s: &str) -> Vec<String> {
+    split_respecting_quotes(s, ';')
+}
+
+fn split_respecting_quotes(s: &str, delimiter: char) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    for ch in s.chars() {
+        if ch == '"' {
+            in_quotes = !in_quotes;
+            current.push(ch);
+        } else if ch == delimiter && !in_quotes {
+            parts.push(std::mem::take(&mut current));
+        } else {
+            current.push(ch);
+        }
+    }
+    parts.push(current);
+    parts
+}
+
+/// Maximum size of a proxy-forwarded certificate header (64 KiB).
+const MAX_PROXY_CERT_HEADER_LEN: usize = 64 * 1024;
+
+/// Try to extract a DER-encoded client certificate from a proxy-forwarded
+/// header.  Returns `Ok(None)` when no cert is available (peer untrusted or
+/// header absent).  Returns `Err(400)` when the header is present but
+/// malformed.
+#[allow(clippy::result_large_err)]
+fn extract_proxy_cert(
+    parts: &Parts,
+    proxy_cfg: &AdminProxyAuthConfig,
+) -> Result<Option<Vec<u8>>, Response> {
+    let peer_addr = match parts
+        .extensions
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+    {
+        Some(ci) => ci.0,
+        None => {
+            tracing::warn!("proxy cert auth: ConnectInfo absent from request extensions");
+            return Ok(None);
+        }
+    };
+
+    if !proxy_cfg.trusted_proxies.contains(&peer_addr.ip()) {
+        return Ok(None);
+    }
+
+    let fmt = proxy_cfg.header_format;
+    let header_name = fmt.header_name();
+
+    let hdr = match parts.headers.get(header_name) {
+        Some(v) => v,
+        None => return Ok(None),
+    };
+    let hdr_str = hdr.to_str().map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("{header_name} header is not valid UTF-8"),
+        )
+            .into_response()
+    })?;
+    if hdr_str.len() > MAX_PROXY_CERT_HEADER_LEN {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("{header_name} header exceeds size limit"),
+        )
+            .into_response());
+    }
+
+    let pem_value = if fmt == ProxyHeaderFormat::Xfcc {
+        match parse_xfcc_cert(hdr_str) {
+            Some(v) => std::borrow::Cow::Owned(v),
+            None => return Ok(None),
+        }
+    } else {
+        std::borrow::Cow::Borrowed(hdr_str)
+    };
+
+    let decoded = percent_encoding::percent_decode_str(&pem_value)
+        .decode_utf8()
+        .map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("{header_name}: URL-decoded value is not valid UTF-8"),
+            )
+                .into_response()
+        })?;
+    let der = synta_certificate::pem_to_der(decoded.as_bytes())
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("{header_name}: no PEM certificate found"),
+            )
+                .into_response()
+        })?;
+    Ok(Some(der))
+}
+
+/// Cheap check: does a proxy cert header exist and is the peer trusted?
+/// Used for rate-limiting without full parsing.
+fn has_proxy_cert_header(parts: &Parts, config: &crate::config::Config) -> bool {
+    let proxy_cfg = match config.admin.as_ref().and_then(|a| a.proxy_auth.as_ref()) {
+        Some(p) => p,
+        None => return false,
+    };
+    let peer_addr = match parts
+        .extensions
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+    {
+        Some(ci) => ci.0,
+        None => return false,
+    };
+    if !proxy_cfg.trusted_proxies.contains(&peer_addr.ip()) {
+        return false;
+    }
+    parts
+        .headers
+        .contains_key(proxy_cfg.header_format.header_name())
+}
+
 // ── OperatorContext extractor ─────────────────────────────────────────────────
 
 /// Authenticated admin operator context, extracted from request parts.
@@ -280,9 +438,11 @@ where
         // exceeded we return 429 without recording an audit event, preventing
         // a flood of AdminLogin failures from filling the audit log and
         // triggering the FAU_STG.4 Halt policy or the FAU_ARP.1 alarm.
+        let is_credential_presentation = parts.extensions.get::<PeerClientCert>().is_some()
+            || has_proxy_cert_header(parts, &app.config)
+            || auth_header.starts_with("Negotiate ");
         if let (true, Some(peer_addr), Some(limiter)) = (
-            parts.extensions.get::<PeerClientCert>().is_some()
-                || auth_header.starts_with("Negotiate "),
+            is_credential_presentation,
             parts
                 .extensions
                 .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>(),
@@ -318,9 +478,7 @@ where
             if map.len() > 500 {
                 map.retain(|_, v| !v.is_empty());
             }
-        } else if parts.extensions.get::<PeerClientCert>().is_some()
-            || auth_header.starts_with("Negotiate ")
-        {
+        } else if is_credential_presentation {
             static WARN_ONCE: std::sync::Once = std::sync::Once::new();
             WARN_ONCE.call_once(|| {
                 tracing::warn!(
@@ -363,9 +521,27 @@ where
             }
         }
 
-        // ── Path 2: mTLS client certificate ──────────────────────────────────
-        if let Some(PeerClientCert(der)) = parts.extensions.get::<PeerClientCert>() {
-            let fingerprint = crate::util::sha256_hex(der).map_err(|e| {
+        // ── Path 2: Client certificate (direct mTLS or proxy-forwarded) ────
+        let (cert_der, cert_method) =
+            if let Some(PeerClientCert(der)) = parts.extensions.get::<PeerClientCert>() {
+                (Some(der.clone()), AdminAuthMethod::Cert)
+            } else if let Some(proxy_cfg) = app
+                .config
+                .admin
+                .as_ref()
+                .and_then(|a| a.proxy_auth.as_ref())
+            {
+                match extract_proxy_cert(parts, proxy_cfg)? {
+                    Some(der) => (Some(der), AdminAuthMethod::CertProxy),
+                    None => (None, AdminAuthMethod::Cert),
+                }
+            } else {
+                (None, AdminAuthMethod::Cert)
+            };
+
+        if let Some(der) = cert_der {
+            let method_str = cert_method.as_str();
+            let fingerprint = crate::util::sha256_hex(&der).map_err(|e| {
                 tracing::error!(error = %e, "cert fingerprint computation failed");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             })?;
@@ -376,18 +552,16 @@ where
                         tracing::error!(role = %op.role, "operator has unknown role");
                         StatusCode::INTERNAL_SERVER_ERROR.into_response()
                     })?;
-                    // Successful auth — reset failure counter (FIA_AFL.1).
                     if let Err(e) = db::operators::reset_failed(&app.db, op.id).await {
                         tracing::warn!(error = %e, operator_id = op.id, "failed to reset auth failure counter");
                     }
-                    // Issue a session token for subsequent requests.
                     let token = create_session(
                         &app,
                         op.id,
                         op.name.clone(),
                         role,
                         op.ca_id.clone(),
-                        AdminAuthMethod::Cert,
+                        cert_method,
                     )
                     .await
                     .map_err(|e| {
@@ -398,12 +572,11 @@ where
                     if let Err(e) = db::operators::update_last_seen(&app.db, op.id, &ts_str).await {
                         tracing::warn!(error = %e, operator_id = op.id, "failed to update last_seen_at");
                     }
-                    // Record audit event (best-effort).
                     let session_prefix = token.get(..8).unwrap_or(&token);
                     app.record_audit(
                         AuditEvent::success(AuditEventType::AdminLogin)
                             .with_principal(&op.name)
-                            .with_detail(serde_json::json!({"method":"cert","session_prefix":session_prefix}).to_string()),
+                            .with_detail(serde_json::json!({"method":method_str,"session_prefix":session_prefix}).to_string()),
                     )
                     .await;
                     return Ok(OperatorContext {
@@ -411,14 +584,15 @@ where
                         name: op.name,
                         role,
                         ca_id: op.ca_id,
-                        auth_method: AdminAuthMethod::Cert,
+                        auth_method: cert_method,
                         session_token: Some(token),
                     });
                 }
                 Ok(None) => {
                     app.record_audit(
                         AuditEvent::failure(AuditEventType::AdminLogin).with_detail(
-                            "{\"method\":\"cert\",\"reason\":\"fingerprint not found\"}",
+                            json!({"method": method_str, "reason": "fingerprint not found"})
+                                .to_string(),
                         ),
                     )
                     .await;
@@ -544,9 +718,15 @@ async fn authenticate_gssapi(
             // token; the client will re-send and a fresh context will be started.
             let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&out_token);
             let mut resp = (StatusCode::UNAUTHORIZED, "").into_response();
-            if let Ok(hv) = axum::http::HeaderValue::from_str(&format!("Negotiate {b64}")) {
-                resp.headers_mut()
-                    .insert(axum::http::header::WWW_AUTHENTICATE, hv);
+            let negotiate = format!("Negotiate {b64}");
+            match axum::http::HeaderValue::from_str(&negotiate) {
+                Ok(hv) => {
+                    resp.headers_mut()
+                        .insert(axum::http::header::WWW_AUTHENTICATE, hv);
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to build GSSAPI continuation WWW-Authenticate header");
+                }
             }
             return Err(resp);
         }
@@ -676,16 +856,26 @@ pub async fn post_session(
 
     if let Some(axum::extract::Extension(GssapiOutToken(b64))) = gssapi_out {
         let negotiate = format!("Negotiate {b64}");
-        if let Ok(hv) = axum::http::HeaderValue::from_str(&negotiate) {
-            resp.headers_mut().insert("WWW-Authenticate", hv);
+        match axum::http::HeaderValue::from_str(&negotiate) {
+            Ok(hv) => {
+                resp.headers_mut().insert("WWW-Authenticate", hv);
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to build GSSAPI mutual-auth WWW-Authenticate header");
+            }
         }
     }
 
     // Set an HttpOnly session cookie so browser-side code can also use it.
     let cookie =
         format!("session={token}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age={ttl_secs}");
-    if let Ok(hv) = axum::http::HeaderValue::from_str(&cookie) {
-        resp.headers_mut().insert("Set-Cookie", hv);
+    match axum::http::HeaderValue::from_str(&cookie) {
+        Ok(hv) => {
+            resp.headers_mut().insert("Set-Cookie", hv);
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to build Set-Cookie header for admin session");
+        }
     }
     resp
 }
@@ -1148,6 +1338,59 @@ mod tests {
             ctx(OperatorRole::CaOperations, "primary").ca_scope(),
             Some("primary")
         );
+    }
+
+    #[test]
+    fn parse_xfcc_cert_basic() {
+        let hdr = "Cert=ABCD";
+        assert_eq!(super::parse_xfcc_cert(hdr), Some("ABCD".to_string()));
+    }
+
+    #[test]
+    fn parse_xfcc_cert_quoted() {
+        let hdr = r#"Cert="ABCD""#;
+        assert_eq!(super::parse_xfcc_cert(hdr), Some("ABCD".to_string()));
+    }
+
+    #[test]
+    fn parse_xfcc_cert_multi_element_takes_last() {
+        let hdr = "Cert=FIRST,Cert=SECOND";
+        assert_eq!(super::parse_xfcc_cert(hdr), Some("SECOND".to_string()));
+    }
+
+    #[test]
+    fn parse_xfcc_cert_with_other_fields() {
+        let hdr = "By=spiffe://foo;Hash=abc123;Cert=MYCERT;Subject=\"CN=test\"";
+        assert_eq!(super::parse_xfcc_cert(hdr), Some("MYCERT".to_string()));
+    }
+
+    #[test]
+    fn parse_xfcc_cert_missing_cert_key() {
+        let hdr = "By=spiffe://foo;Hash=abc123";
+        assert_eq!(super::parse_xfcc_cert(hdr), None);
+    }
+
+    #[test]
+    fn parse_xfcc_cert_empty() {
+        assert_eq!(super::parse_xfcc_cert(""), None);
+    }
+
+    #[test]
+    fn parse_xfcc_cert_quoted_comma_in_subject() {
+        let hdr = r#"Subject="O=Corp, Inc.";Cert=MYCERT"#;
+        assert_eq!(super::parse_xfcc_cert(hdr), Some("MYCERT".to_string()));
+    }
+
+    #[test]
+    fn parse_xfcc_cert_case_insensitive() {
+        let hdr = "cert=ABCD";
+        assert_eq!(super::parse_xfcc_cert(hdr), Some("ABCD".to_string()));
+    }
+
+    #[test]
+    fn parse_xfcc_cert_quoted_semicolon_in_value() {
+        let hdr = r#"Subject="CN=a;b";Cert=MYCERT"#;
+        assert_eq!(super::parse_xfcc_cert(hdr), Some("MYCERT".to_string()));
     }
 }
 

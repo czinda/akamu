@@ -844,10 +844,29 @@ impl std::fmt::Display for OperatorRole {
 pub enum AdminAuthMethod {
     /// Authenticated via an mTLS client certificate.
     Cert,
+    /// Authenticated via a proxy-forwarded client certificate header.
+    CertProxy,
     /// Authenticated via GSSAPI/SPNEGO (Kerberos).
     Gssapi,
     /// Authenticated via EAB kid + HMAC-SHA256 signature (web UI secondary login).
     Eab,
+}
+
+impl AdminAuthMethod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AdminAuthMethod::Cert => "cert",
+            AdminAuthMethod::CertProxy => "cert-proxy",
+            AdminAuthMethod::Gssapi => "gssapi",
+            AdminAuthMethod::Eab => "eab",
+        }
+    }
+}
+
+impl std::fmt::Display for AdminAuthMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// An active admin operator session stored in `AppState::admin_sessions`.

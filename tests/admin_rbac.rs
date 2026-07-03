@@ -81,6 +81,7 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
             bootstrap_operator_pkcs12_password: "".into(),
             bootstrap_operator_name: "admin".into(),
             bootstrap_operator_gssapi_principal: None,
+            proxy_auth: None,
             gssapi: None,
             session_ttl_secs: 3600,
             session_lock_secs: 900,

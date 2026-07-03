@@ -104,6 +104,11 @@ pub struct AdminConfig {
     /// principal is stored on the same bootstrapped operator row so that the
     /// operator can authenticate via either mTLS or GSSAPI.
     pub bootstrap_operator_gssapi_principal: Option<String>,
+    /// Proxy-forwarded client certificate authentication.  When Akamu runs
+    /// behind a TLS-terminating reverse proxy (Nginx, Apache, Envoy), the proxy
+    /// can forward the client certificate in an HTTP header.  This section
+    /// configures which header to read and which proxy IPs to trust.
+    pub proxy_auth: Option<AdminProxyAuthConfig>,
 }
 
 fn default_admin_session_ttl_secs() -> u64 {
@@ -179,7 +184,61 @@ impl AdminConfig {
                     .into(),
             );
         }
+        if let Some(ref proxy) = self.proxy_auth {
+            if proxy.trusted_proxies.is_empty() {
+                return Err("[admin.proxy_auth] trusted_proxies must be non-empty".into());
+            }
+        }
         Ok(())
+    }
+}
+
+/// Proxy-forwarded client certificate configuration.
+///
+/// When Akamu runs behind a TLS-terminating reverse proxy, the proxy can
+/// forward the verified client certificate in an HTTP header.  This struct
+/// selects the header convention and restricts which peer IPs are trusted
+/// to inject it.
+///
+/// ```toml
+/// [admin.proxy_auth]
+/// trusted_proxies = ["127.0.0.1/32", "::1/128"]
+/// header_format   = "x-ssl-client-cert"   # or "ssl-client-cert" or "xfcc"
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct AdminProxyAuthConfig {
+    /// Trusted reverse proxies.  The proxy-forwarded certificate header is
+    /// only read when the TCP peer address matches one of these entries.
+    /// Must be non-empty.  Accepts CIDR ranges (e.g. `"127.0.0.1/32"`) and
+    /// the special literal `"local addresses"` (all local interface IPs).
+    pub trusted_proxies: crate::trusted_proxy::TrustedProxies,
+    /// Header convention used by the reverse proxy.
+    /// Default: `XSslClientCert` (`"x-ssl-client-cert"`).
+    #[serde(default)]
+    pub header_format: ProxyHeaderFormat,
+}
+
+/// Header convention used by the reverse proxy to forward the client certificate.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProxyHeaderFormat {
+    /// Nginx `X-SSL-Client-Cert` (URL-encoded PEM).
+    #[default]
+    XSslClientCert,
+    /// Apache `SSL_CLIENT_CERT` (URL-encoded PEM).
+    SslClientCert,
+    /// Envoy `X-Forwarded-Client-Cert` (XFCC key-value format).
+    Xfcc,
+}
+
+impl ProxyHeaderFormat {
+    /// The HTTP header name to read for this format.
+    pub fn header_name(self) -> &'static str {
+        match self {
+            ProxyHeaderFormat::XSslClientCert => "X-SSL-Client-Cert",
+            ProxyHeaderFormat::SslClientCert => "SSL_CLIENT_CERT",
+            ProxyHeaderFormat::Xfcc => "X-Forwarded-Client-Cert",
+        }
     }
 }
 
