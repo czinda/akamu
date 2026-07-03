@@ -370,11 +370,19 @@ SubtreeSignature in return.
 	§4).  Requires that the server can reach the Tor network outbound.
 	Default: *false*.
 
-*trusted_proxies* = _[cidr, ...]_
-	CIDR blocks trusted to supply the *X-Remote-User* header (set by a
-	Kerberos/SPNEGO reverse proxy).  Requests from source IPs not in
-	this list never have *X-Remote-User* honoured.  Example:
-	*["127.0.0.1/32", "::1/128"]*.
+*trusted_proxies* = _[entry, ...]_
+	List of entries whose connecting IP is trusted to supply the
+	*X-Remote-User* header (set by a Kerberos/SPNEGO reverse proxy).
+	Each entry is either a CIDR block (IPv4 or IPv6) or the special
+	literal *"local addresses"* which expands at runtime to all IP
+	addresses assigned to local network interfaces (via *getifaddrs*,
+	refreshed every 30 seconds).  Requests from source IPs not in
+	this list never have *X-Remote-User* honoured.  Examples:
+
+	```
+	trusted_proxies = ["127.0.0.1/32", "::1/128"]
+	trusted_proxies = ["local addresses"]
+	```
 
 *eab_master_secret* = _string_
 	Base64url-encoded master secret for HKDF-SHA-256 EAB key derivation
@@ -616,14 +624,17 @@ Admin endpoints (*/admin/*) are served on a dedicated TLS listener
 configured in this section.  When this section is absent, all admin
 endpoints return 404.
 
-Operator authentication uses one or both of:
+Operator authentication uses one or more of:
 
 - *mTLS client certificates* — configure *ca_certs* with the operator
   CA(s).
+- *Proxy-forwarded client certificates* — configure *[admin.proxy_auth]*
+  when Akamu runs behind a TLS-terminating reverse proxy (Nginx, Apache,
+  Envoy).
 - *GSSAPI/Kerberos* — configure *[admin.gssapi]*.
 
-At least one of *ca_certs* or *[admin.gssapi]* must be configured;
-the server exits at startup if neither is set.
+At least one of *ca_certs*, *[admin.proxy_auth]*, or *[admin.gssapi]*
+must be configured; the server exits at startup if none is set.
 
 *listen_addr* = _addr_
 	Address and port for the dedicated admin TLS listener.  Follows the
@@ -766,6 +777,38 @@ GSSAPI/Kerberos authentication for admin operators.
 *service_name* = _string_
 	Kerberos service name.  MIT Kerberos appends *@*_hostname_
 	automatically.  Default: *HTTP*.
+
+## [admin.proxy_auth]
+
+Proxy-forwarded client certificate authentication.  When Akamu runs
+behind a TLS-terminating reverse proxy, the proxy can forward the
+verified client certificate in an HTTP header.  This section configures
+which header to read and which proxy IPs to trust.
+
+Proxy-forwarded cert auth records *"method":"cert-proxy"* in audit
+events, distinguishing it from direct mTLS (*"method":"cert"*).
+
+*trusted_proxies* = _[entry, ...]_
+	List of reverse proxies allowed to inject the client certificate
+	header.  Must be non-empty.  Each entry is either a CIDR range
+	(e.g. *"127.0.0.1/32"*) or the literal *"local addresses"* (all
+	local interface IPs, refreshed every 30 seconds via *getifaddrs*).
+
+*header_format* = _string_
+	Header convention used by the reverse proxy.  Accepted values:
+
+	*"x-ssl-client-cert"*
+		Nginx convention.  Reads the *X-SSL-Client-Cert* header
+		containing URL-encoded PEM.  This is the default.
+
+	*"ssl-client-cert"*
+		Apache convention.  Reads the *SSL_CLIENT_CERT* header
+		containing URL-encoded PEM.
+
+	*"xfcc"*
+		Envoy convention.  Reads the *X-Forwarded-Client-Cert* header
+		in XFCC key-value format; extracts the *Cert=* value and
+		URL-decodes it as PEM.
 
 # [profiles] — certificate profiles
 
