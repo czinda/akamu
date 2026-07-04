@@ -90,6 +90,58 @@ sudo update-ca-certificates          # Debian/Ubuntu
 sudo update-ca-trust                 # Fedora/RHEL
 ```
 
+## 6. Enable admin access (optional)
+
+The admin API lets you manage operators, certificates, EAB keys, and audit logs through [`akamuctl`](../user/akamuctl.md). It requires TLS with client certificate authentication on the server listener.
+
+Add the following sections to `/etc/akamu/config.toml` and update `listen_addr` and `base_url` for HTTPS:
+
+```toml
+listen_addr = "0.0.0.0:8443"
+base_url    = "https://acme.example.com:8443"
+
+# ... existing [database], [ca], [mtc] sections ...
+
+[tls]
+enabled     = true
+cert_file   = "/etc/akamu/server.crt"
+key_file    = "/etc/akamu/server.key"
+server_name = "acme.example.com"
+
+[tls.client_auth]
+ca_files = ["/etc/akamu/ca.cert.pem"]
+required = false
+
+[admin]
+bootstrap_operator_cert_file = "/etc/akamu/admin-bootstrap.pem"
+bootstrap_operator_key_file  = "/etc/akamu/admin-bootstrap-key.pem"
+```
+
+Setting `required = false` in `[tls.client_auth]` lets ACME clients connect without a client certificate while still allowing operator authentication via mTLS.
+
+On the next start, because the TLS and bootstrap files do not exist yet, Akamu auto-generates a server TLS certificate and a bootstrap operator certificate (both signed by the CA), and registers the bootstrap operator with the `administrator` role.
+
+Log in with the bootstrap certificate:
+
+```bash
+akamuctl --server-url https://acme.example.com:8443 \
+         --ca-cert /etc/akamu/ca.cert.pem \
+         --cert    /etc/akamu/admin-bootstrap.pem \
+         --key     /etc/akamu/admin-bootstrap-key.pem \
+    login
+```
+
+The session token is cached in `~/.config/akamu/session.json` and reused automatically for subsequent commands.
+
+Verify admin access:
+
+```bash
+akamuctl stats       # server counters and version
+akamuctl ca list     # configured certificate authorities
+```
+
+For the full endpoint reference, see [Admin API and Operator Management](../user/admin-api.md). For all CLI commands, see [akamuctl](../user/akamuctl.md). See [TLS Configuration](../user/tls.md) for advanced TLS setups including proxy-forwarded client certificates.
+
 ## Logging
 
 The server uses the `tracing` crate. Control log verbosity with the `RUST_LOG` environment variable:
