@@ -59,6 +59,7 @@
 - [Account Management Internals](developer/accounts.md)
 - [EAB Internals](developer/eab.md)
 - [TLS Layer](developer/tls.md)
+- [Admin Authentication](developer/admin-auth.md)
 - [Client Library Internals](developer/client.md)
 - [Testing](developer/testing.md)
 - [Test Data Generation](developer/seedgen.md)
