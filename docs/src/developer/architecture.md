@@ -58,7 +58,7 @@ graph TB
 
 ## Crate layout
 
-The repository is organized as a **Cargo workspace** with eight members:
+The repository is organized as a **Cargo workspace** with thirteen members:
 
 ```
 Cargo.toml          <- workspace root (members: ., crates/*)
@@ -80,6 +80,20 @@ crates/
                        all handler threads without a mutex
   akamuctl/         <- server administration CLI binary; talks to /admin/* endpoints
                        over mTLS or GSSAPI/Kerberos (ccache-based) authentication
+  akamu-seedgen/    <- test-data generator binary; runs an in-process Akamu server
+                       and drives the full ACME protocol to produce realistic PKI
+                       lifecycle states (expired, revoked, STAR, delegation, ARI)
+  akamu-crdt/       <- CRDT primitives for cluster state replication (LWW-register,
+                       OR-map, LWW-map, GrowSet); used by the gossip subsystem
+  akamu-mtc-wire/   <- MTC wire-format helpers shared between akamu-cosigner and
+                       integration tests; breaks the circular dependency between
+                       the cosigner and the root crate
+  akamu-util/       <- lightweight shared utilities (listen target parsing, TLS
+                       cert/key loading, auth helpers, SHA-256 hex, SecretBuffer);
+                       breaks the akamu-cosigner -> akamu full-library dependency
+  akamu-mtc-validator/ <- MTC RFC draft validation and test-vector tool; generates
+                       log artifacts from test vectors and validates them against
+                       Go reference output
 ```
 
 ### Crate dependencies
@@ -348,7 +362,6 @@ Defined in `src/state.rs`. Every axum handler receives an `Arc<AppState>` via ax
 - `default_ca_id: Arc<String>` — the CA ID that serves the backward-compatible `/acme/directory` and `/ca/crl` routes. Set to the entry with `is_default = true` in `[[ca]]` config.
 - `crl_caches: Arc<HashMap<String, CrlCache>>` — per-CA CRL cache keyed by CA ID. Each entry is `None` until the first CRL request for that CA. Replaces the old single `crl_cache` field.
 - `link_headers: Arc<HashMap<String, Arc<HeaderValue>>>` — per-CA precomputed `Link: …; rel="index"` header values keyed by CA ID. `acme_headers(state, ca_id, nonce)` looks up the header for the request's CA, falling back to the default CA's header. Replaces the old single `link_header` field.
-- `mtc: Arc<MtcState>` — MTC log handle, signing key, and pre-built cosigner HTTPS clients.
 - `profiles: Arc<ProfileRegistry>` — in-memory certificate profile cache; empty when no providers are configured, in which case every order falls back to CA defaults.
 - `tls: Option<Arc<TlsState>>` — present when `[tls]` is enabled and client auth is configured; holds the client-auth config for introspection by handlers.
 - `nonces: Arc<NonceBucket>` — in-memory anti-replay nonce store.
@@ -356,15 +369,29 @@ Defined in `src/state.rs`. Every axum handler receives an `Arc<AppState>` via ax
 - `validation_client: ValidationClient` — shared hyper HTTP client for http-01 challenge validation; connection-pooled so TCP connections are reused across validations.
 - `gss_cred: Option<Arc<GssServerCred>>` — server-side GSSAPI credential for standalone SPNEGO authentication. `None` when `[server.gssapi]` is absent.
 - `admin_gss_cred: Option<Arc<GssServerCred>>` — admin-specific GSSAPI credential from `[admin.gssapi]`; takes precedence over `gss_cred` for admin SPNEGO. `None` when `[admin.gssapi]` is absent.
-- `eab_master_secret: Option<Arc<Zeroizing<Vec<u8>>>>` — decoded master secret for HKDF-based EAB key derivation. `None` when `[server].eab_master_secret` is absent.
+- `eab_master_secret: Option<Arc<akamu_util::SecretBuffer>>` — decoded master secret for HKDF-based EAB key derivation. `None` when `[server].eab_master_secret` is absent.
 - `journal: Arc<JournalWriter>` — audit event writer. Connects to the systemd journal namespace socket, writes to a JSONL file (`[server].audit_log_file`), or uses an in-process store (development/CI). Always present.
 - `audit: Arc<AuditState>` — shared in-memory audit state (overflow flag, FAU_ARP.1 alarm counter, `VecDeque`-backed violation timestamp window). Always present.
 - `audit_policy: Arc<AuditPolicy>` — audit policy extracted from `[admin]` at startup.
 - `admin_sessions: Option<Arc<tokio::sync::Mutex<HashMap<String, AdminSession>>>>` — opaque session token store for admin operator sessions. `None` when `[admin]` is absent.
 - `admin_auth_limiter: Option<AdminAuthLimiter>` — per-source-IP credential-attempt timestamps for admin auth rate-limiting. `None` when `[admin]` is absent.
+- `eab_session_nonces: Option<Arc<tokio::sync::Mutex<HashMap<String, i64>>>>` — anti-replay cache for EAB session login. Records recently seen `"kid.timestamp"` keys so captured requests cannot be replayed within the +/-60-second window. `None` when `[admin]` is absent.
 - `startup_time: Instant` — time the server process started; used for uptime reporting in `GET /admin/stats`.
+- `crdt: Arc<tokio::sync::RwLock<akamu_crdt::AkaCrdt>>` — in-memory CRDT replica. Authoritative for cluster state; the local DB is a persistence cache. Read-heavy handlers hold read locks concurrently while gossip merges write.
+- `node_id: Arc<String>` — stable node identity derived from the node's signing public key (base64url-nopad of the first 16 bytes of SHA-256(SPKI-DER)). Used as the `node_id` in all CRDT writes.
+- `node_kem_priv: Arc<Vec<u8>>` — ML-KEM-768 private key as PKCS8 DER. Used by the gossip handler to decapsulate the per-message session key from inbound CMS EnvelopedData.
+- `node_gossip_signing_priv: Arc<Vec<u8>>` — ECDSA P-256 gossip signing private key as PEM bytes. Used to sign outbound CMS SignedData so peers can authenticate this node's pushes.
+- `node_gossip_signing_cert: Arc<Vec<u8>>` — DER-encoded self-signed certificate for the gossip signing key. Embedded in outbound CMS SignedData so peers can pin-verify the sender.
+- `gossip_client: Arc<reqwest::Client>` — shared HTTP client for outbound gossip pushes. Plain HTTP is used; CMS SignedData + EnvelopedData provides authentication and confidentiality.
+- `gossip_nonce_cache: GossipNonceCache` — seen gossip envelope nonces (nonce bytes to first-seen unix timestamp). Prevents replay of captured CMS blobs within the `gossip_envelope_max_age_secs` window.
+- `write_notify: Arc<tokio::sync::Notify>` — signalled after every CRDT write so the gossip loop can fire immediately rather than waiting the full configured interval.
+- `crdt_db: crate::db::Db` — dedicated pool for CRDT cluster tables (`crdt_cluster_nodes`, `crdt_order_owners`, `crdt_mtc_writer`, `node_keys`). Separate from `db` so periodic cluster-state persistence does not contend with ACME writes.
+- `tkauth_trust_anchors: Option<Arc<synta_x509_verification::OwnedStore>>` — trust anchors for Token Authority certificate chain validation (RFC 9447 section 5.3). Built from `config.tkauth.trusted_ta_ca_files` at startup. `None` when `[tkauth]` is absent or `enabled = false`.
+- `claim_encoder_registry: Option<Arc<crate::validation::claim_encoder::ClaimEncoderRegistry>>` — registry mapping JWT claim names to DER extension encoders. Used at finalize time to convert validated `JWTClaimConstraints` claims into OtherName SANs. `None` when tkauth is disabled or no encoders are configured.
+- `jwks_cache: Option<JwksCache>` — in-memory JWKS body cache for `kid`-signed authority tokens (RFC 9447). Keyed by JWKS endpoint URL; entries are refreshed after 5 minutes. `None` when tkauth is disabled.
+- `write_coalescer: Option<Arc<crate::db::coalescer::WriteCoalescer>>` — write coalescer for SQLite hot-path writes. `None` for PostgreSQL/MariaDB.
 
-`AppState` is `Clone` because `Arc<T>` is `Clone` and `sqlx::AnyPool` is `Clone`. Cloning is cheap (reference count bump). All mutable state (the database and MTC log) is protected at a lower level by sqlx's internal pool management and a `tokio::sync::Mutex<DiskBackedLog>`, respectively.
+`AppState` is `Clone` because `Arc<T>` is `Clone` and `sqlx::AnyPool` is `Clone`. Cloning is cheap (reference count bump). All mutable state (the database, MTC log, and CRDT replica) is protected at a lower level by sqlx's internal pool management, a `tokio::sync::Mutex<DiskBackedLog>`, and a `tokio::sync::RwLock<AkaCrdt>`, respectively.
 
 ### `CaState`
 
@@ -382,6 +409,7 @@ Holds the key material and issuance policy for a single CA. Key fields:
 - `enforce_validity_cap: bool` — when `true`, `issue_with_params` rejects issuance when the computed validity exceeds 200 days (CA/B Forum BR §6.3.2).
 - `crl_next_update_secs: u64` — validity window for signed CRLs (determines cache TTL).
 - `caa_identities: Vec<String>` — CAA domain identities specific to this CA; falls back to `[server].caa_identities` when empty.
+- `mtc: Arc<MtcState>` — per-CA MTC transparency log state: log handle, signing key, and pre-built cosigner HTTPS clients.
 
 `CaState` is shared across all concurrent handler tasks via `Arc<CaState>`. The underlying `BackendPrivateKey` delegates to the OpenSSL backend, which serializes concurrent signing operations internally.
 
