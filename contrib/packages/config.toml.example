@@ -118,6 +118,12 @@ enabled = false
 
 # ── ACME server behaviour ─────────────────────────────────────────────────────
 [server]
+# Path to a JSONL audit log file (for non-journald environments).
+# When set, audit events are written as append-only JSON Lines to this file
+# instead of the systemd journal namespace.  When absent, the server writes
+# to the "akamu" journal namespace (see contrib/systemd/journald@akamu.conf).
+# audit_log_file = "/var/log/akamu/audit.jsonl"
+
 # Optional Terms of Service URL advertised in /acme/directory.
 # terms_of_service_url = "https://acme.example.com/tos.html"
 
@@ -304,6 +310,7 @@ validate_dnssec = true
 # [admin.gssapi]
 # keytab_file  = "/etc/akamu/admin-http.keytab"
 # service_name = "HTTP"
+# gssproxy     = false     # set true to delegate credential acquisition to gssproxy
 #
 # Proxy-forwarded client certificate authentication.
 # When behind a TLS-terminating reverse proxy, the proxy can forward the
@@ -321,7 +328,7 @@ validate_dnssec = true
 # directory_url            = "https://upstream-ca.example.com/acme/directory"
 # account_key_file         = "/etc/akamu/upstream-acme.key.pem"  # auto-generated if absent
 # contacts                 = ["mailto:admin@example.com"]
-# challenge_solver         = "dns-01"    # only "dns-01" is currently supported
+# challenge_solver         = "dns-01"    # "dns-01", "http-01", or "tls-alpn-01"
 # challenge_deploy_script  = "/etc/akamu/upstream-dns-deploy.sh"
 #   # Script receives: CERTBOT_DOMAIN, CERTBOT_VALIDATION (env_clear applied)
 #   # Exit 0 = success.  Called after akamu triggers the upstream challenge.

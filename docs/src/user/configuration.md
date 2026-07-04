@@ -10,19 +10,21 @@ If no argument is given, the server looks for `config.toml` in the current worki
 
 The file is parsed once at startup. Changes require a restart. Unknown keys produce a parse error on startup (serde's strict TOML parser).
 
-## Complete example
+## Getting started example
+
+A minimal, working configuration for a single-CA deployment.
+See the rest of this page for the full field reference; see
+`config.toml.example` in the repository root for every available field
+with explanatory comments.
 
 ```toml
-listen_addr  = "0.0.0.0:8080"
-base_url     = "https://acme.example.com"
-crdt_db_url  = "sqlite:///var/lib/akamu/crdt.db"
+listen_addr = "0.0.0.0:8080"
+base_url    = "https://acme.example.com"
 
 [database]
 url = "sqlite:///var/lib/akamu/akamu.db"
 
-[[ca]]
-id               = "default"
-is_default       = true
+[ca]
 key_file         = "/etc/akamu/ca.key.pem"
 cert_file        = "/etc/akamu/ca.cert.pem"
 key_type         = "ec:P-256"
@@ -31,89 +33,32 @@ validity_days    = 90
 ca_validity_years = 10
 common_name      = "Example ACME CA"
 organization     = "Example Org"
-crl_url              = "http://acme.example.com/ca/crl"
-crl_next_update_secs = 86400
-ocsp_url             = "http://acme.example.com/ca/ocsp"
+crl_url          = "http://acme.example.com/ca/crl"
+ocsp_url         = "http://acme.example.com/ca/ocsp"
 
 [mtc]
 log_path = "/var/lib/akamu/mtc.log"
 enabled  = false
-# log_number = 1
-# tree_minimum_index = 0
-# trust_anchor_id = "1.3.6.1.4.1.44363.47.10.1"
 
 [server]
-terms_of_service_url        = "https://acme.example.com/tos.html"
-website_url                 = "https://acme.example.com"
-caa_identities              = ["acme.example.com"]
-external_account_required   = false
-order_expiry_secs           = 86400
-authz_expiry_secs           = 86400
-max_body_bytes              = 65536
-ari_retry_after_secs        = 21600
-ari_explanation_url         = "https://acme.example.com/docs/renewal-policy"
-allow_subdomain_auth        = false
-account_scope               = "server"
-star_min_lifetime_secs      = 86400
-star_max_duration_secs      = 31536000
-star_allow_certificate_get  = true
-tor_connectivity_enabled    = false
-dns_resolver_addr           = "1.1.1.1:853"
-dns_dot_server_name         = "cloudflare-dns.com"
-dns_persist01_resolver_addr = "127.0.0.1:5354"
-validate_dnssec             = true
-trusted_proxies             = ["127.0.0.1/32"]
-eab_master_secret           = "Zm9vYmFyYmF6cXV4cXV1eGZvb2JhcmJhenF1eHF1dXg"
-delegation_enabled          = false
-allow_certificate_get       = false
+caa_identities            = ["acme.example.com"]
+external_account_required = false
+order_expiry_secs         = 86400
+authz_expiry_secs         = 86400
+max_body_bytes            = 65536
+validate_dnssec           = true
 
-[server.gssapi]
-keytab_file  = "/etc/akamu/http.keytab"   # omit and set gssproxy = true to use gssproxy instead
-service_name = "HTTP"
+# [tls]
+# enabled   = true
+# cert_file = "/etc/akamu/server.pem"
+# key_file  = "/etc/akamu/server.key"
 
-# [server.webui]
-# static_dir = "/usr/share/akamu/webui"
+# [tls.client_auth]
+# ca_files = ["/etc/akamu/operator-ca.pem"]
+# required = false
 
-[tls.client_auth]
-ca_files = ["/etc/akamu/operator-ca.pem"]
-required = false
-
-[admin]
-session_ttl_secs = 3600
-
-[email_challenge]
-enabled             = true
-from_address        = "acme-validation@example.com"
-send_script         = "/etc/akamu/send-email.sh"
-webhook_hmac_secret = "replace-with-output-of--openssl-rand-hex-32"
-
-# [delegation_upstream]
-# directory_url            = "https://upstream-ca.example.com/acme/directory"
-# account_key_file         = "/etc/akamu/upstream-acme.key.pem"
-# contacts                 = ["mailto:admin@example.com"]
-# challenge_solver         = "dns-01"
-# challenge_deploy_script  = "/etc/akamu/upstream-dns-deploy.sh"
-# challenge_cleanup_script = "/etc/akamu/upstream-dns-cleanup.sh"
-# poll_interval_secs       = 10
-
-[tkauth]
-enabled                 = false
-# trusted_ta_ca_files   = ["/etc/akamu/ta-root.pem"]
-# token_authority_url   = "https://ta.example.com"
-# max_validity_secs     = 3600
-# jti_prune_interval_secs = 3600
-# [[tkauth.claim_encoders]]
-# claim   = "sub"
-# encoder = "krb5-kpn"
-
-[gossip]
-peers                      = ["https://node2.example.com", "https://node3.example.com"]
-interval_secs              = 15
-tombstone_ttl_secs         = 604800
-ownership_ttl_secs         = 150
-gossip_envelope_max_age_secs = 300
-clock_skew_tolerance_secs  = 30
-fan_out                    = 3
+# [admin]
+# session_ttl_secs = 3600
 
 [profiles]
 refresh_interval_secs = 3600
