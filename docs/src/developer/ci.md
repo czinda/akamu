@@ -136,3 +136,19 @@ CARGO_TARGET_DIR=/tmp/akamu-ci ./contrib/ci/local-ci.sh all
 # No colour output (e.g. when piping to a log file)
 ./contrib/ci/local-ci.sh --no-color all
 ```
+
+## Documentation TOML validation
+
+`contrib/ci/check-doc-toml.sh` extracts every `` ```toml `` fenced code block
+from `docs/src/**/*.md` and validates it with Python's `tomllib`.  Blocks
+that are clearly fragments (fewer than 2 non-empty lines, or containing
+placeholder syntax like `<profile-id>`) are skipped automatically.
+
+```bash
+./contrib/ci/check-doc-toml.sh
+```
+
+Requires Python 3.11+ (for the built-in `tomllib` module).  The script exits
+with status 0 when all checked blocks parse and 1 if any block contains
+invalid TOML.  It can be integrated into `local-ci.sh` as a standalone job
+with no prerequisites.
