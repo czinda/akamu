@@ -59,10 +59,16 @@ The server offers the following challenge types per identifier type:
 | `tls-alpn-01` | `dns`, `ip` | RFC 8737 / RFC 8738 §4 |
 | `dns-persist-01` | `dns` | draft-ietf-acme-dns-persist |
 | `onion-csr-01` | `dns` (`.onion` only) | RFC 9799 §3.2 |
+| `email-reply-00` | `email` | RFC 8823 |
+| `tkauth-01` | `TNAuthList`, `JWTClaimConstraints`, `EnhancedJWTClaimConstraints` | RFC 9447 / RFC 9448 |
 
 `dns-persist-01` is only offered when the server is configured with at least one `dns_persist_issuer_domains` entry.
 
 `onion-csr-01` is offered exclusively for `.onion` (Tor v3 hidden service) identifiers. The server rejects v2 `.onion` addresses.
+
+`email-reply-00` is offered exclusively for `email` identifiers (S/MIME certificate issuance). It requires the `[email_challenge]` configuration section. The challenge object includes a `from` field with the server's outbound email address and a `token` field carrying **token-part2**. When the client POSTs `{}` to trigger the challenge, the server sends an email containing **token-part1** in the `Subject` header. The client computes a two-part key authorization (`base64url(token-part1) || base64url(token-part2) || "." || thumbprint`), hashes it with SHA-256, and sends the base64url-encoded digest in an email reply. The reply is delivered to the server via a webhook endpoint (`POST /acme/email-webhook`). See [Challenges — email-reply-00](../user/challenges.md#email-reply-00-rfc-8823) for the full protocol flow, key authorization formula, and webhook format.
+
+`tkauth-01` is offered for `TNAuthList`, `JWTClaimConstraints`, and `EnhancedJWTClaimConstraints` identifiers when `[tkauth]` is enabled. The challenge object includes a `tkauth-type` field (always `"atc"`) and an optional `token-authority` URL hint. The client obtains a signed JWT authority token from an external Token Authority and POSTs it in the challenge response as `{"tkauth": "<compact-JWT>"}`. The server verifies the JWT signature against configured trust anchors (`x5c`/`x5u`) or per-profile JWKS endpoints (`kid`), then checks the `atc` claim binding and account key fingerprint. When a `dns-san` claim encoder is configured, `tkauth-01` is also offered as the sole challenge type for non-wildcard, non-`.onion` `dns` identifiers. See [Challenges — tkauth-01](../user/challenges.md#tkauth-01-rfc-9447--rfc-9448) for the full validation steps and configuration.
 
 ### IP identifiers (RFC 8738)
 
