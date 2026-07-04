@@ -26,6 +26,7 @@
 - [RFC Support Reference](user/rfc-support.md)
 - [EAB and Kerberos Authentication](user/eab-kerberos.md)
 - [FreeIPA Co-deployment](user/deployment-ipa.md)
+- [Migration Guide](user/migration-guide.md)
 - [Backup and Restore](user/backup-restore.md)
 - [akamuctl — Admin CLI](user/akamuctl.md)
 
