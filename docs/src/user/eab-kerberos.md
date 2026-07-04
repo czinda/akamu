@@ -296,6 +296,24 @@ fails before `newAccount` completes, re-running the script returns the same
 If `GET /acme/eab` returns `409 Conflict`, the credentials have already been
 consumed by a prior registration. Contact your CA administrator to reset them.
 
+## Troubleshooting
+
+| Error message or symptom | Likely cause | Fix |
+|---|---|---|
+| `keytab file not readable: /etc/akamu/http.keytab: …` | The keytab file does not exist, has wrong permissions, or is owned by the wrong user. | Ensure the file exists, is owned by the akamu service account, and has mode `600`. Regenerate with `ipa-getkeytab` or `ktutil` if missing. |
+| `gss_acquire_cred_from (server keytab) failed: …` | The keytab does not contain the expected `HTTP/<hostname>@REALM` principal, or the keytab is corrupted. | Run `klist -kte /etc/akamu/http.keytab` to list entries. Verify the principal matches `service_name` in `[server.gssapi]`. Regenerate if needed. |
+| `gss_import_name (service name) failed: …` | The `service_name` in `[server.gssapi]` is malformed or contains invalid characters. | Use the format `HTTP` (realm auto-appended) or `HTTP@akamu.example.com`. |
+| `gss_accept_sec_context failed: …` | The client's Kerberos ticket is expired, the service principal does not match, or there is a cross-realm trust issue. | Run `klist` on the client to check ticket validity. Run `kinit` to obtain a fresh ticket. Verify that the client's realm trusts the server's realm. |
+| `GSSAPI authentication failed` (HTTP 403) | The Negotiate token was rejected by the GSSAPI library. The server log includes the underlying GSS major/minor status codes. | Check the server log for the detailed error. Common causes: expired ticket, wrong service principal, missing cross-realm trust, or clock skew exceeding the Kerberos tolerance (typically 5 minutes). |
+| `malformed Negotiate token` (HTTP 400) | The `Authorization: Negotiate` header contains invalid base64 or is not a valid SPNEGO token. | Verify the client is sending a proper SPNEGO token. With `curl`, use `--negotiate -u :` (the colon is required). |
+| `Negotiate token exceeds size limit` (HTTP 400) | The Negotiate token is larger than 128 KiB. This can happen with PAC data in Active Directory environments with many group memberships. | Reduce the user's group memberships, or configure the KDC to limit PAC size. Legitimate Kerberos service tickets are well under this limit. |
+| `no authentication mechanism configured for this endpoint` (HTTP 404) | Neither `trusted_proxies` nor `[server.gssapi]` is configured. | Add a `[server.gssapi]` section with a keytab or gssproxy configuration, or configure `trusted_proxies` for proxy-header mode. |
+| `server.trusted_proxies and server.gssapi cannot both be configured` (startup error) | Both authentication modes are enabled at the same time. | Remove one of the two settings. Only proxy-header mode or standalone GSSAPI may be active. |
+| `GSSAPI is configured without TLS` (startup warning) | SPNEGO tokens are sent in plaintext and can be intercepted or relayed. | Enable `[tls]` on the akamu listener, or place akamu behind a TLS-terminating reverse proxy. |
+| `GSSAPI credential init (gssproxy): …` (startup error) | The gssproxy daemon is not running or the service entry for akamu is misconfigured. | Check that gssproxy is running (`systemctl status gssproxy`). Verify the gssproxy service file has `euid = akamu` and the correct keytab path. |
+| `[server.gssapi]: keytab_file is required when gssproxy = false` (startup error) | `gssproxy = true` is not set and no `keytab_file` is provided. | Set `keytab_file` to the path of your HTTP keytab, or set `gssproxy = true` and configure gssproxy. |
+| `409 Conflict` from `GET /acme/eab` | The EAB credentials for this principal have already been consumed by a prior `newAccount` registration. | Contact the CA administrator to reset the EAB key, or use the existing ACME account. |
+
 ## Security notes
 
 - In keytab mode the keytab grants the ability to accept Kerberos service

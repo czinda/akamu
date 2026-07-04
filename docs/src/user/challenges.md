@@ -830,6 +830,43 @@ ca_ids          = ["ipa-ca"]
 trust_jwks_urls = ["http+unix://%2Frun%2Fekishib%2Fekishib.sock/jwks"]
 ```
 
+---
+
+## Troubleshooting
+
+### http-01
+
+| Error message or symptom | Likely cause | Fix |
+|---|---|---|
+| `connection error during challenge: http-01 GET '…': connection refused` | Port 80 on the target host is not reachable from the akamu server. | Ensure a web server is listening on port 80 and that firewall rules allow inbound connections from the akamu server's IP. |
+| `connection error during challenge: http-01: DNS lookup for '…': …` | The domain name does not resolve from the akamu server's DNS resolver. | Verify the domain has an A/AAAA record. If using split-horizon DNS, configure `server.dns_resolver_addr` to point to a resolver that can reach the public zone. |
+| `incorrect response during challenge: http-01: key authorization mismatch for '…'` | The file at `/.well-known/acme-challenge/<token>` exists but its content does not match the expected key authorization string. | Verify the file contains exactly `<token>.<jwk-thumbprint>` with no extra whitespace or newlines beyond what `trim()` removes. |
+| `incorrect response during challenge: http-01: server returned HTTP 404 for '…'` | The challenge file is not served at the expected path. | Ensure your web server serves files from `/.well-known/acme-challenge/` without authentication, redirects to a login page, or path rewriting. |
+| `incorrect response during challenge: http-01: redirect from '…' targets blocked IP address …` | The SSRF guard blocked a redirect to a private or loopback IP address. | The redirect chain must not lead to RFC 1918, loopback, or link-local addresses. Fix the redirect target. For isolated test environments, set `http_validation_allow_private_ips = true`. |
+| `incorrect response during challenge: http-01: redirect from '…' resolves to blocked address …` | A redirect target hostname resolves to a private IP address. | Update the DNS record for the redirect target to point to a public IP address. |
+| `incorrect response during challenge: http-01: body is not valid UTF-8` | The challenge response file contains binary or non-UTF-8 data. | Recreate the file with UTF-8 content containing only the key authorization string. |
+| `incorrect response during challenge: http-01: exceeded 10 redirects starting from '…'` | The web server created a redirect loop or chain longer than 10 hops. | Fix the web server configuration to serve the challenge file directly or with fewer redirects. |
+
+### dns-01
+
+| Error message or symptom | Likely cause | Fix |
+|---|---|---|
+| `DNS error: …` (NXDOMAIN or SERVFAIL) | The `_acme-challenge.<domain>` TXT record does not exist or the DNS server is not responding. | Create the TXT record. Verify with `dig _acme-challenge.<domain> TXT`. If using a custom resolver, check `server.dns_resolver_addr`. |
+| `incorrect response during challenge: dns-01: no TXT record at '…' matches the expected value` | A TXT record exists but its value is wrong, or the record has not propagated yet. | Verify the TXT record value is `base64url(SHA-256(key_authorization))` (no padding). Use a short TTL (60s) and wait for propagation. Check with `dig +short _acme-challenge.<domain> TXT`. |
+| Wrong TXT record for wildcard `*.example.com` | The TXT record was placed at `_acme-challenge.*.example.com` instead of `_acme-challenge.example.com`. | For wildcard domains, strip the `*.` prefix: the record goes at `_acme-challenge.example.com`. |
+
+### tls-alpn-01
+
+| Error message or symptom | Likely cause | Fix |
+|---|---|---|
+| `connection error during challenge: TCP connect to …:443: connection refused` | Port 443 on the target host is not reachable from the akamu server. | Ensure the TLS server is listening on port 443 and that firewall rules allow inbound connections from the akamu server. |
+| `TLS error: TLS handshake with …: …` | The TLS handshake failed. Common causes: the server does not support the `acme-tls/1` ALPN protocol, or the TLS configuration is incompatible. | Configure the validation TLS server to accept the `acme-tls/1` ALPN protocol. Most ACME clients handle this automatically. |
+| `TLS error: server presented no certificate` | The TLS server did not send a certificate during the handshake. | Ensure the TLS server is configured with a certificate for the ALPN challenge. |
+| `incorrect response during challenge: tls-alpn-01: certificate for '…' is missing id-pe-acmeIdentifier` | The validation certificate does not contain the required `id-pe-acmeIdentifier` extension (OID `1.3.6.1.5.5.7.1.31`). | The validation certificate must include the `id-pe-acmeIdentifier` extension containing `SHA-256(key_authorization)`. Most ACME clients generate this certificate automatically. |
+| `incorrect response during challenge: tls-alpn-01: id-pe-acmeIdentifier extension in '…' cert must be critical` | The `id-pe-acmeIdentifier` extension is present but not marked as critical. | RFC 8737 requires this extension to be critical. Update the certificate generation to set `critical = true`. |
+| `incorrect response during challenge: tls-alpn-01: id-pe-acmeIdentifier value mismatch in certificate for '…'` | The hash in the extension does not match the expected `SHA-256(key_authorization)`. | Regenerate the validation certificate with the correct key authorization hash. Ensure the token and JWK thumbprint are correct. |
+| `incorrect response during challenge: tls-alpn-01: certificate SAN does not match '…': …` | The validation certificate's SubjectAlternativeName does not contain the domain being validated, or contains extra SAN entries. | RFC 8737 requires exactly one SAN entry matching the identifier. Generate a new certificate with only the target domain as a dNSName (or iPAddress for IP identifiers). |
+
 ## See also
 
 - [Configuration Reference](configuration.md) — challenge solver and DNS resolver configuration keys

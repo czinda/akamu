@@ -1137,6 +1137,26 @@ Deactivate an operator with `akamuctl operator remove <id>` or
 preserved for audit trail continuity.  The operator's active sessions are
 invalidated immediately and they cannot authenticate again until reactivated.
 
+---
+
+## Troubleshooting
+
+| Error message or symptom | Likely cause | Fix |
+|---|---|---|
+| `admin API is not configured` (HTTP 404) | The `[admin]` section is absent from `config.toml`. | Add an `[admin]` section with `bootstrap_operator_cert_file` and `bootstrap_operator_key_file` to enable the admin API. |
+| `Authentication required: Bearer token, mTLS certificate, or Negotiate` (HTTP 401) | No valid credential was presented in the request. | Supply a client certificate via mTLS, a session token via `Authorization: Bearer <token>`, or a Kerberos token via `Authorization: Negotiate <token>`. |
+| `Authentication required: Bearer token or mTLS client certificate` (HTTP 401) | No credential was presented, and GSSAPI is not configured for the admin interface. | Use mTLS or a Bearer session token. To enable Kerberos, configure `[admin.gssapi]`. |
+| `client certificate not recognized` (HTTP 403) | The mTLS client certificate's SHA-256 fingerprint does not match any registered operator. | Verify the certificate fingerprint with `openssl x509 -in cert.pem -noout -fingerprint -sha256`. Register the operator with `akamuctl operator add --cert-file cert.pem`. |
+| `session token expired or invalid; please re-authenticate` (HTTP 401) | The Bearer token has exceeded the idle timeout (`session_ttl_secs`, default 1 hour) or has been invalidated. | Obtain a fresh session token via `POST /admin/session`. |
+| `session locked due to inactivity; re-authenticate` (HTTP 423) | The session exceeded `session_lock_secs` of inactivity but has not yet fully expired. | Re-authenticate via `POST /admin/session` to obtain a new token. |
+| `operator account locked due to repeated authentication failures` (HTTP 403) | The operator exceeded `max_failed_auth` failed login attempts. | An administrator must unlock the account via `POST /admin/operators/{id}/unlock` or `akamuctl operator unlock <id>`. |
+| `insufficient role for this operation` (HTTP 403) | The authenticated operator's role does not permit this endpoint. | Check [Operator Roles](operator-roles.md) for the required role. Use an operator with the appropriate role (`administrator`, `ca_operations`, `ca_ra`, or `auditor`). |
+| `ca_ra operator has no CA scope configured` (HTTP 403) | A `ca_ra` operator attempted an operation but has no `ca_id` scope assigned. | Assign a CA scope via `PATCH /admin/operators/{id}` with `{"ca_id": "<ca-id>"}`. |
+| `authentication rate limit exceeded; try again later` (HTTP 429) | Too many authentication attempts from the same IP address within the rolling 5-minute window. | Wait a few minutes before retrying. Investigate whether a misconfigured client is retrying in a loop. |
+| `Kerberos principal is not a registered operator` (HTTP 403) | GSSAPI authentication succeeded, but the Kerberos principal is not registered in the operators table. | Register the principal as an operator: `akamuctl operator add --name <name> --role <role> --gssapi-principal <principal@REALM>`. |
+| `GSSAPI not configured for admin interface` (HTTP 401) | A Negotiate token was sent, but `[admin.gssapi]` is not configured. | Add an `[admin.gssapi]` section with a keytab or gssproxy configuration to enable Kerberos for the admin API. |
+| `server halted: audit overflow or security alarm` (HTTP 503) | The audit overflow or security alarm policy is set to `"halt"` and the threshold was reached. | Restart the server after investigating the audit events. Consider switching the policy to `"drop_oldest"` or `"syslog"`. |
+
 ## See also
 
 - [Operator Roles](operator-roles.md) — role-based access control and the route-by-role permission matrix

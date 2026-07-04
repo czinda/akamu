@@ -459,6 +459,38 @@ akamuctl cosigner stats
 See [akamuctl — Cosigner administration](akamuctl.md#cosigner-administration)
 for the full command reference.
 
+---
+
+## Troubleshooting
+
+### akamu server communicating with cosigner
+
+| Error message or symptom | Likely cause | Fix |
+|---|---|---|
+| `cosigner request failed: …` (server log warning) | The akamu server cannot connect to the cosigner's `/sign` endpoint. The cosigner may be down, the URL may be wrong, or a firewall may block the connection. | Verify the cosigner is running and reachable. Check the `url` in `[[mtc.cosigners]]`. Test with `curl -X POST <url>`. |
+| `cosigner request timed out` (server log warning) | The cosigner did not respond within 30 seconds. | Check that the cosigner process is healthy and not overloaded. Verify network connectivity and latency between the akamu server and the cosigner. |
+| `cosigner returned non-2xx status` (server log warning) | The cosigner rejected the checkpoint. The log includes the HTTP status code and the first 256 bytes of the response body. | Check the cosigner's own logs for the root cause (malformed checkpoint, internal error, etc.). |
+| `cosigner returned empty body` (server log warning) | The cosigner returned HTTP 200 but with no response body. | This indicates a bug or misconfiguration in the cosigner. Check the cosigner logs. |
+| `cosignature rejected: SubtreeSignature cosigner TrustAnchorID OID does not match expected` | The `trust_anchor_id` configured in `[[mtc.cosigners]]` on the akamu server does not match the `[cosigner_id].trust_anchor_id` on the cosigner. | Ensure both sides use the same OID string. The OID is in dotted-decimal notation (e.g. `1.3.6.1.4.1.44363.47.10.1`). |
+| `cosignature rejected: cosignature cryptographic verification failed: …` | The cosigner's signing key does not match the public key in the `cosigner_id_cert_pem` configured on the akamu server side. | Regenerate or re-export the cosigner identity certificate and update `cosigner_id_cert_pem` in `[[mtc.cosigners]]`. |
+| `cosignature accepted WITHOUT identity or cryptographic verification` (server log warning) | Neither `cosigner_id_cert_pem` nor `trust_anchor_id` is configured in `[[mtc.cosigners]]`. The cosignature is accepted without any verification. | Configure `cosigner_id_cert_pem` and `trust_anchor_id` in `[[mtc.cosigners]]` to enable identity and cryptographic verification. |
+| `build cosigner client: …` (server startup warning) | The TLS configuration for the cosigner connection failed. The cosigner CA certificate may be missing, malformed, or the certificate file path may be wrong. | Check `cosigner_ca_pem` in `[[mtc.cosigners]]` points to a valid PEM CA file. Verify the cosigner's TLS certificate chains to this CA. |
+| `cosigner CA file '…' contains no PEM certificate blocks` | The file at `cosigner_ca_pem` exists but contains no valid PEM certificate blocks. | Verify the file contains `-----BEGIN CERTIFICATE-----` blocks. It may be DER-encoded (convert with `openssl x509 -inform DER -in ca.der -out ca.pem`). |
+| `read cosigner ID cert '…': …` | The cosigner identity certificate file cannot be read. | Check the file path in `cosigner_id_cert_pem` and file permissions. |
+
+### akamu-cosigner daemon
+
+| Error message or symptom | Likely cause | Fix |
+|---|---|---|
+| `parse cosigner_id.trust_anchor_id OID '…': …` (startup error) | The `trust_anchor_id` value in `[cosigner_id]` is not a valid dotted-decimal OID. | Use a valid OID format, e.g. `"1.3.6.1.4.1.44363.47.10.1"`. |
+| `TLS cannot be used with a Unix domain socket listener` (startup error) | The configuration has both a Unix socket `listen_addr` and a `[tls]` section. | Remove the `[tls]` section when using a Unix socket, or switch `listen_addr` to a TCP address when using TLS. |
+| `TLS cert/key: …` (startup error) | The TLS certificate or key file cannot be loaded. | Check file paths and permissions for `[tls].cert_file` and `[tls].key_file`. Ensure the key is unencrypted PEM. |
+| `unknown key type '…'` (startup error) | The `key_type` in `[signing_key]` is not a recognized algorithm. | Use a supported value: `"ec:P-256"`, `"ec:P-384"`, `"ec:P-521"`, `"rsa:2048"`, `"rsa:3072"`, `"rsa:4096"`, `"ed25519"`, or `"ed448"`. |
+| `invalid Checkpoint DER: …` (HTTP 400 on `/sign`) | The akamu server sent a malformed checkpoint to the cosigner. | This typically indicates a version mismatch between the akamu server and cosigner. Ensure both are built from the same version. |
+| `no challenge of type '…' offered by server` (ACME bootstrap error) | The `challenge_type` in `[acme_bootstrap]` is not offered by the ACME server for the requested domain. | Use a challenge type supported by the server. Check the ACME directory for available challenge types. |
+| `dns-01 requires dns_hook or manual DNS setup` (ACME bootstrap error) | `challenge_type = "dns-01"` but no `dns_hook` script is configured. | Set `dns_hook` to a script that provisions TXT records, or switch to `challenge_type = "http-01"`. |
+| `[admin] section not configured` (startup warning) | The cosigner admin interface is disabled. | Add an `[admin]` section to `cosigner.toml` if operator access to the cosigner admin API is needed. |
+
 ## See also
 
 - [Merkle Tree Certificate Log](mtc.md) — MTC log, checkpoints, and cosigner integration on the server side
