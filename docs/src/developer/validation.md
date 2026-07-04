@@ -437,3 +437,116 @@ Error mapping:
 - Missing or mismatched `cabf-onion-csr-nonce` extension → `AcmeError::IncorrectResponse`
 - Hidden-service signature verification failed → `AcmeError::IncorrectResponse`
 - Domain not found in CSR SAN → `AcmeError::IncorrectResponse`
+
+## CAA record validation (`src/validation/caa.rs`)
+
+CAA (Certification Authority Authorization) checking runs **at finalization time**, after challenge validation has already succeeded and the order is in the `ready` state. It is not part of the challenge validation dispatch; it is called directly from `routes::finalize::finalize_order` (`src/routes/finalize.rs`, line 209) before the certificate is issued.
+
+### When CAA is checked in the issuance flow
+
+The finalization handler (`finalize_order`) performs operations in this order:
+
+1. JWS verification, order lookup, status checks.
+2. Profile resolution and per-profile authorization checks.
+3. CSR validation (`ca::csr::validate_csr`).
+4. **CAA record check** — iterates over each `dns` identifier in the order and calls `caa::check_caa`.
+5. Certificate issuance (`ca::issue::issue_with_params`).
+
+CAA is checked after challenge validation (which happened asynchronously when the challenge was triggered) but before any certificate is signed. IP identifiers are skipped because CAA is a DNS-only mechanism (RFC 8659).
+
+### How CAA checking works
+
+The entry point is `check_caa` (`src/validation/caa.rs`, line 45):
+
+```rust
+pub async fn check_caa(
+    params: CaaParams<'_>,
+    resolver_addr: Option<&str>,
+) -> Result<(), AcmeError>
+```
+
+`CaaParams` carries all per-request fields:
+
+```rust
+pub struct CaaParams<'a> {
+    pub domain: &'a str,          // domain without *. prefix
+    pub ca_identities: &'a [String],
+    pub is_wildcard: bool,
+    pub challenge_type: &'a str,  // e.g. "http-01", "dns-01"
+    pub account_url: Option<&'a str>,
+    pub validate_dnssec: bool,
+    pub dot_server_name: Option<&'a str>,
+}
+```
+
+**Step 1 — Skip when unconfigured.** If `ca_identities` is empty, `check_caa` returns `Ok(())` immediately (open policy). CAA checking is only active when `caa_identities` is configured in `[server]` or the per-CA `[[ca]]` section.
+
+**Step 2 — DNS tree walk.** `build_name_walk` (`src/validation/caa.rs`, line 155) constructs a list of names from the requested domain up to (but not including) the TLD. For example, `sub.example.com` produces `["sub.example.com", "example.com"]`. Single-label names are excluded.
+
+**Step 3 — Query CAA records.** For each name in the walk, a CAA record query is issued via `crate::dns::dns_query` (hickory-resolver). Three outcomes:
+
+- **No records found** (NXDOMAIN or empty answer) — continue walking up the tree.
+- **Records found** — pass the record set to `evaluate_caa_record_set` and return its result.
+- **DNS error** (SERVFAIL, REFUSED, network failure, DNSSEC failure) — **fail closed** with `AcmeError::Caa`.
+
+**Step 4 — No records found anywhere.** If the entire walk completes without finding any CAA records, issuance is allowed (unconstrained domain, per RFC 8659 section 4).
+
+### Which RFC 8659 record properties are checked
+
+`evaluate_caa_record_set` (`src/validation/caa.rs`, line 187) processes the CAA record set:
+
+| Property | Handling |
+|----------|----------|
+| `issue` | Checked for non-wildcard certificates. The record's domain value is compared (case-insensitive, trailing-dot-stripped) against each entry in `ca_identities`. |
+| `issuewild` | Checked for wildcard certificates. When `issuewild` records are present, they take precedence over `issue` records. When no `issuewild` records exist in the set, `issue` records govern wildcards as a fallback (RFC 8659 section 4). |
+| `iodef` | Not evaluated. A record set containing only `iodef` records (no `issue` or `issuewild`) is treated as unconstrained — issuance is allowed. |
+
+An explicit denial record (`CAA 0 issue ";"` with no CA domain) is skipped — it does not match any CA but does not block issuance by itself unless no other authorizing record exists.
+
+### RFC 8657 account URI and validation method binding
+
+When a matching `issue` or `issuewild` record contains RFC 8657 parameters, `evaluate_caa_record_set` enforces them (starting at line 253):
+
+**`validationmethods` (RFC 8657 section 3):** The parameter value is a comma-separated list of challenge types. The challenge type used to validate the order's authorization must appear in the list. If it does not, the record is treated as non-authorizing. The finalization handler looks up the validated challenge type for each authorization via `db::challenges::get_validated_type` (`src/db/challenges.rs`, line 107), which queries `SELECT type FROM challenges WHERE authz_id = ? AND status = 'valid' LIMIT 1`.
+
+**`accounturi` (RFC 8657 section 4):** The full ACME account URL of the requesting client must match the parameter value exactly (case-sensitive). The account URL is constructed as `{base_url}/acme/account/{account_id}` in the finalization handler (`src/routes/finalize.rs`, line 208). If the account URL is `None` (not supplied to the check), any record carrying `accounturi` is denied.
+
+Unknown parameters are silently ignored per RFC 8657.
+
+A record authorizes issuance only when both `validationmethods` and `accounturi` checks pass (if present). If no record in the set authorizes issuance, the function returns `Err(AcmeError::Caa(...))`.
+
+### CAA identity resolution
+
+The finalization handler resolves which CAA identities to use (`src/routes/finalize.rs`, line 165):
+
+1. Per-CA identities (`CaState.caa_identities`, set via `[[ca]].caa_identities`) take precedence.
+2. If the per-CA list is empty, the server-level `[server].caa_identities` is used.
+3. If both are empty, the entire CAA check is skipped.
+
+### How CAA failures are reported
+
+| Condition | Error type | HTTP status | Problem type |
+|-----------|-----------|-------------|--------------|
+| CAA policy denies issuance | `AcmeError::Caa(String)` | 403 Forbidden | `urn:ietf:params:acme:error:caa` |
+| DNS lookup failure during CAA check | `AcmeError::Caa(String)` | 403 Forbidden | `urn:ietf:params:acme:error:caa` |
+| Invalid DNS resolver address | `AcmeError::Internal(String)` | 500 Internal Server Error | `urn:ietf:params:acme:error:serverInternal` |
+
+The `AcmeError::Caa` variant is defined in `src/error.rs` (line 59). The error detail string describes the specific failure (e.g., `"CAA policy denies issuance for example.com"` or `"CAA lookup failed for 'example.com': ..."`) and is included in the `application/problem+json` response body.
+
+### DNSSEC enforcement
+
+CAA queries respect the `server.validate_dnssec` setting (default `true`). When enabled, DNSSEC-invalid responses cause the CAA check to fail closed. DNS-over-TLS is supported when `server.dns_dot_server_name` is set. Both settings are passed through `CaaParams` to the underlying `dns::dns_query` call.
+
+### Test coverage
+
+`src/validation/caa.rs` contains unit tests for `build_name_walk` and DNS-based integration tests using a mock UDP DNS server (`start_mock_dns`). The integration tests cover:
+
+- No CAA records (unconstrained) — `Ok`
+- Matching `issue` record — `Ok`
+- Non-matching `issue` record — `Err(Caa)`
+- Wildcard fallback to `issue` when no `issuewild` exists — `Ok` and `Err`
+- `issuewild` matching — `Ok`
+- `validationmethods` matching and non-matching
+- `iodef`-only record set — `Ok` (no restriction)
+- Case-insensitive CA identity matching
+- `accounturi` matching and mismatch (RFC 8657 section 4)
