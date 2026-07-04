@@ -1092,6 +1092,48 @@ When `true`, the directory `meta` object includes `"allow-certificate-get": true
 allow_certificate_get = true
 ```
 
+### `profiles`
+
+> **Deprecated.** Use the top-level [`[profiles]`](#profiles) section instead,
+> which supports multiple provider backends (builtin, dogtag, ipa) and
+> per-profile extension control. `[server].profiles` is retained for backward
+> compatibility and will be removed in a future release.
+
+**Optional. Default: `{}` (empty map).**
+
+Simple map of profile identifier to human-readable description or documentation URL. When non-empty, the profile identifiers are advertised in the ACME directory `meta` object and clients may request a profile by name in `newOrder` (draft-ietf-acme-profiles). When empty, profile selection is not advertised.
+
+```toml
+# Deprecated — prefer [profiles.providers.local] instead
+[server.profiles]
+"tlsserver" = "Standard TLS server certificate"
+"smime"     = "S/MIME email protection certificate"
+```
+
+**Migrating to `[profiles]`:** move each entry from `[server.profiles]` to a
+`builtin` provider under `[profiles.providers]`. The profile identifier becomes
+a sub-table key and the description string becomes the `description` field:
+
+```toml
+# Before (deprecated):
+[server.profiles]
+"tlsserver" = "Standard TLS server certificate"
+
+# After (recommended):
+[profiles.providers.local]
+type = "builtin"
+
+[profiles.providers.local.profiles.tlsserver]
+description   = "Standard TLS server certificate"
+validity_days = 90
+key_usage     = ["digital_signature", "key_encipherment"]
+eku           = ["server_auth"]
+```
+
+The top-level `[profiles]` form also supports Dogtag and IPA provider backends,
+per-profile key usage / EKU / validity overrides, identifier restrictions, and
+authorization hooks. See [`[profiles]`](#profiles) for the full reference.
+
 ### `tor_connectivity_enabled`
 
 **Optional. Default: `false`.**
