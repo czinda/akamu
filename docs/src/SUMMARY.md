@@ -12,6 +12,7 @@
 
 - [Operator Roles](user/operator-roles.md)
 - [Configuration Reference](user/configuration.md)
+- [Common Configuration Patterns](user/config-recipes.md)
 - [Account Management](user/accounts.md)
 - [Orders](user/orders.md)
 - [Challenges](user/challenges.md)
