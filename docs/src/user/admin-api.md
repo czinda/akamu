@@ -9,16 +9,15 @@ all admin endpoints return `404 Not Found` and are unreachable.
 
 ```mermaid
 flowchart LR
-    AC([ACME client]) -->|"HTTPS :8443"| ACME["Akamu<br/>ACME listener<br/>/acme/*"]
-    OP([Operator]) -->|"HTTPS :9443<br/>(mTLS / GSSAPI)"| ADM["Akamu<br/>admin listener<br/>/admin/*"]
-    ACME --- CORE["Akamu core<br/>(shared DB, CA, audit)"]
-    ADM --- CORE
+    AC([ACME client]) -->|"HTTPS :8443<br/>/acme/*"| SRV["Akamu<br/>shared listener<br/>:8443"]
+    OP([Operator]) -->|"HTTPS :8443<br/>/admin/*<br/>(mTLS / GSSAPI)"| SRV
+    SRV --- CORE["Akamu core<br/>(DB, CA, audit)"]
 
     classDef client fill:#eff6ff,stroke:#3b82f6,color:#0f172a
     classDef listen fill:#fefce8,stroke:#ca8a04,color:#0f172a
     classDef core   fill:#f0fdf4,stroke:#16a34a,color:#0f172a
     class AC,OP client
-    class ACME,ADM listen
+    class SRV listen
     class CORE core
 ```
 
