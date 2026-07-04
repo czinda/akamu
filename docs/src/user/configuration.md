@@ -820,11 +820,15 @@ Each entry has the following fields:
 
 #### `cosigner_id_cert_pem`
 
-**Optional.** Path to the cosigner's X.509 identity certificate PEM file. When set, the file is loaded at startup and added to the TLS trust store for that cosigner's HTTPS connection, in addition to the system root CAs. This allows cosigners whose TLS certificate chains to an operator-provisioned CA to be used without installing that CA system-wide. The certificate is also used for cryptographic verification of received `SubtreeSignature` values.
+**Optional. Default: absent.**
+
+Path to the cosigner's X.509 identity certificate PEM file. When set, the file is loaded at startup and added to the TLS trust store for that cosigner's HTTPS connection, in addition to the system root CAs. This allows cosigners whose TLS certificate chains to an operator-provisioned CA to be used without installing that CA system-wide. The certificate is also used for cryptographic verification of received `SubtreeSignature` values.
 
 #### `trust_anchor_id`
 
-**Optional.** The expected `TrustAnchorID` OID of the cosigner in dotted-decimal notation (e.g. `"1.3.6.1.4.1.44363.47.10.1"`). Per draft-ietf-plants-merkle-tree-certs-04 §4.1, `CosignerID` is now an `OBJECT IDENTIFIER` (`TrustAnchorID ::= OBJECT IDENTIFIER`) rather than a SEQUENCE of hash algorithm and public key. When set, Akāmu verifies that the `SubtreeSignature.cosigner` OID in each response matches this value. When absent, the OID identity check is skipped; cryptographic verification via `cosigner_id_cert_pem` still applies when that field is set. Operators must agree on the OID value with their cosigner operator.
+**Optional. Default: absent.**
+
+The expected `TrustAnchorID` OID of the cosigner in dotted-decimal notation (e.g. `"1.3.6.1.4.1.44363.47.10.1"`). Per draft-ietf-plants-merkle-tree-certs-04 §4.1, `CosignerID` is now an `OBJECT IDENTIFIER` (`TrustAnchorID ::= OBJECT IDENTIFIER`) rather than a SEQUENCE of hash algorithm and public key. When set, Akāmu verifies that the `SubtreeSignature.cosigner` OID in each response matches this value. When absent, the OID identity check is skipped; cryptographic verification via `cosigner_id_cert_pem` still applies when that field is set. Operators must agree on the OID value with their cosigner operator.
 
 > **Security constraint:** Setting `trust_anchor_id` without also setting `cosigner_id_cert_pem` is a hard startup error. OID-only verification provides no cryptographic assurance — anyone who knows the OID could forge a cosignature. Both fields must be set together to enable verified cosignature acceptance.
 
@@ -1633,6 +1637,10 @@ webhook_hmac_secret = "replace-with-output-of--openssl-rand-hex-32"
 
 Set to `true` to activate the `email-reply-00` challenge type. When `false`, any POST to `/acme/email-webhook` returns `503 Service Unavailable`.
 
+```toml
+enabled = true
+```
+
 ### `from_address`
 
 **Required when `enabled = true`.** The email address the server sends challenge emails from. This value is returned to clients in the `from` field of the challenge object and passed to the send script as `$ACME_FROM`.
@@ -1808,6 +1816,10 @@ encoder = "krb5-kpn"
 
 Set to `true` to activate the `tkauth-01` challenge type. When `false`, any order with `TNAuthList` or `JWTClaimConstraints` identifiers is rejected with `unsupportedIdentifier`.
 
+```toml
+enabled = true
+```
+
 ### `trusted_ta_ca_files`
 
 **Required when `enabled = true`.** List of absolute paths to PEM files containing trusted CA certificates for Token Authority signing certificate validation. The signing certificate presented in the authority token (via `x5u` or `x5c`) must chain to one of these CA roots. Not used for `kid`-signed tokens (which rely on `trust_jwks_urls` in per-profile configuration instead).
@@ -1887,11 +1899,19 @@ encoder = "dns-san"
 
 Each encoder entry has these fields:
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `claim` | yes | JWT claim name in the authority token's `permittedValues` |
-| `encoder` | yes | Encoder name: `"krb5-kpn"`, `"ms-upn"`, or `"dns-san"` |
-| `default_realm` | no | Kerberos realm appended when the claim value contains no `@`. Only meaningful for `"krb5-kpn"`. |
+#### `claim`
+
+**Required.** JWT claim name in the authority token's `permittedValues`.
+
+#### `encoder`
+
+**Required.** Encoder name: `"krb5-kpn"`, `"ms-upn"`, or `"dns-san"`.
+
+#### `default_realm`
+
+**Optional. Default: absent.**
+
+Kerberos realm appended when the claim value contains no `@`. Only meaningful for `"krb5-kpn"`.
 
 A `permittedValues` entry with exactly one value is injected as a SAN using the matching encoder. Entries with multiple permitted values are skipped (the server cannot determine which specific value to attest).
 
@@ -2074,75 +2094,141 @@ gssapi     = true
 
 **`[ldap]` sub-table fields** (applies to both `dogtag` and `ipa` providers)
 
-*Server selection — at least one of the following is required*
+*Server selection — at least one of the following is required:*
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `uri` | string | absent | Single LDAP URI (`ldap://host:port` or `ldaps://host:636`). Kept for backward compatibility; use `uris` when listing multiple servers explicitly. |
-| `uris` | array of strings | `[]` | Ordered list of LDAP URIs tried in turn for failover. All URIs are passed to `ldap_initialize` as a space-separated string. |
-| `srv_domain` | string | absent | DNS domain for SRV discovery. Resolves `_ldap._tcp.{srv_domain}` SRV records; discovered servers are sorted by RFC 2782 priority/weight and appended after any explicit `uris`. |
+#### `uri`
+
+**Optional. Default: absent.**
+
+Single LDAP URI (`ldap://host:port` or `ldaps://host:636`). Kept for backward compatibility; use `uris` when listing multiple servers explicitly.
+
+#### `uris`
+
+**Optional. Default: `[]`.**
+
+Ordered list of LDAP URIs tried in turn for failover. All URIs are passed to `ldap_initialize` as a space-separated string.
+
+#### `srv_domain`
+
+**Optional. Default: absent.**
+
+DNS domain for SRV discovery. Resolves `_ldap._tcp.{srv_domain}` SRV records; discovered servers are sorted by RFC 2782 priority/weight and appended after any explicit `uris`.
 
 Explicit servers (`uri` / `uris`) are always tried before SRV-discovered servers. An error is returned at startup if none of the three keys is set.
 
-*Search parameters — required*
+*Search parameters:*
 
-| Key | Type | Description |
-|-----|------|-------------|
-| `base_dn` | string | Base DN for the profile search. Dogtag: directory root suffix (e.g. `dc=example,dc=com`). IPA: `o=ipaca`. |
+#### `base_dn`
 
-*Authentication — choose one method*
+**Required.** Base DN for the profile search. Dogtag: directory root suffix (e.g. `dc=example,dc=com`). IPA: `o=ipaca`.
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `bind_dn` | string | absent | Bind DN for LDAP simple bind. Required when using simple authentication. |
-| `bind_password_file` | string | absent | Path to a file containing the simple bind password (trailing newline is stripped). Required when `bind_dn` is set. |
-| `gssapi` | boolean | `false` | Use SASL GSSAPI (Kerberos) authentication. Pre-condition: the process must hold a valid Kerberos TGT in its credential cache. Mutually exclusive with `bind_dn` / `bind_password_file`. |
+*Authentication — choose one method:*
 
-*TLS*
+#### `bind_dn`
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `tls_ca_cert_file` | string | absent | Path to a PEM CA certificate used to verify the LDAP server's TLS certificate. When this is set on an `ldap://` URI, STARTTLS is negotiated automatically before any credentials are sent. When set on an `ldaps://` URI, the CA is used for the immediate TLS handshake. When absent, the system trust store is used. |
+**Optional. Default: absent.**
+
+Bind DN for LDAP simple bind. Required when using simple authentication.
+
+#### `bind_password_file`
+
+**Optional. Default: absent.**
+
+Path to a file containing the simple bind password (trailing newline is stripped). Required when `bind_dn` is set.
+
+#### `gssapi`
+
+**Optional. Default: `false`.**
+
+Use SASL GSSAPI (Kerberos) authentication. Pre-condition: the process must hold a valid Kerberos TGT in its credential cache. Mutually exclusive with `bind_dn` / `bind_password_file`.
+
+*TLS:*
+
+#### `tls_ca_cert_file`
+
+**Optional. Default: absent.**
+
+Path to a PEM CA certificate used to verify the LDAP server's TLS certificate. When this is set on an `ldap://` URI, STARTTLS is negotiated automatically before any credentials are sent. When set on an `ldaps://` URI, the CA is used for the immediate TLS handshake. When absent, the system trust store is used.
 
 **Additional `builtin` profile fields**
 
 Beyond the core extension fields, each `builtin` profile supports four groups of optional settings:
 
-*Multi-CA restriction*
+*Multi-CA restriction:*
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `ca_ids` | `[]` | List of CA IDs for which this profile is available. When non-empty, the profile is only accessible via the named CAs' ACME endpoints; requests via other CAs receive `invalidProfile`. Empty = available via all CAs. Config validation rejects entries not matching a configured CA `id`. |
+#### `ca_ids`
 
-*Kerberos / UPN SAN injection*
+**Optional. Default: `[]`.**
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `kpn_san_templates` | `[]` | KPN SAN templates expanded against the order's DNS SANs at issuance. `{dns}` is replaced with each DNS SAN. Syntax: `"HTTP/{dns}@REALM"` produces an NT-SRV-HST(3) KPN; `"{dns}@REALM"` produces an NT-PRINCIPAL(1) KPN. Templates without `{dns}` are injected once (static). |
-| `ms_upn_san_template` | absent | MS-UPN SAN template (OID `1.3.6.1.4.1.311.20.2.3`). `{dns}` is replaced with the first DNS SAN from the CSR. Use a literal value for a static UPN. |
-| `inject_account_kpn` | `false` | When `true`, inject the account's stored Kerberos principal (copied from the EAB `bound_principal` at registration) as a KRB5PrincipalName OtherName SAN. |
+List of CA IDs for which this profile is available. When non-empty, the profile is only accessible via the named CAs' ACME endpoints; requests via other CAs receive `invalidProfile`. Empty = available via all CAs. Config validation rejects entries not matching a configured CA `id`.
 
-*Certificate format*
+*Kerberos / UPN SAN injection:*
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `issue_as` | absent / `"x509"` | Set to `"mtc"` to issue a Merkle Tree Certificate standalone certificate instead of a PEM chain. Requires `[mtc]` to be enabled. The standalone certificate is a standard X.509 v3 `Certificate` where `signatureAlgorithm` is `id-alg-mtcProof` (OID `1.3.6.1.4.1.44363.47.0`, experimental pre-IANA) and `signatureValue` carries a TLS-encoded `MTCProof`. Per draft-04 §4.3, `MTCProof` contains a leading `extensions` field (uint16 length-prefixed; empty = `\x00\x00`), `start`/`end` as uint48 (6-byte big-endian), and a uint8-prefixed `cosigner_id` in each `MtcSignature`. The OID will change when the draft is published as an RFC. |
+#### `kpn_san_templates`
 
-*Per-profile authorization*
+**Optional. Default: `[]`.**
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `allowed_identifiers` | `[]` | List of regex patterns. Each order identifier is matched as `"type:value"` (e.g. `"dns:example.com"`). Empty = no restriction. |
-| `identifier_match` | `"all"` | `"all"`: every identifier must match a pattern. `"any"`: at least one identifier must match. Ignored when `allowed_identifiers` is empty. |
-| `auth_hook` | absent | Path to an external executable. Receives JSON on stdin; exit 0 = permit, non-zero = deny. |
-| `auth_hook_timeout_secs` | `30` | Seconds to wait for the hook before denying. |
-| `require_account_grant` | `false` | When `true`, the account must have this profile's name in its `profile_grants` attribute (set via the Admin API or inherited from its EAB key). |
+KPN SAN templates expanded against the order's DNS SANs at issuance. `{dns}` is replaced with each DNS SAN. Syntax: `"HTTP/{dns}@REALM"` produces an NT-SRV-HST(3) KPN; `"{dns}@REALM"` produces an NT-PRINCIPAL(1) KPN. Templates without `{dns}` are injected once (static).
 
-*tkauth-01 JWKS trust*
+#### `ms_upn_san_template`
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `trust_jwks_urls` | `[]` | List of HTTPS or `http+unix://` URLs of JWKS endpoints trusted for `kid`-signed authority tokens (RFC 9447 tkauth-01). Only meaningful when `[tkauth]` is enabled. When empty, `kid`-signed tokens are rejected for this profile. |
+**Optional. Default: absent.**
+
+MS-UPN SAN template (OID `1.3.6.1.4.1.311.20.2.3`). `{dns}` is replaced with the first DNS SAN from the CSR. Use a literal value for a static UPN.
+
+#### `inject_account_kpn`
+
+**Optional. Default: `false`.**
+
+When `true`, inject the account's stored Kerberos principal (copied from the EAB `bound_principal` at registration) as a KRB5PrincipalName OtherName SAN.
+
+*Certificate format:*
+
+#### `issue_as`
+
+**Optional. Default: absent / `"x509"`.**
+
+Set to `"mtc"` to issue a Merkle Tree Certificate standalone certificate instead of a PEM chain. Requires `[mtc]` to be enabled. The standalone certificate is a standard X.509 v3 `Certificate` where `signatureAlgorithm` is `id-alg-mtcProof` (OID `1.3.6.1.4.1.44363.47.0`, experimental pre-IANA) and `signatureValue` carries a TLS-encoded `MTCProof`. Per draft-04 §4.3, `MTCProof` contains a leading `extensions` field (uint16 length-prefixed; empty = `\x00\x00`), `start`/`end` as uint48 (6-byte big-endian), and a uint8-prefixed `cosigner_id` in each `MtcSignature`. The OID will change when the draft is published as an RFC.
+
+*Per-profile authorization:*
+
+#### `allowed_identifiers`
+
+**Optional. Default: `[]`.**
+
+List of regex patterns. Each order identifier is matched as `"type:value"` (e.g. `"dns:example.com"`). Empty = no restriction.
+
+#### `identifier_match`
+
+**Optional. Default: `"all"`.**
+
+`"all"`: every identifier must match a pattern. `"any"`: at least one identifier must match. Ignored when `allowed_identifiers` is empty.
+
+#### `auth_hook`
+
+**Optional. Default: absent.**
+
+Path to an external executable. Receives JSON on stdin; exit 0 = permit, non-zero = deny.
+
+#### `auth_hook_timeout_secs`
+
+**Optional. Default: `30`.**
+
+Seconds to wait for the hook before denying.
+
+#### `require_account_grant`
+
+**Optional. Default: `false`.**
+
+When `true`, the account must have this profile's name in its `profile_grants` attribute (set via the Admin API or inherited from its EAB key).
+
+*tkauth-01 JWKS trust:*
+
+#### `trust_jwks_urls`
+
+**Optional. Default: `[]`.**
+
+List of HTTPS or `http+unix://` URLs of JWKS endpoints trusted for `kid`-signed authority tokens (RFC 9447 tkauth-01). Only meaningful when `[tkauth]` is enabled. When empty, `kid`-signed tokens are rejected for this profile.
 
 The `http+unix://` form allows co-located Token Authorities (for example, an Ekishib IdP on the same host) to be reached without a network port. Encode the socket path with `/` as `%2F`:
 
