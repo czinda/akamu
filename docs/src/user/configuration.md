@@ -267,6 +267,12 @@ cert_file  = "/etc/akamu/rsa-ca.cert.pem"
 id        = "ec"
 key_file  = "/etc/akamu/ec-ca.key.pem"
 cert_file = "/etc/akamu/ec-ca.cert.pem"
+
+# HSM-backed CA (PKCS#11 URI — key lives in a hardware token)
+[[ca]]
+id        = "hsm"
+key_file  = "pkcs11:token=akamu;object=ca-key"
+cert_file = "/etc/akamu/hsm-ca.cert.pem"
 ```
 
 ### `id`
@@ -315,7 +321,10 @@ caa_identities = ["rsa.acme.example.com", "acme.example.com"]
 
 ### `key_file`
 
-**Required.** Path to the CA private key PEM file.
+**Required.** Path to the CA private key PEM file **or** a PKCS#11 URI
+(`pkcs11:token=...;object=...`) for HSM-backed keys.
+
+**File-based keys** (default):
 
 - If both `key_file` and `cert_file` are absent on disk, a new key is generated and written to this path on first run.
 - If both files are present, they are loaded without modification.
@@ -324,6 +333,86 @@ caa_identities = ["rsa.acme.example.com", "acme.example.com"]
 ```toml
 key_file = "/etc/akamu/ca.key.pem"
 ```
+
+**PKCS#11 / HSM keys:**
+
+When `key_file` starts with `pkcs11:`, the server treats the value as an
+RFC 7512 PKCS#11 URI and loads the private key from a hardware security
+module (HSM) or software token. The key must already exist in the token
+before the server starts -- PKCS#11 keys are never auto-generated. Key
+material never leaves the token; only the public key (SPKI) is extracted
+for certificate operations.
+
+If `cert_file` is absent on disk at first startup, the server generates a
+self-signed CA certificate using the token key and writes it to
+`cert_file`. On subsequent starts, the certificate is loaded from disk
+normally.
+
+The URI format follows RFC 7512. Recognised attributes:
+
+| Attribute | Description |
+|-----------|-------------|
+| `token=` | Token label (required for NSS; recommended for OpenSSL) |
+| `object=` | Object (key) label (`CKA_LABEL`) |
+| `id=` | Key ID (`CKA_ID`), percent-encoded bytes (e.g. `%01%02`) |
+| `pin-value=` | PIN passed as a query parameter (`?pin-value=...`) |
+| `module-path=` | Path to the PKCS#11 `.so` module (non-standard extension) |
+
+The key type stored in the token determines the signing algorithm. Any key
+type the token supports can be used -- ECDSA (P-256, P-384, P-521), RSA,
+Ed25519, etc. The `key_type` configuration field is ignored for PKCS#11
+keys (it only controls auto-generation of file-based keys).
+
+Example URIs:
+
+```toml
+# SoftHSM2 token
+key_file = "pkcs11:token=akamu;object=ca-key"
+
+# With explicit PIN (prefer environment/provider config over embedding PINs)
+key_file = "pkcs11:token=akamu;object=ca-key?pin-value=1234"
+
+# Using CKA_ID instead of object label
+key_file = "pkcs11:token=akamu;id=%01%02%03"
+```
+
+**Backend-specific setup:**
+
+The PKCS#11 module must be configured externally before starting the
+server. The setup differs by crypto backend:
+
+*OpenSSL backend* (default build): The
+[pkcs11-provider](https://github.com/latchset/pkcs11-provider) must be
+loaded via `openssl.cnf` or the `OPENSSL_CONF` environment variable. The
+provider makes PKCS#11 tokens accessible through the OpenSSL store API
+(`OSSL_STORE_open_ex`). Example `openssl.cnf` snippet:
+
+```ini
+[openssl_init]
+providers = provider_sect
+
+[provider_sect]
+pkcs11 = pkcs11_sect
+default = default_sect
+
+[pkcs11_sect]
+module = /usr/lib64/ossl-modules/pkcs11.so
+pkcs11-module-path = /usr/lib64/softhsm/libsofthsm2.so
+activate = 1
+
+[default_sect]
+activate = 1
+```
+
+*NSS backend*: The PKCS#11 module must be registered in the NSS secmod
+database. The URI **must** include a non-empty `token=` attribute -- the
+NSS code path uses `PK11_FindSlotByName` to locate the slot from the
+token label, then calls `PK11_ListPrivKeysInSlot` to find the key.
+
+**Interaction with `require_encrypted_key`:** When `require_encrypted_key
+= true` and `key_file` is a PKCS#11 URI, the encrypted-PEM check is
+skipped (the HSM provides its own key protection). `key_password_file` is
+not needed for PKCS#11 keys.
 
 ### `cert_file`
 
