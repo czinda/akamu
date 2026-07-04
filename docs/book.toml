@@ -18,15 +18,16 @@ additional-js = ["mermaid.min.js", "mermaid-init.js"]
 [output.rustdoc]
 command = "python3 ../../scripts/mdbook-copy-api.py"
 
-[output.pandoc]
-number-internal-headings = false # number headings inside of chapters
-list-internal-headings = false # list internal headings in the table of contents
-
-[output.pandoc.profile.pdf]
-output-file = "akamu-book.pdf"
-to = "latex"
-pdf-engine = "xelatex"
-filters = ["mermaid-filter.lua"]
+# Enable the following sections when building a PDF
+##[output.pandoc]
+##number-internal-headings = false # number headings inside of chapters
+##list-internal-headings = false # list internal headings in the table of contents
+##
+##[output.pandoc.profile.pdf]
+##output-file = "akamu-book.pdf"
+##to = "latex"
+##pdf-engine = "xelatex"
+##filters = ["mermaid-filter.lua"]
 
 [preprocessor]
 
