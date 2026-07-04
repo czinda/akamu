@@ -62,7 +62,7 @@ listen_addr = "127.0.0.1:8080"
 base_url    = "https://acme.example.com"
 
 [database]
-path = "/var/lib/akamu/akamu.db"
+url = "sqlite:///var/lib/akamu/akamu.db"
 
 [ca]
 key_file  = "/etc/akamu/ca.key.pem"
