@@ -42,6 +42,35 @@ flowchart TD
     class ERR fail
 ```
 
+## Network architecture
+
+The following diagram shows the three common network topologies for reaching
+Akamu, corresponding to the deployment modes above.
+
+```mermaid
+flowchart LR
+    subgraph direct["Direct TLS (Modes 2–4)"]
+        C1([ACME client]) -->|HTTPS| A1["Akamu<br/>(TLS termination)"]
+    end
+
+    subgraph proxy["Reverse proxy (Mode 1)"]
+        C2([ACME client]) -->|HTTPS| P["nginx / Apache / Caddy<br/>(TLS termination)"]
+        P -->|"HTTP or<br/>Unix socket"| A2["Akamu<br/>(plain HTTP)"]
+    end
+
+    subgraph proxymtls["Proxy-forwarded admin mTLS"]
+        C3([Operator]) -->|mTLS| P2["nginx / Apache / Envoy<br/>(TLS + client cert)"]
+        P2 -->|"HTTP +<br/>X-Ssl-Client-Cert"| A3["Akamu<br/>(plain HTTP)"]
+    end
+
+    classDef client fill:#eff6ff,stroke:#3b82f6,color:#0f172a
+    classDef proxy  fill:#fefce8,stroke:#ca8a04,color:#0f172a
+    classDef server fill:#f0fdf4,stroke:#16a34a,color:#0f172a
+    class C1,C2,C3 client
+    class P,P2 proxy
+    class A1,A2,A3 server
+```
+
 ## Deployment walkthroughs
 
 The sections below walk through each of the four supported operating modes in

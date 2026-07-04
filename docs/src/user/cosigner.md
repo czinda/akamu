@@ -4,6 +4,25 @@
 
 Operators who run an independent MTC log can expose `akamu-cosigner` as a public cosigning service.  Operators who want additional signatures on their own log can run one or more cosigner instances as part of their infrastructure.
 
+## Architecture
+
+```mermaid
+flowchart TD
+    A["Akamu server<br/>(MTC log)"] -->|"POST /sign<br/>DER Checkpoint"| CS["akamu-cosigner<br/>(signing daemon)"]
+    CS -->|"200 OK<br/>DER SubtreeSignature"| A
+    A -->|embeds signature| SC["StandaloneCertificate<br/>issued to ACME clients"]
+
+    OP([Operator]) -->|"mTLS or session token"| ADM["akamu-cosigner<br/>admin listener<br/>(:9444)"]
+    ADM -->|"/admin/status<br/>/admin/stats<br/>/admin/config"| OP
+
+    classDef server fill:#f0fdf4,stroke:#16a34a,color:#0f172a
+    classDef output fill:#eff6ff,stroke:#3b82f6,color:#0f172a
+    classDef client fill:#fefce8,stroke:#ca8a04,color:#0f172a
+    class A,CS,ADM server
+    class SC output
+    class OP client
+```
+
 ## Binary
 
 Build from source:

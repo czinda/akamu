@@ -7,6 +7,21 @@ listener as the main ACME API.  It requires operator authentication on every
 request.  When the `[admin]` section is absent from the configuration file,
 all admin endpoints return `404 Not Found` and are unreachable.
 
+```mermaid
+flowchart LR
+    AC([ACME client]) -->|"HTTPS :8443"| ACME["Akamu<br/>ACME listener<br/>/acme/*"]
+    OP([Operator]) -->|"HTTPS :9443<br/>(mTLS / GSSAPI)"| ADM["Akamu<br/>admin listener<br/>/admin/*"]
+    ACME --- CORE["Akamu core<br/>(shared DB, CA, audit)"]
+    ADM --- CORE
+
+    classDef client fill:#eff6ff,stroke:#3b82f6,color:#0f172a
+    classDef listen fill:#fefce8,stroke:#ca8a04,color:#0f172a
+    classDef core   fill:#f0fdf4,stroke:#16a34a,color:#0f172a
+    class AC,OP client
+    class ACME,ADM listen
+    class CORE core
+```
+
 See [`akamuctl`](akamuctl.md) for the command-line tool that wraps this API.
 See [Configuration Reference — `[admin]`](configuration.md#admin) for all
 configuration keys.
