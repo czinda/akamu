@@ -29,6 +29,7 @@
 - [Migration Guide](user/migration-guide.md)
 - [Backup and Restore](user/backup-restore.md)
 - [akamuctl — Admin CLI](user/akamuctl.md)
+- [Web UI](user/webui.md)
 
 # Cluster Operations
 
