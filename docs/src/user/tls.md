@@ -16,7 +16,8 @@ Backward compatibility is strict: deployments without a `[tls]` section in
 |----------|----------------|
 | Single-host lab / development | Native TLS — fewer moving parts |
 | High-traffic or load-balanced production | Reverse proxy — better performance, centralized cert management |
-| Mutual-TLS client authentication | Native TLS — the proxy would need to forward raw TLS which most do not |
+| Mutual-TLS client authentication (ACME clients) | Native TLS — the TLS handshake must reach Akāmu directly |
+| Admin operator mTLS behind a proxy | Either works — native mTLS via `[tls.client_auth]`, or proxy-forwarded client certs via `[admin.proxy_auth]` (see [Proxy-forwarded client certificates](#proxy-forwarded-client-certificates-for-admin-mtls) below) |
 | Post-quantum hybrid mTLS | Native TLS — composite ML-DSA schemes require direct OpenSSL integration |
 
 ---
@@ -364,7 +365,6 @@ Composite schemes are TLS 1.3 only and never appear in a TLS 1.2 handshake.
 ## Full annotated example with mTLS
 
 ```toml
-[server]
 listen_addr = "0.0.0.0:8443"
 base_url    = "https://akamu.internal:8443"
 
@@ -384,6 +384,47 @@ allow_post_quantum = true
 max_chain_depth    = 5
 minimum_rsa_modulus = 3072
 ```
+
+---
+
+## Proxy-forwarded client certificates for admin mTLS
+
+When Akāmu runs behind a TLS-terminating reverse proxy (Nginx, Apache, Envoy),
+the TLS handshake happens at the proxy and the client certificate never reaches
+Akāmu directly.  For **admin operator authentication**, the proxy can forward
+the verified client certificate in an HTTP header.  Configure
+`[admin.proxy_auth]` to enable this:
+
+```toml
+listen_addr = "127.0.0.1:8080"
+base_url    = "https://acme.example.com"
+
+[admin]
+session_ttl_secs = 3600
+
+[admin.proxy_auth]
+trusted_proxies = ["127.0.0.1/32"]
+header_format   = "x-ssl-client-cert"   # or "ssl-client-cert" or "xfcc"
+```
+
+Three header conventions are supported:
+
+| `header_format` | Header name | Proxy |
+|-----------------|-------------|-------|
+| `"x-ssl-client-cert"` *(default)* | `X-SSL-Client-Cert` | Nginx |
+| `"ssl-client-cert"` | `SSL_CLIENT_CERT` | Apache |
+| `"xfcc"` | `X-Forwarded-Client-Cert` | Envoy |
+
+The certificate header is only read when the TCP peer address matches one of
+the `trusted_proxies` entries.  Requests from untrusted IPs that include the
+header silently ignore it.
+
+> **Note:** proxy-forwarded client certificates apply to **admin operator
+> authentication only** (`/admin/*` endpoints).  ACME client mTLS (Mode 4
+> above) requires native TLS — the TLS handshake must reach Akāmu directly.
+
+See [Configuration Reference — `[admin.proxy_auth]`](configuration.md#adminproxy_auth)
+for the full field reference and proxy configuration examples.
 
 ---
 

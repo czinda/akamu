@@ -440,11 +440,11 @@ The download endpoint auto-detects MTC certificates by their PEM marker and swit
 
 ## Admin API
 
-The admin API is enabled by adding an `[admin]` section to `config.toml` with a `listen_addr` and at least one of `ca_certs` (for mTLS client certificates) or `[admin.gssapi]` (for Kerberos). See [Configuration Reference — `[admin]`](configuration.md#admin) for all configuration keys.
+The admin API is enabled by adding an `[admin]` section to `config.toml` and at least one of `[tls.client_auth]` (for mTLS client certificates), `[admin.proxy_auth]` (for proxy-forwarded client certificates), or `[admin.gssapi]` (for Kerberos). Admin endpoints are served on the same listener as the ACME API. See [Configuration Reference — `[admin]`](configuration.md#admin) for all configuration keys.
 
 Operators authenticate via mTLS client certificate or GSSAPI/Kerberos session token. A successful login returns a `session_token` that is passed as `Authorization: Bearer <token>` on subsequent requests. Each endpoint enforces a role-based access policy; see [Admin API — Endpoint reference](admin-api.md#endpoint-reference) for the full role matrix.
 
-When `[admin]` is absent from the configuration, the admin listener is not started and all admin endpoints are unreachable.
+When `[admin]` is absent from the configuration, all admin endpoints return 404 and are unreachable.
 
 ### Account profile grants
 

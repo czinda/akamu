@@ -266,7 +266,7 @@ src/
                    POST /admin/ca/{id}/crl/force, POST /admin/ca/{id}/cross-sign;
                    GET /admin/cross-certs, GET /admin/cross-certs/{id};
                    GET/POST /admin/delegations, GET/PUT/DELETE /admin/delegations/{id}
-                   (role-based access control; admin listener not started when [admin] absent)
+                   (role-based access control; admin endpoints return 404 when [admin] absent)
 
   ca/
     mod.rs         Re-exports ca submodules

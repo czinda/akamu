@@ -296,7 +296,7 @@ validate_dnssec = true
 # bootstrap_operator_key_file  = "/etc/akamu/bootstrap-admin.key"
 # bootstrap_operator_name      = "admin"
 #
-# Bootstrap operator (GSSAPI) — mutually exclusive with cert bootstrap above.
+# Bootstrap operator (GSSAPI) — can be combined with cert bootstrap above.
 # When operators table is empty at startup, registers this principal as Administrator.
 # bootstrap_operator_gssapi_principal = "admin@EXAMPLE.COM"
 #
@@ -304,6 +304,13 @@ validate_dnssec = true
 # [admin.gssapi]
 # keytab_file  = "/etc/akamu/admin-http.keytab"
 # service_name = "HTTP"
+#
+# Proxy-forwarded client certificate authentication.
+# When behind a TLS-terminating reverse proxy, the proxy can forward the
+# client certificate in an HTTP header. See docs for Nginx/Apache/Envoy examples.
+# [admin.proxy_auth]
+# trusted_proxies = ["127.0.0.1/32"]
+# header_format   = "x-ssl-client-cert"   # or "ssl-client-cert" or "xfcc"
 
 # ── RFC 9115 delegation upstream CA ──────────────────────────────────────────
 # When present, akamu acts as an ACME client toward an upstream CA to obtain

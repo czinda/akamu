@@ -287,13 +287,11 @@ validate_dnssec = true
 # minimum_rsa_modulus  = 2048
 
 # ── Admin API ─────────────────────────────────────────────────────────────────
+# Admin endpoints (/admin/*) are served on the same listener as the ACME API.
 # When absent, all /admin/* endpoints return 404.
-# At least one of ca_certs or [admin.gssapi] must be configured.
+# At least one of [tls.client_auth], [admin.proxy_auth], or [admin.gssapi]
+# must be configured for operator authentication.
 # [admin]
-# listen_addr = "127.0.0.1:9443"
-# cert_file   = "/etc/akamu/admin-tls.pem"
-# key_file    = "/etc/akamu/admin-tls-key.pem"
-# ca_certs    = ["/etc/akamu/operator-ca.pem"]   # omit when using GSSAPI-only auth
 #
 # Inactive session expiry (seconds). Default: 3600 (1 hour).
 # session_ttl_secs = 3600
@@ -328,8 +326,7 @@ validate_dnssec = true
 # audit_alarm_threshold = 10
 # audit_alarm_action    = "syslog"   # "syslog" or "halt"
 #
-# Auto-generated admin TLS certificate (testing only; omit cert_file/key_file):
-# server_name        = "localhost"
+# Key algorithm for the bootstrap operator certificate. Default: "ec:P-256".
 # bootstrap_key_type = "ec:P-256"
 #
 # Bootstrap an initial Administrator operator on first run (optional).
@@ -342,6 +339,13 @@ validate_dnssec = true
 # [admin.gssapi]
 # keytab_file  = "/etc/akamu/http.keytab"
 # service_name = "HTTP"
+#
+# Proxy-forwarded client certificate authentication.
+# When behind a TLS-terminating reverse proxy, the proxy can forward the
+# client certificate in an HTTP header. See docs for Nginx/Apache/Envoy examples.
+# [admin.proxy_auth]
+# trusted_proxies = ["127.0.0.1/32"]
+# header_format   = "x-ssl-client-cert"   # or "ssl-client-cert" or "xfcc"
 
 # ── Certificate profiles ──────────────────────────────────────────────────────
 # When absent, the deprecated [server].profiles map governs directory advertisement

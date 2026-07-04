@@ -333,22 +333,11 @@ pub fn build_rustls_server_config(
 5. If absent: calls `.with_no_client_auth()`.
 6. Calls `.with_single_cert(certs, key)` to install the server certificate and key.
 
-### `build_admin_rustls_server_config` (`src/tls/mod.rs`)
-
-A parallel function for the dedicated admin listener:
-
-```rust
-pub fn build_admin_rustls_server_config(
-    admin: &crate::config::AdminConfig,
-) -> Result<rustls::ServerConfig, String>
-```
-
-Differences from `build_rustls_server_config`:
-
-- Always enables both TLS 1.2 and TLS 1.3 (not configurable via `protocols`).
-- Client auth is **optional**: if `admin.ca_certs` is empty, `with_no_client_auth()` is used; otherwise a `SyntaClientCertVerifier` is built with `required = false` so the same listener serves both mTLS (cert path) and GSSAPI (no cert presented) connections.
-- Uses a fixed `ClientAuthConfig` with `profile = "rfc5280"`, `max_chain_depth = 5`, `minimum_rsa_modulus = 2048`, and `allow_post_quantum = false`.
-- Admin ALPN is `["http/1.1"]` only (set by the caller after this function returns).
+Admin endpoints (`/admin/*`) share the same listener and TLS configuration as
+the ACME API — there is no separate admin listener or dedicated admin TLS
+builder.  Operator mTLS authentication uses the `[tls.client_auth]` section
+with `required = false`, so the same listener can serve both mTLS (cert path)
+and GSSAPI (no cert presented) connections.
 
 ### `leaf_cert_der` (`src/tls/mod.rs`)
 

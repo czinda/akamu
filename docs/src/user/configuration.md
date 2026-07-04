@@ -75,7 +75,7 @@ service_name = "HTTP"
 # static_dir = "/usr/share/akamu/webui"
 
 [tls.client_auth]
-ca_certs = ["/etc/akamu/operator-ca.pem"]
+ca_files = ["/etc/akamu/operator-ca.pem"]
 required = false
 
 [admin]
@@ -529,9 +529,36 @@ filesystem path (not a PKCS#11 URI).
 key_password_file = "/etc/akamu/ca-key-passphrase"
 ```
 
+### `mtc`
+
+**Optional. Default: absent (CA does not participate in an MTC log).**
+
+Per-CA MTC transparency log configuration. When present, this CA participates
+in a Merkle Tree Certificate log with the settings given here. The sub-table
+accepts the same fields as the top-level `[mtc]` section (see below).
+
+When absent, the CA falls back to the global `[mtc]` section if one exists.
+Prefer the per-CA form for new deployments; the global `[mtc]` section is
+deprecated and retained only for backward compatibility.
+
+```toml
+[[ca]]
+id        = "default"
+key_file  = "/etc/akamu/ca.key.pem"
+cert_file = "/etc/akamu/ca.cert.pem"
+
+[ca.mtc]
+log_path = "/var/lib/akamu/mtc.log"
+enabled  = true
+```
+
 ---
 
 ## `[mtc]`
+
+> **Deprecated.** The top-level `[mtc]` section is retained for backward
+> compatibility. Prefer the per-CA `[ca.mtc]` sub-table instead. When a CA
+> has its own `[ca.mtc]`, the global section is ignored for that CA.
 
 ### `log_path`
 
@@ -1580,7 +1607,7 @@ contacts = ["mailto:admin@example.com"]
 
 ### `challenge_solver`
 
-**Required within `[delegation_upstream]`.** Challenge type used to satisfy the upstream CA's authorizations. Only `"dns-01"` is currently supported.
+**Required within `[delegation_upstream]`.** Challenge type used to satisfy the upstream CA's authorizations. Accepted values: `"dns-01"`, `"http-01"`, `"tls-alpn-01"`.
 
 ```toml
 challenge_solver = "dns-01"
@@ -1588,7 +1615,7 @@ challenge_solver = "dns-01"
 
 ### `challenge_deploy_script`
 
-**Required within `[delegation_upstream]`.** Absolute path to an executable that deploys the dns-01 TXT record at the upstream CA's direction. The script is invoked with `env_clear()`; only the following environment variables are set:
+**Required when `challenge_solver = "dns-01"`.** Absolute path to an executable that deploys the dns-01 TXT record at the upstream CA's direction. The script is invoked with `env_clear()`; only the following environment variables are set:
 
 | Variable | Value |
 |----------|-------|
@@ -1956,6 +1983,14 @@ Beyond the core extension fields, each `builtin` profile supports four groups of
 |-----|---------|-------------|
 | `ca_ids` | `[]` | List of CA IDs for which this profile is available. When non-empty, the profile is only accessible via the named CAs' ACME endpoints; requests via other CAs receive `invalidProfile`. Empty = available via all CAs. Config validation rejects entries not matching a configured CA `id`. |
 
+*Kerberos / UPN SAN injection*
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `kpn_san_templates` | `[]` | KPN SAN templates expanded against the order's DNS SANs at issuance. `{dns}` is replaced with each DNS SAN. Syntax: `"HTTP/{dns}@REALM"` produces an NT-SRV-HST(3) KPN; `"{dns}@REALM"` produces an NT-PRINCIPAL(1) KPN. Templates without `{dns}` are injected once (static). |
+| `ms_upn_san_template` | absent | MS-UPN SAN template (OID `1.3.6.1.4.1.311.20.2.3`). `{dns}` is replaced with the first DNS SAN from the CSR. Use a literal value for a static UPN. |
+| `inject_account_kpn` | `false` | When `true`, inject the account's stored Kerberos principal (copied from the EAB `bound_principal` at registration) as a KRB5PrincipalName OtherName SAN. |
+
 *Certificate format*
 
 | Key | Default | Description |
@@ -2011,7 +2046,7 @@ At least one of `[tls.client_auth]`, `[admin.proxy_auth]`, or `[admin.gssapi]` m
 ```toml
 # mTLS client authentication — operator CA(s) accepted for /admin/* requests.
 [tls.client_auth]
-ca_certs = ["/etc/akamu/operator-ca.pem"]
+ca_files = ["/etc/akamu/operator-ca.pem"]
 required = false   # allow GSSAPI-only clients that carry no cert
 
 [admin]

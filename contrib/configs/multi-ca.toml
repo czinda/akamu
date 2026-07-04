@@ -104,12 +104,18 @@ key_usage     = ["digital_signature", "key_encipherment"]
 eku           = ["server_auth"]
 ca_ids        = ["rsa"]
 
+# ── TLS (required for admin mTLS) ─────────────────────────────────────────────
+[tls]
+enabled   = true
+cert_file = "/etc/akamu/server.crt"
+key_file  = "/etc/akamu/server.key"
+
+[tls.client_auth]
+ca_files = ["/etc/akamu/operator-ca.pem"]
+required = false
+
 # ── Admin API ─────────────────────────────────────────────────────────────────
 [admin]
-listen_addr = "127.0.0.1:9443"
-cert_file   = "/etc/akamu/admin-tls.pem"
-key_file    = "/etc/akamu/admin-tls-key.pem"
-ca_certs    = ["/etc/akamu/operator-ca.pem"]
 
 # Bootstrap an Administrator operator on first run.
 # bootstrap_operator_cert_file = "/etc/akamu/admin-bootstrap.pem"

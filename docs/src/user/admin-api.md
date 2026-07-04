@@ -2,12 +2,10 @@
 
 > **API Reference** — This page documents the admin REST API for operators and automation tools. For the akamuctl CLI that wraps this API, see [akamuctl — Admin CLI](../user/akamuctl.md) in the Operator Guide.
 
-The akamu admin API is a separate HTTPS listener that exposes management
-endpoints for operators.  It is completely independent of the main ACME
-listener: it binds to a different address, uses its own TLS certificate, and
-requires operator authentication on every request.  When the `[admin]` section
-is absent from the configuration file, all admin endpoints return `404 Not Found`
-and are unreachable.
+The akamu admin API exposes management endpoints for operators on the same
+listener as the main ACME API.  It requires operator authentication on every
+request.  When the `[admin]` section is absent from the configuration file,
+all admin endpoints return `404 Not Found` and are unreachable.
 
 See [`akamuctl`](akamuctl.md) for the command-line tool that wraps this API.
 See [Configuration Reference — `[admin]`](configuration.md#admin) for all
@@ -68,9 +66,8 @@ and the complete route-by-role permission matrix, see
 
 ## Endpoint reference
 
-All paths are relative to the admin listener base URL.  The `[admin].listen_addr`
-field controls the address; the default in the configuration example is
-`https://127.0.0.1:9443`.
+All paths are relative to the server's `base_url`.  Admin endpoints are
+served on the same listener as the ACME API.
 
 ### `POST /admin/session`
 
@@ -1077,16 +1074,22 @@ The halt flag is also set when the `"halt"` overflow policy is triggered.
 
 ### Initial setup
 
-Akāmu auto-provisions the first administrator on first run.  Add two keys to
-`[admin]` that point to where the bootstrap certificate and key should live:
+Akāmu auto-provisions the first administrator on first run.  Enable TLS on the
+main listener via `[tls]` and configure `[tls.client_auth]` so operator client
+certificates are verified.  Then add `[admin]` keys that point to where the
+bootstrap certificate and key should live:
 
 ```toml
-[admin]
-listen_addr    = "127.0.0.1:9443"
-cert_file      = "/etc/akamu/admin-tls.pem"
-key_file       = "/etc/akamu/admin-tls-key.pem"
-ca_certs       = ["/etc/akamu/ca.pem"]
+[tls]
+enabled   = true
+cert_file = "/etc/akamu/server.crt"
+key_file  = "/etc/akamu/server.key"
 
+[tls.client_auth]
+ca_files = ["/etc/akamu/operator-ca.pem"]
+required = false   # allow GSSAPI-only clients that carry no cert
+
+[admin]
 # Bootstrap operator — generated automatically on first run.
 bootstrap_operator_cert_file = "/etc/akamu/admin-bootstrap.pem"
 bootstrap_operator_key_file  = "/etc/akamu/admin-bootstrap-key.pem"
@@ -1095,18 +1098,14 @@ bootstrap_operator_key_file  = "/etc/akamu/admin-bootstrap-key.pem"
 # bootstrap_key_type         = "ec:P-256"  # default
 ```
 
-On the first startup, if both files are absent **and** the operators table is
-empty, Akāmu:
+On the first startup, if both bootstrap files are absent **and** the operators
+table is empty, Akāmu:
 
 1. Generates a fresh private key (using `bootstrap_key_type`).
 2. Issues a client certificate signed by the Akāmu CA with `CN=<bootstrap_operator_name>` and a SubjectAltName extension. The SAN type is selected by an optional prefix on the name (`dns:`, `email:`, `ip:`, `uri:`, `dn:`); a bare name defaults to a `directoryName` SAN built from the Subject DN. See [`bootstrap_operator_name`](configuration.md#bootstrap_operator_name) for the full prefix table.
 3. Writes the key and certificate PEM files to the configured paths.
 4. Registers the certificate's SHA-256 fingerprint in the operators table with
    the `administrator` role.
-
-Both the admin listener TLS certificate (`cert_file`/`key_file`) and the
-bootstrap operator cert are auto-generated if absent; the admin listener cert
-uses `server_name` (default `"localhost"`) as the CN/SAN.
 
 After first boot, use the bootstrap cert to authenticate and provision real
 operator accounts:
