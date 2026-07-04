@@ -701,3 +701,140 @@ Foreign key constraints are enabled at database open time. The constraint graph 
 - `orders.delegation_id` → `delegations.id` (nullable)
 
 Enabling foreign keys is done before running migrations so that any migration that would violate a constraint fails immediately rather than silently inserting orphaned rows.
+
+## CRDT database
+
+In a multi-node cluster, Akamu maintains a second database dedicated to CRDT cluster state.  This database is separate from the main ACME database so that periodic cluster-state persists (every 30 seconds) do not contend with ACME reads and writes on the main pool.  In single-node deployments the CRDT database still exists but receives minimal traffic.
+
+### Configuration
+
+The CRDT database URL is set by the top-level `crdt_db_url` configuration key:
+
+```toml
+crdt_db_url = "sqlite:///var/lib/akamu/akamu_crdt.db"
+```
+
+When `crdt_db_url` is absent, the URL is derived automatically from `database.url`:
+
+- **SQLite file paths** — `_crdt` is inserted before the `.db` extension.  `sqlite:///var/lib/akamu/akamu.db` becomes `sqlite:///var/lib/akamu/akamu_crdt.db`.
+- **`:memory:` SQLite** — the CRDT database is also in-memory (`sqlite::memory:`).
+- **Non-SQLite backends** — the same URL is reused with a separate pool; contention is still reduced because the CRDT pool manages its own connections independently.
+
+`open_crdt_db` in `crates/akamu-crdt/src/db.rs` opens the pool (up to 4 connections for file-backed SQLite, 1 for in-memory), enables WAL mode and `synchronous=NORMAL` for SQLite, and creates the four CRDT-owned tables inline via `CREATE TABLE IF NOT EXISTS`.  No migration files are used for the CRDT database; the `akamu-crdt` crate owns the schema entirely.
+
+### Pool placement in `AppState`
+
+`AppState` stores the CRDT pool as `crdt_db: Db` alongside the main pools.  Code paths that touch cluster tables use `state.crdt_db`; code paths that touch ACME tables use `state.db` (write) or `state.db_ro` (read-only).
+
+### Schema
+
+The CRDT database contains four tables.  The SQL below uses the SQLite column types; PostgreSQL uses `BYTEA`/`BIGINT`/`SMALLINT` and MariaDB uses `MEDIUMBLOB`/`BIGINT`/`TINYINT`/`VARCHAR(N)` in the corresponding main-database migration counterparts.
+
+**`node_keys`** — Local node identity keys.  Generated on first startup; never replicated via gossip.  One row per node (a given database file always contains exactly one row, keyed by the node's own `node_id`).
+
+```sql
+CREATE TABLE IF NOT EXISTS node_keys (
+    node_id                  TEXT    PRIMARY KEY,
+    kem_private_key_der      BLOB    NOT NULL,  -- ML-KEM-768 PKCS8 DER
+    kem_public_key_der       BLOB    NOT NULL,  -- ML-KEM-768 SPKI DER
+    signing_private_key_der  BLOB    NOT NULL,  -- ECDSA P-256 PKCS8 DER
+    signing_public_key_der   BLOB    NOT NULL,  -- ECDSA P-256 SPKI DER
+    signing_certificate_der  BLOB    NOT NULL,  -- Self-signed X.509 DER
+    created_at               INTEGER NOT NULL   -- Unix epoch seconds
+);
+```
+
+**`crdt_cluster_nodes`** — Cluster node registry, mirroring `AkaCrdt.cluster_nodes`.  One row per known peer (including the local node).  Entries arrive via the `POST /admin/gossip/register` endpoint and propagate through gossip.
+
+```sql
+CREATE TABLE IF NOT EXISTS crdt_cluster_nodes (
+    node_id                  TEXT    PRIMARY KEY,
+    gossip_url               TEXT    NOT NULL,
+    kem_public_key_der       BLOB    NOT NULL,   -- Peer ML-KEM-768 SPKI DER
+    signing_public_key_der   BLOB    NOT NULL,   -- Peer ECDSA P-256 SPKI DER
+    signing_certificate_der  BLOB    NOT NULL,   -- Peer self-signed X.509 DER
+    ca_ids                   TEXT    NOT NULL DEFAULT '[]',  -- JSON array of CA IDs
+    registered_at            INTEGER NOT NULL,    -- Unix epoch seconds
+    tombstone                INTEGER NOT NULL DEFAULT 0,
+    tombstone_at             INTEGER,
+    local_gen                INTEGER NOT NULL DEFAULT 0,
+    CONSTRAINT ck_tombstone_consistency CHECK (
+        (tombstone = 0 AND tombstone_at IS NULL) OR
+        (tombstone = 1 AND tombstone_at IS NOT NULL)
+    )
+);
+```
+
+The `tombstone`/`tombstone_at` pair tracks Observed-Remove Map deletions.  The `ck_tombstone_consistency` constraint enforces that `tombstone_at` is present if and only if the entry is tombstoned.
+
+**`crdt_order_owners`** — Gossip-consensus order processing ownership.  One row per order that has a live claim.  A claim lapses when `claimed_at + ownership_ttl_secs < now` (default TTL: 150 seconds).
+
+```sql
+CREATE TABLE IF NOT EXISTS crdt_order_owners (
+    order_id    TEXT    PRIMARY KEY,
+    node_id     TEXT    NOT NULL,
+    claimed_at  INTEGER NOT NULL,   -- Unix epoch seconds
+    local_gen   INTEGER NOT NULL DEFAULT 0
+);
+```
+
+**`crdt_mtc_writer`** — MTC log writer election.  At most one row; the application always uses `id = 'singleton'`.  The node with the highest `claimed_at` wins; ties break by lexicographic `node_id`.
+
+```sql
+CREATE TABLE IF NOT EXISTS crdt_mtc_writer (
+    id          TEXT    PRIMARY KEY,   -- always 'singleton'
+    node_id     TEXT    NOT NULL,
+    claimed_at  INTEGER NOT NULL,      -- Unix epoch seconds
+    local_gen   INTEGER NOT NULL DEFAULT 0
+);
+```
+
+### Main-database migration counterparts
+
+The same three CRDT tables (`crdt_cluster_nodes`, `crdt_order_owners`, `crdt_mtc_writer`) and `node_keys` also exist in the main ACME database, created by backend-specific migrations:
+
+| Table | SQLite | MariaDB | PostgreSQL |
+|---|---|---|---|
+| `node_keys` | 0022 | 0023 | 0024 |
+| `crdt_cluster_nodes`, `crdt_order_owners`, `crdt_mtc_writer` | 0024 | 0025 | 0026 |
+
+The main-database copies are a historical artifact of the initial gossip implementation; the active code path reads from and writes to the CRDT database pool exclusively.  The `open_crdt_db` inline schema creation is the authoritative schema definition.
+
+### `local_gen` column on main-database tables
+
+Migration 0023 (SQLite) / 0024 (MariaDB) / 0025 (PostgreSQL) adds a `local_gen INTEGER NOT NULL DEFAULT 0` column to every CRDT-tracked table in the main database:
+
+- `accounts`, `orders`, `authorizations`, `challenges`, `certificates`
+- `eab_keys`, `operators`, `delegations`
+- `mtc_checkpoints`, `mtc_cosignatures`
+
+This column records the CRDT generation counter value at the time each row was last written by gossip replication.  It enables delta computation after a restart: the highest `local_gen` across all tables seeds the process-wide `CRDT_GENERATION` counter so that deltas computed after startup do not collide with pre-existing generations.
+
+For ACME tables loaded from the main database, `local_gen` is set to 0 at load time (the first gossip round after restart exchanges full state regardless).  For cluster tables loaded from the CRDT database, the stored `local_gen` is preserved so delta gossip resumes from the correct generation without requiring a full push.
+
+### Persistence and recovery model
+
+The in-memory `AkaCrdt` is the source of truth.  The databases are persistence caches for crash recovery.
+
+| Data | Target pool | Trigger | Semantics |
+|---|---|---|---|
+| Cluster state (`crdt_cluster_nodes`, `crdt_order_owners`, `crdt_mtc_writer`) | `crdt_db` | Every 30 s in the gossip loop; immediately on `gossip/register` and inbound `gossip/sync` | Full replace (DELETE + INSERT within a transaction) |
+| Order ownership claims | `crdt_db` | Immediately after `claim_order` succeeds | Single-row upsert via `persist_order_owner` |
+| MTC writer election | `crdt_db` | Immediately after `claim_mtc_writer` succeeds | Single-row upsert via `persist_mtc_writer` |
+| ACME state (accounts, orders, authz, challenges, certs, EAB, operators, delegations, MTC checkpoints) | `db` (main) | Every 30 s in the gossip loop | Upsert (INSERT ON CONFLICT UPDATE); certificates are UPDATE-only because `CertEntry` does not carry PEM/DER bytes |
+
+On startup, `load_from_db` rebuilds the in-memory `AkaCrdt` by reading ACME entries from the main pool and cluster entries from the CRDT pool.  `mtc_cosignatures` is intentionally not loaded; rows are repopulated via gossip on the first sync after restart.
+
+### Relationship to `AkaCrdt` fields
+
+Each CRDT database table maps to a field in the `AkaCrdt` struct (defined in `crates/akamu-crdt/src/crdt.rs`):
+
+| CRDT database table | `AkaCrdt` field | CRDT type | Entry type |
+|---|---|---|---|
+| `crdt_cluster_nodes` | `cluster_nodes` | `OrMap<String, AkaNodeEntry>` | `AkaNodeEntry` |
+| `crdt_order_owners` | `order_owners` | `LwwMap<String, OrderOwner>` | `OrderOwner` |
+| `crdt_mtc_writer` | `mtc_writer` | `LwwRegister<MtcWriter>` | `MtcWriter` |
+
+The `node_keys` table has no CRDT counterpart; it stores local-only private key material that is never replicated.
+
+ACME tables in the main database map to the remaining `AkaCrdt` fields (`accounts`, `orders`, `authorizations`, `challenges`, `certificates`, `eab_keys`, `operators`, `delegations`, `mtc_checkpoints`).  These are persisted to the main database rather than the CRDT database because ACME handlers query them directly via sqlx; having them in the main pool avoids cross-pool joins.
