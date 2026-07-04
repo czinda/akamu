@@ -284,6 +284,141 @@ The `info` field domain-separates the two outputs, ensuring that the kid and HMA
 
 The same `(master_secret, principal)` pair always yields identical `kid` and `hmac_key` values.  The `GET /acme/eab` handler inserts the derived key into `eab_keys` on the first call (using `insert_if_absent`) and returns the same values on subsequent calls.  This lets clients retry a failed registration without administrator intervention.
 
+### Handler integration (`src/routes/eab_identity.rs`)
+
+The `GET /acme/eab` handler in `src/routes/eab_identity.rs` ties derivation to persistence:
+
+1. The `RemoteUser` extractor authenticates the caller via GSSAPI or proxy header, yielding a Kerberos principal string.
+2. If `eab_master_secret` is not configured, the handler returns `{"principal": "..."}` (stub mode) and stops.
+3. `derive_eab_credentials(master_secret, &principal)` produces the `(kid, hmac_key)` pair.
+4. `db::eab::insert_if_absent` stores the key row with `bound_principal = Some(principal)`.  The `bound_principal` column records which Kerberos principal derived this key; it is later copied to the account row at registration (see [EAB-to-profile-grant flow](#eab-to-profile-grant-flow) below).
+5. A follow-up `get_by_kid` check returns `409 Conflict` if `used_at` is already set (credentials were consumed by a prior `newAccount`).
+6. Otherwise the handler returns `{ "principal", "kid", "hmac_key", "alg": "HS256" }`.
+
 ### Keying material lifetime
 
 Once the `kid` has been consumed by a successful `newAccount` request, the `eab_keys.used_at` column is set and further calls to `GET /acme/eab` by the same principal return `409 Conflict`.  The administrator must delete the consumed key row (via the Admin API or `akamuctl eab remove`) to allow the principal to re-register.
+
+---
+
+## EAB-to-profile-grant flow
+
+This section traces the end-to-end path from EAB credential derivation through account creation, profile grant inheritance, and Kerberos SAN injection at certificate issuance.
+
+### Overview
+
+```text
+GET /acme/eab                       newAccount (POST)                   finalize (POST)
+  Kerberos auth                       EAB JWS verification                profile auth + SAN injection
+  +-----------+                       +------------------+                +-------------------+
+  | principal |--HKDF--> kid,hmac_key | verify EAB JWS   |                | check_profile_auth|
+  |           |          |            | lookup eab_keys   |                |   require_account |
+  |           |          v            |   .profile_grants |---> account   |   _grant check    |
+  |           |   eab_keys row        |   .bound_principal|     .profile_ |                   |
+  |           |   .bound_principal    |          |        |     _grants   | KPN/UPN template  |
+  +-----------+     = principal       |          v        |     .kerberos_|   expansion       |
+                                      | insert account    |     _principal| inject_account_kpn|
+                                      |   row atomically  |                +-------------------+
+                                      +------------------+
+```
+
+### Step 1: EAB key derivation and `bound_principal` storage
+
+When a Kerberos-authenticated client calls `GET /acme/eab`, the handler derives credentials via HKDF (see [above](#hkdf-sha-256-eab-credential-derivation-srceab_derivationrs)) and inserts them into the `eab_keys` table with:
+
+- `bound_principal` = the authenticated Kerberos principal (e.g. `host/client.example.com@EXAMPLE.COM`)
+- `profile_grants` = `NULL` (HKDF-derived keys do not carry grants; grants are attached only to admin-provisioned keys via `POST /admin/eab`)
+
+The `bound_principal` column is what connects GSSAPI authentication to the account's Kerberos identity downstream.
+
+### Step 2: Account creation and grant/principal inheritance
+
+When the client calls `newAccount` with an `externalAccountBinding` JWS, the handler in `src/routes/account.rs` performs EAB verification and then captures two values from the `EabKeyRow`:
+
+```rust
+let grants = key_row.profile_grants.clone();       // Option<String>
+let principal = key_row.bound_principal.clone();    // Option<String>
+```
+
+These are passed into the new `AccountRow`:
+
+- `profile_grants` = inherited from `eab_keys.profile_grants` (the JSON array of permitted profile IDs, or `NULL`)
+- `kerberos_principal` = inherited from `eab_keys.bound_principal`
+
+The account insert, EAB key consumption (`mark_used`), and grant transfer all happen in a single database transaction, ensuring atomicity.
+
+**Key distinction:** HKDF-derived keys always have `profile_grants = NULL` (no restriction), so accounts created via GSSAPI EAB start with unrestricted profile access unless an administrator subsequently sets grants via `PUT /admin/account/{id}/profile-grants`.  Admin-provisioned keys (`POST /admin/eab`) can carry `profile_grants`, which are then inherited by the account.
+
+### Step 3: Profile authorization at finalization
+
+When the client finalizes an order (`POST /acme/order/{id}/finalize`), the profile's `CertificateParameters` determine what checks apply.  The `check_profile_auth` function in `src/profiles/auth.rs` runs three AND-combined checks:
+
+1. **Identifier patterns** (`allowed_identifier_patterns`) -- regex matching on order identifiers.
+2. **External auth hook** (`auth_hook`) -- out-of-process authorization script.
+3. **Account grant** (`require_account_grant`) -- the account's `profile_grants` JSON array must list this profile's ID.
+
+The account grant check (`check_account_grant`) loads `accounts.profile_grants` via `db::accounts::get_profile_grants` and verifies the profile name is present in the JSON array.  If the column is `NULL` (no grants set), the check fails with `Unauthorized`.
+
+### Step 4: Kerberos SAN injection at issuance
+
+Three independent mechanisms inject Kerberos-related SANs into the issued certificate.  All three are evaluated in `src/routes/finalize.rs` and produce OtherName DER blobs that are passed to `SubjectAlternativeNameBuilder::other_name()`:
+
+#### Option A: `kpn_san_templates` (template-based, DNS-derived)
+
+Each entry in `CertificateParameters::kpn_san_templates` is expanded against the DNS SANs from the subscriber's CSR by `ca::krb5_san::expand_kpn_template`:
+
+- Templates containing `{dns}` produce one KRB5PrincipalName OtherName per DNS SAN.
+  - `"HTTP/{dns}@EXAMPLE.COM"` with DNS SANs `["web.example.com", "api.example.com"]` produces two SANs: `HTTP/web.example.com@EXAMPLE.COM` (NT-SRV-HST) and `HTTP/api.example.com@EXAMPLE.COM` (NT-SRV-HST).
+  - `"{dns}@EXAMPLE.COM"` produces NT-PRINCIPAL type SANs.
+- Templates without `{dns}` are static and produce exactly one OtherName regardless of DNS SANs.
+
+#### Option A (cont.): `ms_upn_san_template` (template-based, DNS-derived)
+
+A single MS-UPN OtherName (OID `1.3.6.1.4.1.311.20.2.3`) is produced by `ca::krb5_san::expand_ms_upn_template`.  The `{dns}` placeholder is replaced with the first DNS SAN from the CSR.  Static templates (no `{dns}`) inject a fixed UPN value.
+
+#### Option B: `inject_account_kpn` (account-stored principal)
+
+When `CertificateParameters::inject_account_kpn` is `true`, the handler loads the account's `kerberos_principal` from the database (`db::accounts::get_kerberos_principal`).  This is the Kerberos principal that was stored at registration time from `eab_keys.bound_principal` (see Step 2).
+
+The principal string is parsed by `ca::krb5_san::encode_principal_str_other_name`:
+- `"service/host@REALM"` is split at `/` and `@`, yielding name-type NT-SRV-HST(3) with components `["service", "host"]` and realm `REALM`.
+- `"user@REALM"` (no slash) yields NT-PRINCIPAL(1) with component `["user"]`.
+
+This mechanism is distinct from template-based injection: it uses the actual authenticated identity of the account holder rather than a template derived from DNS names.
+
+### Configuration example
+
+A profile that combines account-grant enforcement with KPN injection from the EAB-bound principal:
+
+```toml
+[profiles.providers.local.profiles.ipa-service]
+description        = "IPA service certificate with Kerberos SAN"
+validity_days      = 90
+eku                = ["server_auth", "client_auth"]
+require_account_grant = true
+inject_account_kpn    = true
+kpn_san_templates     = ["HTTP/{dns}@EXAMPLE.COM"]
+ms_upn_san_template   = "{dns}@example.com"
+```
+
+With this configuration:
+
+1. Only accounts whose `profile_grants` include `"ipa-service"` may use this profile.
+2. The account's stored Kerberos principal (from EAB `bound_principal`) is injected as a KRB5PrincipalName OtherName SAN.
+3. Each DNS SAN in the CSR additionally produces an `HTTP/<dns>@EXAMPLE.COM` KRB5PrincipalName SAN.
+4. The first DNS SAN additionally produces an MS-UPN SAN.
+
+### Code references
+
+| Component | Source file | Key function / struct |
+|-----------|------------|----------------------|
+| HKDF derivation | `src/eab_derivation.rs` | `derive_eab_credentials` |
+| EAB endpoint handler | `src/routes/eab_identity.rs` | `get_eab_identity` |
+| Account creation + grant inheritance | `src/routes/account.rs` | `new_account` |
+| EAB key row (includes `bound_principal`) | `src/db/eab.rs` | `EabKeyRow` |
+| Account row (includes `kerberos_principal`) | `src/db/schema.rs` | `AccountRow` |
+| Profile grant check | `src/profiles/auth.rs` | `check_profile_auth`, `check_account_grant` |
+| KPN/UPN template expansion | `src/ca/krb5_san.rs` | `expand_kpn_template`, `expand_ms_upn_template`, `encode_principal_str_other_name` |
+| SAN injection at finalization | `src/routes/finalize.rs` | `finalize_order` (lines ~227--258) |
+| Profile parameters | `src/profiles/mod.rs` | `CertificateParameters` |
+| Profile config (TOML) | `src/config/profiles.rs` | `BuiltinProfileConfig` |
