@@ -461,3 +461,9 @@ for the full field reference and proxy configuration examples.
 | `client cert verification failed: …` | Client presented a cert that does not chain to the configured CA, has expired, or violates the chosen profile |
 | `composite signature verification failed: …` | OpenSSL does not support the composite NID for the scheme used; see Known Limitations |
 | `TLS versions: …` | `protocols` list contains an unsupported value; use `"TLSv1.2"` and/or `"TLSv1.3"` |
+
+## See also
+
+- [EAB and Kerberos Authentication](eab-kerberos.md) — TLS channel bindings for GSSAPI authentication
+- [Admin API and Operator Management](admin-api.md) — admin listener TLS and mTLS authentication
+- [MTC Cosigner Daemon](cosigner.md) — cosigner TLS configuration and ACME bootstrap

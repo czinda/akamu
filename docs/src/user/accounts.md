@@ -185,3 +185,8 @@ POST-as-GET to the `delegations` URL returns the list of delegation objects avai
 - Each account is identified by the SHA-256 thumbprint of its JWK public key. The server uses this thumbprint to look up accounts without needing to parse or compare full public key material on every request.
 - Key rollover is the only mechanism to change the signing key. There is no password or other credential; possession of the private key is the sole proof of identity.
 - Contact URIs are not validated for reachability. The server accepts any URI containing `:` (e.g. `mailto:`, `tel:`); it does not restrict the scheme or verify that the address is reachable.
+
+## See also
+
+- [EAB and Kerberos Authentication](eab-kerberos.md) — EAB credential issuance and account binding via Kerberos
+- [Certificate Profiles](profiles.md) — account profile grants and `require_account_grant` enforcement

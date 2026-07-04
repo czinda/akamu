@@ -538,3 +538,9 @@ Prior to the `[profiles]` subsystem, profile names were declared as a flat strin
 This still works for **advertising** profile names in the directory (the `meta.profiles` field). However, the map is a pure label registry — no actual certificate parameters are loaded from it, and any profile name is accepted at order time (no enforcement of key usage or EKU). Use the new `[profiles]` section for real per-profile issuance policy.
 
 When `[profiles]` providers are configured, `meta.profiles` is populated from the registry; `[server.profiles]` is ignored.
+
+## See also
+
+- [Challenges](challenges.md) — tkauth-01 JWKS trust configuration for per-profile token verification
+- [Certificate Downloads and Formats](certificates.md) — certificate extensions and download formats produced by profiles
+- [Configuration Reference](configuration.md) — full `[profiles]` configuration key reference

@@ -310,3 +310,9 @@ consumed by a prior registration. Contact your CA administrator to reset them.
   `0.0.0.0/0`) allows any network client to assert any principal name.
 - Kerberos tickets have a finite lifetime (typically 10 hours). Clients must
   obtain fresh tickets before they expire; akamu returns `403` for expired tokens.
+
+## See also
+
+- [TLS Configuration](tls.md) — TLS requirements for GSSAPI channel bindings
+- [FreeIPA Deployment](deployment-ipa.md) — complete IPA deployment with Kerberos and gssproxy
+- [Account Management](accounts.md) — EAB account binding and profile grant inheritance

@@ -458,3 +458,8 @@ akamuctl cosigner stats
 
 See [akamuctl — Cosigner administration](akamuctl.md#cosigner-administration)
 for the full command reference.
+
+## See also
+
+- [Merkle Tree Certificate Log](mtc.md) — MTC log, checkpoints, and cosigner integration on the server side
+- [TLS Configuration](tls.md) — cosigner TLS setup and native TLS modes

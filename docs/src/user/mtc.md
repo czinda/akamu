@@ -296,3 +296,9 @@ When `[mtc.signing_key]` is configured, a background task fires every `landmark_
 The log is append-only by design. Once a leaf is appended it cannot be removed or modified without corrupting the file. A single Akāmu process is the exclusive writer. At startup, Akāmu acquires an exclusive advisory lock on `<log_path>.lock`; if another process already holds the lock the server exits immediately with a clear error rather than proceeding to corrupt the log.
 
 For details on the internal log format, appending algorithm, checkpoint production, and concurrency model, see [MTC Implementation](../developer/mtc.md) in the Developer Guide.
+
+## See also
+
+- [MTC Cosigner Daemon](cosigner.md) — external cosigner binary for independent checkpoint signing
+- [Certificate Downloads and Formats](certificates.md) — MTC standalone certificate download endpoints
+- [Certificate Profiles](profiles.md) — `issue_as = "mtc"` profile configuration for MTC issuance

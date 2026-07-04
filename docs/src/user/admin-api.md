@@ -1136,3 +1136,9 @@ Deactivate an operator with `akamuctl operator remove <id>` or
 `PATCH /admin/operators/{id}` with `{"active":false}`.  The record is
 preserved for audit trail continuity.  The operator's active sessions are
 invalidated immediately and they cannot authenticate again until reactivated.
+
+## See also
+
+- [Operator Roles](operator-roles.md) — role-based access control and the route-by-role permission matrix
+- [akamuctl — Admin CLI](akamuctl.md) — command-line tool that wraps the admin API
+- [TLS Configuration](tls.md) — TLS and mTLS setup for the admin listener

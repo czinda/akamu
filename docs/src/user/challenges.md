@@ -829,3 +829,8 @@ ca_ids          = ["ipa-ca"]
 # Co-located Ekishib IdP via Unix socket
 trust_jwks_urls = ["http+unix://%2Frun%2Fekishib%2Fekishib.sock/jwks"]
 ```
+
+## See also
+
+- [Configuration Reference](configuration.md) — challenge solver and DNS resolver configuration keys
+- [Certificate Profiles](profiles.md) — challenge type restrictions and per-profile authorization
