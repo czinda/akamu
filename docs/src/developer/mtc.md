@@ -102,17 +102,101 @@ In both paths the standalone certificate embeds:
 - A signature from the MTC signing key.
 - Any gathered `SubtreeSignature` entries from external cosigners (empty slice for profile-driven issuance, which does not wait for cosigners).
 
-## Landmark construction
+## Landmark system
 
-The landmark background task (`src/mtc/landmark.rs`) fires every `landmark_interval_secs` seconds. If the tree has grown since the last landmark:
+### What landmarks are
 
-1. A new row is inserted into the `mtc_landmarks` table with the current tree size and a monotonically increasing `sequence_no`.
-2. A representative certificate (any leaf with `mtc_log_index < tree_size`) is selected.
-3. All leaf hashes up to `tree_size` are read from the log under the mutex.
-4. A `LandmarkCertificate` is built using `LandmarkCertificateBuilder`: it embeds the representative `TBSCertificate`, the leaf's log index, all leaf hashes (for internal inclusion proof generation), the `LandmarkID` (log identity + frozen tree size), and a signature from the MTC signing key.
-5. The DER-encoded certificate is stored in the `cert_der` column of the landmark row.
+A *landmark* is a frozen snapshot of the MTC log's tree size at a point in time, defined in section 6.3.1 of `draft-ietf-plants-merkle-tree-certs`. Relying parties use landmarks to anchor inclusion proofs across the log's lifetime without tracking every checkpoint. While checkpoints are produced frequently (default: every hour) and are pruned aggressively, landmarks are produced less often (default: every day) and retained in larger numbers (default: 100), providing stable reference points for verifiers.
 
-After each new landmark is built, rows beyond `max_active_landmarks` are pruned by sequence number.
+Each landmark carries a `LandmarkCertificate` -- a DER-encoded structure that embeds:
+
+- A `TBSCertificate` from a representative leaf in the log.
+- The leaf's log index.
+- A Merkle inclusion proof against the full set of leaves at the landmark's frozen tree size.
+- A `LandmarkID` identifying the log (hash algorithm + SPKI) and the frozen tree size.
+- A signature from the MTC signing key.
+
+This is self-contained: a verifier can check that the representative certificate was present in the log at the stated tree size without contacting the CA.
+
+### Database schema (`mtc_landmarks`)
+
+The `mtc_landmarks` table stores landmark metadata and the built certificate DER. The initial schema is defined in `migrations/{sqlite,postgres,mariadb}/0005_mtc_landmarks.sql`; the `ca_id` column was added by `migrations/sqlite/0030_mtc_per_ca.sql`, `migrations/mariadb/0031_mtc_per_ca.sql`, and `migrations/postgres/0032_mtc_per_ca.sql` to support per-CA transparency logs.
+
+Current schema (after per-CA migration):
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `INTEGER PRIMARY KEY` / `BIGSERIAL` | Auto-incrementing row ID. |
+| `ca_id` | `TEXT NOT NULL` | CA identifier; defaults to `'default'` for legacy rows. |
+| `sequence_no` | `INTEGER` / `BIGINT` | Monotonically increasing per-CA sequence number (0, 1, 2, ...). |
+| `tree_size` | `INTEGER` / `BIGINT` | The log tree size frozen by this landmark. |
+| `cert_der` | `BLOB` / `BYTEA` | DER-encoded `LandmarkCertificate`; `NULL` until built. |
+| `created` | `INTEGER` / `BIGINT` | Unix timestamp of allocation. |
+
+Uniqueness constraints: `UNIQUE(ca_id, sequence_no)` and `UNIQUE(ca_id, tree_size)` -- a given CA cannot have two landmarks for the same tree size or sequence number.
+
+The Rust row type is `LandmarkRow` (`src/db/schema.rs:110`).
+
+### Code layout
+
+| File | Role |
+|------|------|
+| `src/mtc/landmark.rs` | Background task and `LandmarkCertificate` construction logic. |
+| `src/db/landmarks.rs` | CRUD functions for the `mtc_landmarks` table. |
+| `src/routes/mtc.rs:147` | `get_landmark_for_cert` -- serves the first landmark covering a cert's log index. |
+| `src/routes/mtc.rs:199` | `get_landmarks` -- lists all landmarks as JSON. |
+| `src/routes/mtc.rs:222` | `get_landmark_cert` -- serves the DER-encoded `LandmarkCertificate` by sequence number. |
+
+### Database access layer (`src/db/landmarks.rs`)
+
+The module exposes seven functions:
+
+| Function | Description |
+|----------|-------------|
+| `get_latest(db, ca_id)` | Returns the most recent landmark for a CA (highest `sequence_no`). Used as the fast-path skip check before allocation. |
+| `list(db, ca_id)` | Returns all landmarks ordered by `sequence_no` ascending. Omits `cert_der` (returns `NULL`) to avoid loading large blobs for metadata-only queries. |
+| `get_by_seq(db, ca_id, seq)` | Fetches a single landmark by sequence number, including `cert_der`. |
+| `get_covering(db, ca_id, log_index)` | Returns the first landmark whose `tree_size > log_index` (smallest covering landmark). Used by the `GET /acme/mtc/cert/{id}/landmark` endpoint. |
+| `insert(db, ca_id, tree_size, created)` | Allocates a new landmark. The `sequence_no` is computed atomically as `COALESCE(MAX(sequence_no), -1) + 1` inside the INSERT. A `WHERE NOT EXISTS` guard makes the insert idempotent on `(ca_id, tree_size)`. Returns `true` if a row was inserted. |
+| `set_cert_der(db, id, cert_der)` | Updates the `cert_der` column after the `LandmarkCertificate` is built. |
+| `prune_oldest(db, ca_id, keep_count)` | Deletes all but the most recent `keep_count` landmarks for a CA. |
+| `count(db, ca_id)` | Returns the number of active landmarks for a CA. |
+
+### Landmark lifecycle
+
+**1. Scheduling.** `spawn_landmark_task` (`src/mtc/landmark.rs:256`) starts a tokio task that ticks every 60 seconds. On each tick it iterates over all configured CAs and checks whether `landmark_interval_secs` has elapsed since the last allocation for that CA (tracked via `MtcState::last_landmark`, an `AtomicI64` in `src/state.rs:731`). The default interval is 86400 seconds (1 day).
+
+**2. Guard checks.** `maybe_allocate_landmark` (`src/mtc/landmark.rs:46`) runs three guards before proceeding:
+
+- The log must be non-empty (`tree_size > 0`).
+- The latest landmark's `tree_size` must be less than the current tree size (the log must have grown).
+- A representative certificate must exist in the database with `mtc_log_index < tree_size`. Without a representative cert, the landmark row would be inserted with `cert_der = NULL` and would never be completed because there is no retry path.
+
+**3. Row insertion.** A write transaction allocates the next `sequence_no` and inserts the row with `cert_der = NULL`. The `WHERE NOT EXISTS` guard prevents duplicates if another writer races on the same `tree_size`.
+
+**4. Certificate construction.** The `LandmarkCertificate` is built in a `tokio::task::spawn_blocking` thread (`src/mtc/landmark.rs:111`) because it involves disk I/O (reading all leaf hashes) and CPU-bound crypto (signing). The steps are:
+
+1. Extract the MTC signing key's SPKI DER.
+2. Read all leaf hashes from the log under the `SharedLog` mutex, trimming to the landmark's frozen `tree_size`.
+3. Parse the representative certificate's DER and extract its `TBSCertificate`.
+4. DER-encode the `TBSCertificate` and sign it with the MTC signing key.
+5. Build a `LogID` (hash algorithm OID + SPKI) and a `LandmarkID` (LogID + frozen tree size).
+6. Assemble the `LandmarkCertificate` via `LandmarkCertificateBuilder` with the TBS, leaf index, tree leaves, hash algorithm, landmark ID, signature algorithm, and signature.
+7. DER-encode the result.
+
+**5. Persistence.** The DER bytes are written to the `cert_der` column via `db::landmarks::set_cert_der`.
+
+**6. Pruning.** After each successful allocation, `prune_oldest` deletes landmarks beyond the `max_active_landmarks` limit (default: 100), removing the oldest by `sequence_no`. This keeps the table bounded.
+
+**Memory note:** Step 4.2 loads every leaf hash into memory (32 bytes each for SHA-256). For a log with 10 million leaves this is approximately 320 MB. Operators should plan memory capacity accordingly, or reduce `landmark_interval_secs` to produce more frequent but smaller snapshots.
+
+### Landmark HTTP endpoints
+
+Three endpoints expose landmarks to clients (see also [HTTP endpoints](#http-endpoints) above for the full MTC endpoint table):
+
+- `GET /acme/mtc/landmarks` -- returns a JSON array of `{sequenceNo, treeSize, createdAt}` objects for all active landmarks.
+- `GET /acme/mtc/landmarks/{seq}/cert` -- returns the DER-encoded `LandmarkCertificate` for a given sequence number. Returns 503 with `Retry-After` if the certificate has not been built yet.
+- `GET /acme/mtc/cert/{cert_id}/landmark` -- returns the DER of the first landmark whose `tree_size` covers the certificate's log index. Returns 503 if no covering landmark exists yet or its certificate is not built.
 
 ## Root computation
 
