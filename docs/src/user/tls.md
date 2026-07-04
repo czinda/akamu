@@ -195,8 +195,9 @@ bootstrap step is skipped entirely.  `server_name` has no effect at runtime but
 is kept as documentation of the hostname and makes the config self-describing.
 
 **Step 4.** When the public certificate is renewed, replace `cert_file` and
-`key_file` on disk and restart Akāmu (or send `SIGHUP` if live reload is
-supported by your deployment).
+`key_file` on disk and restart Akāmu.  The TLS configuration is loaded once at
+startup; there is no live-reload mechanism, so a restart is required to pick up
+new certificate or key files.
 
 ---
 

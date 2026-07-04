@@ -304,13 +304,16 @@ src/
     ldap_session.rs  Shared LDAP connect→bind→search→parse helper used by dogtag and ipa providers
 
   tls/
-    mod.rs           Re-exports tls submodules; module-level doc for standalone TLS support
-    channel_binding.rs TLS channel binding helpers (tls-unique / tls-exporter)
+    mod.rs           Re-exports tls submodules; build_rustls_server_config entry point;
+                     leaf_cert_der helper
+    channel_binding.rs RFC 5929 tls-server-end-point channel binding computation
     init.rs          load_or_generate — loads or auto-generates the server TLS certificate
-    loader.rs        Async TLS config reloader (hot-reload of cert/key without restart)
-    schemes.rs       Custom rustls SignatureScheme negotiation for hybrid post-quantum keys
-    verifier.rs      SyntaClientCertVerifier — mTLS client certificate verification
-                     (CAB Forum or RFC 5280 profile; hybrid ML-DSA+classical chains)
+    loader.rs        PEM loading helpers (cert chain, private key, CA trust store)
+    schemes.rs       Composite ML-DSA+classical TLS 1.3 SignatureScheme code points
+    verifier.rs      SyntaChainVerifier (CertChainVerifier for rustls-native-ossl) and
+                     SyntaClientCertVerifier (rustls ClientCertVerifier wrapper);
+                     mTLS client certificate verification with CAB Forum or RFC 5280
+                     profile and hybrid ML-DSA+classical chain support
 
   validation/
     mod.rs             Challenge dispatch and DB state transitions (validate_challenge)

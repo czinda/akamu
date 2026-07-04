@@ -6,12 +6,13 @@ This chapter documents the internal implementation of Akāmu's native TLS server
 
 ```
 src/tls/
-  mod.rs              TLS module re-exports; build_rustls_server_config and
-                      build_admin_rustls_server_config entry points; leaf_cert_der helper
+  mod.rs              TLS module re-exports; build_rustls_server_config entry point;
+                      leaf_cert_der helper
   init.rs             tls::init::load_or_generate — certificate bootstrap
-  loader.rs           PEM loading helpers (pem_to_der, BackendPrivateKey::from_pem)
+  loader.rs           PEM loading helpers (cert chain, private key, CA trust store)
   schemes.rs          Composite ML-DSA+classical code points (COMPOSITE_SCHEMES)
-  verifier.rs         SyntaClientCertVerifier — rustls ClientCertVerifier impl
+  verifier.rs         SyntaChainVerifier (CertChainVerifier for rustls-native-ossl) and
+                      SyntaClientCertVerifier (rustls ClientCertVerifier wrapper)
   channel_binding.rs  RFC 5929 tls-server-end-point channel binding computation
 ```
 
@@ -83,23 +84,20 @@ pub fn load_ca_certs(ca_files: &[String]) -> Result<Vec<Vec<u8>>, String>
 
 Iterates the configured CA PEM files, calls `pem_to_der` for each, and returns a flat `Vec` of DER blobs for the `SyntaClientCertVerifier` trust store.
 
-## `SyntaClientCertVerifier` (`src/tls/verifier.rs`)
+## Client certificate verification (`src/tls/verifier.rs`)
 
-Implements `rustls::server::danger::ClientCertVerifier` using `synta-x509-verification` for chain validation. Trust anchors are parsed once at startup via `OwnedStore::try_new` and reused across all connections with no DER re-parsing per handshake.
+Client certificate chain validation uses a two-layer architecture built on `rustls-native-ossl`:
 
-### Construction
+1. **`SyntaChainVerifier`** (private) — implements the `rustls_native_ossl::cert_verifier::CertChainVerifier` trait, providing pluggable chain validation backed by `synta-x509-verification`.
+2. **`SyntaClientCertVerifier`** (public) — wraps an `OsslClientCertVerifier` (which carries the `SyntaChainVerifier`) and adds configurable `client_auth_mandatory`, composite ML-DSA TLS 1.3 `CertificateVerify` routing, and `allow_post_quantum` scheme advertising.
 
-```rust
-let verifier = SyntaClientCertVerifier::new(&ca_ders, client_auth_config)?;
-```
+Trust anchors are parsed once at startup via `OwnedStore::try_new` and reused across all connections with no DER re-parsing per handshake.
 
-`OwnedStore::try_new` parses each CA DER blob into an owned in-process trust store. The DN hints (`root_hint_subjects`) are also pre-computed once by parsing the subject Name from each CA DER using `synta::Decoder`.
+### `SyntaChainVerifier`
 
-### `verify_client_cert`
+Implements `CertChainVerifier` from `rustls-native-ossl`. The framework passes native-ossl `X509` types directly; the verifier converts them back to DER and runs synta policy validation:
 
-On each TLS handshake, rustls calls this method. It:
-
-1. Clones the DER bytes out of the short-lived `CertificateDer` borrows into owned `Vec<u8>` allocations.
+1. Calls `end_entity.to_der()` and each `intermediate.to_der()` to obtain raw DER bytes from the `X509` objects.
 2. Parses the leaf and each intermediate via `synta::Decoder::decode::<Certificate>()`.
 3. Builds a `PolicyDefinition` via `PolicyDefinition::new_client(OpensslSignatureVerifier, validation_time)`, then applies the configured profile, depth, minimum RSA modulus, and algorithm sets.
 4. Calls `self.owned_store.verify(&leaf_vc, &inter_vcs, &policy, RevocationChecks::default())` — no re-parsing of trust anchors.
@@ -110,6 +108,24 @@ Algorithm sets are chosen based on `allow_post_quantum`:
 |---|---|---|
 | `false` | `WEBPKI_PERMITTED_SPKI_ALGORITHMS` | `WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS` |
 | `true` | `WEBPKI_PERMITTED_SPKI_ALGORITHMS_WITH_PQ` | `WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS_WITH_PQ` |
+
+### `SyntaClientCertVerifier` — construction
+
+```rust
+let verifier = SyntaClientCertVerifier::new(&ca_ders, client_auth_config)?;
+```
+
+Construction proceeds in three steps:
+
+1. **DN hints**: each CA DER is parsed with `synta::Decoder` to extract the subject `Name`, pre-computing the `root_hint_subjects` list sent to clients in the `CertificateRequest` message.
+2. **Trust store**: `OwnedStore::try_new` parses each CA DER blob into an owned in-process trust store, shared via `Arc`.
+3. **Two-layer assembly**: a `SyntaChainVerifier` is created with the `OwnedStore`, profile, chain-depth, RSA-modulus, and PQ settings. It is then wrapped in `OsslClientCertVerifier::builder_with_verifier(synta_verifier).with_root_hint_subjects(root_hints).build()`. The resulting `OsslClientCertVerifier` is stored as the `inner` field of `SyntaClientCertVerifier`.
+
+A `rustls::crypto::CryptoProvider` (`Arc<rustls_native_ossl::default_provider()>`) is also built once and stored in the `provider` field for TLS 1.2/1.3 `CertificateVerify` signature verification.
+
+### `verify_client_cert`
+
+On each TLS handshake, rustls calls this method. `SyntaClientCertVerifier` delegates directly to `self.inner.verify_client_cert(end_entity, intermediates, now)`, which invokes the `SyntaChainVerifier::verify_chain` callback described above.
 
 ### `verify_tls12_signature`
 
