@@ -2,35 +2,89 @@
 
 This page documents every RFC that is relevant to `Akāmu`, explaining what each one specifies, which parts are implemented, and — for RFCs that are intentionally not implemented — why.
 
-## Summary
+## Compliance Matrix
 
-| Specification | Title | Status |
-|---------------|-------|--------|
-| [CA/B Forum BR](#cab-forum-baseline-requirements) | CA/Browser Forum Baseline Requirements v2.x | Partial |
-| [dns-persist-01](#lets-encrypt-dns-persist-01) | Let's Encrypt Persistent DNS Challenge | Full |
-| [draft-ietf-acme-profiles-01](#draft-ietf-acme-profiles-01) | ACME Certificate Profiles | Full |
-| [RFC 9964](#rfc-9964--ml-dsa-for-jose-and-cose) | ML-DSA for JSON Object Signing and Encryption (JOSE) and CBOR Object Signing and Encryption (COSE) | Full |
-| [draft-ietf-lamps-pq-composite-sigs / draft-reddy-tls-composite-mldsa](#draft-ietf-lamps-pq-composite-sigs--draft-reddy-tls-composite-mldsa) | ML-DSA Composite TLS Signature Schemes | Partial (provisional code points) |
-| [RFC 7807](#rfc-7807--problem-details-for-http-apis) | Problem Details for HTTP APIs | Full |
-| [RFC 8555](#rfc-8555--core-acme) | Automatic Certificate Management Environment (ACME) | Full |
-| [RFC 8659](#rfc-8659--caa-dns-resource-record) | DNS Certification Authority Authorization (CAA) | Full |
-| [RFC 8657](#rfc-8657--caa-accounturi-and-validationmethods) | CAA Extensions: accounturi and validationmethods | Full |
-| [RFC 8737](#rfc-8737--tls-alpn-01-challenge) | ACME TLS-ALPN-01 Challenge Extension | Full |
-| [RFC 8738](#rfc-8738--ip-identifier-validation) | ACME IP Identifier Validation | Full |
-| [RFC 8739](#rfc-8739--acme-star) | ACME Short-Term, Automatically Renewed (STAR) Certificates | Full |
-| [RFC 8823](#rfc-8823--smime-certificates) | ACME Extensions for S/MIME Certificates | Full |
-| [RFC 9444](#rfc-9444--acme-for-subdomains) | ACME for Subdomains | Full |
-| [RFC 9773](#rfc-9773--acme-renewal-information-ari) | ACME Renewal Information (ARI) | Full |
-| [RFC 9799](#rfc-9799--acme-for-onion-domains) | ACME Extensions for .onion Special-Use Domain Names | Full |
-| [RFC 5280](#rfc-5280--x509-certificate-profile) | X.509 Certificate and CRL Profile | Full |
-| [RFC 6960](#rfc-6960--ocsp-responder) | Online Certificate Status Protocol (OCSP) | Full |
-| [RFC 9115](#rfc-9115--acme-profile-for-delegated-certificates) | ACME Profile for Delegated Certificates | Full |
-| [RFC 9447](#rfc-9447--acme-challenges-using-an-authority-token) | ACME Challenges Using an Authority Token | Full |
-| [RFC 9448](#rfc-9448--acme-tnauthlist-authority-token) | ACME TNAuthList Authority Token | Full |
-| [draft-ietf-acme-authority-token-jwtclaimcon](#draft-ietf-acme-authority-token-jwtclaimcon) | ACME Authority Token: JWTClaimConstraints | Full |
-| [RFC 9538](#rfc-9538--acme-delegation-metadata-for-cdni) | ACME Delegation Metadata for CDNI | Not implemented |
-| [draft-ietf-plants-merkle-tree-certs-04](#draft-ietf-plants-merkle-tree-certs-04--merkle-tree-certificates) | Merkle Tree Certificates (MTC) | Partial |
-| [RFC 9891](#rfc-9891--acme-dtn-node-id-validation-experimental) | ACME DTN Node ID Validation (Experimental) | Not considered |
+> **Last verified:** 2026-07-04
+
+### Core ACME Protocol
+
+| RFC/Draft | Title | Status | Notes |
+|-----------|-------|--------|-------|
+| [RFC 8555](#rfc-8555--core-acme) | Automatic Certificate Management Environment (ACME) | Full | All sections including pre-authorization, EAB, key rollover |
+| [RFC 7807](#rfc-7807--problem-details-for-http-apis) | Problem Details for HTTP APIs | Full | All error responses use `application/problem+json` |
+
+### ACME Challenge Extensions
+
+| RFC/Draft | Title | Status | Notes |
+|-----------|-------|--------|-------|
+| [RFC 8737](#rfc-8737--tls-alpn-01-challenge) | ACME TLS-ALPN-01 Challenge Extension | Full | TLS 1.2 and 1.3; IP identifier SNI via reverse-DNS |
+| [RFC 8738](#rfc-8738--ip-identifier-validation) | ACME IP Identifier Validation | Full | IPv4 and IPv6; http-01 and tls-alpn-01 for IP identifiers |
+| [draft-ietf-acme-dns-persist](#lets-encrypt-dns-persist-01) | Persistent DNS Challenge (dns-persist-01) | Full | Long-lived `_validation-persist` TXT records |
+
+### ACME Certificate Lifecycle
+
+| RFC/Draft | Title | Status | Notes |
+|-----------|-------|--------|-------|
+| [RFC 8739](#rfc-8739--acme-star) | ACME STAR Certificates | Full | Rolling certificate URL, cancel, auto-reissuance |
+| [RFC 9773](#rfc-9773--acme-renewal-information-ari) | ACME Renewal Information (ARI) | Full | Suggested renewal window, `replaces` in new orders |
+| [RFC 9444](#rfc-9444--acme-for-subdomains) | ACME for Subdomains | Full | `ancestorDomain` and `subdomainAuthAllowed` |
+| [RFC 8823](#rfc-8823--smime-certificates) | ACME Extensions for S/MIME Certificates | Full | `email` identifier, `email-reply-00` challenge, DKIM enforcement |
+| [RFC 9799](#rfc-9799--acme-for-onion-domains) | ACME for .onion Domains | Full | `onion-csr-01`; http-01/tls-alpn-01 gated on Tor connectivity |
+| [draft-ietf-acme-profiles-01](#draft-ietf-acme-profiles-01) | ACME Certificate Profiles | Full | Profile advertisement, selection, default auto-selection |
+
+### ACME Delegation
+
+| RFC/Draft | Title | Status | Notes |
+|-----------|-------|--------|-------|
+| [RFC 9115](#rfc-9115--acme-profile-for-delegated-certificates) | ACME Profile for Delegated Certificates | Full | IdO + NDC roles, CSR template validation, upstream CA client |
+| [RFC 9538](#rfc-9538--acme-delegation-metadata-for-cdni) | ACME Delegation Metadata for CDNI | Planned | Single-tier delegation (RFC 9115) works; multi-tier CDNI chaining not yet implemented |
+
+### ACME Authority Tokens (STIR/SHAKEN)
+
+| RFC/Draft | Title | Status | Notes |
+|-----------|-------|--------|-------|
+| [RFC 9447](#rfc-9447--acme-challenges-using-an-authority-token) | ACME Challenges Using an Authority Token | Full | `tkauth-01` with x5u/x5c, JTI replay prevention |
+| [RFC 9448](#rfc-9448--acme-tnauthlist-authority-token) | ACME TNAuthList Authority Token | Full | `TNAuthList` identifier type via `tkauth-01` |
+| [draft-ietf-acme-authority-token-jwtclaimcon](#draft-ietf-acme-authority-token-jwtclaimcon) | ACME Authority Token: JWTClaimConstraints | Full | `JWTClaimConstraints` identifier type; no extra config beyond `[tkauth]` |
+
+### DNS and CAA
+
+| RFC/Draft | Title | Status | Notes |
+|-----------|-------|--------|-------|
+| [RFC 8659](#rfc-8659--caa-dns-resource-record) | DNS Certification Authority Authorization (CAA) | Full | Tree-walk lookup; `issue` and `issuewild` tags |
+| [RFC 8657](#rfc-8657--caa-accounturi-and-validationmethods) | CAA Extensions: accounturi and validationmethods | Full | Both parameters enforced at issuance time |
+
+### PKI and X.509
+
+| RFC/Draft | Title | Status | Notes |
+|-----------|-------|--------|-------|
+| [RFC 5280](#rfc-5280--x509-certificate-profile) | X.509 Certificate and CRL Profile | Full | Via `synta-certificate`; BasicConstraints, AKI/SKI, KU, EKU, SAN, CRL |
+| [RFC 6960](#rfc-6960--ocsp-responder) | Online Certificate Status Protocol (OCSP) | Full | GET and POST endpoints; `byName` responder identity |
+
+### Cryptography and Post-Quantum
+
+| RFC/Draft | Title | Status | Notes |
+|-----------|-------|--------|-------|
+| [RFC 9964](#rfc-9964--ml-dsa-for-jose-and-cose) | ML-DSA for JOSE and COSE | Full | ML-DSA-44/65/87 for ACME account key authentication |
+| [draft-ietf-lamps-pq-composite-sigs / draft-reddy-tls-composite-mldsa](#draft-ietf-lamps-pq-composite-sigs--draft-reddy-tls-composite-mldsa) | Composite ML-DSA Signatures | Full | All 18 composite-sig CA key variants (OID sub-arcs 37-54); 11 TLS code points for mTLS. OIDs and code points are provisional (pre-IANA) |
+
+### Merkle Tree Certificates
+
+| RFC/Draft | Title | Status | Notes |
+|-----------|-------|--------|-------|
+| [draft-ietf-plants-merkle-tree-certs-04](#draft-ietf-plants-merkle-tree-certs-04--merkle-tree-certificates) | Merkle Tree Certificates (MTC) | Partial | `tile/entries` endpoint not served (only leaf hashes stored); experimental OIDs (pre-IANA). See [coverage table](#coverage-status) for details |
+
+### Industry Policy
+
+| RFC/Draft | Title | Status | Notes |
+|-----------|-------|--------|-------|
+| [CA/B Forum BR](#cab-forum-baseline-requirements) | CA/Browser Forum Baseline Requirements v2.x | Partial | MPIC (BR SS 3.2.2.9) not implemented; validity limits, SHA-1 ban, DNSSEC, pre-issuance linting all enforced |
+
+### Out of Scope
+
+| RFC/Draft | Title | Status | Notes |
+|-----------|-------|--------|-------|
+| [RFC 9891](#rfc-9891--acme-dtn-node-id-validation-experimental) | ACME DTN Node ID Validation | Not planned | Experimental; targets DTN/Bundle Protocol (RFC 9171) networks |
 
 ---
 
