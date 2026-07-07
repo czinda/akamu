@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Akamu · Kipuka · Synta — A Post-Quantum PKI Ecosystem</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@300;400;600;700;900&display=swap');
+
+  :root {
+    --bg: #0a0e17;
+    --bg-card: #111827;
+    --fg: #e2e8f0;
+    --fg-dim: #94a3b8;
+    --accent: #00ffc8;
+    --accent-dim: #00ffc840;
+    --red: #ff4757;
+    --red-dim: #ff475730;
+    --orange: #ffa502;
+    --orange-dim: #ffa50230;
+    --blue: #3b82f6;
+    --blue-dim: #3b82f630;
+    --purple: #a78bfa;
+    --green: #34d399;
+    --slide-w: 100vw;
+    --slide-h: 100vh;
+
+    /* Project accent colors */
+    --akamu: #00d4aa;
+    --akamu-dim: #00d4aa40;
+    --kipuka: #f0a030;
+    --kipuka-dim: #f0a03040;
+    --synta: #7b8ec8;
+    --synta-dim: #7b8ec840;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { font-size: 18px; scroll-behavior: smooth; }
+
+  body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    overflow: hidden;
+    cursor: default;
+  }
+
+  /* -- Slide Container -- */
+  #deck {
+    width: var(--slide-w);
+    height: var(--slide-h);
+    position: relative;
+  }
+
+  .slide {
+    width: 100%;
+    height: 100%;
+    position: absolute;
+    top: 0; left: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    padding: 4rem 6rem;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.5s ease;
+    text-align: center;
+  }
+
+  .slide.active {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .slide.left { text-align: left; align-items: flex-start; }
+
+  /* -- Typography -- */
+  h1 { font-size: 3.2rem; font-weight: 900; line-height: 1.1; letter-spacing: -0.02em; margin-bottom: 1rem; }
+  h2 { font-size: 2.4rem; font-weight: 700; line-height: 1.2; margin-bottom: 1.5rem; }
+  h3 { font-size: 1.4rem; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 0.15em; margin-bottom: 0.75rem; }
+  p  { font-size: 1.25rem; line-height: 1.7; color: var(--fg-dim); max-width: 52rem; }
+  .big { font-size: 1.5rem; }
+  .mono { font-family: 'JetBrains Mono', monospace; }
+  .accent { color: var(--accent); }
+  .akamu-color { color: var(--akamu); }
+  .kipuka-color { color: var(--kipuka); }
+  .synta-color { color: var(--synta); }
+  .red { color: var(--red); }
+  .orange { color: var(--orange); }
+  .blue { color: var(--blue); }
+  .purple { color: var(--purple); }
+  .dim { color: var(--fg-dim); }
+  .bold { font-weight: 700; }
+  .light { font-weight: 300; }
+  .small { font-size: 0.9rem; }
+  .mt { margin-top: 1.5rem; }
+  .mt2 { margin-top: 2.5rem; }
+  .mb { margin-bottom: 1.5rem; }
+
+  .subtitle {
+    font-size: 1.4rem;
+    color: var(--fg-dim);
+    font-weight: 300;
+    margin-top: 0.5rem;
+  }
+
+  /* -- Reveal animations -- */
+  .reveal {
+    opacity: 0;
+    transform: translateY(20px);
+    transition: opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1),
+                transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .reveal.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  .reveal:nth-child(1) { transition-delay: 0.05s; }
+  .reveal:nth-child(2) { transition-delay: 0.12s; }
+  .reveal:nth-child(3) { transition-delay: 0.19s; }
+  .reveal:nth-child(4) { transition-delay: 0.26s; }
+  .reveal:nth-child(5) { transition-delay: 0.33s; }
+  .reveal:nth-child(6) { transition-delay: 0.40s; }
+
+  /* -- Grid / Flex Helpers -- */
+  .cols { display: grid; gap: 2rem; width: 100%; }
+  .cols-2 { grid-template-columns: 1fr 1fr; }
+  .cols-3 { grid-template-columns: 1fr 1fr 1fr; }
+  .cols-4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+  .row { display: flex; gap: 1.5rem; align-items: center; width: 100%; }
+
+  /* -- Cards -- */
+  .card {
+    background: var(--bg-card);
+    border: 1px solid #1e293b;
+    border-radius: 12px;
+    padding: 2rem;
+    text-align: left;
+  }
+  .card h4 {
+    font-size: 1.1rem;
+    font-weight: 700;
+    margin-bottom: 0.75rem;
+  }
+  .card p { font-size: 1rem; }
+  .card.glow-green { border-color: var(--accent-dim); box-shadow: 0 0 30px var(--accent-dim); }
+  .card.glow-red { border-color: var(--red-dim); box-shadow: 0 0 30px var(--red-dim); }
+  .card.glow-orange { border-color: var(--orange-dim); box-shadow: 0 0 30px var(--orange-dim); }
+  .card.glow-blue { border-color: var(--blue-dim); box-shadow: 0 0 30px var(--blue-dim); }
+  .card.glow-akamu { border-color: var(--akamu-dim); box-shadow: 0 0 30px var(--akamu-dim); }
+  .card.glow-kipuka { border-color: var(--kipuka-dim); box-shadow: 0 0 30px var(--kipuka-dim); }
+  .card.glow-synta { border-color: var(--synta-dim); box-shadow: 0 0 30px var(--synta-dim); }
+
+  /* -- Lists -- */
+  ul, ol { text-align: left; padding-left: 1.5rem; max-width: 52rem; }
+  li {
+    font-size: 1.15rem;
+    line-height: 1.7;
+    color: var(--fg-dim);
+    margin-bottom: 0.5rem;
+  }
+  li strong { color: var(--fg); }
+
+  /* -- Stat Counter -- */
+  .stat { font-size: 4rem; font-weight: 900; color: var(--accent); line-height: 1; }
+  .stat-label { font-size: 1rem; color: var(--fg-dim); margin-top: 0.5rem; }
+
+  /* -- Layer Stack -- */
+  .layer-stack {
+    width: 100%;
+    max-width: 40rem;
+    margin: 1rem auto;
+  }
+  .layer {
+    padding: 1rem 2rem;
+    text-align: center;
+    font-weight: 600;
+    font-size: 1.05rem;
+    border: 1px solid #1e293b;
+    position: relative;
+  }
+  .layer:first-child { border-radius: 10px 10px 0 0; }
+  .layer:last-child  { border-radius: 0 0 10px 10px; }
+  .layer.akamu-l  { background: #0a1f1a; color: var(--akamu); border-color: var(--akamu-dim); box-shadow: 0 0 20px var(--akamu-dim); }
+  .layer.kipuka-l { background: #1a1508; color: var(--kipuka); border-color: var(--kipuka-dim); }
+  .layer.synta-l  { background: #10132a; color: var(--synta); border-color: var(--synta-dim); }
+  .layer.base     { background: #111827; color: var(--fg-dim); }
+
+  /* -- Chain Diagram -- */
+  .chain {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    margin: 1.5rem 0;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .chain-node {
+    background: var(--bg-card);
+    border: 2px solid var(--accent);
+    border-radius: 10px;
+    padding: 0.8rem 1.5rem;
+    font-weight: 600;
+    font-size: 1rem;
+    white-space: nowrap;
+  }
+  .chain-arrow {
+    font-size: 1.5rem;
+    color: var(--accent);
+    padding: 0 0.5rem;
+  }
+
+  /* -- Pill badges -- */
+  .pill {
+    display: inline-block;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    border: 1px solid;
+    margin: 0.15rem;
+  }
+  .pill-green { color: var(--accent); border-color: var(--accent-dim); background: rgba(0,255,200,0.06); }
+  .pill-blue { color: var(--blue); border-color: var(--blue-dim); background: rgba(59,130,246,0.06); }
+  .pill-orange { color: var(--orange); border-color: var(--orange-dim); background: rgba(255,165,2,0.06); }
+  .pill-purple { color: var(--purple); border-color: rgba(167,139,250,0.3); background: rgba(167,139,250,0.06); }
+
+  /* -- Quote -- */
+  .quote {
+    border-left: 4px solid var(--accent);
+    padding: 1rem 2rem;
+    font-size: 1.4rem;
+    font-style: italic;
+    color: var(--fg);
+    max-width: 48rem;
+    text-align: left;
+    line-height: 1.6;
+  }
+
+  /* -- Progress Bar -- */
+  #progress {
+    position: fixed;
+    bottom: 0; left: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--akamu), var(--kipuka));
+    transition: width 0.4s ease;
+    z-index: 100;
+  }
+
+  /* -- Slide Number -- */
+  #slide-num {
+    position: fixed;
+    bottom: 1rem; right: 1.5rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem;
+    color: #334155;
+    z-index: 100;
+  }
+
+  /* -- Nav Hint -- */
+  #nav-hint {
+    position: fixed;
+    bottom: 1rem; left: 50%;
+    transform: translateX(-50%);
+    font-size: 0.75rem;
+    color: #1e293b;
+    z-index: 100;
+    transition: opacity 2s ease;
+  }
+
+  /* -- Author Bar -- */
+  #author-bar {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    background: rgba(10,14,23,0.85);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid #1e293b;
+    padding: 0.4rem 2rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.7rem;
+    color: var(--fg-dim);
+    z-index: 200;
+    letter-spacing: 0.02em;
+  }
+  #author-bar strong { color: var(--fg); font-weight: 600; }
+  #author-bar .author-contact { font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; }
+
+  /* -- Background Grid -- */
+  body::before {
+    content: '';
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background-image:
+      linear-gradient(rgba(0,255,200,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,255,200,0.03) 1px, transparent 1px);
+    background-size: 60px 60px;
+    pointer-events: none;
+    z-index: -1;
+  }
+
+  /* -- Scanline effect on title -- */
+  .scanline {
+    position: relative;
+    overflow: hidden;
+  }
+  .scanline::after {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.1) 2px,
+      rgba(0,0,0,0.1) 4px
+    );
+    pointer-events: none;
+  }
+
+  /* -- Responsive -- */
+  @media (max-width: 900px) {
+    .slide { padding: 2rem 2.5rem; }
+    h1 { font-size: 2.2rem; }
+    h2 { font-size: 1.8rem; }
+    .cols-2, .cols-3, .cols-4 { grid-template-columns: 1fr; }
+    .stat { font-size: 3rem; }
+  }
+
+  /* ═══════════════════════════════════════════════
+     Deck Engine CSS (inlined)
+     ═══════════════════════════════════════════════ */
+  #author-bar, .internal-badge, #progress-bar, #progress,
+  #slide-counter, #slide-num, #pres-timer {
+    transition: opacity 0.4s ease;
+  }
+  .ui-hidden { opacity: 0 !important; pointer-events: none !important; }
+  body.cursor-hidden, body.cursor-hidden * { cursor: none !important; }
+
+  #slide-overview {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.94);
+    z-index: 10000; display: none; overflow-y: auto;
+    padding: 5rem 2rem 2rem; backdrop-filter: blur(8px);
+  }
+  #slide-overview.open { display: block; }
+  .overview-header {
+    text-align: center; margin-bottom: 2rem;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.7rem;
+    letter-spacing: 0.18em; text-transform: uppercase; color: rgba(255,255,255,0.3);
+  }
+  .overview-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 1rem; max-width: 1400px; margin: 0 auto;
+  }
+  .overview-thumb {
+    background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 8px; padding: 1.25rem; cursor: pointer;
+    transition: all 0.2s ease; display: flex; flex-direction: column; gap: 0.4rem;
+  }
+  .overview-thumb:hover {
+    border-color: var(--accent); background: rgba(255,255,255,0.07); transform: translateY(-2px);
+  }
+  .overview-thumb.current {
+    border-color: var(--accent); box-shadow: 0 0 20px rgba(0,255,200,0.2);
+    background: rgba(0,255,200,0.05);
+  }
+  .overview-thumb .thumb-num {
+    font-family: 'JetBrains Mono', monospace; font-size: 0.65rem;
+    letter-spacing: 0.1em; color: var(--accent); opacity: 0.5;
+  }
+  .overview-thumb .thumb-title {
+    font-size: 0.82rem; font-weight: 600; color: rgba(255,255,255,0.85); line-height: 1.35;
+  }
+
+  #help-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.88);
+    z-index: 10001; display: none; align-items: center;
+    justify-content: center; backdrop-filter: blur(6px);
+  }
+  #help-overlay.open { display: flex; }
+  .help-content {
+    background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 12px; padding: 2.5rem; max-width: 460px; width: 90%;
+  }
+  .help-content h3 {
+    font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;
+    letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 1.5rem;
+    color: var(--accent); text-align: center; font-weight: 600;
+  }
+  .help-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0.45rem 0; border-bottom: 1px solid rgba(255,255,255,0.04);
+  }
+  .help-key {
+    font-family: 'JetBrains Mono', monospace; background: rgba(255,255,255,0.08);
+    padding: 0.15rem 0.55rem; border-radius: 4px; font-size: 0.72rem;
+    color: rgba(255,255,255,0.75); letter-spacing: 0.03em; white-space: nowrap;
+  }
+  .help-desc { color: rgba(255,255,255,0.45); font-size: 0.82rem; }
+  .help-close {
+    text-align: center; margin-top: 1.5rem; font-size: 0.7rem;
+    color: rgba(255,255,255,0.2); font-family: 'JetBrains Mono', monospace;
+  }
+
+  #laser-dot {
+    position: fixed; width: 12px; height: 12px; background: #ff2222;
+    border-radius: 50%; box-shadow: 0 0 8px 3px rgba(255,34,34,0.5);
+    pointer-events: none; z-index: 9999; display: none; transform: translate(-50%,-50%);
+  }
+  body.laser-active { cursor: none !important; }
+  body.laser-active #laser-dot { display: block; }
+
+  #pres-timer {
+    position: fixed; bottom: 12px; left: 2rem;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;
+    color: rgba(255,255,255,0.3); z-index: 100; display: none;
+  }
+  #pres-timer.visible { display: block; }
+
+  #deck-toolbar {
+    position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 0.5rem; z-index: 100; opacity: 0.4; transition: opacity 0.3s ease;
+  }
+  #deck-toolbar:hover { opacity: 1; }
+  #deck-toolbar button {
+    background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 6px; padding: 0.35rem 0.6rem; cursor: pointer;
+    color: rgba(255,255,255,0.6); font-family: 'JetBrains Mono', monospace;
+    font-size: 0.65rem; letter-spacing: 0.05em; transition: all 0.2s ease;
+    display: flex; align-items: center; gap: 0.3rem; white-space: nowrap;
+  }
+  #deck-toolbar button:hover {
+    background: rgba(255,255,255,0.14); border-color: rgba(255,255,255,0.25);
+    color: rgba(255,255,255,0.9);
+  }
+  #deck-toolbar button svg {
+    width: 14px; height: 14px; fill: none; stroke: currentColor;
+    stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+  }
+
+  @media print {
+    .slide {
+      display: flex !important; opacity: 1 !important; pointer-events: auto !important;
+      position: relative !important; top: auto !important; left: auto !important;
+      width: 100% !important; height: auto !important; min-height: 100vh;
+      page-break-after: always; page-break-inside: avoid; z-index: auto !important;
+    }
+    #author-bar, .internal-badge, #progress-bar, #progress, #slide-counter, #slide-num,
+    #pres-timer, #deck-toolbar, #slide-overview, #help-overlay, #laser-dot, #nav-hint {
+      display: none !important;
+    }
+    body::before, body::after, .scanline::after, .scanline::before { display: none !important; }
+    .reveal { opacity: 1 !important; transform: none !important; }
+    #deck { position: static !important; height: auto !important; overflow: visible !important; }
+    html, body { overflow: visible !important; }
+  }
+</style>
+</head>
+<body>
+
+<div id="author-bar">
+  <span><strong>Akamu · Kipuka · Synta</strong> &mdash; Post-Quantum PKI Ecosystem</span>
+  <span class="author-contact">akamu.dev &bull; kipuka.dev</span>
+</div>
+
+<div id="deck">
+
+<!-- ======== SLIDE 1: TITLE ======== -->
+<div class="slide active" id="s1">
+  <h1 class="scanline reveal"><span class="akamu-color">Akamu</span> · <span class="kipuka-color">Kipuka</span> · <span class="synta-color">Synta</span></h1>
+  <p class="subtitle light reveal">A Post-Quantum PKI Ecosystem for Private Networks</p>
+  <div class="mt reveal" style="display:flex; gap:0.5rem; flex-wrap:wrap; justify-content:center;">
+    <span class="pill pill-green">ACME</span>
+    <span class="pill pill-orange">EST</span>
+    <span class="pill pill-blue">CMP</span>
+    <span class="pill pill-purple">MTC</span>
+    <span class="pill pill-green">ML-DSA</span>
+    <span class="pill pill-green">Rust</span>
+    <span class="pill pill-blue">Open Source</span>
+  </div>
+</div>
+
+<!-- ======== SLIDE 2: THE ECOSYSTEM ======== -->
+<div class="slide" id="s2">
+  <h3 class="reveal">The Ecosystem</h3>
+  <h2 class="reveal">Three Projects, <span class="accent">One Vision</span></h2>
+  <div class="layer-stack mt reveal">
+    <div class="layer akamu-l">Akamu &mdash; ACME Certificate Authority &nbsp;&middot;&nbsp; akamu.dev</div>
+    <div class="layer kipuka-l">Kipuka &mdash; EST / CMP / CoAP Enrollment Server &nbsp;&middot;&nbsp; kipuka.dev</div>
+    <div class="layer synta-l">Synta &mdash; ASN.1 / X.509 / MTC Cryptographic Library</div>
+    <div class="layer base">Rust &nbsp;&middot;&nbsp; OpenSSL 3.5+ &nbsp;&middot;&nbsp; GPL-3.0-or-later</div>
+  </div>
+  <p class="mt dim small reveal">Synta provides the cryptographic engine. Akamu and Kipuka build on top of it.</p>
+</div>
+
+<!-- ======== SLIDE 3: SYNTA ======== -->
+<div class="slide left" id="s3">
+  <h3 class="reveal">Foundation</h3>
+  <h2 class="reveal"><span class="synta-color">Synta</span> &mdash; The Cryptographic Engine</h2>
+  <div class="cols cols-2 mt">
+    <div class="card glow-synta reveal">
+      <h4 style="color:var(--synta);">Core Library</h4>
+      <p>Native Rust ASN.1 DER/BER codec with zero-copy decoding. Integer, OID, BitString, and all X.690 primitives. No C dependencies for parsing.</p>
+      <p class="small dim mt"><span class="mono">synta</span></p>
+    </div>
+    <div class="card glow-synta reveal">
+      <h4 style="color:var(--synta);">Certificate Operations</h4>
+      <p>X.509 certificate issuance, PKCS#10 CSR parsing, CRL generation, OCSP. Post-quantum composite signatures via OpenSSL 3.5+ OQS provider.</p>
+      <p class="small dim mt"><span class="mono">synta-certificate</span></p>
+    </div>
+    <div class="card glow-synta reveal">
+      <h4 style="color:var(--synta);">Path Validation</h4>
+      <p>X.509 certification path validation &mdash; trust anchor resolution, name constraints, key usage checking. Powers mTLS verification.</p>
+      <p class="small dim mt"><span class="mono">synta-x509-verification</span></p>
+    </div>
+    <div class="card glow-synta reveal">
+      <h4 style="color:var(--synta);">MTC Transparency</h4>
+      <p>Merkle tree log primitives &mdash; append-only disk-backed log, leaf hashing, tree root computation, checkpoint construction, cosignature handling.</p>
+      <p class="small dim mt"><span class="mono">synta-mtc</span></p>
+    </div>
+  </div>
+</div>
+
+<!-- ======== SLIDE 4: AKAMU ======== -->
+<div class="slide left" id="s4">
+  <h3 class="reveal">ACME CA</h3>
+  <h2 class="reveal"><span class="akamu-color">Akamu</span> &mdash; Self-Hosted Certificate Authority</h2>
+  <div class="cols cols-3 mt">
+    <div class="card glow-akamu reveal">
+      <h4 style="color:var(--akamu);">Full ACME v2</h4>
+      <p>RFC 8555 &mdash; accounts, orders, authorizations, challenges, revocation. Five challenge types: http-01, dns-01, tls-alpn-01, dns-persist-01, onion-csr-01.</p>
+    </div>
+    <div class="card glow-akamu reveal">
+      <h4 style="color:var(--akamu);">CRDT Clustering</h4>
+      <p>Multi-node gossip replication with ML-KEM-768 encrypted, CMS-signed envelopes. Automatic state convergence &mdash; eventually consistent.</p>
+    </div>
+    <div class="card glow-akamu reveal">
+      <h4 style="color:var(--akamu);">Certificate Profiles</h4>
+      <p>Pluggable providers: built-in TOML, Dogtag PKI via REST, FreeIPA/IPAThinCA via LDAP. Profile-driven issuance including MTC format.</p>
+    </div>
+  </div>
+  <div class="cols cols-3 mt">
+    <div class="card reveal">
+      <h4 class="accent">HSM / PKCS#11</h4>
+      <p class="small">CA keys in hardware tokens. Key material never leaves the HSM.</p>
+    </div>
+    <div class="card reveal">
+      <h4 class="accent">Web UI + Admin CLI</h4>
+      <p class="small">React dashboard, <span class="mono">akamuctl</span> CLI, mTLS or Kerberos RBAC.</p>
+    </div>
+    <div class="card reveal">
+      <h4 class="accent">23 RFCs Implemented</h4>
+      <p class="small">STAR, ARI, CAA, subdomain auth, Tor .onion, renewal info, and more.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ======== SLIDE 5: KIPUKA ======== -->
+<div class="slide left" id="s5">
+  <h3 class="reveal">EST Enrollment</h3>
+  <h2 class="reveal"><span class="kipuka-color">Kipuka</span> &mdash; Certificate Enrollment Server</h2>
+  <div class="cols cols-3 mt">
+    <div class="card glow-kipuka reveal">
+      <h4 style="color:var(--kipuka);">EST (RFC 7030)</h4>
+      <p>All six operations &mdash; cacerts, simpleenroll, simplereenroll, fullcmc, serverkeygen with KRA key escrow, and csrattrs. STAR auto-renewal integration.</p>
+    </div>
+    <div class="card glow-kipuka reveal">
+      <h4 style="color:var(--kipuka);">CMP (RFC 4210/9810)</h4>
+      <p>MAC-based and signature-based protection. IR, CR, KUR, and RR requests. Served at <span class="mono">/.well-known/cmp</span>.</p>
+    </div>
+    <div class="card glow-kipuka reveal">
+      <h4 style="color:var(--kipuka);">EST-over-CoAP (RFC 9483)</h4>
+      <p>IoT and constrained devices via DTLS 1.2/1.3 transport. Block-wise transfer, compressed URI paths, session resumption.</p>
+    </div>
+  </div>
+  <div class="cols cols-3 mt">
+    <div class="card reveal">
+      <h4 class="accent">Multi-CA HA</h4>
+      <p class="small">Active-passive, round-robin, weighted, and latency-based failover with circuit breakers.</p>
+    </div>
+    <div class="card reveal">
+      <h4 class="accent">Dogtag Integration</h4>
+      <p class="small">Profile enrollment, Full CMC passthrough, KRA key escrow, TPS smart card support.</p>
+    </div>
+    <div class="card reveal">
+      <h4 class="accent">21 RFCs &bull; 129 Assertions</h4>
+      <p class="small">CMS-EST, CSR templates (RFC 9908), OTP auth, GSSAPI/Kerberos, mTLS with OCSP.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ======== SLIDE 6: POST-QUANTUM ======== -->
+<div class="slide" id="s6">
+  <h3 class="reveal">Quantum Resistant</h3>
+  <h2 class="reveal">Post-Quantum Ready &mdash; <span class="accent">From Day One</span></h2>
+  <div class="cols cols-2 mt" style="max-width:52rem;">
+    <div class="card glow-green reveal">
+      <h4 class="accent">ML-DSA Signing (FIPS 204)</h4>
+      <p>ML-DSA-44/65/87 for account keys, certificates, and TLS authentication. Composite hybrid signatures: ML-DSA + RSA, ECDSA, or Ed25519 for migration.</p>
+    </div>
+    <div class="card glow-green reveal">
+      <h4 class="accent">ML-KEM Encapsulation (FIPS 203)</h4>
+      <p>ML-KEM-768 key exchange in gossip protocol encryption. Post-quantum composite TLS for server authentication.</p>
+    </div>
+  </div>
+  <div class="cols cols-3 mt" style="max-width:52rem;">
+    <div class="card reveal" style="text-align:center;">
+      <h4 class="accent">HSM / PKCS#11</h4>
+      <p class="small dim">PQC keys in hardware tokens. PKCS#11 v3.2 mechanisms.</p>
+    </div>
+    <div class="card reveal" style="text-align:center;">
+      <h4 class="accent">CNSA 2.0</h4>
+      <p class="small dim">Aligned with NSA timeline. OpenSSL 3.5+ OQS provider.</p>
+    </div>
+    <div class="card reveal" style="text-align:center;">
+      <h4 class="accent">MTC Transparency</h4>
+      <p class="small dim">Batch signing amortizes PQ costs. One sig covers thousands of certs.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ======== SLIDE 7: ENTERPRISE INTEGRATION ======== -->
+<div class="slide left" id="s7">
+  <h3 class="reveal">Enterprise Ready</h3>
+  <h2 class="reveal">Deep Integration, <span class="accent">Flexible Deployment</span></h2>
+  <div class="cols cols-3 mt">
+    <div class="card glow-green reveal">
+      <h4 class="accent">Kerberos / FreeIPA</h4>
+      <p>GSSAPI authentication for ACME EAB. LDAP certificate profile loading. RHEL IdM co-deployment with IPA thin CA support.</p>
+    </div>
+    <div class="card glow-blue reveal">
+      <h4 class="blue">Multi-Database</h4>
+      <p>SQLite for single-node dev. PostgreSQL or MariaDB for production scale. One config line to switch. Automatic migrations via sqlx.</p>
+    </div>
+    <div class="card glow-orange reveal">
+      <h4 class="orange">Containers &amp; K8s</h4>
+      <p>Five hardened OCI images on Hummingbird base. Helm charts, systemd units, podman-compose, Ansible playbooks.</p>
+    </div>
+  </div>
+  <div class="chain mt reveal">
+    <div class="chain-node" style="border-color:var(--akamu);color:var(--akamu);">certbot / acme.sh</div>
+    <div class="chain-arrow" style="color:var(--fg-dim);">&rarr;</div>
+    <div class="chain-node" style="border-color:var(--akamu);color:var(--akamu);">Akamu</div>
+    <div class="chain-arrow" style="color:var(--fg-dim);">&harr;</div>
+    <div class="chain-node" style="border-color:var(--synta);color:var(--synta);">Synta</div>
+    <div class="chain-arrow" style="color:var(--fg-dim);">&harr;</div>
+    <div class="chain-node" style="border-color:var(--kipuka);color:var(--kipuka);">Kipuka</div>
+    <div class="chain-arrow" style="color:var(--fg-dim);">&larr;</div>
+    <div class="chain-node" style="border-color:var(--kipuka);color:var(--kipuka);">IoT / EST clients</div>
+  </div>
+</div>
+
+<!-- ======== SLIDE 8: CLOSING ======== -->
+<div class="slide" id="s8">
+  <h1 class="scanline reveal">Open Source.<br>Standards First.<br>Quantum Ready.</h1>
+  <div class="mt2 reveal" style="display:flex; gap:3rem; flex-wrap:wrap; justify-content:center;">
+    <div style="text-align:center;">
+      <div style="font-size:1.8rem;font-weight:900;color:var(--akamu);">Akamu</div>
+      <div class="mono small dim">akamu.dev</div>
+    </div>
+    <div style="text-align:center;">
+      <div style="font-size:1.8rem;font-weight:900;color:var(--kipuka);">Kipuka</div>
+      <div class="mono small dim">kipuka.dev</div>
+    </div>
+    <div style="text-align:center;">
+      <div style="font-size:1.8rem;font-weight:900;color:var(--synta);">Synta</div>
+      <div class="mono small dim">codeberg.org/abbra/synta</div>
+    </div>
+  </div>
+  <p class="mt2 dim reveal" style="font-style:italic;font-weight:300;">Private PKI that&rsquo;s ready for what&rsquo;s next.</p>
+  <p class="mt dim small reveal"><span class="mono" style="font-size:0.75rem;">GPL-3.0-or-later</span></p>
+</div>
+
+</div><!-- /deck -->
+
+<!-- -- Progress & UI -- -->
+<div id="progress" style="width:12.5%"></div>
+<div id="slide-num">1 / 8</div>
+<div id="nav-hint">Arrow keys or click to navigate &bull; ? for help</div>
+
+<!-- ═══════════════════════════════════════════════
+     Deck Engine JS (inlined for portability)
+     ═══════════════════════════════════════════════ -->
+<script>
+(function () {
+  'use strict';
+
+  var slides = document.querySelectorAll('.slide');
+  var totalSlides = slides.length;
+  if (totalSlides === 0) return;
+
+  var currentSlide = 0;
+  var progressBar = document.getElementById('progress');
+  var slideCounter = document.getElementById('slide-num');
+  var authorBar = document.getElementById('author-bar');
+
+  function triggerReveals(slide) {
+    var els = slide.querySelectorAll('.reveal');
+    for (var i = 0; i < els.length; i++) els[i].classList.add('visible');
+  }
+
+  function clearReveals(slide) {
+    var els = slide.querySelectorAll('.reveal.visible');
+    for (var i = 0; i < els.length; i++) els[i].classList.remove('visible');
+  }
+
+  function showSlide(n) {
+    clearReveals(slides[currentSlide]);
+    slides[currentSlide].classList.remove('active');
+    currentSlide = ((n % totalSlides) + totalSlides) % totalSlides;
+    slides[currentSlide].classList.add('active');
+    triggerReveals(slides[currentSlide]);
+    updateProgress();
+    updateHash();
+  }
+
+  function nextSlide() { showSlide(currentSlide + 1); }
+  function prevSlide() { showSlide(currentSlide - 1); }
+
+  function updateProgress() {
+    var pct = ((currentSlide + 1) / totalSlides) * 100;
+    if (progressBar) progressBar.style.width = pct + '%';
+    if (slideCounter) slideCounter.textContent = (currentSlide + 1) + ' / ' + totalSlides;
+  }
+
+  function updateHash() {
+    if (history.replaceState) history.replaceState(null, '', '#' + (currentSlide + 1));
+  }
+
+  function readHash() {
+    var n = parseInt(location.hash.replace('#', ''), 10);
+    if (n >= 1 && n <= totalSlides) showSlide(n - 1);
+  }
+
+  window.addEventListener('hashchange', readHash);
+
+  function toggleFullscreen() {
+    if (!document.fullscreenElement) {
+      (document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen || function(){}).call(document.documentElement);
+    } else {
+      (document.exitFullscreen || document.webkitExitFullscreen || function(){}).call(document);
+    }
+  }
+
+  // Auto-hide UI in fullscreen
+  var hideTimer = null;
+  var hideableEls = [authorBar, progressBar, slideCounter].filter(Boolean);
+
+  function showUI() {
+    hideableEls.forEach(function(el){ el.classList.remove('ui-hidden'); });
+    document.body.classList.remove('cursor-hidden');
+    clearTimeout(hideTimer);
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
+      hideTimer = setTimeout(hideUI, 2500);
+    }
+  }
+
+  function hideUI() {
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
+      hideableEls.forEach(function(el){ el.classList.add('ui-hidden'); });
+      document.body.classList.add('cursor-hidden');
+    }
+  }
+
+  document.addEventListener('mousemove', showUI);
+  var fsEvent = document.fullscreenElement !== undefined ? 'fullscreenchange' : 'webkitfullscreenchange';
+  document.addEventListener(fsEvent, function(){
+    if (document.fullscreenElement || document.webkitFullscreenElement) { showUI(); }
+    else { clearTimeout(hideTimer); hideableEls.forEach(function(el){ el.classList.remove('ui-hidden'); }); document.body.classList.remove('cursor-hidden'); }
+  });
+
+  // Slide overview
+  var overviewOpen = false;
+  var overviewEl = document.createElement('div');
+  overviewEl.id = 'slide-overview';
+
+  function escHtml(s) { var d = document.createElement('span'); d.textContent = s; return d.innerHTML; }
+
+  function buildOverview() {
+    var html = '<div class="overview-header">Slide Overview &mdash; click to jump, press G or Esc to close</div><div class="overview-grid">';
+    for (var i = 0; i < totalSlides; i++) {
+      var h = slides[i].querySelector('h1, h2'); var title = h ? h.textContent.trim() : 'Untitled';
+      var cls = i === currentSlide ? 'overview-thumb current' : 'overview-thumb';
+      html += '<div class="'+cls+'" data-index="'+i+'"><span class="thumb-num">Slide '+(i+1)+'</span><span class="thumb-title">'+escHtml(title)+'</span></div>';
+    }
+    html += '</div>';
+    overviewEl.innerHTML = html;
+  }
+
+  function toggleOverview() {
+    overviewOpen = !overviewOpen;
+    if (overviewOpen) { buildOverview(); overviewEl.classList.add('open'); }
+    else { overviewEl.classList.remove('open'); }
+  }
+
+  overviewEl.addEventListener('click', function(e) {
+    var thumb = e.target.closest ? e.target.closest('.overview-thumb') : null;
+    if (thumb) { showSlide(parseInt(thumb.getAttribute('data-index'),10)); toggleOverview(); }
+    else if (e.target === overviewEl) { toggleOverview(); }
+  });
+  document.body.appendChild(overviewEl);
+
+  // Help overlay
+  var helpOpen = false;
+  var helpEl = document.createElement('div');
+  helpEl.id = 'help-overlay';
+  function hRow(k,d) { return '<div class="help-row"><span class="help-desc">'+d+'</span><span class="help-key">'+k+'</span></div>'; }
+  helpEl.innerHTML = '<div class="help-content"><h3>Keyboard Shortcuts</h3>'+
+    hRow('&rarr; &darr; Space','Next slide')+hRow('&larr; &uarr;','Previous slide')+
+    hRow('Home','First slide')+hRow('End','Last slide')+
+    hRow('F','Toggle fullscreen')+hRow('G','Slide overview')+
+    hRow('L','Laser pointer')+hRow('?','This help')+hRow('Esc','Close overlay')+
+    '<div class="help-close">Press ? or Esc to close</div></div>';
+
+  function toggleHelp() { helpOpen = !helpOpen; helpEl.classList.toggle('open', helpOpen); }
+  helpEl.addEventListener('click', function(e){ if(e.target===helpEl) toggleHelp(); });
+  document.body.appendChild(helpEl);
+
+  // Laser pointer
+  var laserOn = false;
+  var laserDot = document.createElement('div');
+  laserDot.id = 'laser-dot';
+  document.body.appendChild(laserDot);
+
+  function toggleLaser() { laserOn = !laserOn; document.body.classList.toggle('laser-active', laserOn); }
+  document.addEventListener('mousemove', function(e){ if(laserOn){ laserDot.style.left=e.clientX+'px'; laserDot.style.top=e.clientY+'px'; } });
+
+  // Keyboard
+  document.addEventListener('keydown', function(e) {
+    if (overviewOpen) { if (e.key==='Escape'||e.key==='g'||e.key==='G') { e.preventDefault(); toggleOverview(); } return; }
+    if (helpOpen) { if (e.key==='Escape'||e.key==='?') { e.preventDefault(); toggleHelp(); } return; }
+    switch(e.key) {
+      case 'ArrowRight': case 'ArrowDown': case ' ': case 'PageDown': e.preventDefault(); nextSlide(); break;
+      case 'ArrowLeft': case 'ArrowUp': case 'PageUp': e.preventDefault(); prevSlide(); break;
+      case 'Home': e.preventDefault(); showSlide(0); break;
+      case 'End': e.preventDefault(); showSlide(totalSlides-1); break;
+      case 'f': case 'F': if(!e.ctrlKey&&!e.metaKey){e.preventDefault(); toggleFullscreen();} break;
+      case 'F5': e.preventDefault(); toggleFullscreen(); break;
+      case 'g': case 'G': case 'o': case 'O': e.preventDefault(); toggleOverview(); break;
+      case 'l': case 'L': e.preventDefault(); toggleLaser(); break;
+      case 'p': case 'P': if(!e.ctrlKey&&!e.metaKey){e.preventDefault(); window.print();} break;
+      case '?': e.preventDefault(); toggleHelp(); break;
+      case 'Escape': if(laserOn) toggleLaser(); break;
+    }
+  });
+
+  // Click navigation
+  document.addEventListener('click', function(e) {
+    if (overviewOpen || helpOpen) return;
+    if (e.target.closest && e.target.closest('a,button,input,.overview-thumb')) return;
+    var w = window.innerWidth;
+    if (e.clientX < w/3) prevSlide();
+    else if (e.clientX > w*2/3) nextSlide();
+  });
+
+  // Touch navigation
+  var touchStartX = 0;
+  document.addEventListener('touchstart', function(e){ touchStartX = e.changedTouches[0].screenX; });
+  document.addEventListener('touchend', function(e){
+    if (overviewOpen || helpOpen) return;
+    var diff = touchStartX - e.changedTouches[0].screenX;
+    if (diff > 50) nextSlide(); else if (diff < -50) prevSlide();
+  });
+
+  // Init
+  triggerReveals(slides[0]);
+  readHash();
+  updateProgress();
+})();
+</script>
+
+</body>
+</html>
