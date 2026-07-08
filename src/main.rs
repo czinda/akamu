@@ -10,7 +10,9 @@ use tracing_subscriber::EnvFilter;
 use akamu::config::{Config, MtcSigningKeyConfig};
 use akamu::journal::JournalWriter;
 use akamu::listen::{parse_listen_target, remove_stale_socket, uds_marker_layer, ListenTarget};
-use akamu::state::{AppStateBuilder, CaState, CrlCache, MtcState, NonceBucket, TlsState};
+use akamu::state::{
+    AppStateBuilder, CaState, CrlCache, MtcState, NonceBucket, SigningBackend, TlsState,
+};
 use akamu::{ca, db, delegation_upstream, mtc, routes, star};
 use indexmap::IndexMap;
 
@@ -554,24 +556,80 @@ async fn run() -> Result<(), String> {
         std::collections::HashMap::new();
 
     for ca_cfg in &config.cas {
-        tracing::info!("loading CA '{}' from '{}'", ca_cfg.id, ca_cfg.key_file);
-        let (ca_key, ca_cert_der) = ca::init::load_or_generate(ca_cfg)
-            .map_err(|e| format!("CA '{}' init: {e}", ca_cfg.id))?;
+        // Build the signing backend and load the CA certificate.
+        let (signing, ca_cert_der, ca_aki_bytes) = if ca_cfg.is_external_signer() {
+            // Dogtag backend: cert_file is the Dogtag CA chain, no local key.
+            let dogtag_cfg = match &ca_cfg.signer {
+                Some(akamu::config::SignerConfig::Dogtag(cfg)) => cfg,
+                _ => {
+                    return Err(format!(
+                        "CA '{}': is_external_signer() true but signer is not Dogtag",
+                        ca_cfg.id
+                    ));
+                }
+            };
+            tracing::info!(
+                "loading Dogtag-backed CA '{}' (url={})",
+                ca_cfg.id,
+                dogtag_cfg.url
+            );
+            let signer = ca::dogtag::DogtagSigner::new(dogtag_cfg)
+                .map_err(|e| format!("CA '{}' Dogtag init: {e}", ca_cfg.id))?;
+            signer.probe().await;
 
-        let ca_spki_der = ca_key
-            .public_key()
-            .map_err(|e| format!("CA '{}' public key: {e}", ca_cfg.id))?
-            .spki_der()
-            .to_vec();
-        let ca_aki_bytes = ca::init::compute_aki_from_spki(&ca_spki_der).ok_or_else(|| {
-            format!(
-                "CA '{}': cannot compute Authority Key Identifier from SPKI",
-                ca_cfg.id
+            let cert_pem = std::fs::read(&ca_cfg.cert_file)
+                .map_err(|e| format!("CA '{}' cert: {e}", ca_cfg.id))?;
+            let cert_der = synta_certificate::pem_to_der(&cert_pem)
+                .into_iter()
+                .next()
+                .ok_or_else(|| format!("CA '{}': cert_file has no PEM blocks", ca_cfg.id))?;
+
+            // Extract SPKI from the CA certificate (no local key to derive from).
+            let spki_der = ca::init::extract_spki_from_cert_der(&cert_der)
+                .ok_or_else(|| format!("CA '{}': cannot extract SPKI from cert", ca_cfg.id))?;
+            let aki_bytes = ca::init::compute_aki_from_spki(&spki_der)
+                .ok_or_else(|| format!("CA '{}': cannot compute AKI from cert SPKI", ca_cfg.id))?;
+
+            (
+                SigningBackend::Dogtag(Arc::new(signer)),
+                cert_der,
+                aki_bytes,
             )
-        })?;
+        } else {
+            // Local signing backend.
+            tracing::info!(
+                "loading CA '{}' from '{}'",
+                ca_cfg.id,
+                ca_cfg.key_file.as_deref().unwrap_or("<none>")
+            );
+            let (ca_key, cert_der) = ca::init::load_or_generate(ca_cfg)
+                .map_err(|e| format!("CA '{}' init: {e}", ca_cfg.id))?;
+
+            let spki_der = ca_key
+                .public_key()
+                .map_err(|e| format!("CA '{}' public key: {e}", ca_cfg.id))?
+                .spki_der()
+                .to_vec();
+            let aki_bytes = ca::init::compute_aki_from_spki(&spki_der)
+                .ok_or_else(|| format!("CA '{}': cannot compute AKI from SPKI", ca_cfg.id))?;
+
+            (
+                SigningBackend::Local {
+                    key: Box::new(ca_key),
+                },
+                cert_der,
+                aki_bytes,
+            )
+        };
 
         // Derive CRL/OCSP URLs if not set explicitly in config.
+        // Dogtag CAs cannot serve CRL/OCSP locally (no signing key), so skip
+        // auto-derivation — the operator must configure explicit URLs pointing
+        // to Dogtag's own CRL/OCSP endpoints.
         let crl_url = ca_cfg.crl_url.clone().or_else(|| {
+            if ca_cfg.is_external_signer() {
+                return None;
+            }
             if ca_cfg.is_default {
                 Some(format!("{}/ca/crl", config.base_url))
             } else {
@@ -579,6 +637,9 @@ async fn run() -> Result<(), String> {
             }
         });
         let ocsp_url = ca_cfg.ocsp_url.clone().or_else(|| {
+            if ca_cfg.is_external_signer() {
+                return None;
+            }
             if ca_cfg.is_default {
                 Some(format!("{}/ca/ocsp", config.base_url))
             } else {
@@ -601,7 +662,7 @@ async fn run() -> Result<(), String> {
         let ca_state = Arc::new(CaState {
             id: ca_cfg.id.clone(),
             key_type: ca_cfg.key_type.clone(),
-            key: ca_key,
+            signing,
             cert_der: ca_cert_der,
             hash_alg: ca_cfg.hash_alg.clone(),
             validity_days: ca_cfg.validity_days,
@@ -647,12 +708,26 @@ async fn run() -> Result<(), String> {
 
     // ── TLS bootstrap (auto-generate cert/key if absent) ─────────────────────
     if config.tls.enabled {
+        if !ca.has_local_key() {
+            return Err(format!(
+                "TLS is enabled but the default CA '{}' uses an external signer; \
+                 TLS bootstrap requires a CA with a local signing key",
+                default_ca_id
+            ));
+        }
         akamu::tls::init::load_or_generate(&config.tls, &ca)
             .map_err(|e| format!("TLS init: {e}"))?;
     }
 
     // ── Admin bootstrap ───────────────────────────────────────────────────────
     if let Some(ref admin_cfg) = config.admin {
+        if !ca.has_local_key() {
+            return Err(format!(
+                "admin API is configured but the default CA '{}' uses an external signer; \
+                 admin certificate bootstrap requires a CA with a local signing key",
+                default_ca_id
+            ));
+        }
         admin_cfg
             .validate()
             .map_err(|e| format!("admin config: {e}"))?;
@@ -920,7 +995,11 @@ async fn run() -> Result<(), String> {
     let state = builder.build();
 
     // ── Startup audit records ─────────────────────────────────────────────────
-    let key_file_exists = std::path::Path::new(&config.default_ca().key_file).exists();
+    let key_file_exists = config
+        .default_ca()
+        .key_file
+        .as_deref()
+        .is_some_and(|p| std::path::Path::new(p).exists());
     let key_event_type = if key_file_exists {
         akamu::audit::AuditEventType::KeyLoad
     } else {
