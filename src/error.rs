@@ -133,6 +133,9 @@ pub enum AcmeError {
     #[error("configuration error: {0}")]
     Config(String),
 
+    #[error("Dogtag CA error: {0}")]
+    Dogtag(String),
+
     #[error("internal server error: {0}")]
     Internal(String),
 }
@@ -197,6 +200,7 @@ impl AcmeError {
             AcmeError::UnknownDelegation => "urn:ietf:params:acme:error:unknownDelegation",
             AcmeError::InvalidProfile(_) => "urn:ietf:params:acme:error:invalidProfile",
             AcmeError::NotFound => "urn:ietf:params:acme:error:malformed",
+            AcmeError::Dogtag(_) => "urn:ietf:params:acme:error:serverInternal",
             _ => "urn:ietf:params:acme:error:serverInternal",
         }
     }
@@ -230,6 +234,7 @@ impl AcmeError {
             AcmeError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             AcmeError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AcmeError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            AcmeError::Dogtag(_) => StatusCode::BAD_GATEWAY,
             AcmeError::ExternalAccountRequired => StatusCode::FORBIDDEN,
             AcmeError::AutoRenewalCanceled => StatusCode::FORBIDDEN,
             AcmeError::AutoRenewalCancellationInvalid => StatusCode::BAD_REQUEST,
