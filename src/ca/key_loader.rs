@@ -34,18 +34,19 @@ impl<'a> CaKeyLoader<'a> {
         Self { config }
     }
 
-    /// Classify the configured key source.
-    pub fn source(&self) -> CaKeySource<'_> {
-        if self.config.key_file.starts_with("pkcs11:") {
-            CaKeySource::Pkcs11Uri(&self.config.key_file)
+    /// Classify the configured key source, or `None` for external-signer CAs.
+    pub fn source(&self) -> Option<CaKeySource<'_>> {
+        let kf = self.config.key_file.as_deref()?;
+        if kf.starts_with("pkcs11:") {
+            Some(CaKeySource::Pkcs11Uri(kf))
         } else {
-            CaKeySource::File(&self.config.key_file)
+            Some(CaKeySource::File(kf))
         }
     }
 
     /// True if this source supports auto-generating a new key (file only).
     pub fn can_generate(&self) -> bool {
-        matches!(self.source(), CaKeySource::File(_))
+        matches!(self.source(), Some(CaKeySource::File(_)))
     }
 
     /// Load the private key from whichever source is configured.
@@ -57,7 +58,10 @@ impl<'a> CaKeyLoader<'a> {
     /// When `require_encrypted_key` is set in the CA config, file-based PEM
     /// keys must use PKCS#8 encrypted format (`ENCRYPTED PRIVATE KEY`).
     pub fn load_key(&self) -> Result<BackendPrivateKey, AcmeError> {
-        match self.source() {
+        let src = self.source().ok_or_else(|| {
+            AcmeError::Config("load_key called on CA with no key_file configured".into())
+        })?;
+        match src {
             CaKeySource::File(path) => {
                 let pem = std::fs::read(path)
                     .map_err(|e| AcmeError::Internal(format!("read CA key '{}': {e}", path)))?;

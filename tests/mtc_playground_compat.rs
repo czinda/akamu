@@ -69,7 +69,7 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
             is_default: true,
 
             caa_identities: vec![],
-            key_file: dir.join("ca.key").to_string_lossy().into_owned(),
+            key_file: Some(dir.join("ca.key").to_string_lossy().into_owned()),
             cert_file: dir.join("ca.crt").to_string_lossy().into_owned(),
             key_type: "ec:P-256".into(),
             hash_alg: "sha256".into(),
@@ -84,6 +84,7 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            signer: None,
         }],
         mtc: Some(MtcConfig {
             log_path: mtc_log_path.clone(),
@@ -132,7 +133,9 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
         id: "default".into(),
         key_type: "ec:P-256".into(),
         crl_next_update_secs: 86400,
-        key: ca_key,
+        signing: akamu::state::SigningBackend::Local {
+            key: Box::new(ca_key),
+        },
         cert_der: ca_cert_der,
         hash_alg: "sha256".into(),
         validity_days: 90,

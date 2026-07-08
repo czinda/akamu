@@ -55,7 +55,7 @@ use akamu::{
     ca,
     config::{CaConfig, Config, DatabaseConfig, GossipConfig, MtcConfig, ServerConfig},
     db, routes,
-    state::{AppState, AppStateBuilder, CaState, MtcState, NonceBucket},
+    state::{AppState, AppStateBuilder, CaState, MtcState, NonceBucket, SigningBackend},
 };
 use akamu_crdt::AkaNodeEntry;
 
@@ -874,7 +874,7 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
             id: "bench".into(),
             is_default: true,
             caa_identities: vec![],
-            key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
+            key_file: Some(dir.path().join("ca.key").to_string_lossy().into_owned()),
             cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
             key_type: args.ca_key_type.clone(),
             // ML-DSA is a pure lattice scheme; the hash_alg field is ignored for
@@ -891,6 +891,7 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            signer: None,
         }],
         mtc: Some(MtcConfig {
             log_path: "/dev/null".into(),
@@ -972,7 +973,9 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
     let ca = Arc::new(CaState {
         id: "bench".into(),
         key_type: args.ca_key_type.clone(),
-        key: ca_key,
+        signing: SigningBackend::Local {
+            key: Box::new(ca_key),
+        },
         cert_der: ca_cert_der,
         hash_alg: "sha256".into(),
         validity_days: 90,
@@ -2486,7 +2489,7 @@ async fn main() {
             id: "bench".into(),
             is_default: true,
             caa_identities: vec![],
-            key_file: d.path().join("ca.key").to_string_lossy().into_owned(),
+            key_file: Some(d.path().join("ca.key").to_string_lossy().into_owned()),
             cert_file: d.path().join("ca.crt").to_string_lossy().into_owned(),
             key_type: args.ca_key_type.clone(),
             hash_alg: "sha256".into(),
@@ -2501,6 +2504,7 @@ async fn main() {
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            signer: None,
         };
         ca::init::load_or_generate(&ca_cfg).unwrap();
         Some(d)

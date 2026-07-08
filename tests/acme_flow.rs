@@ -204,7 +204,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             is_default: true,
 
             caa_identities: vec![],
-            key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
+            key_file: Some(dir.path().join("ca.key").to_string_lossy().into_owned()),
             cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
             key_type: "ec:P-256".into(),
             hash_alg: "sha256".into(),
@@ -219,6 +219,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            signer: None,
         }],
         mtc: Some(MtcConfig {
             log_path: "/dev/null".into(),
@@ -255,7 +256,9 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         id: "default".into(),
         key_type: "ec:P-256".into(),
         crl_next_update_secs: 86400,
-        key: ca_key,
+        signing: akamu::state::SigningBackend::Local {
+            key: Box::new(ca_key),
+        },
         cert_der: ca_cert_der,
         hash_alg: "sha256".into(),
         validity_days: 90,
@@ -2205,7 +2208,7 @@ async fn test_directory_with_optional_fields() {
             is_default: true,
 
             caa_identities: vec![],
-            key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
+            key_file: Some(dir.path().join("ca.key").to_string_lossy().into_owned()),
             cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
             key_type: "ec:P-256".into(),
             hash_alg: "sha256".into(),
@@ -2220,6 +2223,7 @@ async fn test_directory_with_optional_fields() {
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            signer: None,
         }],
         mtc: Some(akamu::config::MtcConfig {
             log_path: "/dev/null".into(),
@@ -2258,7 +2262,9 @@ async fn test_directory_with_optional_fields() {
         id: "default".into(),
         key_type: "ec:P-256".into(),
         crl_next_update_secs: 86400,
-        key: ca_key,
+        signing: akamu::state::SigningBackend::Local {
+            key: Box::new(ca_key),
+        },
         cert_der: ca_cert_der,
         hash_alg: "sha256".into(),
         validity_days: 90,
@@ -2582,7 +2588,7 @@ async fn test_finalize_with_mtc_enabled() {
             is_default: true,
 
             caa_identities: vec![],
-            key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
+            key_file: Some(dir.path().join("ca.key").to_string_lossy().into_owned()),
             cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
             key_type: "ec:P-256".into(),
             hash_alg: "sha256".into(),
@@ -2597,6 +2603,7 @@ async fn test_finalize_with_mtc_enabled() {
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            signer: None,
         }],
         mtc: Some(MtcConfig {
             log_path: log_path.clone(),
@@ -2634,7 +2641,9 @@ async fn test_finalize_with_mtc_enabled() {
         id: "default".into(),
         key_type: "ec:P-256".into(),
         crl_next_update_secs: 86400,
-        key: ca_key,
+        signing: akamu::state::SigningBackend::Local {
+            key: Box::new(ca_key),
+        },
         cert_der: ca_cert_der,
         hash_alg: "sha256".into(),
         validity_days: 90,
@@ -2841,7 +2850,7 @@ async fn test_finalize_with_aia_and_cdp() {
             is_default: true,
 
             caa_identities: vec![],
-            key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
+            key_file: Some(dir.path().join("ca.key").to_string_lossy().into_owned()),
             cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
             key_type: "ec:P-256".into(),
             hash_alg: "sha256".into(),
@@ -2856,6 +2865,7 @@ async fn test_finalize_with_aia_and_cdp() {
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            signer: None,
         }],
         mtc: Some(MtcConfig {
             log_path: "/dev/null".into(),
@@ -2888,7 +2898,9 @@ async fn test_finalize_with_aia_and_cdp() {
         id: "default".into(),
         key_type: "ec:P-256".into(),
         crl_next_update_secs: 86400,
-        key: ca_key,
+        signing: akamu::state::SigningBackend::Local {
+            key: Box::new(ca_key),
+        },
         cert_der: ca_cert_der,
         hash_alg: "sha256".into(),
         validity_days: 90,
@@ -3337,7 +3349,7 @@ async fn test_smime_email_reply_00_full_flow() {
             id: "default".to_owned(),
             is_default: true,
             caa_identities: vec![],
-            key_file: ca_dir.join("ca.key").to_string_lossy().into_owned(),
+            key_file: Some(ca_dir.join("ca.key").to_string_lossy().into_owned()),
             cert_file: ca_dir.join("ca.crt").to_string_lossy().into_owned(),
             key_type: "ec:P-256".into(),
             hash_alg: "sha256".into(),
@@ -3352,6 +3364,7 @@ async fn test_smime_email_reply_00_full_flow() {
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            signer: None,
         }],
         mtc: Some(MtcConfig {
             log_path: "/dev/null".into(),
@@ -3401,7 +3414,9 @@ async fn test_smime_email_reply_00_full_flow() {
         id: "default".into(),
         key_type: "ec:P-256".into(),
         crl_next_update_secs: 86400,
-        key: ca_key,
+        signing: akamu::state::SigningBackend::Local {
+            key: Box::new(ca_key),
+        },
         cert_der: ca_cert_der,
         hash_alg: "sha256".into(),
         validity_days: 90,

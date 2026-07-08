@@ -740,7 +740,7 @@ enabled = false
         assert_eq!(cfg.database.url, "sqlite:///tmp/test.db");
         assert!(cfg.database.max_connections.is_none());
         let ca = cfg.default_ca();
-        assert_eq!(ca.key_file, "/tmp/ca.key");
+        assert_eq!(ca.key_file.as_deref(), Some("/tmp/ca.key"));
         assert_eq!(ca.cert_file, "/tmp/ca.crt");
         let mtc = cfg.mtc.as_ref().expect("global mtc section");
         assert_eq!(mtc.log_path, "/tmp/mtc.log");

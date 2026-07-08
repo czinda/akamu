@@ -106,7 +106,7 @@ async fn build_state(
             is_default: true,
 
             caa_identities: vec![],
-            key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
+            key_file: Some(dir.path().join("ca.key").to_string_lossy().into_owned()),
             cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
             key_type: "ec:P-256".into(),
             hash_alg: "sha256".into(),
@@ -121,6 +121,7 @@ async fn build_state(
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            signer: None,
         }],
         mtc: Some(MtcConfig {
             log_path: "/dev/null".into(),
@@ -176,7 +177,9 @@ async fn build_state(
         id: "default".into(),
         key_type: "ec:P-256".into(),
         crl_next_update_secs: 86400,
-        key: ca_key,
+        signing: akamu::state::SigningBackend::Local {
+            key: Box::new(ca_key),
+        },
         cert_der: ca_cert_der,
         hash_alg: "sha256".into(),
         validity_days: 90,
@@ -806,7 +809,7 @@ async fn build_state_with_proxy(
             id: "default".to_owned(),
             is_default: true,
             caa_identities: vec![],
-            key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
+            key_file: Some(dir.path().join("ca.key").to_string_lossy().into_owned()),
             cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
             key_type: "ec:P-256".into(),
             hash_alg: "sha256".into(),
@@ -821,6 +824,7 @@ async fn build_state_with_proxy(
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            signer: None,
         }],
         mtc: Some(MtcConfig {
             log_path: "/dev/null".into(),
@@ -879,7 +883,9 @@ async fn build_state_with_proxy(
         id: "default".into(),
         key_type: "ec:P-256".into(),
         crl_next_update_secs: 86400,
-        key: ca_key,
+        signing: akamu::state::SigningBackend::Local {
+            key: Box::new(ca_key),
+        },
         cert_der: ca_cert_der,
         hash_alg: "sha256".into(),
         validity_days: 90,
@@ -1204,7 +1210,7 @@ async fn proxy_cert_rate_limited() {
             id: "default".to_owned(),
             is_default: true,
             caa_identities: vec![],
-            key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
+            key_file: Some(dir.path().join("ca.key").to_string_lossy().into_owned()),
             cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
             key_type: "ec:P-256".into(),
             hash_alg: "sha256".into(),
@@ -1219,6 +1225,7 @@ async fn proxy_cert_rate_limited() {
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            signer: None,
         }],
         mtc: Some(MtcConfig {
             log_path: "/dev/null".into(),
@@ -1277,7 +1284,9 @@ async fn proxy_cert_rate_limited() {
         id: "default".into(),
         key_type: "ec:P-256".into(),
         crl_next_update_secs: 86400,
-        key: ca_key,
+        signing: akamu::state::SigningBackend::Local {
+            key: Box::new(ca_key),
+        },
         cert_der: ca_cert_der,
         hash_alg: "sha256".into(),
         validity_days: 90,

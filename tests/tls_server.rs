@@ -403,7 +403,7 @@ async fn start_tls_server() -> TlsTestServer {
             is_default: true,
 
             caa_identities: vec![],
-            key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
+            key_file: Some(dir.path().join("ca.key").to_string_lossy().into_owned()),
             cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
             key_type: "ec:P-256".into(),
             hash_alg: "sha256".into(),
@@ -418,6 +418,7 @@ async fn start_tls_server() -> TlsTestServer {
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            signer: None,
         }],
         mtc: Some(MtcConfig {
             log_path: "/dev/null".into(),
@@ -467,7 +468,9 @@ async fn start_tls_server() -> TlsTestServer {
     let ca_state = Arc::new(CaState {
         id: "default".into(),
         key_type: "ec:P-256".into(),
-        key: ca_key,
+        signing: akamu::state::SigningBackend::Local {
+            key: Box::new(ca_key),
+        },
         cert_der: ca_cert_der.clone(),
         hash_alg: "sha256".into(),
         validity_days: 90,
@@ -940,11 +943,12 @@ async fn test_tls_untrusted_ca_rejected() {
         id: "other".to_owned(),
         is_default: false,
         caa_identities: vec![],
-        key_file: dir
-            .path()
-            .join("other-ca.key")
-            .to_string_lossy()
-            .into_owned(),
+        key_file: Some(
+            dir.path()
+                .join("other-ca.key")
+                .to_string_lossy()
+                .into_owned(),
+        ),
         cert_file: dir
             .path()
             .join("other-ca.crt")
@@ -963,6 +967,7 @@ async fn test_tls_untrusted_ca_rejected() {
         require_encrypted_key: false,
         key_password_file: None,
         mtc: None,
+        signer: None,
     };
     let (_, other_ca_der) = ca::init::load_or_generate(&unrelated_ca_cfg).unwrap();
     tracing::info!("Attempting TLS handshake with unrelated CA trust store…");

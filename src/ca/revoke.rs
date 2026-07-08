@@ -118,7 +118,7 @@ mod tests {
             id: "default".to_owned(),
             is_default: true,
             caa_identities: vec![],
-            key_file: dir.path().join("ca.key").to_str().unwrap().into(),
+            key_file: Some(dir.path().join("ca.key").to_str().unwrap().into()),
             cert_file: dir.path().join("ca.crt").to_str().unwrap().into(),
             key_type: "ec:P-256".into(),
             hash_alg: "sha256".into(),
@@ -133,6 +133,7 @@ mod tests {
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            signer: None,
         };
         init::load_or_generate(&config).unwrap()
     }

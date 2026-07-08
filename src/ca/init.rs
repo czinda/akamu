@@ -39,12 +39,18 @@ use crate::error::AcmeError;
 pub fn load_or_generate(config: &CaConfig) -> Result<(BackendPrivateKey, Vec<u8>), AcmeError> {
     use crate::ca::key_loader::CaKeyLoader;
 
+    let key_file = config.key_file.as_deref().ok_or_else(|| {
+        AcmeError::Config(format!(
+            "CA '{}': key_file is required for local signing",
+            config.id
+        ))
+    })?;
     let loader = CaKeyLoader::new(config);
     let cert_exists = Path::new(&config.cert_file).exists();
 
     if loader.can_generate() {
         // File-based key: both files must exist together or be absent together.
-        let key_exists = Path::new(&config.key_file).exists();
+        let key_exists = Path::new(key_file).exists();
         if key_exists && cert_exists {
             load(config)
         } else if !key_exists && !cert_exists {
@@ -72,8 +78,9 @@ pub fn load_or_generate(config: &CaConfig) -> Result<(BackendPrivateKey, Vec<u8>
 ///
 /// Called only when both files already exist (verified by the caller).
 fn load(config: &CaConfig) -> Result<(BackendPrivateKey, Vec<u8>), AcmeError> {
-    let key_pem = std::fs::read(&config.key_file)
-        .map_err(|e| AcmeError::Internal(format!("read CA key '{}': {}", config.key_file, e)))?;
+    let key_path = config.key_file.as_deref().unwrap();
+    let key_pem = std::fs::read(key_path)
+        .map_err(|e| AcmeError::Internal(format!("read CA key '{}': {}", key_path, e)))?;
     let cert_pem = std::fs::read(&config.cert_file)
         .map_err(|e| AcmeError::Internal(format!("read CA cert '{}': {}", config.cert_file, e)))?;
 
@@ -86,7 +93,7 @@ fn load(config: &CaConfig) -> Result<(BackendPrivateKey, Vec<u8>), AcmeError> {
         .next()
         .ok_or_else(|| AcmeError::Internal("CA certificate PEM has no blocks".into()))?;
 
-    tracing::info!("Loaded CA key from {}", config.key_file);
+    tracing::info!("Loaded CA key from {}", key_path);
     Ok((key, cert_der))
 }
 
@@ -99,10 +106,11 @@ fn load(config: &CaConfig) -> Result<(BackendPrivateKey, Vec<u8>), AcmeError> {
 ///
 /// Called only when neither file exists (verified by the caller).
 fn generate(config: &CaConfig) -> Result<(BackendPrivateKey, Vec<u8>), AcmeError> {
+    let key_path = config.key_file.as_deref().unwrap();
     tracing::info!(
         "Generating new CA key ({}) — writing to {} and {}",
         config.key_type,
-        config.key_file,
+        key_path,
         config.cert_file
     );
 
@@ -114,8 +122,8 @@ fn generate(config: &CaConfig) -> Result<(BackendPrivateKey, Vec<u8>), AcmeError
     let key_pem_out = backend_key
         .to_pem(None)
         .map_err(|e| AcmeError::Crypto(format!("CA key to PEM: {}", e)))?;
-    crate::util::write_key_file(&config.key_file, &key_pem_out)
-        .map_err(|e| AcmeError::Internal(format!("write CA key '{}': {}", config.key_file, e)))?;
+    crate::util::write_key_file(key_path, &key_pem_out)
+        .map_err(|e| AcmeError::Internal(format!("write CA key '{}': {}", key_path, e)))?;
 
     let spki_der = backend_key
         .public_key()
@@ -204,7 +212,10 @@ fn load_pkcs11(
         .next()
         .ok_or_else(|| AcmeError::Internal("CA certificate PEM has no blocks".into()))?;
 
-    tracing::info!("Loaded CA key via PKCS#11 URI {}", config.key_file);
+    tracing::info!(
+        "Loaded CA key via PKCS#11 URI {}",
+        config.key_file.as_deref().unwrap()
+    );
     Ok((key, cert_der))
 }
 
@@ -216,7 +227,7 @@ fn generate_cert_for_hsm_key(
 ) -> Result<(BackendPrivateKey, Vec<u8>), AcmeError> {
     tracing::info!(
         "Generating CA certificate for PKCS#11 key {} — writing to {}",
-        config.key_file,
+        config.key_file.as_deref().unwrap(),
         config.cert_file
     );
 
@@ -299,6 +310,15 @@ fn generate_cert_for_hsm_key(
 /// the BIT STRING value of the public key.  This matches the
 /// `KeyIdMethod::Rfc7093Method1Sha256` method used when encoding the CA
 /// certificate's SKI / AKI extensions, so the result equals the
+/// Extract the SubjectPublicKeyInfo DER bytes from a DER-encoded certificate.
+///
+/// Used for Dogtag-backed CAs where there is no local private key — the SPKI
+/// is read from the CA certificate itself.
+pub fn extract_spki_from_cert_der(cert_der: &[u8]) -> Option<Vec<u8>> {
+    let ranges = synta_certificate::cert_byte_ranges(cert_der)?;
+    Some(cert_der[ranges.subject_public_key_info].to_vec())
+}
+
 /// `keyIdentifier` stored in every issued certificate's AKI extension.
 ///
 /// The value is used by the ARI (RFC 9773) handler to validate the first
@@ -517,7 +537,7 @@ mod tests {
             id: "default".to_owned(),
             is_default: true,
             caa_identities: vec![],
-            key_file: dir.join("ca.key").to_string_lossy().into_owned(),
+            key_file: Some(dir.join("ca.key").to_string_lossy().into_owned()),
             cert_file: dir.join("ca.crt").to_string_lossy().into_owned(),
             key_type: key_type.to_string(),
             hash_alg: "sha256".to_string(),
@@ -532,6 +552,7 @@ mod tests {
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            signer: None,
         }
     }
 
@@ -642,7 +663,7 @@ mod tests {
         // Neither file exists — should generate.
         let (_key, cert_der) = load_or_generate(&config).unwrap();
         assert!(!cert_der.is_empty());
-        assert!(std::path::Path::new(&config.key_file).exists());
+        assert!(std::path::Path::new(config.key_file.as_deref().unwrap()).exists());
         assert!(std::path::Path::new(&config.cert_file).exists());
 
         // Both files now exist — should load.
@@ -659,7 +680,7 @@ mod tests {
         let config = make_config_with_paths(dir.path(), "ec:P-256");
 
         // Only key file exists (cert missing) — should error.
-        fs::write(&config.key_file, b"dummy").unwrap();
+        fs::write(config.key_file.as_deref().unwrap(), b"dummy").unwrap();
         let result = load_or_generate(&config);
         assert!(result.is_err());
         match result.unwrap_err() {

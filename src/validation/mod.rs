@@ -674,7 +674,7 @@ mod tests {
                 id: "default".to_owned(),
                 is_default: true,
                 caa_identities: vec![],
-                key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
+                key_file: Some(dir.path().join("ca.key").to_string_lossy().into_owned()),
                 cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
                 key_type: "ec:P-256".into(),
                 hash_alg: "sha256".into(),
@@ -689,6 +689,7 @@ mod tests {
                 require_encrypted_key: false,
                 key_password_file: None,
                 mtc: None,
+                signer: None,
             }],
             mtc: None,
             server: ServerConfig::default(),
@@ -709,7 +710,9 @@ mod tests {
         let ca = Arc::new(CaState {
             id: "default".into(),
             key_type: "ec:P-256".into(),
-            key: ca_key,
+            signing: crate::state::SigningBackend::Local {
+                key: Box::new(ca_key),
+            },
             cert_der: ca_cert_der,
             hash_alg: "sha256".into(),
             validity_days: 90,
@@ -1161,7 +1164,7 @@ mod tests {
                 id: "default".to_owned(),
                 is_default: true,
                 caa_identities: vec![],
-                key_file: dir.path().join("ca.key").to_string_lossy().into_owned(),
+                key_file: Some(dir.path().join("ca.key").to_string_lossy().into_owned()),
                 cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
                 key_type: "ec:P-256".into(),
                 hash_alg: "sha256".into(),
@@ -1176,6 +1179,7 @@ mod tests {
                 require_encrypted_key: false,
                 key_password_file: None,
                 mtc: None,
+                signer: None,
             }],
             mtc: None,
             server: ServerConfig {
@@ -1198,7 +1202,9 @@ mod tests {
         let ca = Arc::new(CaState {
             id: "default".into(),
             key_type: "ec:P-256".into(),
-            key: ca_key,
+            signing: crate::state::SigningBackend::Local {
+                key: Box::new(ca_key),
+            },
             cert_der: ca_cert_der,
             hash_alg: "sha256".into(),
             validity_days: 90,
@@ -1459,7 +1465,7 @@ mod tests {
                 id: "default".to_owned(),
                 is_default: true,
                 caa_identities: vec![],
-                key_file: dir.path().join("ca-p.key").to_string_lossy().into_owned(),
+                key_file: Some(dir.path().join("ca-p.key").to_string_lossy().into_owned()),
                 cert_file: dir.path().join("ca-p.crt").to_string_lossy().into_owned(),
                 key_type: "ec:P-256".into(),
                 hash_alg: "sha256".into(),
@@ -1474,6 +1480,7 @@ mod tests {
                 require_encrypted_key: false,
                 key_password_file: None,
                 mtc: None,
+                signer: None,
             }],
             mtc: None,
             server: ServerConfig::default(),
@@ -1490,7 +1497,9 @@ mod tests {
         let ca = Arc::new(CaState {
             id: "default".into(),
             key_type: "ec:P-256".into(),
-            key: ca_key,
+            signing: crate::state::SigningBackend::Local {
+                key: Box::new(ca_key),
+            },
             cert_der: ca_cert_der,
             hash_alg: "sha256".into(),
             validity_days: 90,

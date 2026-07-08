@@ -145,7 +145,7 @@ fn render_ca(s: &mut String, cfg: &CaConfig) {
     ));
 
     // Prefer absolute paths so the config works regardless of working directory.
-    let key_abs = abs_path(&cfg.key_file);
+    let key_abs = abs_path(cfg.key_file.as_deref().unwrap());
     let cert_abs = abs_path(&cfg.cert_file);
     s.push_str(&format!("key_file          = {}\n", toml_str(&key_abs)));
     s.push_str(&format!("cert_file         = {}\n", toml_str(&cert_abs)));

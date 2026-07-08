@@ -53,7 +53,7 @@ pub async fn start(
                 id: s.id.clone(),
                 is_default: s.is_default,
                 caa_identities: vec![],
-                key_file: ca_dir.join("ca.key").to_string_lossy().into_owned(),
+                key_file: Some(ca_dir.join("ca.key").to_string_lossy().into_owned()),
                 cert_file: ca_dir.join("ca.crt").to_string_lossy().into_owned(),
                 key_type: s.key_type.clone(),
                 hash_alg: s.hash_alg.clone(),
@@ -68,6 +68,7 @@ pub async fn start(
                 require_encrypted_key: false,
                 key_password_file: None,
                 mtc: None,
+                signer: None,
             }
         })
         .collect();

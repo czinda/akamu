@@ -1,5 +1,70 @@
 use serde::Deserialize;
 
+/// Signing backend discriminator for a `[[ca]]` entry.
+///
+/// When absent from the config file (`signer` field omitted), the CA uses
+/// local signing — the existing `key_file` + `cert_file` behaviour.
+///
+/// ```toml
+/// # Local signing (default, signer section may be omitted entirely):
+/// [[ca]]
+/// key_file  = "/etc/akamu/ca.key"
+/// cert_file = "/etc/akamu/ca.crt"
+///
+/// # Dogtag PKI delegation:
+/// [[ca]]
+/// cert_file = "/etc/akamu/dogtag-ca-chain.pem"
+/// [ca.signer]
+/// type         = "dogtag"
+/// url          = "https://pki.example.com:8443"
+/// ra_cert_file = "/etc/akamu/ra-agent.pem"
+/// ra_key_file  = "/etc/akamu/ra-agent.key.pem"
+/// profile_id   = "caServerCert"
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum SignerConfig {
+    Local,
+    Dogtag(DogtagSignerConfig),
+}
+
+/// Dogtag PKI CA REST API configuration for delegated signing.
+///
+/// When a `[[ca]]` entry uses `[ca.signer] type = "dogtag"`, Akamu acts as
+/// an ACME Registration Authority: it validates ACME requests, performs
+/// challenge verification, then submits the CSR to a Dogtag CA for signing
+/// via the REST enrollment API.
+#[derive(Debug, Deserialize, Clone)]
+pub struct DogtagSignerConfig {
+    /// Base URL of the Dogtag CA (e.g. `"https://pki.example.com:8443"`).
+    /// The enrollment endpoint is `{url}/ca/rest/certrequests/`.
+    pub url: String,
+    /// PEM file containing the RA agent certificate for TLS client auth.
+    pub ra_cert_file: String,
+    /// PEM file containing the RA agent private key.
+    pub ra_key_file: String,
+    /// Optional passphrase file for an encrypted RA agent key.
+    pub ra_key_password_file: Option<String>,
+    /// Optional additional CA certificate PEM for TLS verification of the
+    /// Dogtag server (when not in the system trust store).
+    pub ca_cert_file: Option<String>,
+    /// Default Dogtag enrollment profile ID.  Can be overridden per ACME
+    /// profile via `dogtag_profile_id`.
+    #[serde(default = "default_dogtag_profile")]
+    pub profile_id: String,
+    /// REST API call timeout in seconds.
+    #[serde(default = "default_dogtag_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn default_dogtag_profile() -> String {
+    "caServerCert".to_string()
+}
+
+fn default_dogtag_timeout() -> u64 {
+    30
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct CaConfig {
     /// Unique identifier for this CA (used as the URL prefix `/acme/{id}/...`).
@@ -36,7 +101,7 @@ pub struct CaConfig {
     /// database.  The URI must include a non-empty `token=` attribute — the NSS
     /// path uses `PK11_ListPrivKeysInSlot`, which requires a slot handle obtained
     /// by `PK11_FindSlotByName` from the token label.
-    pub key_file: String,
+    pub key_file: Option<String>,
     /// Path to the CA certificate PEM file (generated on first run if absent)
     pub cert_file: String,
     /// Key algorithm for auto-generated CA key: "ec:P-256", "ec:P-384", "ec:P-521",
@@ -95,6 +160,19 @@ pub struct CaConfig {
     /// not participate in an MTC log.  Falls back to the global `[mtc]` section
     /// when that exists and this field is `None`.
     pub mtc: Option<super::mtc::MtcConfig>,
+    /// Signing backend.  When absent or `type = "local"`, the CA uses its own
+    /// `key_file` for local signing (the default).  When `type = "dogtag"`,
+    /// certificate signing is delegated to a Dogtag PKI CA via its REST API.
+    #[serde(default)]
+    pub signer: Option<SignerConfig>,
+}
+
+impl CaConfig {
+    /// Returns `true` when this CA uses an external signing backend
+    /// (i.e. the CA private key is not local).
+    pub fn is_external_signer(&self) -> bool {
+        matches!(self.signer, Some(SignerConfig::Dogtag(_)))
+    }
 }
 
 pub(super) fn default_key_type() -> String {

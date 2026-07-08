@@ -137,8 +137,9 @@ native-ossl = { workspace = true }
 # zstd compression for gossip CRDT payloads
 zstd = "0.13"
 
-# HTTP client for outbound gossip pushes (plain HTTP; CMS provides auth+confidentiality)
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# HTTP client for outbound gossip pushes and Dogtag REST API (CMS provides
+# auth+confidentiality for gossip; TLS client certs for Dogtag RA auth).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
