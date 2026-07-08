@@ -103,6 +103,29 @@ organization = "Example Org"
 # log_path = "/var/lib/akamu/mtc.log"
 # enabled  = true
 
+# ── External signing backend (Dogtag PKI) ─────────────────────────────────────
+# Uncomment to delegate certificate signing to a Dogtag PKI CA.
+# When [ca.signer] is set, omit key_file — Akāmu acts as a Registration
+# Authority and forwards CSRs to Dogtag's REST API.
+#
+# [[ca]]
+# id        = "dogtag-ca"
+# cert_file = "/etc/akamu/certs/dogtag-ca-chain.pem"
+# key_type  = "ec:P-256"
+# hash_alg  = "sha256"
+# crl_url   = "https://pki.example.com:8443/ca/crl"
+# ocsp_url  = "https://pki.example.com:8443/ca/ocsp"
+#
+# [ca.signer]
+# type              = "dogtag"
+# url               = "https://pki.example.com:8443"
+# ra_cert_file      = "/etc/akamu/dogtag/ra-agent.pem"
+# ra_key_file       = "/etc/akamu/dogtag/ra-agent.key.pem"
+# ra_key_password_file = "/etc/akamu/dogtag/ra-pass"   # optional
+# ca_cert_file      = "/etc/pki/tls/certs/dogtag-tls.pem"  # optional extra trust anchor
+# profile_id        = "caServerCert"                        # default enrollment profile
+# timeout_secs      = 30                                    # default 30
+
 # ── Merkle Tree Certificates ──────────────────────────────────────────────────
 # Deprecated: prefer per-CA [ca.mtc] sub-table for new deployments.
 # When a CA has its own [ca.mtc], this global section is ignored for that CA.

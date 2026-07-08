@@ -77,8 +77,9 @@ key_usage     = ["digital_signature"]   # see table below
 eku           = ["server_auth"]         # see table below
 crl_url       = "http://crl.example.com/ca.crl"   # optional
 ocsp_url      = "http://ocsp.example.com"          # optional
-allowed_key_types = ["ec:P-256", "rsa:2048"]       # optional; empty = any
-issue_as      = "mtc"       # optional; "mtc" or absent/"x509" for standard X.509
+allowed_key_types  = ["ec:P-256", "rsa:2048"]       # optional; empty = any
+issue_as           = "mtc"       # optional; "mtc" or absent/"x509" for standard X.509
+dogtag_profile_id  = "caServerCert"  # optional; override [ca.signer].profile_id per profile
 
 # Multi-CA restriction (optional; empty = available via all CAs)
 ca_ids               = ["rsa", "ec"]              # restrict to specific CA IDs
@@ -391,6 +392,27 @@ Grants are managed two ways:
 - **EAB key inheritance**: when an EAB key is provisioned with `profile_grants`, those grants are automatically copied to any account created using that key.
 
 An account whose `profile_grants` is NULL (the default) is considered to have no grants. When `require_account_grant` is `true`, such an account is denied.
+
+---
+
+## Dogtag profile override (`dogtag_profile_id`)
+
+When a CA uses the Dogtag signing backend (`[ca.signer]` with `type = "dogtag"`),
+each Akāmu profile can override the Dogtag enrollment profile used for certificate
+issuance. If `dogtag_profile_id` is absent, the default `profile_id` from
+`[ca.signer]` is used.
+
+```toml
+[profiles.providers.local.profiles.ipa_service]
+description       = "IPA service certificate (issued via Dogtag)"
+dogtag_profile_id = "caIPAserviceCert"
+```
+
+> **Note:** When Dogtag signs the certificate, the Dogtag enrollment profile
+> controls the certificate content (extensions, validity, key usage). Akāmu's
+> `CertificateParameters` (e.g. `key_usage`, `eku`, `validity_days`) are still
+> enforced for access control and ACME-level validation, but do not influence
+> the issued certificate.
 
 ---
 

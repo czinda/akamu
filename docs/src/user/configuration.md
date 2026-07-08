@@ -266,7 +266,10 @@ caa_identities = ["rsa.acme.example.com", "acme.example.com"]
 
 ### `key_file`
 
-**Required.** Path to the CA private key PEM file **or** a PKCS#11 URI
+**Required for local-signing CAs. Omit when using an external signer
+(`[ca.signer]` with `type = "dogtag"`).**
+
+Path to the CA private key PEM file **or** a PKCS#11 URI
 (`pkcs11:token=...;object=...`) for HSM-backed keys.
 
 **File-based keys** (default):
@@ -584,6 +587,112 @@ cert_file = "/etc/akamu/ca.cert.pem"
 [ca.mtc]
 log_path = "/var/lib/akamu/mtc.log"
 enabled  = true
+```
+
+### `[ca.signer]`
+
+**Optional. Default: absent (local signing).**
+
+Configures an external signing backend for this CA. When absent, Akāmu signs
+certificates locally using `key_file`. Currently the only supported external
+backend is Dogtag PKI.
+
+When `[ca.signer]` is set to `type = "dogtag"`, Akāmu acts as a Registration
+Authority (RA): it validates ACME requests and forwards the client's CSR to
+the Dogtag CA REST API for signing. The `key_file` field must be omitted for
+Dogtag-backed CAs; the `cert_file` must point to the Dogtag CA's certificate
+(used for chain building and AKI computation).
+
+**Limitations of Dogtag-backed CAs:**
+
+- The built-in CRL and OCSP endpoints return 404 — configure `crl_url` /
+  `ocsp_url` to point to Dogtag's own CRL/OCSP endpoints instead.
+- Cross-signing (`POST /admin/cas/cross-sign`) requires a local-signing
+  issuer CA.
+- STAR certificate renewals (RFC 8739) are skipped for Dogtag CAs.
+- The default CA must have a local key when TLS bootstrap or admin API is
+  enabled.
+
+#### `type`
+
+**Required.** The signer backend type. Currently only `"dogtag"` is supported.
+
+#### `url`
+
+**Required.** Base URL of the Dogtag PKI CA instance (e.g.
+`https://pki.example.com:8443`).
+
+#### `ra_cert_file`
+
+**Required.** Path to the RA agent certificate PEM file used for TLS client
+authentication against the Dogtag REST API.
+
+#### `ra_key_file`
+
+**Required.** Path to the RA agent private key PEM file.
+
+#### `ra_key_password_file`
+
+**Optional.** Path to a file containing the passphrase for an encrypted RA
+agent key. The file is read once at startup; trailing newlines are stripped.
+
+#### `ca_cert_file`
+
+**Optional.** Path to an additional CA certificate PEM file to trust when
+connecting to the Dogtag REST API (e.g. the Dogtag server's TLS CA).
+
+#### `profile_id`
+
+**Optional. Default: `"caServerCert"`.**
+
+Default Dogtag enrollment profile ID. Can be overridden per certificate
+profile with `dogtag_profile_id` in the profile configuration.
+
+#### `timeout_secs`
+
+**Optional. Default: `30`.**
+
+HTTP request timeout in seconds for Dogtag REST API calls.
+
+#### Example: Dogtag-backed CA
+
+```toml
+[[ca]]
+id        = "dogtag-ca"
+cert_file = "/etc/akamu/certs/dogtag-ca-chain.pem"
+key_type  = "ec:P-256"
+hash_alg  = "sha256"
+
+[ca.signer]
+type         = "dogtag"
+url          = "https://pki.example.com:8443"
+ra_cert_file = "/etc/akamu/dogtag/ra-agent.pem"
+ra_key_file  = "/etc/akamu/dogtag/ra-agent.key.pem"
+ca_cert_file = "/etc/pki/tls/certs/dogtag-tls-ca.pem"
+profile_id   = "caServerCert"
+timeout_secs = 30
+```
+
+#### Example: mixed local and Dogtag CAs
+
+```toml
+[[ca]]
+id         = "local"
+is_default = true
+key_file   = "/etc/akamu/ca.key.pem"
+cert_file  = "/etc/akamu/ca.cert.pem"
+
+[[ca]]
+id        = "dogtag"
+cert_file = "/etc/akamu/dogtag-ca.pem"
+crl_url   = "https://pki.example.com:8443/ca/crl"
+ocsp_url  = "https://pki.example.com:8443/ca/ocsp"
+
+[ca.signer]
+type         = "dogtag"
+url          = "https://pki.example.com:8443"
+ra_cert_file = "/etc/akamu/dogtag/ra-agent.pem"
+ra_key_file  = "/etc/akamu/dogtag/ra-agent.key.pem"
 ```
 
 ---
