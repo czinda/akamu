@@ -9,6 +9,7 @@ RUN dnf install -y \
         openldap-devel \
         krb5-devel \
         cyrus-sasl-devel \
+        p11-kit-devel \
     && dnf clean all
 
 WORKDIR /build/akamu
@@ -33,7 +34,10 @@ RUN mkdir -p /runtime-libs && \
     cp -L /usr/lib64/libkeyutils.so*    /runtime-libs/ && \
     cp -L /usr/lib64/libresolv.so*      /runtime-libs/ && \
     cp -L /usr/lib64/libevent*.so*      /runtime-libs/ && \
-    cp -L /usr/lib64/libcrypt.so*       /runtime-libs/
+    cp -L /usr/lib64/libcrypt.so*       /runtime-libs/ && \
+    cp -L /usr/lib64/libp11-kit.so*     /runtime-libs/ 2>/dev/null || true && \
+    cp -L /usr/lib64/p11-kit-client.so  /runtime-libs/ 2>/dev/null || true && \
+    cp -L /usr/lib64/libffi.so*         /runtime-libs/ 2>/dev/null || true
 
 # Build passwd/group with the akamu user for the runtime stage.
 RUN cp /etc/passwd /runtime-libs/passwd && \
@@ -62,8 +66,10 @@ COPY --from=builder /runtime-libs/group /etc/group
 # Remove SUID/SGID bits from all binaries.
 RUN find / -xdev -perm /6000 -type f -exec chmod a-s {} + 2>/dev/null || true
 
-# Runtime directories.
-RUN mkdir -p /app/conf /app/data && chown -R 1001:1001 /app
+# Runtime directories and PKCS#11 config for Kryoptic HSM access.
+RUN mkdir -p /app/conf /app/data /etc/pkcs11/modules /var/run/kryoptic && \
+    chown -R 1001:1001 /app /var/run/kryoptic && \
+    echo 'remote: unix:path=/var/run/kryoptic/pkcs11.sock' > /etc/pkcs11/modules/kryoptic.module
 
 COPY --from=builder --chown=1001:1001 /build/akamu/target/release/akamu /app/akamu
 COPY --from=builder --chown=1001:1001 /build/akamu/config.toml.example /app/conf/config.toml.example
