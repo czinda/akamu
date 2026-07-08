@@ -184,6 +184,11 @@ pub struct BuiltinProfileConfig {
     /// Unix-socket form: `"http+unix://%2Frun%2Fekishib%2Fekishib.sock/jwks"`.
     #[serde(default)]
     pub trust_jwks_urls: Vec<String>,
+    /// Dogtag enrollment profile ID override.  When set, overrides the default
+    /// `profile_id` in the `[ca.signer]` Dogtag configuration for orders that
+    /// use this ACME profile.  Ignored for local-signing CAs.
+    #[serde(default)]
+    pub dogtag_profile_id: Option<String>,
 }
 
 /// A certificate policy OID with an optional CPS URI qualifier.

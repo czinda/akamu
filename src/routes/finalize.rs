@@ -437,20 +437,29 @@ pub async fn finalize_order(
         order.not_after
     };
 
-    // Issue the certificate on the blocking pool so the CPU-bound crypto
-    // (signing + lint verification) does not stall async worker threads.
-    let ca_arc = Arc::clone(order_ca);
-    let csr_owned = validated_csr.clone();
-    let params_owned = cert_params.clone();
-    let nb = order.not_before;
-    let na = not_after;
-    let on = extra_other_names.clone();
-    let dn = extra_dns_names.clone();
-    let issued = tokio::task::spawn_blocking(move || {
-        ca::issue::issue_with_params(&ca_arc, &csr_owned, &params_owned, nb, na, &on, &dn)
-    })
-    .await
-    .map_err(|e| AcmeError::Internal(format!("issue task: {e}")))??;
+    // Issue the certificate — either locally via spawn_blocking (CPU-bound
+    // crypto) or remotely via the Dogtag REST API (async I/O).
+    let issued = match &order_ca.signing {
+        crate::state::SigningBackend::Dogtag(signer) => {
+            let profile_override = cert_params.dogtag_profile_id.as_deref();
+            ca::dogtag::issue_via_dogtag(signer, &order_ca.cert_der, &csr_der, profile_override)
+                .await?
+        }
+        crate::state::SigningBackend::Local { .. } => {
+            let ca_arc = Arc::clone(order_ca);
+            let csr_owned = validated_csr.clone();
+            let params_owned = cert_params.clone();
+            let nb = order.not_before;
+            let na = not_after;
+            let on = extra_other_names.clone();
+            let dn = extra_dns_names.clone();
+            tokio::task::spawn_blocking(move || {
+                ca::issue::issue_with_params(&ca_arc, &csr_owned, &params_owned, nb, na, &on, &dn)
+            })
+            .await
+            .map_err(|e| AcmeError::Internal(format!("issue task: {e}")))??
+        }
+    };
 
     // For MTC issuance profiles, build a StandaloneCertificate from the issued
     // TBSCertificate + an MTC Merkle inclusion proof.  This is done synchronously

@@ -93,6 +93,7 @@ impl ProfilePayload {
             ms_upn_san_template: self.ms_upn_san_template,
             inject_account_kpn: self.inject_account_kpn,
             trust_jwks_urls: vec![],
+            dogtag_profile_id: None,
         }
     }
 }

@@ -126,6 +126,7 @@ pub fn register_profiles(state: &Arc<AppState>, profiles: &[ProfileSpec]) {
             ms_upn_san_template: None,
             inject_account_kpn: false,
             trust_jwks_urls: vec![],
+            dogtag_profile_id: None,
         };
 
         let added = state

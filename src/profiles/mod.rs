@@ -166,6 +166,11 @@ pub struct CertificateParameters {
     /// Populated from `BuiltinProfileConfig.trust_jwks_urls`; non-builtin
     /// providers always carry an empty list.
     pub trust_jwks_urls: Vec<String>,
+    /// Dogtag enrollment profile ID override for this ACME profile.
+    /// When set, overrides the default `profile_id` in `DogtagSignerConfig`.
+    /// Only meaningful for CAs with a Dogtag signing backend; ignored for
+    /// local-signing CAs.
+    pub dogtag_profile_id: Option<String>,
 }
 
 impl CertificateParameters {
@@ -196,6 +201,7 @@ impl CertificateParameters {
             ms_upn_san_template: None,
             inject_account_kpn: false,
             trust_jwks_urls: vec![],
+            dogtag_profile_id: None,
         }
     }
 }
@@ -534,6 +540,7 @@ mod tests {
             ms_upn_san_template: None,
             inject_account_kpn: false,
             trust_jwks_urls: vec![],
+            dogtag_profile_id: None,
         }
     }
 

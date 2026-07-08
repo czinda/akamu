@@ -71,6 +71,7 @@ pub fn load_builtin(
             ms_upn_san_template: pcfg.ms_upn_san_template.clone(),
             inject_account_kpn: pcfg.inject_account_kpn,
             trust_jwks_urls: pcfg.trust_jwks_urls.clone(),
+            dogtag_profile_id: pcfg.dogtag_profile_id.clone(),
         };
 
         out.insert(id.clone(), (pcfg.description.clone(), params));
@@ -150,6 +151,7 @@ mod tests {
             ms_upn_san_template: None,
             inject_account_kpn: false,
             trust_jwks_urls: vec![],
+            dogtag_profile_id: None,
         }
     }
 
