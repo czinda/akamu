@@ -168,8 +168,18 @@ async fn run_once(state: &Arc<AppState>) {
             );
             continue;
         };
+        if !ca.has_local_key() {
+            tracing::warn!(
+                "STAR order {}: CA '{}' uses an external signer; \
+                 STAR renewal requires local signing, skipping",
+                order.id,
+                order.ca_id
+            );
+            continue;
+        }
+        let ca_key = ca.local_key().expect("guarded by has_local_key() above");
         let issued = match ca::issue::issue_certificate(ca::issue::IssueCertParams {
-            ca_key: &ca.key,
+            ca_key,
             ca_cert_der: &ca.cert_der,
             hash_alg: &ca.hash_alg,
             validity_days: ca.validity_days,

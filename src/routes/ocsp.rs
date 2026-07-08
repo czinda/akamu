@@ -43,6 +43,10 @@ pub async fn get_ocsp(
     let ca = state
         .get_ca(&ca_id.0)
         .ok_or_else(|| AcmeError::Internal(format!("no CA for id '{}'", ca_id.0)))?;
+    if !ca.has_local_key() {
+        tracing::debug!(ca_id = %ca_id.0, "OCSP not available: CA uses an external signer");
+        return Err(AcmeError::NotFound);
+    }
     let der = URL_SAFE_NO_PAD
         .decode(request.as_bytes())
         .map_err(|_| AcmeError::BadRequest("OCSP GET: invalid base64url in path".into()))?;
@@ -79,6 +83,10 @@ pub async fn post_ocsp(
     let ca = state
         .get_ca(&ca_id.0)
         .ok_or_else(|| AcmeError::Internal(format!("no CA for id '{}'", ca_id.0)))?;
+    if !ca.has_local_key() {
+        tracing::debug!(ca_id = %ca_id.0, "OCSP not available: CA uses an external signer");
+        return Err(AcmeError::NotFound);
+    }
     if body.len() > MAX_OCSP_POST_BYTES {
         return Err(AcmeError::BadRequest(format!(
             "OCSP POST body too large ({} bytes; max {MAX_OCSP_POST_BYTES})",
@@ -210,7 +218,10 @@ async fn handle_ocsp_request(
         .build_tbs()
         .map_err(|e| AcmeError::Builder(format!("OCSP TBS: {e}")))?;
 
-    let signer = ca.key.as_signer(&ca.hash_alg);
+    let ca_key = ca
+        .local_key()
+        .ok_or_else(|| AcmeError::Internal("OCSP: CA has no local key".into()))?;
+    let signer = ca_key.as_signer(&ca.hash_alg);
     let sig_alg_der = signer
         .signature_algorithm_der()
         .map_err(|e| AcmeError::Crypto(format!("OCSP sig alg: {e}")))?;

@@ -35,6 +35,10 @@ pub async fn get_crl(
     let ca = state
         .get_ca(&ca_id.0)
         .ok_or_else(|| AcmeError::Internal(format!("no CA for id '{}'", ca_id.0)))?;
+    if !ca.has_local_key() {
+        tracing::debug!(ca_id = %ca_id.0, "CRL not available: CA uses an external signer");
+        return Err(AcmeError::NotFound);
+    }
     let validity_secs = ca.crl_next_update_secs;
     // Cache for half the CRL validity period, at least 30 s.
     let cache_ttl = Duration::from_secs((validity_secs / 2).max(30));
@@ -109,7 +113,10 @@ pub async fn get_crl(
         })
         .collect();
 
-    let (crl_der, _) = build_crl(&ca.key, &ca.cert_der, &ca.hash_alg, &entries, validity_secs)?;
+    let ca_key = ca
+        .local_key()
+        .ok_or_else(|| AcmeError::Internal("CRL: CA has no local key".into()))?;
+    let (crl_der, _) = build_crl(ca_key, &ca.cert_der, &ca.hash_alg, &entries, validity_secs)?;
 
     // Store in cache.
     {

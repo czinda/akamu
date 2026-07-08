@@ -299,6 +299,16 @@ pub async fn post_ca_cross_sign(
         }
     };
 
+    if !issuer_ca.has_local_key() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(
+                json!({"status": 400, "detail": "issuer CA uses an external signer and cannot cross-sign locally"}),
+            ),
+        )
+            .into_response();
+    }
+
     let issued = match crate::ca::issue::issue_ca_cert(
         &issuer_ca,
         &subject_cert_der,
