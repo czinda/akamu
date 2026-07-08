@@ -496,7 +496,9 @@ mod tests {
         CaState {
             id: "default".into(),
             key_type: "ec:P-256".into(),
-            key: synta_certificate::BackendPrivateKey::generate_ec("P-256").unwrap(),
+            signing: crate::state::SigningBackend::Local {
+                key: Box::new(synta_certificate::BackendPrivateKey::generate_ec("P-256").unwrap()),
+            },
             cert_der: vec![],
             hash_alg: "sha256".into(),
             validity_days: 90,

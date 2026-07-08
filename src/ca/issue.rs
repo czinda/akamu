@@ -541,8 +541,10 @@ pub fn issue_with_params(
             }
             _ => {
                 let name = extract_ca_subject_der(&ca.cert_der)?;
-                let spki = ca
-                    .key
+                let ca_key = ca.local_key().ok_or_else(|| {
+                    AcmeError::Internal("issue_with_params called on non-local CA".into())
+                })?;
+                let spki = ca_key
                     .public_key()
                     .map_err(|e| AcmeError::Crypto(format!("CA public key: {e}")))?
                     .spki_der()
@@ -693,7 +695,10 @@ pub fn issue_with_params(
     }
 
     // ── Assemble certificate ─────────────────────────────────────────────────
-    let signer = ca.key.as_signer(&params.hash_alg);
+    let ca_key = ca
+        .local_key()
+        .ok_or_else(|| AcmeError::Internal("issue_with_params called on non-local CA".into()))?;
+    let signer = ca_key.as_signer(&params.hash_alg);
 
     let mut builder = CertificateBuilder::new()
         .issuer_name(&ca_name_der)
@@ -790,8 +795,10 @@ pub fn sign_server_cert(
         .to_vec();
 
     // CA public key for AKI.
-    let ca_spki_der = ca
-        .key
+    let ca_key = ca
+        .local_key()
+        .ok_or_else(|| AcmeError::Internal("sign_server_cert requires local CA key".into()))?;
+    let ca_spki_der = ca_key
         .public_key()
         .map_err(|e| AcmeError::Crypto(format!("CA public key for AKI: {e}")))?
         .spki_der()
@@ -851,8 +858,7 @@ pub fn sign_server_cert(
         .build()
         .map_err(|e| AcmeError::Builder(format!("SAN: {e}")))?;
 
-    // Sign with the CA key.
-    let signer = ca.key.as_signer(&ca.hash_alg);
+    let signer = ca_key.as_signer(&ca.hash_alg);
     CertificateBuilder::new()
         .issuer_name(&ca_name_der)
         .subject_name(&subject_der)
@@ -948,8 +954,10 @@ pub fn sign_admin_cert(
         .spki_der()
         .to_vec();
 
-    let ca_spki_der = ca
-        .key
+    let ca_key = ca
+        .local_key()
+        .ok_or_else(|| AcmeError::Internal("sign_admin_cert requires local CA key".into()))?;
+    let ca_spki_der = ca_key
         .public_key()
         .map_err(|e| AcmeError::Crypto(format!("CA public key for AKI: {e}")))?
         .spki_der()
@@ -1003,7 +1011,7 @@ pub fn sign_admin_cert(
     .build()
     .map_err(|e| AcmeError::Builder(format!("SAN: {e}")))?;
 
-    let signer = ca.key.as_signer(&ca.hash_alg);
+    let signer = ca_key.as_signer(&ca.hash_alg);
     CertificateBuilder::new()
         .issuer_name(&ca_name_der)
         .subject_name(&subject_der)
@@ -1192,8 +1200,10 @@ pub fn issue_ca_cert(
     let subject_dn = synta_certificate::format_dn(subject_cert.tbs_certificate.subject.as_bytes());
 
     // Extract issuer CA SPKI for AKI computation.
-    let issuer_spki_der = issuer_ca
-        .key
+    let issuer_key = issuer_ca
+        .local_key()
+        .ok_or_else(|| AcmeError::Internal("issue_ca_cert requires local issuer key".into()))?;
+    let issuer_spki_der = issuer_key
         .public_key()
         .map_err(|e| AcmeError::Crypto(format!("issuer CA public key: {e}")))?
         .spki_der()
@@ -1246,7 +1256,7 @@ pub fn issue_ca_cert(
     )
     .ok_or_else(|| AcmeError::Builder("AKI encode".into()))?;
 
-    let signer = issuer_ca.key.as_signer(&issuer_ca.hash_alg);
+    let signer = issuer_key.as_signer(&issuer_ca.hash_alg);
 
     let cert_der = CertificateBuilder::new()
         .issuer_name(&issuer_name_der)
@@ -1790,7 +1800,9 @@ mod tests {
         let ca = crate::state::CaState {
             id: "test".into(),
             key_type: "ec:P-256".into(),
-            key: ca_key,
+            signing: crate::state::SigningBackend::Local {
+                key: Box::new(ca_key),
+            },
             cert_der: ca_cert_der,
             hash_alg: "sha256".into(),
             validity_days: 90,
@@ -1823,6 +1835,7 @@ mod tests {
             ms_upn_san_template: None,
             inject_account_kpn: false,
             trust_jwks_urls: vec![],
+            dogtag_profile_id: None,
         };
 
         let result = issue_with_params(&ca, &validated_csr, &params, None, None, &[], &[]);
@@ -1850,7 +1863,9 @@ mod tests {
         let ca = crate::state::CaState {
             id: "test".into(),
             key_type: "ec:P-256".into(),
-            key: ca_key,
+            signing: crate::state::SigningBackend::Local {
+                key: Box::new(ca_key),
+            },
             cert_der: ca_cert_der,
             hash_alg: "sha256".into(),
             validity_days: 90,
@@ -1883,6 +1898,7 @@ mod tests {
             ms_upn_san_template: None,
             inject_account_kpn: false,
             trust_jwks_urls: vec![],
+            dogtag_profile_id: None,
         };
 
         let result = issue_with_params(&ca, &validated_csr, &params, None, None, &[], &[]);
@@ -2000,7 +2016,9 @@ mod tests {
         crate::state::CaState {
             id: "test".into(),
             key_type: "ec:P-256".into(),
-            key: ca_key,
+            signing: crate::state::SigningBackend::Local {
+                key: Box::new(ca_key),
+            },
             cert_der: ca_cert_der,
             hash_alg: "sha256".into(),
             validity_days: 90,

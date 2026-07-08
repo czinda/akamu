@@ -632,23 +632,32 @@ pub struct TlsState {
     pub client_auth_config: crate::config::ClientAuthConfig,
 }
 
+/// Certificate signing backend for a CA.
+///
+/// Each `[[ca]]` entry uses either a local private key (the default) or
+/// delegates signing to an external CA via its REST API.
+pub enum SigningBackend {
+    /// Local signing using the CA's own private key.
+    Local { key: Box<BackendPrivateKey> },
+    /// Dogtag PKI remote signing via REST API.
+    Dogtag(Arc<crate::ca::dogtag::DogtagSigner>),
+}
+
 /// CA key material and issuance policy.
 ///
 /// # Concurrency
 ///
 /// `CaState` is shared across all concurrent axum handler tasks via
-/// `Arc<CaState>`. `BackendPrivateKey` delegates signing to the underlying
-/// `synta_certificate` backend (OpenSSL / AWS-LC), which serialises concurrent
-/// operations internally. If the backend ever changes to one that is not
-/// thread-safe for concurrent signing, protect `key` with a
-/// `tokio::sync::Mutex<BackendPrivateKey>`.
+/// `Arc<CaState>`. For local signing, `BackendPrivateKey` delegates to the
+/// underlying `synta_certificate` backend (OpenSSL / AWS-LC), which serialises
+/// concurrent operations internally.
 pub struct CaState {
     /// Unique identifier for this CA (matches `CaConfig.id`).
     pub id: String,
     /// Key type string from config, e.g. `"ec:P-256"` or `"rsa:2048"`.
     pub key_type: String,
-    /// CA private key (used for signing certificates and CRLs).
-    pub key: BackendPrivateKey,
+    /// Signing backend: local key or external CA delegation.
+    pub signing: SigningBackend,
     /// DER-encoded CA certificate.
     pub cert_der: Vec<u8>,
     /// Hash algorithm string, e.g. `"sha256"`.
@@ -673,6 +682,21 @@ pub struct CaState {
     pub caa_identities: Vec<String>,
     /// Per-CA MTC transparency log state.
     pub mtc: Arc<MtcState>,
+}
+
+impl CaState {
+    /// Returns the local signing key, or `None` for externally-signed CAs.
+    pub fn local_key(&self) -> Option<&BackendPrivateKey> {
+        match &self.signing {
+            SigningBackend::Local { key } => Some(key),
+            SigningBackend::Dogtag(_) => None,
+        }
+    }
+
+    /// Returns `true` when this CA has a local signing key.
+    pub fn has_local_key(&self) -> bool {
+        self.local_key().is_some()
+    }
 }
 
 /// Cached account key material stored in `AppState::spki_cache`.

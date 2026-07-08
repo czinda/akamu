@@ -127,7 +127,7 @@ pub async fn start(
         let ca = Arc::new(CaState {
             id: spec.id.clone(),
             key_type: spec.key_type.clone(),
-            key,
+            signing: akamu::state::SigningBackend::Local { key: Box::new(key) },
             cert_der,
             hash_alg: spec.hash_alg.clone(),
             validity_days: spec.validity_days,
