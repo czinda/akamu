@@ -1215,8 +1215,8 @@ impl GssClientCred {
 
     /// Re-acquire an initiator credential from an existing named ccache.
     ///
-    /// `ccache_name` must be a ccache previously populated by [`store_into_ccache`].
-    /// Calling this after `store_into_ccache` produces a credential whose backing
+    /// `ccache_name` must be a ccache previously populated by [`Self::store_into_ccache`].
+    /// Calling this after [`Self::store_into_ccache`] produces a credential whose backing
     /// store is the named ccache — MIT Kerberos can then find the evidence ticket
     /// in that ccache when performing S4U2Proxy inside `gss_init_sec_context`.
     ///
