@@ -61,13 +61,22 @@ pub async fn get_directory(State(state): State<Arc<AppState>>, ca_id: CaId) -> i
         meta["profiles"] = json!(loaded_profiles);
     }
 
+    // Account-level endpoints (newAccount, keyChange) use the canonical
+    // prefix when accounts are server-wide (default).  Per-CA directories
+    // still return per-CA URLs for order/authz/revoke endpoints.
+    let acct_pfx = if state.config.server.account_scope == "ca" {
+        pfx.clone()
+    } else {
+        format!("{base}/acme")
+    };
+
     let dir = json!({
         "newNonce":    format!("{pfx}/new-nonce"),
-        "newAccount":  format!("{pfx}/new-account"),
+        "newAccount":  format!("{acct_pfx}/new-account"),
         "newOrder":    format!("{pfx}/new-order"),
         "newAuthz":    format!("{pfx}/new-authz"),
         "revokeCert":  format!("{pfx}/revoke-cert"),
-        "keyChange":   format!("{pfx}/key-change"),
+        "keyChange":   format!("{acct_pfx}/key-change"),
         "renewalInfo": format!("{pfx}/renewal-info"),
         "meta": meta,
     });
