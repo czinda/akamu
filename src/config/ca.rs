@@ -55,6 +55,11 @@ pub struct DogtagSignerConfig {
     /// REST API call timeout in seconds.
     #[serde(default = "default_dogtag_timeout")]
     pub timeout_secs: u64,
+    /// Accept TLS certificates whose hostname does not match the URL.
+    /// Only use for development/demo setups where the Dogtag CA uses a
+    /// certificate issued for a different hostname (e.g. container DNS name).
+    #[serde(default)]
+    pub tls_danger_accept_invalid_hostnames: bool,
 }
 
 fn default_dogtag_profile() -> String {

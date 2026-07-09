@@ -654,6 +654,15 @@ profile with `dogtag_profile_id` in the profile configuration.
 
 HTTP request timeout in seconds for Dogtag REST API calls.
 
+#### `tls_danger_accept_invalid_hostnames`
+
+**Optional. Default: `false`.**
+
+When `true`, disables TLS hostname verification for the Dogtag REST API
+connection.  Use only in development or demo environments where the Dogtag
+CA certificate was issued for a different hostname (e.g. a container DNS
+name that does not match the connection address).
+
 #### Example: Dogtag-backed CA
 
 ```toml
