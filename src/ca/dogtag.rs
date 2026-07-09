@@ -6,10 +6,12 @@
 //! it validates ACME requests, performs challenge verification, then submits
 //! the ACME client's CSR to Dogtag for signing.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use rustls::pki_types::CertificateDer;
 use serde::{Deserialize, Serialize};
 
 use crate::config::DogtagSignerConfig;
@@ -94,7 +96,9 @@ impl DogtagSigner {
     /// Build a new Dogtag signer client from config.
     ///
     /// Reads the RA agent cert+key PEM files and constructs a `reqwest::Client`
-    /// with TLS client certificate authentication.
+    /// with TLS client certificate authentication.  Uses the
+    /// `rustls_native_ossl` crypto provider (OpenSSL-based chain verification)
+    /// to match the rest of the Akamu TLS stack.
     pub fn new(cfg: &DogtagSignerConfig) -> Result<Self, AcmeError> {
         if cfg.ra_key_password_file.is_some() {
             return Err(AcmeError::Config(
@@ -112,34 +116,19 @@ impl DogtagSigner {
             );
         }
 
-        let ra_cert_pem = std::fs::read(&cfg.ra_cert_file)
-            .map_err(|e| AcmeError::Config(format!("read RA cert '{}': {e}", cfg.ra_cert_file)))?;
-        let ra_key_pem = std::fs::read(&cfg.ra_key_file)
-            .map_err(|e| AcmeError::Config(format!("read RA key '{}': {e}", cfg.ra_key_file)))?;
+        let tls_config = build_dogtag_tls_config(cfg)?;
 
-        // reqwest::Identity::from_pem expects cert+key concatenated in one PEM blob.
-        let mut identity_pem = ra_cert_pem;
-        identity_pem.push(b'\n');
-        identity_pem.extend_from_slice(&ra_key_pem);
-
-        let identity = reqwest::Identity::from_pem(&identity_pem)
-            .map_err(|e| AcmeError::Config(format!("parse RA agent identity: {e}")))?;
-
-        let mut builder = reqwest::Client::builder()
-            .identity(identity)
-            .timeout(Duration::from_secs(cfg.timeout_secs))
-            .pool_max_idle_per_host(16);
-
-        if let Some(ref ca_cert_path) = cfg.ca_cert_file {
-            let ca_pem = std::fs::read(ca_cert_path).map_err(|e| {
-                AcmeError::Config(format!("read Dogtag CA cert '{}': {e}", ca_cert_path))
-            })?;
-            let ca_cert = reqwest::Certificate::from_pem(&ca_pem)
-                .map_err(|e| AcmeError::Config(format!("parse Dogtag CA cert: {e}")))?;
-            builder = builder.add_root_certificate(ca_cert);
+        if cfg.tls_danger_accept_invalid_hostnames {
+            tracing::warn!(
+                "Dogtag TLS hostname verification disabled — \
+                 do not use this setting in production"
+            );
         }
 
-        let client = builder
+        let client = reqwest::Client::builder()
+            .use_preconfigured_tls(tls_config)
+            .timeout(Duration::from_secs(cfg.timeout_secs))
+            .pool_max_idle_per_host(16)
             .build()
             .map_err(|e| AcmeError::Config(format!("build Dogtag HTTP client: {e}")))?;
 
@@ -436,6 +425,108 @@ fn time_to_unix(t: &synta_certificate::Time) -> Result<i64, AcmeError> {
         )
         .map(|gt| gt.to_unix())
         .map_err(|_| AcmeError::Dogtag("invalid UtcTime in Dogtag-issued certificate".into())),
+    }
+}
+
+// ── TLS configuration ─────────────────────────────────────────────────────────
+
+/// Build a `rustls::ClientConfig` for the Dogtag REST API connection.
+///
+/// Uses `rustls_native_ossl` for OpenSSL-based chain verification (matching
+/// the rest of Akamu's TLS stack), with mTLS client auth via the RA agent
+/// cert+key.
+fn build_dogtag_tls_config(cfg: &DogtagSignerConfig) -> Result<rustls::ClientConfig, AcmeError> {
+    use rustls_native_ossl::cert_verifier::{OsslChainVerifier, OsslServerCertVerifier};
+
+    // ── RA agent client cert + key ──────────────────────────────────────
+    let ra_cert_pem = std::fs::read(&cfg.ra_cert_file)
+        .map_err(|e| AcmeError::Config(format!("read RA cert '{}': {e}", cfg.ra_cert_file)))?;
+    let ra_key_pem = std::fs::read(&cfg.ra_key_file)
+        .map_err(|e| AcmeError::Config(format!("read RA key '{}': {e}", cfg.ra_key_file)))?;
+
+    let cert_ders: Vec<CertificateDer<'static>> = synta_certificate::pem_to_der(&ra_cert_pem)
+        .into_iter()
+        .map(CertificateDer::from)
+        .collect();
+    if cert_ders.is_empty() {
+        return Err(AcmeError::Config(
+            "RA cert PEM contains no certificates".into(),
+        ));
+    }
+
+    let key_blocks = synta_certificate::pem_blocks(&ra_key_pem);
+    let key_der = key_blocks
+        .into_iter()
+        .find(|(label, _)| label.contains("PRIVATE KEY"))
+        .map(|(_, der)| der)
+        .ok_or_else(|| AcmeError::Config("RA key PEM contains no private key".into()))?;
+    let private_key = rustls::pki_types::PrivateKeyDer::try_from(key_der)
+        .map_err(|e| AcmeError::Config(format!("parse RA agent private key: {e}")))?;
+
+    // ── CA trust anchors ────────────────────────────────────────────────
+    let mut all_ca_ders: Vec<CertificateDer<'_>> = Vec::new();
+
+    if let Some(ref ca_cert_path) = cfg.ca_cert_file {
+        let ca_pem = std::fs::read(ca_cert_path).map_err(|e| {
+            AcmeError::Config(format!("read Dogtag CA cert '{}': {e}", ca_cert_path))
+        })?;
+        let extra = synta_certificate::pem_to_der(&ca_pem);
+        if extra.is_empty() {
+            return Err(AcmeError::Config(
+                "Dogtag CA cert PEM contains no certificates".into(),
+            ));
+        }
+        for der in extra {
+            all_ca_ders.push(CertificateDer::from(der));
+        }
+    }
+
+    let native = rustls_native_certs::load_native_certs();
+    for cert in &native.certs {
+        all_ca_ders.push(CertificateDer::from(cert.as_ref()));
+    }
+
+    // ── Chain verifier (OpenSSL) ────────────────────────────────────────
+    let chain_verifier = OsslChainVerifier::new(&all_ca_ders)
+        .map_err(|e| AcmeError::Config(format!("build Dogtag TLS chain verifier: {e}")))?;
+
+    let verifier = if cfg.tls_danger_accept_invalid_hostnames {
+        let bypass = Arc::new(HostnameBypassVerifier {
+            inner: chain_verifier,
+        });
+        OsslServerCertVerifier::builder_with_verifier(bypass).build()
+    } else {
+        OsslServerCertVerifier::builder_with_verifier(Arc::new(chain_verifier)).build()
+    };
+
+    // ── Assemble ClientConfig ───────────────────────────────────────────
+    rustls::ClientConfig::builder_with_provider(rustls_native_ossl::default_provider().into())
+        .with_safe_default_protocol_versions()
+        .map_err(|e| AcmeError::Config(format!("TLS protocol versions: {e}")))?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(verifier))
+        .with_client_auth_cert(cert_ders, private_key)
+        .map_err(|e| AcmeError::Config(format!("RA agent TLS client auth: {e}")))
+}
+
+/// Wraps `OsslChainVerifier` to skip hostname verification by passing `None`
+/// for `server_name`.  Only used when `tls_danger_accept_invalid_hostnames`
+/// is set (development/demo environments).
+#[derive(Debug)]
+struct HostnameBypassVerifier {
+    inner: rustls_native_ossl::cert_verifier::OsslChainVerifier,
+}
+
+impl rustls_native_ossl::cert_verifier::CertChainVerifier for HostnameBypassVerifier {
+    fn verify_chain(
+        &self,
+        end_entity: &native_ossl::x509::X509,
+        intermediates: &[native_ossl::x509::X509],
+        _server_name: Option<&rustls::pki_types::ServerName<'_>>,
+        now: rustls::pki_types::UnixTime,
+    ) -> Result<(), rustls::Error> {
+        self.inner
+            .verify_chain(end_entity, intermediates, None, now)
     }
 }
 
