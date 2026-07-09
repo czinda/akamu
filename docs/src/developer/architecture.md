@@ -290,6 +290,9 @@ src/
     issue.rs       End-entity and CA certificate issuance (issue_certificate,
                    issue_with_params, issue_ca_cert, check_is_ca_cert)
     revoke.rs      CRL generation
+    dogtag.rs      Dogtag PKI REST client (DogtagSigner, enrollment,
+                   TLS config with rustls_native_ossl, session login with
+                   401 retry)
 
   profiles/
     mod.rs           ProfileRegistry — in-memory cache, background refresh, resolve()
@@ -402,7 +405,7 @@ Holds the key material and issuance policy for a single CA. Key fields:
 
 - `id: String` — the CA's unique identifier, matching `CaConfig.id` from the config file.
 - `key_type: String` — the key algorithm string (e.g. `"ec:P-256"`, `"rsa:2048"`).
-- `key: BackendPrivateKey` — CA private key used for certificate and CRL signing.
+- `signing: SigningBackend` — signing backend: `Local { key }` for PEM file or PKCS#11 keys, or `Dogtag(Arc<DogtagSigner>)` for remote signing via the Dogtag REST API.
 - `cert_der: Vec<u8>` — DER-encoded CA certificate.
 - `hash_alg: String` — hash algorithm string for certificate and CRL signatures (e.g. `"sha256"`).
 - `validity_days: u32` — default validity period for issued end-entity certificates.
@@ -414,7 +417,7 @@ Holds the key material and issuance policy for a single CA. Key fields:
 - `caa_identities: Vec<String>` — CAA domain identities specific to this CA; falls back to `[server].caa_identities` when empty.
 - `mtc: Arc<MtcState>` — per-CA MTC transparency log state: log handle, signing key, and pre-built cosigner HTTPS clients.
 
-`CaState` is shared across all concurrent handler tasks via `Arc<CaState>`. The underlying `BackendPrivateKey` delegates to the OpenSSL backend, which serializes concurrent signing operations internally.
+`CaState` is shared across all concurrent handler tasks via `Arc<CaState>`. For local signing, `BackendPrivateKey` delegates to the underlying `synta_certificate` backend (OpenSSL / AWS-LC), which serialises concurrent operations internally. For Dogtag signing, the `reqwest::Client` is thread-safe and handles concurrent requests internally.
 
 Two helpers on `AppState` provide access to CA instances:
 
@@ -428,6 +431,11 @@ Defined in `src/error.rs`. Implements `IntoResponse` so it can be returned direc
 - An ACME problem type string (`urn:ietf:params:acme:error:*`).
 - An HTTP status code.
 - A human-readable `detail` string.
+
+Notable variants for external backends:
+
+- `Dogtag(String)` → `serverInternal` / HTTP 502 Bad Gateway.
+- `ServiceUnavailable(String)` → HTTP 503 (used for Dogtag timeout, connection failure, or pending agent approval).
 
 The response body is `application/problem+json` (RFC 7807).
 

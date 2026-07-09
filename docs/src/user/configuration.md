@@ -599,9 +599,19 @@ backend is Dogtag PKI.
 
 When `[ca.signer]` is set to `type = "dogtag"`, Akāmu acts as a Registration
 Authority (RA): it validates ACME requests and forwards the client's CSR to
-the Dogtag CA REST API for signing. The `key_file` field must be omitted for
-Dogtag-backed CAs; the `cert_file` must point to the Dogtag CA's certificate
-(used for chain building and AKI computation).
+the Dogtag CA REST API for signing. The `key_file` field should be omitted
+for Dogtag-backed CAs (it is not used when a signer is configured); the
+`cert_file` must point to the Dogtag CA's certificate (used for chain
+building and AKI computation).
+
+**Runtime behaviour:**
+
+At startup Akāmu probes the Dogtag CA info endpoint, then authenticates via
+`POST /ca/rest/account/login` using the RA agent TLS client certificate.
+The resulting session cookie is stored in an internal cookie jar and included
+in subsequent REST API calls.  If a session expires (HTTP 401), the
+enrollment request is automatically retried after re-login.  Probe failures
+are logged as warnings but do not prevent the server from starting.
 
 **Limitations of Dogtag-backed CAs:**
 
@@ -612,6 +622,11 @@ Dogtag-backed CAs; the `cert_file` must point to the Dogtag CA's certificate
 - STAR certificate renewals (RFC 8739) are skipped for Dogtag CAs.
 - The default CA must have a local key when TLS bootstrap or admin API is
   enabled.
+- Dogtag enrollment profiles that require agent approval (manual approval
+  workflow) are not supported — ACME finalization returns HTTP 503
+  when the Dogtag profile is not auto-approved.
+- Dogtag communication errors return HTTP 502 (`serverInternal`); timeout
+  and connectivity failures return HTTP 503 (`serviceUnavailable`).
 
 #### `type`
 
@@ -633,8 +648,8 @@ authentication against the Dogtag REST API.
 
 #### `ra_key_password_file`
 
-**Optional.** Path to a file containing the passphrase for an encrypted RA
-agent key. The file is read once at startup; trailing newlines are stripped.
+**Optional. Not yet implemented** — setting this field currently returns a
+startup error. The RA agent key must be an unencrypted PEM file.
 
 #### `ca_cert_file`
 
@@ -659,9 +674,11 @@ HTTP request timeout in seconds for Dogtag REST API calls.
 **Optional. Default: `false`.**
 
 When `true`, disables TLS hostname verification for the Dogtag REST API
-connection.  Use only in development or demo environments where the Dogtag
-CA certificate was issued for a different hostname (e.g. a container DNS
-name that does not match the connection address).
+connection.  Certificate chain verification (including expiry and CA trust)
+is still performed; only the hostname-to-certificate match is skipped.
+Use only in development or demo environments where the Dogtag CA certificate
+was issued for a different hostname (e.g. a container DNS name that does not
+match the connection address).
 
 #### Example: Dogtag-backed CA
 
