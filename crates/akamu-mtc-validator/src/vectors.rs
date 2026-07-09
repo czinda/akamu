@@ -1,6 +1,6 @@
 //! Deserialization types for the MTC demo test vector format (mtc.json).
 //!
-//! Schema mirrors https://github.com/ietf-plants-wg/merkle-tree-certs/blob/main/demo/config.go
+//! Schema mirrors <https://github.com/ietf-plants-wg/merkle-tree-certs/blob/main/demo/config.go>
 
 use base64::Engine as _;
 use serde::Deserialize;
