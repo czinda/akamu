@@ -129,6 +129,7 @@ impl DogtagSigner {
             .use_preconfigured_tls(tls_config)
             .timeout(Duration::from_secs(cfg.timeout_secs))
             .pool_max_idle_per_host(16)
+            .cookie_store(true)
             .build()
             .map_err(|e| AcmeError::Config(format!("build Dogtag HTTP client: {e}")))?;
 
@@ -142,10 +143,13 @@ impl DogtagSigner {
         })
     }
 
-    /// Probe the Dogtag CA for connectivity.
+    /// Probe the Dogtag CA for connectivity and establish an authenticated
+    /// session.
     ///
-    /// Sends a GET to the Dogtag info endpoint; logs a warning on failure but
-    /// does not return an error (the CA may come up later).
+    /// Sends a GET to the Dogtag info endpoint, then authenticates via the
+    /// REST login endpoint using the RA agent TLS client certificate.  Logs
+    /// warnings on failure but does not return an error (the CA may come up
+    /// later).
     pub async fn probe(&self) {
         let url = format!("{}/ca/rest/info", self.base_url);
         match self
@@ -165,14 +169,103 @@ impl DogtagSigner {
                     self.base_url,
                     resp.status()
                 );
+                return;
             }
             Err(e) => {
                 tracing::warn!(
-                    "Dogtag CA at {} unreachable during startup probe: {e}",
+                    "Dogtag CA at {} unreachable during startup probe: {e:#}",
                     self.base_url
                 );
+                return;
             }
         }
+
+        if let Err(e) = self.login().await {
+            tracing::warn!("Dogtag RA agent login failed: {e:#}");
+        }
+    }
+
+    /// Authenticate to Dogtag using the RA agent TLS client certificate.
+    ///
+    /// Dogtag's REST API uses session-based authentication.  This method
+    /// POSTs to `/ca/rest/account/login` which establishes a session tied
+    /// to the TLS client certificate.  The session cookie is stored in
+    /// reqwest's cookie jar and included in subsequent requests.
+    async fn login(&self) -> Result<(), AcmeError> {
+        let url = format!("{}/ca/rest/account/login", self.base_url);
+        let resp = self
+            .client
+            .post(&url)
+            .header("Accept", "application/json")
+            .timeout(self.timeout)
+            .send()
+            .await
+            .map_err(|e| AcmeError::Dogtag(format!("RA agent login request failed: {e:#}")))?;
+
+        if resp.status().is_success() {
+            tracing::info!("Dogtag RA agent session established");
+            Ok(())
+        } else {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            Err(AcmeError::Dogtag(format!(
+                "RA agent login returned HTTP {status}: {body}"
+            )))
+        }
+    }
+
+    /// POST to a Dogtag REST endpoint, re-establishing the session on 401.
+    ///
+    /// If the first attempt returns 401 (session expired or not yet
+    /// established), calls `login()` and retries once.
+    async fn post_with_login_retry<T: Serialize>(
+        &self,
+        url: &str,
+        body: &T,
+    ) -> Result<reqwest::Response, AcmeError> {
+        let resp = self
+            .client
+            .post(url)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .timeout(self.timeout)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    AcmeError::ServiceUnavailable(format!("Dogtag CA timeout: {e:#}"))
+                } else if e.is_connect() {
+                    AcmeError::ServiceUnavailable(format!("Dogtag CA unreachable: {e:#}"))
+                } else {
+                    AcmeError::Dogtag(format!("enrollment request failed: {e:#}"))
+                }
+            })?;
+
+        if resp.status() != reqwest::StatusCode::UNAUTHORIZED {
+            return Ok(resp);
+        }
+
+        tracing::debug!("Dogtag returned 401 — re-establishing RA agent session");
+        self.login().await?;
+
+        self.client
+            .post(url)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .timeout(self.timeout)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    AcmeError::ServiceUnavailable(format!("Dogtag CA timeout: {e:#}"))
+                } else if e.is_connect() {
+                    AcmeError::ServiceUnavailable(format!("Dogtag CA unreachable: {e:#}"))
+                } else {
+                    AcmeError::Dogtag(format!("enrollment request failed: {e:#}"))
+                }
+            })
     }
 
     /// Submit a PKCS#10 CSR to the Dogtag enrollment API and retrieve the
@@ -211,24 +304,7 @@ impl DogtagSigner {
         };
 
         let enroll_url = format!("{}/ca/rest/certrequests", self.base_url);
-        let resp = self
-            .client
-            .post(&enroll_url)
-            .header("Accept", "application/json")
-            .header("Content-Type", "application/json")
-            .timeout(self.timeout)
-            .json(&enrollment)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    AcmeError::ServiceUnavailable(format!("Dogtag CA timeout: {e}"))
-                } else if e.is_connect() {
-                    AcmeError::ServiceUnavailable(format!("Dogtag CA unreachable: {e}"))
-                } else {
-                    AcmeError::Dogtag(format!("enrollment request failed: {e}"))
-                }
-            })?;
+        let resp = self.post_with_login_retry(&enroll_url, &enrollment).await?;
 
         let status = resp.status();
         if !status.is_success() {
