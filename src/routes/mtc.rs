@@ -18,8 +18,8 @@ use crate::state::AppState;
 
 use super::{acme_prefix, CaId};
 
-/// X-MTC-Version header value for draft-04 responses.
-pub const MTC_DRAFT_VERSION: &str = "draft-04";
+/// X-MTC-Version header value for draft-05 responses.
+pub const MTC_DRAFT_VERSION: &str = "draft-05";
 
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
