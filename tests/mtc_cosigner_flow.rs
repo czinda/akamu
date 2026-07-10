@@ -29,7 +29,7 @@ use axum::routing::post;
 use axum::Router;
 use synta::types::primitive::Integer;
 use synta::types::string::OctetString;
-use synta::{BitString, Decoder, Encoding, ObjectIdentifier};
+use synta::{BitString, Decoder, Encoding, RelativeOid};
 use synta_certificate::owned::Certificate as OwnedCert;
 use synta_certificate::{
     BackendPrivateKey, CertificateSigner as _, NameBuilder, PrivateKey as _,
@@ -71,7 +71,7 @@ struct CosignerState {
     signing_key: BackendPrivateKey,
     hash_alg: String,
     sig_alg_der: Vec<u8>,
-    /// DER-encoded `TrustAnchorID` ObjectIdentifier for this test cosigner.
+    /// DER-encoded `TrustAnchorID` RELATIVE-OID for this test cosigner.
     cosigner_oid_der: Vec<u8>,
 }
 
@@ -79,7 +79,7 @@ struct CosignerState {
 fn encode_oid_der(oid_str: &str) -> Vec<u8> {
     use synta::traits::Encode;
     use synta::{Encoder, Encoding};
-    let oid: ObjectIdentifier = oid_str.parse().expect("valid OID string");
+    let oid: RelativeOid = oid_str.parse().expect("valid ROID string");
     let mut enc = Encoder::new(Encoding::Der);
     oid.encode(&mut enc).expect("encode OID");
     enc.finish().expect("finish OID DER")
@@ -119,14 +119,14 @@ async fn cosigner_sign(State(state): State<Arc<CosignerState>>, body: Bytes) -> 
         value: OctetString::from(root_bytes),
     };
 
-    // Decode the CosignerID (TrustAnchorID = ObjectIdentifier) from stored DER.
-    let cosigner_id: ObjectIdentifier =
+    // Decode the CosignerID (TrustAnchorID = RELATIVE-OID) from stored DER.
+    let cosigner_id: RelativeOid =
         match Decoder::new(&state.cosigner_oid_der, Encoding::Der).decode() {
             Ok(oid) => oid,
             Err(e) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("decode cosigner OID: {e}"),
+                    format!("decode cosigner ROID: {e}"),
                 )
                     .into_response()
             }
