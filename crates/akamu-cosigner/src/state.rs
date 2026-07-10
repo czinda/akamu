@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
-use synta::ObjectIdentifier;
+use synta::RelativeOid;
 use synta_certificate::BackendPrivateKey;
 
 use crate::config::{CosignerRole, OperatorConfig};
@@ -20,11 +20,11 @@ pub struct AppState {
     pub sig_alg_der: Vec<u8>,
     /// Parsed `TrustAnchorID` OID for this cosigner.
     ///
-    /// Per draft-ietf-plants-merkle-tree-certs-04 §4.1, `CosignerID` is a
-    /// `TrustAnchorID ::= OBJECT IDENTIFIER`.  Cloned per request to build
-    /// `SubtreeSignature.cosigner`.  `ObjectIdentifier` is `Clone` so no DER
+    /// Per draft-ietf-plants-merkle-tree-certs-05 §4.1, `CosignerID` is a
+    /// `TrustAnchorID ::= RELATIVE-OID`.  Cloned per request to build
+    /// `SubtreeSignature.cosigner`.  `RelativeOid` is `Clone` so no DER
     /// round-trip is needed on the hot signing path.
-    pub cosigner_oid: ObjectIdentifier,
+    pub cosigner_oid: RelativeOid,
     /// Token store for ACME http-01 challenges.
     ///
     /// Populated during ACME bootstrap; read by `GET /.well-known/acme-challenge/:token`.

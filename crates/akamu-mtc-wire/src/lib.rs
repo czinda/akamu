@@ -6,7 +6,7 @@
 //! depends on akamu, so the reverse direction would be circular), hence this
 //! thin shared crate.
 
-use synta::ObjectIdentifier;
+use synta::RelativeOid;
 use synta_mtc::types::{Checkpoint, Subtree};
 
 /// Build the TLS `CosignedMessage` wire structure that cosigners sign (spec §5.4.1).
@@ -23,14 +23,15 @@ use synta_mtc::types::{Checkpoint, Subtree};
 /// } CosignedMessage;
 /// ```
 ///
-/// `cosigner_name` is `"oid/{dotted-decimal-OID}"` using the cosigner's
-/// `TrustAnchorID` OID.  `log_origin` should be `"oid/{log-TrustAnchorID}"` per
-/// §5.3.1; currently callers pass `"oid/{hash-algorithm-OID}"` for compatibility
-/// with `synta-mtc`'s internal `validate_cosignature_quorum_with_crypto`.
+/// `cosigner_name` is `"oid/{dotted-decimal}"` using the cosigner's
+/// `TrustAnchorID` (RELATIVE-OID per draft-05).  `log_origin` should be
+/// `"oid/{log-TrustAnchorID}"` per §5.3.1; currently callers pass
+/// `"oid/{hash-algorithm-OID}"` for compatibility with synta-mtc's internal
+/// `validate_cosignature_quorum_with_crypto`.
 /// The `timestamp` is the Unix seconds from the checkpoint's `GeneralizedTime`
 /// (0 when the checkpoint carries no time information or for pre-epoch dates).
 pub fn build_cosigned_message(
-    cosigner: &ObjectIdentifier,
+    cosigner: &RelativeOid,
     subtree: &Subtree,
     checkpoint: &Checkpoint<'_>,
     log_origin: &str,

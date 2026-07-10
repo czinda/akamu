@@ -27,7 +27,7 @@ use hyper_util::rt::TokioExecutor;
 use rustls::pki_types::CertificateDer;
 use rustls::{ClientConfig, RootCertStore};
 use synta::traits::Encode;
-use synta::{Decoder, Encoder, Encoding, ObjectIdentifier};
+use synta::{Decoder, Encoder, Encoding, RelativeOid};
 use synta_certificate::owned::Certificate;
 use synta_certificate::{
     pem_to_der, AlgorithmIdentifier, OpensslSignatureVerifier, SignatureVerifier as _,
@@ -48,7 +48,7 @@ const COSIGNER_TIMEOUT_SECS: u64 = 30;
 /// Returns a DER-encoded `SubtreeSignature` in the same format as external
 /// cosigners, so the downstream standalone-cert builder treats it uniformly.
 ///
-/// `trust_anchor_id_der` is the DER-encoded `ObjectIdentifier` of the CA's
+/// `trust_anchor_id_der` is the DER-encoded `RelativeOid` of the CA's
 /// own `TrustAnchorID`.  `checkpoint_der` is the DER-encoded `Checkpoint`
 /// that was just produced and signed.
 pub fn build_ca_self_cosignature(
@@ -65,9 +65,9 @@ pub fn build_ca_self_cosignature(
     use synta::{BitString, Encoding};
     use synta_certificate::{CertificateSigner as _, PrivateKey as _};
 
-    let cosigner_oid: ObjectIdentifier = Decoder::new(trust_anchor_id_der, Encoding::Der)
+    let cosigner_oid: RelativeOid = Decoder::new(trust_anchor_id_der, Encoding::Der)
         .decode()
-        .map_err(|e| AcmeError::Mtc(format!("decode CA trust_anchor_id OID: {e}")))?;
+        .map_err(|e| AcmeError::Mtc(format!("decode CA trust_anchor_id ROID: {e}")))?;
 
     let checkpoint: Checkpoint<'_> = Decoder::new(checkpoint_der, Encoding::Der)
         .decode()
@@ -270,11 +270,11 @@ fn load_cosigner_verifier(
     let expected_cosigner_oid = trust_anchor_id
         .map(|oid_str| {
             oid_str
-                .parse::<ObjectIdentifier>()
+                .parse::<RelativeOid>()
                 .map(|oid| oid.components().to_vec())
                 .map_err(|e| {
                     AcmeError::Tls(format!(
-                        "parse cosigner trust_anchor_id OID '{oid_str}': {e}"
+                        "parse cosigner trust_anchor_id ROID '{oid_str}': {e}"
                     ))
                 })
         })

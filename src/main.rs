@@ -125,8 +125,8 @@ fn init_mtc_for_ca(
         .as_deref()
         .map(|oid_str| {
             use synta::traits::Encode;
-            let oid: synta::ObjectIdentifier = oid_str.parse().map_err(|e| {
-                format!("CA '{ca_id}': invalid mtc.trust_anchor_id OID '{oid_str}': {e}")
+            let oid: synta::RelativeOid = oid_str.parse().map_err(|e| {
+                format!("CA '{ca_id}': invalid mtc.trust_anchor_id ROID '{oid_str}': {e}")
             })?;
             let mut enc = synta::Encoder::new(synta::Encoding::Der);
             oid.encode(&mut enc)

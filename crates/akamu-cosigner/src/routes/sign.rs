@@ -41,7 +41,7 @@ pub async fn post_sign(
         value: OctetString::from(root_bytes),
     };
 
-    // ── 3. Clone CosignerID (TrustAnchorID = ObjectIdentifier) from state ──────
+    // ── 3. Clone CosignerID (TrustAnchorID = RelativeOid) from state ──────────
     let cosigner_id = state.cosigner_oid.clone();
 
     // ── 4. Build TLS-encoded CosignedMessage (spec §5.4.1) ───────────────────

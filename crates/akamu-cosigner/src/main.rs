@@ -273,11 +273,11 @@ fn generate_self_signed_cert(
     Ok(())
 }
 
-/// Parse a dotted-decimal OID string and return the parsed `ObjectIdentifier`.
-fn parse_cosigner_oid(oid_str: &str) -> Result<synta::ObjectIdentifier, CosignerError> {
+/// Parse a dotted-decimal relative OID string and return the parsed `RelativeOid`.
+fn parse_cosigner_oid(oid_str: &str) -> Result<synta::RelativeOid, CosignerError> {
     oid_str.parse().map_err(|e| {
         CosignerError::Config(format!(
-            "parse cosigner_id.trust_anchor_id OID '{oid_str}': {e}"
+            "parse cosigner_id.trust_anchor_id ROID '{oid_str}': {e}"
         ))
     })
 }
