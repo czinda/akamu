@@ -13,7 +13,7 @@ axum = { version = "0.8", features = ["http1"] }
 rustls = { version = "0.23", default-features = false, features = ["std"] }
 
 # PEM/DER parsing and private key handling
-synta-certificate = { version = ">=0.2.6", features = ["std", "pqc"] }
+synta-certificate = { version = ">=0.3.0", features = ["std", "pqc"] }
 
 # SHA-256 fingerprint computation
 native-ossl = { workspace = true }

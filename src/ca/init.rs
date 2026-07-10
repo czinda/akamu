@@ -20,7 +20,7 @@ use synta_certificate::{
     KEY_USAGE_KEY_CERT_SIGN,
 };
 
-use synta_mtc::builder::ca_extension::{build_mtc_ca_extension_from_hash, MTC_CA_EXTENSION_OID};
+use synta_mtc::builder::{ca_extension::build_mtc_ca_extension_from_hash, MTC_CA_EXTENSION_OID};
 use synta_mtc::crypto::HashAlgorithm;
 
 use crate::config::CaConfig;
@@ -419,11 +419,14 @@ fn build_mtc_extension_der(
         .parse()
         .map_err(|e| AcmeError::Internal(format!("MTC hash_alg parse: {e}")))?;
     let min_serial = (mtc_cfg.log_number as u64) << 48 | 1;
+    // Per draft-05 §"Limiting Issuance Logs": cap serials at the top of this
+    // log number's range so relying parties reject entries from future log numbers.
+    let max_serial = ((mtc_cfg.log_number as u64 + 1) << 48) - 1;
 
-    let (der, critical) = build_mtc_ca_extension_from_hash(log_hash, &sig_alg, min_serial)
+    let der = build_mtc_ca_extension_from_hash(log_hash, &sig_alg, min_serial, max_serial)
         .map_err(|e| AcmeError::Builder(format!("build MTCCertificationAuthority: {e}")))?;
 
-    Ok(Some((der, critical)))
+    Ok(Some((der, true))) // MTCCertificationAuthority is always critical per spec
 }
 
 /// Generate a `BackendPrivateKey` using the synta-certificate crypto backend.

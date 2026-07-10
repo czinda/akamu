@@ -122,14 +122,14 @@ akamu-ldap = { path = "crates/akamu-ldap" }
 akamu-util = { path = "crates/akamu-util" }
 
 # Base ASN.1 library (needed for Decoder/Encoder and Integer type)
-synta = { version = ">=0.2.6", default-features = false, features = ["std", "derive"] }
+synta = { version = ">=0.3.0", default-features = false, features = ["std", "derive"] }
 
 # Synta crates for all X.509 / MTC operations
 # >=0.2.4: CosignerID redesigned as TrustAnchorID OID, MtcProof gains extensions field
 # (draft-ietf-plants-merkle-tree-certs-04).
-synta-certificate =  { version = ">=0.2.6", features = ["std", "pqc"] }
-synta-x509-verification =  { version = ">=0.2.6" }
-synta-mtc = { version = ">=0.2.6", features = ["std"] }
+synta-certificate =  { version = ">=0.3.0", features = ["std", "pqc"] }
+synta-x509-verification =  { version = ">=0.3.0" }
+synta-mtc = { version = ">=0.3.0", features = ["std"] }
 
 # Native Rust bindings to system OpenSSL (composite ML-DSA TLS verify)
 native-ossl = { workspace = true }
