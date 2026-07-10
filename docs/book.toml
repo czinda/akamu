@@ -33,4 +33,5 @@ command = "python3 ../../scripts/mdbook-copy-api.py"
 
 [preprocessor.mermaid]
 command = "mdbook-mermaid"
+optional = true
 
