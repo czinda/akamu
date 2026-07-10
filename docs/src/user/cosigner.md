@@ -175,7 +175,7 @@ hash_alg = "sha256"
 
 ## `[cosigner_id]`
 
-The cosigner identity configuration.  Per draft-ietf-plants-merkle-tree-certs-04 §4.1, `CosignerID` is now `TrustAnchorID ::= OBJECT IDENTIFIER`.  The `trust_anchor_id` OID is embedded in every `SubtreeSignature.cosigner` field so that akamu servers and relying parties can identify which cosigner produced the signature.  The certificate file is retained for cryptographic verification by relying parties.
+The cosigner identity configuration.  Per draft-ietf-plants-merkle-tree-certs-05 §4.1, `CosignerID` is `TrustAnchorID ::= RELATIVE-OID`.  The `trust_anchor_id` value is embedded in every `SubtreeSignature.cosigner` field so that akamu servers and relying parties can identify which cosigner produced the signature.  The certificate file is retained for cryptographic verification by relying parties.
 
 ### `cert_file`
 

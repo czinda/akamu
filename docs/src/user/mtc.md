@@ -115,7 +115,7 @@ Multiple `[[mtc.cosigners]]` entries are supported. For each entry:
 
 When `cosigner_id_cert_pem` is set, the PEM file is loaded at startup and added to the TLS trust store for that cosigner's HTTPS connection, in addition to the system root CAs. The certificate's public key is also used for cryptographic verification of received `SubtreeSignature` values. This allows cosigners whose TLS certificate chains to an operator-provisioned CA to be used without installing that CA system-wide.
 
-When `trust_anchor_id` is set, the `SubtreeSignature.cosigner` OID in each response is compared against this value. Per draft-ietf-plants-merkle-tree-certs-04 §4.1, `CosignerID` is `TrustAnchorID ::= OBJECT IDENTIFIER`; a mismatch causes the signature to be rejected.
+When `trust_anchor_id` is set, the `SubtreeSignature.cosigner` value in each response is compared against this value. Per draft-ietf-plants-merkle-tree-certs-05 §4.1, `CosignerID` is `TrustAnchorID ::= RELATIVE-OID`; a mismatch causes the signature to be rejected.
 
 > **Security constraint:** Setting `trust_anchor_id` without also setting `cosigner_id_cert_pem` is a hard startup error. OID-only verification provides no cryptographic assurance — anyone who knows the OID could forge a cosignature. Both fields must be set together to enable verified cosignature acceptance. When neither field is set, cosignatures are accepted without any verification and a warning is logged at startup.
 
@@ -167,7 +167,7 @@ Returns a Merkle inclusion proof for the certificate identified by `cert_id` (th
 }
 ```
 
-Each element of `proof` is an object with a single `"hash"` field containing the sibling hash as a lowercase hex string. The proof is ordered from the leaf up to the root. The sibling position (left or right) is determined algorithmically from the leaf index and tree size, following the standard RFC 6962 Merkle audit proof construction; it is not encoded in the response.
+Each element of `proof` is an object with a single `"hash"` field containing the sibling hash as a lowercase hex string. The proof is ordered from the leaf up to the root. The sibling position (left or right) is determined algorithmically from the leaf index and tree size, following the RFC 9162 §2.1 Merkle audit proof construction; it is not encoded in the response.
 
 ### `GET /acme/mtc/cert/{cert_id}/standalone`
 
@@ -181,9 +181,33 @@ Returns 404 when:
 - The certificate has no MTC log index (the log append failed at issuance)
 - A checkpoint covering the certificate has not yet been produced (the standalone certificate is built during the next checkpoint cycle)
 
+### `GET /acme/mtc/landmark-list`
+
+Returns the landmark list in the spec §3.4 text/plain format. This is the format consumed by `LandmarkDistributor` clients and spec-compliant relying parties.
+
+```
+<last_seq_no> <count>
+<tree_size for newest landmark>
+<tree_size for second-newest landmark>
+...
+<prev_tree_size>
+```
+
+`Content-Type` is `text/plain; charset=utf-8`. Returns an empty body (not 404) when there are no landmarks yet.
+
+### `GET /acme/mtc/cert/{cert_id}/landmark`
+
+Returns the DER-encoded `LandmarkCertificate` for the smallest landmark whose `tree_size` covers the certificate's log index, with `Content-Type: application/pkix-cert`.
+
+Returns 503 with `Retry-After` when:
+- A covering landmark exists but its certificate has not been built yet.
+- No landmark covers this certificate's log index yet.
+
+Returns 404 when MTC is disabled or the certificate does not exist.
+
 ### `GET /acme/mtc/landmarks`
 
-Returns a JSON array of all allocated landmarks, ordered by sequence number ascending.
+Returns a JSON array of all allocated landmarks, ordered by sequence number ascending (akamu-specific format; use `landmark-list` for spec-compliant clients).
 
 ```json
 [
@@ -220,7 +244,7 @@ Both `from` and `to` must be positive integers with `from < to` and `to <= curre
 
 ### `GET /acme/mtc/subtree-root?start={start}&end={end}`
 
-Returns the Merkle root hash for the subtree `[start, end)`. The subtree must satisfy the alignment constraint from draft-04 §4.3.1 (`start` is a multiple of `BIT_CEIL(end - start)`).
+Returns the Merkle root hash for the subtree `[start, end)`. The subtree must satisfy the alignment constraint from draft-05 §4.3.1 (`start` is a multiple of `BIT_CEIL(end - start)`).
 
 ```json
 {
@@ -232,7 +256,7 @@ Returns the Merkle root hash for the subtree `[start, end)`. The subtree must sa
 
 ### `GET /acme/mtc/revoked-ranges`
 
-Returns a JSON array of `[start, end]` pairs representing revoked log entry index ranges (draft-04 §5.6). Relying parties use these to reject standalone certificates whose serial number falls within a revoked range.
+Returns a JSON array of `[start, end]` pairs representing revoked log entry index ranges (draft-05 §7.5). Relying parties use these to reject standalone certificates whose serial number falls within a revoked range.
 
 ```json
 [[10, 15], [100, 120]]

@@ -73,7 +73,7 @@ The `CosignerClient` struct (one per `[[mtc.cosigners]]` entry) is built once at
 
 When `cosigner_id_cert_pem` is set for a cosigner, an `AkamuCosignerVerifier` is built at startup and stored inside the `CosignerClient`. At checkpoint time, the received `SubtreeSignature` is verified before being stored:
 
-- **OID identity check**: When `trust_anchor_id` is also configured, the `SubtreeSignature.cosigner` field (a `TrustAnchorID ::= OBJECT IDENTIFIER` per draft-04 §4.1) is compared against the expected OID. A mismatch causes the signature to be rejected.
+- **ROID identity check**: When `trust_anchor_id` is also configured, the `SubtreeSignature.cosigner` field (a `TrustAnchorID ::= RELATIVE-OID` per draft-05 §4.1) is compared against the expected value. A mismatch causes the signature to be rejected.
 - **Cryptographic check**: The public key is extracted from the `cosigner_id_cert_pem` PEM and used for signature verification. Verification uses `synta_mtc::cosignature::validate_cosignature_quorum_with_crypto`, which builds the TLS-framed `CosignedMessage` (per §5.4.1 of the MTC draft) internally from the checkpoint and signature fields, then delegates the actual signature check to `OpensslSignatureVerifier`.
 
 Setting `trust_anchor_id` without `cosigner_id_cert_pem` is a hard startup error: OID-only verification provides no cryptographic assurance. When neither field is set, cosignatures are accepted without verification and a warning is logged.
@@ -192,15 +192,16 @@ The module exposes seven functions:
 
 ### Landmark HTTP endpoints
 
-Three endpoints expose landmarks to clients (see also [HTTP endpoints](#http-endpoints) above for the full MTC endpoint table):
+Four endpoints expose landmarks to clients (see also [HTTP endpoints](#http-endpoints) below for the full MTC endpoint table):
 
-- `GET /acme/mtc/landmarks` -- returns a JSON array of `{sequenceNo, treeSize, createdAt}` objects for all active landmarks.
+- `GET /acme/mtc/landmark-list` -- returns the landmark list in the spec §3.4 text/plain format consumed by `LandmarkDistributor` clients and spec-compliant relying parties.
+- `GET /acme/mtc/landmarks` -- returns a JSON array of `{sequenceNo, treeSize, createdAt}` objects for all active landmarks (akamu-specific format).
 - `GET /acme/mtc/landmarks/{seq}/cert` -- returns the DER-encoded `LandmarkCertificate` for a given sequence number. Returns 503 with `Retry-After` if the certificate has not been built yet.
 - `GET /acme/mtc/cert/{cert_id}/landmark` -- returns the DER of the first landmark whose `tree_size` covers the certificate's log index. Returns 503 if no covering landmark exists yet or its certificate is not built.
 
 ## Root computation
 
-The Merkle root is computed from all leaf hashes using the RFC 6962 / synta-mtc binary tree algorithm:
+The Merkle root is computed from all leaf hashes using the RFC 9162 §2.1 recursive binary tree algorithm (split at the largest power of 2 less than the number of leaves):
 
 - For a log with zero leaves the root is undefined.
 - For a log with one or more leaves the root is the Merkle root of all leaf hashes, computed using the configured `[mtc].hash_alg` algorithm.
@@ -217,6 +218,8 @@ The following read-only endpoints are served under `/acme/mtc/` and return 404 w
 | `GET /acme/mtc/root` | `mtc::get_root` |
 | `GET /acme/mtc/inclusion-proof/{cert_id}` | `mtc::get_inclusion_proof` |
 | `GET /acme/mtc/cert/{cert_id}/standalone` | `mtc::get_standalone` |
+| `GET /acme/mtc/cert/{cert_id}/landmark` | `mtc::get_landmark_for_cert` |
+| `GET /acme/mtc/landmark-list` | `mtc::get_landmark_list` |
 | `GET /acme/mtc/landmarks` | `mtc::get_landmarks` |
 | `GET /acme/mtc/landmarks/{seq}/cert` | `mtc::get_landmark_cert` |
 | `GET /acme/mtc/tlog/checkpoint` | `mtc::get_tlog_checkpoint` |
@@ -265,12 +268,12 @@ The log origin string used in checkpoint notes is `{base_url}/acme/mtc/tlog`.
 The `akamu-mtc-validator` workspace crate (`crates/akamu-mtc-validator/`) is a
 standalone tool for verifying that Akāmu's MTC leaf hashing, Merkle tree construction,
 and proof generation are byte-for-byte compatible with the reference Go implementation
-of draft-ietf-plants-merkle-tree-certs-04.
+of draft-ietf-plants-merkle-tree-certs-05.
 
 ### Test vector corpus
 
-`contrib/test-vectors/mtc/mtc.json` is a 2036-entry plants-04 test vector corpus
-(version `plants-04`). Its schema mirrors the Go demo tool's `config.go`: each
+`contrib/test-vectors/mtc/mtc.json` is a 2036-entry plants-05 test vector corpus
+(version `plants-05`). Its schema mirrors the Go demo tool's `config.go`: each
 entry in `Entries` may be a null entry or a TBS-certificate entry with key usage,
 extended key usage, SANs, BasicConstraints, and subtree/checkpoint bindings.
 
