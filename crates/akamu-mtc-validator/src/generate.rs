@@ -20,7 +20,7 @@ use synta_certificate::{
 };
 use synta_mtc::crypto::{compute_root, MtcDigest, Sha256Digest};
 use synta_mtc::{
-    crypto::hash::{hash_leaf, tls_encode_entry, HashAlgorithm},
+    crypto::hash::{hash_log_entry, HashAlgorithm},
     integration::parse_raw_name,
     types::{Extension, MerkleTreeCertEntry, TBSCertificateLogEntry},
 };
@@ -115,8 +115,8 @@ pub fn build_artifacts(vectors: &MtcVectors) -> Result<GeneratedArtifacts> {
         .build()
         .map_err(|e| Error::Parse(format!("build issuer DN: {e}")))?;
 
-    // --- Phase 1: expand entries and encode them to wire bytes ---
-    let mut raw_entries: Vec<Vec<u8>> = Vec::new();
+    // --- Phase 1: expand entries and compute leaf hashes ---
+    let mut leaf_hashes: Vec<Vec<u8>> = Vec::new();
     let mut checkpoint_seqs: HashMap<String, u64> = HashMap::new();
 
     struct PendingCert {
@@ -129,9 +129,9 @@ pub fn build_artifacts(vectors: &MtcVectors) -> Result<GeneratedArtifacts> {
     for (entry_config_idx, entry) in vectors.entries.iter().enumerate() {
         let repeat = entry.effective_repeat();
         for _ in 0..repeat {
-            let wire = encode_entry(entry, &issuer_dn_der)?;
-            raw_entries.push(wire);
-            let entry_idx = (raw_entries.len() - 1) as u64;
+            let leaf_hash = encode_entry(entry, &issuer_dn_der)?;
+            leaf_hashes.push(leaf_hash);
+            let entry_idx = (leaf_hashes.len() - 1) as u64;
 
             for (cert_config_idx, cert_cfg) in entry.certificates.iter().enumerate() {
                 let cert_idx = certs.len();
@@ -176,7 +176,7 @@ pub fn build_artifacts(vectors: &MtcVectors) -> Result<GeneratedArtifacts> {
             }
 
             for seq in &entry.checkpoints {
-                let new_size = raw_entries.len() as u64;
+                let new_size = leaf_hashes.len() as u64;
                 checkpoint_seqs.insert(seq.clone(), new_size);
                 if let Some(pending) = awaiting.remove(seq) {
                     for p in pending {
@@ -204,12 +204,6 @@ pub fn build_artifacts(vectors: &MtcVectors) -> Result<GeneratedArtifacts> {
         }
     }
 
-    // --- Phase 2: compute leaf hashes ---
-    let leaf_hashes: Vec<Vec<u8>> = raw_entries
-        .iter()
-        .map(|wire| Ok(hash_leaf(HashAlgorithm::Sha256, wire)))
-        .collect::<Result<_>>()?;
-
     let tree_size = leaf_hashes.len() as u64;
 
     Ok(GeneratedArtifacts {
@@ -219,16 +213,16 @@ pub fn build_artifacts(vectors: &MtcVectors) -> Result<GeneratedArtifacts> {
     })
 }
 
-/// Encode one log entry to the TLS wire format used for leaf hashing.
+/// Compute the leaf hash for one log entry.
 ///
-/// For null entries: `[0x00, 0x00, 0x00, 0x00]` (extensions(0) + type(0)).
-/// For TBS cert entries: build a `TBSCertificateLogEntry` and call
-/// `tls_encode_entry()`, matching Go's plants-04 encoding.
+/// For null entries hashes `NullEntry`; for TBS cert entries builds a
+/// `TBSCertificateLogEntry` and hashes it via `hash_log_entry`, matching
+/// Go's plants-05 encoding.
 fn encode_entry(entry: &EntryConfig, issuer_dn_der: &[u8]) -> Result<Vec<u8>> {
     if entry.null {
         let null_entry = MerkleTreeCertEntry::NullEntry(Null);
-        return tls_encode_entry(&null_entry, &[])
-            .map_err(|e| Error::Crypto(format!("tls_encode_entry(null): {e}")));
+        return hash_log_entry(HashAlgorithm::Sha256, &null_entry, &[])
+            .map_err(|e| Error::Crypto(format!("hash_log_entry(null): {e}")));
     }
 
     let spki = entry
@@ -289,7 +283,8 @@ fn encode_entry(entry: &EntryConfig, issuer_dn_der: &[u8]) -> Result<Vec<u8>> {
     };
 
     let mtc_entry = MerkleTreeCertEntry::TbsCertEntry(log_entry);
-    tls_encode_entry(&mtc_entry, &[]).map_err(|e| Error::Crypto(format!("tls_encode_entry: {e}")))
+    hash_log_entry(HashAlgorithm::Sha256, &mtc_entry, &[])
+        .map_err(|e| Error::Crypto(format!("hash_log_entry: {e}")))
 }
 
 /// Build the DER-encoded Name for the subject field.
