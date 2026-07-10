@@ -78,7 +78,7 @@ pub struct StandaloneParams<'a> {
     /// `(cosigner_url, DER)` pairs.  The URL is used only for diagnostic logging
     /// on decode failure; an empty string is acceptable when no URL is available.
     pub cosignature_ders: &'a [(String, Vec<u8>)],
-    /// Log number for serialNumber encoding (draft-04 §6.1).
+    /// Log number for serialNumber encoding (draft-05 §6.1).
     pub log_number: u16,
     /// Start of the subtree range for the inclusion proof.
     /// `0` means the proof covers the full tree `[0, tree_size)`.

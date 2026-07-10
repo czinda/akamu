@@ -5,7 +5,7 @@
 //! The issued certificate is stored on disk and used as the TLS server
 //! certificate.  The cosigner's identity is the `TrustAnchorID` OID from
 //! `cosigner_id.trust_anchor_id`; the ACME certificate plays no role in the
-//! `SubtreeSignature.cosigner` field under draft-04.
+//! `SubtreeSignature.cosigner` field under draft-05.
 //!
 //! Challenge types supported:
 //! - `"http-01"` — tokens served by the main Axum server at

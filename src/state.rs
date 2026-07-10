@@ -737,7 +737,7 @@ pub struct MtcState {
     pub landmark_interval_secs: u64,
     /// Maximum number of active landmarks to retain.
     pub max_active_landmarks: u32,
-    /// Log number for serialNumber encoding (draft-04 §6.1).
+    /// Log number for serialNumber encoding (draft-05 §6.1).
     pub log_number: u16,
     /// Minimum valid entry index for Checkpoint (§5.2.3 log pruning).
     pub tree_minimum_index: Option<u64>,

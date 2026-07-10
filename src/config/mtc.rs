@@ -41,7 +41,7 @@ pub struct CosignerConfig {
     pub cosigner_id_cert_pem: Option<String>,
     /// Expected `TrustAnchorID` OID (dotted-decimal) of this cosigner.
     ///
-    /// Per draft-ietf-plants-merkle-tree-certs-04 §4.1, `CosignerID` is an
+    /// Per draft-ietf-plants-merkle-tree-certs-05 §4.1, `CosignerID` is an
     /// `OBJECT IDENTIFIER` assigned to the cosigner.  When set, the OID in
     /// the returned `SubtreeSignature.cosigner` must match this value.
     /// When absent, the OID identity check is skipped (cryptographic
@@ -84,7 +84,7 @@ pub struct MtcConfig {
     /// and recreating it; the algorithm is stored in the log's file header.
     #[serde(default = "default_hash_alg")]
     pub hash_alg: String,
-    /// Log number for serialNumber encoding per draft-04 §6.1.
+    /// Log number for serialNumber encoding per draft-05 §6.1.
     /// Serial = `(log_number << 48) | entry_index`.  Default: `1`.
     /// Consecutive from 1; each CA log gets a unique number.
     #[serde(default = "default_log_number")]
