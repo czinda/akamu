@@ -218,6 +218,47 @@ pub async fn get_landmarks(
     Ok((StatusCode::OK, axum::Json(body)).into_response())
 }
 
+/// GET /acme/mtc/landmark-list  or  GET /acme/{ca_id}/mtc/landmark-list
+///
+/// Serves the landmark list in spec §3.4 text/plain format for use by
+/// `LandmarkDistributor` clients and spec-compliant relying parties.
+///
+/// Format: `{last_seq_no} {count}\n{tree_size_newest}\n...\n{prev_tree_size}\n`
+pub async fn get_landmark_list(
+    State(state): State<Arc<AppState>>,
+    ca_id: CaId,
+) -> Result<Response, AcmeError> {
+    let ca = state.get_ca(&ca_id.0).ok_or(AcmeError::NotFound)?;
+    ca.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
+
+    let landmarks = db::landmarks::list(&state.db_ro, &ca_id.0).await?;
+
+    let body = if landmarks.is_empty() {
+        String::new()
+    } else {
+        let count = landmarks.len();
+        let last_seq = landmarks.last().unwrap().sequence_no;
+        let mut s = format!("{last_seq} {count}\n");
+        for lm in landmarks.iter().rev() {
+            s.push_str(&format!("{}\n", lm.tree_size));
+        }
+        // prev_tree_size = 0: covers all entries from genesis.
+        // Update when pruning tracking is added.
+        s.push_str("0\n");
+        s
+    };
+
+    Ok((
+        StatusCode::OK,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("text/plain; charset=utf-8"),
+        )],
+        body,
+    )
+        .into_response())
+}
+
 /// GET /acme/mtc/landmarks/{seq}/cert  or  GET /acme/{ca_id}/mtc/landmarks/{seq}/cert
 pub async fn get_landmark_cert(
     State(state): State<Arc<AppState>>,
