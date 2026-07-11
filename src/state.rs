@@ -82,7 +82,7 @@ impl NonceBucket {
         let prefix_dot = if prefix.is_empty() {
             String::new()
         } else {
-            format!("{prefix}.")
+            format!("{prefix}_")
         };
         Self {
             inner: Mutex::new(HashMap::new()),
