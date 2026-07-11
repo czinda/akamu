@@ -767,7 +767,9 @@ fn gen_nonce(prefix: &str) -> Result<String, AcmeError> {
     if prefix.is_empty() {
         Ok(random)
     } else {
-        Ok(format!("{prefix}.{random}"))
+        // Use underscore separator (base64url-safe) instead of dot — certbot's
+        // acme library tries to base64-decode nonces and dots break parsing.
+        Ok(format!("{prefix}_{random}"))
     }
 }
 
