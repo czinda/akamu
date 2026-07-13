@@ -394,9 +394,10 @@ impl Config {
     pub fn from_file(path: &str) -> Result<Self, String> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read config file '{}': {}", path, e))?;
-        let config: Self =
+        let mut config: Self =
             toml::from_str(&content).map_err(|e| format!("config parse error: {}", e))?;
         config.validate()?;
+        config.normalize();
         Ok(config)
     }
 
@@ -597,6 +598,14 @@ impl Config {
             }
         }
 
+        if self.server.dns_persist_issuer_domains.len() > 10 {
+            return Err(
+                "[server].dns_persist_issuer_domains must not contain more than 10 entries \
+                 (draft-ietf-acme-dns-persist Section 3.1)"
+                    .into(),
+            );
+        }
+
         if let Some(ref mtc_cfg) = self.mtc {
             if let Err(e) = mtc_cfg.hash_alg.parse::<synta_mtc::crypto::HashAlgorithm>() {
                 return Err(format!("[mtc].hash_alg: {e}"));
@@ -691,21 +700,22 @@ impl Config {
     /// Returns the list of issuer domains used for dns-persist-01 TXT record
     /// validation and the `issuer-domain-names` challenge field.
     ///
-    /// Uses `server.dns_persist_issuer_domains` when explicitly configured;
-    /// otherwise falls back to the host portion of `base_url`.
-    pub fn dns_persist_issuer_domains(&self) -> Vec<String> {
-        if !self.server.dns_persist_issuer_domains.is_empty() {
-            return self.server.dns_persist_issuer_domains.clone();
+    /// Returns the explicitly configured `server.dns_persist_issuer_domains`,
+    /// normalized at load time per draft-ietf-acme-dns-persist Section 3.1:
+    /// lowercase, trailing dot removed.  A-label (punycode) encoding is the
+    /// operator's responsibility.
+    /// When empty, dns-persist-01 is not offered.
+    pub fn dns_persist_issuer_domains(&self) -> &[String] {
+        &self.server.dns_persist_issuer_domains
+    }
+
+    /// Normalize config values that need canonical form.
+    /// Called once after deserialization + validation.
+    fn normalize(&mut self) {
+        for d in &mut self.server.dns_persist_issuer_domains {
+            let normalized = d.to_lowercase().trim_end_matches('.').to_owned();
+            *d = normalized;
         }
-        // Extract host from base_url: strip scheme, then take up to first '/' or ':'
-        let without_scheme = self
-            .base_url
-            .strip_prefix("https://")
-            .or_else(|| self.base_url.strip_prefix("http://"))
-            .unwrap_or(&self.base_url);
-        let host = without_scheme.split('/').next().unwrap_or(without_scheme);
-        let host = host.split(':').next().unwrap_or(host);
-        vec![host.to_string()]
     }
 }
 
@@ -809,28 +819,36 @@ enabled = false
     }
 
     #[test]
-    fn dns_persist_issuer_domains_falls_back_to_base_url_https() {
-        let cfg: Config = toml::from_str(minimal_toml()).unwrap();
-        // base_url = "https://acme.example.com" → host = "acme.example.com"
-        assert_eq!(cfg.dns_persist_issuer_domains(), vec!["acme.example.com"]);
+    fn dns_persist_issuer_domains_normalized() {
+        let toml = format!(
+            "{}\n[server]\ndns_persist_issuer_domains = [\"ACME.Example.COM.\", \"ca2.example.org\"]\n",
+            minimal_toml()
+        );
+        let mut cfg: Config = toml::from_str(&toml).unwrap();
+        cfg.normalize();
+        assert_eq!(
+            cfg.dns_persist_issuer_domains(),
+            &["acme.example.com", "ca2.example.org"]
+        );
     }
 
     #[test]
-    fn dns_persist_issuer_domains_strips_port_from_base_url() {
-        let toml = r#"
-listen_addr = "127.0.0.1:8080"
-base_url = "https://acme.example.com:8443"
-[database]
-url = "sqlite::memory:"
-[ca]
-key_file = "/tmp/ca.key"
-cert_file = "/tmp/ca.crt"
-[mtc]
-log_path = "/dev/null"
-enabled = false
-"#;
-        let cfg: Config = toml::from_str(toml).unwrap();
-        assert_eq!(cfg.dns_persist_issuer_domains(), vec!["acme.example.com"]);
+    fn dns_persist_issuer_domains_empty_when_unconfigured() {
+        let cfg: Config = toml::from_str(minimal_toml()).unwrap();
+        assert!(cfg.dns_persist_issuer_domains().is_empty());
+    }
+
+    #[test]
+    fn dns_persist_issuer_domains_rejects_more_than_10() {
+        let domains: Vec<String> = (1..=11).map(|i| format!("\"d{i}.example.com\"")).collect();
+        let toml = format!(
+            "{}\n[server]\ndns_persist_issuer_domains = [{}]\n",
+            minimal_toml(),
+            domains.join(", ")
+        );
+        let cfg: Config = toml::from_str(&toml).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("more than 10"), "err: {err}");
     }
 
     #[test]

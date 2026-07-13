@@ -53,8 +53,8 @@ pub struct ServerConfig {
     pub http_validation_allow_private_ips: bool,
     /// Issuer domain(s) placed in the `issuer-domain-names` field of
     /// dns-persist-01 challenges and matched against TXT records.  Accepts a
-    /// single string or an array of strings.  When empty, the host portion of
-    /// `base_url` is used as the sole issuer domain.
+    /// single string or an array of strings.  When empty (the default),
+    /// dns-persist-01 challenges are not offered.
     ///
     /// ```toml
     /// dns_persist_issuer_domains = "acme.example.com"

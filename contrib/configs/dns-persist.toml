@@ -18,8 +18,9 @@ cert_file = "/etc/akamu/certs/ca.cert.pem"
 
 [server]
 # Issuer domain(s) placed in the dns-persist-01 "issuer-domain-names" field
-# and matched against the TXT record label.  Defaults to the host portion of
-# base_url when absent.  Accepts a single string or an array.
+# and matched against the TXT record label.  Required to enable dns-persist-01;
+# when absent, the challenge type is not offered.  Accepts a single string or
+# an array.
 dns_persist_issuer_domains = ["acme.example.com"]
 
 # Optional: separate resolver for dns-persist-01 lookups only.
