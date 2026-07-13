@@ -250,10 +250,16 @@ pub async fn get_landmark_list(
 
     Ok((
         StatusCode::OK,
-        [(
-            axum::http::header::CONTENT_TYPE,
-            axum::http::HeaderValue::from_static("text/plain; charset=utf-8"),
-        )],
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderValue::from_static("text/plain; charset=utf-8"),
+            ),
+            (
+                axum::http::HeaderName::from_static("x-mtc-version"),
+                axum::http::HeaderValue::from_static(MTC_DRAFT_VERSION),
+            ),
+        ],
         body,
     )
         .into_response())
