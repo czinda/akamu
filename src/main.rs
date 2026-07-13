@@ -205,6 +205,13 @@ async fn run() -> Result<(), String> {
     tracing::info!("loading config from '{config_path}'");
     let config = Config::from_file(&config_path)?;
 
+    if config.dns_persist_issuer_domains().is_empty() {
+        tracing::warn!(
+            "dns-persist-01 challenge type is disabled: \
+             set [server].dns_persist_issuer_domains to enable it"
+        );
+    }
+
     // Set GSS_USE_PROXY before the first GSSAPI call so MIT Kerberos intercepts
     // gss_acquire_cred_from() via gssproxy.  No krb5/GSSAPI C library thread exists
     // yet at this point in startup, so the write is not concurrent with any getenv.
