@@ -87,6 +87,46 @@ pub mod renewal_info;
 pub mod revoke;
 pub mod star_cert;
 
+/// Challenge entry used in both authorization and challenge response bodies.
+///
+/// Shared between `authz::build_authz_json` and `challenge::challenge_response`
+/// to prevent field-set drift when new challenge types are added.
+#[derive(serde::Serialize)]
+pub(crate) struct ChallengeJson<'a> {
+    pub r#type: &'a str,
+    pub url: String,
+    pub status: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accounturi: Option<String>,
+    #[serde(
+        rename = "issuer-domain-names",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub issuer_domain_names: Option<&'a [String]>,
+    #[serde(rename = "authKey", skip_serializing_if = "Option::is_none")]
+    pub auth_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    #[serde(rename = "tkauth-type", skip_serializing_if = "Option::is_none")]
+    pub tkauth_type: Option<&'a str>,
+    #[serde(rename = "token-authority", skip_serializing_if = "Option::is_none")]
+    pub token_authority: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validated: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<Box<serde_json::value::RawValue>>,
+}
+
+/// Construct the ACME account URI for dns-persist-01 `accounturi` fields.
+///
+/// Uses `acme_pfx` (from [`acme_prefix`]) so the URI respects the
+/// `account_scope` setting (`/acme/account/…` vs `/acme/{ca}/account/…`).
+pub(crate) fn account_uri(acme_pfx: &str, account_id: &str) -> String {
+    format!("{acme_pfx}/account/{account_id}")
+}
+
 /// Middleware: reject ACME requests when the audit store is full and the
 /// overflow policy is `halt` (FAU_STG.4).  Admin routes bypass this check
 /// so operators can query status and resolve the condition.

@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use super::{account_uri, acme_prefix, fmt_time, json_response, parse_jws, unix_now, CaId};
 use crate::crdt_hooks;
 use crate::db;
 use crate::error::AcmeError;
@@ -11,9 +12,6 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::Response;
-use serde::Serialize;
-
-use super::{acme_prefix, fmt_time, json_response, parse_jws, unix_now, CaId};
 
 pub async fn respond_challenge(
     State(state): State<Arc<AppState>>,
@@ -30,6 +28,11 @@ pub async fn respond_challenge(
     let account_id = ctx
         .account_id
         .ok_or(AcmeError::Unauthorized("kid required".into()))?;
+
+    let jwk_thumbprint = ctx
+        .jwk_thumbprint
+        .clone()
+        .ok_or_else(|| AcmeError::Internal("JWK thumbprint missing in challenge handler".into()))?;
 
     // Two-step approach: one read-only SELECT (via db_ro) to validate ownership
     // and get challenge data, then one autocommit conditional UPDATE to flip the
@@ -83,7 +86,15 @@ pub async fn respond_challenge(
 
         if already_processing {
             // Return current state without spawning another validation task.
-            return challenge_response(&state, &challenge, &pfx, &ca_id.0, &ctx.next_nonce);
+            return challenge_response(
+                &state,
+                &challenge,
+                &pfx,
+                &ca_id.0,
+                &ctx.next_nonce,
+                &account_id,
+                &jwk_thumbprint,
+            );
         }
         (authz, challenge)
     };
@@ -126,15 +137,10 @@ pub async fn respond_challenge(
         })?
         .to_string();
 
-    // JWK thumbprint was already loaded by parse_jws (SPKI cache or DB lookup).
-    let jwk_thumbprint = ctx
-        .jwk_thumbprint
-        .clone()
-        .ok_or_else(|| AcmeError::Internal("JWK thumbprint missing in challenge handler".into()))?;
     // dns-persist-01 is validated against the account URI stored as the key_auth;
     // all other challenge types use the standard token·thumbprint form.
     let key_auth = if chall_type == "dns-persist-01" {
-        format!("{}/acme/account/{}", state.config.base_url, account_id)
+        account_uri(&pfx, &account_id)
     } else {
         format!("{}.{}", challenge.token, jwk_thumbprint)
     };
@@ -197,6 +203,7 @@ pub async fn respond_challenge(
     let chall_type_clone = chall_type.clone();
     let authz_id_clone = authz_id.clone();
     let challenge_id_for_log = challenge.id.clone();
+    let account_id_for_response = account_id.clone();
 
     let handle = tokio::spawn(async move {
         validation::validate_challenge(
@@ -226,40 +233,18 @@ pub async fn respond_challenge(
 
     let mut updated = challenge.clone();
     updated.status = "processing".into();
-    challenge_response(&state, &updated, &pfx, &ca_id.0, &ctx.next_nonce)
+    challenge_response(
+        &state,
+        &updated,
+        &pfx,
+        &ca_id.0,
+        &ctx.next_nonce,
+        &account_id_for_response,
+        &jwk_thumbprint,
+    )
 }
 
-/// Typed challenge response body — borrows `&str` fields from `ChallengeRow`
-/// to avoid intermediate `serde_json::Value` (HashMap) allocation.
-#[derive(Serialize)]
-struct ChallengeJson<'a> {
-    r#type: &'a str,
-    url: String,
-    status: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    token: Option<&'a str>,
-    #[serde(
-        rename = "issuer-domain-names",
-        skip_serializing_if = "Option::is_none"
-    )]
-    issuer_domain_names: Option<Vec<String>>,
-    /// RFC 9799 §3.2: present only for `onion-csr-01` challenges.
-    #[serde(rename = "authKey", skip_serializing_if = "Option::is_none")]
-    auth_key: Option<String>,
-    /// RFC 8823 §3: present only for `email-reply-00` challenges.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    from: Option<String>,
-    /// RFC 9447 §4: present only for `tkauth-01` challenges.
-    #[serde(rename = "tkauth-type", skip_serializing_if = "Option::is_none")]
-    tkauth_type: Option<&'a str>,
-    /// RFC 9447 §4: optional Token Authority URL hint, present only for `tkauth-01`.
-    #[serde(rename = "token-authority", skip_serializing_if = "Option::is_none")]
-    token_authority: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    validated: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<Box<serde_json::value::RawValue>>,
-}
+use super::ChallengeJson;
 
 fn challenge_response(
     state: &AppState,
@@ -267,12 +252,26 @@ fn challenge_response(
     acme_pfx: &str,
     ca_id: &str,
     nonce: &str,
+    account_id: &str,
+    jwk_thumbprint: &str,
 ) -> Result<Response, AcmeError> {
-    let (token, issuer_domain_names, auth_key, from) = if challenge.r#type == "dns-persist-01" {
+    let (token, accounturi, issuer_domain_names, auth_key, from) = if challenge.r#type
+        == "dns-persist-01"
+    {
+        let uri = account_uri(acme_pfx, account_id);
         (
             None,
+            Some(uri),
             Some(state.config.dns_persist_issuer_domains()),
             None,
+            None,
+        )
+    } else if challenge.r#type == "onion-csr-01" {
+        (
+            Some(challenge.token.as_str()),
+            None,
+            None,
+            Some(jwk_thumbprint.to_string()),
             None,
         )
     } else if challenge.r#type == "email-reply-00" {
@@ -298,9 +297,9 @@ fn challenge_response(
                 ));
             }
         };
-        (Some(challenge.token.as_str()), None, None, from_addr)
+        (Some(challenge.token.as_str()), None, None, None, from_addr)
     } else {
-        (Some(challenge.token.as_str()), None, None, None)
+        (Some(challenge.token.as_str()), None, None, None, None)
     };
     let (tkauth_type, token_authority) = if challenge.r#type == "tkauth-01" {
         (
@@ -318,6 +317,7 @@ fn challenge_response(
         ),
         status: &challenge.status,
         token,
+        accounturi,
         issuer_domain_names,
         auth_key,
         from,

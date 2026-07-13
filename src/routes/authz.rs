@@ -15,51 +15,15 @@ use crate::db::schema::{AuthorizationRow, ChallengeRow};
 use crate::error::AcmeError;
 use crate::state::AppState;
 
-use super::{acme_prefix, fmt_time, json_response, parse_jws, require_payload, unix_now, CaId};
+use super::{
+    account_uri, acme_prefix, fmt_time, json_response, parse_jws, require_payload, unix_now, CaId,
+};
 
 fn is_false(b: &bool) -> bool {
     !b
 }
 
-/// Typed challenge entry in the authz response.
-///
-/// Borrows `type` and `status` from `ChallengeRow`; `token` is borrowed for
-/// non-dns-persist-01 challenges. `issuer_domain_names` is only populated
-/// for dns-persist-01 (one allocation per authz at most).
-/// `auth_key` is only populated for `onion-csr-01` challenges (RFC 9799 §3.2):
-/// it carries the JWK thumbprint so the client can construct the key authorization
-/// without an extra server round-trip.
-#[derive(Serialize)]
-struct ChallengeJson<'a> {
-    r#type: &'a str,
-    url: String,
-    status: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    token: Option<&'a str>,
-    #[serde(
-        rename = "issuer-domain-names",
-        skip_serializing_if = "Option::is_none"
-    )]
-    issuer_domain_names: Option<Vec<String>>,
-    /// RFC 9799 §3.2: present only for `onion-csr-01` challenges.
-    /// Value is the JWK thumbprint of the account key (base64url, SHA-256).
-    #[serde(rename = "authKey", skip_serializing_if = "Option::is_none")]
-    auth_key: Option<String>,
-    /// RFC 8823 §3: present only for `email-reply-00` challenges.
-    /// Value is the server's `From:` address for challenge emails.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    from: Option<String>,
-    /// RFC 9447 §4: present only for `tkauth-01` challenges.
-    #[serde(rename = "tkauth-type", skip_serializing_if = "Option::is_none")]
-    tkauth_type: Option<&'a str>,
-    /// RFC 9447 §4: optional Token Authority URL hint, present only for `tkauth-01`.
-    #[serde(rename = "token-authority", skip_serializing_if = "Option::is_none")]
-    token_authority: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    validated: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<Box<serde_json::value::RawValue>>,
-}
+use super::ChallengeJson;
 
 /// Typed authorization response body.
 ///
@@ -203,7 +167,7 @@ pub async fn new_authz(
     }
 
     let token = gen_token()?;
-    let dns_persist_enabled = !state.config.server.dns_persist_issuer_domains.is_empty();
+    let dns_persist_enabled = !state.config.dns_persist_issuer_domains().is_empty();
     let dns_types: &[&str] = if dns_persist_enabled {
         &["http-01", "dns-01", "tls-alpn-01", "dns-persist-01"]
     } else {
@@ -293,26 +257,27 @@ fn build_authz_json<'a>(
     authz: &'a AuthorizationRow,
     challenges: &'a [ChallengeRow],
     acme_pfx: &str,
-    state: &AppState,
+    state: &'a AppState,
     jwk_thumbprint: &str,
 ) -> Result<AuthzJson<'a>, AcmeError> {
     let issuer_domains = state.config.dns_persist_issuer_domains();
     let challs: Vec<ChallengeJson<'_>> = challenges
         .iter()
         .map(|c| -> Result<ChallengeJson<'_>, AcmeError> {
-            let (token, issuer_domain_names, auth_key) = if c.r#type == "dns-persist-01" {
-                (None, Some(issuer_domains.clone()), None)
-            } else if c.r#type == "onion-csr-01" {
-                // RFC 9799 §3.2: include authKey (JWK thumbprint) so the client
-                // can construct the key authorization without an extra lookup.
-                (
-                    Some(c.token.as_str()),
-                    None,
-                    Some(jwk_thumbprint.to_string()),
-                )
-            } else {
-                (Some(c.token.as_str()), None, None)
-            };
+            let (token, accounturi, issuer_domain_names, auth_key) =
+                if c.r#type == "dns-persist-01" {
+                    let uri = account_uri(acme_pfx, &authz.account_id);
+                    (None, Some(uri), Some(issuer_domains), None)
+                } else if c.r#type == "onion-csr-01" {
+                    (
+                        Some(c.token.as_str()),
+                        None,
+                        None,
+                        Some(jwk_thumbprint.to_string()),
+                    )
+                } else {
+                    (Some(c.token.as_str()), None, None, None)
+                };
             let from = if c.r#type == "email-reply-00" {
                 match state.config.email_challenge.as_ref().filter(|ec| ec.enabled) {
                     Some(ec) => Some(ec.from_address.clone()),
@@ -346,6 +311,7 @@ fn build_authz_json<'a>(
                 url: format!("{acme_pfx}/chall/{}/{}", authz.id, c.r#type),
                 status: &c.status,
                 token,
+                accounturi,
                 issuer_domain_names,
                 auth_key,
                 from,
@@ -543,6 +509,7 @@ mod tests {
                 url: format!("{base}/acme/chall/{}/{}", authz.id, c.r#type),
                 status: &c.status,
                 token: Some(c.token.as_str()),
+                accounturi: None,
                 issuer_domain_names: None,
                 auth_key: None,
                 from: None,
