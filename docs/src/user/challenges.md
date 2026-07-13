@@ -234,7 +234,7 @@ The ACME client must ensure that a TXT record exists at `_validation-persist.<do
 #### TXT record format
 
 ```
-_validation-persist.<domain>. IN TXT "<issuer-domain>; accounturi=<account-uri>[; policy=wildcard][; persistUntil=<ISO8601Z>]"
+_validation-persist.<domain>. IN TXT "<issuer-domain>; accounturi=<account-uri>[; policy=wildcard][; persistUntil=<unix-timestamp>]"
 ```
 
 Fields are separated by semicolons. Field order is not significant except that the issuer domain must appear first.
@@ -244,7 +244,7 @@ Fields are separated by semicolons. Field order is not significant except that t
 | `<issuer-domain>` | Yes | First token (before the first `;`). Must match the CA's configured issuer domain, case-insensitively, trailing dot stripped. |
 | `accounturi=<uri>` | Yes | Full ACME account URI, e.g. `https://acme.example.com/acme/account/42`. Must match the requesting account exactly. |
 | `policy=wildcard` | Only for wildcard orders | Must be present when the identifier starts with `*.`. |
-| `persistUntil=<timestamp>` | No | UTC timestamp in `YYYY-MM-DDTHH:MM:SSZ` format. The server rejects records whose timestamp is in the past. |
+| `persistUntil=<timestamp>` | No | Base-10 UNIX timestamp (seconds since 1970-01-01T00:00:00Z). The server rejects records whose timestamp is in the past. |
 
 **Concrete example** for account `https://acme.example.com/acme/account/42` validating `example.com` through a CA with issuer domain `acme.example.com`:
 
@@ -281,7 +281,7 @@ To validate `*.example.com`, the TXT record must include `policy=wildcard`. The 
 
 ### `persistUntil` expiry
 
-The optional `persistUntil` field lets an operator set an explicit expiry on the authorization grant, independently of the DNS TTL. Format: `YYYY-MM-DDTHH:MM:SSZ` (literal `Z`; lowercase `z` also accepted).
+The optional `persistUntil` field lets an operator set an explicit expiry on the authorization grant, independently of the DNS TTL. The value is a base-10 UNIX timestamp (seconds since 1970-01-01T00:00:00Z).
 
 - Timestamp **at or after** current time → field is valid; evaluation continues.
 - Timestamp **before** current time → record rejected, even if all other fields match.

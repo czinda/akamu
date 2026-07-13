@@ -180,8 +180,8 @@ Tests use a hand-crafted UDP DNS stub server:
 ### `src/validation/dns_persist_01.rs`
 
 Tests cover both the `parse_persist_until` timestamp parser and the `matches_record` record-matching logic:
-- `parse_persist_until` accepts epoch, known timestamps, and leap-year dates; rejects bad separators, missing `Z`, and out-of-range fields.
-- `matches_record` verifies issuer match (case-insensitive, trailing-dot stripped), `accounturi` match and mismatch, wildcard `policy=deny` handling, `persist-until` expiry, unknown key-value tokens, and multi-issuer lists.
+- `parse_persist_until` accepts base-10 integer UNIX timestamps; rejects non-integer input including ISO 8601 strings.
+- `matches_record` verifies issuer match (case-insensitive, trailing-dot stripped), `accounturi` match and mismatch, wildcard `policy` handling (case-insensitive), `persistUntil` expiry, unknown key-value tokens, and multi-issuer lists.
 - Async integration tests using a UDP DNS stub server: matching record returns `Ok`, wrong issuer returns error, wildcard domain strips `*.` prefix, wildcard requires `policy=deny`, non-existent domain returns a DNS error.
 
 ### `src/validation/onion_csr_01.rs`

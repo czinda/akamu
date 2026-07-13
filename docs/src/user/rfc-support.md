@@ -722,7 +722,7 @@ The **[dns-persist-01 specification](https://letsencrypt.org/2026/02/18/dns-pers
 | TXT record name | `_acme-challenge.<domain>` | `_validation-persist.<domain>` |
 | Record changes per renewal | Required | Not required |
 | Token in record | Yes (changes each time) | No |
-| Record format | `<key-auth>` | `"<issuer-domain>; accounturi=<uri>[; policy=wildcard][; persistUntil=<ISO8601Z>]"` |
+| Record format | `<key-auth>` | `"<issuer-domain>; accounturi=<uri>[; policy=wildcard][; persistUntil=<unix-ts>]"` |
 | Wildcard support | Requires explicit `policy=wildcard` parameter |
 
 ### Configuration
@@ -744,7 +744,7 @@ _validation-persist.example.com. IN TXT "acme.example.com; accounturi=https://ac
 
 Optional extensions:
 - `policy=wildcard` — authorizes wildcard certificate issuance.
-- `persistUntil=2026-12-31T00:00:00Z` — caps the record's validity. After this date, the record must be renewed.
+- `persistUntil=1798761600` — caps the record's validity (base-10 UNIX timestamp). After this timestamp, the record must be renewed.
 
 ### Validation
 

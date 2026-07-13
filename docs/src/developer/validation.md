@@ -406,7 +406,7 @@ Unknown tokens are silently ignored. The function returns `false` as soon as any
 
 ### `parse_persist_until`
 
-A pure-Rust, zero-dependency parser for the `YYYY-MM-DDTHH:MM:SSZ` timestamp format (lowercase `z` is also accepted). It performs the proleptic Gregorian day count from the Unix epoch without using any external date/time crate. Returns `None` for malformed input (wrong separators, out-of-range fields, missing `Z` suffix).
+Parses the `persistUntil` value as a base-10 integer UNIX timestamp (per draft-ietf-acme-dns-persist Section 4.1 item 5). Returns `None` for non-integer input.
 
 Error mapping for dns-persist-01:
 - DNS lookup failure → `AcmeError::Dns`
