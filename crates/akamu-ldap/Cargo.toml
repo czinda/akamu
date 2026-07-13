@@ -5,6 +5,9 @@ edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Synchronous LDAP client with simple-bind and GSSAPI (Kerberos) authentication"
 
+[build-dependencies]
+pkg-config = "0.3"
+
 [dependencies]
 libc = "0.2"
 thiserror = "2"

@@ -10,10 +10,22 @@ fn main() {
         .or_else(|_| pkg_config::probe_library("mit-krb5-gssapi"))
         .is_err()
     {
-        // The canonical MIT Kerberos shared library name — used when pkg-config is absent.
+        // Homebrew keg-only: libraries are not symlinked into /opt/homebrew/lib.
+        if let Some(prefix) = homebrew_prefix("krb5") {
+            println!("cargo:rustc-link-search=native={prefix}/lib");
+        }
         println!("cargo:rustc-link-lib=gssapi_krb5");
     }
     // All three paths above resolve to MIT Kerberos; emit the cfg so that the
     // unsafe Sync impl (only sound with MIT Kerberos) is conditionally compiled.
     println!("cargo:rustc-cfg=mit_kerberos");
+}
+
+fn homebrew_prefix(formula: &str) -> Option<String> {
+    std::process::Command::new("brew")
+        .args(["--prefix", formula])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
 }
