@@ -9,10 +9,10 @@
 //!  3. For wildcard orders, `policy=wildcard` is present.
 //!  4. If `persistUntil=<timestamp>` is present, the timestamp is >= now.
 //!
-//! TXT record format (per the Let's Encrypt dns-persist-01 specification):
+//! TXT record format (per draft-ietf-acme-dns-persist):
 //! ```text
 //! _validation-persist.<domain>. IN TXT
-//!   "<issuer-domain>; accounturi=<uri>[; policy=wildcard][; persistUntil=<ISO8601Z>]"
+//!   "<issuer-domain>; accounturi=<uri>[; policy=wildcard][; persistUntil=<unix-ts>]"
 //! ```
 
 use std::str::FromStr;
@@ -142,7 +142,7 @@ async fn validate_with_resolver(
 ///   (case-insensitive, trailing dot stripped).
 /// - `accounturi=<expected_account_uri>` is present among the key=value tokens.
 /// - If `require_wildcard_policy` is true, `policy=wildcard` is present.
-/// - If `persistUntil=<ts>` is present, `<ts>` parses and is >= `now`.
+/// - If `persistUntil=<ts>` is present, `<ts>` is a valid base-10 integer and is >= `now`.
 pub(crate) fn matches_record(
     raw: &str,
     expected_issuers: &[&str],
@@ -174,8 +174,10 @@ pub(crate) fn matches_record(
             if uri.trim() == expected_account_uri {
                 found_account_uri = true;
             }
-        } else if part == "policy=wildcard" {
-            found_wildcard_policy = true;
+        } else if let Some(val) = part.strip_prefix("policy=") {
+            if val.trim().eq_ignore_ascii_case("wildcard") {
+                found_wildcard_policy = true;
+            }
         } else if let Some(ts) = part.strip_prefix("persistUntil=") {
             match parse_persist_until(ts.trim()) {
                 Some(expiry) if expiry >= now => { /* still valid */ }
@@ -198,66 +200,10 @@ pub(crate) fn matches_record(
     true
 }
 
-/// Parse an ISO 8601 UTC timestamp of the form `YYYY-MM-DDTHH:MM:SSZ` to a
-/// Unix timestamp (seconds since 1970-01-01T00:00:00Z).
-///
-/// Returns `None` if the format is not recognised or the field values are out
-/// of range.  No external date/time crate is required; the algorithm is the
-/// standard proleptic Gregorian count of days from the Unix epoch.
+/// Parse a `persistUntil` value as a base-10 UNIX timestamp
+/// (draft-ietf-acme-dns-persist Section 4.1 item 5).
 fn parse_persist_until(s: &str) -> Option<i64> {
-    // Strip mandatory UTC suffix.
-    let s = s.strip_suffix('Z').or_else(|| s.strip_suffix('z'))?;
-    // Require exactly "YYYY-MM-DDTHH:MM:SS" — 19 characters.
-    if s.len() != 19 {
-        return None;
-    }
-    // Validate separators.
-    if &s[4..5] != "-"
-        || &s[7..8] != "-"
-        || &s[10..11] != "T"
-        || &s[13..14] != ":"
-        || &s[16..17] != ":"
-    {
-        return None;
-    }
-    let year: i64 = s[0..4].parse().ok()?;
-    let month: i64 = s[5..7].parse().ok()?;
-    let day: i64 = s[8..10].parse().ok()?;
-    let hour: i64 = s[11..13].parse().ok()?;
-    let minute: i64 = s[14..16].parse().ok()?;
-    let second: i64 = s[17..19].parse().ok()?;
-
-    if !(1..=12).contains(&month)
-        || !(1..=31).contains(&day)
-        || hour > 23
-        || minute > 59
-        || second > 60
-    // 60 for leap seconds
-    {
-        return None;
-    }
-
-    // Count leap years before year `y` (exclusive): y/4 - y/100 + y/400
-    // for y >= 1; the formula counts years from year 1, so subtract from 1970.
-    fn leap_years_before(y: i64) -> i64 {
-        let y = y - 1;
-        y / 4 - y / 100 + y / 400
-    }
-
-    let days_to_year = (year - 1970) * 365 + leap_years_before(year) - leap_years_before(1970);
-
-    let is_leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
-    let days_in_months: [i64; 13] = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let mut days_to_month = 0i64;
-    for m in 1..month {
-        days_to_month += days_in_months[m as usize];
-        if m == 2 && is_leap {
-            days_to_month += 1;
-        }
-    }
-
-    let total_days = days_to_year + days_to_month + day - 1;
-    Some(total_days * 86400 + hour * 3600 + minute * 60 + second)
+    s.parse::<i64>().ok()
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -271,47 +217,25 @@ mod tests {
 
     #[test]
     fn parse_epoch_returns_zero() {
-        assert_eq!(parse_persist_until("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(parse_persist_until("0"), Some(0));
     }
 
     #[test]
     fn parse_known_timestamp() {
-        // 2024-01-01T00:00:00Z = 1704067200
-        assert_eq!(
-            parse_persist_until("2024-01-01T00:00:00Z"),
-            Some(1_704_067_200)
-        );
+        assert_eq!(parse_persist_until("1704067200"), Some(1_704_067_200));
     }
 
     #[test]
-    fn parse_leap_year_feb_29() {
-        // 2024 is a leap year; 2024-02-29 is valid.
-        let ts = parse_persist_until("2024-02-29T00:00:00Z");
-        assert!(ts.is_some(), "2024-02-29 should be valid in leap year 2024");
+    fn parse_negative_timestamp() {
+        assert_eq!(parse_persist_until("-1"), Some(-1));
     }
 
     #[test]
-    fn parse_rejects_bad_separator() {
-        assert!(parse_persist_until("2024/01/01T00:00:00Z").is_none());
-        assert!(parse_persist_until("2024-01-01 00:00:00Z").is_none());
-    }
-
-    #[test]
-    fn parse_rejects_missing_z() {
-        assert!(parse_persist_until("2024-01-01T00:00:00").is_none());
-        assert!(parse_persist_until("2024-01-01T00:00:00+00:00").is_none());
-    }
-
-    #[test]
-    fn parse_rejects_out_of_range() {
-        assert!(parse_persist_until("2024-13-01T00:00:00Z").is_none()); // month 13
-        assert!(parse_persist_until("2024-01-32T00:00:00Z").is_none()); // day 32
-        assert!(parse_persist_until("2024-01-01T25:00:00Z").is_none()); // hour 25
-    }
-
-    #[test]
-    fn parse_lowercase_z() {
-        assert_eq!(parse_persist_until("1970-01-01T00:00:00z"), Some(0));
+    fn parse_rejects_non_integer() {
+        assert!(parse_persist_until("not-a-number").is_none());
+        assert!(parse_persist_until("2024-01-01T00:00:00Z").is_none());
+        assert!(parse_persist_until("123.456").is_none());
+        assert!(parse_persist_until("").is_none());
     }
 
     // ── matches_record ────────────────────────────────────────────────────────
@@ -407,6 +331,28 @@ mod tests {
     }
 
     #[test]
+    fn matches_wildcard_policy_uppercase() {
+        assert!(matches_record(
+            "acme.example.com; accounturi=https://acme.example.com/acme/account/1; policy=WILDCARD",
+            &["acme.example.com"],
+            "https://acme.example.com/acme/account/1",
+            true,
+            NOW,
+        ));
+    }
+
+    #[test]
+    fn matches_wildcard_policy_mixed_case() {
+        assert!(matches_record(
+            "acme.example.com; accounturi=https://acme.example.com/acme/account/1; policy=Wildcard",
+            &["acme.example.com"],
+            "https://acme.example.com/acme/account/1",
+            true,
+            NOW,
+        ));
+    }
+
+    #[test]
     fn accepts_non_wildcard_order_without_policy() {
         assert!(matches_record(
             "acme.example.com; accounturi=https://acme.example.com/acme/account/1",
@@ -419,9 +365,9 @@ mod tests {
 
     #[test]
     fn matches_with_future_persist_until() {
-        // persistUntil well in the future
+        // persistUntil=4102444800 (2099-12-31)
         assert!(matches_record(
-            "acme.example.com; accounturi=https://acme.example.com/acme/account/1; persistUntil=2099-01-01T00:00:00Z",
+            "acme.example.com; accounturi=https://acme.example.com/acme/account/1; persistUntil=4102444800",
             &["acme.example.com"],
             "https://acme.example.com/acme/account/1",
             false,
@@ -431,9 +377,9 @@ mod tests {
 
     #[test]
     fn rejects_expired_persist_until() {
-        // persistUntil in the past
+        // persistUntil=1577836800 (2020-01-01)
         assert!(!matches_record(
-            "acme.example.com; accounturi=https://acme.example.com/acme/account/1; persistUntil=2020-01-01T00:00:00Z",
+            "acme.example.com; accounturi=https://acme.example.com/acme/account/1; persistUntil=1577836800",
             &["acme.example.com"],
             "https://acme.example.com/acme/account/1",
             false,
@@ -444,7 +390,18 @@ mod tests {
     #[test]
     fn rejects_unparseable_persist_until() {
         assert!(!matches_record(
-            "acme.example.com; accounturi=https://acme.example.com/acme/account/1; persistUntil=not-a-date",
+            "acme.example.com; accounturi=https://acme.example.com/acme/account/1; persistUntil=not-a-number",
+            &["acme.example.com"],
+            "https://acme.example.com/acme/account/1",
+            false,
+            NOW,
+        ));
+    }
+
+    #[test]
+    fn rejects_iso8601_persist_until() {
+        assert!(!matches_record(
+            "acme.example.com; accounturi=https://acme.example.com/acme/account/1; persistUntil=2099-01-01T00:00:00Z",
             &["acme.example.com"],
             "https://acme.example.com/acme/account/1",
             false,
@@ -465,8 +422,9 @@ mod tests {
 
     #[test]
     fn matches_record_with_all_fields() {
+        // persistUntil=4102444799 (2099-12-31T23:59:59Z)
         assert!(matches_record(
-            "acme.example.com; accounturi=https://acme.example.com/acme/account/1; policy=wildcard; persistUntil=2099-12-31T23:59:59Z",
+            "acme.example.com; accounturi=https://acme.example.com/acme/account/1; policy=wildcard; persistUntil=4102444799",
             &["acme.example.com"],
             "https://acme.example.com/acme/account/1",
             true,
