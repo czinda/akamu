@@ -131,7 +131,7 @@ fn default_hash_alg() -> String {
 /// Cosigner identity certificate and `TrustAnchorID`.
 ///
 /// Per draft-ietf-plants-merkle-tree-certs-05 §4.1, `CosignerID` is an
-/// `OBJECT IDENTIFIER` (`TrustAnchorID`) assigned to the cosigner.
+/// `RELATIVE-OID` (`TrustAnchorID`) assigned to the cosigner.
 /// `trust_anchor_id` (dotted-decimal) is embedded in every
 /// `SubtreeSignature.cosigner` field so that relying parties can identify
 /// the cosigner.

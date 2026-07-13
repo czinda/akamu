@@ -42,7 +42,7 @@ pub struct CosignerConfig {
     /// Expected `TrustAnchorID` OID (dotted-decimal) of this cosigner.
     ///
     /// Per draft-ietf-plants-merkle-tree-certs-05 §4.1, `CosignerID` is an
-    /// `OBJECT IDENTIFIER` assigned to the cosigner.  When set, the OID in
+    /// `RELATIVE-OID` assigned to the cosigner.  When set, the OID in
     /// the returned `SubtreeSignature.cosigner` must match this value.
     /// When absent, the OID identity check is skipped (cryptographic
     /// verification via `cosigner_id_cert_pem` still applies when set).
