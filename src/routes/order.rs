@@ -460,9 +460,7 @@ pub async fn new_order(
             serde_json::to_string(&json!({"type": authz_type, "value": authz_value}))
                 .map_err(|e| AcmeError::Internal(format!("serialize identifier: {e}")))?;
         let token = gen_token()?;
-        // dns-persist-01 is offered only when the operator has explicitly configured
-        // an issuer domain — without it the challenge cannot be validated.
-        let dns_persist_enabled = !state.config.server.dns_persist_issuer_domains.is_empty();
+        let dns_persist_enabled = !state.config.dns_persist_issuer_domains().is_empty();
         let dns_types: &[&str] = if dns_persist_enabled {
             &["http-01", "dns-01", "tls-alpn-01", "dns-persist-01"]
         } else {
@@ -877,12 +875,25 @@ pub(crate) fn order_json<'a>(
     // Embed identifiers as raw JSON — no parse, no Vec<Value>/HashMap allocs.
     // The stored string is always valid JSON (written by serde_json::to_string).
     let identifiers = serde_json::value::RawValue::from_string(order.identifiers.clone())
-        .unwrap_or_else(|_| serde_json::value::RawValue::from_string("[]".to_string()).unwrap());
-    // Same for error: embed raw JSON if present; skip if None or unparseable.
-    let error = order
-        .error
-        .as_deref()
-        .and_then(|s| serde_json::value::RawValue::from_string(s.to_string()).ok());
+        .unwrap_or_else(|e| {
+            tracing::warn!(
+                order_id = %order.id,
+                raw = %order.identifiers,
+                "corrupt identifiers JSON in order row: {e}"
+            );
+            serde_json::value::RawValue::from_string("[]".to_string()).unwrap()
+        });
+    let error = order.error.as_deref().and_then(|s| {
+        serde_json::value::RawValue::from_string(s.to_string())
+            .map_err(|e| {
+                tracing::warn!(
+                    order_id = %order.id,
+                    raw = s,
+                    "corrupt error JSON in order row: {e}"
+                );
+            })
+            .ok()
+    });
 
     // Build STAR auto-renewal object if this is a STAR order.
     let auto_renewal = order.star_end_date.map(|end_ts| AutoRenewalJson {
