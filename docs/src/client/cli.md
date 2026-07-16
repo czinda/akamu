@@ -40,6 +40,19 @@ akamu-cli [-v] [-vv]
   revoke           Revoke a certificate via account key or certificate's own key
   import
     certbot        Import accounts and certificates from a certbot installation
+  mtc
+    tree-size      Print the current tree size
+    root           Print the current tree size and root hash
+    inclusion-proof  Print the inclusion proof for a certificate
+    standalone     Download a standalone DER certificate
+    landmark-cert  Download a landmark certificate for a given cert
+    landmarks      List all landmarks
+    landmark-list  Print the landmark list (text/plain)
+    consistency-proof  Consistency proof between two tree sizes
+    subtree-root   Subtree root hash for a range
+    revoked-ranges Print revoked entry ranges
+    verify         Verify a standalone certificate's inclusion proof
+    checkpoint     Print the signed tlog checkpoint
 ```
 
 ## Global flags
@@ -327,6 +340,151 @@ After import, renew each certificate with:
 
 ```bash
 akamu-cli renew --renewal-config /etc/akamu/certs/example.com.pem.renewal.toml
+```
+
+## MTC subcommands
+
+All `mtc` subcommands share these common flags:
+
+| Flag | Required | Description |
+|---|---|---|
+| `--server URL` | Yes | ACME server base URL or full directory URL |
+| `--ca CA_ID` | No | CA identifier for multi-CA servers (derives directory URL as `{server}/acme/{ca}/directory`) |
+| `--server-ca FILE` | No | PEM file of an extra CA certificate to trust for TLS |
+| `--max-response-bytes BYTES` | No | Maximum response body size in bytes (default: 10485760 = 10 MiB) |
+| `--request-timeout SECS` | No | HTTP request timeout in seconds (default: 30) |
+
+### mtc tree-size
+
+Print the current Merkle tree size as JSON.
+
+```bash
+akamu-cli mtc tree-size --server https://acme.example.com
+```
+
+### mtc root
+
+Print the current tree size and root hash as JSON.
+
+```bash
+akamu-cli mtc root --server https://acme.example.com
+```
+
+### mtc inclusion-proof
+
+Print the inclusion proof for a certificate.
+
+```bash
+akamu-cli mtc inclusion-proof --server https://acme.example.com --cert-id CERT_UUID
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--cert-id ID` | Yes | Certificate ID (UUID from the ACME certificate URL) |
+
+### mtc standalone
+
+Download the standalone DER certificate for an issued certificate.
+
+```bash
+akamu-cli mtc standalone --server https://acme.example.com --cert-id CERT_UUID --out cert.der
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--cert-id ID` | Yes | Certificate ID |
+| `--out FILE` | No | Write DER to file; if omitted, prints hex to stdout |
+
+### mtc landmark-cert
+
+Download the landmark certificate for a given certificate.
+
+```bash
+akamu-cli mtc landmark-cert --server https://acme.example.com --cert-id CERT_UUID --out landmark.der
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--cert-id ID` | Yes | Certificate ID |
+| `--out FILE` | No | Write DER to file; if omitted, prints hex to stdout |
+
+Returns an error with a retry-after duration if the landmark is not yet available.
+
+### mtc landmarks
+
+List all landmarks as JSON.
+
+```bash
+akamu-cli mtc landmarks --server https://acme.example.com
+```
+
+### mtc landmark-list
+
+Print the landmark list in text/plain format.
+
+```bash
+akamu-cli mtc landmark-list --server https://acme.example.com
+```
+
+### mtc consistency-proof
+
+Print a consistency proof between two tree sizes as JSON.
+
+```bash
+akamu-cli mtc consistency-proof --server https://acme.example.com --from 5 --to 10
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--from N` | Yes | Starting tree size |
+| `--to N` | Yes | Ending tree size |
+
+### mtc subtree-root
+
+Print the root hash of a subtree range as JSON.
+
+```bash
+akamu-cli mtc subtree-root --server https://acme.example.com --start 0 --end 10
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--start N` | Yes | Start index (inclusive) |
+| `--end N` | Yes | End index (exclusive) |
+
+### mtc revoked-ranges
+
+Print revoked entry ranges as JSON.
+
+```bash
+akamu-cli mtc revoked-ranges --server https://acme.example.com
+```
+
+### mtc verify
+
+Verify a standalone certificate's inclusion proof. Displays certificate details (subject, issuer, validity, serial, SANs, extensions) and verifies the Merkle tree inclusion proof against the server's root hash.
+
+```bash
+# Fetch and verify by certificate ID
+akamu-cli mtc verify --server https://acme.example.com --cert-id CERT_UUID
+
+# Verify a local DER file
+akamu-cli mtc verify --server https://acme.example.com --cert-id CERT_UUID --cert-file cert.der
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--cert-id ID` | Yes | Certificate ID |
+| `--cert-file FILE` | No | Read DER from a local file instead of fetching from the server |
+
+Output includes: Subject, Issuer, Validity, Serial (with log/leaf decomposition), SANs (DNS, IP, email, Kerberos, URI), X.509 extensions, leaf hash, proof details, root hash, and verification result.
+
+### mtc checkpoint
+
+Print the signed tlog checkpoint text.
+
+```bash
+akamu-cli mtc checkpoint --server https://acme.example.com
 ```
 
 ## File permissions
@@ -695,6 +853,46 @@ sudo akamu-cli import certbot \
 
 # 3. Renew each certificate with its generated config
 akamu-cli renew --renewal-config /etc/akamu/certs/example.com.pem.renewal.toml
+```
+
+### Query and verify MTC transparency log
+
+```bash
+# Check tree size and root hash
+akamu-cli mtc tree-size --server https://acme.example.com
+akamu-cli mtc root --server https://acme.example.com
+
+# Verify a certificate's inclusion proof (fetches from server)
+akamu-cli mtc verify \
+  --server https://acme.example.com \
+  --cert-id ddaf3c89-1da0-4bc0-b2aa-abe634e88dc0
+
+# Download a standalone cert, then verify the local copy
+akamu-cli mtc standalone \
+  --server https://acme.example.com \
+  --cert-id ddaf3c89-1da0-4bc0-b2aa-abe634e88dc0 \
+  --out /tmp/cert.der
+
+akamu-cli mtc verify \
+  --server https://acme.example.com \
+  --cert-id ddaf3c89-1da0-4bc0-b2aa-abe634e88dc0 \
+  --cert-file /tmp/cert.der
+```
+
+Example `mtc verify` output:
+
+```
+Subject:       CN=cert-01.mtc-demo.localhost
+Issuer:        CN=MTC LogID (sha256:a1b2c3...)
+Validity:      Jul  8 12:00:00 2026 GMT .. Oct  6 12:00:00 2026 GMT
+Serial:        0x000100000000000a (log=1, leaf=10)
+SANs:          DNS:cert-01.mtc-demo.localhost
+Extension:     subjectKeyIdentifier: 7f:3a:...
+Extension:     authorityKeyIdentifier: keyid:ab:cd:...
+Leaf hash:     e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+Proof:         tree at size 11, 3 sibling hash(es)
+Root hash:     a1b2c3d4e5f6...
+Verification:  PASSED
 ```
 
 ## External Account Binding

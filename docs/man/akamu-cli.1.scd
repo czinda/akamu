@@ -455,6 +455,103 @@ Certbot authenticator names are mapped to akamu challenge types as follows:
 	ready-to-paste *systemctl enable* command; it does not enable or
 	start the timer automatically.
 
+## MTC transparency log
+
+All *mtc* subcommands share these common options:
+
+*--server* _URL_
+	ACME server base URL or full directory URL.  Required.
+
+*--ca* _CA_ID_
+	CA identifier for multi-CA servers.
+
+*--server-ca* _FILE_
+	PEM file of an extra CA certificate to trust for the server's TLS
+	connection.
+
+*--max-response-bytes* _BYTES_
+	Maximum response body size in bytes.  Default: 10485760 (10 MiB).
+
+*--request-timeout* _SECS_
+	HTTP request timeout in seconds.  Default: 30.
+
+*mtc tree-size* *--server* _URL_ [_OPTIONS_]
+	Print the current Merkle tree size as JSON.
+
+*mtc root* *--server* _URL_ [_OPTIONS_]
+	Print the current tree size and root hash as JSON.
+
+*mtc inclusion-proof* *--server* _URL_ *--cert-id* _ID_ [_OPTIONS_]
+	Print the inclusion proof for a certificate as JSON.
+
+	*--cert-id* _ID_
+		Certificate ID (UUID from the ACME certificate URL).  Required.
+
+*mtc standalone* *--server* _URL_ *--cert-id* _ID_ [*--out* _FILE_] [_OPTIONS_]
+	Download the standalone DER certificate.
+
+	*--cert-id* _ID_
+		Certificate ID.  Required.
+
+	*--out* _FILE_
+		Write DER bytes to _FILE_.  If omitted, prints hex to stdout.
+
+*mtc landmark-cert* *--server* _URL_ *--cert-id* _ID_ [*--out* _FILE_] [_OPTIONS_]
+	Download the landmark certificate for a given certificate.  Returns
+	an error with a retry-after duration if the landmark is not yet
+	available.
+
+	*--cert-id* _ID_
+		Certificate ID.  Required.
+
+	*--out* _FILE_
+		Write DER bytes to _FILE_.  If omitted, prints hex to stdout.
+
+*mtc landmarks* *--server* _URL_ [_OPTIONS_]
+	List all landmarks as JSON.
+
+*mtc landmark-list* *--server* _URL_ [_OPTIONS_]
+	Print the landmark list in text/plain format.
+
+*mtc consistency-proof* *--server* _URL_ *--from* _N_ *--to* _N_ [_OPTIONS_]
+	Print a consistency proof between two tree sizes as JSON.
+
+	*--from* _N_
+		Starting tree size.  Required.
+
+	*--to* _N_
+		Ending tree size.  Required.
+
+*mtc subtree-root* *--server* _URL_ *--start* _N_ *--end* _N_ [_OPTIONS_]
+	Print the root hash of a subtree range as JSON.
+
+	*--start* _N_
+		Start index (inclusive).  Required.
+
+	*--end* _N_
+		End index (exclusive).  Required.
+
+*mtc revoked-ranges* *--server* _URL_ [_OPTIONS_]
+	Print revoked entry ranges as JSON.
+
+*mtc verify* *--server* _URL_ *--cert-id* _ID_ [*--cert-file* _FILE_] [_OPTIONS_]
+	Verify a standalone certificate's inclusion proof against the
+	server's Merkle tree.  Displays certificate details including
+	subject, issuer, validity, serial number (with log/leaf
+	decomposition), SANs (DNS, IP, email, Kerberos, URI), X.509
+	extensions, leaf hash, proof details, root hash, and the
+	verification result.
+
+	*--cert-id* _ID_
+		Certificate ID.  Required.
+
+	*--cert-file* _FILE_
+		Read the standalone DER certificate from a local file instead
+		of fetching it from the server.
+
+*mtc checkpoint* *--server* _URL_ [_OPTIONS_]
+	Print the signed transparency log checkpoint text.
+
 # KEY TYPES
 
 The following values are accepted by *--key-type*, *--cert-key-type*, and
@@ -845,6 +942,45 @@ akamu-cli install timer \
 systemctl --user enable --now akamu-renew-example.com.timer
 ```
 
+Query the MTC transparency log tree size and root hash:
+
+```
+akamu-cli mtc tree-size --server https://acme.example.com
+akamu-cli mtc root --server https://acme.example.com
+```
+
+Verify an MTC standalone certificate by ID (fetches from server):
+
+```
+akamu-cli mtc verify \
+  --server https://acme.example.com \
+  --cert-id ddaf3c89-1da0-4bc0-b2aa-abe634e88dc0
+```
+
+Verify a locally saved standalone certificate:
+
+```
+akamu-cli mtc verify \
+  --server https://acme.example.com \
+  --cert-id ddaf3c89-1da0-4bc0-b2aa-abe634e88dc0 \
+  --cert-file /tmp/cert.der
+```
+
+Download a standalone certificate and verify it with a custom timeout:
+
+```
+akamu-cli mtc standalone \
+  --server https://acme.example.com \
+  --cert-id ddaf3c89-1da0-4bc0-b2aa-abe634e88dc0 \
+  --out /tmp/cert.der
+
+akamu-cli mtc verify \
+  --server https://acme.example.com \
+  --cert-id ddaf3c89-1da0-4bc0-b2aa-abe634e88dc0 \
+  --cert-file /tmp/cert.der \
+  --request-timeout 60
+```
+
 # ENVIRONMENT
 
 *RUST_LOG*
@@ -875,7 +1011,8 @@ RFC 9448 - TNAuthList Profile of Automated Certificate Management Environment (A
 RFC 9773 - ACME Renewal Information (ARI)++
 RFC 9799 - ACME Extensions for .onion Special-Use Domain Names++
 draft-ietf-acme-dns-persist - Persistent DNS-01 Challenge for ACME++
-RFC 9964 - ML-DSA for JSON Object Signing and Encryption (JOSE) and CBOR Object Signing and Encryption (COSE)
+RFC 9964 - ML-DSA for JSON Object Signing and Encryption (JOSE) and CBOR Object Signing and Encryption (COSE)++
+draft-ietf-plants-merkle-tree-certs-05 - Merkle Tree Certificates (MTC)
 
 # AUTHORS
 

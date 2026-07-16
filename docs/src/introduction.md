@@ -1,22 +1,30 @@
 # Introduction
 
-`Akāmu` is a self-hosted certificate authority that speaks the ACME protocol defined in [RFC 8555](https://www.rfc-editor.org/rfc/rfc8555). It is written in Rust and is designed to be operated inside a private network or behind a reverse proxy, issuing X.509 certificates to ACME clients such as certbot, acme.sh, or any RFC 8555-compliant library. The project is organized as a Cargo workspace. In addition to the server binary, it ships standalone client libraries — see [Client Libraries](client/overview.md).
+`Akāmu` is a self-hosted certificate authority that speaks the ACME protocol defined in [RFC 8555](https://www.rfc-editor.org/rfc/rfc8555). It is designed to be operated inside a private network or behind a reverse proxy, issuing X.509 and Merkle Tree Certificates to ACME clients such as certbot, acme.sh, or any RFC 8555-compliant library. In addition to the server binary, it ships standalone client libraries — see [Client Libraries](client/overview.md).
 
 For a detailed breakdown of RFC and draft coverage — including which sections are implemented, which are intentionally omitted, and post-quantum support — see the [RFC Support Reference](user/rfc-support.md).
 
 ## What it does
 
+### Core capabilities
+
 - Implements the full RFC 8555 ACME server protocol: directory, nonces, accounts, orders, authorizations, challenges, certificate issuance, and revocation.
 - Validates domain ownership using **http-01**, **dns-01**, **tls-alpn-01**, and **dns-persist-01** challenge types (RFC 8555 §8, RFC 8737, and the [Let's Encrypt dns-persist-01 specification](https://letsencrypt.org/2026/02/18/dns-persist-01)).
-- Validates `TNAuthList` and `JWTClaimConstraints` identifiers using the **tkauth-01** challenge type (RFC 9447 / RFC 9448), verifying signed authority tokens issued by an external Token Authority.
-- Issues end-entity certificates signed by a built-in Certificate Authority whose key and self-signed root are generated automatically on first run, or loaded from existing PEM files.
+- Issues end-entity certificates signed by a built-in Certificate Authority whose key and self-signed root are generated automatically on first run, or loaded from existing PEM files. When a certificate profile sets `issue_as = "mtc"`, the server issues a Merkle Tree Certificate `StandaloneCertificate` instead of a standard X.509 PEM chain — see [Certificates](user/certificates.md) for details.
 - Persists all ACME objects (accounts, orders, authorizations, challenges, certificates, nonces) in a SQL database. The supported backends are **SQLite** (default; single-file, no external service required), **PostgreSQL**, and **MariaDB/MySQL**, selected by the `database.url` configuration key.
+
+### Protocol extensions
+
+- Validates `TNAuthList` and `JWTClaimConstraints` identifiers using the **tkauth-01** challenge type (RFC 9447 / RFC 9448), verifying signed authority tokens issued by an external Token Authority.
+- Optionally appends issued certificates to a Merkle Tree Certificate transparency log. The `akamu-client` library and `akamu-cli` tool include MTC client support for querying the log and verifying standalone certificate inclusion proofs.
+- When `external_account_required = true`, performs full HMAC verification of the `externalAccountBinding` JWS (HS256/HS384/HS512), confirms the payload is the account key, and atomically consumes the EAB key on account creation. EAB keys can be provisioned in two ways: statically in the TOML config under `[server.eab_keys]`, or derived on demand via HKDF-SHA-256 (RFC 5869) when `[server].eab_master_secret` is set and the client authenticates via GSSAPI or a trusted proxy (`GET /acme/eab`).
+- Implements the ACME Renewal Information extension ([RFC 9773](https://www.rfc-editor.org/rfc/rfc9773)) so ACME clients know when to renew.
+
+### Operational features
+
 - Generates and serves CRLs (Certificate Revocation Lists) at `GET /ca/crl`.
 - Serves OCSP responses at `GET /ca/ocsp/{request}` and `POST /ca/ocsp` (RFC 6960).
-- Implements the ACME Renewal Information extension ([RFC 9773](https://www.rfc-editor.org/rfc/rfc9773)) so ACME clients know when to renew.
-- Optionally appends issued certificates to a Merkle Tree Certificate transparency log using the `synta-mtc` library.
-- When `external_account_required = true`, performs full HMAC verification of the `externalAccountBinding` JWS (HS256/HS384/HS512), confirms the payload is the account key, and atomically consumes the EAB key on account creation. EAB keys can be provisioned in two ways: statically in the TOML config under `[server.eab_keys]`, or derived on demand via HKDF-SHA-256 (RFC 5869) when `[server].eab_master_secret` is set and the client authenticates via GSSAPI or a trusted proxy (`GET /acme/eab`).
-- Optionally terminates TLS directly using rustls, with an auto-generated certificate on first run. Supports mutual TLS (mTLS) client certificate authentication with configurable CA trust anchors, chain depth, RSA modulus enforcement, and post-quantum client certificate acceptance.
+- Optionally terminates TLS directly, with an auto-generated certificate on first run. Supports mutual TLS (mTLS) client certificate authentication with configurable CA trust anchors, chain depth, RSA modulus enforcement, and post-quantum client certificate acceptance.
 - Supports multi-node clustering through a built-in CRDT + gossip replication layer. All domain state (accounts, orders, authorizations, challenges, certificates, EAB keys, operators, delegations, MTC) is replicated to every cluster member via signed gossip envelopes. Nodes are registered with each other via the `POST /admin/gossip/register` admin endpoint. When the `[gossip]` section is absent the node runs in single-node mode with no replication overhead.
 
 ## What it does not do
@@ -24,6 +32,8 @@ For a detailed breakdown of RFC and draft coverage — including which sections 
 - It does not support wildcard certificates via http-01 or tls-alpn-01 (only dns-01 and dns-persist-01 can authorize wildcard identifiers per RFC 8555 §7.1.3).
 
 ## Technology stack
+
+Akāmu is written in Rust and organized as a Cargo workspace.
 
 | Component | Library |
 |---|---|
@@ -33,6 +43,7 @@ For a detailed breakdown of RFC and draft coverage — including which sections 
 | Schema migrations | sqlx built-in migrate |
 | X.509 / PKCS#10 / CRL | synta-certificate |
 | MTC transparency log | synta-mtc |
+| Kerberos SAN decoding | synta-krb5 |
 | DNS resolution | hickory-resolver |
 | TLS server | axum-server + rustls |
 | TLS client | rustls + tokio-rustls |

@@ -24,8 +24,12 @@ The library covers:
 - A `ChallengeSolver` trait for custom solvers
 - `AccountKey::from_jwk_private` — load an account key from a certbot-style private JWK
 - `RenewalConfig` — serialisable struct for persisting renewal parameters alongside a certificate
+- `MtcClient` — HTTP client for querying Merkle Tree Certificate transparency logs
+- `mtc_verify` module — standalone certificate parsing, leaf hashing, and inclusion proof verification
+- `cert_id_from_url` — extract certificate ID from an ACME certificate URL
+- `HashAlgorithm` — re-exported from `synta-mtc` for use with MTC verification functions
 
-Dependencies: `tokio`, `hyper-rustls` (TLS enabled by default), `akamu-jose`. No database or server dependencies.
+Dependencies: `tokio`, `hyper-rustls` (TLS enabled by default), `akamu-jose`, `synta-mtc`, `synta-krb5` (Kerberos SAN decoding). No database or server dependencies.
 
 ## End-to-end example: P-256 key, http-01 challenge
 
@@ -696,6 +700,138 @@ let loaded: RenewalConfig = toml::from_str(&toml)?;
 
 Fields with defaults (`account_key_type`, `cert_key_type`, `challenge_type`, `http_port`, `tls_port`, `poll_timeout`, `eab_alg`) are optional in TOML files; missing fields are filled with sensible defaults on deserialisation. The `gssapi_keytab` field is also optional (defaults to absent when not present in the file, via `#[serde(default)]`).
 
+## MtcClient
+
+`MtcClient` is an HTTP client for querying Merkle Tree Certificate (MTC) transparency log endpoints exposed by an akamu server. It derives the MTC base URL from a standard ACME directory URL.
+
+### Constructors
+
+```rust
+use akamu_client::MtcClient;
+
+// From a directory URL (http or https)
+let client = MtcClient::new("https://acme.example.com/acme/directory")?;
+
+// With an extra CA certificate for TLS verification
+let pem = std::fs::read("ca.pem")?;
+let client = MtcClient::new_with_extra_root("https://acme.example.com/acme/directory", &pem)?;
+
+// HTTPS-only (rejects http:// URLs)
+let client = MtcClient::new_https_only("https://acme.example.com/acme/directory")?;
+```
+
+### Configuration
+
+```rust
+// Set maximum response body size (default: 10 MiB)
+client.set_max_response_bytes(5 * 1024 * 1024);
+
+// Set request timeout (default: 30 seconds)
+client.set_request_timeout(std::time::Duration::from_secs(60));
+```
+
+### Query methods
+
+All methods are `async` and return `Result<T, ClientError>`.
+
+| Method | Returns | Description |
+|---|---|---|
+| `tree_size()` | `TreeSize` | Current number of entries in the log |
+| `root()` | `TreeRoot` | Current tree size and root hash |
+| `inclusion_proof(cert_id)` | `InclusionProofResponse` | Inclusion proof for a certificate |
+| `standalone_cert(cert_id)` | `Vec<u8>` | Standalone DER certificate |
+| `landmark_cert_for(cert_id)` | `CertFetchResult` | Landmark certificate for a given cert |
+| `landmarks()` | `Vec<Landmark>` | List of all landmarks |
+| `landmark_list()` | `String` | Text representation of the landmark list |
+| `landmark_cert(seq)` | `CertFetchResult` | Landmark certificate by sequence number |
+| `consistency_proof(from, to)` | `ConsistencyProofResponse` | Consistency proof between two tree sizes |
+| `subtree_root(start, end)` | `SubtreeRootResponse` | Root hash of a subtree range |
+| `revoked_ranges()` | `Vec<[i64; 2]>` | Revoked entry ranges |
+| `tlog_checkpoint()` | `String` | Signed checkpoint text |
+| `tlog_tile(path)` | `Vec<u8>` | Raw tile data |
+| `tlog_cosignature()` | `String` | Cosignature text |
+
+`CertFetchResult` is either `Ok(Vec<u8>)` (DER bytes) or `RetryAfter(u64)` (seconds to wait).
+
+### End-to-end verification example
+
+```rust
+use akamu_client::{MtcClient, HashAlgorithm, mtc_verify};
+
+let client = MtcClient::new("https://acme.example.com/acme/directory")?;
+let algorithm = HashAlgorithm::Sha256;
+
+// Fetch and parse the standalone certificate
+let der = client.standalone_cert("cert-uuid").await?;
+let (details, proof) = mtc_verify::extract_cert_and_proof(&der)?;
+
+// Compute the leaf hash and fetch the root
+let leaf_hash = mtc_verify::compute_leaf_hash(&der, algorithm)?;
+let sr = client.subtree_root(proof.start, proof.end).await?;
+let root_hash = mtc_verify::parse_hex_hash(&sr.root_hash)?;
+
+// Verify inclusion
+mtc_verify::verify_standalone_inclusion(
+    &leaf_hash, details.entry_index, &proof, &root_hash, algorithm,
+)?;
+println!("Verification passed for {}", details.subject);
+```
+
+## cert_id_from_url
+
+Extracts the certificate ID (the last path segment) from an ACME certificate URL. Returns `None` for empty strings or trailing-slash URLs.
+
+```rust
+use akamu_client::cert_id_from_url;
+
+assert_eq!(cert_id_from_url("https://host/acme/cert/abc123"), Some("abc123"));
+assert_eq!(cert_id_from_url(""), None);
+assert_eq!(cert_id_from_url("https://host/acme/cert/"), None);
+```
+
+## mtc_verify
+
+The `mtc_verify` module provides standalone MTC certificate verification with no I/O coupling.
+
+### Functions
+
+| Function | Description |
+|---|---|
+| `parse_standalone_cert(der) -> (OwnedCert, MtcProof)` | Parse DER into an owned certificate and its embedded MTC proof |
+| `extract_cert_and_proof(der) -> (CertDetails, MtcProof)` | Single-pass parse returning display details and proof (preferred over calling `parse_standalone_cert` + `extract_cert_details` separately) |
+| `extract_cert_details(der) -> CertDetails` | Parse DER into display-oriented certificate details |
+| `split_serial(serial) -> (entry_index, log_number)` | Decompose a serial number into its 48-bit entry index and upper log number |
+| `compute_leaf_hash(der, algorithm) -> Vec<u8>` | Compute the Merkle tree leaf hash for a DER certificate |
+| `verify_standalone_inclusion(leaf_hash, entry_index, proof, root_hash, algorithm)` | Verify an inclusion proof against a root or subtree hash |
+| `proof_sibling_count(proof, algorithm) -> usize` | Count sibling hashes in the inclusion proof |
+| `parse_hex_hash(hex_str) -> Vec<u8>` | Parse a hex-encoded hash string into bytes |
+
+### CertDetails
+
+```rust
+#[derive(Debug, Clone)]
+pub struct CertDetails {
+    pub subject: String,       // RFC 4514 distinguished name
+    pub issuer: String,        // RFC 4514 distinguished name
+    pub not_before: String,    // formatted validity start
+    pub not_after: String,     // formatted validity end
+    pub serial_hex: String,    // hex-encoded serial number
+    pub entry_index: u64,      // lower 48 bits of serial
+    pub log_number: u64,       // upper bits of serial
+    pub sans: Vec<String>,     // formatted SANs (DNS:, IP:, email:, KRB5:, URI:)
+    pub extensions: Vec<ExtensionDetail>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExtensionDetail {
+    pub name: String,          // OID name or numeric OID
+    pub critical: bool,
+    pub value: Option<String>, // human-readable value, if decodable
+}
+```
+
+SAN entries are formatted with type prefixes: `DNS:example.com`, `IP:192.0.2.1`, `email:user@example.com`, `KRB5:user@REALM` (decoded from otherName via `synta-krb5`), `URI:https://...`.
+
 ## ClientError
 
 ```rust
@@ -706,6 +842,7 @@ pub enum ClientError {
     Crypto(String),           // key generation or CSR error
     Io(String),               // I/O error
     Gssapi(String),           // GSSAPI / Kerberos error from akamu-gssapi
+    Mtc(String),              // MTC verification or parsing error
 }
 ```
 

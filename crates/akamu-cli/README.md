@@ -190,6 +190,44 @@ Options:
   --cert-key <FILE>       Certificate's own private key for self-revocation
 ```
 
+### `mtc` subcommands
+
+Query and verify an MTC transparency log (draft-ietf-plants-merkle-tree-certs-05).
+
+```
+akamu-cli mtc <SUBCOMMAND> --server <URL> [--server-ca <PEM>] [--ca <CA_ID>]
+              [--max-response-bytes <BYTES>] [--request-timeout <SECS>]
+```
+
+| Subcommand | Description |
+|---|---|
+| `tree-size` | Print current tree size as JSON |
+| `root` | Print tree size and root hash as JSON |
+| `inclusion-proof` | Fetch Merkle inclusion proof for a certificate |
+| `standalone` | Download a standalone certificate (DER) |
+| `landmark-cert` | Download the landmark certificate covering a cert |
+| `landmarks` | List all landmarks as JSON |
+| `landmark-list` | Print the spec §3.4 landmark list (text/plain) |
+| `consistency-proof` | Verify consistency between two tree sizes |
+| `subtree-root` | Print the subtree root hash for a `[start, end)` range |
+| `revoked-ranges` | Print revoked log entry index ranges |
+| `verify` | Verify a certificate's inclusion proof against the server |
+| `checkpoint` | Print the C2SP tlog-tiles checkpoint (signed-note) |
+
+The `verify` subcommand accepts `--cert-id <UUID>` to fetch the certificate
+from the server, or `--cert-file <PATH>` to verify a local DER file:
+
+```sh
+# Verify by fetching from the server
+akamu-cli mtc verify --server https://acme.example.com \
+  --cert-id ddaf3c89-1da0-4bc0-b2aa-abe634e88dc0
+
+# Verify a local standalone certificate
+akamu-cli mtc verify --server https://acme.example.com \
+  --cert-id ddaf3c89-1da0-4bc0-b2aa-abe634e88dc0 \
+  --cert-file /tmp/cert.der
+```
+
 ### `import certbot`
 
 Import accounts and certificates from an existing certbot installation.
@@ -375,6 +413,28 @@ akamu-cli renew \
 # 5. Deactivate the account when no longer needed.
 akamu-cli account deregister \
   --account-key /etc/akamu/acme.pem
+```
+
+To query and verify an MTC transparency log:
+
+```sh
+# Check tree state
+akamu-cli mtc tree-size --server https://acme.example.com
+akamu-cli mtc root --server https://acme.example.com
+
+# Verify a certificate's inclusion proof
+akamu-cli mtc verify --server https://acme.example.com \
+  --cert-id ddaf3c89-1da0-4bc0-b2aa-abe634e88dc0
+
+# Download and verify a local copy with custom timeout
+akamu-cli mtc standalone --server https://acme.example.com \
+  --cert-id ddaf3c89-1da0-4bc0-b2aa-abe634e88dc0 \
+  --out /tmp/cert.der
+
+akamu-cli mtc verify --server https://acme.example.com \
+  --cert-id ddaf3c89-1da0-4bc0-b2aa-abe634e88dc0 \
+  --cert-file /tmp/cert.der \
+  --request-timeout 60
 ```
 
 To use manual EAB (kid + HMAC key) during registration:

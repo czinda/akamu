@@ -43,7 +43,21 @@ classical and post-quantum (ML-DSA) account keys.
   service name `HTTP@<hostname>` from the URL automatically.  The blocking
   `gss_init_sec_context` FFI call is run via `tokio::task::spawn_blocking`.
 - **`ClientError`** — unified error type wrapping `JoseError`, HTTP errors,
-  ACME problem document errors, crypto errors, I/O errors, and GSSAPI errors.
+  ACME problem document errors, crypto errors, I/O errors, GSSAPI errors, and
+  MTC errors.
+- **`MtcClient`** — async HTTP client for querying an MTC transparency log
+  server.  Fetches tree state, inclusion proofs, standalone certificates,
+  landmarks, consistency proofs, subtree roots, revoked ranges, and C2SP
+  tlog-tiles endpoints.  Configurable response size limits and request
+  timeouts.
+- **`mtc_verify`** module — MTC standalone certificate verification: parsing,
+  leaf hashing, and inclusion proof checks.  Key types: `CertDetails`
+  (parsed certificate metadata including SANs, extensions, serial
+  decomposition into log number + entry index), `ExtensionDetail`.
+- **`cert_id_from_url(url)`** — extract the certificate ID (UUID) from an
+  ACME certificate URL.
+- **`HashAlgorithm`** — re-exported from `synta_mtc::crypto`; used to select
+  the hash function for leaf hashing and proof verification.
 
 ## End-to-end example
 
@@ -255,6 +269,62 @@ accept these strings:
 | `ml-dsa-87` | ML-DSA-87 (post-quantum) |
 
 The JWS `alg` string is inferred automatically from the key material.
+
+## MTC transparency log client
+
+`MtcClient` provides an async HTTP client for querying an MTC transparency log
+server (draft-ietf-plants-merkle-tree-certs-05).
+
+```rust
+use akamu_client::{MtcClient, mtc_verify, HashAlgorithm};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = MtcClient::new("https://acme.example.com")?;
+
+    // Query tree state.
+    let ts = client.tree_size().await?;
+    println!("Tree size: {}", ts.tree_size);
+
+    let root = client.root().await?;
+    println!("Root hash: {}", root.root_hash);
+
+    // Download and verify a standalone certificate.
+    let cert_id = "ddaf3c89-1da0-4bc0-b2aa-abe634e88dc0";
+    let der = client.standalone_cert(cert_id).await?;
+
+    let (details, proof) = mtc_verify::extract_cert_and_proof(&der)?;
+    println!("Subject: {}", details.subject);
+    println!("Serial: log={}, leaf={}", details.log_number, details.entry_index);
+
+    let leaf_hash = mtc_verify::compute_leaf_hash(&der, HashAlgorithm::Sha256)?;
+    let sr = client.subtree_root(proof.start, proof.end).await?;
+    let root_hash = mtc_verify::parse_hex_hash(&sr.root_hash)?;
+
+    mtc_verify::verify_standalone_inclusion(
+        &leaf_hash, details.entry_index, &proof, &root_hash, HashAlgorithm::Sha256,
+    )?;
+    println!("Verification: PASSED");
+    Ok(())
+}
+```
+
+### MtcClient configuration
+
+```rust
+use std::time::Duration;
+
+let mut client = MtcClient::new("https://acme.example.com")?;
+client.set_max_response_bytes(5 * 1024 * 1024);       // 5 MB limit (default: 10 MB)
+client.set_request_timeout(Duration::from_secs(60));   // 60s timeout (default: 30s)
+```
+
+When the server uses a private CA for TLS, load the CA certificate:
+
+```rust
+let pem = std::fs::read("/etc/akamu/ca.cert.pem")?;
+let client = MtcClient::new_with_extra_root("https://acme.example.com", &pem)?;
+```
 
 ## Dependency note — PQC support
 

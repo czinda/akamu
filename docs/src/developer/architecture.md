@@ -34,6 +34,7 @@ graph TB
 
     subgraph artifacts["Issued Artifacts"]
         certchain["X.509 certificate chain<br/>PEM bundle"]
+        mtccert["MTC StandaloneCertificate<br/>DER (when issue_as = mtc)"]
         crlsvc["CRL / OCSP service<br/>(external, referenced by URL)"]
     end
 
@@ -53,6 +54,7 @@ graph TB
     val -->|"TLS ALPN connect"| tlsserver
 
     ca -->|"leaf + CA bundle"| certchain
+    mtc -->|"StandaloneCertificate DER"| mtccert
     ca -->|"revoked serial list"| crlsvc
 ```
 
@@ -108,6 +110,8 @@ graph LR
     SYNTA["synta-certificate"]
     SYNTABASE["synta"]
     SYNTAVERIF["synta-x509-verification"]
+    SYNTAMTC["synta-mtc"]
+    SYNTAKRB["synta-krb5"]
     LDAP["akamu-ldap"]
     GSSAPI["akamu-gssapi"]
     AKAMUCTL["akamuctl"]
@@ -124,6 +128,8 @@ graph LR
     SERVER --> HYPERRUSTLS
     CLIENT --> JOSE
     CLIENT --> SYNTA
+    CLIENT --> SYNTAMTC
+    CLIENT --> SYNTAKRB
     CLIENT --> GSSAPI
     CLIENT --> HYPERRUSTLS
     CLI --> CLIENT
@@ -147,7 +153,7 @@ The server and `akamu-client` both depend directly on `akamu-jose` and `synta-ce
 - `synta-x509-verification` for X.509 certification-path validation (trust anchor resolution, name constraints, key usage checking) used in mTLS client-certificate verification and OCSP response validation.
 - `hyper-rustls` as the HTTPS connector for outbound MTC cosigner requests; paired with `rustls-native-certs` to load the OS root CA store for verifying cosigner TLS certificates.
 
-`akamu-client` uses `akamu-gssapi` for GSSAPI-authenticated ACME requests and `hyper-rustls` for all outbound HTTPS. `akamu-cli` depends only on `akamu-client`. `akamu-cosigner` depends on both `akamu-client` (for ACME EAB bootstrap) and `akamu` itself (to reuse TLS loader helpers and key generation utilities), and uses `native-ossl` directly for crypto operations. `akamuctl` is a standalone admin CLI that depends on `akamu-gssapi` for ccache-based Kerberos login to the `/admin/*` endpoints, on `synta-certificate` for certificate handling, and on `native-ossl` directly; it does not depend on `akamu-client` or `akamu-jose`.
+`akamu-client` uses `akamu-gssapi` for GSSAPI-authenticated ACME requests, `hyper-rustls` for all outbound HTTPS, `synta-mtc` for MTC leaf hashing, inclusion proof verification, and `HashAlgorithm`/`MtcProof` types, and `synta-krb5` for decoding Kerberos principal names in certificate SANs. `akamu-cli` depends only on `akamu-client`. `akamu-cosigner` depends on both `akamu-client` (for ACME EAB bootstrap) and `akamu` itself (to reuse TLS loader helpers and key generation utilities), and uses `native-ossl` directly for crypto operations. `akamuctl` is a standalone admin CLI that depends on `akamu-gssapi` for ccache-based Kerberos login to the `/admin/*` endpoints, on `synta-certificate` for certificate handling, and on `native-ossl` directly; it does not depend on `akamu-client` or `akamu-jose`.
 
 ### Key external dependencies
 

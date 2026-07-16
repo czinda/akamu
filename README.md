@@ -24,7 +24,7 @@ networks or behind a reverse proxy, and works with any standards-compliant ACME 
 - **CAA enforcement** — RFC 8659 + RFC 8657 `accounturi` and `validationmethods` extensions
 - **Subdomain authorization** — RFC 9444 ancestor-domain reuse
 - **IP identifier validation** — RFC 8738 IPv4/IPv6 certificates
-- **Merkle Tree Certificate (MTC) transparency** — append-only on-disk transparency log
+- **Merkle Tree Certificate (MTC) transparency** — append-only on-disk transparency log with client-side query and inclusion proof verification
 - **Optional server TLS + mTLS** — rustls, post-quantum composite client certificates
 - **Certificate profiles** — draft-aaron-acme-profiles-01 named profiles
 - **External Account Binding (EAB)** — single-use HMAC-based account provisioning
@@ -37,8 +37,8 @@ networks or behind a reverse proxy, and works with any standards-compliant ACME 
 |-------|-------------|
 | `akamu` | ACME server binary |
 | `akamu-jose` | JWK / JWS / thumbprint primitives (RFC 7517/7515, ML-DSA) |
-| `akamu-client` | Async ACME client library (tokio + hyper) |
-| `akamu-cli` | Command-line ACME client (`akamu-cli`) |
+| `akamu-client` | Async ACME client library (tokio + hyper) with MTC log query and verification |
+| `akamu-cli` | Command-line ACME client (`akamu-cli`) with MTC transparency log subcommands |
 | `akamu-mtc-validator` | MTC test vector validation tool (draft-ietf-plants-merkle-tree-certs-05 compliance) |
 
 ---

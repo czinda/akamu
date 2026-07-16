@@ -326,3 +326,5 @@ For details on the internal log format, appending algorithm, checkpoint producti
 - [MTC Cosigner Daemon](cosigner.md) — external cosigner binary for independent checkpoint signing
 - [Certificate Downloads and Formats](certificates.md) — MTC standalone certificate download endpoints
 - [Certificate Profiles](profiles.md) — `issue_as = "mtc"` profile configuration for MTC issuance
+- [akamu-client — MtcClient](../client/client-library.md#mtcclient) — Rust client library for querying and verifying MTC logs
+- [akamu-cli — MTC subcommands](../client/cli.md#mtc-subcommands) — command-line tools for MTC log queries and certificate verification

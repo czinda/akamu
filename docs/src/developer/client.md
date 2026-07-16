@@ -17,6 +17,9 @@ For the user-facing command reference, see [akamu-cli — Command Reference](../
 | `crates/akamu-client/src/eab.rs` | `create_eab_jws` — client-side EAB JWS construction (RFC 8555 §7.3.4) |
 | `crates/akamu-client/src/error.rs` | `ClientError` — unified error type |
 | `crates/akamu-client/src/gssapi_eab.rs` | `fetch_eab_via_gssapi`, `GssapiEabResult` — GSSAPI-authenticated EAB credential fetch |
+| `crates/akamu-client/src/mtc_client.rs` | `MtcClient` — async HTTP client for querying an MTC transparency log server |
+| `crates/akamu-client/src/mtc_verify.rs` | MTC standalone certificate verification: parsing, leaf hashing, inclusion proof checks (`CertDetails`, `ExtensionDetail`) |
+| `crates/akamu-client/src/mtc_types.rs` | MTC response types: `TreeSizeResponse`, `RootResponse`, `InclusionProofResponse`, `CertFetchResult`, etc. |
 | `crates/akamu-client/src/onion.rs` | `build_onion_csr` — DER-encoded CSR for onion-csr-01 challenges (RFC 9799) |
 | `crates/akamu-client/src/types.rs` | `Identifier`, `Order`, `Authorization`, `Challenge`, `RenewalConfig`, `AccountOptions`, `EabOptions`, `StarOrderParams`, `StarOrder`, `RenewalInfo` |
 | `crates/akamu-cli/src/import/certbot.rs` | `discover_accounts`, `discover_renewals`, `jwk_to_account_key`, `map_challenge_type`, `build_renewal_config`, `live_cert_paths` |
