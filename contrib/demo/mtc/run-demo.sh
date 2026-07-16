@@ -7,12 +7,11 @@
 #        - ML-DSA-87 CA key (post-quantum)
 #        - ML-DSA-44 MTC signing key (distinct from CA key per MTC §5.5)
 #        - An issue_as="mtc" certificate profile
-#   3. Registers an ACME account and requests a certificate via http-01
-#   4. The server issues an MTC StandaloneCertificate
-#      (draft-ietf-plants-merkle-tree-certs) instead of a standard X.509 PEM chain
-#   5. Inspects the standalone certificate ASN.1 structure
+#   3. Issues 10 MTC StandaloneCertificates for distinct subdomains
+#   4. Shows how the Merkle tree grows with each issuance
+#   5. Inspects the first certificate's ASN.1 structure
 #   6. Queries the MTC transparency log via `akamu-cli mtc` subcommands
-#   7. Verifies the MTC inclusion proof via `akamu-cli mtc verify`
+#   7. Verifies all 10 inclusion proofs via `akamu-cli mtc verify`
 #   8. Cleans up on exit (Ctrl-C or completion)
 #
 # The MTC StandaloneCertificate has:
@@ -39,7 +38,6 @@ set -euo pipefail
 DEMO_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$DEMO_DIR/../../.." && pwd)"
 TESTDIR="${TMPDIR:-/tmp}/akamu-demo-mtc"
-DOMAIN="mtc-demo.localhost"     # .localhost TLD is reserved (RFC 6761), resolves to 127.0.0.1
 AKAMU_PORT=8556                 # Avoids collision with gssapi demo's 8555
 HTTP_CHALLENGE_PORT=5002        # Non-privileged port for http-01 challenge
 AKAMU_CA_ID="default"
@@ -209,62 +207,67 @@ wait_for_port 127.0.0.1 "$AKAMU_PORT" "akamu"
 wait_for_file "$CA_CERT" "CA certificate"
 echo "[demo] akamu ready (pid $AKAMU_PID)"
 
-# ── ACME request ──────────────────────────────────────────────────────────────
+# ── issue 10 certificates ────────────────────────────────────────────────────
 
 ACCOUNT_KEY="$TESTDIR/account.key.pem"
-CERT_OUT="$TESTDIR/demo.cert.der"
-ACME_DIR="https://127.0.0.1:${AKAMU_PORT}/acme/${AKAMU_CA_ID}/directory"
+CERT_COUNT=10
+CERT_IDS=()
+MTC_ARGS=(--server "https://127.0.0.1:${AKAMU_PORT}" --ca "$AKAMU_CA_ID" --server-ca "$CA_CERT")
 
-echo "[demo] Requesting MTC StandaloneCertificate for dns:${DOMAIN} via http-01..."
-echo "[demo]   ACME directory: ${ACME_DIR}"
+echo "[demo] Issuing ${CERT_COUNT} MTC StandaloneCertificates via http-01..."
 echo "[demo]   Profile:        mtc-tls (issue_as = mtc)"
 echo "[demo]   CA key type:    ML-DSA-87"
 echo "[demo]   Cert key type:  ML-DSA-65"
 echo "[demo]   MTC key type:   ML-DSA-44"
 echo
 
-ISSUE_OUTPUT=$("$AKAMU_CLI" issue \
-    --server        "https://127.0.0.1:${AKAMU_PORT}" \
-    --ca            "$AKAMU_CA_ID" \
-    --account-key   "$ACCOUNT_KEY" \
-    --out           "$CERT_OUT" \
-    --cert-key-type ml-dsa-65 \
-    --challenge     http-01 \
-    --http-port     "$HTTP_CHALLENGE_PORT" \
-    --domain        "$DOMAIN" \
-    --server-ca     "$CA_CERT" \
-    --profile       mtc-tls 2>&1)
-echo "$ISSUE_OUTPUT"
+for i in $(seq -w 1 "$CERT_COUNT"); do
+    CERT_SUBDIR="$TESTDIR/cert-$i"
+    mkdir -p "$CERT_SUBDIR"
+    CERT_DOMAIN="cert-${i}.mtc-demo.localhost"
+    CERT_FILE="$CERT_SUBDIR/cert.der"
 
-# Extract cert_id from the certificate URL printed by akamu-cli issue.
-CERT_URL=$(echo "$ISSUE_OUTPUT" | grep 'Certificate URL:' | awk '{print $NF}')
-CERT_ID="${CERT_URL##*/}"
-if [[ -z "$CERT_ID" ]]; then
-    echo "[demo] WARNING: could not extract cert_id from issue output" >&2
-fi
+    echo "[demo] ── Certificate $i/$CERT_COUNT: dns:${CERT_DOMAIN} ──"
 
-# ── display results ──────────────────────────────────────────────────────────
+    ISSUE_OUTPUT=$("$AKAMU_CLI" issue \
+        --server        "https://127.0.0.1:${AKAMU_PORT}" \
+        --ca            "$AKAMU_CA_ID" \
+        --account-key   "$ACCOUNT_KEY" \
+        --out           "$CERT_FILE" \
+        --cert-key-type ml-dsa-65 \
+        --challenge     http-01 \
+        --http-port     "$HTTP_CHALLENGE_PORT" \
+        --domain        "$CERT_DOMAIN" \
+        --server-ca     "$CA_CERT" \
+        --profile       mtc-tls 2>&1)
+
+    CERT_URL=$(echo "$ISSUE_OUTPUT" | grep 'Certificate URL:' | awk '{print $NF}')
+    CERT_ID="${CERT_URL##*/}"
+    CERT_IDS+=("$CERT_ID")
+
+    echo "[demo]   cert_id:   ${CERT_ID}"
+    echo "[demo]   file:      ${CERT_FILE} ($(wc -c < "$CERT_FILE") bytes)"
+    echo
+done
+
+echo "[demo] ================================================"
+echo "[demo] All ${CERT_COUNT} certificates issued."
+echo "[demo] ================================================"
+
+# ── inspect first certificate ────────────────────────────────────────────────
+
+echo
+echo "[demo] Certificate #01 ASN.1 structure:"
+echo
+"$SYNTA_TOOL" cert -v "$TESTDIR/cert-01/cert.der"
+
+# ── query MTC transparency log ───────────────────────────────────────────────
 
 echo
 echo "[demo] ================================================"
-echo "[demo] MTC StandaloneCertificate issued successfully!"
-echo "[demo] Written to: ${CERT_OUT}"
-echo "[demo] File size:  $(wc -c < "$CERT_OUT") bytes (raw DER)"
+echo "[demo] MTC Transparency Log State (after ${CERT_COUNT} issuances)"
 echo "[demo] ================================================"
 echo
-echo "[demo] Certificate structure:"
-echo
-"$SYNTA_TOOL" cert -v "$CERT_OUT"
-
-# ── query MTC transparency log endpoints ─────────────────────────────────────
-
-echo
-echo "[demo] ================================================"
-echo "[demo] MTC Transparency Log State"
-echo "[demo] ================================================"
-echo
-
-MTC_ARGS=(--server "https://127.0.0.1:${AKAMU_PORT}" --ca "$AKAMU_CA_ID" --server-ca "$CA_CERT")
 
 echo "[demo] akamu-cli mtc tree-size"
 "$AKAMU_CLI" mtc tree-size "${MTC_ARGS[@]}"
@@ -282,27 +285,41 @@ echo "[demo] akamu-cli mtc landmarks"
 "$AKAMU_CLI" mtc landmarks "${MTC_ARGS[@]}"
 echo
 
-# ── verify MTC inclusion proof ───────────────────────────────────────────────
+# ── verify all inclusion proofs ──────────────────────────────────────────────
 
-if [[ -n "$CERT_ID" ]]; then
-    echo "[demo] ================================================"
-    echo "[demo] Verifying MTC inclusion proof end-to-end..."
-    echo "[demo]   cert_id: ${CERT_ID}"
-    echo
-    "$AKAMU_CLI" mtc verify "${MTC_ARGS[@]}" --cert-id "$CERT_ID" --cert-file "$CERT_OUT"
-    echo "[demo] ================================================"
-    echo
-fi
+echo "[demo] ================================================"
+echo "[demo] Verifying all ${CERT_COUNT} inclusion proofs..."
+echo "[demo] ================================================"
+echo
+
+VERIFY_PASS=0
+VERIFY_FAIL=0
+for i in $(seq -w 1 "$CERT_COUNT"); do
+    idx=$((10#$i - 1))
+    CID="${CERT_IDS[$idx]}"
+    CFILE="$TESTDIR/cert-$i/cert.der"
+    if "$AKAMU_CLI" mtc verify "${MTC_ARGS[@]}" --cert-id "$CID" --cert-file "$CFILE" 2>&1; then
+        VERIFY_PASS=$((VERIFY_PASS + 1))
+    else
+        echo "[demo]   FAIL: cert-$i (cert_id=$CID)"
+        VERIFY_FAIL=$((VERIFY_FAIL + 1))
+    fi
+done
+
+echo
+echo "[demo] ================================================"
+echo "[demo] Verification: ${VERIFY_PASS} passed, ${VERIFY_FAIL} failed (of ${CERT_COUNT})"
+echo "[demo] ================================================"
 
 # ── done ──────────────────────────────────────────────────────────────────────
 
-echo "[demo] ================================================"
-echo "[demo] Tip: inspect the certificate with:"
-echo "[demo]   ${SYNTA_TOOL} cert -v ${CERT_OUT}"
+echo
+echo "[demo] Tip: inspect any certificate with:"
+echo "[demo]   ${SYNTA_TOOL} cert -v ${TESTDIR}/cert-01/cert.der"
 echo
 echo "[demo] Tip: query the MTC log while running in --interactive mode:"
 echo "[demo]   ${AKAMU_CLI} mtc root ${MTC_ARGS[*]}"
-echo "[demo]   ${AKAMU_CLI} mtc verify ${MTC_ARGS[*]} --cert-id <CERT_ID>"
+echo "[demo]   ${AKAMU_CLI} mtc verify ${MTC_ARGS[*]} --cert-id <CERT_ID> --cert-file <FILE>"
 echo "[demo] ================================================"
 echo
 if $INTERACTIVE; then
