@@ -115,7 +115,7 @@ The CSR must:
 - Contain a SubjectAlternativeName extension listing exactly the identifiers from the order (no more, no fewer).
 - Not assert `cA=TRUE` in BasicConstraints.
 
-The server validates the CSR and immediately issues the certificate. On success, the order status changes to `valid` and the response includes the `certificate` field:
+The server validates the CSR and immediately issues the certificate. The issued artifact is a standard X.509 PEM chain by default; when the resolved profile sets `issue_as = "mtc"`, a Merkle Tree Certificate `StandaloneCertificate` is issued instead — see [Certificates](certificates.md) for download format details. On success, the order status changes to `valid` and the response includes the `certificate` field:
 
 ```json
 {
