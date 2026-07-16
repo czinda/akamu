@@ -97,6 +97,8 @@ Key fields to verify:
 - **Extended Key Usage**: `TLS Web Server Authentication`.
 - **Validity**: 90 days from issuance (default; adjustable via `validity_days`).
 
+> **MTC certificates:** The steps above issue standard X.509 certificates. When a certificate profile sets `issue_as = "mtc"`, Akāmu issues a Merkle Tree Certificate `StandaloneCertificate` instead. See [Certificate Profiles](../user/profiles.md) and the [MTC section](../user/mtc.md) for configuration and verification details.
+
 ## Renewal
 
 Both clients support automatic renewal. They check the certificate expiry and renew when less than 30 days remain.
