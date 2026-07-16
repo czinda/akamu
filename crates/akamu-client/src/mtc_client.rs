@@ -51,8 +51,13 @@ impl std::fmt::Debug for MtcClient {
 
 fn mtc_base_from_directory(directory_url: &str) -> String {
     let url = directory_url.trim_end_matches('/');
-    let prefix = url.strip_suffix("/directory").unwrap_or(url);
-    format!("{prefix}/mtc")
+    if let Some(prefix) = url.strip_suffix("/directory") {
+        format!("{prefix}/mtc")
+    } else if url.ends_with("/acme") {
+        format!("{url}/mtc")
+    } else {
+        format!("{url}/acme/mtc")
+    }
 }
 
 pub fn cert_id_from_url(cert_url: &str) -> Option<&str> {
@@ -374,6 +379,14 @@ mod tests {
         assert_eq!(
             mtc_base_from_directory("https://host/acme"),
             "https://host/acme/mtc"
+        );
+    }
+
+    #[test]
+    fn mtc_base_bare_url() {
+        assert_eq!(
+            mtc_base_from_directory("https://host:8556"),
+            "https://host:8556/acme/mtc"
         );
     }
 
