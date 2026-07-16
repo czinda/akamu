@@ -98,6 +98,7 @@ dependencies = [
  "serde_json",
  "synta",
  "synta-certificate",
+ "synta-krb5",
  "synta-mtc",
  "thiserror 2.0.18",
  "tokio",
@@ -2814,6 +2815,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "synta-krb5"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1b447875f104864a4e4c401a75daeb66705d7f7352a396172dfdad513e21919"
+dependencies = [
+ "synta",
+ "synta-codegen",
+ "synta-derive",
 ]
 
 [[package]]
