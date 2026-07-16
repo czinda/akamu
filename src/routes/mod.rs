@@ -147,203 +147,113 @@ async fn halt_check(
     next.run(req).await
 }
 
-/// Build the unified axum router: ACME, admin API, and optional web UI.
+/// Register a route on both `/acme/{path}` (legacy) and `/acme/{ca_id}/{path}` (per-CA).
 ///
-/// When `static_dir` is `Some`, serves the PatternFly SPA from `/ui/*` and
-/// redirects `GET /` to `/ui/`.  Admin routes intentionally bypass `halt_check`
-/// so operators can query status even when the ACME listener is halted.
-pub fn build_router(state: Arc<AppState>, static_dir: Option<&std::path::Path>) -> Router {
-    // max_body_bytes = 0 means "use the 2 MiB default".
-    // Never disable the limit entirely — that would allow unbounded request bodies.
-    let max_body = state.config.server.max_body_bytes;
+/// Axum resolves static segments before dynamic ones, so `/acme/directory`
+/// is unambiguous vs `/acme/{ca_id}/directory`.  Config validation ensures
+/// no CA ID matches a reserved ACME path segment.
+fn dual_acme_route(
+    router: Router<Arc<AppState>>,
+    path: &str,
+    handler: axum::routing::MethodRouter<Arc<AppState>>,
+) -> Router<Arc<AppState>> {
+    router
+        .route(&format!("/acme/{path}"), handler.clone())
+        .route(&format!("/acme/{{ca_id}}/{path}"), handler)
+}
 
-    // ACME routes: subject to FAU_STG.4 halt_check middleware.
-    let acme_router = Router::new()
-        // Directory
-        .route("/acme/directory", get(directory::get_directory))
-        // Nonces
-        .route("/acme/new-nonce", head(nonce::new_nonce_head))
-        .route("/acme/new-nonce", get(nonce::new_nonce_get))
-        // Accounts
-        .route("/acme/new-account", post(account::new_account))
-        .route("/acme/account/{id}", post(account::update_account))
-        // Orders
-        .route("/acme/new-order", post(order::new_order))
-        .route("/acme/order/{id}", post(order::get_order))
-        .route("/acme/order/{id}/finalize", post(finalize::finalize_order))
-        // Delegations (RFC 9115)
-        .route(
-            "/acme/delegations/{account_id}",
-            post(delegation::list_delegations),
-        )
-        .route("/acme/delegation/{id}", post(delegation::get_delegation))
-        // Authorizations
-        .route("/acme/new-authz", post(authz::new_authz))
-        .route("/acme/authz/{id}", post(authz::get_authz))
-        // Challenges
-        .route(
-            "/acme/chall/{authz_id}/{type}",
-            post(challenge::respond_challenge),
-        )
-        // Certificates
-        .route(
-            "/acme/cert/{id}",
-            get(certificate::download_cert).post(certificate::download_cert_post),
-        )
-        // STAR rolling certificate URL (RFC 8739 §3.3)
-        .route(
-            "/acme/cert/star/{order_id}",
-            get(star_cert::star_cert_get).post(star_cert::star_cert_post),
-        )
-        // Revocation
-        .route("/acme/revoke-cert", post(revoke::revoke_cert))
-        // Key change
-        .route("/acme/key-change", post(key_change::key_change))
-        // Renewal Info (RFC 9773 ARI)
-        .route(
-            "/acme/renewal-info/{cert_id}",
-            get(renewal_info::get_renewal_info),
-        )
-        // MTC log state (read-only; 404 when MTC is disabled)
-        .route("/acme/mtc/tree-size", get(mtc::get_tree_size))
-        .route("/acme/mtc/root", get(mtc::get_root))
-        .route(
-            "/acme/mtc/inclusion-proof/{cert_id}",
-            get(mtc::get_inclusion_proof),
-        )
-        .route(
-            "/acme/mtc/cert/{cert_id}/standalone",
-            get(mtc::get_standalone),
-        )
-        .route(
-            "/acme/mtc/cert/{cert_id}/landmark",
-            get(mtc::get_landmark_for_cert),
-        )
-        .route("/acme/mtc/landmarks", get(mtc::get_landmarks))
-        .route("/acme/mtc/landmark-list", get(mtc::get_landmark_list))
-        .route(
-            "/acme/mtc/landmarks/{seq}/cert",
-            get(mtc::get_landmark_cert),
-        )
-        // C2SP tlog-tiles API
-        .route("/acme/mtc/tlog/checkpoint", get(mtc::get_tlog_checkpoint))
-        .route("/acme/mtc/tlog/cosignature", get(mtc::get_tlog_cosignature))
-        .route("/acme/mtc/tlog/tile/{*path}", get(mtc::get_tlog_tile))
-        // Consistency proof for monitors
-        .route(
-            "/acme/mtc/consistency-proof",
-            get(mtc::get_consistency_proof),
-        )
-        // Subtree root hash
-        .route("/acme/mtc/subtree-root", get(mtc::get_subtree_root))
-        // Revoked ranges
-        .route("/acme/mtc/revoked-ranges", get(mtc::get_revoked_ranges))
-        // EAB identity — returns authenticated principal (proxy header or GSSAPI)
-        .route("/acme/eab", get(eab_identity::get_eab_identity))
-        .layer(axum::middleware::from_fn_with_state(
-            Arc::clone(&state),
-            halt_check,
-        ));
+/// ACME protocol routes (both legacy and per-CA), with FAU_STG.4 halt_check.
+fn build_acme_router(state: &Arc<AppState>) -> Router<Arc<AppState>> {
+    let mut r = Router::new();
+    // Directory
+    r = dual_acme_route(r, "directory", get(directory::get_directory));
+    // Nonces
+    r = dual_acme_route(r, "new-nonce", head(nonce::new_nonce_head));
+    r = dual_acme_route(r, "new-nonce", get(nonce::new_nonce_get));
+    // Accounts
+    r = dual_acme_route(r, "new-account", post(account::new_account));
+    r = dual_acme_route(r, "account/{id}", post(account::update_account));
+    // Orders
+    r = dual_acme_route(r, "new-order", post(order::new_order));
+    r = dual_acme_route(r, "order/{id}", post(order::get_order));
+    r = dual_acme_route(r, "order/{id}/finalize", post(finalize::finalize_order));
+    // Delegations (RFC 9115)
+    r = dual_acme_route(
+        r,
+        "delegations/{account_id}",
+        post(delegation::list_delegations),
+    );
+    r = dual_acme_route(r, "delegation/{id}", post(delegation::get_delegation));
+    // Authorizations
+    r = dual_acme_route(r, "new-authz", post(authz::new_authz));
+    r = dual_acme_route(r, "authz/{id}", post(authz::get_authz));
+    // Challenges
+    r = dual_acme_route(
+        r,
+        "chall/{authz_id}/{type}",
+        post(challenge::respond_challenge),
+    );
+    // Certificates
+    r = dual_acme_route(
+        r,
+        "cert/{id}",
+        get(certificate::download_cert).post(certificate::download_cert_post),
+    );
+    // STAR rolling certificate URL (RFC 8739 §3.3)
+    r = dual_acme_route(
+        r,
+        "cert/star/{order_id}",
+        get(star_cert::star_cert_get).post(star_cert::star_cert_post),
+    );
+    // Revocation
+    r = dual_acme_route(r, "revoke-cert", post(revoke::revoke_cert));
+    // Key change
+    r = dual_acme_route(r, "key-change", post(key_change::key_change));
+    // Renewal Info (RFC 9773 ARI)
+    r = dual_acme_route(
+        r,
+        "renewal-info/{cert_id}",
+        get(renewal_info::get_renewal_info),
+    );
+    // MTC log state (read-only; 404 when MTC is disabled)
+    r = dual_acme_route(r, "mtc/tree-size", get(mtc::get_tree_size));
+    r = dual_acme_route(r, "mtc/root", get(mtc::get_root));
+    r = dual_acme_route(
+        r,
+        "mtc/inclusion-proof/{cert_id}",
+        get(mtc::get_inclusion_proof),
+    );
+    r = dual_acme_route(r, "mtc/cert/{cert_id}/standalone", get(mtc::get_standalone));
+    r = dual_acme_route(
+        r,
+        "mtc/cert/{cert_id}/landmark",
+        get(mtc::get_landmark_for_cert),
+    );
+    r = dual_acme_route(r, "mtc/landmarks", get(mtc::get_landmarks));
+    r = dual_acme_route(r, "mtc/landmark-list", get(mtc::get_landmark_list));
+    r = dual_acme_route(r, "mtc/landmarks/{seq}/cert", get(mtc::get_landmark_cert));
+    // C2SP tlog-tiles API
+    r = dual_acme_route(r, "mtc/tlog/checkpoint", get(mtc::get_tlog_checkpoint));
+    r = dual_acme_route(r, "mtc/tlog/cosignature", get(mtc::get_tlog_cosignature));
+    r = dual_acme_route(r, "mtc/tlog/tile/{*path}", get(mtc::get_tlog_tile));
+    // Consistency proof for monitors
+    r = dual_acme_route(r, "mtc/consistency-proof", get(mtc::get_consistency_proof));
+    // Subtree root hash
+    r = dual_acme_route(r, "mtc/subtree-root", get(mtc::get_subtree_root));
+    // Revoked ranges
+    r = dual_acme_route(r, "mtc/revoked-ranges", get(mtc::get_revoked_ranges));
+    // EAB identity — legacy-only (no per-CA counterpart)
+    r = r.route("/acme/eab", get(eab_identity::get_eab_identity));
 
-    // Per-CA ACME routes: same handlers as above but with {ca_id} prefix.
-    // Axum resolves static segments before dynamic ones, so `/acme/directory`
-    // (legacy) is unambiguous vs `/acme/{ca_id}/directory`.  Config validation
-    // ensures no CA ID matches a reserved ACME path segment.
-    let per_ca_acme_router = Router::new()
-        .route("/acme/{ca_id}/directory", get(directory::get_directory))
-        .route("/acme/{ca_id}/new-nonce", head(nonce::new_nonce_head))
-        .route("/acme/{ca_id}/new-nonce", get(nonce::new_nonce_get))
-        .route("/acme/{ca_id}/new-account", post(account::new_account))
-        .route("/acme/{ca_id}/account/{id}", post(account::update_account))
-        .route("/acme/{ca_id}/new-order", post(order::new_order))
-        .route("/acme/{ca_id}/order/{id}", post(order::get_order))
-        .route(
-            "/acme/{ca_id}/order/{id}/finalize",
-            post(finalize::finalize_order),
-        )
-        // Delegations (RFC 9115)
-        .route(
-            "/acme/{ca_id}/delegations/{account_id}",
-            post(delegation::list_delegations),
-        )
-        .route(
-            "/acme/{ca_id}/delegation/{id}",
-            post(delegation::get_delegation),
-        )
-        .route("/acme/{ca_id}/new-authz", post(authz::new_authz))
-        .route("/acme/{ca_id}/authz/{id}", post(authz::get_authz))
-        .route(
-            "/acme/{ca_id}/chall/{authz_id}/{type}",
-            post(challenge::respond_challenge),
-        )
-        .route(
-            "/acme/{ca_id}/cert/{id}",
-            get(certificate::download_cert).post(certificate::download_cert_post),
-        )
-        .route(
-            "/acme/{ca_id}/cert/star/{order_id}",
-            get(star_cert::star_cert_get).post(star_cert::star_cert_post),
-        )
-        .route("/acme/{ca_id}/revoke-cert", post(revoke::revoke_cert))
-        .route("/acme/{ca_id}/key-change", post(key_change::key_change))
-        .route(
-            "/acme/{ca_id}/renewal-info/{cert_id}",
-            get(renewal_info::get_renewal_info),
-        )
-        // Per-CA MTC endpoints
-        .route("/acme/{ca_id}/mtc/tree-size", get(mtc::get_tree_size))
-        .route("/acme/{ca_id}/mtc/root", get(mtc::get_root))
-        .route(
-            "/acme/{ca_id}/mtc/inclusion-proof/{cert_id}",
-            get(mtc::get_inclusion_proof),
-        )
-        .route(
-            "/acme/{ca_id}/mtc/cert/{cert_id}/standalone",
-            get(mtc::get_standalone),
-        )
-        .route(
-            "/acme/{ca_id}/mtc/cert/{cert_id}/landmark",
-            get(mtc::get_landmark_for_cert),
-        )
-        .route("/acme/{ca_id}/mtc/landmarks", get(mtc::get_landmarks))
-        .route(
-            "/acme/{ca_id}/mtc/landmark-list",
-            get(mtc::get_landmark_list),
-        )
-        .route(
-            "/acme/{ca_id}/mtc/landmarks/{seq}/cert",
-            get(mtc::get_landmark_cert),
-        )
-        .route(
-            "/acme/{ca_id}/mtc/tlog/checkpoint",
-            get(mtc::get_tlog_checkpoint),
-        )
-        .route(
-            "/acme/{ca_id}/mtc/tlog/cosignature",
-            get(mtc::get_tlog_cosignature),
-        )
-        .route(
-            "/acme/{ca_id}/mtc/tlog/tile/{*path}",
-            get(mtc::get_tlog_tile),
-        )
-        .route(
-            "/acme/{ca_id}/mtc/consistency-proof",
-            get(mtc::get_consistency_proof),
-        )
-        .route("/acme/{ca_id}/mtc/subtree-root", get(mtc::get_subtree_root))
-        .route(
-            "/acme/{ca_id}/mtc/revoked-ranges",
-            get(mtc::get_revoked_ranges),
-        )
-        .layer(axum::middleware::from_fn_with_state(
-            Arc::clone(&state),
-            halt_check,
-        ));
+    r.layer(axum::middleware::from_fn_with_state(
+        Arc::clone(state),
+        halt_check,
+    ))
+}
 
-    // Non-ACME routes: CRL/OCSP/cross-certs (public, read-only), provider
-    // webhooks, and inter-node gossip sync.  Admin routes are served on the
-    // dedicated admin listener; they are not registered here.
-    let other_router = Router::new()
+/// Non-ACME public routes: CRL/OCSP/cross-certs, email webhook, gossip sync.
+fn build_other_router() -> Router<Arc<AppState>> {
+    Router::new()
         // RFC 8823 email-reply-00 webhook — HMAC-authenticated, not JWS-authenticated.
         // Body is capped at 64 KiB; legitimate payloads are a few KiB.
         // halt_check exemption is documented in src/routes/email_webhook.rs.
@@ -364,10 +274,12 @@ pub fn build_router(state: Arc<AppState>, static_dir: Option<&std::path::Path>) 
         .route("/ca/{ca_id}/cross-certs", get(crl::get_cross_certs))
         // Inter-node gossip sync (C-3): on the public listener; authentication is
         // provided by the CMS SignedData wrapper (ECDSA P-256 with pinned peer cert).
-        .route("/gossip/sync", post(crate::gossip::handlers::gossip_sync));
+        .route("/gossip/sync", post(crate::gossip::handlers::gossip_sync))
+}
 
-    // Admin routes: bypass halt_check; auth enforced per-handler via OperatorContext.
-    let admin_router = Router::new()
+/// Admin API routes (bypass halt_check; auth enforced per-handler via OperatorContext).
+fn build_admin_router() -> Router<Arc<AppState>> {
+    Router::new()
         .route(
             "/admin/session",
             post(crate::admin::auth::post_session).delete(crate::admin::auth::delete_session),
@@ -463,6 +375,60 @@ pub fn build_router(state: Arc<AppState>, static_dir: Option<&std::path::Path>) 
             "/admin/cross-certs/{id}",
             axum::routing::get(admin::get_cross_cert),
         )
+        // ── MTC transparency log ──────────────────────────────────────────
+        .route(
+            "/admin/mtc/tree-size",
+            axum::routing::get(admin::get_mtc_tree_size),
+        )
+        .route("/admin/mtc/root", axum::routing::get(admin::get_mtc_root))
+        .route(
+            "/admin/mtc/landmarks",
+            axum::routing::get(admin::get_mtc_landmarks),
+        )
+        .route(
+            "/admin/mtc/landmark-list",
+            axum::routing::get(admin::get_mtc_landmark_list),
+        )
+        .route(
+            "/admin/mtc/inclusion-proof/{cert_id}",
+            axum::routing::get(admin::get_mtc_inclusion_proof),
+        )
+        .route(
+            "/admin/mtc/standalone/{cert_id}",
+            axum::routing::get(admin::get_mtc_standalone),
+        )
+        .route(
+            "/admin/mtc/landmarks/{seq}/cert",
+            axum::routing::get(admin::get_mtc_landmark_cert),
+        )
+        .route(
+            "/admin/mtc/consistency-proof",
+            axum::routing::get(admin::get_mtc_consistency_proof),
+        )
+        .route(
+            "/admin/mtc/subtree-root",
+            axum::routing::get(admin::get_mtc_subtree_root),
+        )
+        .route(
+            "/admin/mtc/revoked-ranges",
+            axum::routing::get(admin::get_mtc_revoked_ranges),
+        )
+        .route(
+            "/admin/mtc/checkpoint",
+            axum::routing::get(admin::get_mtc_checkpoint),
+        )
+        .route(
+            "/admin/mtc/cosignature",
+            axum::routing::get(admin::get_mtc_cosignature),
+        )
+        .route(
+            "/admin/ca/{id}/mtc/force-checkpoint",
+            post(admin::post_mtc_force_checkpoint),
+        )
+        .route(
+            "/admin/ca/{id}/mtc/force-landmark",
+            post(admin::post_mtc_force_landmark),
+        )
         .route(
             "/admin/gossip/status",
             axum::routing::get(crate::gossip::handlers::gossip_status),
@@ -472,20 +438,27 @@ pub fn build_router(state: Arc<AppState>, static_dir: Option<&std::path::Path>) 
         .route(
             "/admin/gossip/register",
             post(crate::gossip::handlers::gossip_register),
-        );
+        )
+}
+
+/// Build the unified axum router: ACME, admin API, and optional web UI.
+///
+/// When `static_dir` is `Some`, serves the PatternFly SPA from `/ui/*` and
+/// redirects `GET /` to `/ui/`.  Admin routes intentionally bypass `halt_check`
+/// so operators can query status even when the ACME listener is halted.
+pub fn build_router(state: Arc<AppState>, static_dir: Option<&std::path::Path>) -> Router {
+    let max_body = state.config.server.max_body_bytes;
 
     let mut router = Router::new()
-        .merge(acme_router)
-        .merge(per_ca_acme_router)
-        .merge(other_router)
-        .merge(admin_router);
+        .merge(build_acme_router(&state))
+        .merge(build_other_router())
+        .merge(build_admin_router());
 
     if let Some(dir) = static_dir {
         let index = ServeFile::new(dir.join("index.html"));
         let serve = ServeDir::new(dir)
             .append_index_html_on_directories(true)
             .fallback(index);
-        // Wrap static file service with security headers.
         let serve_with_headers = tower::ServiceBuilder::new()
             .layer(axum::middleware::from_fn(ui_security_headers))
             .service(serve);

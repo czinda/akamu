@@ -221,7 +221,7 @@ impl AdminClient {
             resp
         };
 
-        let body: Value = serde_json::from_str(&session_resp.body)
+        let body: Value = serde_json::from_str(&session_resp.body_text())
             .map_err(|e| CtlError::Api(format!("session JSON: {e}")))?;
         let token = body["session_token"]
             .as_str()
@@ -285,7 +285,7 @@ impl AdminClient {
     pub async fn get(&self, path: &str) -> Result<Value, CtlError> {
         let resp = self.authed(Method::GET, path, None).await?;
         check_status(&resp)?;
-        parse_json(&resp.body)
+        parse_json(&resp.body_text())
     }
 
     /// Make an authenticated GET request; returns the raw response body as text.
@@ -294,7 +294,31 @@ impl AdminClient {
     pub async fn get_text(&self, path: &str) -> Result<String, CtlError> {
         let resp = self.authed(Method::GET, path, None).await?;
         check_status(&resp)?;
-        Ok(resp.body)
+        Ok(resp.body_text())
+    }
+
+    /// Make an authenticated GET request; returns raw bytes.
+    ///
+    /// Use this for endpoints that return binary content (e.g. DER certificates).
+    pub async fn get_bytes(&self, path: &str) -> Result<Vec<u8>, CtlError> {
+        let resp = self.authed(Method::GET, path, None).await?;
+        check_status(&resp)?;
+        Ok(resp.raw_bytes)
+    }
+
+    /// Make an authenticated POST request with no body; ignores the response.
+    ///
+    /// Use this for action endpoints that return 204 No Content.
+    pub async fn post_action(&self, path: &str) -> Result<(), CtlError> {
+        let resp = self.authed(Method::POST, path, None).await?;
+        if resp.status == StatusCode::NO_CONTENT || resp.status.is_success() {
+            return Ok(());
+        }
+        Err(CtlError::Api(format!(
+            "POST {path} returned {}: {}",
+            resp.status,
+            resp.body_text()
+        )))
     }
 
     /// Make an authenticated POST request with optional JSON body.
@@ -302,7 +326,7 @@ impl AdminClient {
         let body_str = body.map(|v| v.to_string());
         let resp = self.authed(Method::POST, path, body_str.as_deref()).await?;
         check_status(&resp)?;
-        parse_json(&resp.body)
+        parse_json(&resp.body_text())
     }
 
     /// Make an authenticated PUT request with JSON body.
@@ -310,7 +334,7 @@ impl AdminClient {
         let body_str = body.to_string();
         let resp = self.authed(Method::PUT, path, Some(&body_str)).await?;
         check_status(&resp)?;
-        parse_json(&resp.body)
+        parse_json(&resp.body_text())
     }
 
     /// Make an authenticated DELETE request.
@@ -321,7 +345,8 @@ impl AdminClient {
         }
         Err(CtlError::Api(format!(
             "DELETE {path} returned {}: {}",
-            resp.status, resp.body
+            resp.status,
+            resp.body_text()
         )))
     }
 
@@ -330,7 +355,7 @@ impl AdminClient {
         let body_str = body.to_string();
         let resp = self.authed(Method::PATCH, path, Some(&body_str)).await?;
         check_status(&resp)?;
-        parse_json(&resp.body)
+        parse_json(&resp.body_text())
     }
 
     /// Invalidate the local session cache entry.
@@ -401,10 +426,9 @@ impl AdminClient {
             .get("www-authenticate")
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
-        let body = String::from_utf8_lossy(&resp_bytes).into_owned();
         Ok(RawResponse {
             status,
-            body,
+            raw_bytes: resp_bytes,
             www_authenticate,
         })
     }
@@ -412,8 +436,14 @@ impl AdminClient {
 
 struct RawResponse {
     status: StatusCode,
-    body: String,
+    raw_bytes: Vec<u8>,
     www_authenticate: Option<String>,
+}
+
+impl RawResponse {
+    fn body_text(&self) -> String {
+        String::from_utf8_lossy(&self.raw_bytes).into_owned()
+    }
 }
 
 fn check_status(resp: &RawResponse) -> Result<(), CtlError> {
@@ -422,7 +452,8 @@ fn check_status(resp: &RawResponse) -> Result<(), CtlError> {
     }
     Err(CtlError::Api(format!(
         "HTTP {}: {}",
-        resp.status, resp.body
+        resp.status,
+        resp.body_text()
     )))
 }
 

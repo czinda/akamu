@@ -5,513 +5,24 @@
 //! Config file: `~/.config/akamu/akamuctl.toml`
 //! Session cache: `~/.config/akamu/session.json`
 
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use clap::{Parser, Subcommand};
+use clap::Parser;
 
+mod cli;
 mod client;
 mod commands;
 mod config;
+mod dns;
 mod error;
 mod output;
 
+use cli::*;
 use client::AdminClient;
 use config::{Config, SessionCache};
+pub(crate) use dns::derive_spn;
 use error::CtlError;
 use output::Format;
-
-#[derive(Parser)]
-#[command(name = "akamuctl", about = "akamu server administration CLI")]
-struct Cli {
-    /// Path to akamuctl.toml config file.
-    #[arg(long, short = 'c', value_name = "FILE")]
-    config: Option<PathBuf>,
-
-    /// Server admin URL (overrides config).
-    #[arg(long, value_name = "URL")]
-    server_url: Option<String>,
-
-    /// CA certificate for server TLS verification.
-    #[arg(long, value_name = "FILE")]
-    ca_cert: Option<PathBuf>,
-
-    /// mTLS client certificate file.
-    #[arg(long, value_name = "FILE")]
-    cert: Option<PathBuf>,
-
-    /// mTLS client private key file.
-    #[arg(long, value_name = "FILE")]
-    key: Option<PathBuf>,
-
-    /// Output format: `table` (default) or `json`.
-    #[arg(long, short = 'o', default_value = "table")]
-    output: String,
-
-    #[command(subcommand)]
-    command: Commands,
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    /// Authenticate and cache session token.
-    Login {
-        /// Use GSSAPI/Kerberos (Negotiate) instead of mTLS.
-        /// The service principal is taken from `[server].gssapi_service` in the
-        /// config, or derived automatically as `HTTP@<hostname>` from the server URL.
-        /// Requires a valid Kerberos TGT in the ccache (run kinit first).
-        #[arg(long)]
-        gssapi: bool,
-    },
-    /// Invalidate current session token.
-    Logout,
-    /// Print server and cosigner statistics.
-    Stats,
-    /// Query audit events.
-    Audit {
-        /// Filter by event type (e.g. cert.issue).
-        #[arg(long)]
-        r#type: Option<String>,
-        /// Filter by subject (JWK thumbprint, serial, account UUID).
-        #[arg(long)]
-        subject: Option<String>,
-        /// Filter from this RFC 3339 timestamp.
-        #[arg(long)]
-        from: Option<String>,
-        /// Filter until this RFC 3339 timestamp.
-        #[arg(long)]
-        until: Option<String>,
-        /// Filter by outcome: `success` or `failure`.
-        #[arg(long)]
-        outcome: Option<String>,
-        /// Maximum number of results (default 100).
-        #[arg(long, default_value = "100")]
-        limit: u32,
-        /// Offset for pagination (default 0).
-        #[arg(long, default_value = "0")]
-        offset: u32,
-    },
-    /// Manage operators.
-    #[command(subcommand)]
-    Operator(OperatorCmd),
-    /// Manage EAB keys.
-    #[command(subcommand)]
-    Eab(EabCmd),
-    /// Manage certificates.
-    #[command(subcommand)]
-    Cert(CertCmd),
-    /// Manage accounts.
-    #[command(subcommand)]
-    Account(AccountCmd),
-    /// Manage certificate profiles.
-    #[command(subcommand)]
-    Profile(ProfileCmd),
-    /// Manage orders.
-    #[command(subcommand)]
-    Order(OrderCmd),
-    /// Show redacted server configuration.
-    ServerConfig,
-    /// Revoke a certificate.
-    Revoke {
-        /// Certificate ID to revoke.
-        cert_id: String,
-        /// Revocation reason code (default 0 = unspecified).
-        #[arg(long, default_value = "0")]
-        reason: u8,
-    },
-    /// Force immediate CRL regeneration.
-    CrlForce,
-    /// Show cached session identity.
-    Whoami,
-    /// Cosigner administration.
-    #[command(subcommand)]
-    Cosigner(CosignerCmd),
-    /// Configuration utilities.
-    #[command(subcommand)]
-    Config(ConfigCmd),
-    /// Manage CAs (list, show, cert, crl-force, cross-sign).
-    #[command(subcommand)]
-    Ca(CaCmd),
-    /// Manage cross-certificates.
-    #[command(subcommand)]
-    CrossCert(CrossCertCmd),
-    /// Manage RFC 9115 delegation objects.
-    #[command(subcommand)]
-    Delegation(DelegationCmd),
-    /// RFC 9447 authority token administration.
-    #[command(subcommand)]
-    Tkauth(TkauthCmd),
-    /// Generate shell completions.
-    Completions {
-        /// Shell to generate completions for.
-        shell: clap_complete::Shell,
-    },
-}
-
-#[derive(Subcommand)]
-enum TkauthCmd {
-    /// Delete expired entries from the JTI replay-prevention cache.
-    PruneJti {
-        /// Print the count of expired entries without deleting them.
-        #[arg(long)]
-        dry_run: bool,
-    },
-}
-
-#[derive(Subcommand)]
-enum ConfigCmd {
-    /// Print an annotated example akamuctl.toml to stdout.
-    ///
-    /// Redirect to a file as a starting point:
-    ///   akamuctl config generate > ~/.config/akamu/akamuctl.toml
-    Generate,
-    /// Validate the configuration file.
-    Validate,
-}
-
-#[derive(Subcommand)]
-enum OperatorCmd {
-    /// List all operators.
-    List,
-    /// Show an operator's details.
-    Show {
-        /// Operator ID.
-        id: i64,
-    },
-    /// Add a new operator.
-    Add {
-        #[arg(long)]
-        name: String,
-        #[arg(long)]
-        role: String,
-        /// Path to operator's client certificate (for fingerprint extraction).
-        #[arg(long, value_name = "FILE")]
-        cert_file: Option<PathBuf>,
-        /// GSSAPI Kerberos principal.
-        #[arg(long)]
-        gssapi_principal: Option<String>,
-    },
-    /// Update an operator's fields.
-    Update {
-        /// Operator ID.
-        id: i64,
-        #[arg(long)]
-        name: Option<String>,
-        #[arg(long)]
-        role: Option<String>,
-        /// Path to operator's client certificate (for fingerprint extraction).
-        #[arg(long, value_name = "FILE")]
-        cert_file: Option<PathBuf>,
-        /// GSSAPI Kerberos principal.
-        #[arg(long)]
-        gssapi_principal: Option<String>,
-    },
-    /// Deactivate an operator.
-    Remove {
-        /// Operator ID.
-        id: i64,
-    },
-    /// Re-activate a previously deactivated operator.
-    Activate {
-        /// Operator ID.
-        id: i64,
-    },
-    /// Unlock a locked operator (reset failed auth counter).
-    Unlock {
-        /// Operator ID.
-        id: i64,
-    },
-}
-
-#[derive(Subcommand)]
-enum EabCmd {
-    /// List EAB keys.
-    List {
-        #[arg(long)]
-        used: bool,
-        #[arg(long)]
-        unused: bool,
-    },
-    /// Show an EAB key's details.
-    Show { kid: String },
-    /// Provision a new EAB key.
-    Add {
-        #[arg(long)]
-        kid: Option<String>,
-        #[arg(long)]
-        hmac_key: Option<String>,
-        #[arg(long = "profile", value_name = "PROFILE")]
-        profiles: Vec<String>,
-    },
-    /// Deactivate an EAB key.
-    Remove { kid: String },
-}
-
-#[derive(Subcommand)]
-enum CertCmd {
-    /// List certificates.
-    List {
-        #[arg(long)]
-        serial: Option<String>,
-        #[arg(long)]
-        subject: Option<String>,
-        #[arg(long)]
-        after: Option<String>,
-        #[arg(long)]
-        before: Option<String>,
-        #[arg(long)]
-        status: Option<String>,
-        /// Filter by CA identifier.
-        #[arg(long, value_name = "CA_ID")]
-        ca: Option<String>,
-        #[arg(long, default_value = "20")]
-        limit: u32,
-        #[arg(long, default_value = "0")]
-        offset: u32,
-    },
-    /// Show a certificate's metadata.
-    Show {
-        /// Certificate ID (UUID).
-        id: String,
-    },
-    /// Download a certificate as PEM or DER.
-    Download {
-        /// Certificate ID (UUID).
-        id: String,
-        /// Output format: pem (default) or der.
-        #[arg(long, default_value = "pem")]
-        format: String,
-        /// Write to file instead of stdout.
-        #[arg(long, short = 'o', value_name = "FILE")]
-        output: Option<PathBuf>,
-    },
-}
-
-#[derive(Subcommand)]
-enum AccountCmd {
-    /// List accounts.
-    List {
-        /// Filter by status (valid, deactivated).
-        #[arg(long)]
-        status: Option<String>,
-        #[arg(long, default_value = "100")]
-        limit: u32,
-        #[arg(long, default_value = "0")]
-        offset: u32,
-    },
-    /// Show an account's details.
-    Show {
-        /// Account ID (UUID).
-        id: String,
-    },
-    /// Admin-initiated account deactivation.
-    Deactivate {
-        /// Account ID (UUID).
-        id: String,
-    },
-    /// Manage profile grants.
-    #[command(subcommand)]
-    Grants(AccountGrantsCmd),
-}
-
-#[derive(Subcommand)]
-enum ProfileCmd {
-    /// List loaded certificate profiles.
-    List,
-    /// Add a new certificate profile.
-    Add {
-        /// Profile ID.
-        id: String,
-        /// JSON file with profile parameters.
-        #[arg(long, value_name = "FILE")]
-        params_file: PathBuf,
-    },
-    /// Update an existing certificate profile.
-    Update {
-        /// Profile ID.
-        id: String,
-        /// JSON file with profile parameters.
-        #[arg(long, value_name = "FILE")]
-        params_file: PathBuf,
-    },
-    /// Remove a certificate profile.
-    Remove {
-        /// Profile ID.
-        id: String,
-    },
-    /// Show a single certificate profile by ID.
-    Show {
-        /// Profile ID.
-        id: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum OrderCmd {
-    /// List orders.
-    List {
-        /// Filter by account ID.
-        #[arg(long)]
-        account_id: Option<String>,
-        /// Filter by status.
-        #[arg(long)]
-        status: Option<String>,
-        /// Filter by CA identifier.
-        #[arg(long, value_name = "CA_ID")]
-        ca: Option<String>,
-        #[arg(long, default_value = "100")]
-        limit: u32,
-        #[arg(long, default_value = "0")]
-        offset: u32,
-    },
-    /// Show an order's details.
-    Show {
-        /// Order ID (UUID).
-        id: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum AccountGrantsCmd {
-    /// Show profile grants for an account.
-    Get { id: String },
-    /// Set profile grants for an account.
-    Set {
-        id: String,
-        #[arg(long = "profile", value_name = "PROFILE")]
-        profiles: Vec<String>,
-    },
-    /// Clear all profile grants (unrestricted).
-    Clear { id: String },
-}
-
-#[derive(Subcommand)]
-enum DelegationCmd {
-    /// List delegation objects (optionally filtered by account).
-    List {
-        /// Filter to delegations owned by this account ID.
-        #[arg(long)]
-        account_id: Option<String>,
-    },
-    /// Show a single delegation object.
-    Show {
-        /// Delegation ID (UUID).
-        id: String,
-    },
-    /// Create a delegation for an account.
-    Add {
-        /// Account ID to create the delegation for.
-        #[arg(long)]
-        account_id: String,
-        /// JSON file containing the CSR template (RFC 9115 §4).
-        #[arg(long, value_name = "FILE")]
-        csr_template: PathBuf,
-        /// JSON file containing the CNAME map (optional).
-        #[arg(long, value_name = "FILE")]
-        cname_map: Option<PathBuf>,
-    },
-    /// Replace the CSR template and CNAME map for a delegation.
-    Update {
-        /// Delegation ID (UUID).
-        id: String,
-        /// JSON file containing the replacement CSR template.
-        #[arg(long, value_name = "FILE")]
-        csr_template: PathBuf,
-        /// JSON file containing the replacement CNAME map.
-        #[arg(long, value_name = "FILE", conflicts_with = "clear_cname_map")]
-        cname_map: Option<PathBuf>,
-        /// Remove the CNAME map (set to null).
-        #[arg(long, conflicts_with = "cname_map")]
-        clear_cname_map: bool,
-    },
-    /// Delete a delegation (fails if active orders reference it).
-    Remove {
-        /// Delegation ID (UUID).
-        id: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum CosignerCmd {
-    /// Authenticate and cache cosigner session token.
-    Login,
-    /// Invalidate cosigner session token.
-    Logout,
-    /// Cosigner status.
-    Status,
-    /// Cosigner statistics.
-    Stats,
-    /// Show redacted cosigner configuration.
-    Config,
-}
-
-#[derive(Subcommand)]
-enum CaCmd {
-    /// List all configured CAs.
-    List,
-    /// Show details for a specific CA.
-    Show {
-        /// CA identifier.
-        id: String,
-    },
-    /// Download the CA certificate PEM.
-    Cert {
-        /// CA identifier.
-        id: String,
-        /// Write to file instead of stdout.
-        #[arg(long, short = 'o', value_name = "FILE")]
-        output: Option<PathBuf>,
-    },
-    /// Invalidate the CRL cache for a specific CA.
-    CrlForce {
-        /// CA identifier.
-        id: String,
-    },
-    /// Issue a cross-certificate from one CA signing another CA's public key.
-    CrossSign {
-        /// CA identifier of the signing (issuer) CA.
-        issuer_id: String,
-        /// CA identifier of the subject CA on this server.
-        #[arg(long, group = "subject")]
-        subject_ca_id: Option<String>,
-        /// PEM file of an external CA certificate to cross-sign.
-        #[arg(long, group = "subject", value_name = "FILE")]
-        subject_cert: Option<PathBuf>,
-        /// Validity of the cross-certificate in years.
-        #[arg(long, default_value = "5")]
-        validity_years: u32,
-    },
-}
-
-#[derive(Subcommand)]
-enum CrossCertCmd {
-    /// List cross-certificates.
-    List {
-        /// Filter by issuer CA identifier.
-        #[arg(long)]
-        issuer_ca: Option<String>,
-        /// Filter by subject CA identifier.
-        #[arg(long)]
-        subject_ca: Option<String>,
-        #[arg(long, default_value = "100")]
-        limit: u32,
-        #[arg(long, default_value = "0")]
-        offset: u32,
-    },
-    /// Download a cross-certificate PEM by UUID.
-    Download {
-        /// Cross-certificate UUID.
-        id: String,
-        /// Write to file instead of stdout.
-        #[arg(long, short = 'o', value_name = "FILE")]
-        output: Option<PathBuf>,
-    },
-    /// Show cross-certificate metadata by UUID.
-    Show {
-        /// Cross-certificate UUID.
-        id: String,
-    },
-}
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -911,6 +422,50 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
                 commands::delegation::remove(&server_client, &id).await?;
             }
         },
+        Commands::Mtc(mtc_cmd) => match mtc_cmd {
+            MtcCmd::TreeSize { ca } => {
+                commands::mtc::tree_size(&server_client, &fmt, ca).await?;
+            }
+            MtcCmd::Root { ca } => {
+                commands::mtc::root(&server_client, &fmt, ca).await?;
+            }
+            MtcCmd::Landmarks { ca } => {
+                commands::mtc::landmarks(&server_client, &fmt, ca).await?;
+            }
+            MtcCmd::LandmarkList { ca } => {
+                commands::mtc::landmark_list(&server_client, ca).await?;
+            }
+            MtcCmd::LandmarkCert { seq, ca, output } => {
+                commands::mtc::landmark_cert(&server_client, seq, ca, output).await?;
+            }
+            MtcCmd::InclusionProof { cert_id } => {
+                commands::mtc::inclusion_proof(&server_client, &fmt, &cert_id).await?;
+            }
+            MtcCmd::Standalone { cert_id, output } => {
+                commands::mtc::standalone(&server_client, &cert_id, output).await?;
+            }
+            MtcCmd::ConsistencyProof { from, to, ca } => {
+                commands::mtc::consistency_proof(&server_client, &fmt, from, to, ca).await?;
+            }
+            MtcCmd::SubtreeRoot { start, end, ca } => {
+                commands::mtc::subtree_root(&server_client, &fmt, start, end, ca).await?;
+            }
+            MtcCmd::RevokedRanges { ca } => {
+                commands::mtc::revoked_ranges(&server_client, &fmt, ca).await?;
+            }
+            MtcCmd::Checkpoint { ca } => {
+                commands::mtc::checkpoint(&server_client, ca).await?;
+            }
+            MtcCmd::Cosignature { ca } => {
+                commands::mtc::cosignature(&server_client, ca).await?;
+            }
+            MtcCmd::ForceCheckpoint { ca } => {
+                commands::mtc::force_checkpoint(&server_client, &ca).await?;
+            }
+            MtcCmd::ForceLandmark { ca } => {
+                commands::mtc::force_landmark(&server_client, &ca).await?;
+            }
+        },
         Commands::Config(cfg_cmd) => match cfg_cmd {
             ConfigCmd::Generate => {
                 commands::config_cmd::generate();
@@ -933,140 +488,6 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-/// Build `HTTP@<hostname>` from a server URL for use as a GSSAPI SPN.
-///
-/// If the host portion of the URL is an IP address or a loopback name
-/// ("localhost", "localhost.localdomain", "ip6-localhost", etc.):
-/// - Loopback addresses / names are replaced with the machine's own FQDN.
-/// - Other IPs are resolved to a hostname via reverse PTR lookup.
-///
-/// If reverse DNS fails, the raw IP is used and a warning is printed.
-pub(crate) async fn derive_spn(url: &str) -> String {
-    if url.starts_with("http+unix://") {
-        // Unix socket: the admin server is on this machine.
-        let host = system_fqdn()
-            .await
-            .unwrap_or_else(|| "localhost".to_owned());
-        return format!("HTTP@{host}");
-    }
-    let host = url
-        .trim_start_matches("https://")
-        .trim_start_matches("http://")
-        .split('/')
-        .next()
-        .unwrap_or(url)
-        .split(':') // strip port
-        .next()
-        .unwrap_or(url);
-    format!("HTTP@{}", resolve_host_for_spn(host).await)
-}
-
-/// Resolve a URL host component to a hostname suitable for a Kerberos SPN.
-async fn resolve_host_for_spn(host: &str) -> String {
-    use std::net::IpAddr;
-
-    // Loopback hostnames — replace with the machine's own FQDN.
-    let is_loopback_name = matches!(
-        host,
-        "localhost" | "localhost.localdomain" | "ip6-localhost" | "ip6-loopback"
-    );
-    if is_loopback_name {
-        return system_fqdn().await.unwrap_or_else(|| host.to_owned());
-    }
-
-    // If the host is an IP address, perform loopback check or reverse PTR lookup.
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        if ip.is_loopback() {
-            return system_fqdn().await.unwrap_or_else(|| host.to_owned());
-        }
-        return ptr_lookup(ip).await.unwrap_or_else(|| {
-            eprintln!("warning: reverse DNS for {ip} failed; SPN will use the IP address");
-            host.to_owned()
-        });
-    }
-
-    // Already a proper DNS hostname.
-    host.to_owned()
-}
-
-/// Return the machine's fully-qualified hostname via `gethostname(2)`.
-///
-/// If the result contains no dot (a bare short name), performs a forward
-/// lookup and then a reverse PTR lookup via hickory-resolver to obtain the FQDN.
-async fn system_fqdn() -> Option<String> {
-    use std::ffi::CStr;
-    let mut buf = [0u8; 256];
-    let ret = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
-    if ret != 0 {
-        return None;
-    }
-    let name = CStr::from_bytes_until_nul(&buf)
-        .ok()?
-        .to_str()
-        .ok()?
-        .to_owned();
-    if name.contains('.') {
-        return Some(name);
-    }
-    // Short hostname — forward lookup then PTR to get the FQDN.
-    let resolver = build_resolver();
-    let lookup = resolver.lookup_ip(name.as_str()).await.ok()?;
-    for ip in lookup {
-        if let Some(fqdn) = ptr_lookup_with(ip, &resolver).await {
-            if fqdn.contains('.') {
-                return Some(fqdn);
-            }
-        }
-    }
-    Some(name)
-}
-
-/// Reverse-resolve an IP address to a hostname via a DNS PTR query.
-async fn ptr_lookup(ip: std::net::IpAddr) -> Option<String> {
-    ptr_lookup_with(ip, &build_resolver()).await
-}
-
-async fn ptr_lookup_with(
-    ip: std::net::IpAddr,
-    resolver: &hickory_resolver::TokioAsyncResolver,
-) -> Option<String> {
-    let lookup = resolver.reverse_lookup(ip).await.ok()?;
-    let name = lookup.into_iter().next()?;
-    let s = name.to_utf8();
-    let s = s.trim_end_matches('.');
-    if s.is_empty() || s == ip.to_string() {
-        None
-    } else {
-        Some(s.to_owned())
-    }
-}
-
-/// Build a hickory resolver pointed at the system nameserver.
-fn build_resolver() -> hickory_resolver::TokioAsyncResolver {
-    use hickory_resolver::config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts};
-    let mut ns = NameServerConfig::new(system_resolver_addr(), Protocol::Udp);
-    ns.tls_dns_name = None;
-    let mut config = ResolverConfig::new();
-    config.add_name_server(ns);
-    hickory_resolver::TokioAsyncResolver::tokio(config, ResolverOpts::default())
-}
-
-/// Return the first nameserver from `/etc/resolv.conf`, or the
-/// systemd-resolved stub (`127.0.0.53:53`) as a fallback.
-fn system_resolver_addr() -> std::net::SocketAddr {
-    if let Ok(contents) = std::fs::read_to_string("/etc/resolv.conf") {
-        for line in contents.lines() {
-            let line = line.trim();
-            if let Some(rest) = line.strip_prefix("nameserver") {
-                if let Ok(ip) = rest.trim().parse::<std::net::IpAddr>() {
-                    return std::net::SocketAddr::new(ip, 53);
-                }
-            }
-        }
-    }
-    "127.0.0.53:53".parse().expect("hardcoded addr is valid")
-}
 
 pub(crate) fn read_file_opt(path: Option<&std::path::Path>) -> Result<Option<Vec<u8>>, CtlError> {
     let Some(p) = path else {

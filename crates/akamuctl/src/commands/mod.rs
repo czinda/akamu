@@ -13,6 +13,7 @@ pub mod cosigner;
 pub mod cross_cert;
 pub mod delegation;
 pub mod eab;
+pub mod mtc;
 pub mod operator;
 pub mod server;
 pub mod session;

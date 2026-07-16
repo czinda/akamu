@@ -10,6 +10,7 @@ use serde_json::json;
 
 use crate::admin::auth::OperatorContext;
 use crate::db;
+use crate::mtc::log;
 use crate::require_role;
 use crate::state::AppState;
 
@@ -31,11 +32,50 @@ pub async fn get_stats(operator: OperatorContext, State(state): State<Arc<AppSta
         Ok(c) => c,
         Err(e) => {
             tracing::error!(error = %e, "stats DB query failed");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": 500, "detail": "stats query failed"})),
+            )
+                .into_response();
         }
     };
 
     let server_version = env!("CARGO_PKG_VERSION");
+
+    let mut mtc_cas = Vec::new();
+    for ca in state.cas.values() {
+        if let Some(scope) = ca_scope {
+            if ca.id != scope {
+                continue;
+            }
+        }
+        let tree_size = match ca.mtc.log.as_ref() {
+            Some(shared_log) => match log::tree_size(shared_log).await {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    tracing::warn!(ca_id = %ca.id, "stats: tree_size query failed: {e}");
+                    None
+                }
+            },
+            None => None,
+        };
+        let landmark_count = match db::landmarks::count(&state.db_ro, &ca.id).await {
+            Ok(c) => Some(c),
+            Err(e) => {
+                tracing::warn!(ca_id = %ca.id, "stats: landmark count query failed: {e}");
+                None
+            }
+        };
+        mtc_cas.push(json!({
+            "ca_id": ca.id,
+            "enabled": ca.mtc.is_enabled(),
+            "tree_size": tree_size,
+            "landmarks": landmark_count,
+            "last_checkpoint_at": ca.mtc.last_checkpoint_at(),
+            "last_landmark_at": ca.mtc.last_landmark_at(),
+            "cosigner_count": ca.mtc.cosigner_clients.len(),
+        }));
+    }
 
     (
         StatusCode::OK,
@@ -62,6 +102,7 @@ pub async fn get_stats(operator: OperatorContext, State(state): State<Arc<AppSta
                 "since_startup": state.audit.event_count.load(std::sync::atomic::Ordering::Acquire),
                 "journal_connected": state.journal.is_connected(),
             },
+            "mtc": mtc_cas,
         })),
     )
         .into_response()
