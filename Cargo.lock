@@ -98,6 +98,7 @@ dependencies = [
  "serde_json",
  "synta",
  "synta-certificate",
+ "synta-mtc",
  "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",
@@ -2776,8 +2777,9 @@ dependencies = [
 
 [[package]]
 name = "synta"
-version = "0.2.6"
-source = "git+ssh://git@codeberg.org/abbra/synta.git?branch=unsafe-reduction#0ba9027cf1fa080b0cc32840dacd52c481d0cf51"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5dbd798f4dfdcbeb5f1e3c1d9fcccc4be09b0764948a08f874c7fee7b8450eaf"
 dependencies = [
  "smallvec",
  "synta-derive",
@@ -2785,8 +2787,9 @@ dependencies = [
 
 [[package]]
 name = "synta-certificate"
-version = "0.2.6"
-source = "git+ssh://git@codeberg.org/abbra/synta.git?branch=unsafe-reduction#0ba9027cf1fa080b0cc32840dacd52c481d0cf51"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfceb660cac1d83931e03cb1d2da2feeca251f1b5a07399a7246902c2980f5f4"
 dependencies = [
  "cryptoki",
  "log",
@@ -2798,13 +2801,15 @@ dependencies = [
 
 [[package]]
 name = "synta-codegen"
-version = "0.2.6"
-source = "git+ssh://git@codeberg.org/abbra/synta.git?branch=unsafe-reduction#0ba9027cf1fa080b0cc32840dacd52c481d0cf51"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "80f37e99fb19aa621b9fa524023dc8028e555705a1539eda1ebddf48e0be71de"
 
 [[package]]
 name = "synta-derive"
-version = "0.2.6"
-source = "git+ssh://git@codeberg.org/abbra/synta.git?branch=unsafe-reduction#0ba9027cf1fa080b0cc32840dacd52c481d0cf51"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df0afa2139fdc26121f965e4c97055fa8de8c7c325a3b075517a831d52d3f017"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2813,8 +2818,9 @@ dependencies = [
 
 [[package]]
 name = "synta-mtc"
-version = "0.2.6"
-source = "git+ssh://git@codeberg.org/abbra/synta.git?branch=unsafe-reduction#0ba9027cf1fa080b0cc32840dacd52c481d0cf51"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9855e9c67c0f693a8e05cab6f416e3a4600f8f96b239a05e9bb334726fbfffb0"
 dependencies = [
  "smallvec",
  "subtle",
@@ -2826,8 +2832,9 @@ dependencies = [
 
 [[package]]
 name = "synta-x509-verification"
-version = "0.2.6"
-source = "git+ssh://git@codeberg.org/abbra/synta.git?branch=unsafe-reduction#0ba9027cf1fa080b0cc32840dacd52c481d0cf51"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74f9afdcf4ac64b59ec013b5badd2e5f950a6bda1bbb8b4018aa3bf6a45227ce"
 dependencies = [
  "openssl",
  "synta",

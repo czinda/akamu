@@ -14,4 +14,6 @@ pub enum ClientError {
     Io(#[from] std::io::Error),
     #[error("GSSAPI error: {0}")]
     Gssapi(String),
+    #[error("MTC error: {0}")]
+    Mtc(String),
 }
