@@ -265,3 +265,36 @@ pub fn parse_hex_hash(hex_str: &str) -> Result<Vec<u8>, ClientError> {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_hex_valid() {
+        assert_eq!(
+            parse_hex_hash("deadbeef").unwrap(),
+            vec![0xde, 0xad, 0xbe, 0xef]
+        );
+    }
+
+    #[test]
+    fn parse_hex_empty() {
+        assert_eq!(parse_hex_hash("").unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn parse_hex_odd_length_rejected() {
+        assert!(parse_hex_hash("abc").is_err());
+    }
+
+    #[test]
+    fn parse_hex_invalid_chars_rejected() {
+        assert!(parse_hex_hash("zzzz").is_err());
+    }
+
+    #[test]
+    fn parse_hex_uppercase() {
+        assert_eq!(parse_hex_hash("AABB").unwrap(), vec![0xaa, 0xbb]);
+    }
+}
