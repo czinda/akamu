@@ -11,8 +11,9 @@
 #   4. The server issues an MTC StandaloneCertificate
 #      (draft-ietf-plants-merkle-tree-certs) instead of a standard X.509 PEM chain
 #   5. Inspects the standalone certificate ASN.1 structure
-#   6. Queries the MTC transparency log HTTP endpoints
-#   7. Cleans up on exit (Ctrl-C or completion)
+#   6. Queries the MTC transparency log via `akamu-cli mtc` subcommands
+#   7. Verifies the MTC inclusion proof via `akamu-cli mtc verify`
+#   8. Cleans up on exit (Ctrl-C or completion)
 #
 # The MTC StandaloneCertificate has:
 #   signatureAlgorithm = id-alg-mtcProof (OID 1.3.6.1.4.1.44363.47.0)
@@ -23,7 +24,6 @@
 # Prerequisites:
 #   - openssl 3.5+ (for ML-DSA key generation)
 #   - synta-tool (for MTC certificate inspection)
-#   - curl
 #   - cargo / rust toolchain
 #
 # Usage:
@@ -99,7 +99,6 @@ done
 
 echo "[demo] Checking prerequisites..."
 require_cmd openssl "openssl 3.5+"
-require_cmd curl    "curl"
 require_cmd cargo   "rustup / cargo"
 
 echo "[demo] All prerequisites found."
@@ -224,7 +223,7 @@ echo "[demo]   Cert key type:  ML-DSA-65"
 echo "[demo]   MTC key type:   ML-DSA-44"
 echo
 
-"$AKAMU_CLI" issue \
+ISSUE_OUTPUT=$("$AKAMU_CLI" issue \
     --server        "https://127.0.0.1:${AKAMU_PORT}" \
     --ca            "$AKAMU_CA_ID" \
     --account-key   "$ACCOUNT_KEY" \
@@ -234,7 +233,15 @@ echo
     --http-port     "$HTTP_CHALLENGE_PORT" \
     --domain        "$DOMAIN" \
     --server-ca     "$CA_CERT" \
-    --profile       mtc-tls
+    --profile       mtc-tls 2>&1)
+echo "$ISSUE_OUTPUT"
+
+# Extract cert_id from the certificate URL printed by akamu-cli issue.
+CERT_URL=$(echo "$ISSUE_OUTPUT" | grep 'Certificate URL:' | awk '{print $NF}')
+CERT_ID="${CERT_URL##*/}"
+if [[ -z "$CERT_ID" ]]; then
+    echo "[demo] WARNING: could not extract cert_id from issue output" >&2
+fi
 
 # ── display results ──────────────────────────────────────────────────────────
 
@@ -257,44 +264,32 @@ echo "[demo] MTC Transparency Log State"
 echo "[demo] ================================================"
 echo
 
-echo "[demo] GET /acme/mtc/tree-size"
-curl -sf --cacert "$CA_CERT" \
-    "https://127.0.0.1:${AKAMU_PORT}/acme/mtc/tree-size"
-echo
+MTC_ARGS=(--server "https://127.0.0.1:${AKAMU_PORT}" --ca "$AKAMU_CA_ID" --server-ca "$CA_CERT")
+
+echo "[demo] akamu-cli mtc tree-size"
+"$AKAMU_CLI" mtc tree-size "${MTC_ARGS[@]}"
 echo
 
-echo "[demo] GET /acme/mtc/root"
-ROOT_JSON=$(curl -sf --cacert "$CA_CERT" \
-    "https://127.0.0.1:${AKAMU_PORT}/acme/mtc/root")
-echo "$ROOT_JSON"
-echo
+echo "[demo] akamu-cli mtc root"
+"$AKAMU_CLI" mtc root "${MTC_ARGS[@]}"
 echo
 
-echo "[demo] GET /acme/mtc/tlog/checkpoint (C2SP signed-note format)"
-CHECKPOINT=$(curl -sf --cacert "$CA_CERT" \
-    "https://127.0.0.1:${AKAMU_PORT}/acme/mtc/tlog/checkpoint")
-echo "$CHECKPOINT"
+echo "[demo] akamu-cli mtc checkpoint (C2SP signed-note format)"
+"$AKAMU_CLI" mtc checkpoint "${MTC_ARGS[@]}"
 echo
 
-echo "[demo] GET /acme/mtc/landmarks"
-curl -sf --cacert "$CA_CERT" \
-    "https://127.0.0.1:${AKAMU_PORT}/acme/mtc/landmarks"
-echo
+echo "[demo] akamu-cli mtc landmarks"
+"$AKAMU_CLI" mtc landmarks "${MTC_ARGS[@]}"
 echo
 
 # ── verify MTC inclusion proof ───────────────────────────────────────────────
 
-# Extract the root hash from the JSON response for proof verification.
-ROOT_HASH=$(python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('rootHash',''))" <<< "$ROOT_JSON")
-if [[ -z "$ROOT_HASH" ]]; then
-    echo "[demo] WARNING: could not extract rootHash from /acme/mtc/root response" >&2
-fi
-if [[ -n "$ROOT_HASH" ]]; then
+if [[ -n "$CERT_ID" ]]; then
     echo "[demo] ================================================"
-    echo "[demo] Verifying MTC inclusion proof against root hash..."
-    echo "[demo]   Root hash: ${ROOT_HASH}"
+    echo "[demo] Verifying MTC inclusion proof end-to-end..."
+    echo "[demo]   cert_id: ${CERT_ID}"
     echo
-    "$SYNTA_TOOL" cert -v --subtree-root "$ROOT_HASH" "$CERT_OUT"
+    "$AKAMU_CLI" mtc verify "${MTC_ARGS[@]}" --cert-id "$CERT_ID"
     echo "[demo] ================================================"
     echo
 fi
@@ -304,10 +299,10 @@ fi
 echo "[demo] ================================================"
 echo "[demo] Tip: inspect the certificate with:"
 echo "[demo]   ${SYNTA_TOOL} cert -v ${CERT_OUT}"
-echo "[demo]   ${SYNTA_TOOL} cert -v --subtree-root <root_hash> ${CERT_OUT}"
 echo
 echo "[demo] Tip: query the MTC log while running in --interactive mode:"
-echo "[demo]   curl -s --cacert ${CA_CERT} https://127.0.0.1:${AKAMU_PORT}/acme/mtc/root"
+echo "[demo]   ${AKAMU_CLI} mtc root ${MTC_ARGS[*]}"
+echo "[demo]   ${AKAMU_CLI} mtc verify ${MTC_ARGS[*]} --cert-id <CERT_ID>"
 echo "[demo] ================================================"
 echo
 if $INTERACTIVE; then
