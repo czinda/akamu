@@ -24,6 +24,7 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
+use native_ossl::util::hex_encode;
 use synta_certificate::{crypto::HmacProvider as _, default_hmac_provider};
 
 use crate::state::AppState;
@@ -124,16 +125,6 @@ pub async fn handle_webhook(
     }
 
     StatusCode::OK.into_response()
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
-            use std::fmt::Write;
-            let _ = write!(s, "{b:02x}");
-            s
-        })
 }
 
 #[cfg(test)]

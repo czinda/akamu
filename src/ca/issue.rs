@@ -20,6 +20,8 @@ use synta_x509_verification::{
     OwnedStore, RevocationChecks,
 };
 
+use native_ossl::util::hex_encode;
+
 use crate::error::AcmeError;
 use crate::profiles::CertificateParameters;
 use crate::state::CaState;
@@ -222,7 +224,7 @@ pub fn issue_certificate(params: IssueCertParams<'_>) -> Result<IssuedCert, Acme
     // is clear.  Forcing bit 0 avoids that case without reducing serial length.
     serial_bytes[0] = (serial_bytes[0] & 0x7f) | 0x01;
     let serial = synta::Integer::from_bytes(&serial_bytes);
-    let serial_hex = hex_encode(&serial_bytes);
+    let serial_hex = hex_encode(serial_bytes);
 
     // ── Compute validity window ───────────────────────────────────────────────
     let now = unix_now();
@@ -469,11 +471,6 @@ fn parse_oid_str(s: &str) -> Option<Vec<u32>> {
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-/// Encode a byte slice as a lowercase hex string.
-fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 /// Convert a dotted-decimal IPv4 or colon-hex IPv6 string to raw bytes.
 fn ip_string_to_bytes(s: &str) -> Option<Vec<u8>> {
     use std::net::IpAddr;
@@ -573,7 +570,7 @@ pub fn issue_with_params(
         .map_err(|e| AcmeError::Internal(format!("random serial: {e}")))?;
     serial_bytes[0] = (serial_bytes[0] & 0x7f) | 0x01;
     let serial = synta::Integer::from_bytes(&serial_bytes);
-    let serial_hex = hex_encode(&serial_bytes);
+    let serial_hex = hex_encode(serial_bytes);
 
     // ── Validity window ──────────────────────────────────────────────────────
     let now = unix_now();
@@ -1218,7 +1215,7 @@ pub fn issue_ca_cert(
         .map_err(|e| AcmeError::Internal(format!("random serial: {e}")))?;
     serial_bytes[0] = (serial_bytes[0] & 0x7f) | 0x01;
     let serial = synta::Integer::from_bytes(&serial_bytes);
-    let serial_hex = hex_encode(&serial_bytes);
+    let serial_hex = hex_encode(serial_bytes);
 
     // Validity window: now to now + validity_years * 365.25 days.
     let now = unix_now();
@@ -1311,8 +1308,10 @@ mod tests {
 
     use std::sync::Arc;
 
+    use native_ossl::util::hex_encode;
+
     use super::{
-        hex_encode, ip_string_to_bytes, issue_certificate, issue_with_params, parse_operator_san,
+        ip_string_to_bytes, issue_certificate, issue_with_params, parse_operator_san,
         permitted_sig_algs_with_composite, permitted_spki_algs_with_composite, sign_admin_cert,
         IssueCertParams, OperatorSanKind,
     };

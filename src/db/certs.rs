@@ -1,3 +1,5 @@
+use native_ossl::util::hex_encode;
+
 use crate::db::schema::{CertForStandalone, CertificateRow, CrlEntry};
 use crate::error::AcmeError;
 
@@ -89,7 +91,7 @@ pub async fn get_by_cert_id(
         .decode(serial_b64)
         .map_err(|_| AcmeError::BadRequest("cert_id serial is not valid base64url".into()))?;
     // Convert bytes to lowercase hex — matches the format stored in serial_number.
-    let serial_hex: String = serial_bytes.iter().map(|b| format!("{b:02x}")).collect();
+    let serial_hex = hex_encode(serial_bytes);
     get_by_serial(executor, &serial_hex).await
 }
 

@@ -24,6 +24,8 @@ use synta_certificate::{
     SingleResponseSpec,
 };
 
+use native_ossl::util::hex_encode;
+
 use crate::ca::init::unix_to_generalized_time;
 use crate::db;
 use crate::error::AcmeError;
@@ -136,7 +138,7 @@ async fn handle_ocsp_request(
                     .map_err(|e| AcmeError::Internal(format!("OCSP hash alg encode: {e}")))?;
                 let hash_alg_oid = cert_id.hash_algorithm.algorithm.components().to_vec();
                 let serial_bytes = cert_id.serial_number.as_bytes().to_vec();
-                let serial_hex: String = serial_bytes.iter().map(|b| format!("{b:02x}")).collect();
+                let serial_hex = hex_encode(&serial_bytes);
                 let issuer_name_hash = cert_id.issuer_name_hash.as_bytes().to_vec();
                 let issuer_key_hash = cert_id.issuer_key_hash.as_bytes().to_vec();
                 Ok::<_, AcmeError>(CertEntry {

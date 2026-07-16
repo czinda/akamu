@@ -11,6 +11,8 @@ use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
 
+use native_ossl::util::hex_encode;
+
 use crate::db;
 use crate::error::AcmeError;
 use crate::mtc::{log, tlog};
@@ -20,15 +22,6 @@ use super::{acme_prefix, CaId};
 
 /// X-MTC-Version header value for draft-05 responses.
 pub const MTC_DRAFT_VERSION: &str = "draft-05";
-
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        let _ = write!(s, "{b:02x}");
-    }
-    s
-}
 
 fn service_unavailable_with_retry(retry_secs: u64, detail: &str) -> Response {
     let body = serde_json::json!({
@@ -71,7 +64,7 @@ pub async fn get_root(
     let (size, root) = log::tree_size_and_root(shared_log).await?;
     Ok((
         StatusCode::OK,
-        axum::Json(json!({ "treeSize": size, "rootHash": hex(&root) })),
+        axum::Json(json!({ "treeSize": size, "rootHash": hex_encode(&root) })),
     )
         .into_response())
 }
@@ -90,12 +83,14 @@ pub async fn get_inclusion_proof(
         .await?
         .ok_or(AcmeError::NotFound)?;
 
-    let leaf_index = cert.mtc_log_index.ok_or(AcmeError::NotFound)? as u64;
+    let log_index = cert.mtc_log_index.ok_or(AcmeError::NotFound)?;
+    let leaf_index =
+        u64::try_from(log_index).map_err(|_| AcmeError::Internal("invalid log index".into()))?;
 
     let (proof_hashes, size) = log::proof_and_tree_size(shared_log, leaf_index).await?;
     let proof: Vec<_> = proof_hashes
         .into_iter()
-        .map(|hash| json!({ "hash": hex(&hash) }))
+        .map(|hash| json!({ "hash": hex_encode(&hash) }))
         .collect();
 
     Ok((
@@ -465,8 +460,8 @@ pub async fn get_consistency_proof(
         axum::Json(json!({
             "fromSize": params.from,
             "toSize": params.to,
-            "fromRoot": hex(&from_root),
-            "toRoot": hex(&to_root),
+            "fromRoot": hex_encode(&from_root),
+            "toRoot": hex_encode(&to_root),
         })),
     )
         .into_response())
@@ -526,7 +521,7 @@ pub async fn get_subtree_root(
         axum::Json(json!({
             "start": params.start,
             "end": params.end,
-            "rootHash": hex(&subtree_root),
+            "rootHash": hex_encode(&subtree_root),
         })),
     )
         .into_response())
