@@ -526,7 +526,9 @@ pub async fn finalize_order(
     // MTC sequencing for regular (non-MTC) profiles: best-effort.
     // If log append fails, the X.509 cert is still valid — MTC is an enhancement,
     // not a requirement for this profile. The error is logged for operator awareness.
-    let mtc_standalone_pending = if order_ca.mtc.is_enabled() && !cert_params.issue_as_mtc {
+    let mtc_standalone_pending = if cert_params.issue_as_mtc {
+        Some(final_cert_der.clone())
+    } else if order_ca.mtc.is_enabled() {
         match append_and_build_standalone(&order_ca.mtc, &issued).await {
             Ok((idx, standalone)) => {
                 final_mtc_index = Some(idx);
