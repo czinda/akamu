@@ -8,7 +8,7 @@ use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
 use tower::ServiceExt;
 
-use synta::ObjectIdentifier;
+use synta::RelativeOid;
 use synta_certificate::BackendPrivateKey;
 
 use akamu_cosigner::admin::PeerClientCert;
@@ -25,7 +25,7 @@ fn build_state() -> Arc<AppState> {
         hash_alg: "sha256".to_owned(),
         sig_alg_der: vec![],
         cosigner_oid: "1.3.6.1.4.1.44363.47.10.1"
-            .parse::<ObjectIdentifier>()
+            .parse::<RelativeOid>()
             .expect("parse test TrustAnchorID OID"),
         challenge_tokens: Arc::new(RwLock::new(HashMap::new())),
         admin_operators: vec![],
@@ -204,7 +204,7 @@ async fn mtls_cert_issues_session_token() {
         hash_alg: "sha256".to_owned(),
         sig_alg_der: vec![],
         cosigner_oid: "1.3.6.1.4.1.44363.47.10.1"
-            .parse::<ObjectIdentifier>()
+            .parse::<RelativeOid>()
             .expect("parse test TrustAnchorID OID"),
         challenge_tokens: Arc::new(RwLock::new(HashMap::new())),
         admin_operators: vec![OperatorConfig {
