@@ -51,6 +51,11 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         target: InstallTarget,
     },
+    /// Query and verify MTC transparency log endpoints
+    Mtc {
+        #[command(subcommand)]
+        cmd: MtcCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -453,4 +458,109 @@ pub(crate) struct CaShowArgs {
     /// CA identifier to look up
     #[arg(long, value_name = "CA_ID")]
     pub(crate) ca: String,
+}
+
+// ── MTC commands ─────────────────────────────────────────────────────────────
+
+#[derive(clap::Args)]
+pub(crate) struct MtcBaseArgs {
+    /// ACME server base URL or full directory URL
+    #[arg(long)]
+    pub(crate) server: String,
+
+    /// CA identifier for multi-CA servers (derives directory URL as {server}/acme/{ca}/directory)
+    #[arg(long, value_name = "CA_ID")]
+    pub(crate) ca: Option<String>,
+
+    /// PEM file of an extra CA certificate to trust for the server's TLS connection
+    #[arg(long, value_name = "FILE")]
+    pub(crate) server_ca: Option<PathBuf>,
+
+    /// Maximum response body size in bytes (default: 10485760 = 10 MiB)
+    #[arg(long, value_name = "BYTES")]
+    pub(crate) max_response_bytes: Option<usize>,
+
+    /// Request timeout in seconds (default: 30)
+    #[arg(long, value_name = "SECS")]
+    pub(crate) request_timeout: Option<u64>,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum MtcCommands {
+    /// Print the current tree size
+    TreeSize(MtcBaseArgs),
+    /// Print the current tree size and root hash
+    Root(MtcBaseArgs),
+    /// Print the inclusion proof for a certificate
+    InclusionProof(MtcCertArgs),
+    /// Download a standalone MTC certificate (DER)
+    Standalone(MtcCertOutArgs),
+    /// Download the landmark certificate for a given cert
+    LandmarkCert(MtcCertOutArgs),
+    /// List landmarks
+    Landmarks(MtcBaseArgs),
+    /// Print the landmark list (text/plain format)
+    LandmarkList(MtcBaseArgs),
+    /// Print the consistency proof between two tree sizes
+    ConsistencyProof(MtcConsistencyArgs),
+    /// Print the subtree root hash for a range
+    SubtreeRoot(MtcSubtreeArgs),
+    /// Print revoked ranges
+    RevokedRanges(MtcBaseArgs),
+    /// Verify a standalone certificate's inclusion proof end-to-end
+    Verify(MtcCertArgs),
+    /// Print the tlog checkpoint (C2SP signed-note format)
+    Checkpoint(MtcBaseArgs),
+}
+
+#[derive(clap::Args)]
+pub(crate) struct MtcCertArgs {
+    #[command(flatten)]
+    pub(crate) base: MtcBaseArgs,
+
+    /// Certificate ID (last path segment of the ACME certificate URL)
+    #[arg(long)]
+    pub(crate) cert_id: String,
+}
+
+#[derive(clap::Args)]
+pub(crate) struct MtcCertOutArgs {
+    #[command(flatten)]
+    pub(crate) base: MtcBaseArgs,
+
+    /// Certificate ID
+    #[arg(long)]
+    pub(crate) cert_id: String,
+
+    /// Write DER output to this file (default: stdout as hex)
+    #[arg(long, value_name = "FILE")]
+    pub(crate) out: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+pub(crate) struct MtcConsistencyArgs {
+    #[command(flatten)]
+    pub(crate) base: MtcBaseArgs,
+
+    /// Previous tree size
+    #[arg(long)]
+    pub(crate) from: u64,
+
+    /// Current tree size
+    #[arg(long)]
+    pub(crate) to: u64,
+}
+
+#[derive(clap::Args)]
+pub(crate) struct MtcSubtreeArgs {
+    #[command(flatten)]
+    pub(crate) base: MtcBaseArgs,
+
+    /// Subtree start index
+    #[arg(long)]
+    pub(crate) start: u64,
+
+    /// Subtree end index (exclusive)
+    #[arg(long)]
+    pub(crate) end: u64,
 }

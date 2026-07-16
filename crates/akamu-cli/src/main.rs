@@ -18,6 +18,7 @@ mod helpers;
 mod import;
 mod install;
 mod issue;
+mod mtc;
 mod renew;
 mod revoke;
 
@@ -71,5 +72,6 @@ async fn run(cli: Cli) -> Result<(), String> {
         Commands::Install { target } => match target {
             InstallTarget::Timer(args) => install::cmd_install_timer(args),
         },
+        Commands::Mtc { cmd } => mtc::cmd_mtc(cmd).await.map_err(|e| e.to_string()),
     }
 }

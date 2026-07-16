@@ -491,6 +491,7 @@ pub(crate) async fn cmd_issue(args: CommonCertArgs) -> Result<(), String> {
 
     fs::write(&args.out, &pem).map_err(|e| format!("write {}: {e}", args.out.display()))?;
     println!("Certificate written to {}", args.out.display());
+    println!("Certificate URL:  {}", cert_url);
     println!("Certificate key:  {}", cert_key_path.display());
 
     // Write .renewal.toml sidecar so `akamu-cli renew --renewal-config` can reload all settings.
