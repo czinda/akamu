@@ -521,6 +521,10 @@ pub(crate) struct MtcCertArgs {
     /// Certificate ID (last path segment of the ACME certificate URL)
     #[arg(long)]
     pub(crate) cert_id: String,
+
+    /// Local standalone cert DER file (skip fetching from server)
+    #[arg(long, value_name = "FILE")]
+    pub(crate) cert_file: Option<PathBuf>,
 }
 
 #[derive(clap::Args)]

@@ -171,7 +171,11 @@ async fn cmd_mtc_verify(args: MtcCertArgs) -> Result<(), ClientError> {
     let algorithm = HashAlgorithm::Sha256;
     let client = build_client(&args.base)?;
 
-    let der = client.standalone_cert(&args.cert_id).await?;
+    let der = if let Some(path) = &args.cert_file {
+        fs::read(path).map_err(|e| ClientError::Mtc(format!("read {}: {e}", path.display())))?
+    } else {
+        client.standalone_cert(&args.cert_id).await?
+    };
 
     let (details, mtc_proof) = mtc_verify::extract_cert_and_proof(&der)?;
 

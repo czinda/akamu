@@ -289,7 +289,7 @@ if [[ -n "$CERT_ID" ]]; then
     echo "[demo] Verifying MTC inclusion proof end-to-end..."
     echo "[demo]   cert_id: ${CERT_ID}"
     echo
-    "$AKAMU_CLI" mtc verify "${MTC_ARGS[@]}" --cert-id "$CERT_ID"
+    "$AKAMU_CLI" mtc verify "${MTC_ARGS[@]}" --cert-id "$CERT_ID" --cert-file "$CERT_OUT"
     echo "[demo] ================================================"
     echo
 fi
