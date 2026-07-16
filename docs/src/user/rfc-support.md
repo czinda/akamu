@@ -72,7 +72,7 @@ This page documents every RFC that is relevant to `Akāmu`, explaining what each
 
 | RFC/Draft | Title | Status | Notes |
 |-----------|-------|--------|-------|
-| [draft-ietf-plants-merkle-tree-certs-04](#draft-ietf-plants-merkle-tree-certs-04--merkle-tree-certificates) | Merkle Tree Certificates (MTC) | Partial | `tile/entries` endpoint not served (only leaf hashes stored); experimental OIDs (pre-IANA). See [coverage table](#coverage-status) for details |
+| [draft-ietf-plants-merkle-tree-certs-05](#draft-ietf-plants-merkle-tree-certs-05--merkle-tree-certificates) | Merkle Tree Certificates (MTC) | Partial | `tile/entries` endpoint not served (only leaf hashes stored); experimental OIDs (pre-IANA). See [coverage table](#coverage-status) for details |
 
 ### Industry Policy
 
@@ -1164,9 +1164,9 @@ An order may contain both `TNAuthList` and `JWTClaimConstraints` identifiers sim
 
 ---
 
-## draft-ietf-plants-merkle-tree-certs-04 — Merkle Tree Certificates
+## draft-ietf-plants-merkle-tree-certs-05 — Merkle Tree Certificates
 
-**[draft-ietf-plants-merkle-tree-certs-04](https://davidben.github.io/merkle-tree-certs/)** defines Merkle Tree Certificates (MTC): a transparency-log-backed certificate format in which certificate validity is anchored to a signed Merkle tree rather than an individual CA signature. Relying parties verify a Merkle inclusion proof against a periodically published, cosigned checkpoint rather than fetching OCSP or CRL data.
+**[draft-ietf-plants-merkle-tree-certs-05](https://datatracker.ietf.org/doc/draft-ietf-plants-merkle-tree-certs/05/)** defines Merkle Tree Certificates (MTC): a transparency-log-backed certificate format in which certificate validity is anchored to a signed Merkle tree rather than an individual CA signature. Relying parties verify a Merkle inclusion proof against a periodically published, cosigned checkpoint rather than fetching OCSP or CRL data.
 
 The format uses experimental OIDs (pre-IANA). OID arcs will change when the draft is published as an RFC; until then, deployments must treat the OIDs as provisional.
 

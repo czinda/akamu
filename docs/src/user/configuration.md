@@ -755,10 +755,10 @@ enabled = false
 When `issue_as = "mtc"` is set in a profile, the server builds a standalone certificate for each issued certificate. The standalone certificate is a standard X.509 v3 `Certificate` where:
 
 - `signatureAlgorithm` is `id-alg-mtcProof` (experimental OID `1.3.6.1.4.1.44363.47.0` from the Cloudflare PEN arc)
-- `signatureValue` carries a TLS-encoded `MTCProof` (inclusion proof + cosignature records); per draft-04 §4.3, `MTCProof` has a leading `extensions` field (uint16 length-prefixed; empty = `\x00\x00`), `start`/`end` as uint48 (6-byte big-endian), and a uint8-prefixed `cosigner_id` in each `MtcSignature`
+- `signatureValue` carries a TLS-encoded `MTCProof` (inclusion proof + cosignature records); per draft-05 §4.3, `MTCProof` has a leading `extensions` field (uint16 length-prefixed; empty = `\x00\x00`), `start`/`end` as uint48 (6-byte big-endian), and a uint8-prefixed `cosigner_id` in each `MtcSignature`
 - `serialNumber` encodes the log entry index per draft §6.1
 
-The `GET /acme/mtc/cert/{cert_id}/standalone` and `GET /acme/mtc/landmarks/{seq}/cert` endpoints return the DER-encoded certificate with `Content-Type: application/pkix-cert` and the `X-MTC-Version: draft-04` response header.
+The `GET /acme/mtc/cert/{cert_id}/standalone` and `GET /acme/mtc/landmarks/{seq}/cert` endpoints return the DER-encoded certificate with `Content-Type: application/pkix-cert` and the `X-MTC-Version: draft-05` response header.
 
 > **OID stability note:** The OIDs are experimental and pre-IANA. They will change when draft-ietf-plants-merkle-tree-certs is published as an RFC, requiring a coordinated update of the `synta-mtc` library and relying implementations. When `[mtc]` is enabled and `[mtc.signing_key]` is configured, the auto-generated CA certificate includes the `id-pe-mtcCertificationAuthority` extension (experimental OID `1.3.6.1.4.1.44363.47.2`), identifying the CA as an MTC-capable issuer.
 
@@ -828,7 +828,7 @@ hash_alg = "sha256"
 
 **Optional. Default: `1`.**
 
-Log number for `serialNumber` encoding per draft-04 §6.1. The serial number of each standalone certificate is computed as `(log_number << 48) | entry_index`. Each CA log should receive a unique, consecutive-from-1 log number.
+Log number for `serialNumber` encoding per draft-05 §6.1. The serial number of each standalone certificate is computed as `(log_number << 48) | entry_index`. Each CA log should receive a unique, consecutive-from-1 log number.
 
 ```toml
 [mtc]
@@ -850,7 +850,7 @@ tree_minimum_index = 100
 
 **Optional. Default: absent.**
 
-The CA's own `TrustAnchorID` OID in dotted-decimal notation. Per draft-04 §5.4, each CA MUST operate a CA cosigner whose cosigner ID is the same as its CA ID. When set, a self-cosignature is produced alongside any external cosignatures during checkpoint production. The signing key configured in `[mtc.signing_key]` is used for the self-cosignature.
+The CA's own `TrustAnchorID` OID in dotted-decimal notation. Per draft-05 §5.4, each CA MUST operate a CA cosigner whose cosigner ID is the same as its CA ID. When set, a self-cosignature is produced alongside any external cosignatures during checkpoint production. The signing key configured in `[mtc.signing_key]` is used for the self-cosignature.
 
 When absent, no self-cosignature is produced.
 
@@ -908,7 +908,7 @@ Path to the cosigner's X.509 identity certificate PEM file. When set, the file i
 
 **Optional. Default: absent.**
 
-The expected `TrustAnchorID` OID of the cosigner in dotted-decimal notation (e.g. `"1.3.6.1.4.1.44363.47.10.1"`). Per draft-ietf-plants-merkle-tree-certs-04 §4.1, `CosignerID` is now an `OBJECT IDENTIFIER` (`TrustAnchorID ::= OBJECT IDENTIFIER`) rather than a SEQUENCE of hash algorithm and public key. When set, Akāmu verifies that the `SubtreeSignature.cosigner` OID in each response matches this value. When absent, the OID identity check is skipped; cryptographic verification via `cosigner_id_cert_pem` still applies when that field is set. Operators must agree on the OID value with their cosigner operator.
+The expected `TrustAnchorID` OID of the cosigner in dotted-decimal notation (e.g. `"1.3.6.1.4.1.44363.47.10.1"`). Per draft-ietf-plants-merkle-tree-certs-05 §4.1, `CosignerID` is a `RELATIVE-OID` (`TrustAnchorID ::= RELATIVE-OID`) rather than a SEQUENCE of hash algorithm and public key. When set, Akāmu verifies that the `SubtreeSignature.cosigner` OID in each response matches this value. When absent, the OID identity check is skipped; cryptographic verification via `cosigner_id_cert_pem` still applies when that field is set. Operators must agree on the OID value with their cosigner operator.
 
 > **Security constraint:** Setting `trust_anchor_id` without also setting `cosigner_id_cert_pem` is a hard startup error. OID-only verification provides no cryptographic assurance — anyone who knows the OID could forge a cosignature. Both fields must be set together to enable verified cosignature acceptance.
 
@@ -2268,7 +2268,7 @@ When `true`, inject the account's stored Kerberos principal (copied from the EAB
 
 **Optional. Default: absent / `"x509"`.**
 
-Set to `"mtc"` to issue a Merkle Tree Certificate standalone certificate instead of a PEM chain. Requires `[mtc]` to be enabled. The standalone certificate is a standard X.509 v3 `Certificate` where `signatureAlgorithm` is `id-alg-mtcProof` (OID `1.3.6.1.4.1.44363.47.0`, experimental pre-IANA) and `signatureValue` carries a TLS-encoded `MTCProof`. Per draft-04 §4.3, `MTCProof` contains a leading `extensions` field (uint16 length-prefixed; empty = `\x00\x00`), `start`/`end` as uint48 (6-byte big-endian), and a uint8-prefixed `cosigner_id` in each `MtcSignature`. The OID will change when the draft is published as an RFC.
+Set to `"mtc"` to issue a Merkle Tree Certificate standalone certificate instead of a PEM chain. Requires `[mtc]` to be enabled. The standalone certificate is a standard X.509 v3 `Certificate` where `signatureAlgorithm` is `id-alg-mtcProof` (OID `1.3.6.1.4.1.44363.47.0`, experimental pre-IANA) and `signatureValue` carries a TLS-encoded `MTCProof`. Per draft-05 §4.3, `MTCProof` contains a leading `extensions` field (uint16 length-prefixed; empty = `\x00\x00`), `start`/`end` as uint48 (6-byte big-endian), and a uint8-prefixed `cosigner_id` in each `MtcSignature`. The OID will change when the draft is published as an RFC.
 
 *Per-profile authorization:*
 

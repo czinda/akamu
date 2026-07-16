@@ -126,7 +126,7 @@ synta = { version = ">=0.3.0", default-features = false, features = ["std", "der
 
 # Synta crates for all X.509 / MTC operations
 # >=0.2.4: CosignerID redesigned as TrustAnchorID OID, MtcProof gains extensions field
-# (draft-ietf-plants-merkle-tree-certs-04).
+# (draft-ietf-plants-merkle-tree-certs-05).
 synta-certificate =  { version = ">=0.3.0", features = ["std", "pqc"] }
 synta-x509-verification =  { version = ">=0.3.0" }
 synta-mtc = { version = ">=0.3.0", features = ["std"] }

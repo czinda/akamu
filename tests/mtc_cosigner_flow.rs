@@ -615,7 +615,7 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
         "TBS signatureAlgorithm must be id-alg-mtcProof"
     );
 
-    // 9c. serialNumber = (log_number << 48) | entry_index (draft-04 §6.1).
+    // 9c. serialNumber = (log_number << 48) | entry_index (draft-05 §6.1).
     let serial = cert
         .tbs_certificate
         .serial_number
@@ -844,7 +844,7 @@ async fn verify_mtc_proof(
     )
     .expect("build log entry from standalone TBS cert");
     // synta-mtc 0.2.6 hardcodes version: None but the server includes the
-    // actual version field (draft-ietf-plants-merkle-tree-certs-04).
+    // actual version field (draft-ietf-plants-merkle-tree-certs-05).
     log_entry.version = standalone_cert.tbs_certificate.version.clone();
     let entry = MerkleTreeCertEntry::TbsCertEntry(log_entry);
     let leaf_hash = hash_log_entry(HashAlgorithm::Sha256, &entry, &[]).expect("hash_log_entry");
