@@ -71,6 +71,22 @@ pub async fn landmark_cert(
     write_binary(&bytes, output.as_deref())
 }
 
+/// Show parsed details of a landmark certificate.
+pub async fn landmark_cert_show(
+    client: &AdminClient,
+    seq: i64,
+    ca: Option<String>,
+) -> Result<(), CtlError> {
+    let bytes = client
+        .get_bytes(&format!("/admin/mtc/landmarks/{seq}/cert{}", ca_qs(&ca)))
+        .await?;
+    match akamu_client::cert_text::describe_landmark_cert_der(&bytes) {
+        Some(text) => print!("{text}"),
+        None => eprintln!("Failed to parse landmark certificate DER"),
+    }
+    Ok(())
+}
+
 /// Show inclusion proof for a certificate.
 pub async fn inclusion_proof(
     client: &AdminClient,

@@ -92,7 +92,19 @@ pub(crate) async fn cmd_mtc(cmd: MtcCommands) -> Result<(), ClientError> {
         MtcCommands::LandmarkCert(args) => {
             let client = build_client(&args.base)?;
             match client.landmark_cert_for(&args.cert_id).await? {
-                CertFetchResult::Ok(der) => write_der_or_hex(&der, &args.out),
+                CertFetchResult::Ok(der) => {
+                    if args.out.is_some() {
+                        write_der_or_hex(&der, &args.out)
+                    } else {
+                        match akamu_client::cert_text::describe_landmark_cert_der(&der) {
+                            Some(text) => {
+                                print!("{text}");
+                                Ok(())
+                            }
+                            None => write_der_or_hex(&der, &args.out),
+                        }
+                    }
+                }
                 CertFetchResult::RetryAfter(secs) => Err(ClientError::Mtc(format!(
                     "landmark not ready; retry after {secs}s"
                 ))),

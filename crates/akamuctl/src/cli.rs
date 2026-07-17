@@ -466,6 +466,14 @@ pub(crate) enum MtcCmd {
         #[arg(long, short = 'o', value_name = "FILE")]
         output: Option<PathBuf>,
     },
+    /// Show parsed details of a landmark certificate.
+    LandmarkCertShow {
+        /// Landmark sequence number.
+        seq: i64,
+        /// Filter by CA identifier.
+        #[arg(long, value_name = "CA_ID")]
+        ca: Option<String>,
+    },
     /// Show an inclusion proof for a certificate.
     InclusionProof {
         /// Certificate ID (UUID).

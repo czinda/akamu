@@ -438,6 +438,9 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
             MtcCmd::LandmarkCert { seq, ca, output } => {
                 commands::mtc::landmark_cert(&server_client, seq, ca, output).await?;
             }
+            MtcCmd::LandmarkCertShow { seq, ca } => {
+                commands::mtc::landmark_cert_show(&server_client, seq, ca).await?;
+            }
             MtcCmd::InclusionProof { cert_id } => {
                 commands::mtc::inclusion_proof(&server_client, &fmt, &cert_id).await?;
             }
