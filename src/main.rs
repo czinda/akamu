@@ -310,7 +310,9 @@ async fn run() -> Result<(), String> {
 
     // Sweep DB nonces older than 24 h at startup (best-effort; handles any
     // nonces written by a previous process that used the DB-backed store).
-    let _ = db::nonces::sweep_expired(&db, 86400).await;
+    if let Err(e) = db::nonces::sweep_expired(&db, 86400).await {
+        tracing::debug!("nonce sweep at startup: {e}");
+    }
 
     // ── CRDT database (separate pool for cluster tables) ─────────────────────
     // Derive the CRDT DB URL from config or from the main DB URL by appending
