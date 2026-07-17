@@ -159,6 +159,9 @@ impl AcmeClient {
         // LoggingChainVerifier wraps OsslChainVerifier so server cert details
         // are logged at debug level during the TLS handshake.
         let native = rustls_native_certs::load_native_certs();
+        for err in &native.errors {
+            tracing::warn!("native cert loading error: {err}");
+        }
         let mut all_ca_ders: Vec<CertificateDer<'_>> = native
             .certs
             .iter()
@@ -392,8 +395,13 @@ impl AcmeClient {
 
         let (status, headers, raw) = self.http_dispatch(req).await?;
         // Cache the nonce from the response for the next request.
-        if let Ok(nonce) = nonce_from_headers(&headers) {
-            *self.cached_nonce.lock().await = Some(nonce);
+        match nonce_from_headers(&headers) {
+            Ok(nonce) => {
+                *self.cached_nonce.lock().await = Some(nonce);
+            }
+            Err(_) => {
+                tracing::debug!(url, "POST response missing Replay-Nonce header");
+            }
         }
         Ok((status, headers, raw))
     }
