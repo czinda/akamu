@@ -1,4 +1,4 @@
-import React, { Component, type ReactNode } from 'react';
+import React, { Component, type ReactNode, useCallback, useMemo } from 'react';
 import { Routes, Route, Navigate, NavLink, Outlet } from 'react-router-dom';
 import {
   Page,
@@ -32,6 +32,9 @@ import CrossCerts from './pages/CrossCerts';
 import Operators from './pages/Operators';
 import AuditLog from './pages/AuditLog';
 import ServerConfig from './pages/ServerConfig';
+import MtcOverview from './pages/MTC';
+import MtcDetail from './pages/MTC/Detail';
+import MtcLandmarkDetail from './pages/MTC/LandmarkDetail';
 import CertDetail from './pages/Certificates/Detail';
 import OrderDetail from './pages/Orders/Detail';
 import AccountDetail from './pages/Accounts/Detail';
@@ -108,6 +111,7 @@ function AppSidebar({ role }: { role: Role | null }) {
   const isAdmin = hasRole(role, 'administrator');
   const canSeeAudit = role === 'administrator' || role === 'auditor';
   const canSeeCrossCerts = role === 'administrator' || role === 'ca_operations' || role === 'auditor';
+  const canSeeMtc = role === 'administrator' || role === 'ca_operations' || role === 'auditor';
 
   return (
     <PageSidebar>
@@ -128,6 +132,7 @@ function AppSidebar({ role }: { role: Role | null }) {
             )}
             {isAtLeastCaOps && <NavItem><NavLink to="/cas">CAs</NavLink></NavItem>}
             {canSeeCrossCerts && <NavItem><NavLink to="/cross-certs">Cross-Certs</NavLink></NavItem>}
+            {canSeeMtc && <NavItem><NavLink to="/mtc">Transparency Log</NavLink></NavItem>}
             {isAdmin && (
               <>
                 <NavItem><NavLink to="/operators">Operators</NavLink></NavItem>
@@ -141,24 +146,28 @@ function AppSidebar({ role }: { role: Role | null }) {
   );
 }
 
+const MemoSidebar = React.memo(AppSidebar);
+const MemoHeader = React.memo(AppHeader);
+
 function AuthenticatedLayout() {
   const { token, role, clearAuth } = useAuth();
+
+  const handleLogout = useCallback(async () => {
+    await apiLogout();
+    clearAuth();
+    window.location.href = '/ui/login';
+  }, [clearAuth]);
+
+  const masthead = useMemo(() => <MemoHeader onLogout={handleLogout} />, [handleLogout]);
+  const sidebar = useMemo(() => <MemoSidebar role={role} />, [role]);
 
   if (!token) return <Navigate to="/login" replace />;
   if (!role) return <Spinner />;
 
-  async function handleLogout() {
-    await apiLogout();
-    clearAuth();
-    // Hard redirect so the React app re-initialises from a clean slate.
-    // A client-side navigate() keeps stale in-memory state alive.
-    window.location.href = '/ui/login';
-  }
-
   return (
     <Page
-      masthead={<AppHeader onLogout={handleLogout} />}
-      sidebar={<AppSidebar role={role} />}
+      masthead={masthead}
+      sidebar={sidebar}
       isManagedSidebar
     >
       <PageErrorBoundary>
@@ -195,6 +204,9 @@ export default function App() {
         <Route path="/cross-certs" element={
           <RequireAnyRole roles={['administrator', 'ca_operations', 'auditor']}><CrossCerts /></RequireAnyRole>
         } />
+        <Route path="/mtc" element={
+          <RequireAnyRole roles={['administrator', 'ca_operations', 'auditor']}><MtcOverview /></RequireAnyRole>
+        } />
         <Route path="/operators" element={
           <RequireRole minRole="administrator"><Operators /></RequireRole>
         } />
@@ -211,6 +223,8 @@ export default function App() {
         <Route path="/delegations/:id" element={<RequireRole minRole="ca_ra"><DelegationDetail /></RequireRole>} />
         <Route path="/cas/:id" element={<RequireRole minRole="ca_operations"><CADetail /></RequireRole>} />
         <Route path="/cross-certs/:id" element={<RequireAnyRole roles={['administrator', 'ca_operations', 'auditor']}><CrossCertDetail /></RequireAnyRole>} />
+        <Route path="/mtc/:caId" element={<RequireAnyRole roles={['administrator', 'ca_operations', 'auditor']}><MtcDetail /></RequireAnyRole>} />
+        <Route path="/mtc/:caId/landmarks/:seq" element={<RequireAnyRole roles={['administrator', 'ca_operations', 'auditor']}><MtcLandmarkDetail /></RequireAnyRole>} />
         <Route path="/operators/:id" element={<RequireRole minRole="administrator"><OperatorDetail /></RequireRole>} />
         <Route path="/operators/:id/edit" element={<RequireRole minRole="administrator"><OperatorEdit /></RequireRole>} />
         <Route path="/operators/new" element={<RequireRole minRole="administrator"><OperatorEdit createMode /></RequireRole>} />
