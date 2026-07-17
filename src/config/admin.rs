@@ -118,7 +118,7 @@ fn default_admin_session_lock_secs() -> u64 {
     900
 }
 fn default_admin_auth_rate_limit() -> u32 {
-    20
+    200
 }
 fn default_max_failed_auth() -> u32 {
     5
