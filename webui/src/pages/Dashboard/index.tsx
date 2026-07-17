@@ -16,6 +16,7 @@ import {
   Label,
 } from '@patternfly/react-core';
 import { getStats, ServerStats } from '../../api/stats';
+import { fmtTs } from '../../utils';
 import { useAuth } from '../../auth/AuthContext';
 
 function StatRow({ label, value }: { label: string; value: number | string }) {
@@ -43,6 +44,7 @@ function fmtUptime(secs: number): string {
 export default function Dashboard() {
   const { role } = useAuth();
   const canSeeAudit = role === 'administrator' || role === 'auditor';
+  const canSeeMtc = role === 'administrator' || role === 'ca_operations' || role === 'auditor';
   const [stats, setStats] = useState<ServerStats | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -112,7 +114,7 @@ export default function Dashboard() {
                   <CardTitle>Audit Events</CardTitle>
                   <CardBody>
                     <DescriptionList isHorizontal columnModifier={{ default: '1Col' }}>
-                      <StatRow label="Total" value={stats.audit_events.total} />
+                      <StatRow label="Since Startup" value={stats.audit_events.since_startup} />
                     </DescriptionList>
                   </CardBody>
                 </Card>
@@ -129,6 +131,39 @@ export default function Dashboard() {
                 </CardBody>
               </Card>
             </GridItem>
+            {canSeeMtc && stats.mtc.length > 0 && (
+              <GridItem span={8}>
+                <Card>
+                  <CardTitle>MTC Transparency Log</CardTitle>
+                  <CardBody>
+                    {stats.mtc.map((ca) => (
+                      <div key={ca.ca_id} style={stats.mtc.length > 1 ? { marginBottom: '1rem' } : undefined}>
+                        {stats.mtc.length > 1 && (
+                          <Title headingLevel="h4" size="md" style={{ marginBottom: '0.5rem' }}>
+                            CA: {ca.ca_id}
+                          </Title>
+                        )}
+                        <DescriptionList isHorizontal columnModifier={{ default: '1Col' }}>
+                          <DescriptionListGroup>
+                            <DescriptionListTerm>Status</DescriptionListTerm>
+                            <DescriptionListDescription>
+                              <Label color={ca.enabled ? 'green' : 'grey'}>
+                                {ca.enabled ? 'enabled' : 'disabled'}
+                              </Label>
+                            </DescriptionListDescription>
+                          </DescriptionListGroup>
+                          <StatRow label="Tree Size" value={ca.tree_size ?? '—'} />
+                          <StatRow label="Landmarks" value={ca.landmarks ?? '—'} />
+                          <StatRow label="Last Checkpoint" value={fmtTs(ca.last_checkpoint_at)} />
+                          <StatRow label="Last Landmark" value={fmtTs(ca.last_landmark_at)} />
+                          <StatRow label="Cosigners" value={ca.cosigner_count} />
+                        </DescriptionList>
+                      </div>
+                    ))}
+                  </CardBody>
+                </Card>
+              </GridItem>
+            )}
           </Grid>
         )}
       </PageSection>

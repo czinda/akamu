@@ -13,6 +13,8 @@ import {
   Label,
 } from '@patternfly/react-core';
 import { getCert, downloadCert, revokeCert, CertRow } from '../../api/certs';
+import { getInclusionProof, downloadStandalone, type MtcInclusionProof } from '../../api/mtc';
+import { triggerBlobDownload } from '../../utils';
 import { fmtTs } from '../../utils';
 import { ObjLink } from '../../components/ObjLink';
 import { CertTextBlock } from '../../components/CertTextBlock';
@@ -27,6 +29,9 @@ export default function CertDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [revoking, setRevoking] = useState(false);
+  const [showInclusionProof, setShowInclusionProof] = useState(false);
+  const [inclusionProof, setInclusionProof] = useState<MtcInclusionProof | null>(null);
+  const [proofError, setProofError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -35,6 +40,24 @@ export default function CertDetail() {
       .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load'))
       .finally(() => setLoading(false));
   }, [id]);
+
+  useEffect(() => {
+    if (showInclusionProof && !inclusionProof && !proofError && id) {
+      getInclusionProof(id)
+        .then(setInclusionProof)
+        .catch((e: unknown) => setProofError(e instanceof Error ? e.message : 'Failed to load proof'));
+    }
+  }, [showInclusionProof, inclusionProof, proofError, id]);
+
+  async function handleDownloadMtc() {
+    if (!id) return;
+    try {
+      const blob = await downloadStandalone(id);
+      triggerBlobDownload(blob, `mtc-${id}.der`);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Download failed');
+    }
+  }
 
   async function handleDownload() {
     if (!id) return;
@@ -143,10 +166,47 @@ export default function CertDetail() {
                 </DescriptionListGroup>
               )}
               {data.mtc_log_index != null && (
-                <DescriptionListGroup>
-                  <DescriptionListTerm>MTC Log Index</DescriptionListTerm>
-                  <DescriptionListDescription>{data.mtc_log_index}</DescriptionListDescription>
-                </DescriptionListGroup>
+                <>
+                  <DescriptionListGroup>
+                    <DescriptionListTerm>MTC Log Index</DescriptionListTerm>
+                    <DescriptionListDescription>
+                      {data.mtc_log_index}
+                      <Button variant="link" size="sm" style={{ marginLeft: '0.5rem' }}
+                        onClick={() => setShowInclusionProof(!showInclusionProof)}>
+                        {showInclusionProof ? 'Hide' : 'Show'} Inclusion Proof
+                      </Button>
+                    </DescriptionListDescription>
+                  </DescriptionListGroup>
+                  {showInclusionProof && (
+                    <DescriptionListGroup>
+                      <DescriptionListTerm>Inclusion Proof</DescriptionListTerm>
+                      <DescriptionListDescription>
+                        {proofError && <Alert variant="danger" title={proofError} isInline isPlain />}
+                        {!inclusionProof && !proofError && <Spinner size="md" />}
+                        {inclusionProof && (
+                          <div>
+                            <div>Leaf Index: {inclusionProof.leaf_index}</div>
+                            <div>Tree Size: {inclusionProof.tree_size}</div>
+                            <div style={{ marginTop: '0.25rem' }}>Proof hashes:</div>
+                            {inclusionProof.proof.map((p) => (
+                              <div key={p.hash}><code style={{ fontSize: '0.8rem' }}>{p.hash}</code></div>
+                            ))}
+                          </div>
+                        )}
+                      </DescriptionListDescription>
+                    </DescriptionListGroup>
+                  )}
+                  {canRevoke && (
+                    <DescriptionListGroup>
+                      <DescriptionListTerm>MTC Certificate</DescriptionListTerm>
+                      <DescriptionListDescription>
+                        <Button variant="secondary" size="sm" onClick={handleDownloadMtc}>
+                          Download Standalone DER
+                        </Button>
+                      </DescriptionListDescription>
+                    </DescriptionListGroup>
+                  )}
+                </>
               )}
               {(data.suggested_window_start || data.suggested_window_end) && (
                 <DescriptionListGroup>
