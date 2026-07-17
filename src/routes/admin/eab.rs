@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use base64::Engine as _;
+
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -22,8 +24,10 @@ use super::grants_to_json;
 
 #[derive(Deserialize)]
 struct NewEabPayload {
-    kid: String,
-    hmac_key_b64u: String,
+    #[serde(default)]
+    kid: Option<String>,
+    #[serde(default)]
+    hmac_key_b64u: Option<String>,
     #[serde(default)]
     profile_grants: Option<Vec<String>>,
     #[serde(default = "default_eab_alg")]
@@ -132,14 +136,6 @@ pub async fn post_eab(
         Err(e) => return (StatusCode::BAD_REQUEST, format!("JSON: {e}")).into_response(),
     };
 
-    if payload.kid.is_empty() || payload.hmac_key_b64u.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            "kid and hmac_key_b64u are required",
-        )
-            .into_response();
-    }
-
     if !matches!(payload.alg.as_str(), "sha256" | "sha384" | "sha512") {
         return (
             StatusCode::BAD_REQUEST,
@@ -150,7 +146,8 @@ pub async fn post_eab(
 
     // Resolve the owner operator: the caller may delegate to another operator,
     // but only administrators may do so (prevents ca_operations privilege escalation).
-    let owner_operator_id = if let Some(target_id) = payload.for_operator_id {
+    // Also capture gssapi_principal for deterministic EAB derivation.
+    let (owner_operator_id, owner_principal) = if let Some(target_id) = payload.for_operator_id {
         if operator.role != OperatorRole::Administrator {
             return (
                 StatusCode::FORBIDDEN,
@@ -159,7 +156,14 @@ pub async fn post_eab(
                 .into_response();
         }
         match db::operators::get_by_id(&state.db, target_id).await {
-            Ok(Some(_)) => target_id,
+            Ok(Some(op)) if op.active == 1 => (op.id, op.gssapi_principal),
+            Ok(Some(_)) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"status": 400, "detail": "target operator is not active"})),
+                )
+                    .into_response();
+            }
             Ok(None) => {
                 return (
                     StatusCode::NOT_FOUND,
@@ -173,8 +177,79 @@ pub async fn post_eab(
             }
         }
     } else {
-        operator.operator_id
+        // Self-ownership: look up the calling operator's principal.
+        match db::operators::get_by_id(&state.db, operator.operator_id).await {
+            Ok(Some(op)) => (op.id, op.gssapi_principal),
+            Ok(None) => (operator.operator_id, None),
+            Err(e) => {
+                tracing::error!(error = %e, "post_eab: owner operator lookup failed");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        }
     };
+
+    let caller_supplied_kid = matches!(payload.kid, Some(ref k) if !k.is_empty());
+    let caller_supplied_key = matches!(payload.hmac_key_b64u, Some(ref k) if !k.is_empty());
+
+    // When the owner has a GSSAPI principal and eab_master_secret is configured,
+    // derive deterministic kid/hmac_key so that both the mTLS admin path and the
+    // GSSAPI /acme/eab path produce identical credentials for the same principal.
+    let (kid, hmac_key_b64u, bound_principal, derived) =
+        if !caller_supplied_kid && !caller_supplied_key {
+            if let (Some(ref principal), Some(ref master)) =
+                (&owner_principal, &state.eab_master_secret)
+            {
+                match crate::eab_derivation::derive_eab_credentials(master, principal) {
+                    Ok((k, h)) => (k, h, Some(principal.as_str()), true),
+                    Err(e) => {
+                        tracing::error!(error = %e, "post_eab: EAB credential derivation failed");
+                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    }
+                }
+            } else {
+                let kid = {
+                    let mut buf = [0u8; 16];
+                    if let Err(e) = native_ossl::rand::Rand::fill(&mut buf) {
+                        tracing::error!(error = %e, "post_eab: random kid generation failed");
+                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    }
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buf)
+                };
+                let hmac_key = {
+                    let mut buf = [0u8; 32];
+                    if let Err(e) = native_ossl::rand::Rand::fill(&mut buf) {
+                        tracing::error!(error = %e, "post_eab: random hmac_key generation failed");
+                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    }
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buf)
+                };
+                (kid, hmac_key, None, false)
+            }
+        } else {
+            let kid = match payload.kid {
+                Some(ref k) if !k.is_empty() => k.clone(),
+                _ => {
+                    let mut buf = [0u8; 16];
+                    if let Err(e) = native_ossl::rand::Rand::fill(&mut buf) {
+                        tracing::error!(error = %e, "post_eab: random kid generation failed");
+                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    }
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buf)
+                }
+            };
+            let hmac_key = match payload.hmac_key_b64u {
+                Some(ref k) if !k.is_empty() => k.clone(),
+                _ => {
+                    let mut buf = [0u8; 32];
+                    if let Err(e) = native_ossl::rand::Rand::fill(&mut buf) {
+                        tracing::error!(error = %e, "post_eab: random hmac_key generation failed");
+                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    }
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buf)
+                }
+            };
+            (kid, hmac_key, None, false)
+        };
 
     let now = unix_now();
     let grants_str = match grants_to_json(payload.profile_grants) {
@@ -188,57 +263,120 @@ pub async fn post_eab(
                 .into_response();
         }
     };
-    match db::eab::insert_with_grants(
-        &state.db,
-        &payload.kid,
-        &payload.hmac_key_b64u,
-        grants_str.as_deref(),
-        Some(owner_operator_id),
-        &payload.alg,
-        now,
-    )
-    .await
-    {
-        Ok(()) => {
-            state
-                .record_audit(
-                    AuditEvent::success(AuditEventType::AdminAction)
-                        .with_principal(&operator.name)
-                        .with_subject(&payload.kid)
-                        .with_detail("{\"action\":\"eab.create\"}"),
+
+    if derived {
+        // Derived credentials: use idempotent insert since the same principal
+        // always yields the same kid.
+        let eab_params = db::eab::EabGrantParams {
+            kid: &kid,
+            hmac_key_b64u: &hmac_key_b64u,
+            profile_grants: grants_str.as_deref(),
+            created_by_operator_id: Some(owner_operator_id),
+            alg: &payload.alg,
+            now,
+            bound_principal,
+        };
+        let inserted = match db::eab::insert_if_absent_with_grants(&state.db, &eab_params).await {
+            Ok(inserted) => inserted,
+            Err(e) => {
+                tracing::error!(error = %e, kid = %kid, "post_eab: db error");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"status": 500, "detail": "database error"})),
                 )
-                .await;
-            crdt_hooks::on_eab_key_set(
-                &state,
-                &payload.kid,
-                &payload.hmac_key_b64u,
-                now,
-                None,
-                grants_str,
+                    .into_response();
+            }
+        };
+
+        // Check if the key was already consumed by a prior account registration.
+        match db::eab::get_by_kid(&state.db, &kid).await {
+            Ok(Some(row)) if row.used_at.is_some() => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "status": 409,
+                        "detail": format!(
+                            "EAB credentials for principal '{}' have already been consumed",
+                            bound_principal.unwrap_or("unknown")
+                        )
+                    })),
+                )
+                    .into_response();
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                tracing::error!(kid = %kid, "post_eab: EAB key vanished after insert");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "post_eab: EAB key lookup after insert failed");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        }
+
+        state
+            .record_audit(
+                AuditEvent::success(AuditEventType::AdminAction)
+                    .with_principal(&operator.name)
+                    .with_subject(&kid)
+                    .with_detail("{\"action\":\"eab.create\"}"),
             )
             .await;
-            (
-                StatusCode::CREATED,
-                Json(json!({"kid": payload.kid, "created": now, "alg": payload.alg})),
-            )
-                .into_response()
+        if inserted {
+            crdt_hooks::on_eab_key_set(&state, &kid, &hmac_key_b64u, now, None, grants_str).await;
         }
-        Err(crate::error::AcmeError::Database(ref msg))
-            if msg.contains("UNIQUE") || msg.contains("unique") || msg.contains("Duplicate") =>
-        {
-            (
-                StatusCode::CONFLICT,
-                format!("EAB key '{}' already exists", payload.kid),
-            )
-                .into_response()
-        }
-        Err(e) => {
-            tracing::error!(error = %e, kid = %payload.kid, "post_eab: db error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "database error"})),
-            )
-                .into_response()
+        (
+            StatusCode::OK,
+            Json(json!({"kid": kid, "hmac_key_b64u": hmac_key_b64u, "created": now, "alg": payload.alg})),
+        )
+            .into_response()
+    } else {
+        let eab_params = db::eab::EabGrantParams {
+            kid: &kid,
+            hmac_key_b64u: &hmac_key_b64u,
+            profile_grants: grants_str.as_deref(),
+            created_by_operator_id: Some(owner_operator_id),
+            alg: &payload.alg,
+            now,
+            bound_principal,
+        };
+        match db::eab::insert_with_grants(&state.db, &eab_params).await {
+            Ok(()) => {
+                state
+                    .record_audit(
+                        AuditEvent::success(AuditEventType::AdminAction)
+                            .with_principal(&operator.name)
+                            .with_subject(&kid)
+                            .with_detail("{\"action\":\"eab.create\"}"),
+                    )
+                    .await;
+                crdt_hooks::on_eab_key_set(&state, &kid, &hmac_key_b64u, now, None, grants_str)
+                    .await;
+                (
+                    StatusCode::CREATED,
+                    Json(json!({"kid": kid, "hmac_key_b64u": hmac_key_b64u, "created": now, "alg": payload.alg})),
+                )
+                    .into_response()
+            }
+            Err(crate::error::AcmeError::Database(ref msg))
+                if msg.contains("UNIQUE")
+                    || msg.contains("unique")
+                    || msg.contains("Duplicate") =>
+            {
+                (
+                    StatusCode::CONFLICT,
+                    format!("EAB key '{kid}' already exists"),
+                )
+                    .into_response()
+            }
+            Err(e) => {
+                tracing::error!(error = %e, kid = %kid, "post_eab: db error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"status": 500, "detail": "database error"})),
+                )
+                    .into_response()
+            }
         }
     }
 }

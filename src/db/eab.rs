@@ -94,35 +94,76 @@ pub async fn get_by_kid(
     Ok(row)
 }
 
+/// Parameters for provisioning an EAB key with optional profile grants.
+///
+/// Bundles the data columns shared by [`insert_with_grants`] and
+/// [`insert_if_absent_with_grants`] so those functions stay under the
+/// clippy argument-count limit.
+pub struct EabGrantParams<'a> {
+    pub kid: &'a str,
+    pub hmac_key_b64u: &'a str,
+    /// JSON-serialised array of permitted profile IDs, or `None` for no
+    /// restriction.
+    pub profile_grants: Option<&'a str>,
+    /// Operator who provisioned this key via the admin API.
+    pub created_by_operator_id: Option<i64>,
+    pub alg: &'a str,
+    pub now: i64,
+    /// Kerberos principal bound to this key (for web UI EAB login).
+    pub bound_principal: Option<&'a str>,
+}
+
 /// Provision a new EAB key with optional profile grants (for the admin endpoint).
 ///
-/// `profile_grants` is a JSON-serialised array of permitted profile IDs, or
-/// `None` for no restriction.  `created_by_operator_id` links the key to the
-/// operator who provisioned it, enabling EAB-based web UI login.
 /// Returns a `Conflict` error if the `kid` already exists.
 pub async fn insert_with_grants(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
-    kid: &str,
-    hmac_key_b64u: &str,
-    profile_grants: Option<&str>,
-    created_by_operator_id: Option<i64>,
-    alg: &str,
-    now: i64,
+    params: &EabGrantParams<'_>,
 ) -> Result<(), AcmeError> {
     super::query(
         "INSERT INTO eab_keys \
-         (kid, hmac_key_b64u, created, profile_grants, created_by_operator_id, alg) \
-         VALUES (?, ?, ?, ?, ?, ?)",
+         (kid, hmac_key_b64u, created, profile_grants, created_by_operator_id, alg, bound_principal) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind(kid)
-    .bind(hmac_key_b64u)
-    .bind(now)
-    .bind(profile_grants)
-    .bind(created_by_operator_id)
-    .bind(alg)
+    .bind(params.kid)
+    .bind(params.hmac_key_b64u)
+    .bind(params.now)
+    .bind(params.profile_grants)
+    .bind(params.created_by_operator_id)
+    .bind(params.alg)
+    .bind(params.bound_principal)
     .execute(executor)
     .await?;
     Ok(())
+}
+
+/// Idempotent insert of a derived EAB key with optional profile grants.
+///
+/// Combines `insert_if_absent` semantics (no-op when the `kid` already exists)
+/// with the full column set of `insert_with_grants`.  Used when the admin API
+/// derives deterministic credentials from a Kerberos principal — repeated
+/// creation for the same principal yields the same `kid` and must not fail.
+pub async fn insert_if_absent_with_grants(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    params: &EabGrantParams<'_>,
+) -> Result<bool, AcmeError> {
+    let result = super::query(
+        "INSERT INTO eab_keys \
+         (kid, hmac_key_b64u, created, profile_grants, created_by_operator_id, alg, bound_principal) \
+         SELECT ?, ?, ?, ?, ?, ?, ? \
+         WHERE NOT EXISTS (SELECT 1 FROM eab_keys WHERE kid = ?)",
+    )
+    .bind(params.kid)
+    .bind(params.hmac_key_b64u)
+    .bind(params.now)
+    .bind(params.profile_grants)
+    .bind(params.created_by_operator_id)
+    .bind(params.alg)
+    .bind(params.bound_principal)
+    .bind(params.kid)
+    .execute(executor)
+    .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 /// Mark a key as used.
@@ -261,9 +302,20 @@ mod tests {
     #[tokio::test]
     async fn insert_with_grants_stores_grants() {
         let db = open_db().await;
-        insert_with_grants(&db, "kid6", "key", Some("[\"p1\"]"), None, "sha256", 1_000)
-            .await
-            .unwrap();
+        insert_with_grants(
+            &db,
+            &EabGrantParams {
+                kid: "kid6",
+                hmac_key_b64u: "key",
+                profile_grants: Some("[\"p1\"]"),
+                created_by_operator_id: None,
+                alg: "sha256",
+                now: 1_000,
+                bound_principal: None,
+            },
+        )
+        .await
+        .unwrap();
         let row = get_by_kid(&db, "kid6").await.unwrap().unwrap();
         assert_eq!(row.profile_grants, Some("[\"p1\"]".to_string()));
     }
@@ -271,9 +323,20 @@ mod tests {
     #[tokio::test]
     async fn insert_with_grants_null_grants() {
         let db = open_db().await;
-        insert_with_grants(&db, "kid7", "key", None, None, "sha256", 1_000)
-            .await
-            .unwrap();
+        insert_with_grants(
+            &db,
+            &EabGrantParams {
+                kid: "kid7",
+                hmac_key_b64u: "key",
+                profile_grants: None,
+                created_by_operator_id: None,
+                alg: "sha256",
+                now: 1_000,
+                bound_principal: None,
+            },
+        )
+        .await
+        .unwrap();
         let row = get_by_kid(&db, "kid7").await.unwrap().unwrap();
         assert!(row.profile_grants.is_none());
     }

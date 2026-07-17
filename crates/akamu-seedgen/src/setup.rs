@@ -79,12 +79,15 @@ pub async fn create_dev_admin(
 
         db::eab::insert_with_grants(
             &state.db,
-            &kid,
-            &hmac_key_b64u,
-            None,
-            Some(op.id),
-            "sha256",
-            now_unix,
+            &db::eab::EabGrantParams {
+                kid: &kid,
+                hmac_key_b64u: &hmac_key_b64u,
+                profile_grants: None,
+                created_by_operator_id: Some(op.id),
+                alg: "sha256",
+                now: now_unix,
+                bound_principal: None,
+            },
         )
         .await
         .map_err(|e| format!("create dev admin EAB key: {e}"))?;
