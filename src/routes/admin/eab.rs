@@ -306,6 +306,8 @@ pub async fn get_eab_key(
                 "used_at": r.used_at,
                 "profile_grants": r.profile_grants,
                 "alg": r.alg,
+                "bound_principal": r.bound_principal,
+                "created_by_operator_id": r.created_by_operator_id,
             })),
         )
             .into_response(),
