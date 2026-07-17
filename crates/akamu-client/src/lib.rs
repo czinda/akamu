@@ -9,6 +9,7 @@ pub mod mtc_client;
 pub mod mtc_types;
 pub mod mtc_verify;
 pub mod onion;
+pub mod tls_verify;
 pub mod types;
 pub mod unix;
 

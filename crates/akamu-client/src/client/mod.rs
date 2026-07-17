@@ -69,11 +69,11 @@ fn log_x509(label: &str, cert: &native_ossl::x509::X509) {
 }
 
 /// `CertChainVerifier` that logs certificate details before delegating to
-/// the inner `OsslChainVerifier`.  Logging is at `debug` level so it is
+/// the inner `MtcAwareChainVerifier`.  Logging is at `debug` level so it is
 /// a no-op unless the tracing subscriber is configured at that level.
 #[derive(Debug)]
 struct LoggingChainVerifier {
-    inner: rustls_native_ossl::cert_verifier::OsslChainVerifier,
+    inner: crate::tls_verify::MtcAwareChainVerifier,
 }
 
 impl rustls_native_ossl::cert_verifier::CertChainVerifier for LoggingChainVerifier {
@@ -168,9 +168,8 @@ impl AcmeClient {
             all_ca_ders.push(CertificateDer::from(der.as_slice()));
         }
 
-        let chain_verifier =
-            rustls_native_ossl::cert_verifier::OsslChainVerifier::new(&all_ca_ders)
-                .map_err(|e| ClientError::Http(format!("build server-CA verifier: {e}")))?;
+        let chain_verifier = crate::tls_verify::MtcAwareChainVerifier::new(&all_ca_ders)
+            .map_err(|e| ClientError::Http(format!("build server-CA verifier: {e}")))?;
         let logging_verifier = Arc::new(LoggingChainVerifier {
             inner: chain_verifier,
         });

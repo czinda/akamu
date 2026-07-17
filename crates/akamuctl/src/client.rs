@@ -20,48 +20,58 @@ pub type HttpsClient = Client<
 >;
 
 /// Build a rustls ClientConfig with optional mTLS client cert.
+///
+/// Uses `rustls_native_ossl` as both the crypto provider and the server
+/// certificate verifier so that ML-DSA / composite post-quantum cert chains
+/// are verified through OpenSSL rather than the webpki verifier (which does
+/// not support ML-DSA).
 pub fn build_tls_config(
     ca_cert_pem: Option<&[u8]>,
     cert_pem: Option<&[u8]>,
     key_pem: Option<&[u8]>,
 ) -> Result<ClientConfig, CtlError> {
-    let mut root_store = rustls::RootCertStore::empty();
+    use rustls_native_ossl::cert_verifier::OsslServerCertVerifier;
 
-    // Load CA cert(s) if provided; otherwise trust native system roots.
-    if let Some(pem) = ca_cert_pem {
-        let certs = synta_certificate::pem_to_der(pem);
-        if certs.is_empty() {
-            return Err(CtlError::Config(
-                "ca_cert PEM contains no certificates".into(),
-            ));
-        }
-        for der in certs {
-            root_store
-                .add(rustls_pki_types::CertificateDer::from(der))
-                .map_err(|e| CtlError::Config(format!("add CA cert: {e}")))?;
-        }
-    } else {
-        let native_certs = rustls_native_certs::load_native_certs();
-        if !native_certs.errors.is_empty() {
-            eprintln!(
-                "warning: {} native certificate(s) failed to load",
-                native_certs.errors.len()
-            );
-            for e in &native_certs.errors {
-                eprintln!("  {e}");
-            }
-        }
-        for cert in native_certs.certs {
-            if let Err(e) = root_store.add(cert) {
-                eprintln!("warning: skipping native cert: {e}");
-            }
-        }
-    }
+    let provider = Arc::new(rustls_native_ossl::default_provider());
 
-    let builder = ClientConfig::builder().with_root_certificates(root_store);
+    let ca_cert_ders: Vec<rustls_pki_types::CertificateDer<'static>> =
+        if let Some(pem) = ca_cert_pem {
+            let ders = synta_certificate::pem_to_der(pem);
+            if ders.is_empty() {
+                return Err(CtlError::Config(
+                    "ca_cert PEM contains no certificates".into(),
+                ));
+            }
+            ders.into_iter()
+                .map(rustls_pki_types::CertificateDer::from)
+                .collect()
+        } else {
+            let native_certs = rustls_native_certs::load_native_certs();
+            if !native_certs.errors.is_empty() {
+                eprintln!(
+                    "warning: {} native certificate(s) failed to load",
+                    native_certs.errors.len()
+                );
+                for e in &native_certs.errors {
+                    eprintln!("  {e}");
+                }
+            }
+            native_certs.certs
+        };
+
+    let chain_verifier = Arc::new(
+        akamu_client::tls_verify::MtcAwareChainVerifier::new(&ca_cert_ders)
+            .map_err(|e| CtlError::Tls(format!("build server-CA verifier: {e}")))?,
+    );
+    let verifier = Arc::new(OsslServerCertVerifier::builder_with_verifier(chain_verifier).build());
+
+    let builder = ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| CtlError::Tls(format!("TLS protocol versions: {e}")))?
+        .dangerous()
+        .with_custom_certificate_verifier(verifier);
 
     if let (Some(cert_pem), Some(key_pem)) = (cert_pem, key_pem) {
-        // mTLS: supply client certificate and key.
         let cert_ders: Vec<rustls_pki_types::CertificateDer<'static>> =
             synta_certificate::pem_to_der(cert_pem)
                 .into_iter()

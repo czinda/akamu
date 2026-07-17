@@ -1077,10 +1077,28 @@ fn lint_issued_cert(cert_der: &[u8], ca_cert_der: &[u8], now: i64) -> Result<(),
     policy.permitted_spki_algorithms = permitted_spki_algs_with_composite();
     policy.permitted_signature_algorithms = permitted_sig_algs_with_composite();
 
-    store
+    let result = store
         .verify(&leaf, &[], &policy, RevocationChecks::default())
-        .map(|_| ())
-        .map_err(|e| AcmeError::Internal(format!("pre-issuance lint failed: {e}")))
+        .map(|_| ());
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let msg = e.to_string();
+            if akamu_client::tls_verify::is_mtc_extension_error(&msg)
+            {
+                akamu_client::tls_verify::validate_mtc_ca_extensions(
+                    std::iter::once(cert_der).chain(std::iter::once(ca_cert_der)),
+                )
+                .map_err(|mtc_err| {
+                    AcmeError::Internal(format!("pre-issuance lint failed: {mtc_err}"))
+                })
+            } else {
+                Err(AcmeError::Internal(format!(
+                    "pre-issuance lint failed: {e}"
+                )))
+            }
+        }
+    }
 }
 
 /// Output of `issue_ca_cert`.
@@ -1126,14 +1144,30 @@ pub(crate) fn check_is_ca_cert(cert_der: &[u8], now: i64) -> Result<(), AcmeErro
     // Apply CA extension policy to the "leaf" so cA=TRUE is required.
     policy.ee_extension_policy = ExtensionPolicy::new_default_webpki_ca();
 
-    store
+    let result = store
         .verify(&leaf, &[], &policy, RevocationChecks::default())
-        .map(|_| ())
-        .map_err(|e| {
-            AcmeError::BadRequest(format!(
-                "subject certificate is not a valid CA certificate: {e}"
-            ))
-        })
+        .map(|_| ());
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let msg = e.to_string();
+            if akamu_client::tls_verify::is_mtc_extension_error(&msg)
+            {
+                akamu_client::tls_verify::validate_mtc_ca_extensions(
+                    std::iter::once(cert_der),
+                )
+                .map_err(|mtc_err| {
+                    AcmeError::BadRequest(format!(
+                        "subject certificate is not a valid CA certificate: {mtc_err}"
+                    ))
+                })
+            } else {
+                Err(AcmeError::BadRequest(format!(
+                    "subject certificate is not a valid CA certificate: {e}"
+                )))
+            }
+        }
+    }
 }
 
 /// Lint a just-issued CA certificate by re-verifying it against the signing CA.
@@ -1159,10 +1193,30 @@ fn lint_issued_ca_cert(cert_der: &[u8], ca_cert_der: &[u8], now: i64) -> Result<
     policy.extended_key_usage = None;
     policy.ee_extension_policy = ExtensionPolicy::new_default_webpki_ca();
 
-    store
+    let result = store
         .verify(&leaf, &[], &policy, RevocationChecks::default())
-        .map(|_| ())
-        .map_err(|e| AcmeError::Internal(format!("cross-cert pre-issuance lint failed: {e}")))
+        .map(|_| ());
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let msg = e.to_string();
+            if akamu_client::tls_verify::is_mtc_extension_error(&msg)
+            {
+                akamu_client::tls_verify::validate_mtc_ca_extensions(
+                    std::iter::once(cert_der).chain(std::iter::once(ca_cert_der)),
+                )
+                .map_err(|mtc_err| {
+                    AcmeError::Internal(format!(
+                        "cross-cert pre-issuance lint failed: {mtc_err}"
+                    ))
+                })
+            } else {
+                Err(AcmeError::Internal(format!(
+                    "cross-cert pre-issuance lint failed: {e}"
+                )))
+            }
+        }
+    }
 }
 
 /// Issue a CA certificate signed by `issuer_ca` for the subject public key

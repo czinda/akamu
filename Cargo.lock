@@ -260,6 +260,7 @@ dependencies = [
  "percent-encoding",
  "rustls",
  "rustls-native-certs",
+ "rustls-native-ossl",
  "rustls-pki-types",
  "serde",
  "serde_json",

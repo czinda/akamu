@@ -110,9 +110,8 @@ impl MtcClient {
             all_ca_ders.push(CertificateDer::from(der.as_slice()));
         }
 
-        let chain_verifier =
-            rustls_native_ossl::cert_verifier::OsslChainVerifier::new(&all_ca_ders)
-                .map_err(|e| ClientError::Http(format!("build CA verifier: {e}")))?;
+        let chain_verifier = crate::tls_verify::MtcAwareChainVerifier::new(&all_ca_ders)
+            .map_err(|e| ClientError::Http(format!("build CA verifier: {e}")))?;
         let verifier =
             OsslServerCertVerifier::builder_with_verifier(Arc::new(chain_verifier)).build();
 

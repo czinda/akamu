@@ -41,6 +41,7 @@ use crate::config::ClientAuthConfig;
 /// `PolicyDefinition` (profile, chain depth, RSA modulus, PQ algorithm set).
 struct SyntaChainVerifier {
     owned_store: Arc<OwnedStore>,
+    ca_ders: Arc<Vec<Vec<u8>>>,
     profile: ValidationProfile,
     max_chain_depth: u8,
     minimum_rsa_modulus: usize,
@@ -114,10 +115,30 @@ impl CertChainVerifier for SyntaChainVerifier {
         policy.permitted_spki_algorithms = spki_algs;
         policy.permitted_signature_algorithms = sig_algs;
 
-        self.owned_store
+        let result = self
+            .owned_store
             .verify(&leaf_vc, &inter_vcs, &policy, RevocationChecks::default())
-            .map(|_| ())
-            .map_err(|e| TlsError::General(format!("client cert verification failed: {e}")))
+            .map(|_| ());
+        match result {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let msg = e.to_string();
+                if akamu_client::tls_verify::is_mtc_extension_error(&msg) {
+                    akamu_client::tls_verify::validate_mtc_ca_extensions(
+                        std::iter::once(leaf_der.as_slice())
+                            .chain(inter_ders.iter().map(|d| d.as_slice()))
+                            .chain(self.ca_ders.iter().map(|d| d.as_slice())),
+                    )
+                    .map_err(|mtc_err| {
+                        TlsError::General(format!("client cert verification failed: {mtc_err}"))
+                    })
+                } else {
+                    Err(TlsError::General(format!(
+                        "client cert verification failed: {e}"
+                    )))
+                }
+            }
+        }
     }
 }
 
@@ -174,6 +195,7 @@ impl SyntaClientCertVerifier {
 
         let synta_verifier = Arc::new(SyntaChainVerifier {
             owned_store: Arc::new(owned_store),
+            ca_ders: Arc::new(ca_ders.to_vec()),
             profile,
             max_chain_depth: config.max_chain_depth,
             minimum_rsa_modulus: config.minimum_rsa_modulus,
