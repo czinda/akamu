@@ -20,8 +20,18 @@ export interface ServerStats {
     free: number;
   };
   audit_events: {
-    total: number;
+    since_startup: number;
+    journal_connected: boolean;
   };
+  mtc: {
+    ca_id: string;
+    enabled: boolean;
+    tree_size: number | null;
+    landmarks: number | null;
+    last_checkpoint_at: number;
+    last_landmark_at: number;
+    cosigner_count: number;
+  }[];
 }
 
 export interface ServerConfig {

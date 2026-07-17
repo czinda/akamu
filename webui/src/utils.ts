@@ -16,10 +16,20 @@ export function fmtIdentifiers(raw: string | null | undefined): string {
   return raw;
 }
 
-/** Format a Unix epoch (seconds) as a local date-time string, or '—' if null/undefined. */
+/** Format a Unix epoch (seconds) as a local date-time string, or '—' if null/undefined/zero. */
 export function fmtTs(ts: number | null | undefined): string {
-  if (ts == null) return '—';
+  if (ts == null || ts === 0) return '—';
   return new Date(ts * 1000).toLocaleString();
+}
+
+/** Trigger a browser download from an in-memory Blob. */
+export function triggerBlobDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 /** Format an ISO 8601 date string as a local date-time string, or '—' if null/undefined. */
