@@ -99,14 +99,14 @@ fn init_mtc_for_ca(
     let cosigner_clients: Vec<_> = mtc_cfg
         .cosigners
         .iter()
-        .filter_map(|c| match mtc::cosign::build_cosigner_client(c) {
-            Ok(client) => Some(client),
-            Err(e) => {
-                tracing::warn!(ca_id, url = %c.url, "build cosigner client: {e}");
-                None
-            }
+        .map(|c| {
+            mtc::cosign::build_cosigner_client(c).map_err(|e| {
+                tracing::error!(ca_id, url = %c.url, "build cosigner client failed: {e}");
+                e
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("CA '{ca_id}': cosigner client build failed: {e}"))?;
 
     tracing::info!(ca_id, "opening MTC log at '{}'", mtc_cfg.log_path);
     let log_lock = mtc::log::acquire_log_lock(&mtc_cfg.log_path).map_err(|e| format!("{e}"))?;
