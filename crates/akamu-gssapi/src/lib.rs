@@ -5,7 +5,7 @@
 //! At startup, acquire a server credential from the HTTP service keytab:
 //!
 //! ```no_run
-//! let cred = akamu_gssapi::GssServerCred::acquire("HTTP", "/etc/akamu/http.keytab")
+//! let cred = akamu_gssapi::GssServerCred::acquire("HTTP", "/etc/akamu/http.keytab", false)
 //!     .expect("GSSAPI credential");
 //! ```
 //!
@@ -13,7 +13,7 @@
 //! [`accept_token`] and match on [`AcceptStep`]:
 //!
 //! ```no_run
-//! # let cred = akamu_gssapi::GssServerCred::acquire("HTTP", "/etc/akamu/http.keytab")
+//! # let cred = akamu_gssapi::GssServerCred::acquire("HTTP", "/etc/akamu/http.keytab", false)
 //! #     .expect("GSSAPI credential");
 //! # let token_bytes: Vec<u8> = vec![];
 //! match akamu_gssapi::accept_token(&cred, &token_bytes, None).expect("GSSAPI accept") {
@@ -93,12 +93,27 @@ impl Drop for GssServerCred {
 }
 
 impl GssServerCred {
-    /// Acquire a server credential for `service_name` (e.g. `"HTTP"`) using
-    /// the keytab at `keytab_file`.
+    /// Acquire a server credential for `service_name` using the keytab at
+    /// `keytab_file`.
     ///
-    /// MIT Kerberos appends `@<local-hostname>` when no realm is specified, so
-    /// passing `"HTTP"` is usually sufficient for a single-homed host.
-    /// Use `"HTTP@fully.qualified.hostname"` to be explicit.
+    /// The name format is auto-detected:
+    ///
+    /// - **Host-based service** (`"HTTP"` or `"HTTP@hostname"`) — imported with
+    ///   `GSS_C_NT_HOSTBASED_SERVICE`.  MIT Kerberos appends `@<local-hostname>`
+    ///   when no host part is given.
+    /// - **Full Kerberos principal** (`"HTTP/host@REALM"`) — imported with
+    ///   `GSS_KRB5_NT_PRINCIPAL_NAME`.  No canonicalization or lowercasing is
+    ///   applied; the principal must match the keytab entry exactly.
+    ///
+    /// A name containing `/` is treated as a Kerberos principal; otherwise it is
+    /// treated as a host-based service name.
+    ///
+    /// `for_impersonation` controls the GSSAPI credential usage flag:
+    /// - `false` → `GSS_C_ACCEPT` — accept-only, for endpoints that only
+    ///   validate incoming Negotiate tokens (e.g. admin GSSAPI auth).
+    /// - `true` → `GSS_C_BOTH` — the credential must also work as an
+    ///   initiator for `gss_acquire_cred_impersonate_name` (S4U2Self).
+    ///   Requires a TGT in the default ccache or a client keytab entry.
     ///
     /// Uses `gss_acquire_cred_from()` (RFC 5587) with a credential store entry
     /// `{key="keytab", value=keytab_file}`, which avoids any environment-variable
@@ -111,7 +126,11 @@ impl GssServerCred {
     /// - [`GssError::ImportName`] — `gss_import_name` rejected the service name.
     /// - [`GssError::AcquireCred`] — `gss_acquire_cred_from` failed (keytab
     ///   missing, wrong principal, or Kerberos library error).
-    pub fn acquire(service_name: &str, keytab_file: &str) -> Result<Self, GssError> {
+    pub fn acquire(
+        service_name: &str,
+        keytab_file: &str,
+        for_impersonation: bool,
+    ) -> Result<Self, GssError> {
         // Validate strings first so NUL-byte errors are reported before any I/O.
         let svc_cstr = CString::new(service_name).map_err(|_| GssError::NulInServiceName)?;
         let kt_cstr = CString::new(keytab_file).map_err(|_| GssError::NulInKeytabPath)?;
@@ -126,8 +145,15 @@ impl GssServerCred {
 
         let mut minor: ffi::OmUint32 = 0;
 
-        // Import "service_name" as a host-based service name.
-        let svc_oid = ffi::gss_c_nt_hostbased_service();
+        // If the name contains '/', treat it as a full Kerberos principal
+        // (e.g. "HTTP/host@REALM") and import with GSS_KRB5_NT_PRINCIPAL_NAME
+        // to avoid the lowercasing and realm-resolution issues of the
+        // host-based service name type.
+        let svc_oid = if service_name.contains('/') {
+            ffi::gss_krb5_nt_principal_name()
+        } else {
+            ffi::gss_c_nt_hostbased_service()
+        };
         let svc_buf = ffi::GssBufferDesc {
             length: svc_cstr.as_bytes().len(),
             // SAFETY: gss_import_name treats input_name_buffer as read-only per
@@ -172,19 +198,21 @@ impl GssServerCred {
         let mut actual_mechs: ffi::GssOidSetT = ptr::null_mut();
         let mut time_rec: ffi::OmUint32 = 0;
 
+        let cred_usage = if for_impersonation {
+            ffi::GSS_C_BOTH
+        } else {
+            ffi::GSS_C_ACCEPT
+        };
+
         // SAFETY: all arguments are valid; svc_name was returned by gss_import_name,
         // cred_store elements point to live CStrings, output pointers are valid locals.
-        //
-        // GSS_C_BOTH: the credential must support INITIATE in addition to ACCEPT so it can
-        // be used as the impersonator in gss_acquire_cred_impersonate_name (S4U2Self).
-        // An ACCEPT-only credential is rejected by gssproxy for impersonation requests.
         let major = unsafe {
             ffi::gss_acquire_cred_from(
                 &raw mut minor,
                 svc_name,
                 0, // GSS_C_INDEFINITE
                 ffi::GSS_C_NO_OID_SET,
-                ffi::GSS_C_BOTH,
+                cred_usage,
                 &raw const cred_store,
                 &raw mut cred_handle,
                 &raw mut actual_mechs,
@@ -2002,13 +2030,13 @@ mod tests {
 
     #[test]
     fn acquire_nul_in_service_name_returns_error() {
-        let err = GssServerCred::acquire("HTTP\0badname", "/tmp/fake.keytab").unwrap_err();
+        let err = GssServerCred::acquire("HTTP\0badname", "/tmp/fake.keytab", false).unwrap_err();
         assert!(matches!(err, GssError::NulInServiceName));
     }
 
     #[test]
     fn acquire_nul_in_keytab_path_returns_error() {
-        let err = GssServerCred::acquire("HTTP", "/tmp/\0fake.keytab").unwrap_err();
+        let err = GssServerCred::acquire("HTTP", "/tmp/\0fake.keytab", false).unwrap_err();
         assert!(matches!(err, GssError::NulInKeytabPath));
     }
 

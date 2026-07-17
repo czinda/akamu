@@ -796,7 +796,7 @@ async fn run() -> Result<(), String> {
                 .as_deref()
                 .ok_or("[server.gssapi]: keytab_file is required when gssproxy = false")?;
             tracing::info!("acquiring GSSAPI credential from keytab: '{keytab}'");
-            akamu_gssapi::GssServerCred::acquire(&gcfg.service_name, keytab)
+            akamu_gssapi::GssServerCred::acquire(&gcfg.service_name, keytab, true)
                 .map_err(|e| format!("GSSAPI credential init: {e}"))?
         };
         Some(Arc::new(cred))
@@ -821,7 +821,7 @@ async fn run() -> Result<(), String> {
                     .as_deref()
                     .ok_or("[admin.gssapi]: keytab_file is required when gssproxy = false")?;
                 tracing::info!("acquiring admin GSSAPI credential from keytab: '{keytab}'");
-                akamu_gssapi::GssServerCred::acquire(&gcfg.service_name, keytab)
+                akamu_gssapi::GssServerCred::acquire(&gcfg.service_name, keytab, false)
                     .map_err(|e| format!("admin GSSAPI credential init: {e}"))?
             };
             Some(Arc::new(cred))
