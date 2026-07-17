@@ -81,6 +81,7 @@ class Realm:
 
             [domain_realm]
                 localhost = {self.realm}
+                127.0.0.1 = {self.realm}
         """)
         kdc = textwrap.dedent(f"""\
             [kdcdefaults]
