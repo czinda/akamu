@@ -138,7 +138,11 @@ pub async fn get_landmarks(
                     })
                 })
                 .collect();
-            (StatusCode::OK, Json(json!({"landmarks": body, "total": body.len()}))).into_response()
+            (
+                StatusCode::OK,
+                Json(json!({"landmarks": body, "total": body.len()})),
+            )
+                .into_response()
         }
         Err(e) => e.into_response(),
     }
@@ -315,6 +319,47 @@ pub async fn get_landmark_cert(
     }
 }
 
+/// `GET /admin/mtc/landmarks/{seq}/cert-details`
+///
+/// Returns parsed landmark certificate details as JSON.
+/// Requires: Administrator | CaOperations | Auditor.
+pub async fn get_landmark_cert_details(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+    Path(seq): Path<i64>,
+    Query(q): Query<MtcQuery>,
+) -> Response {
+    require_role!(operator, state, Administrator | CaOperations | Auditor);
+    let Some((ca_id, ca)) = resolve_ca(&state, q.ca_id.as_deref(), &operator) else {
+        return not_found();
+    };
+    if ca.mtc.log.is_none() {
+        return mtc_disabled();
+    }
+    match db::landmarks::get_by_seq(&state.db_ro, ca_id, seq).await {
+        Ok(Some(lm)) => match lm.cert_der {
+            Some(der) => {
+                let cert_text = super::describe_landmark_cert_der(&der);
+                (
+                    StatusCode::OK,
+                    Json(json!({
+                        "sequence_no": seq,
+                        "cert_text": cert_text,
+                    })),
+                )
+                    .into_response()
+            }
+            None => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"detail": "landmark certificate not yet built"})),
+            )
+                .into_response(),
+        },
+        Ok(None) => not_found(),
+        Err(e) => e.into_response(),
+    }
+}
+
 #[derive(Deserialize)]
 pub struct ConsistencyQuery {
     pub ca_id: Option<String>,
@@ -465,8 +510,15 @@ pub async fn get_revoked_ranges(
     }
     match db::revoked_ranges::get_all(&state.db_ro, ca_id).await {
         Ok(rows) => {
-            let ranges: Vec<_> = rows.iter().map(|r| json!({"start": r.range_start, "end": r.range_end})).collect();
-            (StatusCode::OK, Json(json!({"revoked_ranges": ranges, "total": ranges.len()}))).into_response()
+            let ranges: Vec<_> = rows
+                .iter()
+                .map(|r| json!({"start": r.range_start, "end": r.range_end}))
+                .collect();
+            (
+                StatusCode::OK,
+                Json(json!({"revoked_ranges": ranges, "total": ranges.len()})),
+            )
+                .into_response()
         }
         Err(e) => e.into_response(),
     }

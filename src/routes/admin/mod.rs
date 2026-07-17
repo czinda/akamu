@@ -60,6 +60,7 @@
 //! | `GET /admin/mtc/inclusion-proof/{cert_id}` | ✓ | ✓ | | ✓ |
 //! | `GET /admin/mtc/standalone/{cert_id}` | ✓ | ✓ | | |
 //! | `GET /admin/mtc/landmarks/{seq}/cert` | ✓ | ✓ | | |
+//! | `GET /admin/mtc/landmarks/{seq}/cert-details` | ✓ | ✓ | | ✓ |
 //! | `GET /admin/mtc/consistency-proof` | ✓ | ✓ | | ✓ |
 //! | `GET /admin/mtc/subtree-root` | ✓ | ✓ | | ✓ |
 //! | `GET /admin/mtc/revoked-ranges` | ✓ | ✓ | | ✓ |
@@ -100,11 +101,12 @@ pub use self::eab::{delete_eab, get_eab, get_eab_key, post_eab};
 pub use self::mtc::{
     get_checkpoint as get_mtc_checkpoint, get_consistency_proof as get_mtc_consistency_proof,
     get_cosignature as get_mtc_cosignature, get_inclusion_proof as get_mtc_inclusion_proof,
-    get_landmark_cert as get_mtc_landmark_cert, get_landmark_list as get_mtc_landmark_list,
-    get_landmarks as get_mtc_landmarks, get_revoked_ranges as get_mtc_revoked_ranges,
-    get_root as get_mtc_root, get_standalone as get_mtc_standalone,
-    get_subtree_root as get_mtc_subtree_root, get_tree_size as get_mtc_tree_size,
-    post_force_checkpoint as post_mtc_force_checkpoint,
+    get_landmark_cert as get_mtc_landmark_cert,
+    get_landmark_cert_details as get_mtc_landmark_cert_details,
+    get_landmark_list as get_mtc_landmark_list, get_landmarks as get_mtc_landmarks,
+    get_revoked_ranges as get_mtc_revoked_ranges, get_root as get_mtc_root,
+    get_standalone as get_mtc_standalone, get_subtree_root as get_mtc_subtree_root,
+    get_tree_size as get_mtc_tree_size, post_force_checkpoint as post_mtc_force_checkpoint,
     post_force_landmark as post_mtc_force_landmark,
 };
 pub use self::operators::{

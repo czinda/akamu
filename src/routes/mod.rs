@@ -402,6 +402,10 @@ fn build_admin_router() -> Router<Arc<AppState>> {
             axum::routing::get(admin::get_mtc_landmark_cert),
         )
         .route(
+            "/admin/mtc/landmarks/{seq}/cert-details",
+            axum::routing::get(admin::get_mtc_landmark_cert_details),
+        )
+        .route(
             "/admin/mtc/consistency-proof",
             axum::routing::get(admin::get_mtc_consistency_proof),
         )
