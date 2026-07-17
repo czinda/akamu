@@ -1,4 +1,5 @@
 pub mod account;
+pub mod cert_text;
 pub mod challenge;
 pub mod client;
 pub mod csr;
