@@ -81,7 +81,7 @@ pub async fn get_tree_size(
         return mtc_disabled();
     };
     match log::tree_size(shared_log).await {
-        Ok(size) => (StatusCode::OK, Json(json!({"treeSize": size}))).into_response(),
+        Ok(size) => (StatusCode::OK, Json(json!({"tree_size": size}))).into_response(),
         Err(e) => e.into_response(),
     }
 }
@@ -104,7 +104,7 @@ pub async fn get_root(
     match log::tree_size_and_root(shared_log).await {
         Ok((size, root)) => (
             StatusCode::OK,
-            Json(json!({"treeSize": size, "rootHash": hex_encode(&root)})),
+            Json(json!({"tree_size": size, "root_hash": hex_encode(&root)})),
         )
             .into_response(),
         Err(e) => e.into_response(),
@@ -132,13 +132,13 @@ pub async fn get_landmarks(
                 .iter()
                 .map(|l| {
                     json!({
-                        "sequenceNo": l.sequence_no,
-                        "treeSize": l.tree_size,
-                        "createdAt": l.created,
+                        "sequence_no": l.sequence_no,
+                        "tree_size": l.tree_size,
+                        "created_at": l.created,
                     })
                 })
                 .collect();
-            (StatusCode::OK, Json(json!(body))).into_response()
+            (StatusCode::OK, Json(json!({"landmarks": body, "total": body.len()}))).into_response()
         }
         Err(e) => e.into_response(),
     }
@@ -232,8 +232,8 @@ pub async fn get_inclusion_proof(
             (
                 StatusCode::OK,
                 Json(json!({
-                    "leafIndex": leaf_index,
-                    "treeSize": size,
+                    "leaf_index": leaf_index,
+                    "tree_size": size,
                     "proof": proof,
                 })),
             )
@@ -366,10 +366,10 @@ pub async fn get_consistency_proof(
     (
         StatusCode::OK,
         Json(json!({
-            "fromSize": q.from,
-            "toSize": q.to,
-            "fromRoot": hex_encode(&from_root),
-            "toRoot": hex_encode(&to_root),
+            "from_size": q.from,
+            "to_size": q.to,
+            "from_root": hex_encode(&from_root),
+            "to_root": hex_encode(&to_root),
         })),
     )
         .into_response()
@@ -440,7 +440,7 @@ pub async fn get_subtree_root(
             Json(json!({
                 "start": q.start,
                 "end": q.end,
-                "rootHash": hex_encode(&root),
+                "root_hash": hex_encode(&root),
             })),
         )
             .into_response(),
@@ -465,8 +465,8 @@ pub async fn get_revoked_ranges(
     }
     match db::revoked_ranges::get_all(&state.db_ro, ca_id).await {
         Ok(rows) => {
-            let ranges: Vec<_> = rows.iter().map(|r| [r.range_start, r.range_end]).collect();
-            (StatusCode::OK, Json(json!(ranges))).into_response()
+            let ranges: Vec<_> = rows.iter().map(|r| json!({"start": r.range_start, "end": r.range_end})).collect();
+            (StatusCode::OK, Json(json!({"revoked_ranges": ranges, "total": ranges.len()}))).into_response()
         }
         Err(e) => e.into_response(),
     }
