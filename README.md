@@ -38,10 +38,68 @@ networks or behind a reverse proxy, and works with any standards-compliant ACME 
 | `akamu` | ACME server binary |
 | `akamu-jose` | JWK / JWS / thumbprint primitives (RFC 7517/7515, ML-DSA) |
 | `akamu-client` | Async ACME client library (tokio + hyper) with MTC log query and verification |
-| `akamu-cli` | Command-line ACME client (`akamu-cli`) with MTC transparency log subcommands |
-| `akamu-mtc-validator` | MTC test vector validation tool (draft-ietf-plants-merkle-tree-certs-05 compliance) |
+| `akamu-cli` | Command-line ACME client with MTC transparency log subcommands |
+| `akamuctl` | Admin CLI for managing a running server (operators, EAB, certs, MTC, cosigner) |
+| `akamu-cosigner` | Standalone MTC cosigner daemon |
+| `akamu-ldap` | OpenLDAP C-binding library (used by the server for LDAP profile sources) |
+| `akamu-gssapi` | MIT Kerberos GSSAPI bindings (server and admin SPNEGO authentication) |
+| `akamu-crdt` | CRDT-based gossip replication primitives for multi-node clusters |
+| `akamu-mtc-wire` | Wire-format types shared across MTC crates |
+| `akamu-mtc-validator` | MTC test vector validation tool (draft-ietf-plants-merkle-tree-certs-05) |
+| `akamu-seedgen` | Test data generator for development and CI |
+| `akamu-util` | Shared utilities (hex encoding, PEM helpers) |
 
 ---
+
+## Build Prerequisites
+
+### Rust toolchain
+
+Install Rust 1.75 or later via [rustup](https://rustup.rs):
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+### System packages (Fedora)
+
+```bash
+sudo dnf install gcc make pkgconf-pkg-config clang \
+    openssl-devel sqlite-devel krb5-devel \
+    openldap-devel cyrus-sasl-devel
+```
+
+| Package | Required by |
+|---------|-------------|
+| `gcc`, `make`, `pkgconf-pkg-config` | C compilation and pkg-config probing |
+| `clang` | bindgen FFI generation (`native-ossl-sys`, `openssl-sys`) |
+| `openssl-devel` | Cryptography backend (`synta-certificate`, `rustls-native-ossl`) |
+| `sqlite-devel` | Default database backend (SQLite via `sqlx`) |
+| `krb5-devel` | Kerberos/GSSAPI authentication (`akamu-gssapi`) |
+| `openldap-devel` | LDAP profile sources (`akamu-ldap`) |
+| `cyrus-sasl-devel` | SASL bindings for LDAP GSSAPI authentication |
+
+**OpenSSL version:** Fedora 42+ ships OpenSSL 3.5, which is required for full server
+functionality (ML-KEM, ML-DSA, composite signatures).  The CLI works with OpenSSL 3.0.7+
+for classical key types.
+
+**Optional database backends:** For PostgreSQL or MariaDB support, install additional packages:
+
+```bash
+sudo dnf install libpq-devel              # PostgreSQL
+sudo dnf install mariadb-connector-c-devel # MariaDB
+```
+
+### Demo prerequisites
+
+The demos under `contrib/demo/` have additional requirements:
+
+| Demo | Extra packages |
+|------|----------------|
+| `gssapi` (tkauth-01 + Kerberos) | `krb5-server krb5-workstation python3-gssapi` |
+| `mtc` (MTC transparency log) | `krb5-server python3` and `cargo install synta-tools` |
+| `cross-signing` | `openssl curl` (no extra packages beyond the build prerequisites) |
+| `dogtag` (Dogtag PKI RA) | `podman openssl curl` |
 
 ## Quick Start
 
