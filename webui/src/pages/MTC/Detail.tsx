@@ -31,6 +31,7 @@ import {
   getLandmarks,
   getCheckpoint,
   getCosignature,
+  getLogListEntry,
   getRevokedRanges,
   getConsistencyProof,
   getSubtreeRoot,
@@ -43,6 +44,7 @@ import {
   type MtcConsistencyProof,
   type MtcSubtreeRoot,
 } from '../../api/mtc';
+import MtcTree from '../../components/MtcTree';
 import { fmtTs, triggerBlobDownload } from '../../utils';
 import { useAuth, hasRole } from '../../auth/AuthContext';
 
@@ -65,6 +67,9 @@ export default function MtcDetail() {
   const [cosignature, setCosignature] = useState<string | null>(null);
   const [cosignatureError, setCosignatureError] = useState<string | null>(null);
 
+  const [logListEntry, setLogListEntry] = useState<string | null>(null);
+  const [logListEntryError, setLogListEntryError] = useState<string | null>(null);
+
   const [revokedRanges, setRevokedRanges] = useState<MtcRevokedRange[]>([]);
   const [revokedError, setRevokedError] = useState<string | null>(null);
 
@@ -86,21 +91,25 @@ export default function MtcDetail() {
   const [srError, setSrError] = useState<string | null>(null);
   const [srLoading, setSrLoading] = useState(false);
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (signal?: AbortSignal) => {
     if (!caId) return;
     setLoading(true);
     setRootError(null);
     setLandmarksError(null);
     setCheckpointError(null);
     setCosignatureError(null);
+    setLogListEntryError(null);
     setRevokedError(null);
-    const [rootRes, landmarksRes, checkpointRes, cosignatureRes, revokedRes] = await Promise.allSettled([
+    const [rootRes, landmarksRes, checkpointRes, cosignatureRes, logListRes, revokedRes] = await Promise.allSettled([
       getRoot(caId),
       getLandmarks(caId),
       getCheckpoint(caId),
       getCosignature(caId),
+      getLogListEntry(caId),
       getRevokedRanges(caId),
     ]);
+    if (signal?.aborted) return;
+
     if (rootRes.status === 'fulfilled') setRoot(rootRes.value);
     else setRootError(rootRes.reason instanceof Error ? rootRes.reason.message : 'Failed to load tree root');
 
@@ -113,13 +122,20 @@ export default function MtcDetail() {
     if (cosignatureRes.status === 'fulfilled') setCosignature(cosignatureRes.value);
     else setCosignatureError(cosignatureRes.reason instanceof Error ? cosignatureRes.reason.message : 'Unavailable');
 
+    if (logListRes.status === 'fulfilled') setLogListEntry(logListRes.value);
+    else setLogListEntryError(logListRes.reason instanceof Error ? logListRes.reason.message : 'Unavailable');
+
     if (revokedRes.status === 'fulfilled') setRevokedRanges(revokedRes.value);
     else setRevokedError(revokedRes.reason instanceof Error ? revokedRes.reason.message : 'Failed to load revoked ranges');
 
     setLoading(false);
   }, [caId]);
 
-  useEffect(() => { loadData(); }, [loadData]);
+  useEffect(() => {
+    const controller = new AbortController();
+    loadData(controller.signal);
+    return () => controller.abort();
+  }, [loadData]);
 
   async function handleForce() {
     if (!caId || !confirmAction) return;
@@ -223,6 +239,21 @@ export default function MtcDetail() {
               </DescriptionList>
             )}
 
+            {/* Tree Visualization */}
+            {root && (
+              <>
+                <Title headingLevel="h2" size="lg" style={{ marginBottom: '0.5rem' }}>Tree Visualization</Title>
+                <div style={{ marginBottom: '1.5rem' }}>
+                  <MtcTree
+                    root={root}
+                    landmarks={landmarks}
+                    revokedRanges={revokedRanges}
+                    checkpoint={checkpoint}
+                  />
+                </div>
+              </>
+            )}
+
             {/* Actions */}
             {canOperate && (
               <div style={{ marginBottom: '1.5rem' }}>
@@ -283,6 +314,15 @@ export default function MtcDetail() {
             <Title headingLevel="h2" size="lg" style={{ marginBottom: '0.5rem' }}>Cosignature</Title>
             {cosignatureError && <Alert variant="warning" title={cosignatureError} isInline style={{ marginBottom: '1rem' }} />}
             {cosignature && <pre style={{ ...preStyle, marginBottom: '1.5rem' }}>{cosignature}</pre>}
+
+            {/* Log-List Entry */}
+            {(logListEntry || logListEntryError) && (
+              <>
+                <Title headingLevel="h2" size="lg" style={{ marginBottom: '0.5rem' }}>Log-List Entry</Title>
+                {logListEntryError && <Alert variant="warning" title={logListEntryError} isInline style={{ marginBottom: '1rem' }} />}
+                {logListEntry && <pre style={{ ...preStyle, marginBottom: '1.5rem' }}>{logListEntry}</pre>}
+              </>
+            )}
 
             {/* Revoked Ranges */}
             <Title headingLevel="h2" size="lg" style={{ marginBottom: '0.5rem' }}>Revoked Ranges</Title>

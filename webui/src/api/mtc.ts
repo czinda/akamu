@@ -152,6 +152,10 @@ export async function getLandmarkCertDetails(
   return apiJson(`/admin/mtc/landmarks/${seq}/cert-details${caQuery(caId)}`);
 }
 
+export async function getLogListEntry(caId: string): Promise<string> {
+  return fetchText(`/admin/ca/${encodeURIComponent(caId)}/mtc/log-list-entry`);
+}
+
 // Actions
 
 export async function forceCheckpoint(caId: string): Promise<void> {
