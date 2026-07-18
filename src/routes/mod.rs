@@ -485,6 +485,7 @@ pub fn build_router(state: Arc<AppState>, static_dir: Option<&std::path::Path>) 
 
 /// Middleware that adds security headers to every `/ui/*` response.
 async fn ui_security_headers(req: Request, next: Next) -> Response {
+    let is_hashed_asset = req.uri().path().starts_with("/ui/assets/");
     let mut resp = next.run(req).await;
     let headers = resp.headers_mut();
     headers.insert(
@@ -511,6 +512,17 @@ async fn ui_security_headers(req: Request, next: Next) -> Response {
         HeaderName::from_static("referrer-policy"),
         HeaderValue::from_static("strict-origin-when-cross-origin"),
     );
+    if is_hashed_asset {
+        headers.insert(
+            hyper::header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=31536000, immutable"),
+        );
+    } else {
+        headers.insert(
+            hyper::header::CACHE_CONTROL,
+            HeaderValue::from_static("no-cache"),
+        );
+    }
     resp
 }
 
