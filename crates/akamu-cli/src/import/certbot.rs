@@ -346,20 +346,36 @@ fn canonical_dns_challenge(dns_challenge: &str) -> &'static str {
 
 // ── RenewalConfig builder ─────────────────────────────────────────────────────
 
+/// Parameters for [`build_renewal_config`].
+pub struct BuildRenewalConfigParams<'a> {
+    pub renewal: &'a CertbotRenewal,
+    pub account_key_jwk: &'a str,
+    pub account_key_path: &'a Path,
+    pub cert_path: &'a Path,
+    pub cert_key_path: &'a Path,
+    pub cert_key_type: &'a str,
+    pub contacts: &'a [String],
+    pub dns_challenge: &'a str,
+    pub dns_hook: Option<&'a str>,
+}
+
 /// Build a [`RenewalConfig`] for an imported certbot renewal.
 ///
 /// Returns `(config, optional_warning_message)`.
 pub fn build_renewal_config(
-    renewal: &CertbotRenewal,
-    account_key_jwk: &str,
-    account_key_path: &Path,
-    cert_path: &Path,
-    cert_key_path: &Path,
-    cert_key_type: &str,
-    contacts: &[String],
-    dns_challenge: &str,
-    dns_hook: Option<&str>,
+    p: BuildRenewalConfigParams<'_>,
 ) -> (RenewalConfig, Option<&'static str>) {
+    let BuildRenewalConfigParams {
+        renewal,
+        account_key_jwk,
+        account_key_path,
+        cert_path,
+        cert_key_path,
+        cert_key_type,
+        contacts,
+        dns_challenge,
+        dns_hook,
+    } = p;
     let (challenge_type, warning) = map_challenge_type(
         &renewal.authenticator,
         renewal.preferred_challenges.as_deref(),

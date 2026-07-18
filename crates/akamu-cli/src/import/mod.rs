@@ -17,7 +17,7 @@ fn copy_private_file(src: &Path, dst: &Path) -> Result<(), String> {
 
 use certbot::{
     build_renewal_config, discover_accounts, discover_renewals, jwk_to_account_key,
-    live_cert_paths, pem_key_type,
+    live_cert_paths, pem_key_type, BuildRenewalConfigParams,
 };
 
 // ── clap args ─────────────────────────────────────────────────────────────────
@@ -296,17 +296,17 @@ pub async fn cmd_import_certbot(args: CertbotImportArgs) -> Result<(), String> {
                 }
             }
         };
-        let (renewal_cfg, warning) = build_renewal_config(
-            r,
-            &acct.jwk_json,
+        let (renewal_cfg, warning) = build_renewal_config(BuildRenewalConfigParams {
+            renewal: r,
+            account_key_jwk: &acct.jwk_json,
             account_key_path,
-            &cert_path,
-            &cert_key_path,
-            &cert_key_type,
-            &acct.contacts,
-            &args.dns_challenge,
-            args.dns_hook.as_deref(),
-        );
+            cert_path: &cert_path,
+            cert_key_path: &cert_key_path,
+            cert_key_type: &cert_key_type,
+            contacts: &acct.contacts,
+            dns_challenge: &args.dns_challenge,
+            dns_hook: args.dns_hook.as_deref(),
+        });
 
         if let Some(warn) = warning {
             eprintln!("Note for {}: {warn}", domain);

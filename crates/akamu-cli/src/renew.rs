@@ -30,10 +30,8 @@ fn parse_rfc3339_utc(s: &str) -> Option<u64> {
     let hour: i64 = s[11..13].parse().ok()?;
     let min: i64 = s[14..16].parse().ok()?;
     let sec: i64 = s[17..19].parse().ok()?;
-    if year < 1970
-        || year > 9999
-        || month < 1
-        || month > 12
+    if !(1970..=9999).contains(&year)
+        || !(1..=12).contains(&month)
         || day < 1
         || hour > 23
         || min > 59
