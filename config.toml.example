@@ -97,6 +97,12 @@ organization = "Example Org"
 # The file is read once at startup; trailing newlines are stripped.
 # key_password_file = "/etc/akamu/ca-key-passphrase"
 
+# Default pre-issuance linter profile for this CA.  Applied when a certificate
+# profile does not specify its own linter.  Built-ins: "webpki" (CA/B Forum BR,
+# the default) and "rfc5280" (plain RFC 5280).  Custom profiles are defined in
+# the [linter] section below.
+# default_linter = "webpki"
+
 # Per-CA MTC configuration (preferred over the global [mtc] section).
 # When present, this CA participates in a Merkle Tree Certificate log.
 # [ca.mtc]
@@ -513,6 +519,7 @@ validate_dnssec = true
 # # ms_upn_san_template    = "{dns}@example.com"
 # # inject_account_kpn     = false
 # # trust_jwks_urls        = ["https://idp.example.com/jwks"]
+# # linter                 = "webpki"  # named linter profile; see [linter] section
 #
 # Dogtag PKI profiles from the filesystem:
 # [profiles.providers.dogtag]
@@ -536,3 +543,19 @@ validate_dnssec = true
 # # tls_ca_cert_file = "/etc/ipa/ca.crt"
 # # srv_domain       = "example.com"   # discover via _ldap._tcp SRV records
 # # srv_scheme       = "ldap"          # "ldap" or "ldaps" for SRV-discovered servers
+
+# ── Pre-issuance linter ────────────────────────────────────────────────────────
+# Named linter profiles that compose on top of the built-in "webpki" (CA/B Forum
+# BR) and "rfc5280" (plain RFC 5280) profiles.  Reference a profile by name from
+# a certificate profile's `linter` field or from a CA's `default_linter` field.
+#
+# Resolution order: cert profile `linter` → CA `default_linter` → "webpki".
+#
+# [linter]
+#
+# [linter.profiles.internal]
+# base                   = "rfc5280"    # "webpki" (default) or "rfc5280"
+# san                    = "optional"   # "required" | "optional" | "absent"
+# name_constraints       = "optional"   # "required" | "optional" | "absent"
+# algorithms             = "webpki_pq" # "webpki" | "webpki_pq" (default) | "pq_only"
+# minimum_rsa_bits       = 2048        # default: 2048

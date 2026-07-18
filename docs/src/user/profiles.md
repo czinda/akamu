@@ -80,6 +80,7 @@ ocsp_url      = "http://ocsp.example.com"          # optional
 allowed_key_types  = ["ec:P-256", "rsa:2048"]       # optional; empty = any
 issue_as           = "mtc"       # optional; "mtc" or absent/"x509" for standard X.509
 dogtag_profile_id  = "caServerCert"  # optional; override [ca.signer].profile_id per profile
+linter             = "webpki"        # optional; see Pre-Issuance Linter
 
 # Multi-CA restriction (optional; empty = available via all CAs)
 ca_ids               = ["rsa", "ec"]              # restrict to specific CA IDs
@@ -261,6 +262,12 @@ At least one of `uri`, `uris`, or `srv_domain` must be set.
 `Akāmu` loads all providers once at startup and caches the results. A background tokio task wakes every `refresh_interval_secs` seconds and re-loads all providers, atomically replacing the cache. Certificates being issued concurrently always see a consistent snapshot.
 
 If a refresh fails (e.g., a `.cfg` file is temporarily unreadable), the previous cache is kept and a warning is logged. The server never stops serving because of a failed refresh.
+
+---
+
+## Pre-issuance linting
+
+Every certificate produced by a builtin-signed profile is linted immediately after signing. The linter profile can be customised per certificate profile (or given a CA-level default) to relax or extend the checks applied. See [Pre-Issuance Linter](linter.md) for the full reference.
 
 The refresh task exits automatically when the server shuts down (it holds a weak reference to the registry).
 

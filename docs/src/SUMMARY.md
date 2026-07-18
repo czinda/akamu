@@ -18,6 +18,7 @@
 - [Challenges](user/challenges.md)
 - [Certificates](user/certificates.md)
 - [Certificate Profiles](user/profiles.md)
+- [Pre-Issuance Linter](user/linter.md)
 - [CRL and OCSP](user/crl-ocsp.md)
 - [Cross-Signing](user/cross-signing.md)
 - [Merkle Tree Certificate Log](user/mtc.md)
