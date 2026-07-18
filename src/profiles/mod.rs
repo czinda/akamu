@@ -171,6 +171,9 @@ pub struct CertificateParameters {
     /// Only meaningful for CAs with a Dogtag signing backend; ignored for
     /// local-signing CAs.
     pub dogtag_profile_id: Option<String>,
+    /// Named linter profile to use during pre-issuance linting.
+    /// `None` means "use the CA's `default_linter`, or fall back to `'webpki'`".
+    pub linter: Option<String>,
 }
 
 impl CertificateParameters {
@@ -202,6 +205,7 @@ impl CertificateParameters {
             inject_account_kpn: false,
             trust_jwks_urls: vec![],
             dogtag_profile_id: None,
+            linter: None,
         }
     }
 }
@@ -515,6 +519,7 @@ mod tests {
             crl_next_update_secs: 86400,
             caa_identities: vec![],
             mtc: Arc::new(MtcState::disabled()),
+            default_linter: None,
         }
     }
 
@@ -541,6 +546,7 @@ mod tests {
             inject_account_kpn: false,
             trust_jwks_urls: vec![],
             dogtag_profile_id: None,
+            linter: None,
         }
     }
 

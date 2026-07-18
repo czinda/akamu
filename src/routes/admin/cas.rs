@@ -309,10 +309,16 @@ pub async fn post_ca_cross_sign(
             .into_response();
     }
 
+    let linter_name = issuer_ca.default_linter.as_deref().unwrap_or("webpki");
+    let linter = match state.linter_registry.resolve(linter_name) {
+        Ok(p) => *p,
+        Err(e) => return e.into_response(),
+    };
     let issued = match crate::ca::issue::issue_ca_cert(
         &issuer_ca,
         &subject_cert_der,
         payload.validity_years,
+        &linter,
     ) {
         Ok(c) => c,
         Err(e) => {

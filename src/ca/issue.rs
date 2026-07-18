@@ -2,6 +2,7 @@
 //!
 //! Takes a validated CSR and CA state and returns a DER + PEM certificate bundle.
 
+use crate::linter::{ExtPresence, ResolvedLinterProfile, WEBPKI_PROFILE};
 use synta::{Decoder, Encoding};
 use synta_certificate::{
     default_key_id_hasher, der_to_pem, encode_authority_key_identifier, encode_basic_constraints,
@@ -14,8 +15,9 @@ use synta_certificate::{
 use synta_x509_verification::{
     ops::VerificationCertificate,
     policy::{
-        AlgorithmId, ExtensionPolicy, PolicyDefinition, ValidationProfile,
-        WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS_WITH_PQ, WEBPKI_PERMITTED_SPKI_ALGORITHMS_WITH_PQ,
+        AlgorithmId, Criticality, ExtensionPolicy, ExtensionValidator, PolicyDefinition,
+        ValidationProfile, WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS_WITH_PQ,
+        WEBPKI_PERMITTED_SPKI_ALGORITHMS_WITH_PQ,
     },
     OwnedStore, RevocationChecks,
 };
@@ -384,8 +386,8 @@ pub fn issue_certificate(params: IssueCertParams<'_>) -> Result<IssuedCert, Acme
         .sign(&signer)
         .map_err(|e| AcmeError::Builder(format!("sign: {e}")))?;
 
-    // Pre-issuance policy lint (CA/B Forum BR §4.3.1.2).
-    lint_issued_cert(&cert_der, ca_cert_der, now)?;
+    // Pre-issuance policy lint — STAR renewal always uses the built-in WebPKI profile.
+    lint_issued_cert(&cert_der, ca_cert_der, now, &WEBPKI_PROFILE)?;
 
     // ── Build PEM bundle: leaf + CA ────────────────────────────────────────────
     // der_to_pem returns Vec<u8> (ASCII PEM bytes); concatenate and convert.
@@ -506,18 +508,32 @@ fn ip_string_to_bytes(s: &str) -> Option<Vec<u8>> {
 /// Validity window resolution and notBefore clamping follow the same rules
 /// as [`issue_certificate`].
 ///
+/// Parameters for [`issue_with_params`].
+pub struct IssueWithParamsArgs<'a> {
+    pub ca: &'a CaState,
+    pub csr: &'a ValidatedCsr,
+    pub params: &'a CertificateParameters,
+    pub not_before_override: Option<i64>,
+    pub not_after_override: Option<i64>,
+    pub extra_other_names: &'a [Vec<u8>],
+    pub extra_dns_names: &'a [String],
+    pub linter: &'a ResolvedLinterProfile,
+}
+
 /// For orders without a `profile` field, pass
 /// `CertificateParameters::from_ca(ca)` to reproduce the pre-profile
 /// behaviour (`digitalSignature` KeyUsage, `serverAuth` EKU, CA validity).
-pub fn issue_with_params(
-    ca: &CaState,
-    csr: &ValidatedCsr,
-    params: &CertificateParameters,
-    not_before_override: Option<i64>,
-    not_after_override: Option<i64>,
-    extra_other_names: &[Vec<u8>],
-    extra_dns_names: &[String],
-) -> Result<IssuedCert, AcmeError> {
+pub fn issue_with_params(args: IssueWithParamsArgs<'_>) -> Result<IssuedCert, AcmeError> {
+    let IssueWithParamsArgs {
+        ca,
+        csr,
+        params,
+        not_before_override,
+        not_after_override,
+        extra_other_names,
+        extra_dns_names,
+        linter,
+    } = args;
     // ── Extract CA name, SPKI DER, AKI DER (cached per CA cert) ────────
     struct CaCachedDer {
         cert_der: Vec<u8>,
@@ -750,8 +766,8 @@ pub fn issue_with_params(
         .sign(&signer)
         .map_err(|e| AcmeError::Builder(format!("sign: {e}")))?;
 
-    // Pre-issuance policy lint (CA/B Forum BR §4.3.1.2).
-    lint_issued_cert(&cert_der, &ca.cert_der, now)?;
+    // Pre-issuance policy lint using the resolved linter profile.
+    lint_issued_cert(&cert_der, &ca.cert_der, now, linter)?;
 
     let mut pem_bytes = der_to_pem("CERTIFICATE", &cert_der);
     pem_bytes.extend_from_slice(&der_to_pem("CERTIFICATE", &ca.cert_der));
@@ -1040,7 +1056,12 @@ pub fn sign_admin_cert(
 /// during CSR processing and may be profile-specific (non-serverAuth EKUs are valid).
 ///
 /// Returns `AcmeError::Internal` if any check fails.
-fn lint_issued_cert(cert_der: &[u8], ca_cert_der: &[u8], now: i64) -> Result<(), AcmeError> {
+fn lint_issued_cert(
+    cert_der: &[u8],
+    ca_cert_der: &[u8],
+    now: i64,
+    profile: &ResolvedLinterProfile,
+) -> Result<(), AcmeError> {
     use std::sync::Mutex;
 
     static STORE_CACHE: Mutex<Option<(Vec<u8>, std::sync::Arc<OwnedStore>)>> = Mutex::new(None);
@@ -1070,14 +1091,40 @@ fn lint_issued_cert(cert_der: &[u8], ca_cert_der: &[u8], now: i64) -> Result<(),
         .map_err(|e| AcmeError::Internal(format!("lint: parse cert: {e}")))?;
     let leaf = VerificationCertificate::new(cert, cert_der);
 
-    // WebPKI policy: PQ-extended algorithm lists; no SAN matching; no EKU enforcement.
+    // Start from the PQ-extended server policy and apply the linter profile.
     let mut policy = PolicyDefinition::new_server_pq(OpensslSignatureVerifier, vec![], now);
-    // Profiles may use non-serverAuth EKUs — skip the EKU presence/content check.
+
+    // Base validation profile (WebPki or Rfc5280).
+    policy.profile = profile.base;
+
+    // Profiles may use non-serverAuth EKUs — always skip the EKU check.
     policy.extended_key_usage = None;
-    // Use composite-extended lists (falls back to upstream statics when upstream
-    // already includes composite OIDs, detected at first call via OnceLock).
-    policy.permitted_spki_algorithms = permitted_spki_algs_with_composite();
-    policy.permitted_signature_algorithms = permitted_sig_algs_with_composite();
+
+    // Algorithm lists from the linter profile.  The composite-extension helper
+    // is applied on top when the profile includes PQ algorithms.
+    policy.permitted_spki_algorithms = if profile.include_composite_algs {
+        permitted_spki_algs_with_composite()
+    } else {
+        profile.spki_algs
+    };
+    policy.permitted_signature_algorithms = if profile.include_composite_algs {
+        permitted_sig_algs_with_composite()
+    } else {
+        profile.sig_algs
+    };
+
+    // RSA modulus floor.
+    policy.minimum_rsa_modulus = profile.minimum_rsa_bits;
+
+    // Per-extension policy overrides.
+    apply_ext_presence(
+        &mut policy.ee_extension_policy.subject_alt_name,
+        profile.san,
+    );
+    apply_ext_presence(
+        &mut policy.ee_extension_policy.name_constraints,
+        profile.name_constraints,
+    );
 
     let result = store
         .verify(&leaf, &[], &policy, RevocationChecks::default())
@@ -1098,6 +1145,30 @@ fn lint_issued_cert(cert_der: &[u8], ca_cert_der: &[u8], now: i64) -> Result<(),
                     "pre-issuance lint failed: {e}"
                 )))
             }
+        }
+    }
+}
+
+/// Apply an [`ExtPresence`] override to an [`ExtensionValidator`] field.
+fn apply_ext_presence<B: synta_x509_verification::ops::CryptoOps>(
+    validator: &mut ExtensionValidator<'_, B>,
+    presence: ExtPresence,
+) {
+    match presence {
+        ExtPresence::Required => {
+            *validator = ExtensionValidator::Present {
+                criticality: Criticality::Agnostic,
+                validator: None,
+            };
+        }
+        ExtPresence::Optional => {
+            *validator = ExtensionValidator::MaybePresent {
+                criticality: Criticality::Agnostic,
+                validator: None,
+            };
+        }
+        ExtPresence::Absent => {
+            *validator = ExtensionValidator::NotPresent;
         }
     }
 }
@@ -1170,11 +1241,18 @@ pub(crate) fn check_is_ca_cert(cert_der: &[u8], now: i64) -> Result<(), AcmeErro
 
 /// Lint a just-issued CA certificate by re-verifying it against the signing CA.
 ///
-/// Analogous to `lint_issued_cert` but for CA certificates: uses
-/// `ValidationProfile::Rfc5280` and `ee_extension_policy = new_default_webpki_ca()`
-/// so that `BasicConstraints.cA=TRUE` and the CA key-usage set are required on
-/// the issued cert while CABF EE restrictions are not applied.
-fn lint_issued_ca_cert(cert_der: &[u8], ca_cert_der: &[u8], now: i64) -> Result<(), AcmeError> {
+/// Analogous to `lint_issued_cert` but for CA certificates.
+///
+/// Always forces `ValidationProfile::Rfc5280` regardless of `profile.base` —
+/// WebPKI rejects `cA=TRUE` on the "leaf" position, so a WebPKI-base profile
+/// would cause every cross-cert to fail.  The configurable fields (SAN,
+/// name-constraints, algorithms, RSA modulus) still apply.
+fn lint_issued_ca_cert(
+    cert_der: &[u8],
+    ca_cert_der: &[u8],
+    now: i64,
+    profile: &ResolvedLinterProfile,
+) -> Result<(), AcmeError> {
     use synta_certificate::OpensslSignatureVerifier;
 
     let store = OwnedStore::try_new(std::iter::once(ca_cert_der))
@@ -1187,9 +1265,32 @@ fn lint_issued_ca_cert(cert_der: &[u8], ca_cert_der: &[u8], now: i64) -> Result<
     let leaf = VerificationCertificate::new(cert, cert_der);
 
     let mut policy = PolicyDefinition::new_server_pq(OpensslSignatureVerifier, vec![], now);
+    // CA certs always use RFC 5280 regardless of the linter profile base.
     policy.profile = ValidationProfile::Rfc5280;
     policy.extended_key_usage = None;
     policy.ee_extension_policy = ExtensionPolicy::new_default_webpki_ca();
+
+    // Apply configurable fields from the profile.
+    policy.minimum_rsa_modulus = profile.minimum_rsa_bits;
+    policy.permitted_spki_algorithms = if profile.include_composite_algs {
+        permitted_spki_algs_with_composite()
+    } else {
+        profile.spki_algs
+    };
+    policy.permitted_signature_algorithms = if profile.include_composite_algs {
+        permitted_sig_algs_with_composite()
+    } else {
+        profile.sig_algs
+    };
+    // CA certificates do not carry SAN — force Optional regardless of profile.
+    apply_ext_presence(
+        &mut policy.ee_extension_policy.subject_alt_name,
+        ExtPresence::Optional,
+    );
+    apply_ext_presence(
+        &mut policy.ee_extension_policy.name_constraints,
+        profile.name_constraints,
+    );
 
     let result = store
         .verify(&leaf, &[], &policy, RevocationChecks::default())
@@ -1229,6 +1330,7 @@ pub fn issue_ca_cert(
     issuer_ca: &CaState,
     subject_cert_der: &[u8],
     validity_years: u32,
+    linter: &ResolvedLinterProfile,
 ) -> Result<IssuedCaCert, AcmeError> {
     // Parse the subject CA cert to extract Subject DN and SPKI.
     let mut dec = Decoder::new(subject_cert_der, Encoding::Der);
@@ -1318,7 +1420,7 @@ pub fn issue_ca_cert(
         .sign(&signer)
         .map_err(|e| AcmeError::Builder(format!("sign cross-cert: {e}")))?;
 
-    lint_issued_ca_cert(&cert_der, &issuer_ca.cert_der, not_before_unix)?;
+    lint_issued_ca_cert(&cert_der, &issuer_ca.cert_der, not_before_unix, linter)?;
 
     let pem_bytes = der_to_pem("CERTIFICATE", &cert_der);
     let cert_pem = String::from_utf8(pem_bytes)
@@ -1362,9 +1464,10 @@ mod tests {
     use super::{
         ip_string_to_bytes, issue_certificate, issue_with_params, parse_operator_san,
         permitted_sig_algs_with_composite, permitted_spki_algs_with_composite, sign_admin_cert,
-        IssueCertParams, OperatorSanKind,
+        IssueCertParams, IssueWithParamsArgs, OperatorSanKind,
     };
     use crate::ca::csr::{validate_csr, SanEntry, ValidatedCsr};
+    use crate::linter::WEBPKI_PROFILE;
     use crate::state::MtcState;
     use synta_certificate::oids;
 
@@ -1861,6 +1964,7 @@ mod tests {
             crl_next_update_secs: 86400,
             caa_identities: vec![],
             mtc: Arc::new(MtcState::disabled()),
+            default_linter: None,
         };
 
         let params = crate::profiles::CertificateParameters {
@@ -1884,9 +1988,19 @@ mod tests {
             inject_account_kpn: false,
             trust_jwks_urls: vec![],
             dogtag_profile_id: None,
+            linter: None,
         };
 
-        let result = issue_with_params(&ca, &validated_csr, &params, None, None, &[], &[]);
+        let result = issue_with_params(IssueWithParamsArgs {
+            ca: &ca,
+            csr: &validated_csr,
+            params: &params,
+            not_before_override: None,
+            not_after_override: None,
+            extra_other_names: &[],
+            extra_dns_names: &[],
+            linter: &WEBPKI_PROFILE,
+        });
         assert!(
             result.is_err(),
             "expected Err when enforce_validity_cap=true and validity_days=201"
@@ -1924,6 +2038,7 @@ mod tests {
             crl_next_update_secs: 86400,
             caa_identities: vec![],
             mtc: Arc::new(MtcState::disabled()),
+            default_linter: None,
         };
 
         let params = crate::profiles::CertificateParameters {
@@ -1947,9 +2062,19 @@ mod tests {
             inject_account_kpn: false,
             trust_jwks_urls: vec![],
             dogtag_profile_id: None,
+            linter: None,
         };
 
-        let result = issue_with_params(&ca, &validated_csr, &params, None, None, &[], &[]);
+        let result = issue_with_params(IssueWithParamsArgs {
+            ca: &ca,
+            csr: &validated_csr,
+            params: &params,
+            not_before_override: None,
+            not_after_override: None,
+            extra_other_names: &[],
+            extra_dns_names: &[],
+            linter: &WEBPKI_PROFILE,
+        });
         assert!(
             result.is_ok(),
             "expected Ok when enforce_validity_cap=true and validity_days=200: {result:?}"
@@ -2077,6 +2202,7 @@ mod tests {
             crl_next_update_secs: 86400,
             caa_identities: vec![],
             mtc: Arc::new(MtcState::disabled()),
+            default_linter: None,
         }
     }
 

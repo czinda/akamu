@@ -84,6 +84,7 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            default_linter: None,
             signer: None,
         }],
         mtc: Some(MtcConfig {
@@ -107,6 +108,7 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
         server: ServerConfig::default(),
         tls: Default::default(),
         profiles: Default::default(),
+        linter: Default::default(),
         admin: None,
         email_challenge: None,
         delegation_upstream: None,
@@ -162,6 +164,7 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
             trust_anchor_id_der: None,
             logid_issuer_dn_der: None,
         }),
+        default_linter: None,
     });
 
     let cas = {

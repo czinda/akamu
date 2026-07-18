@@ -446,6 +446,14 @@ pub async fn finalize_order(
                 .await?
         }
         crate::state::SigningBackend::Local { .. } => {
+            // Three-way linter resolution: cert profile → CA default → "webpki".
+            let linter_name = cert_params
+                .linter
+                .as_deref()
+                .or_else(|| order_ca.default_linter.as_deref())
+                .unwrap_or("webpki");
+            let linter_profile = *state.linter_registry.resolve(linter_name)?;
+
             let ca_arc = Arc::clone(order_ca);
             let csr_owned = validated_csr.clone();
             let params_owned = cert_params.clone();
@@ -454,7 +462,16 @@ pub async fn finalize_order(
             let on = extra_other_names.clone();
             let dn = extra_dns_names.clone();
             tokio::task::spawn_blocking(move || {
-                ca::issue::issue_with_params(&ca_arc, &csr_owned, &params_owned, nb, na, &on, &dn)
+                ca::issue::issue_with_params(ca::issue::IssueWithParamsArgs {
+                    ca: &ca_arc,
+                    csr: &csr_owned,
+                    params: &params_owned,
+                    not_before_override: nb,
+                    not_after_override: na,
+                    extra_other_names: &on,
+                    extra_dns_names: &dn,
+                    linter: &linter_profile,
+                })
             })
             .await
             .map_err(|e| AcmeError::Internal(format!("issue task: {e}")))??

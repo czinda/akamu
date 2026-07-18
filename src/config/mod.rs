@@ -6,6 +6,7 @@ mod db;
 mod delegation;
 mod gssapi;
 mod ldap;
+mod linter;
 mod mtc;
 mod profiles;
 mod server;
@@ -18,6 +19,7 @@ pub use self::db::*;
 pub use self::delegation::*;
 pub use self::gssapi::*;
 pub use self::ldap::*;
+pub use self::linter::*;
 pub use self::mtc::*;
 pub use self::profiles::*;
 pub use self::server::*;
@@ -51,6 +53,11 @@ pub struct Config {
     /// still governs directory advertisement in that case.
     #[serde(default)]
     pub profiles: ProfilesConfig,
+    /// Pre-issuance linter profile definitions.  The built-in `"webpki"` and
+    /// `"rfc5280"` profiles are always available; this section adds named
+    /// user-defined profiles that compose on top of them.
+    #[serde(default)]
+    pub linter: LinterConfig,
     /// Admin API configuration.  Absent → admin endpoints return 404.
     #[serde(default)]
     pub admin: Option<AdminConfig>,

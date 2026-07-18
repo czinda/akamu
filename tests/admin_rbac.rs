@@ -55,6 +55,7 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            default_linter: None,
             signer: None,
         }],
         mtc: Some(MtcConfig {
@@ -74,6 +75,7 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         server: ServerConfig::default(),
         tls: Default::default(),
         profiles: Default::default(),
+        linter: Default::default(),
         admin: Some(AdminConfig {
             bootstrap_key_type: "ec:P-256".into(),
             bootstrap_operator_cert_file: None,
@@ -123,6 +125,7 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         enforce_validity_cap: false,
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
+        default_linter: None,
     });
 
     let sessions: Arc<tokio::sync::Mutex<HashMap<String, AdminSession>>> =

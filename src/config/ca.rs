@@ -165,6 +165,14 @@ pub struct CaConfig {
     /// not participate in an MTC log.  Falls back to the global `[mtc]` section
     /// when that exists and this field is `None`.
     pub mtc: Option<super::mtc::MtcConfig>,
+    /// Default linter profile for this CA.  Applied when an order's certificate
+    /// profile does not explicitly set a `linter` field.  When absent, falls back
+    /// to the built-in `"webpki"` profile.
+    ///
+    /// Must name a profile from the top-level `[linter.profiles]` section, or
+    /// one of the built-ins `"webpki"` / `"rfc5280"`.
+    #[serde(default)]
+    pub default_linter: Option<String>,
     /// Signing backend.  When absent or `type = "local"`, the CA uses its own
     /// `key_file` for local signing (the default).  When `type = "dogtag"`,
     /// certificate signing is delegated to a Dogtag PKI CA via its REST API.

@@ -682,6 +682,7 @@ async fn run() -> Result<(), String> {
             crl_next_update_secs: ca_cfg.crl_next_update_secs,
             caa_identities: ca_cfg.caa_identities.clone(),
             mtc: ca_mtc,
+            default_linter: ca_cfg.default_linter.clone(),
         });
         crl_caches_map.insert(ca_cfg.id.clone(), Default::default());
         cas_map.insert(ca_cfg.id.clone(), ca_state);
@@ -942,6 +943,10 @@ async fn run() -> Result<(), String> {
     )
     .db_ro(db_ro)
     .profiles(profile_registry.clone())
+    .linter_registry(Arc::new(
+        akamu::linter::LinterRegistry::new(&config.linter)
+            .unwrap_or_else(|e| panic!("linter config error: {e}")),
+    ))
     .nonces(Arc::clone(&nonces))
     .link_headers(Arc::new(link_headers_map))
     .crl_caches(Arc::new(crl_caches_map))

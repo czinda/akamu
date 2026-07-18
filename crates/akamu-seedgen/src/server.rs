@@ -69,6 +69,7 @@ pub async fn start(
                 key_password_file: None,
                 mtc: None,
                 signer: None,
+                default_linter: None,
             }
         })
         .collect();
@@ -96,6 +97,7 @@ pub async fn start(
         },
         tls: Default::default(),
         profiles: Default::default(),
+        linter: Default::default(),
         admin: None,
         email_challenge: None,
         delegation_upstream: None,
@@ -138,6 +140,7 @@ pub async fn start(
             crl_next_update_secs: 86400,
             caa_identities: vec![],
             mtc: Arc::new(akamu::state::MtcState::disabled()),
+            default_linter: None,
         });
 
         if spec.is_default {

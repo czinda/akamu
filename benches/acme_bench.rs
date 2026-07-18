@@ -891,6 +891,7 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            default_linter: None,
             signer: None,
         }],
         mtc: Some(MtcConfig {
@@ -918,6 +919,7 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
         },
         tls: Default::default(),
         profiles: Default::default(),
+        linter: Default::default(),
         admin: None,
         email_challenge: None,
         delegation_upstream: None,
@@ -986,6 +988,7 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
         crl_next_update_secs: 86400,
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
+        default_linter: None,
     });
     let default_ca_id = Arc::new("bench".to_string());
     let cas: Arc<IndexMap<String, Arc<CaState>>> =
@@ -2504,6 +2507,7 @@ async fn main() {
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            default_linter: None,
             signer: None,
         };
         ca::init::load_or_generate(&ca_cfg).unwrap();

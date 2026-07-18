@@ -61,7 +61,9 @@ async fn build_test_state(
             key_password_file: None,
             mtc: None,
             signer: None,
+            default_linter: None,
         }],
+        linter: Default::default(),
         mtc: Some(MtcConfig {
             log_path: "/dev/null".into(),
             enabled: false,
@@ -114,6 +116,7 @@ async fn build_test_state(
         enforce_validity_cap: false,
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
+        default_linter: None,
     });
 
     AppStateBuilder::new(

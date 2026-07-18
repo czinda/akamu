@@ -94,6 +94,7 @@ impl ProfilePayload {
             inject_account_kpn: self.inject_account_kpn,
             trust_jwks_urls: vec![],
             dogtag_profile_id: None,
+            linter: None,
         }
     }
 }

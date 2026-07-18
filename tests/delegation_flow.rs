@@ -285,6 +285,7 @@ async fn build_delegation_state() -> (
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            default_linter: None,
             signer: None,
         }],
         mtc: Some(MtcConfig {
@@ -304,6 +305,7 @@ async fn build_delegation_state() -> (
         server,
         tls: Default::default(),
         profiles: Default::default(),
+        linter: Default::default(),
         admin: Some(AdminConfig {
             bootstrap_key_type: "ec:P-256".into(),
             bootstrap_operator_cert_file: None,
@@ -353,6 +355,7 @@ async fn build_delegation_state() -> (
         enforce_validity_cap: false,
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
+        default_linter: None,
     });
 
     let admin_token = "test-admin-token".to_string();
@@ -1258,6 +1261,7 @@ async fn delegation_disabled_returns_404() {
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            default_linter: None,
             signer: None,
         }],
         mtc: Some(MtcConfig {
@@ -1277,6 +1281,7 @@ async fn delegation_disabled_returns_404() {
         server,
         tls: Default::default(),
         profiles: Default::default(),
+        linter: Default::default(),
         admin: None,
         email_challenge: None,
         delegation_upstream: None,
@@ -1307,6 +1312,7 @@ async fn delegation_disabled_returns_404() {
         enforce_validity_cap: false,
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
+        default_linter: None,
     });
 
     let state = AppStateBuilder::new(

@@ -130,6 +130,7 @@ pub fn register_profiles(state: &Arc<AppState>, profiles: &[ProfileSpec]) {
             inject_account_kpn: false,
             trust_jwks_urls: vec![],
             dogtag_profile_id: None,
+            linter: None,
         };
 
         let added = state
@@ -169,7 +170,12 @@ pub async fn issue_cross_certs(
             .cert_der
             .clone();
 
-        let issued = issue_ca_cert(&issuer_ca, &subject_cert_der, cs.validity_years)
+        let linter_name = issuer_ca.default_linter.as_deref().unwrap_or("webpki");
+        let linter = *state
+            .linter_registry
+            .resolve(linter_name)
+            .map_err(|e| format!("linter profile '{linter_name}': {e}"))?;
+        let issued = issue_ca_cert(&issuer_ca, &subject_cert_der, cs.validity_years, &linter)
             .map_err(|e| format!("cross-sign {}->{}: {e}", cs.issuer, cs.subject))?;
 
         let row = CrossCertRow {

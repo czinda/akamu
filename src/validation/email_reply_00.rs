@@ -708,12 +708,14 @@ mod tests {
                 require_encrypted_key: false,
                 key_password_file: None,
                 mtc: None,
+                default_linter: None,
                 signer: None,
             }],
             mtc: None,
             server: ServerConfig::default(),
             tls: Default::default(),
             profiles: Default::default(),
+            linter: Default::default(),
             admin: None,
             email_challenge: None,
             delegation_upstream: None,
@@ -740,6 +742,7 @@ mod tests {
             crl_next_update_secs: 604800,
             caa_identities: vec![],
             mtc: Arc::new(MtcState::disabled()),
+            default_linter: None,
         });
 
         let acc_id = "acc-vr-001".to_string();

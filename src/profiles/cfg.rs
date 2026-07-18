@@ -345,6 +345,7 @@ fn translate(
         inject_account_kpn: false,
         trust_jwks_urls: vec![],
         dogtag_profile_id: None,
+        linter: None,
     })
 }
 

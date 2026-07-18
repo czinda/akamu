@@ -121,6 +121,7 @@ async fn build_state(
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            default_linter: None,
             signer: None,
         }],
         mtc: Some(MtcConfig {
@@ -140,6 +141,7 @@ async fn build_state(
         server: ServerConfig::default(),
         tls: Default::default(),
         profiles: Default::default(),
+        linter: Default::default(),
         admin: Some(AdminConfig {
             bootstrap_key_type: "ec:P-256".into(),
             bootstrap_operator_cert_file: None,
@@ -189,6 +191,7 @@ async fn build_state(
         enforce_validity_cap: false,
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
+        default_linter: None,
     });
 
     let sessions: Arc<tokio::sync::Mutex<HashMap<String, AdminSession>>> =
@@ -824,6 +827,7 @@ async fn build_state_with_proxy(
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            default_linter: None,
             signer: None,
         }],
         mtc: Some(MtcConfig {
@@ -843,6 +847,7 @@ async fn build_state_with_proxy(
         server: ServerConfig::default(),
         tls: Default::default(),
         profiles: Default::default(),
+        linter: Default::default(),
         admin: Some(AdminConfig {
             bootstrap_key_type: "ec:P-256".into(),
             bootstrap_operator_cert_file: None,
@@ -895,6 +900,7 @@ async fn build_state_with_proxy(
         enforce_validity_cap: false,
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
+        default_linter: None,
     });
 
     let sessions: Arc<tokio::sync::Mutex<HashMap<String, AdminSession>>> =
@@ -1225,6 +1231,7 @@ async fn proxy_cert_rate_limited() {
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            default_linter: None,
             signer: None,
         }],
         mtc: Some(MtcConfig {
@@ -1244,6 +1251,7 @@ async fn proxy_cert_rate_limited() {
         server: ServerConfig::default(),
         tls: Default::default(),
         profiles: Default::default(),
+        linter: Default::default(),
         admin: Some(AdminConfig {
             bootstrap_key_type: "ec:P-256".into(),
             bootstrap_operator_cert_file: None,
@@ -1296,6 +1304,7 @@ async fn proxy_cert_rate_limited() {
         enforce_validity_cap: false,
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
+        default_linter: None,
     });
 
     let sessions: Arc<tokio::sync::Mutex<HashMap<String, AdminSession>>> =

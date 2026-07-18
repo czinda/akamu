@@ -277,6 +277,7 @@ async fn build_akamu_state(
             key_password_file: None,
             mtc: None,
             signer: None,
+            default_linter: None,
         }],
         mtc: Some(MtcConfig {
             log_path: mtc_log_path.clone(),
@@ -314,6 +315,7 @@ async fn build_akamu_state(
         tkauth: None,
         gossip: None,
         crdt_db_url: None,
+        linter: Default::default(),
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
@@ -350,6 +352,7 @@ async fn build_akamu_state(
         crl_next_update_secs: 86400,
         enforce_validity_cap: false,
         caa_identities: vec![],
+        default_linter: None,
         mtc: {
             let mtc_spki = mtc_key.public_key().unwrap().spki_der().to_vec();
             let logid_dn =

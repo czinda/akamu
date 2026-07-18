@@ -166,6 +166,7 @@ async fn spawn_node(params: SpawnParams) -> NodeHandle {
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            default_linter: None,
             signer: None,
         }],
         mtc: Some(MtcConfig {
@@ -185,6 +186,7 @@ async fn spawn_node(params: SpawnParams) -> NodeHandle {
         server: ServerConfig::default(),
         tls: Default::default(),
         profiles: Default::default(),
+        linter: Default::default(),
         admin: None,
         email_challenge: None,
         delegation_upstream: None,
@@ -217,6 +219,7 @@ async fn spawn_node(params: SpawnParams) -> NodeHandle {
         enforce_validity_cap: false,
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
+        default_linter: None,
     });
 
     let now_ts = std::time::SystemTime::now()

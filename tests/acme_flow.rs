@@ -219,6 +219,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            default_linter: None,
             signer: None,
         }],
         mtc: Some(MtcConfig {
@@ -238,6 +239,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         server: ServerConfig::default(),
         tls: Default::default(),
         profiles: Default::default(),
+        linter: Default::default(),
         admin: None,
         email_challenge: None,
         delegation_upstream: None,
@@ -268,6 +270,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         enforce_validity_cap: false,
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
+        default_linter: None,
     });
     let cas = {
         let mut m = indexmap::IndexMap::new();
@@ -2223,6 +2226,7 @@ async fn test_directory_with_optional_fields() {
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            default_linter: None,
             signer: None,
         }],
         mtc: Some(akamu::config::MtcConfig {
@@ -2248,6 +2252,7 @@ async fn test_directory_with_optional_fields() {
         },
         tls: Default::default(),
         profiles: Default::default(),
+        linter: Default::default(),
         admin: None,
         email_challenge: None,
         delegation_upstream: None,
@@ -2274,6 +2279,7 @@ async fn test_directory_with_optional_fields() {
         enforce_validity_cap: false,
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
+        default_linter: None,
     });
     let cas = {
         let mut m = indexmap::IndexMap::new();
@@ -2603,6 +2609,7 @@ async fn test_finalize_with_mtc_enabled() {
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            default_linter: None,
             signer: None,
         }],
         mtc: Some(MtcConfig {
@@ -2622,6 +2629,7 @@ async fn test_finalize_with_mtc_enabled() {
         server: akamu::config::ServerConfig::default(),
         tls: Default::default(),
         profiles: Default::default(),
+        linter: Default::default(),
         admin: None,
         email_challenge: None,
         delegation_upstream: None,
@@ -2653,6 +2661,7 @@ async fn test_finalize_with_mtc_enabled() {
         enforce_validity_cap: false,
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
+        default_linter: None,
     });
     let cas = {
         let mut m = indexmap::IndexMap::new();
@@ -2865,6 +2874,7 @@ async fn test_finalize_with_aia_and_cdp() {
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            default_linter: None,
             signer: None,
         }],
         mtc: Some(MtcConfig {
@@ -2884,6 +2894,7 @@ async fn test_finalize_with_aia_and_cdp() {
         server: ServerConfig::default(),
         tls: Default::default(),
         profiles: Default::default(),
+        linter: Default::default(),
         admin: None,
         email_challenge: None,
         delegation_upstream: None,
@@ -2910,6 +2921,7 @@ async fn test_finalize_with_aia_and_cdp() {
         enforce_validity_cap: false,
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
+        default_linter: None,
     });
     let cas = {
         let mut m = indexmap::IndexMap::new();
@@ -3364,6 +3376,7 @@ async fn test_smime_email_reply_00_full_flow() {
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            default_linter: None,
             signer: None,
         }],
         mtc: Some(MtcConfig {
@@ -3391,6 +3404,7 @@ async fn test_smime_email_reply_00_full_flow() {
         },
         tls: Default::default(),
         profiles: Default::default(),
+        linter: Default::default(),
         admin: None,
         email_challenge: Some(EmailChallengeConfig {
             enabled: true,
@@ -3426,6 +3440,7 @@ async fn test_smime_email_reply_00_full_flow() {
         enforce_validity_cap: false,
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
+        default_linter: None,
     });
     // Build a profile registry with the S/MIME profile so the finalize route
     // picks up the emailProtection EKU instead of the CA default server_auth.

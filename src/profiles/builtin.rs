@@ -72,6 +72,7 @@ pub fn load_builtin(
             inject_account_kpn: pcfg.inject_account_kpn,
             trust_jwks_urls: pcfg.trust_jwks_urls.clone(),
             dogtag_profile_id: pcfg.dogtag_profile_id.clone(),
+            linter: pcfg.linter.clone(),
         };
 
         out.insert(id.clone(), (pcfg.description.clone(), params));
@@ -152,6 +153,7 @@ mod tests {
             inject_account_kpn: false,
             trust_jwks_urls: vec![],
             dogtag_profile_id: None,
+            linter: None,
         }
     }
 

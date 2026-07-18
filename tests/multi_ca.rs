@@ -58,6 +58,7 @@ async fn build_two_ca_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir
                 require_encrypted_key: false,
                 key_password_file: None,
                 mtc: None,
+                default_linter: None,
                 signer: None,
             },
             CaConfig {
@@ -79,6 +80,7 @@ async fn build_two_ca_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir
                 require_encrypted_key: false,
                 key_password_file: None,
                 mtc: None,
+                default_linter: None,
                 signer: None,
             },
         ],
@@ -99,6 +101,7 @@ async fn build_two_ca_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir
         server: ServerConfig::default(),
         tls: Default::default(),
         profiles: Default::default(),
+        linter: Default::default(),
         admin: None,
         email_challenge: None,
         delegation_upstream: None,
@@ -137,6 +140,7 @@ async fn build_two_ca_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir
         enforce_validity_cap: false,
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
+        default_linter: None,
     });
     let ca_ec = Arc::new(CaState {
         id: "ec".into(),
@@ -154,6 +158,7 @@ async fn build_two_ca_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir
         enforce_validity_cap: false,
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
+        default_linter: None,
     });
 
     let mut cas_map = indexmap::IndexMap::new();
@@ -514,6 +519,7 @@ async fn admin_cas_list_returns_both_cas() {
                 require_encrypted_key: false,
                 key_password_file: None,
                 mtc: None,
+                default_linter: None,
                 signer: None,
             },
             CaConfig {
@@ -535,6 +541,7 @@ async fn admin_cas_list_returns_both_cas() {
                 require_encrypted_key: false,
                 key_password_file: None,
                 mtc: None,
+                default_linter: None,
                 signer: None,
             },
         ],
@@ -555,6 +562,7 @@ async fn admin_cas_list_returns_both_cas() {
         server: ServerConfig::default(),
         tls: Default::default(),
         profiles: Default::default(),
+        linter: Default::default(),
         admin: Some(AdminConfig {
             bootstrap_key_type: "ec:P-256".into(),
             bootstrap_operator_cert_file: None,
@@ -611,6 +619,7 @@ async fn admin_cas_list_returns_both_cas() {
         enforce_validity_cap: false,
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
+        default_linter: None,
     });
     let ca_ec = Arc::new(CaState {
         id: "ec".into(),
@@ -628,6 +637,7 @@ async fn admin_cas_list_returns_both_cas() {
         enforce_validity_cap: false,
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
+        default_linter: None,
     });
 
     let mut cas_map = indexmap::IndexMap::new();
@@ -752,6 +762,7 @@ async fn build_two_ca_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
                 require_encrypted_key: false,
                 key_password_file: None,
                 mtc: None,
+                default_linter: None,
                 signer: None,
             },
             CaConfig {
@@ -773,6 +784,7 @@ async fn build_two_ca_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
                 require_encrypted_key: false,
                 key_password_file: None,
                 mtc: None,
+                default_linter: None,
                 signer: None,
             },
         ],
@@ -793,6 +805,7 @@ async fn build_two_ca_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         server: ServerConfig::default(),
         tls: Default::default(),
         profiles: Default::default(),
+        linter: Default::default(),
         admin: Some(AdminConfig {
             bootstrap_key_type: "ec:P-256".into(),
             bootstrap_operator_cert_file: None,
@@ -849,6 +862,7 @@ async fn build_two_ca_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         enforce_validity_cap: false,
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
+        default_linter: None,
     });
     let ca_ec = Arc::new(CaState {
         id: "ec".into(),
@@ -866,6 +880,7 @@ async fn build_two_ca_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         enforce_validity_cap: false,
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
+        default_linter: None,
     });
 
     let mut cas_map = indexmap::IndexMap::new();

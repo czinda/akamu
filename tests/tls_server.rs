@@ -418,6 +418,7 @@ async fn start_tls_server() -> TlsTestServer {
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            default_linter: None,
             signer: None,
         }],
         mtc: Some(MtcConfig {
@@ -445,6 +446,7 @@ async fn start_tls_server() -> TlsTestServer {
             bootstrap_key_type: "ec:P-256".into(),
             client_auth: None,
         },
+        linter: Default::default(),
         admin: None,
         email_challenge: None,
         delegation_upstream: None,
@@ -481,6 +483,7 @@ async fn start_tls_server() -> TlsTestServer {
         crl_next_update_secs: 86400,
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
+        default_linter: None,
     });
 
     // Bootstrap TLS cert/key signed by the CA.
@@ -967,6 +970,7 @@ async fn test_tls_untrusted_ca_rejected() {
         require_encrypted_key: false,
         key_password_file: None,
         mtc: None,
+        default_linter: None,
         signer: None,
     };
     let (_, other_ca_der) = ca::init::load_or_generate(&unrelated_ca_cfg).unwrap();

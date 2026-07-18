@@ -133,6 +133,7 @@ mod tests {
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            default_linter: None,
             signer: None,
         };
         init::load_or_generate(&config).unwrap()

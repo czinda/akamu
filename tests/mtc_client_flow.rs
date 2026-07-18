@@ -66,6 +66,7 @@ async fn build_state(dir: &std::path::Path, base_url: &str, http01_port: u16) ->
             require_encrypted_key: false,
             key_password_file: None,
             mtc: None,
+            default_linter: None,
             signer: None,
         }],
         mtc: Some(MtcConfig {
@@ -94,6 +95,7 @@ async fn build_state(dir: &std::path::Path, base_url: &str, http01_port: u16) ->
         },
         tls: Default::default(),
         profiles: Default::default(),
+        linter: Default::default(),
         admin: None,
         email_challenge: None,
         delegation_upstream: None,
@@ -155,6 +157,7 @@ async fn build_state(dir: &std::path::Path, base_url: &str, http01_port: u16) ->
                 logid_issuer_dn_der: Some(logid_dn),
             })
         },
+        default_linter: None,
     });
 
     let cas = {

@@ -189,6 +189,14 @@ pub struct BuiltinProfileConfig {
     /// use this ACME profile.  Ignored for local-signing CAs.
     #[serde(default)]
     pub dogtag_profile_id: Option<String>,
+    /// Named linter profile to apply during pre-issuance linting.
+    /// When absent, the issuing CA's `default_linter` is used; if that is also
+    /// absent, the built-in `"webpki"` profile is used.
+    ///
+    /// Must name a profile from `[linter.profiles]` or one of the built-ins
+    /// `"webpki"` / `"rfc5280"`.
+    #[serde(default)]
+    pub linter: Option<String>,
 }
 
 /// A certificate policy OID with an optional CPS URI qualifier.

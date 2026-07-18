@@ -172,6 +172,10 @@ pub struct AppState {
     /// `CertificateParameters::from_ca` (`digitalSignature` KeyUsage,
     /// `serverAuth` EKU, CA validity and URL defaults).
     pub profiles: Arc<ProfileRegistry>,
+    /// Pre-issuance linter profile registry.  Always contains the built-in
+    /// `"webpki"` and `"rfc5280"` profiles; user-defined profiles from
+    /// `[linter.profiles]` are added on top.
+    pub linter_registry: Arc<crate::linter::LinterRegistry>,
     /// Present when `[tls]` is enabled and client auth is configured.
     pub tls: Option<Arc<TlsState>>,
     /// In-memory cache of account key material keyed by account ID.
@@ -389,6 +393,7 @@ pub struct AppStateBuilder {
     cas: Arc<IndexMap<String, Arc<CaState>>>,
     default_ca_id: Arc<String>,
     profiles: Option<Arc<ProfileRegistry>>,
+    linter_registry: Option<Arc<crate::linter::LinterRegistry>>,
     tls: Option<Arc<TlsState>>,
     spki_cache: Option<Arc<RwLock<HashMap<String, CachedAccount>>>>,
     nonces: Option<Arc<NonceBucket>>,
@@ -445,6 +450,7 @@ impl AppStateBuilder {
             cas,
             default_ca_id,
             profiles: None,
+            linter_registry: None,
             tls: None,
             spki_cache: None,
             nonces: None,
@@ -479,6 +485,7 @@ impl AppStateBuilder {
 
     builder_setter!(db_ro, crate::db::Db);
     builder_setter!(profiles, Arc<ProfileRegistry>);
+    builder_setter!(linter_registry, Arc<crate::linter::LinterRegistry>);
     builder_setter!(tls, Arc<TlsState>);
     builder_setter!(spki_cache, Arc<RwLock<HashMap<String, CachedAccount>>>);
     builder_setter!(nonces, Arc<NonceBucket>);
@@ -572,6 +579,12 @@ impl AppStateBuilder {
             cas: self.cas,
             default_ca_id: self.default_ca_id,
             profiles,
+            linter_registry: self.linter_registry.unwrap_or_else(|| {
+                Arc::new(
+                    crate::linter::LinterRegistry::new(&crate::config::LinterConfig::default())
+                        .expect("default linter registry always succeeds"),
+                )
+            }),
             tls: self.tls,
             spki_cache: self
                 .spki_cache
@@ -682,6 +695,9 @@ pub struct CaState {
     pub caa_identities: Vec<String>,
     /// Per-CA MTC transparency log state.
     pub mtc: Arc<MtcState>,
+    /// Default linter profile name for this CA.  Applied when an order's cert
+    /// profile omits the `linter` field.  Falls back to `"webpki"` when `None`.
+    pub default_linter: Option<String>,
 }
 
 impl CaState {
