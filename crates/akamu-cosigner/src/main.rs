@@ -161,7 +161,7 @@ async fn run() -> Result<(), CosignerError> {
         axum::serve(listener, router)
             .with_graceful_shutdown(async move { shutdown_signal(&mut sigterm).await })
             .await
-            .map_err(|e| CosignerError::Io(e))?;
+            .map_err(CosignerError::Io)?;
     } else {
         let target = parse_listen_target(&config.server.listen_addr, "AKAMU_COSIGNER_LISTEN")
             .map_err(CosignerError::Config)?;
@@ -185,7 +185,7 @@ async fn run() -> Result<(), CosignerError> {
                     axum::serve(listener, router)
                         .with_graceful_shutdown(async move { shutdown_signal(&mut sigterm).await })
                         .await
-                        .map_err(|e| CosignerError::Io(e))?;
+                        .map_err(CosignerError::Io)?;
                 }
                 ListenTarget::Unix(path) => {
                     remove_stale_socket(&path)
@@ -198,7 +198,7 @@ async fn run() -> Result<(), CosignerError> {
                     axum::serve(listener, router)
                         .with_graceful_shutdown(async move { shutdown_signal(&mut sigterm).await })
                         .await
-                        .map_err(|e| CosignerError::Io(e))?;
+                        .map_err(CosignerError::Io)?;
                     // Best-effort cleanup of the socket file after graceful shutdown.
                     let _ = std::fs::remove_file(&path);
                 }
