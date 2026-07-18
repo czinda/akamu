@@ -60,17 +60,25 @@ pub async fn respond_challenge(
         if !authz.ca_id.is_empty() && authz.ca_id != "default" && authz.ca_id != ca_id.0 {
             return Err(AcmeError::NotFound);
         }
-        if authz.status != "pending" {
-            return Err(AcmeError::BadRequest(format!(
-                "authorization status is '{}', expected 'pending'",
-                authz.status
-            )));
-        }
-
         let challenge = challenges
             .into_iter()
             .find(|c| c.r#type == chall_type)
             .ok_or(AcmeError::NotFound)?;
+
+        // RFC 8555 §7.5.1: if the authorization is no longer pending the server
+        // MUST ignore the request body and return the current challenge object.
+        // Clients legitimately poll challenge URLs after validation completes.
+        if authz.status != "pending" {
+            return challenge_response(
+                &state,
+                &challenge,
+                &pfx,
+                &ca_id.0,
+                &ctx.next_nonce,
+                &account_id,
+                &jwk_thumbprint,
+            );
+        }
 
         let already_processing = if challenge.status == "pending" {
             let affected = if let Some(ref coal) = state.write_coalescer {
