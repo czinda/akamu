@@ -53,6 +53,7 @@ it for automated service accounts.
 - Force CRL regeneration for any CA or all CAs.
 - Cross-sign CAs.
 - Manage RFC 9115 delegation objects.
+- Query and force MTC transparency log operations (checkpoints, landmarks).
 - Deactivate ACME accounts.
 - Query the audit log.
 
@@ -89,6 +90,7 @@ operators or read the server configuration.
 - Create and delete EAB keys.
 - Revoke certificates from any CA.
 - Manage RFC 9115 delegation objects (create, update, delete).
+- Query and force MTC transparency log operations (checkpoints, landmarks).
 - Manage ACME account profile grants (set but not clear).
 - View accounts, orders, profiles, EAB keys, stats.
 - Query the audit log.
@@ -186,6 +188,7 @@ able to make changes.
 
 **Key capabilities:**
 - Query the audit event log (`GET /admin/audit`).
+- Query MTC transparency log state (tree size, root, landmarks, proofs, checkpoint).
 - List and view issued certificates (across all CAs).
 - List and view EAB keys.
 - List and view accounts, orders, and profiles.
@@ -267,6 +270,21 @@ filter — the operator only sees data belonging to its assigned CA.
 | `GET` | `/admin/delegations/{id}` | Y | Y | Y | Y |
 | `PUT` | `/admin/delegations/{id}` | Y | Y | | |
 | `DELETE` | `/admin/delegations/{id}` | Y | Y | | |
+| `GET` | `/admin/mtc/tree-size` | Y | Y | | Y |
+| `GET` | `/admin/mtc/root` | Y | Y | | Y |
+| `GET` | `/admin/mtc/landmarks` | Y | Y | | Y |
+| `GET` | `/admin/mtc/landmark-list` | Y | Y | | Y |
+| `GET` | `/admin/mtc/landmarks/{seq}/cert` | Y | Y | | |
+| `GET` | `/admin/mtc/landmarks/{seq}/cert-details` | Y | Y | | Y |
+| `GET` | `/admin/mtc/inclusion-proof/{cert_id}` | Y | Y | | Y |
+| `GET` | `/admin/mtc/standalone/{cert_id}` | Y | Y | | |
+| `GET` | `/admin/mtc/consistency-proof` | Y | Y | | Y |
+| `GET` | `/admin/mtc/subtree-root` | Y | Y | | Y |
+| `GET` | `/admin/mtc/revoked-ranges` | Y | Y | | Y |
+| `GET` | `/admin/mtc/checkpoint` | Y | Y | | Y |
+| `GET` | `/admin/mtc/cosignature` | Y | Y | | Y |
+| `POST` | `/admin/ca/{id}/mtc/force-checkpoint` | Y | Y | | |
+| `POST` | `/admin/ca/{id}/mtc/force-landmark` | Y | Y | | |
 
 **Note on `ca_ra` scoping:** When `ca_ra` is listed as permitted on a cert,
 account, or order endpoint, the server silently overrides any `ca_id` query
