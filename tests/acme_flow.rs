@@ -2387,8 +2387,11 @@ async fn test_challenge_authz_wrong_account() {
     );
 }
 
-/// POST challenge when the authz status is not 'pending' → BadRequest.
-/// Covers routes/challenge.rs lines 40-44.
+/// POST challenge when the authz status is not 'pending' → 200 with current state.
+///
+/// RFC 8555 §7.5.1: the server MUST ignore the request body and return the
+/// current challenge object when the authorization is already resolved.
+/// Clients legitimately poll challenge URLs after validation completes.
 #[tokio::test]
 async fn test_challenge_authz_not_pending() {
     let base_url = "https://acme.test";
@@ -2403,7 +2406,7 @@ async fn test_challenge_authz_not_pending() {
         .to_string();
     let authz_id = authz_url.split('/').next_back().unwrap().to_string();
 
-    // Mark the authz as 'valid' to make it non-pending.
+    // Mark the authz as 'valid' to simulate post-validation polling.
     sqlx::query("UPDATE authorizations SET status='valid' WHERE id=?")
         .bind(&authz_id)
         .execute(&db)
@@ -2414,9 +2417,14 @@ async fn test_challenge_authz_not_pending() {
     let chall_path = format!("/acme/chall/{authz_id}/http-01");
     let jws = key.jws_with_kid(&account_url, &nonce, &chall_url, Some(json!({})));
     let (status, body, _) = post_acme(&router, &chall_path, jws).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "re-poll of a resolved challenge must return 200 with current state, got {status}: {body}"
+    );
     assert!(
-        status.is_client_error(),
-        "challenge on non-pending authz should fail, got {status}: {body}"
+        body["type"].as_str().is_some(),
+        "response must contain a challenge object, got: {body}"
     );
 }
 

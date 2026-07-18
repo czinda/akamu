@@ -363,7 +363,9 @@ pub fn issue_certificate(params: IssueCertParams<'_>) -> Result<IssuedCert, Acme
         let san_der = san_builder
             .build()
             .map_err(|e| AcmeError::Builder(format!("SAN: {e}")))?;
-        builder = builder.add_extension_oid(oids::SUBJECT_ALT_NAME, false, &san_der);
+        // RFC 5280 §4.1.2.6: SAN MUST be critical when subject DN is empty.
+        let san_critical = csr.subject_der.as_slice() == [0x30, 0x00];
+        builder = builder.add_extension_oid(oids::SUBJECT_ALT_NAME, san_critical, &san_der);
     }
 
     if let Some(ocsp) = ocsp_url {
@@ -738,7 +740,9 @@ pub fn issue_with_params(args: IssueWithParamsArgs<'_>) -> Result<IssuedCert, Ac
         let san_der = san_builder
             .build()
             .map_err(|e| AcmeError::Builder(format!("SAN: {e}")))?;
-        builder = builder.add_extension_oid(oids::SUBJECT_ALT_NAME, false, &san_der);
+        // RFC 5280 §4.1.2.6: SAN MUST be critical when subject DN is empty.
+        let san_critical = csr.subject_der.as_slice() == [0x30, 0x00];
+        builder = builder.add_extension_oid(oids::SUBJECT_ALT_NAME, san_critical, &san_der);
     }
 
     if let Some(ocsp) = &params.ocsp_url {
@@ -2078,6 +2082,77 @@ mod tests {
         assert!(
             result.is_ok(),
             "expected Ok when enforce_validity_cap=true and validity_days=200: {result:?}"
+        );
+    }
+
+    /// RFC 5280 §4.1.2.6: when the subject DN is empty the SAN MUST be critical.
+    ///
+    /// Regression test for the bug where issue_with_params always emitted a
+    /// non-critical SAN regardless of the subject DN, causing the pre-issuance
+    /// linter to reject the certificate with "SubjectAltName must be critical
+    /// when subject is empty".
+    #[test]
+    fn issue_with_params_empty_subject_produces_critical_san() {
+        let (_ca_key, _ca_cert_der) = make_test_ca();
+        let ee_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let spki_der = ee_key.public_key().unwrap().spki_der().to_vec();
+
+        // Empty subject DN: NameBuilder with no fields → DER SEQUENCE { } = 0x30 0x00
+        let empty_subject_der = NameBuilder::new().build().unwrap();
+        let san_der = SubjectAlternativeNameBuilder::new()
+            .dns_name("empty-subject.example.com")
+            .build()
+            .unwrap();
+
+        let signer = ee_key.as_signer("sha256");
+        let csr_der = CsrBuilder::new()
+            .subject_name(&empty_subject_der)
+            .public_key_der(&spki_der)
+            .add_extension_oid(oids::SUBJECT_ALT_NAME, true, &san_der)
+            .sign(&signer)
+            .unwrap();
+
+        let allowed = &[("dns", "empty-subject.example.com")];
+        let validated_csr = validate_csr(&csr_der, allowed).unwrap();
+
+        let ca = make_test_ca_state();
+        let params = crate::profiles::CertificateParameters::from_ca(&ca);
+
+        let issued = issue_with_params(IssueWithParamsArgs {
+            ca: &ca,
+            csr: &validated_csr,
+            params: &params,
+            not_before_override: None,
+            not_after_override: None,
+            extra_other_names: &[],
+            extra_dns_names: &[],
+            linter: &WEBPKI_PROFILE,
+        })
+        .expect("issue_with_params must succeed for empty-subject CSR with critical SAN");
+
+        // Verify the SAN extension is marked critical by scanning the raw DER.
+        // In X.509 DER a critical extension has the structure:
+        //   SEQUENCE { OID, BOOLEAN TRUE (01 01 ff), OCTET STRING }
+        // A non-critical extension omits the BOOLEAN.
+        // OID 2.5.29.17 (SubjectAltName) encodes as 06 03 55 1d 11.
+        let san_oid: &[u8] = &[0x06, 0x03, 0x55, 0x1d, 0x11];
+        let critical_bool: &[u8] = &[0x01, 0x01, 0xff];
+        let mut san_is_critical = false;
+        for i in 0..issued
+            .cert_der
+            .len()
+            .saturating_sub(san_oid.len() + critical_bool.len())
+        {
+            if issued.cert_der[i..].starts_with(san_oid)
+                && issued.cert_der[i + san_oid.len()..].starts_with(critical_bool)
+            {
+                san_is_critical = true;
+                break;
+            }
+        }
+        assert!(
+            san_is_critical,
+            "SAN must be critical when subject DN is empty (RFC 5280 §4.1.2.6)"
         );
     }
 
