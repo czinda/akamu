@@ -903,6 +903,279 @@ Show a single cross-certificate by UUID, including its PEM.
 
 Returns `404 Not Found` when the cross-cert ID does not exist.
 
+## MTC transparency log endpoints
+
+These endpoints query and manage the Merkle Tree Certificate transparency log.
+They are only functional when MTC is enabled for the target CA (`[mtc]` in the
+server configuration).  When MTC is not enabled, all endpoints return
+`404 Not Found` with `{"detail": "MTC not enabled for this CA"}`.
+
+All read-only endpoints accept an optional `ca_id` query parameter for multi-CA
+deployments.  When omitted, the default CA is used.  A `ca_ra` operator's
+`ca_id` scope is automatically enforced on certificate-specific endpoints
+(`inclusion-proof`, `standalone`).
+
+For the CLI that wraps these endpoints, see
+[akamuctl — MTC transparency log](akamuctl.md#mtc-transparency-log).
+
+### `GET /admin/mtc/tree-size`
+
+Return the current MTC log tree size.
+
+Query parameters: `ca_id` (optional).
+
+Requires the `administrator`, `ca_operations`, or `auditor` role.
+
+**Response `200 OK`:**
+
+```json
+{ "tree_size": 42 }
+```
+
+### `GET /admin/mtc/root`
+
+Return the tree size and root hash.
+
+Query parameters: `ca_id` (optional).
+
+Requires the `administrator`, `ca_operations`, or `auditor` role.
+
+**Response `200 OK`:**
+
+```json
+{
+  "tree_size": 42,
+  "root_hash": "a1b2c3d4e5f6…"
+}
+```
+
+### `GET /admin/mtc/landmarks`
+
+List all landmarks as JSON.
+
+Query parameters: `ca_id` (optional).
+
+Requires the `administrator`, `ca_operations`, or `auditor` role.
+
+**Response `200 OK`:**
+
+```json
+{
+  "landmarks": [
+    {
+      "sequence_no": 1,
+      "tree_size": 100,
+      "created_at": "2026-07-01T00:00:00Z"
+    }
+  ],
+  "total": 1
+}
+```
+
+### `GET /admin/mtc/landmark-list`
+
+Return the landmark list in the spec section 3.4 text/plain format.
+
+Query parameters: `ca_id` (optional).
+
+Requires the `administrator`, `ca_operations`, or `auditor` role.
+
+**Response `200 OK`:** `Content-Type: text/plain; charset=utf-8`.
+
+### `GET /admin/mtc/landmarks/{seq}/cert`
+
+Download the landmark certificate DER for the given sequence number.
+
+Query parameters: `ca_id` (optional).
+
+Requires the `administrator` or `ca_operations` role.
+
+**Response `200 OK`:** `Content-Type: application/octet-stream` (raw DER bytes).
+
+Returns `503 Service Unavailable` with `{"detail": "landmark certificate not yet built"}` if the certificate has not been constructed yet.
+
+Returns `404 Not Found` when the sequence number does not exist.
+
+### `GET /admin/mtc/landmarks/{seq}/cert-details`
+
+Return parsed details of a landmark certificate as JSON.
+
+Query parameters: `ca_id` (optional).
+
+Requires the `administrator`, `ca_operations`, or `auditor` role.
+
+**Response `200 OK`:**
+
+```json
+{
+  "sequence_no": 3,
+  "cert_text": "Subject:       CN=…\nIssuer:        …\n…"
+}
+```
+
+Returns `503 Service Unavailable` when the landmark certificate has not been built.
+
+### `GET /admin/mtc/inclusion-proof/{cert_id}`
+
+Return the inclusion proof for a certificate identified by UUID.
+
+Requires the `administrator`, `ca_operations`, or `auditor` role.
+
+**Response `200 OK`:**
+
+```json
+{
+  "leaf_index": 10,
+  "tree_size": 42,
+  "proof": [
+    { "hash": "a1b2c3…" },
+    { "hash": "d4e5f6…" }
+  ]
+}
+```
+
+Returns `404 Not Found` when the certificate does not exist or has no MTC log
+index.
+
+### `GET /admin/mtc/standalone/{cert_id}`
+
+Download the standalone MTC certificate DER for a certificate identified by UUID.
+
+Requires the `administrator` or `ca_operations` role.
+
+**Response `200 OK`:** `Content-Type: application/octet-stream` (raw DER bytes).
+
+Returns `404 Not Found` when the certificate or its standalone DER does not
+exist.
+
+### `GET /admin/mtc/consistency-proof`
+
+Return root hashes for consistency verification between two tree sizes.
+
+Query parameters:
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `from` | Yes | Older tree size (must be positive and less than `to`). |
+| `to` | Yes | Newer tree size (must not exceed current tree size). |
+| `ca_id` | No | CA identifier. |
+
+Requires the `administrator`, `ca_operations`, or `auditor` role.
+
+**Response `200 OK`:**
+
+```json
+{
+  "from_size": 5,
+  "to_size": 10,
+  "from_root": "a1b2c3…",
+  "to_root": "d4e5f6…"
+}
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400 Bad Request` | `from` or `to` is zero, `from >= to`, or `to` exceeds the current tree size. |
+
+### `GET /admin/mtc/subtree-root`
+
+Compute the subtree root hash over a leaf range.
+
+Query parameters:
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `start` | Yes | Start index (inclusive). Must be aligned to the next power of two of the range size. |
+| `end` | Yes | End index (exclusive). Must not exceed the current tree size. |
+| `ca_id` | No | CA identifier. |
+
+Requires the `administrator`, `ca_operations`, or `auditor` role.
+
+**Response `200 OK`:**
+
+```json
+{
+  "start": 0,
+  "end": 10,
+  "root_hash": "a1b2c3…"
+}
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400 Bad Request` | `start >= end`, `start` is not aligned, or `end` exceeds the tree size. |
+
+### `GET /admin/mtc/revoked-ranges`
+
+Return revoked leaf-index ranges.
+
+Query parameters: `ca_id` (optional).
+
+Requires the `administrator`, `ca_operations`, or `auditor` role.
+
+**Response `200 OK`:**
+
+```json
+{
+  "revoked_ranges": [
+    { "start": 5, "end": 8 }
+  ],
+  "total": 1
+}
+```
+
+### `GET /admin/mtc/checkpoint`
+
+Return the C2SP tlog operator checkpoint as signed-note text.
+
+Query parameters: `ca_id` (optional).
+
+Requires the `administrator`, `ca_operations`, or `auditor` role.
+
+**Response `200 OK`:** `Content-Type: text/plain; charset=utf-8`.
+
+Returns `503 Service Unavailable` when no MTC signing key is configured.
+
+### `GET /admin/mtc/cosignature`
+
+Return the C2SP tlog cosignature checkpoint text.
+
+Query parameters: `ca_id` (optional).
+
+Requires the `administrator`, `ca_operations`, or `auditor` role.
+
+**Response `200 OK`:** `Content-Type: text/plain; charset=utf-8`.
+
+Returns `503 Service Unavailable` when no MTC signing key is configured.
+
+### `POST /admin/ca/{id}/mtc/force-checkpoint`
+
+Force an immediate MTC checkpoint for the specified CA.  Triggers checkpoint
+production, cosignature gathering, and standalone certificate construction.
+An `admin.action` audit event with `{"action": "mtc.force-checkpoint"}` is
+recorded on success.
+
+Requires the `administrator` or `ca_operations` role.
+
+**Response: `204 No Content`** on success.  Returns `404 Not Found` when the
+CA ID does not exist or MTC is not enabled.
+
+### `POST /admin/ca/{id}/mtc/force-landmark`
+
+Force an immediate MTC landmark allocation for the specified CA.  Allocates a
+new landmark at the current tree size and produces the landmark certificate.
+An `admin.action` audit event with `{"action": "mtc.force-landmark"}` is
+recorded on success.
+
+Requires the `administrator` or `ca_operations` role.
+
+**Response: `204 No Content`** on success.  Returns `404 Not Found` when the
+CA ID does not exist or MTC is not enabled.
+
 ## Delegation management endpoints
 
 These endpoints are active only when `server.delegation_enabled = true` is set in the configuration. Delegations represent pre-configured RFC 9115 IdO-to-NDC delegation policies: a CSR template and an optional CNAME map. Read operations (`GET`) are available to all authenticated roles; write operations (`POST`, `PUT`, `DELETE`) require the `administrator` or `ca_operations` role.
