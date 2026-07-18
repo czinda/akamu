@@ -1,4 +1,4 @@
-import React, { Component, type ReactNode, useCallback, useMemo } from 'react';
+import React, { Component, type ReactNode, Suspense, useCallback, useMemo } from 'react';
 import { Routes, Route, Navigate, NavLink, Outlet } from 'react-router-dom';
 import {
   Page,
@@ -19,34 +19,35 @@ import {
 } from '@patternfly/react-core';
 import { useAuth, hasRole, Role } from './auth/AuthContext';
 import { logout as apiLogout } from './api/session';
-import LoginPage from './auth/LoginPage';
-import Dashboard from './pages/Dashboard';
-import Certificates from './pages/Certificates';
-import Orders from './pages/Orders';
-import Accounts from './pages/Accounts';
-import EabKeys from './pages/EabKeys';
-import Profiles from './pages/Profiles';
-import Delegations from './pages/Delegations';
-import CAs from './pages/CAs';
-import CrossCerts from './pages/CrossCerts';
-import Operators from './pages/Operators';
-import AuditLog from './pages/AuditLog';
-import ServerConfig from './pages/ServerConfig';
-import MtcOverview from './pages/MTC';
-import MtcDetail from './pages/MTC/Detail';
-import MtcLandmarkDetail from './pages/MTC/LandmarkDetail';
-import CertDetail from './pages/Certificates/Detail';
-import OrderDetail from './pages/Orders/Detail';
-import AccountDetail from './pages/Accounts/Detail';
-import EabKeyDetail from './pages/EabKeys/Detail';
-import ProfileDetail from './pages/Profiles/Detail';
-import ProfileEdit from './pages/Profiles/Edit';
-import OperatorEdit from './pages/Operators/Edit';
-import DelegationEdit from './pages/Delegations/Edit';
-import DelegationDetail from './pages/Delegations/Detail';
-import CADetail from './pages/CAs/Detail';
-import CrossCertDetail from './pages/CrossCerts/Detail';
-import OperatorDetail from './pages/Operators/Detail';
+
+const LoginPage = React.lazy(() => import('./auth/LoginPage'));
+const Dashboard = React.lazy(() => import('./pages/Dashboard'));
+const Certificates = React.lazy(() => import('./pages/Certificates'));
+const Orders = React.lazy(() => import('./pages/Orders'));
+const Accounts = React.lazy(() => import('./pages/Accounts'));
+const EabKeys = React.lazy(() => import('./pages/EabKeys'));
+const Profiles = React.lazy(() => import('./pages/Profiles'));
+const Delegations = React.lazy(() => import('./pages/Delegations'));
+const CAs = React.lazy(() => import('./pages/CAs'));
+const CrossCerts = React.lazy(() => import('./pages/CrossCerts'));
+const Operators = React.lazy(() => import('./pages/Operators'));
+const AuditLog = React.lazy(() => import('./pages/AuditLog'));
+const ServerConfig = React.lazy(() => import('./pages/ServerConfig'));
+const MtcOverview = React.lazy(() => import('./pages/MTC'));
+const MtcDetail = React.lazy(() => import('./pages/MTC/Detail'));
+const MtcLandmarkDetail = React.lazy(() => import('./pages/MTC/LandmarkDetail'));
+const CertDetail = React.lazy(() => import('./pages/Certificates/Detail'));
+const OrderDetail = React.lazy(() => import('./pages/Orders/Detail'));
+const AccountDetail = React.lazy(() => import('./pages/Accounts/Detail'));
+const EabKeyDetail = React.lazy(() => import('./pages/EabKeys/Detail'));
+const ProfileDetail = React.lazy(() => import('./pages/Profiles/Detail'));
+const ProfileEdit = React.lazy(() => import('./pages/Profiles/Edit'));
+const OperatorEdit = React.lazy(() => import('./pages/Operators/Edit'));
+const DelegationEdit = React.lazy(() => import('./pages/Delegations/Edit'));
+const DelegationDetail = React.lazy(() => import('./pages/Delegations/Detail'));
+const CADetail = React.lazy(() => import('./pages/CAs/Detail'));
+const CrossCertDetail = React.lazy(() => import('./pages/CrossCerts/Detail'));
+const OperatorDetail = React.lazy(() => import('./pages/Operators/Detail'));
 
 class PageErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   constructor(props: { children: ReactNode }) {
@@ -171,7 +172,9 @@ function AuthenticatedLayout() {
       isManagedSidebar
     >
       <PageErrorBoundary>
-        <Outlet />
+        <Suspense fallback={<Spinner />}>
+          <Outlet />
+        </Suspense>
       </PageErrorBoundary>
     </Page>
   );
@@ -180,7 +183,7 @@ function AuthenticatedLayout() {
 export default function App() {
   return (
     <Routes>
-      <Route path="/login" element={<LoginPage />} />
+      <Route path="/login" element={<Suspense fallback={<Spinner />}><LoginPage /></Suspense>} />
       <Route element={<AuthenticatedLayout />}>
         <Route path="/" element={<Dashboard />} />
         <Route path="/certs" element={<Certificates />} />
