@@ -1200,7 +1200,12 @@ async fn run() -> Result<(), String> {
                         let tls = match acceptor.accept(stream).await {
                             Ok(s) => s,
                             Err(e) => {
-                                tracing::warn!("TLS handshake failed: {e}");
+                                let msg = e.to_string();
+                                if msg.contains("received fatal alert") {
+                                    tracing::debug!("TLS handshake rejected by client: {e}");
+                                } else {
+                                    tracing::warn!("TLS handshake failed: {e}");
+                                }
                                 return;
                             }
                         };
