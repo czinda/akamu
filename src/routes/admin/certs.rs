@@ -336,6 +336,17 @@ pub async fn post_revoke(
             {
                 let ca_id = cert.ca_id.clone();
                 state.invalidate_crl_cache(&cert.ca_id);
+                if let Some(idx) = cert.mtc_log_index {
+                    if let Err(e) =
+                        db::revoked_ranges::insert(&state.db, &ca_id, idx, idx, now).await
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            cert_id = %payload.cert_id,
+                            "failed to insert MTC revoked range on admin revoke"
+                        );
+                    }
+                }
                 ca_id
             } else {
                 // Cert row missing (shouldn't happen after a successful revoke) —

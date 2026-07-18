@@ -94,6 +94,12 @@ pub async fn revoke_cert(
         return Err(AcmeError::AlreadyRevoked);
     }
 
+    if let Some(idx) = cert.mtc_log_index {
+        if let Err(e) = db::revoked_ranges::insert(&state.db, &cert.ca_id, idx, idx, now).await {
+            tracing::warn!(error = %e, cert_id = %cert.id, "failed to insert MTC revoked range on ACME revoke");
+        }
+    }
+
     state
         .record_audit(
             crate::audit::AuditEvent::success(crate::audit::AuditEventType::CertRevoke)
