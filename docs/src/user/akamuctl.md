@@ -952,6 +952,191 @@ akamuctl cosigner config
 
 Requires the `administrator` role on the cosigner.
 
+## MTC transparency log
+
+These subcommands query and manage the Merkle Tree Certificate (MTC) transparency
+log via the admin API.  Most read-only commands are available to the
+`administrator`, `ca_operations`, and `auditor` roles.  The two force commands
+(`force-checkpoint`, `force-landmark`) require `administrator` or `ca_operations`.
+
+All commands accept an optional `--ca CA_ID` flag for multi-CA deployments.
+When omitted, the default CA is used.
+
+### `mtc tree-size`
+
+Show the current MTC log tree size:
+
+```bash
+akamuctl mtc tree-size
+akamuctl mtc tree-size --ca ec
+```
+
+### `mtc root`
+
+Show the current tree size and root hash:
+
+```bash
+akamuctl mtc root
+```
+
+### `mtc landmarks`
+
+List all landmarks as JSON:
+
+```bash
+akamuctl mtc landmarks
+akamuctl mtc landmarks --ca rsa
+```
+
+### `mtc landmark-list`
+
+Print the landmark list in the spec section 3.4 text/plain format:
+
+```bash
+akamuctl mtc landmark-list
+```
+
+### `mtc landmark-cert`
+
+Download a landmark certificate DER by sequence number:
+
+```bash
+akamuctl mtc landmark-cert 3
+akamuctl mtc landmark-cert 3 -o landmark-3.der
+akamuctl mtc landmark-cert 3 --ca ec -o landmark.der
+```
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `SEQ` (positional) | Yes | Landmark sequence number. |
+| `--ca CA_ID` | No | CA identifier. |
+| `-o FILE` | No | Write DER to file. Without this flag, hex is printed to stdout. |
+
+Requires the `administrator` or `ca_operations` role.
+
+### `mtc landmark-cert-show`
+
+Show parsed details of a landmark certificate (subject, issuer, validity,
+serial, SANs, extensions):
+
+```bash
+akamuctl mtc landmark-cert-show 3
+akamuctl mtc landmark-cert-show 3 --ca ec
+```
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `SEQ` (positional) | Yes | Landmark sequence number. |
+| `--ca CA_ID` | No | CA identifier. |
+
+### `mtc inclusion-proof`
+
+Show the inclusion proof for a certificate:
+
+```bash
+akamuctl mtc inclusion-proof ddaf3c89-1da0-4bc0-b2aa-abe634e88dc0
+```
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `CERT_ID` (positional) | Yes | Certificate UUID. |
+
+### `mtc standalone`
+
+Download the standalone MTC certificate DER for a certificate:
+
+```bash
+akamuctl mtc standalone ddaf3c89-1da0-4bc0-b2aa-abe634e88dc0
+akamuctl mtc standalone ddaf3c89-1da0-4bc0-b2aa-abe634e88dc0 -o cert.der
+```
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `CERT_ID` (positional) | Yes | Certificate UUID. |
+| `-o FILE` | No | Write DER to file. Without this flag, hex is printed to stdout. |
+
+Requires the `administrator` or `ca_operations` role.
+
+### `mtc consistency-proof`
+
+Show a consistency proof between two tree sizes:
+
+```bash
+akamuctl mtc consistency-proof --from 5 --to 10
+akamuctl mtc consistency-proof --from 5 --to 10 --ca ec
+```
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--from N` | Yes | Older tree size. |
+| `--to N` | Yes | Newer tree size. |
+| `--ca CA_ID` | No | CA identifier. |
+
+### `mtc subtree-root`
+
+Show the root hash of a subtree range:
+
+```bash
+akamuctl mtc subtree-root --start 0 --end 10
+```
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--start N` | Yes | Start index (inclusive). |
+| `--end N` | Yes | End index (exclusive). |
+| `--ca CA_ID` | No | CA identifier. |
+
+### `mtc revoked-ranges`
+
+Show revoked leaf-index ranges:
+
+```bash
+akamuctl mtc revoked-ranges
+akamuctl mtc revoked-ranges --ca rsa
+```
+
+### `mtc checkpoint`
+
+Show the C2SP tlog operator checkpoint text:
+
+```bash
+akamuctl mtc checkpoint
+```
+
+### `mtc cosignature`
+
+Show the C2SP tlog cosignature checkpoint text:
+
+```bash
+akamuctl mtc cosignature
+```
+
+### `mtc force-checkpoint`
+
+Force an immediate MTC checkpoint for a CA.  Requires the `administrator` or
+`ca_operations` role.
+
+```bash
+akamuctl mtc force-checkpoint --ca default
+```
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--ca CA_ID` | Yes | CA identifier (required). |
+
+### `mtc force-landmark`
+
+Force an immediate landmark allocation for a CA.  Requires the `administrator`
+or `ca_operations` role.
+
+```bash
+akamuctl mtc force-landmark --ca default
+```
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--ca CA_ID` | Yes | CA identifier (required). |
+
 ## tkauth JTI cache management
 
 These commands require `administrator` or `ca_operations` role and are only available when `[tkauth]` is enabled in the server configuration.
