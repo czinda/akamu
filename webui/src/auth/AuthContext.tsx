@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
 
 export type Role = 'administrator' | 'ca_operations' | 'ca_ra' | 'auditor';
 
@@ -60,8 +60,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => clearTimeout(tid);
   }, [auth.expiresAt, clearAuth]);
 
+  const value = useMemo(
+    () => ({ ...auth, setAuth, clearAuth }),
+    [auth, setAuth, clearAuth],
+  );
+
   return (
-    <AuthContext.Provider value={{ ...auth, setAuth, clearAuth }}>
+    <AuthContext.Provider value={value}>
       {children}
     </AuthContext.Provider>
   );
