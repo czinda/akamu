@@ -2,6 +2,8 @@
 
 `Akāmu` integrates with a Merkle Tree Certificate (MTC) transparency log using the `synta-mtc` library. When enabled, each issued end-entity certificate is appended as a leaf to a disk-backed, append-only log.
 
+For a complete list of all MTC public endpoints and their request/response schemas, see [Public API Reference](public-api.md#mtc-transparency-log).
+
 ## What is an MTC log?
 
 A Merkle Tree Certificate log is a tamper-evident, append-only data structure. Each leaf encodes an issued certificate in a way that allows efficient proofs of inclusion and consistency that third parties can verify independently.

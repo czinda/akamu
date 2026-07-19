@@ -2,6 +2,8 @@
 
 `Akāmu` supports both Certificate Revocation List (CRL) and Online Certificate Status Protocol (OCSP) to communicate revocation status to relying parties. Both protocols are served directly by Akāmu at built-in endpoints.
 
+For a consolidated endpoint reference, see [Public API Reference — CRL and OCSP](public-api.md#crl-and-ocsp).
+
 ## CRL — `GET /ca/{ca_id}/crl` and `GET /ca/crl`
 
 Akāmu generates and serves a signed v2 CRL (RFC 5280) for each configured CA.

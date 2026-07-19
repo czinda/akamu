@@ -2,6 +2,8 @@
 
 This page is the protocol-level API reference for clients interacting with Akāmu: which JWS algorithms the server accepts, which challenge types are offered and for which identifier types, the wire format for EAB credentials, and the endpoint contract for ARI and ACME STAR.
 
+For a complete list of all public endpoints, see [Public API Reference](../user/public-api.md).
+
 For implementation notes — how the server verifies these on the wire, DER encoding helpers, and pre-issuance linting — see [RFC Compliance Internals](../developer/rfc-compliance.md).
 
 ## JWS algorithm support (RFC 8555 §6.2)

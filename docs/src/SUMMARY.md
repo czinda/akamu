@@ -39,6 +39,7 @@
 
 # API Reference
 
+- [Public API](user/public-api.md)
 - [Admin API](user/admin-api.md)
 - [Admin API Authentication Methods](user/admin-auth.md)
 - [ACME Protocol Reference](client/protocol.md)
