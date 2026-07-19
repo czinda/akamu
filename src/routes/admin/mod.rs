@@ -109,9 +109,10 @@ pub use self::mtc::{
     get_landmark_cert as get_mtc_landmark_cert,
     get_landmark_cert_details as get_mtc_landmark_cert_details,
     get_landmark_list as get_mtc_landmark_list, get_landmarks as get_mtc_landmarks,
-    get_revoked_ranges as get_mtc_revoked_ranges, get_root as get_mtc_root,
-    get_standalone as get_mtc_standalone, get_subtree_root as get_mtc_subtree_root,
-    get_tree_size as get_mtc_tree_size, post_force_checkpoint as post_mtc_force_checkpoint,
+    get_log_list_entry as get_mtc_log_list_entry, get_revoked_ranges as get_mtc_revoked_ranges,
+    get_root as get_mtc_root, get_standalone as get_mtc_standalone,
+    get_subtree_root as get_mtc_subtree_root, get_tree_size as get_mtc_tree_size,
+    post_force_checkpoint as post_mtc_force_checkpoint,
     post_force_landmark as post_mtc_force_landmark,
 };
 pub use self::operators::{
