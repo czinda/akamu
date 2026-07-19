@@ -907,6 +907,7 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
             log_number: 1,
             tree_minimum_index: None,
             trust_anchor_id: None,
+            contact: None,
         }),
         server: ServerConfig {
             http_validation_port: infra.http_validation_port,

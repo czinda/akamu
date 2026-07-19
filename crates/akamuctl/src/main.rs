@@ -468,6 +468,9 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
             MtcCmd::ForceLandmark { ca } => {
                 commands::mtc::force_landmark(&server_client, &ca).await?;
             }
+            MtcCmd::LogListEntry { ca } => {
+                commands::mtc::log_list_entry(&server_client, &ca).await?;
+            }
         },
         Commands::Config(cfg_cmd) => match cfg_cmd {
             ConfigCmd::Generate => {

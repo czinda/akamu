@@ -434,6 +434,10 @@ fn build_admin_router() -> Router<Arc<AppState>> {
             post(admin::post_mtc_force_landmark),
         )
         .route(
+            "/admin/ca/{id}/mtc/log-list-entry",
+            axum::routing::get(admin::get_mtc_log_list_entry),
+        )
+        .route(
             "/admin/gossip/status",
             axum::routing::get(crate::gossip::handlers::gossip_status),
         )

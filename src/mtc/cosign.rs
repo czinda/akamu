@@ -43,6 +43,18 @@ use crate::error::AcmeError;
 
 const COSIGNER_TIMEOUT_SECS: u64 = 30;
 
+/// Parameters for building a CA self-cosignature.
+pub struct SelfCosignatureParams<'a> {
+    pub signing_key: &'a synta_certificate::BackendPrivateKey,
+    pub signing_hash_alg: &'a str,
+    pub trust_anchor_id_der: &'a [u8],
+    pub checkpoint_der: &'a [u8],
+    pub subtree_start: u64,
+    pub subtree_end: u64,
+    pub subtree_root_bytes: &'a [u8],
+    pub log_origin: &'a str,
+}
+
 /// Produce the CA's mandatory self-cosignature (§5.4).
 ///
 /// Returns a DER-encoded `SubtreeSignature` in the same format as external
@@ -51,58 +63,52 @@ const COSIGNER_TIMEOUT_SECS: u64 = 30;
 /// `trust_anchor_id_der` is the DER-encoded `RelativeOid` of the CA's
 /// own `TrustAnchorID`.  `checkpoint_der` is the DER-encoded `Checkpoint`
 /// that was just produced and signed.
-pub fn build_ca_self_cosignature(
-    signing_key: &synta_certificate::BackendPrivateKey,
-    signing_hash_alg: &str,
-    trust_anchor_id_der: &[u8],
-    checkpoint_der: &[u8],
-    subtree_start: u64,
-    subtree_end: u64,
-    subtree_root_bytes: &[u8],
-) -> Result<Vec<u8>, AcmeError> {
+pub fn build_ca_self_cosignature(params: &SelfCosignatureParams<'_>) -> Result<Vec<u8>, AcmeError> {
     use synta::types::primitive::Integer;
     use synta::types::string::OctetString;
     use synta::{BitString, Encoding};
     use synta_certificate::{CertificateSigner as _, PrivateKey as _};
 
-    let cosigner_oid: RelativeOid = Decoder::new(trust_anchor_id_der, Encoding::Der)
+    let cosigner_oid: RelativeOid = Decoder::new(params.trust_anchor_id_der, Encoding::Der)
         .decode()
         .map_err(|e| AcmeError::Mtc(format!("decode CA trust_anchor_id ROID: {e}")))?;
 
-    let checkpoint: Checkpoint<'_> = Decoder::new(checkpoint_der, Encoding::Der)
+    let checkpoint: Checkpoint<'_> = Decoder::new(params.checkpoint_der, Encoding::Der)
         .decode()
         .map_err(|e| AcmeError::Mtc(format!("decode Checkpoint for self-cosig: {e}")))?;
 
     let subtree = Subtree {
-        start: Integer::from(subtree_start),
-        end: Integer::from(subtree_end),
-        value: OctetString::from(subtree_root_bytes.to_vec()),
+        start: Integer::from(params.subtree_start),
+        end: Integer::from(params.subtree_end),
+        value: OctetString::from(params.subtree_root_bytes.to_vec()),
     };
 
-    // log_origin per §5.3.1: "oid/<log TrustAnchorID>" as a dotted-decimal OID string.
-    let log_origin = format!("oid/{}", checkpoint.log_id.hash_algorithm.algorithm);
+    let cosigned_msg = akamu_mtc_wire::build_cosigned_message(
+        &cosigner_oid,
+        &subtree,
+        &checkpoint,
+        params.log_origin,
+    )
+    .map_err(|e| AcmeError::Mtc(format!("build CosignedMessage for self-cosig: {e}")))?;
 
-    let cosigned_msg =
-        akamu_mtc_wire::build_cosigned_message(&cosigner_oid, &subtree, &checkpoint, &log_origin)
-            .map_err(|e| AcmeError::Mtc(format!("build CosignedMessage for self-cosig: {e}")))?;
-
-    let signer = signing_key.as_signer(signing_hash_alg);
+    let signer = params.signing_key.as_signer(params.signing_hash_alg);
     let sig_bytes = signer
         .sign_tbs(&cosigned_msg)
         .map_err(|e| AcmeError::Mtc(format!("sign CA self-cosignature: {e}")))?;
 
-    let pub_key = signing_key
+    let pub_key = params
+        .signing_key
         .public_key()
         .map_err(|e| AcmeError::Mtc(format!("CA self-cosig public key: {e}")))?;
     let spki_der = pub_key.spki_der().to_vec();
     let spki: synta_certificate::SubjectPublicKeyInfo = Decoder::new(&spki_der, Encoding::Der)
         .decode()
         .map_err(|e| AcmeError::Mtc(format!("decode SPKI for self-cosig sig_alg: {e}")))?;
-    let sig_alg_der =
-        synta_certificate::signing_algorithm_der(&spki.algorithm.algorithm, signing_hash_alg)
-            .ok_or_else(|| {
-                AcmeError::Mtc("unsupported key/hash combination for CA self-cosig".into())
-            })?;
+    let sig_alg_der = synta_certificate::signing_algorithm_der(
+        &spki.algorithm.algorithm,
+        params.signing_hash_alg,
+    )
+    .ok_or_else(|| AcmeError::Mtc("unsupported key/hash combination for CA self-cosig".into()))?;
     let sig_alg: AlgorithmIdentifier<'_> = Decoder::new(&sig_alg_der, Encoding::Der)
         .decode()
         .map_err(|e| AcmeError::Mtc(format!("decode self-cosig AlgorithmIdentifier: {e}")))?;

@@ -30,6 +30,8 @@ pub struct CheckpointParams<'a> {
     pub log_number: u16,
     pub tree_minimum_index: Option<u64>,
     pub trust_anchor_id_der: Option<&'a [u8]>,
+    /// C2SP tlog origin for cosigned_message (e.g. `oid/1.3.6.1.4.1.32473.2.0.1`).
+    pub log_origin: Option<&'a str>,
 }
 
 /// Produce and persist a checkpoint for the current log state.
@@ -53,6 +55,7 @@ pub async fn produce_checkpoint(params: CheckpointParams<'_>) -> Result<(), Acme
         log_number,
         tree_minimum_index,
         trust_anchor_id_der,
+        log_origin,
     } = params;
     let tree_size = crate::mtc::log::tree_size(log).await?;
 
@@ -280,29 +283,27 @@ pub async fn produce_checkpoint(params: CheckpointParams<'_>) -> Result<(), Acme
 
     // ── CA self-cosignature (§5.4) ──────────────────────────────────────────────
     let mut cosig_ders: Vec<(String, Vec<u8>)> = Vec::new();
-    if let Some(ta_der) = trust_anchor_id_der {
-        match crate::mtc::cosign::build_ca_self_cosignature(
-            signing_key,
-            signing_hash_alg,
-            ta_der,
-            &checkpoint_der,
-            subtree_info.start,
-            actual_tree_size,
-            &subtree_info.root,
-        ) {
-            Ok(der) => {
-                tracing::debug!("CA self-cosignature produced");
-                cosig_ders.push(("self".to_string(), der));
-            }
-            Err(e) => tracing::error!("CA self-cosignature failed: {e}"),
-        }
+    if let (Some(ta_der), Some(origin)) = (trust_anchor_id_der, log_origin) {
+        let self_cosig_der = crate::mtc::cosign::build_ca_self_cosignature(
+            &crate::mtc::cosign::SelfCosignatureParams {
+                signing_key,
+                signing_hash_alg,
+                trust_anchor_id_der: ta_der,
+                checkpoint_der: &checkpoint_der,
+                subtree_start: subtree_info.start,
+                subtree_end: actual_tree_size,
+                subtree_root_bytes: &subtree_info.root,
+                log_origin: origin,
+            },
+        )?;
+        tracing::debug!("CA self-cosignature produced");
+        cosig_ders.push(("self".to_string(), self_cosig_der));
     }
 
     // ── Async: gather cosignatures from external cosigners ────────────────────
-    if !cosigners.is_empty() {
-        let log_origin = format!("oid/{}", log_algorithm.to_oid());
+    if let (false, Some(origin)) = (cosigners.is_empty(), log_origin) {
         let external =
-            crate::mtc::cosign::gather_cosignatures(&checkpoint_der, cosigners, &log_origin).await;
+            crate::mtc::cosign::gather_cosignatures(&checkpoint_der, cosigners, origin).await;
         cosig_ders.extend(external);
     }
     // Persist cosignatures before Phase 2 so cosig_ders can be moved (not
@@ -439,6 +440,7 @@ pub fn spawn_checkpoint_task(state: Arc<AppState>) -> tokio::task::JoinHandle<()
                 if now - mtc.last_checkpoint_at() < mtc.checkpoint_interval_secs as i64 {
                     continue;
                 }
+                let origin = mtc.tlog_origin();
                 if let Err(e) = produce_checkpoint(CheckpointParams {
                     log,
                     signing_key,
@@ -450,6 +452,7 @@ pub fn spawn_checkpoint_task(state: Arc<AppState>) -> tokio::task::JoinHandle<()
                     log_number: mtc.log_number,
                     tree_minimum_index: mtc.tree_minimum_index,
                     trust_anchor_id_der: mtc.trust_anchor_id_der.as_deref(),
+                    log_origin: origin,
                 })
                 .await
                 {

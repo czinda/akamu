@@ -103,7 +103,8 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
             hash_alg: "sha256".into(),
             log_number: 1,
             tree_minimum_index: None,
-            trust_anchor_id: None,
+            trust_anchor_id: Some("32473.2".into()),
+            contact: None,
         }),
         server: ServerConfig::default(),
         tls: Default::default(),
@@ -162,6 +163,10 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
             log_number: 1,
             tree_minimum_index: None,
             trust_anchor_id_der: None,
+            trust_anchor_id: Some("32473.2".into()),
+            contact: None,
+            tlog_origin: Some("oid/1.3.6.1.4.1.32473.2.0.1".into()),
+            cosigner_name: Some("oid/1.3.6.1.4.1.32473.2".into()),
             logid_issuer_dn_der: None,
         }),
         default_linter: None,
@@ -399,10 +404,10 @@ fn c2sp_signed_note_operator_ed25519_structure() {
     assert!(sig_line.starts_with("\u{2014} "), "must start with em-dash");
     assert!(sig_line.contains(key_name), "must contain key name");
 
-    // Wire format: type_byte(1) || key_id(4) || sig(64) = 69 bytes for Ed25519.
+    // Wire format: key_id(4) || sig(64) = 68 bytes for Ed25519.
     let b64_part = sig_line.splitn(3, ' ').nth(2).unwrap();
     let blob = BASE64.decode(b64_part).unwrap();
-    assert_eq!(blob.len(), 1 + 4 + 64, "Ed25519 note blob must be 69 bytes");
+    assert_eq!(blob.len(), 4 + 64, "Ed25519 note blob must be 68 bytes");
 }
 
 /// The full signed note must contain an em-dash separator line with the key name.
@@ -422,7 +427,7 @@ fn c2sp_signed_note_operator_ecdsa_structure() {
     let sig_line = note.lines().find(|l| l.starts_with("\u{2014}")).unwrap();
     let b64_part = sig_line.splitn(3, ' ').nth(2).unwrap();
     let blob = BASE64.decode(b64_part).unwrap();
-    // 1 type byte + 4 bytes key ID + DER ECDSA sig (variable)
+    // 4 bytes key ID + DER ECDSA sig (variable)
     assert!(
         blob.len() > 4,
         "ECDSA note blob must be longer than key ID alone"
@@ -452,9 +457,9 @@ fn c2sp_cosignature_ed25519_timestamp_in_blob() {
     let sig_line = note.lines().find(|l| l.starts_with("\u{2014}")).unwrap();
     let b64_part = sig_line.splitn(3, ' ').nth(2).unwrap();
     let blob = BASE64.decode(b64_part).unwrap();
-    // Wire format: type_byte(1) || key_id(4) || timestamp_be(8) || sig(64) = 77 bytes
-    assert_eq!(blob.len(), 1 + 4 + 8 + 64);
-    let ts_from_blob = u64::from_be_bytes(blob[5..13].try_into().unwrap());
+    // Wire format: key_id(4) || timestamp_be(8) || sig(64) = 76 bytes
+    assert_eq!(blob.len(), 4 + 8 + 64);
+    let ts_from_blob = u64::from_be_bytes(blob[4..12].try_into().unwrap());
     assert_eq!(ts_from_blob, ts);
 }
 
@@ -482,13 +487,13 @@ fn c2sp_cosignature_mldsa44_blob_structure() {
     let sig_line = note.lines().find(|l| l.starts_with("\u{2014}")).unwrap();
     let b64_part = sig_line.splitn(3, ' ').nth(2).unwrap();
     let blob = BASE64.decode(b64_part).unwrap();
-    // Wire format: type_byte(1) || key_id(4) || timestamp_be(8) || sig(2420) = 2433 bytes
+    // Wire format: key_id(4) || timestamp_be(8) || sig(2420) = 2432 bytes
     assert_eq!(
         blob.len(),
-        1 + 4 + 8 + 2420,
-        "ML-DSA-44 cosig blob must be 2433 bytes"
+        4 + 8 + 2420,
+        "ML-DSA-44 cosig blob must be 2432 bytes"
     );
-    let ts_from_blob = u64::from_be_bytes(blob[5..13].try_into().unwrap());
+    let ts_from_blob = u64::from_be_bytes(blob[4..12].try_into().unwrap());
     assert_eq!(ts_from_blob, ts);
 }
 
@@ -525,9 +530,12 @@ async fn tlog_checkpoint_endpoint_returns_valid_note() {
     );
 
     let body = resp.text().await.unwrap();
-    // Must contain the tlog origin as the first line.
-    let origin = format!("{base_url}/acme/mtc/tlog");
-    assert!(body.starts_with(&origin), "first line must be origin");
+    // Must contain the tlog origin as the first line (OID-based per C2SP mtc-tlog).
+    assert!(
+        body.starts_with("oid/1.3.6.1.4.1.32473.2.0.1"),
+        "first line must be OID-based origin, got: {}",
+        body.lines().next().unwrap_or("")
+    );
 
     // Must contain an em-dash signature line.
     assert!(body.contains('\u{2014}'), "must contain em-dash signature");
@@ -651,14 +659,14 @@ async fn tlog_cosignature_endpoint_structure() {
     let sig_line = body.lines().find(|l| l.starts_with('\u{2014}')).unwrap();
     let b64_part = sig_line.splitn(3, ' ').nth(2).unwrap();
     let blob = BASE64.decode(b64_part).unwrap();
-    // Wire format: type_byte(1) || key_id(4) || timestamp_be(8) || ed25519_sig(64) = 77 bytes
+    // Wire format: key_id(4) || timestamp_be(8) || ed25519_sig(64) = 76 bytes
     assert_eq!(
         blob.len(),
-        1 + 4 + 8 + 64,
-        "Ed25519 cosig blob must be 77 bytes"
+        4 + 8 + 64,
+        "Ed25519 cosig blob must be 76 bytes"
     );
     // Timestamp must be a recent-ish Unix time (after 2020-01-01).
-    let ts = u64::from_be_bytes(blob[5..13].try_into().unwrap());
+    let ts = u64::from_be_bytes(blob[4..12].try_into().unwrap());
     assert!(
         ts > 1_577_836_800,
         "embedded timestamp must be after 2020-01-01"

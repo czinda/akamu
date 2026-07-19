@@ -212,3 +212,12 @@ fn write_binary(bytes: &[u8], output: Option<&std::path::Path>) -> Result<(), Ct
     }
     Ok(())
 }
+
+/// Print the Witness Network log-list entry for this CA's MTC log.
+pub async fn log_list_entry(client: &AdminClient, ca: &str) -> Result<(), CtlError> {
+    let text = client
+        .get_text(&format!("/admin/ca/{}/mtc/log-list-entry", urlenc(ca)))
+        .await?;
+    print!("{text}");
+    Ok(())
+}

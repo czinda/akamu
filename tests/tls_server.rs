@@ -434,6 +434,7 @@ async fn start_tls_server() -> TlsTestServer {
             log_number: 1,
             tree_minimum_index: None,
             trust_anchor_id: None,
+            contact: None,
         }),
         server: ServerConfig::default(),
         profiles: Default::default(),

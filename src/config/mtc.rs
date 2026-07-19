@@ -99,6 +99,11 @@ pub struct MtcConfig {
     /// is the same as its CA ID").  When set, a self-cosignature is produced
     /// alongside any external cosignatures during checkpoint production.
     pub trust_anchor_id: Option<String>,
+    /// Operator contact string for Witness Network log-list entries.
+    /// Typically a URL (e.g. `"https://github.com/your-org/issues"`)
+    /// or an email address.
+    #[serde(default)]
+    pub contact: Option<String>,
 }
 
 fn default_checkpoint_interval_secs() -> u64 {

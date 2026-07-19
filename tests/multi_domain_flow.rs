@@ -77,6 +77,7 @@ async fn build_test_state(
             log_number: 1,
             tree_minimum_index: None,
             trust_anchor_id: None,
+            contact: None,
         }),
         server: ServerConfig {
             http_validation_port: http01_port,

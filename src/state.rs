@@ -757,9 +757,18 @@ pub struct MtcState {
     pub log_number: u16,
     /// Minimum valid entry index for Checkpoint (§5.2.3 log pruning).
     pub tree_minimum_index: Option<u64>,
+    /// Dotted-decimal CA TrustAnchorID OID string (e.g. `"32473.2"`).
+    /// Used to construct the C2SP tlog origin and cosigner name.
+    pub trust_anchor_id: Option<String>,
     /// DER-encoded CA TrustAnchorID OID for the mandatory self-cosigner (§5.4).
     /// `None` when the CA does not produce a self-cosignature.
     pub trust_anchor_id_der: Option<Vec<u8>>,
+    /// Operator contact string for log-list entries.
+    pub contact: Option<String>,
+    /// Precomputed C2SP tlog origin: `oid/1.3.6.1.4.1.<ta_id>.0.<log_number>`.
+    pub tlog_origin: Option<String>,
+    /// Precomputed C2SP cosigner name: `oid/1.3.6.1.4.1.<ta_id>`.
+    pub cosigner_name: Option<String>,
     /// DER-encoded LogID issuer DN for leaf hash computation.
     /// Pre-computed at startup so `append_cert_to_log` can build the same
     /// `TBSCertificateLogEntry` that a verifier will derive from the standalone
@@ -780,6 +789,16 @@ impl MtcState {
     /// Return `true` when checkpoint production is enabled (log + signing key).
     pub fn can_checkpoint(&self) -> bool {
         self.log.is_some() && self.signing_key.is_some()
+    }
+
+    /// C2SP tlog origin per c2sp.org/mtc-tlog: `oid/1.3.6.1.4.1.<ta_id>.0.<log_number>`.
+    pub fn tlog_origin(&self) -> Option<&str> {
+        self.tlog_origin.as_deref()
+    }
+
+    /// C2SP cosigner name: `oid/1.3.6.1.4.1.<ta_id>`.
+    pub fn cosigner_name(&self) -> Option<&str> {
+        self.cosigner_name.as_deref()
     }
 
     /// Unix timestamp of the last checkpoint production.
@@ -825,7 +844,11 @@ impl MtcState {
             max_active_landmarks: 100,
             log_number: 1,
             tree_minimum_index: None,
+            trust_anchor_id: None,
             trust_anchor_id_der: None,
+            contact: None,
+            tlog_origin: None,
+            cosigner_name: None,
             logid_issuer_dn_der: None,
             last_checkpoint: std::sync::atomic::AtomicI64::new(0),
             last_landmark: std::sync::atomic::AtomicI64::new(0),

@@ -22,9 +22,9 @@ use crate::mtc::{
     checkpoint::{produce_checkpoint, CheckpointParams},
     landmark::{maybe_allocate_landmark, LandmarkAllocationParams},
     log, tlog,
+    tlog::NoteSigningRole,
 };
 use crate::require_role;
-use crate::routes::acme_prefix;
 use crate::state::{AppState, CaState};
 
 #[derive(Deserialize)]
@@ -533,7 +533,7 @@ pub async fn get_checkpoint(
     Query(q): Query<MtcQuery>,
 ) -> Response {
     require_role!(operator, state, Administrator | CaOperations | Auditor);
-    let Some((ca_id, ca)) = resolve_ca(&state, q.ca_id.as_deref(), &operator) else {
+    let Some((_ca_id, ca)) = resolve_ca(&state, q.ca_id.as_deref(), &operator) else {
         return not_found();
     };
     let Some(shared_log) = ca.mtc.log.as_ref() else {
@@ -546,15 +546,19 @@ pub async fn get_checkpoint(
         )
             .into_response();
     };
-    let pfx = acme_prefix(&state.config.base_url, ca_id, &state.default_ca_id);
-    let origin = format!("{pfx}/mtc/tlog");
-    let key_name = origin.clone();
+    let Some(origin) = ca.mtc.tlog_origin() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"detail": "mtc.trust_anchor_id not configured"})),
+        )
+            .into_response();
+    };
     match tlog::produce_operator_checkpoint(
         shared_log,
-        &key_name,
+        origin,
         key,
         &ca.mtc.signing_hash_alg,
-        &origin,
+        origin,
     )
     .await
     {
@@ -580,7 +584,7 @@ pub async fn get_cosignature(
     Query(q): Query<MtcQuery>,
 ) -> Response {
     require_role!(operator, state, Administrator | CaOperations | Auditor);
-    let Some((ca_id, ca)) = resolve_ca(&state, q.ca_id.as_deref(), &operator) else {
+    let Some((_ca_id, ca)) = resolve_ca(&state, q.ca_id.as_deref(), &operator) else {
         return not_found();
     };
     let Some(shared_log) = ca.mtc.log.as_ref() else {
@@ -593,15 +597,19 @@ pub async fn get_cosignature(
         )
             .into_response();
     };
-    let pfx = acme_prefix(&state.config.base_url, ca_id, &state.default_ca_id);
-    let origin = format!("{pfx}/mtc/tlog");
-    let key_name = origin.clone();
+    let Some(origin) = ca.mtc.tlog_origin() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"detail": "mtc.trust_anchor_id not configured"})),
+        )
+            .into_response();
+    };
     match tlog::produce_cosigner_checkpoint(
         shared_log,
-        &key_name,
+        origin,
         key,
         &ca.mtc.signing_hash_alg,
-        &origin,
+        origin,
     )
     .await
     {
@@ -638,6 +646,7 @@ pub async fn post_force_checkpoint(
     let (Some(log), Some(signing_key)) = (ca.mtc.log.as_ref(), ca.mtc.signing_key.as_ref()) else {
         return mtc_disabled();
     };
+    let origin = ca.mtc.tlog_origin();
     let result = produce_checkpoint(CheckpointParams {
         log,
         signing_key,
@@ -649,6 +658,7 @@ pub async fn post_force_checkpoint(
         log_number: ca.mtc.log_number,
         tree_minimum_index: ca.mtc.tree_minimum_index,
         trust_anchor_id_der: ca.mtc.trust_anchor_id_der.as_deref(),
+        log_origin: origin,
     })
     .await;
     match result {
@@ -725,4 +735,57 @@ pub async fn post_force_landmark(
             e.into_response()
         }
     }
+}
+
+/// `GET /admin/ca/{id}/mtc/log-list-entry`
+///
+/// Returns a Witness Network log-list entry for this CA's MTC issuance log.
+/// Requires: Administrator | CaOperations | Auditor.
+pub async fn get_log_list_entry(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    require_role!(operator, state, Administrator | CaOperations | Auditor);
+    if operator.ca_scope().is_some_and(|scope| id != scope) {
+        return not_found();
+    }
+    let Some(ca) = state.get_ca(&id) else {
+        return not_found();
+    };
+    let Some(signing_key) = ca.mtc.signing_key.as_ref() else {
+        return mtc_disabled();
+    };
+    let Some(origin) = ca.mtc.tlog_origin() else {
+        return (StatusCode::NOT_FOUND, "mtc.trust_anchor_id not configured").into_response();
+    };
+
+    let vkey = match tlog::format_vkey(origin, signing_key, NoteSigningRole::LogOperator) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(ca_id = %id, "format vkey: {e}");
+            return e.into_response();
+        }
+    };
+
+    let Some(contact) = ca.mtc.contact.as_deref() else {
+        return (
+            StatusCode::NOT_FOUND,
+            "mtc.contact not configured; set it in [mtc] config before generating a log-list entry",
+        )
+            .into_response();
+    };
+
+    let qpd = ca.mtc.checkpoint_interval_secs;
+    let entry = format!("vkey {vkey}\norigin {origin}\nqpd {qpd}\ncontact {contact}\n");
+
+    (
+        StatusCode::OK,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            HeaderValue::from_static("text/plain; charset=utf-8"),
+        )],
+        entry,
+    )
+        .into_response()
 }

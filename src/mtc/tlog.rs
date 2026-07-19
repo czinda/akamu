@@ -210,6 +210,31 @@ pub fn compute_key_id(
     }
 }
 
+/// Format a C2SP signed-note verification key (vkey) string.
+///
+/// Format: `<key_name>+<hex(key_id)>+<base64(type_byte || raw_pubkey)>`
+pub fn format_vkey(
+    key_name: &str,
+    key: &synta_certificate::BackendPrivateKey,
+    role: NoteSigningRole,
+) -> Result<String, AcmeError> {
+    let (type_byte, key_id) = compute_key_id(key_name, key, role)?;
+    let raw_pubkey = raw_pubkey_from_spki(
+        key.public_key()
+            .map_err(|e| AcmeError::Mtc(format!("get public key for vkey: {e}")))?
+            .spki_der(),
+    )?;
+    let mut vkey_blob = Vec::with_capacity(1 + raw_pubkey.len());
+    vkey_blob.push(type_byte);
+    vkey_blob.extend_from_slice(&raw_pubkey);
+    Ok(format!(
+        "{}+{:08x}+{}",
+        key_name,
+        u32::from_be_bytes(key_id),
+        BASE64.encode(&vkey_blob)
+    ))
+}
+
 // ── Note body and primary operator signing ────────────────────────────────────
 
 /// Build the C2SP tlog-checkpoint note body (unsigned).
@@ -258,7 +283,7 @@ pub fn sign_checkpoint_as_operator(
     root_hash: &[u8],
 ) -> Result<String, AcmeError> {
     let body = checkpoint_note_body(origin, tree_size, root_hash);
-    let (type_byte, key_id) = compute_key_id(key_name, key, NoteSigningRole::LogOperator)?;
+    let (_type_byte, key_id) = compute_key_id(key_name, key, NoteSigningRole::LogOperator)?;
 
     if key.key_type() == "ml-dsa-44" {
         // C2SP tlog-checkpoint: "Logs SHOULD use ML-DSA-44 cosignatures to
@@ -286,9 +311,8 @@ pub fn sign_checkpoint_as_operator(
             )));
         }
 
-        // Wire format: type_byte(1) || key_id(4) || timestamp_be(8) || sig(2420)
-        let mut blob = Vec::with_capacity(1 + 4 + 8 + sig.len());
-        blob.push(type_byte);
+        // Wire format: key_id(4) || timestamp_be(8) || sig(2420)
+        let mut blob = Vec::with_capacity(4 + 8 + sig.len());
         blob.extend_from_slice(&key_id);
         blob.extend_from_slice(&timestamp_unix.to_be_bytes());
         blob.extend_from_slice(&sig);
@@ -301,9 +325,8 @@ pub fn sign_checkpoint_as_operator(
         // Ed25519 / ECDSA: sign the note body directly
         let sig = raw_sign(key, hash_alg, body.as_bytes())?;
 
-        // Wire format: type_byte(1) || key_id(4) || signature
-        let mut blob = Vec::with_capacity(1 + 4 + sig.len());
-        blob.push(type_byte);
+        // Wire format: key_id(4) || signature
+        let mut blob = Vec::with_capacity(4 + sig.len());
         blob.extend_from_slice(&key_id);
         blob.extend_from_slice(&sig);
 
@@ -351,7 +374,7 @@ pub fn sign_checkpoint_as_cosigner(
     timestamp_unix: u64,
 ) -> Result<String, AcmeError> {
     let body = checkpoint_note_body(origin, tree_size, root_hash);
-    let (type_byte, key_id) = compute_key_id(cosigner_name, key, NoteSigningRole::Cosigner)?;
+    let (_type_byte, key_id) = compute_key_id(cosigner_name, key, NoteSigningRole::Cosigner)?;
 
     match key.key_type() {
         "ed25519" => {
@@ -359,9 +382,8 @@ pub fn sign_checkpoint_as_cosigner(
             let msg = format!("cosignature/v1\ntime {timestamp_unix}\n{body}");
             let sig = raw_sign(key, hash_alg, msg.as_bytes())?;
 
-            // Wire format: type_byte(1) || key_id(4) || timestamp_be(8) || sig(64)
-            let mut blob = Vec::with_capacity(1 + 4 + 8 + sig.len());
-            blob.push(type_byte);
+            // Wire format: key_id(4) || timestamp_be(8) || sig(64)
+            let mut blob = Vec::with_capacity(4 + 8 + sig.len());
             blob.extend_from_slice(&key_id);
             blob.extend_from_slice(&timestamp_unix.to_be_bytes());
             blob.extend_from_slice(&sig);
@@ -375,9 +397,8 @@ pub fn sign_checkpoint_as_cosigner(
             // ECDSA has no dedicated cosignature type; use primary-operator format (0x02).
             // `timestamp_unix` is not embedded — ECDSA cosignatures carry no timestamp.
             let sig = raw_sign(key, hash_alg, body.as_bytes())?;
-            // Wire format: type_byte(1) || key_id(4) || sig
-            let mut blob = Vec::with_capacity(1 + 4 + sig.len());
-            blob.push(type_byte);
+            // Wire format: key_id(4) || sig
+            let mut blob = Vec::with_capacity(4 + sig.len());
             blob.extend_from_slice(&key_id);
             blob.extend_from_slice(&sig);
             Ok(format!(
@@ -404,9 +425,8 @@ pub fn sign_checkpoint_as_cosigner(
                 )));
             }
 
-            // Wire format: type_byte(1) || key_id(4) || timestamp_be(8) || sig(2420)
-            let mut blob = Vec::with_capacity(1 + 4 + 8 + sig.len());
-            blob.push(type_byte);
+            // Wire format: key_id(4) || timestamp_be(8) || sig(2420)
+            let mut blob = Vec::with_capacity(4 + 8 + sig.len());
             blob.extend_from_slice(&key_id);
             blob.extend_from_slice(&timestamp_unix.to_be_bytes());
             blob.extend_from_slice(&sig);
@@ -923,9 +943,9 @@ mod tests {
         let sig_line = note.lines().find(|l| l.starts_with("\u{2014}")).unwrap();
         let b64 = sig_line.splitn(3, ' ').nth(2).unwrap();
         let blob = BASE64.decode(b64).unwrap();
-        // blob = type_byte(1) || key_id(4) || timestamp_be(8) || sig(64)
-        assert_eq!(blob[0], NOTE_TYPE_ED25519_COSIGNER);
-        let ts_bytes: [u8; 8] = blob[5..13].try_into().unwrap();
+        // blob = key_id(4) || timestamp_be(8) || sig(64)
+        assert_eq!(blob.len(), 4 + 8 + 64);
+        let ts_bytes: [u8; 8] = blob[4..12].try_into().unwrap();
         assert_eq!(u64::from_be_bytes(ts_bytes), ts);
     }
 
@@ -946,10 +966,9 @@ mod tests {
         let sig_line = note.lines().find(|l| l.starts_with("\u{2014}")).unwrap();
         let b64 = sig_line.splitn(3, ' ').nth(2).unwrap();
         let blob = BASE64.decode(b64).unwrap();
-        // blob = type_byte(1) || key_id(4) || timestamp_be(8) || sig(2420) = 2433 bytes
-        assert_eq!(blob.len(), 1 + 4 + 8 + ML_DSA_44_SIG_LEN);
-        assert_eq!(blob[0], NOTE_TYPE_ML_DSA_44);
-        let ts_bytes: [u8; 8] = blob[5..13].try_into().unwrap();
+        // blob = key_id(4) || timestamp_be(8) || sig(2420) = 2432 bytes
+        assert_eq!(blob.len(), 4 + 8 + ML_DSA_44_SIG_LEN);
+        let ts_bytes: [u8; 8] = blob[4..12].try_into().unwrap();
         assert_eq!(u64::from_be_bytes(ts_bytes), ts);
     }
 

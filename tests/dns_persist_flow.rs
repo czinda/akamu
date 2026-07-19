@@ -189,6 +189,7 @@ async fn build_state(
             log_number: 1,
             tree_minimum_index: None,
             trust_anchor_id: None,
+            contact: None,
         }),
         server: ServerConfig {
             dns_persist_issuer_domains: vec![issuer_domain.into()],

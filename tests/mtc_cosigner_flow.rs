@@ -300,6 +300,7 @@ async fn build_akamu_state(
             log_number: 1,
             tree_minimum_index: None,
             trust_anchor_id: Some(TEST_CA_TRUST_ANCHOR_OID.into()),
+            contact: None,
         }),
         server: {
             let mut s = ServerConfig::default();
@@ -374,6 +375,10 @@ async fn build_akamu_state(
                 log_number: 1,
                 tree_minimum_index: None,
                 trust_anchor_id_der: Some(encode_oid_der(TEST_CA_TRUST_ANCHOR_OID)),
+                trust_anchor_id: Some(TEST_CA_TRUST_ANCHOR_OID.into()),
+                contact: None,
+                tlog_origin: Some(format!("oid/{TEST_CA_TRUST_ANCHOR_OID}.0.1")),
+                cosigner_name: Some(format!("oid/{TEST_CA_TRUST_ANCHOR_OID}")),
                 logid_issuer_dn_der: Some(logid_dn),
             })
         },
@@ -532,6 +537,7 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
         let mtc = &ca.mtc;
         let log = mtc.log.as_ref().expect("MTC log");
         let signing_key = mtc.signing_key.as_ref().expect("MTC signing key");
+        let origin = mtc.tlog_origin();
 
         produce_checkpoint(CheckpointParams {
             log,
@@ -544,6 +550,7 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
             log_number: mtc.log_number,
             tree_minimum_index: mtc.tree_minimum_index,
             trust_anchor_id_der: mtc.trust_anchor_id_der.as_deref(),
+            log_origin: origin,
         })
         .await
         .expect("produce_checkpoint");
@@ -726,6 +733,7 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
     {
         let ca = state.default_ca();
         let mtc = &ca.mtc;
+        let origin = mtc.tlog_origin();
         produce_checkpoint(CheckpointParams {
             log: mtc.log.as_ref().unwrap(),
             signing_key: mtc.signing_key.as_ref().unwrap(),
@@ -737,6 +745,7 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
             log_number: mtc.log_number,
             tree_minimum_index: mtc.tree_minimum_index,
             trust_anchor_id_der: mtc.trust_anchor_id_der.as_deref(),
+            log_origin: origin,
         })
         .await
         .expect("produce_checkpoint (2nd)");

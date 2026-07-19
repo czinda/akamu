@@ -85,7 +85,8 @@ async fn build_state(dir: &std::path::Path, base_url: &str, http01_port: u16) ->
             hash_alg: "sha256".into(),
             log_number: 1,
             tree_minimum_index: None,
-            trust_anchor_id: None,
+            trust_anchor_id: Some("32473.2".into()),
+            contact: None,
         }),
         server: {
             let mut s = ServerConfig::default();
@@ -154,6 +155,10 @@ async fn build_state(dir: &std::path::Path, base_url: &str, http01_port: u16) ->
                 log_number: 1,
                 tree_minimum_index: None,
                 trust_anchor_id_der: None,
+                trust_anchor_id: Some("32473.2".into()),
+                contact: None,
+                tlog_origin: Some("oid/1.3.6.1.4.1.32473.2.0.1".into()),
+                cosigner_name: Some("oid/1.3.6.1.4.1.32473.2".into()),
                 logid_issuer_dn_der: Some(logid_dn),
             })
         },
@@ -275,6 +280,7 @@ async fn mtc_client_queries_and_verify() {
     {
         let ca = state.default_ca();
         let mtc = &ca.mtc;
+        let origin = mtc.tlog_origin();
         produce_checkpoint(CheckpointParams {
             log: mtc.log.as_ref().expect("MTC log"),
             signing_key: mtc.signing_key.as_ref().expect("MTC signing key"),
@@ -286,6 +292,7 @@ async fn mtc_client_queries_and_verify() {
             log_number: mtc.log_number,
             tree_minimum_index: mtc.tree_minimum_index,
             trust_anchor_id_der: mtc.trust_anchor_id_der.as_deref(),
+            log_origin: origin,
         })
         .await
         .expect("produce_checkpoint");

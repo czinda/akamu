@@ -182,6 +182,7 @@ async fn spawn_node(params: SpawnParams) -> NodeHandle {
             log_number: 1,
             tree_minimum_index: None,
             trust_anchor_id: None,
+            contact: None,
         }),
         server: ServerConfig::default(),
         tls: Default::default(),

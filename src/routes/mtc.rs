@@ -18,7 +18,7 @@ use crate::error::AcmeError;
 use crate::mtc::{log, tlog};
 use crate::state::AppState;
 
-use super::{acme_prefix, CaId};
+use super::CaId;
 
 /// X-MTC-Version header value for draft-05 responses.
 pub const MTC_DRAFT_VERSION: &str = "draft-05";
@@ -316,13 +316,12 @@ pub async fn get_tlog_checkpoint(
             AcmeError::ServiceUnavailable("MTC signing key not configured".into())
         })?;
 
-    let pfx = acme_prefix(&state.config.base_url, &ca_id.0, &state.default_ca_id);
-    let origin = format!("{pfx}/mtc/tlog");
-    let key_name = origin.clone();
+    let origin = ca.mtc.tlog_origin().ok_or_else(|| {
+        AcmeError::ServiceUnavailable("mtc.trust_anchor_id not configured".into())
+    })?;
     let hash_alg = &ca.mtc.signing_hash_alg;
 
-    let note =
-        tlog::produce_operator_checkpoint(shared_log, &key_name, key, hash_alg, &origin).await?;
+    let note = tlog::produce_operator_checkpoint(shared_log, origin, key, hash_alg, origin).await?;
 
     Ok((
         StatusCode::OK,
@@ -394,13 +393,12 @@ pub async fn get_tlog_cosignature(
             AcmeError::ServiceUnavailable("MTC signing key not configured".into())
         })?;
 
-    let pfx = acme_prefix(&state.config.base_url, &ca_id.0, &state.default_ca_id);
-    let origin = format!("{pfx}/mtc/tlog");
-    let key_name = origin.clone();
+    let origin = ca.mtc.tlog_origin().ok_or_else(|| {
+        AcmeError::ServiceUnavailable("mtc.trust_anchor_id not configured".into())
+    })?;
     let hash_alg = &ca.mtc.signing_hash_alg;
 
-    let note =
-        tlog::produce_cosigner_checkpoint(shared_log, &key_name, key, hash_alg, &origin).await?;
+    let note = tlog::produce_cosigner_checkpoint(shared_log, origin, key, hash_alg, origin).await?;
 
     Ok((
         StatusCode::OK,

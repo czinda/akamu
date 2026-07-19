@@ -172,7 +172,17 @@ fn init_mtc_for_ca(
         max_active_landmarks: mtc_cfg.max_active_landmarks,
         log_number: mtc_cfg.log_number,
         tree_minimum_index: mtc_cfg.tree_minimum_index,
+        trust_anchor_id: mtc_cfg.trust_anchor_id.clone(),
         trust_anchor_id_der,
+        contact: mtc_cfg.contact.clone(),
+        tlog_origin: mtc_cfg
+            .trust_anchor_id
+            .as_deref()
+            .map(|ta| format!("oid/1.3.6.1.4.1.{ta}.0.{}", mtc_cfg.log_number)),
+        cosigner_name: mtc_cfg
+            .trust_anchor_id
+            .as_deref()
+            .map(|ta| format!("oid/1.3.6.1.4.1.{ta}")),
         logid_issuer_dn_der,
         last_checkpoint: AtomicI64::new(0),
         last_landmark: AtomicI64::new(0),

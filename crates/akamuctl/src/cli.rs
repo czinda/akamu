@@ -541,6 +541,12 @@ pub(crate) enum MtcCmd {
         #[arg(long, value_name = "CA_ID")]
         ca: String,
     },
+    /// Print the Witness Network log-list entry for this CA's MTC log.
+    LogListEntry {
+        /// CA identifier (required).
+        #[arg(long, value_name = "CA_ID")]
+        ca: String,
+    },
 }
 
 #[derive(Subcommand)]
