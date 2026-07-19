@@ -10,6 +10,7 @@
 //! |-------|:---:|:---:|:---:|:---:|
 //! | `POST /admin/session` | ✓ | ✓ | ✓ | ✓ |
 //! | `DELETE /admin/session` | ✓ | ✓ | ✓ | ✓ |
+//! | `POST /admin/session/eab` | ✓ | ✓ | ✓ | ✓ |
 //! | `GET /admin/operators` | ✓ | | | |
 //! | `POST /admin/operators` | ✓ | | | |
 //! | `GET /admin/operators/{id}` | ✓ | | | |
@@ -23,6 +24,7 @@
 //! | `GET /admin/profiles` | ✓ | ✓ | ✓ | ✓ |
 //! | `POST /admin/profiles` | ✓ | | | |
 //! | `PUT /admin/profiles/{id}` | ✓ | | | |
+//! | `GET /admin/profiles/{id}` | ✓ | ✓ | ✓ | ✓ |
 //! | `DELETE /admin/profiles/{id}` | ✓ | | | |
 //! | `GET /admin/accounts` | ✓ | ✓ | ✓ | ✓ |
 //! | `GET /admin/account/{id}` | ✓ | ✓ | ✓ | ✓ |
@@ -68,6 +70,9 @@
 //! | `GET /admin/mtc/cosignature` | ✓ | ✓ | | ✓ |
 //! | `POST /admin/ca/{id}/mtc/force-checkpoint` | ✓ | ✓ | | |
 //! | `POST /admin/ca/{id}/mtc/force-landmark` | ✓ | ✓ | | |
+//! | `GET /admin/ca/{id}/mtc/log-list-entry` | ✓ | ✓ | | ✓ |
+//! | `GET /admin/gossip/status` | | | | ✓ |
+//! | `POST /admin/gossip/register` | ✓ | | | |
 
 pub mod accounts;
 pub mod audit;
