@@ -17,7 +17,7 @@ use crate::db;
 use crate::error::AcmeError;
 use crate::state::AppState;
 
-use super::{acme_prefix, parse_jws, CaId};
+use super::{acme_headers, acme_prefix, parse_jws, CaId};
 
 const PROPERTIES_CT: &str = "application/pem-certificate-chain-with-properties";
 
@@ -114,12 +114,15 @@ pub async fn download_cert_post(
         (None, None, None)
     };
     let wants_properties = accepts_properties(&headers);
-    Ok(cert_pem_response(
+    let mut resp = cert_pem_response(
         cert,
         standalone_der,
         link_alternate,
         wants_properties.then_some(trust_anchor_id).flatten(),
-    ))
+    );
+    resp.headers_mut()
+        .extend(acme_headers(&state, &ca_id.0, &ctx.next_nonce));
+    Ok(resp)
 }
 
 fn cert_pem_response(

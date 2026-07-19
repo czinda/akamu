@@ -14,7 +14,7 @@ use crate::db;
 use crate::error::AcmeError;
 use crate::state::AppState;
 
-use super::{acme_prefix, parse_jws, unix_now, CaId};
+use super::{acme_headers, acme_prefix, parse_jws, unix_now, CaId};
 
 /// GET handler — unauthenticated (allowed only when `allow_certificate_get = true`).
 pub async fn star_cert_get(
@@ -83,7 +83,10 @@ pub async fn star_cert_post(
         return Err(AcmeError::NotFound);
     }
 
-    serve_star_cert(&state, &order).await
+    let mut resp = serve_star_cert(&state, &order).await?;
+    resp.headers_mut()
+        .extend(acme_headers(&state, &ca_id.0, &ctx.next_nonce));
+    Ok(resp)
 }
 
 async fn serve_star_cert(
