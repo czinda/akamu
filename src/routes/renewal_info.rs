@@ -48,9 +48,22 @@ pub async fn get_renewal_info(
     let now = unix_now();
 
     // Use explicitly set renewal window if available; otherwise compute a default.
+    // RFC 9773 §4.2: server MUST NOT serve a window where end <= start.
     let (window_start, window_end) = match (cert.suggested_window_start, cert.suggested_window_end)
     {
-        (Some(s), Some(e)) => (s, e),
+        (Some(s), Some(e)) if e > s => (s, e),
+        (Some(s), Some(e)) => {
+            tracing::warn!(
+                cert_id,
+                start = s,
+                end = e,
+                "ARI: operator-set renewal window has end <= start; falling back to computed window"
+            );
+            let lifetime = cert.not_after - cert.not_before;
+            let renewal_start = cert.not_before + (lifetime * 2 / 3);
+            let renewal_end = cert.not_after - 86400;
+            (renewal_start.max(now), renewal_end.max(renewal_start))
+        }
         _ => {
             // Default: suggest renewal in the last third of the certificate's validity.
             let lifetime = cert.not_after - cert.not_before;
