@@ -59,6 +59,12 @@ pub async fn revoke_cert(
         return Err(AcmeError::AlreadyRevoked);
     }
 
+    // RFC 8739 §3.1.2: STAR certificates MUST NOT be revoked via revokeCert.
+    let order = db::orders::get_by_id(&state.db, &cert.order_id).await?;
+    if order.is_some_and(|o| o.star_end_date.is_some()) {
+        return Err(AcmeError::AutoRenewalRevocationNotSupported);
+    }
+
     // Authorisation: either the account that owns the cert, or the cert key itself.
     match &ctx.account_id {
         Some(account_id) => {
