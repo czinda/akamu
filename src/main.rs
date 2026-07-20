@@ -254,7 +254,7 @@ fn derive_crdt_db_url(main_url: &str) -> String {
 
 async fn run(config_path: &str) -> Result<(), String> {
     tracing::info!("loading config from '{config_path}'");
-    let config = Config::from_file(&config_path)?;
+    let config = Config::from_file(config_path)?;
 
     if config.dns_persist_issuer_domains().is_empty() {
         if config.server.dns_persist_issuer_domains.is_some() {
