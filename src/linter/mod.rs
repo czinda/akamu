@@ -169,4 +169,15 @@ impl LinterRegistry {
             ))
         })
     }
+
+    /// Resolve the linter profile for an order using the three-way chain:
+    /// cert profile → CA default → "webpki".
+    pub fn resolve_for_order(
+        &self,
+        profile_linter: Option<&str>,
+        ca_default: Option<&str>,
+    ) -> Result<ResolvedLinterProfile, AcmeError> {
+        let name = profile_linter.or(ca_default).unwrap_or("webpki");
+        self.resolve(name).copied()
+    }
 }

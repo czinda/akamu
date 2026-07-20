@@ -446,13 +446,10 @@ pub async fn finalize_order(
                 .await?
         }
         crate::state::SigningBackend::Local { .. } => {
-            // Three-way linter resolution: cert profile → CA default → "webpki".
-            let linter_name = cert_params
-                .linter
-                .as_deref()
-                .or_else(|| order_ca.default_linter.as_deref())
-                .unwrap_or("webpki");
-            let linter_profile = *state.linter_registry.resolve(linter_name)?;
+            let linter_profile = state.linter_registry.resolve_for_order(
+                cert_params.linter.as_deref(),
+                order_ca.default_linter.as_deref(),
+            )?;
 
             let ca_arc = Arc::clone(order_ca);
             let csr_owned = validated_csr.clone();
