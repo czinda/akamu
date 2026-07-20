@@ -17,13 +17,21 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "FILE")]
     pub ca_cert: Option<PathBuf>,
 
-    /// mTLS client certificate file.
-    #[arg(long, value_name = "FILE")]
+    /// mTLS client certificate file (PEM).
+    #[arg(long, value_name = "FILE", conflicts_with = "pkcs12")]
     pub cert: Option<PathBuf>,
 
-    /// mTLS client private key file.
-    #[arg(long, value_name = "FILE")]
+    /// mTLS client private key file (PEM).
+    #[arg(long, value_name = "FILE", conflicts_with = "pkcs12")]
     pub key: Option<PathBuf>,
+
+    /// PKCS#12 file containing client certificate and private key.
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["cert", "key"])]
+    pub pkcs12: Option<PathBuf>,
+
+    /// Password for the PKCS#12 file (default: empty).
+    #[arg(long, value_name = "PASSWORD", requires = "pkcs12")]
+    pub pkcs12_password: Option<String>,
 
     /// Output format: `table` (default) or `json`.
     #[arg(long, short = 'o', default_value = "table")]

@@ -6,7 +6,7 @@ use crate::client::AdminClient;
 use crate::config::{CosignerConfig, SessionCache};
 use crate::error::CtlError;
 use crate::output::{print, Format};
-use crate::read_file_opt;
+use crate::{read_file_opt, resolve_pkcs12};
 
 /// Construct an `AdminClient` pointed at the cosigner admin endpoint.
 ///
@@ -28,18 +28,32 @@ pub fn build_client(
             .map(std::path::Path::new),
     )?
     .or(ca_cert_fallback);
-    let cos_cert = read_file_opt(
-        cosigner_cfg
-            .and_then(|c| c.cert_file.as_deref())
-            .map(std::path::Path::new),
-    )?
-    .or(cert_fallback);
-    let cos_key = read_file_opt(
-        cosigner_cfg
-            .and_then(|c| c.key_file.as_deref())
-            .map(std::path::Path::new),
-    )?
-    .or(key_fallback);
+
+    let p12_path = cosigner_cfg
+        .and_then(|c| c.pkcs12_file.as_deref())
+        .map(std::path::Path::new);
+    let (cos_cert, cos_key) = if let Some(p12) = p12_path {
+        let password = cosigner_cfg
+            .and_then(|c| c.pkcs12_password.as_deref())
+            .unwrap_or("");
+        let (cert, key) = resolve_pkcs12(p12, password)?;
+        (Some(cert), Some(key))
+    } else {
+        let cos_cert = read_file_opt(
+            cosigner_cfg
+                .and_then(|c| c.cert_file.as_deref())
+                .map(std::path::Path::new),
+        )?
+        .or(cert_fallback);
+        let cos_key = read_file_opt(
+            cosigner_cfg
+                .and_then(|c| c.key_file.as_deref())
+                .map(std::path::Path::new),
+        )?
+        .or(key_fallback);
+        (cos_cert, cos_key)
+    };
+
     let cos_gssapi = cosigner_cfg.and_then(|c| c.gssapi_service.clone());
     AdminClient::new(
         cosigner_url,

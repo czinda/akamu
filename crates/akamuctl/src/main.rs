@@ -62,16 +62,35 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
             .as_deref()
             .or_else(|| cfg.server.ca_cert.as_deref().map(std::path::Path::new)),
     )?;
-    let cert_bytes = read_file_opt(
-        cli.cert
+
+    // Resolve client identity: PKCS#12 (CLI or config) takes precedence over PEM.
+    let pkcs12_path = cli.pkcs12.as_deref().or_else(|| {
+        cfg.server
+            .pkcs12_file
             .as_deref()
-            .or_else(|| cfg.server.cert_file.as_deref().map(std::path::Path::new)),
-    )?;
-    let key_bytes = read_file_opt(
-        cli.key
+            .map(std::path::Path::new)
+    });
+    let (cert_bytes, key_bytes) = if let Some(p12_path) = pkcs12_path {
+        let password = cli
+            .pkcs12_password
             .as_deref()
-            .or_else(|| cfg.server.key_file.as_deref().map(std::path::Path::new)),
-    )?;
+            .or(cfg.server.pkcs12_password.as_deref())
+            .unwrap_or("");
+        let (cert, key) = resolve_pkcs12(p12_path, password)?;
+        (Some(cert), Some(key))
+    } else {
+        let cert_bytes = read_file_opt(
+            cli.cert
+                .as_deref()
+                .or_else(|| cfg.server.cert_file.as_deref().map(std::path::Path::new)),
+        )?;
+        let key_bytes = read_file_opt(
+            cli.key
+                .as_deref()
+                .or_else(|| cfg.server.key_file.as_deref().map(std::path::Path::new)),
+        )?;
+        (cert_bytes, key_bytes)
+    };
 
     let server_client = AdminClient::new(
         server_url.clone(),
@@ -494,6 +513,32 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+pub(crate) fn resolve_pkcs12(
+    path: &std::path::Path,
+    password: &str,
+) -> Result<(Vec<u8>, Vec<u8>), CtlError> {
+    let data = std::fs::read(path)?;
+    let pki = synta_certificate::pki_from_pkcs12(
+        &data,
+        password.as_bytes(),
+        &synta_certificate::OpensslDecryptor,
+    )
+    .map_err(|e| CtlError::Config(format!("parse PKCS#12 '{}': {e}", path.display())))?;
+    let cert_der = pki
+        .certs
+        .into_iter()
+        .next()
+        .ok_or_else(|| CtlError::Config("PKCS#12 file contains no certificates".into()))?;
+    let key_der = pki
+        .keys
+        .into_iter()
+        .next()
+        .ok_or_else(|| CtlError::Config("PKCS#12 file contains no private keys".into()))?;
+    let cert_pem = synta_certificate::der_to_pem("CERTIFICATE", &cert_der);
+    let key_pem = synta_certificate::der_to_pem("PRIVATE KEY", &key_der);
+    Ok((cert_pem, key_pem))
+}
 
 pub(crate) fn read_file_opt(path: Option<&std::path::Path>) -> Result<Option<Vec<u8>>, CtlError> {
     let Some(p) = path else {

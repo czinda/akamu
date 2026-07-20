@@ -11,7 +11,7 @@
 #
 # Everything auto-generates on first run: CA, TLS cert, admin credentials.
 #   WebUI:    {base_url}/ui/  (import admin.p12 into your browser)
-#   akamuctl: akamuctl --cert {data_dir}/admin.p12 operator list
+#   akamuctl: akamuctl --pkcs12 {data_dir}/admin.p12 operator list
 #
 # Full reference: config.toml.example
 
