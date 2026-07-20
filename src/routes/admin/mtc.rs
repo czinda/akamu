@@ -597,6 +597,13 @@ pub async fn get_cosignature(
         )
             .into_response();
     };
+    let Some(cosigner_name) = ca.mtc.cosigner_name() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"detail": "mtc.trust_anchor_id not configured"})),
+        )
+            .into_response();
+    };
     let Some(origin) = ca.mtc.tlog_origin() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -606,7 +613,7 @@ pub async fn get_cosignature(
     };
     match tlog::produce_cosigner_checkpoint(
         shared_log,
-        origin,
+        cosigner_name,
         key,
         &ca.mtc.signing_hash_alg,
         origin,

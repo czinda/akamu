@@ -393,12 +393,16 @@ pub async fn get_tlog_cosignature(
             AcmeError::ServiceUnavailable("MTC signing key not configured".into())
         })?;
 
+    let cosigner_name = ca.mtc.cosigner_name().ok_or_else(|| {
+        AcmeError::ServiceUnavailable("mtc.trust_anchor_id not configured".into())
+    })?;
     let origin = ca.mtc.tlog_origin().ok_or_else(|| {
         AcmeError::ServiceUnavailable("mtc.trust_anchor_id not configured".into())
     })?;
     let hash_alg = &ca.mtc.signing_hash_alg;
 
-    let note = tlog::produce_cosigner_checkpoint(shared_log, origin, key, hash_alg, origin).await?;
+    let note =
+        tlog::produce_cosigner_checkpoint(shared_log, cosigner_name, key, hash_alg, origin).await?;
 
     Ok((
         StatusCode::OK,
