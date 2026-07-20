@@ -40,6 +40,9 @@ pub async fn get_directory(State(state): State<Arc<AppState>>, ca_id: CaId) -> i
     if state.config.server.allow_subdomain_auth {
         meta["subdomainAuthAllowed"] = json!(true);
     }
+    if state.config.server.in_band_onion_caa {
+        meta["inBandOnionCAARequired"] = json!(true);
+    }
     if let Some(min_lifetime) = state.config.server.star_min_lifetime_secs {
         let mut auto_renewal = json!({
             "min-lifetime": min_lifetime,

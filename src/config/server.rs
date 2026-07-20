@@ -126,6 +126,10 @@ pub struct ServerConfig {
     /// successfully perform outbound connections to `.onion` hidden services.
     #[serde(default)]
     pub tor_connectivity_enabled: bool,
+    /// RFC 9799 §6: advertise that this CA requires in-band CAA records for
+    /// .onion domains (checked via Hidden Service Descriptor).
+    #[serde(default)]
+    pub in_band_onion_caa: bool,
     /// Enable DNSSEC validation for DNS-based challenge verification.
     ///
     /// Applies to dns-01, dns-persist-01, and CAA record lookups.
@@ -294,6 +298,7 @@ impl Default for ServerConfig {
             profiles: std::collections::HashMap::new(),
             eab_keys: std::collections::HashMap::new(),
             tor_connectivity_enabled: false,
+            in_band_onion_caa: false,
             validate_dnssec: false,
             trusted_proxies: crate::trusted_proxy::TrustedProxies::default(),
             gssapi: None,

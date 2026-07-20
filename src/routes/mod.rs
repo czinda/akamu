@@ -107,6 +107,9 @@ pub(crate) struct ChallengeJson<'a> {
     pub issuer_domain_names: Option<&'a [String]>,
     #[serde(rename = "authKey", skip_serializing_if = "Option::is_none")]
     pub auth_key: Option<String>,
+    /// RFC 9799 §3.2: server-generated nonce for onion-csr-01 challenges.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
     #[serde(rename = "tkauth-type", skip_serializing_if = "Option::is_none")]

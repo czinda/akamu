@@ -39,6 +39,8 @@ pub struct ChallengeParams<'a> {
     /// Raw compact JWT from the client's tkauth-01 challenge response payload.
     /// `None` for all other challenge types.
     pub authority_token: Option<&'a str>,
+    /// Unix timestamp when the challenge was created.
+    pub challenge_created: i64,
 }
 
 /// Entry point called from `routes::challenge::respond_challenge`.
@@ -71,6 +73,7 @@ pub async fn validate_challenge(
         onion_csr_der,
         account_id,
         authority_token,
+        challenge_created,
     } = params;
 
     // dns-persist-01: the TXT record is long-lived and pre-provisioned; the
@@ -218,6 +221,7 @@ pub async fn validate_challenge(
         dot_server_name: dot_server_name.as_deref(),
         validation_client: &state.validation_client,
         onion_csr_der,
+        challenge_created,
     })
     .await;
 
@@ -254,6 +258,7 @@ struct DispatchParams<'a> {
     dot_server_name: Option<&'a str>,
     validation_client: &'a crate::state::ValidationClient,
     onion_csr_der: Option<&'a [u8]>,
+    challenge_created: i64,
 }
 
 /// Dispatch to the correct validator based on challenge type.
@@ -275,6 +280,7 @@ async fn dispatch(
         dot_server_name,
         validation_client,
         onion_csr_der,
+        challenge_created,
     }: DispatchParams<'_>,
 ) -> Result<(), AcmeError> {
     match chall_type {
@@ -309,7 +315,8 @@ async fn dispatch(
                 )
             })?;
             // id_value is the .onion domain; key_auth is token.thumbprint.
-            onion_csr_01::validate(id_value, csr_der, key_auth)
+            // token serves as the server-generated nonce (RFC 9799 §3.2).
+            onion_csr_01::validate(id_value, csr_der, key_auth, token, challenge_created)
         }
         other => Err(AcmeError::IncorrectResponse(format!(
             "unsupported challenge type: {other}"
@@ -802,6 +809,7 @@ mod tests {
             dot_server_name: None,
             validation_client: &client,
             onion_csr_der: None,
+            challenge_created: 0,
         })
         .await;
         assert!(result.is_err());
@@ -859,6 +867,7 @@ mod tests {
                 onion_csr_der: None,
                 account_id: "1",
                 authority_token: None,
+                challenge_created: 0,
             },
         )
         .await;
@@ -1354,6 +1363,7 @@ mod tests {
                 onion_csr_der: None,
                 account_id: "1",
                 authority_token: None,
+                challenge_created: 0,
             },
         )
         .await;

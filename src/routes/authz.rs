@@ -306,6 +306,11 @@ fn build_authz_json<'a>(
             } else {
                 (None, None)
             };
+            let nonce = if c.r#type == "onion-csr-01" {
+                Some(c.token.as_str())
+            } else {
+                None
+            };
             Ok(ChallengeJson {
                 r#type: &c.r#type,
                 url: format!("{acme_pfx}/chall/{}/{}", authz.id, c.r#type),
@@ -314,6 +319,7 @@ fn build_authz_json<'a>(
                 accounturi,
                 issuer_domain_names,
                 auth_key,
+                nonce,
                 from,
                 tkauth_type,
                 token_authority,
@@ -512,6 +518,7 @@ mod tests {
                 accounturi: None,
                 issuer_domain_names: None,
                 auth_key: None,
+                nonce: None,
                 from: None,
                 tkauth_type: None,
                 token_authority: None,

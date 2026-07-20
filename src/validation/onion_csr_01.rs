@@ -26,6 +26,12 @@ use crate::error::AcmeError;
 /// OID 2.23.140.41 — CA/B Forum `cabf-onion-csr-nonce` extension.
 const CABF_ONION_CSR_NONCE: &[u32] = &[2, 23, 140, 41];
 
+/// OID 2.23.140.42 — CA/B Forum `applicantSigningNonce` extension (RFC 9799 §3.2 step 5).
+const APPLICANT_SIGNING_NONCE: &[u32] = &[2, 23, 140, 42];
+
+/// Maximum nonce age in seconds (30 days per RFC 9799 §3.2).
+const MAX_NONCE_AGE_SECS: i64 = 30 * 24 * 3600;
+
 /// Check whether `value` is a valid v3 `.onion` domain.
 ///
 /// A v3 address consists of a single 56-character base32 label followed by
@@ -236,10 +242,31 @@ fn extract_csr_extensions(csr: &CertificationRequest<'_>) -> Result<Vec<CsrExt>,
 ///
 /// # Arguments
 ///
-/// * `onion_domain` — the `.onion` domain being authorized.
-/// * `csr_der`      — DER-encoded PKCS#10 CSR from the client.
-/// * `key_auth`     — expected key authorization: `{token}.{thumbprint}`.
-pub fn validate(onion_domain: &str, csr_der: &[u8], key_auth: &str) -> Result<(), AcmeError> {
+/// * `onion_domain`      — the `.onion` domain being authorized.
+/// * `csr_der`           — DER-encoded PKCS#10 CSR from the client.
+/// * `key_auth`          — expected key authorization: `{token}.{thumbprint}`.
+/// * `server_nonce`      — server-generated nonce (the challenge token).
+/// * `challenge_created` — unix timestamp when the challenge was created.
+pub fn validate(
+    onion_domain: &str,
+    csr_der: &[u8],
+    key_auth: &str,
+    server_nonce: &str,
+    challenge_created: i64,
+) -> Result<(), AcmeError> {
+    // RFC 9799 §3.2: MUST NOT accept nonces older than 30 days.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    if now - challenge_created > MAX_NONCE_AGE_SECS {
+        return Err(AcmeError::IncorrectResponse(format!(
+            "onion-csr-01 nonce expired: challenge created {} seconds ago (max {})",
+            now - challenge_created,
+            MAX_NONCE_AGE_SECS
+        )));
+    }
+
     // 1. Extract the Ed25519 public key from the .onion address.
     let pubkey_bytes = decode_onion_pubkey(onion_domain).ok_or_else(|| {
         AcmeError::IncorrectResponse(format!(
@@ -312,6 +339,19 @@ pub fn validate(onion_domain: &str, csr_der: &[u8], key_auth: &str) -> Result<()
                 "cabf-onion-csr-nonce value mismatch: expected key authorization '{key_auth}'"
             )));
         }
+    }
+
+    // 5b. Verify applicantSigningNonce (OID 2.23.140.42) — RFC 9799 §3.2 step 5.
+    let asn_value = find_ext_value(&extensions, APPLICANT_SIGNING_NONCE).ok_or_else(|| {
+        AcmeError::IncorrectResponse(
+            "applicantSigningNonce extension (OID 2.23.140.42) missing from CSR".into(),
+        )
+    })?;
+    let asn_str = decode_utf8string_or_raw(&asn_value);
+    if asn_str.as_deref() != Some(server_nonce) && asn_value != server_nonce.as_bytes() {
+        return Err(AcmeError::IncorrectResponse(
+            "applicantSigningNonce value does not match server nonce".into(),
+        ));
     }
 
     // 6. Verify the hidden-service Ed25519 signature over the CertificationRequestInfo.
@@ -693,16 +733,25 @@ mod tests {
             .build()
             .unwrap();
 
+        let server_nonce = b"mytoken";
+        let mut asn_ext_value = vec![0x0C, server_nonce.len() as u8];
+        asn_ext_value.extend_from_slice(server_nonce);
+
         let signer = hs_key.as_signer("sha512");
         let csr_der = CsrBuilder::new()
             .subject_name(&name_der)
             .public_key_der(&hs_pub_spki)
             .add_extension_oid(oids::SUBJECT_ALT_NAME, false, &san_der)
             .add_extension_oid(CABF_ONION_CSR_NONCE, false, &nonce_ext_value)
+            .add_extension_oid(APPLICANT_SIGNING_NONCE, false, &asn_ext_value)
             .sign(&signer)
             .unwrap();
 
-        let result = validate(&onion_domain, &csr_der, key_auth);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let result = validate(&onion_domain, &csr_der, key_auth, "mytoken", now);
         assert!(
             result.is_ok(),
             "validation should succeed when CSR key matches HS key: {result:?}"
@@ -741,7 +790,11 @@ mod tests {
             .sign(&signer)
             .unwrap();
 
-        let result = validate(&onion_domain, &csr_der, "token.thumb");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let result = validate(&onion_domain, &csr_der, "token.thumb", "token", now);
         assert!(
             result.is_err(),
             "missing nonce extension should fail validation"
@@ -794,7 +847,17 @@ mod tests {
             .sign(&signer)
             .unwrap();
 
-        let result = validate(&onion_domain, &csr_der, "correct.thumbprint");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let result = validate(
+            &onion_domain,
+            &csr_der,
+            "correct.thumbprint",
+            "correct",
+            now,
+        );
         assert!(result.is_err(), "wrong nonce should fail");
         match result.unwrap_err() {
             AcmeError::IncorrectResponse(msg) => {
@@ -835,16 +898,25 @@ mod tests {
             .dns_name(wrong_domain)
             .build()
             .unwrap();
+        let server_nonce = b"mytoken";
+        let mut asn_ext = vec![0x0C, server_nonce.len() as u8];
+        asn_ext.extend_from_slice(server_nonce);
+
         let signer = hs_key.as_signer("sha512");
         let csr_der = CsrBuilder::new()
             .subject_name(&name_der)
             .public_key_der(&hs_pub_spki)
             .add_extension_oid(oids::SUBJECT_ALT_NAME, false, &san_der)
             .add_extension_oid(CABF_ONION_CSR_NONCE, false, &nonce_ext)
+            .add_extension_oid(APPLICANT_SIGNING_NONCE, false, &asn_ext)
             .sign(&signer)
             .unwrap();
 
-        let result = validate(&onion_domain, &csr_der, key_auth);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let result = validate(&onion_domain, &csr_der, key_auth, "mytoken", now);
         assert!(result.is_err(), "wrong SAN should fail");
         match result.unwrap_err() {
             AcmeError::IncorrectResponse(msg) => {

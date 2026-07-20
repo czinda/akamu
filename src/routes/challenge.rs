@@ -211,6 +211,7 @@ pub async fn respond_challenge(
     let chall_type_clone = chall_type.clone();
     let authz_id_clone = authz_id.clone();
     let challenge_id_for_log = challenge.id.clone();
+    let challenge_created_ts = challenge.created;
     let account_id_for_response = account_id.clone();
 
     let handle = tokio::spawn(async move {
@@ -228,6 +229,7 @@ pub async fn respond_challenge(
                 onion_csr_der: onion_csr_der.as_deref(),
                 account_id: &account_id,
                 authority_token: authority_token.as_deref(),
+                challenge_created: challenge_created_ts,
             },
         )
         .await;
@@ -317,6 +319,11 @@ fn challenge_response(
     } else {
         (None, None)
     };
+    let challenge_nonce = if challenge.r#type == "onion-csr-01" {
+        Some(challenge.token.as_str())
+    } else {
+        None
+    };
     let body = ChallengeJson {
         r#type: &challenge.r#type,
         url: format!(
@@ -328,6 +335,7 @@ fn challenge_response(
         accounturi,
         issuer_domain_names,
         auth_key,
+        nonce: challenge_nonce,
         from,
         tkauth_type,
         token_authority,
