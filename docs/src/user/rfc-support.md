@@ -4,14 +4,14 @@ This page documents every RFC that is relevant to `Akāmu`, explaining what each
 
 ## Compliance Matrix
 
-> **Last verified:** 2026-07-04
+> **Last verified:** 2026-07-20
 
 ### Core ACME Protocol
 
 | RFC/Draft | Title | Status | Notes |
 |-----------|-------|--------|-------|
 | [RFC 8555](#rfc-8555--core-acme) | Automatic Certificate Management Environment (ACME) | Full | All sections including pre-authorization, EAB, key rollover |
-| [RFC 7807](#rfc-7807--problem-details-for-http-apis) | Problem Details for HTTP APIs | Full | All error responses use `application/problem+json` |
+| [RFC 7807](#rfc-7807--problem-details-for-http-apis) | Problem Details for HTTP APIs | Full | All error responses use `application/problem+json` with `type`, `detail`, `status`, and `title` |
 
 ### ACME Challenge Extensions
 
@@ -29,7 +29,7 @@ This page documents every RFC that is relevant to `Akāmu`, explaining what each
 | [RFC 9773](#rfc-9773--acme-renewal-information-ari) | ACME Renewal Information (ARI) | Full | Suggested renewal window, `replaces` in new orders |
 | [RFC 9444](#rfc-9444--acme-for-subdomains) | ACME for Subdomains | Full | `ancestorDomain` and `subdomainAuthAllowed` |
 | [RFC 8823](#rfc-8823--smime-certificates) | ACME Extensions for S/MIME Certificates | Full | `email` identifier, `email-reply-00` challenge, DKIM enforcement |
-| [RFC 9799](#rfc-9799--acme-for-onion-domains) | ACME for .onion Domains | Full | `onion-csr-01`; http-01/tls-alpn-01 gated on Tor connectivity |
+| [RFC 9799](#rfc-9799--acme-for-onion-domains) | ACME for .onion Domains | Full | `onion-csr-01` with `applicantSigningNonce` age check; `inBandOnionCAARequired` directory metadata; http-01/tls-alpn-01 gated on Tor connectivity. HS descriptor CAA parsing not yet implemented |
 | [draft-ietf-acme-profiles-01](#draft-ietf-acme-profiles-01) | ACME Certificate Profiles | Full | Profile advertisement, selection, default auto-selection |
 
 ### ACME Delegation
@@ -66,7 +66,7 @@ This page documents every RFC that is relevant to `Akāmu`, explaining what each
 | RFC/Draft | Title | Status | Notes |
 |-----------|-------|--------|-------|
 | [RFC 9964](#rfc-9964--ml-dsa-for-jose-and-cose) | ML-DSA for JOSE and COSE | Full | ML-DSA-44/65/87 for ACME account key authentication |
-| [draft-ietf-lamps-pq-composite-sigs / draft-reddy-tls-composite-mldsa](#draft-ietf-lamps-pq-composite-sigs--draft-reddy-tls-composite-mldsa) | Composite ML-DSA Signatures | Full | All 18 composite-sig CA key variants (OID sub-arcs 37-54); 11 TLS code points for mTLS. OIDs and code points are provisional (pre-IANA) |
+| [draft-ietf-lamps-pq-composite-sigs / draft-reddy-tls-composite-mldsa](#draft-ietf-lamps-pq-composite-sigs--draft-reddy-tls-composite-mldsa) | Composite ML-DSA Signatures | Full (provisional) | All 18 composite-sig CA key variants (OID sub-arcs 37-54); 11 TLS code points for mTLS. All OIDs and `SignatureScheme` code points are TBD pending IANA allocation — values will change |
 
 ### Merkle Tree Certificates
 
@@ -232,6 +232,10 @@ When a matching `issue` or `issuewild` CAA record contains an `accounturi` param
 ; Only the named account may obtain a certificate from this CA
 example.com. IN CAA 0 issue "acme.example.com; accounturi=https://acme.example.com/acme/account/42"
 ```
+
+### Duplicate parameter handling
+
+Per RFC 8657 §3, a CAA record containing more than one `accounturi` or more than one `validationmethods` parameter is malformed. Akāmu skips such records during evaluation — they are treated as non-authorizing rather than producing an error, so issuance proceeds only if another record in the set is valid.
 
 ---
 
@@ -502,7 +506,11 @@ When placing a renewal order for a certificate that is being replaced, include t
 }
 ```
 
-Akāmu validates that the predecessor cert belongs to the same account, marks it as replaced in the database at finalization, and returns an HTTP 409 (`alreadyReplaced`) if a replacement order has already been finalized.
+Akāmu validates:
+
+1. The predecessor cert belongs to the same account.
+2. The new order's identifiers have at least one overlap with the predecessor's identifiers (RFC 9773 §5 MUST).
+3. The predecessor has not already been replaced — returns HTTP 409 (`alreadyReplaced`) if a replacement order has already been finalized.
 
 ### Configuration
 
@@ -553,6 +561,8 @@ Only set this when the Akāmu server process can make outbound Tor connections t
 4. Akāmu:
    - Extracts the 32-byte Ed25519 public key from the `.onion` address.
    - Verifies the `cabf-onion-csr-nonce` extension contains the correct key authorization.
+   - Verifies the `applicantSigningNonce` extension (OID `2.23.140.42`) is present and matches the server-issued nonce.
+   - Enforces a 30-day maximum age on the nonce (RFC 9799 §5.1).
    - Verifies the CSR signature using the extracted hidden-service public key.
    - If all checks pass, marks the authorization as valid.
 
@@ -565,6 +575,19 @@ bbcweb3hytmzhn5d532owbu6oqadra5z3ar726vq5kgwwn6aucdccrad.onion
 ```
 
 Version 2 addresses (16-character label) are rejected per RFC 9799 §2.
+
+### In-band .onion CAA (RFC 9799 §6)
+
+RFC 9799 §6 defines an optional mechanism for checking CAA records embedded in the Hidden Service Descriptor. The directory metadata field `inBandOnionCAARequired` advertises whether the CA enforces this check.
+
+```toml
+[server]
+in_band_onion_caa = true
+```
+
+When `in_band_onion_caa = true`, the directory `meta` includes `"inBandOnionCAARequired": true`. If a `.onion` identifier fails the in-band CAA check, the server returns `urn:ietf:params:acme:error:onionCAARequired` (HTTP 403).
+
+> **Limitation:** Akāmu advertises the `inBandOnionCAARequired` metadata and returns the `onionCAARequired` error type, but does not yet parse Hidden Service Descriptors to extract embedded CAA records. The HS descriptor CAA parsing is a planned addition.
 
 ---
 
@@ -702,12 +725,13 @@ As of 2025-03-15, CAs are required to validate domain control from multiple netw
 ```json
 {
   "type":   "urn:ietf:params:acme:error:malformed",
+  "title":  "Malformed request",
   "detail": "JWS url mismatch: got '...', expected '...'",
   "status": 400
 }
 ```
 
-All ACME-specific error URNs are defined in RFC 8555 §6.7 and its extensions.
+Every response includes the `title` field with a human-readable summary of the error type, as recommended by RFC 7807 §3.1. All ACME-specific error URNs are defined in RFC 8555 §6.7 and its extensions.
 
 ---
 
@@ -749,6 +773,8 @@ Optional extensions:
 ### Validation
 
 Akāmu queries the `_validation-persist.<domain>` TXT record, verifies the issuer domain matches one of the configured `dns_persist_issuer_domains`, and checks that the `accounturi` matches the requesting ACME account URL. If both match, the authorization is marked valid.
+
+IP address identifiers are rejected upfront — `dns-persist-01` is a DNS-based mechanism and cannot validate IP addresses.
 
 ---
 
@@ -936,10 +962,9 @@ Composite ML-DSA schemes also appear in the TLS `CertificateVerify` message when
 
 ### Stability warning
 
-All OID sub-arcs (37–54) and all `SignatureScheme` code points (`0x090x`) are provisional pending IANA allocation. They may change as the drafts advance toward RFC publication. Before deploying to production, verify the current draft version against the values listed above.
+All OID sub-arcs (37–54) and all `SignatureScheme` code points (`0x090x`) are TBD pending IANA allocation. The `0x0901`–`0x090C` values used in the implementation are internally-assigned provisionals that do **not** match any published draft version. They **will** change when IANA publishes final allocations. Additionally, `MLDSA65-ECDSA-P256-SHA512` (`0x0905`) is a valid LAMPS composite algorithm (sub-arc 46) but is not mapped in `draft-reddy-tls-composite-mldsa` at the ML-DSA-65 level — the TLS draft only maps `mldsa65_ecdsa_secp384r1_sha384`. The P-256 variant may need removal from the TLS scheme list if it is not added in a future draft revision.
 
----
-
+Before deploying to production, verify the current draft version against the values listed above.
 
 ---
 
