@@ -222,7 +222,7 @@ pub async fn new_order(
                     )));
                 }
             }
-            "TNAuthList" | "EnhancedJWTClaimConstraints" => {
+            "TNAuthList" | "JWTClaimConstraints" | "EnhancedJWTClaimConstraints" => {
                 if !state.config.tkauth.as_ref().is_some_and(|t| t.enabled) {
                     return Err(AcmeError::UnsupportedIdentifier(id.r#type.clone()));
                 }
@@ -269,6 +269,27 @@ pub async fn new_order(
         }
         if pred.replaced_by.is_some() {
             return Err(AcmeError::CertAlreadyReplaced);
+        }
+        // RFC 9773 §5: the server SHOULD verify that the identifiers in the new
+        // order overlap with those of the predecessor certificate.
+        let pred_order = db::orders::get_by_id(&state.db_ro, &pred.order_id).await?;
+        if let Some(ref po) = pred_order {
+            if let Ok(pred_ids) = serde_json::from_str::<Vec<serde_json::Value>>(&po.identifiers) {
+                let pred_set: std::collections::HashSet<(&str, &str)> = pred_ids
+                    .iter()
+                    .filter_map(|v| Some((v["type"].as_str()?, v["value"].as_str()?)))
+                    .collect();
+                let has_overlap = payload
+                    .identifiers
+                    .iter()
+                    .any(|id| pred_set.contains(&(id.r#type.as_str(), id.value.as_str())));
+                if !has_overlap {
+                    return Err(AcmeError::BadRequest(
+                        "replaces: new order identifiers do not overlap with predecessor certificate"
+                            .into(),
+                    ));
+                }
+            }
         }
         Some(cert_id.clone())
     } else {
@@ -394,8 +415,10 @@ pub async fn new_order(
     let expiry = now + state.config.server.order_expiry_secs as i64;
     let authz_expiry = now + state.config.server.authz_expiry_secs as i64;
 
-    // Delegation orders start in "ready" — no challenges to complete.
-    let initial_status = if delegation_id.is_some() {
+    // Status is determined after the authz loop — if all identifiers are
+    // covered by existing pre-authorizations (or this is a delegation order),
+    // the order starts in "ready" and skips the challenge phase.
+    let mut initial_status = if delegation_id.is_some() {
         "ready"
     } else {
         "pending"
@@ -431,7 +454,6 @@ pub async fn new_order(
     } else {
         &[]
     } {
-        let authz_id = uuid::Uuid::new_v4().to_string();
         // When ancestorDomain is set, issue the authz against the ancestor domain
         // and mark it subdomainAuthAllowed; the proof is for the ancestor, not
         // the exact subdomain.
@@ -455,6 +477,29 @@ pub async fn new_order(
                  got: {authz_value}"
             )));
         }
+
+        // RFC 9444 §4.3: reuse an existing valid subdomain pre-authorization
+        // for an ancestor domain instead of creating a new authorization.
+        if authz_type == "dns"
+            && id.ancestor_domain.is_none()
+            && !is_onion_domain(authz_value)
+            && state.config.server.allow_subdomain_auth
+        {
+            if let Some(ancestor_authz) = db::authz::find_valid_subdomain_ancestor(
+                &state.db_ro,
+                &account_id,
+                authz_value,
+                &ca_id.0,
+                now,
+            )
+            .await?
+            {
+                authz_urls.push(format!("{pfx}/authz/{}", ancestor_authz.id));
+                continue;
+            }
+        }
+
+        let authz_id = uuid::Uuid::new_v4().to_string();
 
         let identifier_json =
             serde_json::to_string(&json!({"type": authz_type, "value": authz_value}))
@@ -514,6 +559,12 @@ pub async fn new_order(
             challenges,
             token,
         });
+    }
+
+    // RFC 9444 §4.3: if all identifiers were satisfied by existing pre-auth
+    // (no new authz plans needed), the order starts in "ready".
+    if authz_plans.is_empty() && !authz_urls.is_empty() && initial_status == "pending" {
+        initial_status = "ready";
     }
 
     // RFC 8555 §7.1.3: persist notBefore/notAfter from the request so the CA

@@ -636,7 +636,7 @@ async fn test_new_order_with_replaces_field() {
         &nonce,
         &format!("{base_url}/acme/new-order"),
         Some(json!({
-            "identifiers": [{"type": "dns", "value": "ari-rpl2.example"}],
+            "identifiers": [{"type": "dns", "value": "ari-rpl.example"}],
             "replaces": cert_id,
         })),
     );
@@ -687,7 +687,7 @@ async fn test_finalize_marks_predecessor_replaced() {
         &nonce,
         &format!("{base_url}/acme/new-order"),
         Some(json!({
-            "identifiers": [{"type": "dns", "value": "ari-pred2.example"}],
+            "identifiers": [{"type": "dns", "value": "ari-pred.example"}],
             "replaces": cert_id,
         })),
     );
@@ -703,7 +703,7 @@ async fn test_finalize_marks_predecessor_replaced() {
 
     mark_order_ready(&db, &order_id).await;
 
-    let csr_b64 = URL_SAFE_NO_PAD.encode(make_csr_der("ari-pred2.example"));
+    let csr_b64 = URL_SAFE_NO_PAD.encode(make_csr_der("ari-pred.example"));
     let finalize_url = format!("{base_url}/acme/order/{order_id}/finalize");
     let jws = key.jws_with_kid(
         &account_url,
