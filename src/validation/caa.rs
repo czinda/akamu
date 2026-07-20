@@ -194,6 +194,18 @@ fn evaluate_caa_record_set(
 ) -> Result<(), AcmeError> {
     use hickory_resolver::proto::rr::rdata::caa::Value;
 
+    // RFC 8659 §4.5: reject issuance if ANY record in the set has an unknown
+    // property tag with the critical flag (issuer-critical bit) set.
+    for caa in records {
+        let tag = caa.tag();
+        if !tag.is_issue() && !tag.is_issuewild() && !tag.is_iodef() && caa.issuer_critical() {
+            return Err(AcmeError::Caa(format!(
+                "CAA record for '{domain}' contains unknown property tag '{}' with critical flag set",
+                tag.as_str()
+            )));
+        }
+    }
+
     // RFC 8659 §4: for wildcards, if `issuewild` records are present in the set,
     // use them. If absent, fall back to `issue` records.
     let relevant: Vec<_> = if is_wildcard {
@@ -243,6 +255,26 @@ fn evaluate_caa_record_set(
                 .any(|id| id.trim_end_matches('.').to_ascii_lowercase() == tag_name);
 
             if !identity_match {
+                continue;
+            }
+
+            // RFC 8657 §3/§4: a record with duplicate validationmethods or
+            // accounturi parameters MUST be treated as unsatisfied.
+            let vm_count = key_values
+                .iter()
+                .filter(|kv| kv.key() == "validationmethods")
+                .count();
+            let au_count = key_values
+                .iter()
+                .filter(|kv| kv.key() == "accounturi")
+                .count();
+            if vm_count > 1 || au_count > 1 {
+                tracing::debug!(
+                    domain,
+                    validationmethods = vm_count,
+                    accounturi = au_count,
+                    "caa: duplicate validationmethods or accounturi parameters; treating record as unsatisfied"
+                );
                 continue;
             }
 
@@ -805,6 +837,127 @@ mod tests {
         assert!(
             result.is_ok(),
             "matching accounturi should return Ok: {result:?}"
+        );
+    }
+
+    /// RFC 8659 §4.5: unknown property tag with critical flag set → Err(Caa).
+    #[tokio::test]
+    async fn unknown_critical_tag_returns_err() {
+        // flags=0x80 sets the issuer-critical bit for an unknown tag "contactphone".
+        let port = start_mock_dns(vec![Box::new(|q: &[u8]| {
+            build_caa_dns_response(q, 0x80, "contactphone", "+1-555-0199")
+        })])
+        .await;
+        let resolver = local_resolver(port);
+        let result = check_caa_with_resolver(
+            CaaParams {
+                domain: "example.com",
+                ca_identities: &["ca.example.com".to_string()],
+                is_wildcard: false,
+                challenge_type: "http-01",
+                account_url: None,
+                validate_dnssec: false,
+                dot_server_name: None,
+            },
+            resolver,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(AcmeError::Caa(ref msg)) if msg.contains("critical flag")),
+            "unknown critical tag should return Err(Caa): {result:?}"
+        );
+    }
+
+    /// RFC 8659 §4.5: unknown property tag WITHOUT critical flag → does not block.
+    #[tokio::test]
+    async fn unknown_non_critical_tag_returns_ok() {
+        // flags=0x00 — no critical bit.  Only non-issue/issuewild tags present, so
+        // the record set is unconstrained and issuance is allowed.
+        let port = start_mock_dns(vec![Box::new(|q: &[u8]| {
+            build_caa_dns_response(q, 0x00, "contactphone", "+1-555-0199")
+        })])
+        .await;
+        let resolver = local_resolver(port);
+        let result = check_caa_with_resolver(
+            CaaParams {
+                domain: "example.com",
+                ca_identities: &["ca.example.com".to_string()],
+                is_wildcard: false,
+                challenge_type: "http-01",
+                account_url: None,
+                validate_dnssec: false,
+                dot_server_name: None,
+            },
+            resolver,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "unknown non-critical tag should not block issuance: {result:?}"
+        );
+    }
+
+    /// RFC 8657 §3: duplicate `validationmethods` parameters → record treated as unsatisfied.
+    #[tokio::test]
+    async fn duplicate_validationmethods_returns_err() {
+        let port = start_mock_dns(vec![Box::new(|q: &[u8]| {
+            build_caa_dns_response(
+                q,
+                0,
+                "issue",
+                "ca.example.com; validationmethods=http-01; validationmethods=dns-01",
+            )
+        })])
+        .await;
+        let resolver = local_resolver(port);
+        let result = check_caa_with_resolver(
+            CaaParams {
+                domain: "example.com",
+                ca_identities: &["ca.example.com".to_string()],
+                is_wildcard: false,
+                challenge_type: "http-01",
+                account_url: None,
+                validate_dnssec: false,
+                dot_server_name: None,
+            },
+            resolver,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(AcmeError::Caa(_))),
+            "duplicate validationmethods should be treated as unsatisfied: {result:?}"
+        );
+    }
+
+    /// RFC 8657 §4: duplicate `accounturi` parameters → record treated as unsatisfied.
+    #[tokio::test]
+    async fn duplicate_accounturi_returns_err() {
+        let port = start_mock_dns(vec![Box::new(|q: &[u8]| {
+            build_caa_dns_response(
+                q,
+                0,
+                "issue",
+                "ca.example.com; accounturi=https://acme.example.com/acme/account/42; accounturi=https://acme.example.com/acme/account/99",
+            )
+        })])
+        .await;
+        let resolver = local_resolver(port);
+        let result = check_caa_with_resolver(
+            CaaParams {
+                domain: "example.com",
+                ca_identities: &["ca.example.com".to_string()],
+                is_wildcard: false,
+                challenge_type: "http-01",
+                account_url: Some("https://acme.example.com/acme/account/42"),
+                validate_dnssec: false,
+                dot_server_name: None,
+            },
+            resolver,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(AcmeError::Caa(_))),
+            "duplicate accounturi should be treated as unsatisfied: {result:?}"
         );
     }
 
