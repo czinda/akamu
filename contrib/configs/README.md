@@ -13,7 +13,8 @@ at the repository root.
 
 | File | Scenario | Key options |
 |------|----------|-------------|
-| [minimal.toml](minimal.toml) | Quick-start, bare minimum | SQLite, auto-generated CA |
+| [quickstart.toml](quickstart.toml) | **Recommended first-time setup** | TLS, admin, WebUI — or use `akamu init` |
+| [minimal.toml](minimal.toml) | Bare minimum (no TLS, no admin) | SQLite, auto-generated CA |
 | [development.toml](development.toml) | Local integration testing | Private IPs allowed, DNSSEC off, short validity |
 | [production-postgres.toml](production-postgres.toml) | Hardened public CA | PostgreSQL, encrypted key, validity cap, CAA |
 | [unix-socket.toml](unix-socket.toml) | Unix domain socket behind a reverse proxy | `listen_addr = "unix:/…"`, no `[tls]` |

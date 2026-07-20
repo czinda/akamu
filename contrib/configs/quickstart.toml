@@ -1,0 +1,43 @@
+# quickstart.toml — Recommended starting point for first-time users.
+#
+# Generate a personalized copy with:
+#   akamu init --base-url https://your-host:port --data-dir /your/data/dir
+#
+# Or copy this file to config.toml and replace placeholders manually:
+#   {base_url}     → your server URL (e.g. https://acme.lab:9443)
+#   {port}         → port from the URL (e.g. 9443)
+#   {server_name}  → hostname from the URL (e.g. acme.lab)
+#   {data_dir}     → absolute path for data storage (e.g. /home/alice/.local/share/akamu)
+#
+# Everything auto-generates on first run: CA, TLS cert, admin credentials.
+#   WebUI:    {base_url}/ui/  (import admin.p12 into your browser)
+#   akamuctl: akamuctl --cert {data_dir}/admin.p12 operator list
+#
+# Full reference: config.toml.example
+
+listen_addr = "0.0.0.0:{port}"
+base_url    = "{base_url}"
+
+[database]
+url = "sqlite://{data_dir}/acme.db"
+
+[ca]
+key_file  = "{data_dir}/ca.key.pem"
+cert_file = "{data_dir}/ca.cert.pem"
+
+[tls]
+enabled     = true
+server_name = "{server_name}"
+
+[tls.client_auth]
+required = false
+
+[admin]
+bootstrap_operator_pkcs12_file = "{data_dir}/admin.p12"
+
+[server]
+# DNSSEC validation requires a DNSSEC-aware resolver.  Set to true for
+# production (required by CA/B Forum BR since 2026-03-15).
+validate_dnssec = false
+
+[server.webui]
