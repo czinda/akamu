@@ -550,12 +550,9 @@ pub fn issue_with_params(args: IssueWithParamsArgs<'_>) -> Result<IssuedCert, Ac
                 .spki_der()
                 .to_vec();
             let hasher = default_key_id_hasher();
-            let aki = encode_authority_key_identifier(
-                &spki,
-                KeyIdMethod::Rfc7093Method1Sha256,
-                &hasher,
-            )
-            .ok_or_else(|| AcmeError::Builder("AKI encode".into()))?;
+            let aki =
+                encode_authority_key_identifier(&spki, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
+                    .ok_or_else(|| AcmeError::Builder("AKI encode".into()))?;
             let val = crate::state::CaCachedDer {
                 name_der: name,
                 spki_der: spki,
@@ -702,7 +699,7 @@ pub fn issue_with_params(args: IssueWithParamsArgs<'_>) -> Result<IssuedCert, Ac
     let signer = ca_key.as_signer(&params.hash_alg);
 
     let mut builder = CertificateBuilder::new()
-        .issuer_name(&ca_name_der)
+        .issuer_name(ca_name_der)
         .subject_name(&csr.subject_der)
         .public_key_der(&csr.spki_der)
         .serial_number(serial)
@@ -719,7 +716,7 @@ pub fn issue_with_params(args: IssueWithParamsArgs<'_>) -> Result<IssuedCert, Ac
 
     builder = builder
         .add_extension_oid(oids::SUBJECT_KEY_IDENTIFIER, false, &ski_der)
-        .add_extension_oid(oids::AUTHORITY_KEY_IDENTIFIER, false, &aki_der);
+        .add_extension_oid(oids::AUTHORITY_KEY_IDENTIFIER, false, aki_der);
 
     if san_has_entries {
         let san_der = san_builder
@@ -1136,28 +1133,28 @@ fn lint_issued_cert(
     }
 }
 
-/// Apply an [`ExtPresence`] override to an [`ExtensionValidator`] field.
+/// Apply an [`ExtPresence`] override to an [`ExtensionValidator`] field,
+/// preserving any inner content validator already attached.
 fn apply_ext_presence<B: synta_x509_verification::ops::CryptoOps>(
     validator: &mut ExtensionValidator<'_, B>,
     presence: ExtPresence,
 ) {
-    match presence {
-        ExtPresence::Required => {
-            *validator = ExtensionValidator::Present {
-                criticality: Criticality::Agnostic,
-                validator: None,
-            };
-        }
-        ExtPresence::Optional => {
-            *validator = ExtensionValidator::MaybePresent {
-                criticality: Criticality::Agnostic,
-                validator: None,
-            };
-        }
-        ExtPresence::Absent => {
-            *validator = ExtensionValidator::NotPresent;
-        }
-    }
+    let inner = match std::mem::replace(validator, ExtensionValidator::NotPresent) {
+        ExtensionValidator::Present { validator: v, .. }
+        | ExtensionValidator::MaybePresent { validator: v, .. } => v,
+        ExtensionValidator::NotPresent => None,
+    };
+    *validator = match presence {
+        ExtPresence::Required => ExtensionValidator::Present {
+            criticality: Criticality::Agnostic,
+            validator: inner,
+        },
+        ExtPresence::Optional => ExtensionValidator::MaybePresent {
+            criticality: Criticality::Agnostic,
+            validator: inner,
+        },
+        ExtPresence::Absent => ExtensionValidator::NotPresent,
+    };
 }
 
 /// Output of `issue_ca_cert`.
