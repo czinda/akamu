@@ -225,45 +225,6 @@ pub(super) fn default_account_scope() -> String {
     "server".to_owned()
 }
 
-/// Serde deserialiser that accepts either a bare string or an array of strings.
-///
-/// Used for `dns_persist_issuer_domains` so that operators can write either:
-/// ```toml
-/// dns_persist_issuer_domains = "acme.example.com"
-/// dns_persist_issuer_domains = ["acme.example.com", "acme.example.org"]
-/// ```
-fn deserialize_string_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::de::{self, Visitor};
-    use std::fmt;
-
-    struct StringOrVec;
-
-    impl<'de> Visitor<'de> for StringOrVec {
-        type Value = Vec<String>;
-
-        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("a string or array of strings")
-        }
-
-        fn visit_str<E: de::Error>(self, v: &str) -> Result<Vec<String>, E> {
-            Ok(vec![v.to_owned()])
-        }
-
-        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<String>, A::Error> {
-            let mut out = Vec::new();
-            while let Some(s) = seq.next_element::<String>()? {
-                out.push(s);
-            }
-            Ok(out)
-        }
-    }
-
-    deserializer.deserialize_any(StringOrVec)
-}
-
 fn deserialize_option_string_or_vec<'de, D>(
     deserializer: D,
 ) -> Result<Option<Vec<String>>, D::Error>

@@ -37,6 +37,7 @@ pub fn leaf_cert_der(tls: &crate::config::TlsConfig) -> Result<Vec<u8>, String> 
 /// `tokio_rustls::TlsAcceptor::from`.
 pub fn build_rustls_server_config(
     tls: &crate::config::TlsConfig,
+    fallback_ca_cert_files: &[String],
 ) -> Result<rustls::ServerConfig, String> {
     let certs = loader::load_server_cert_chain(&tls.cert_file)?;
     let key = loader::load_server_private_key(&tls.key_file)?;
@@ -64,8 +65,20 @@ pub fn build_rustls_server_config(
         .map_err(|e| format!("TLS protocol versions: {e}"))?;
 
     let cfg = if let Some(client_auth) = &tls.client_auth {
-        let ca_ders = loader::load_ca_certs(&client_auth.ca_files)?;
-        // Parses trust anchors once via OwnedStore::try_new; returns Err on malformed cert.
+        let mut ca_ders = loader::load_ca_certs(&client_auth.ca_files)?;
+        if ca_ders.is_empty() {
+            ca_ders = loader::load_ca_certs(fallback_ca_cert_files)?;
+            if ca_ders.is_empty() {
+                return Err(
+                    "[tls.client_auth] requires trusted CAs: set ca_files or configure \
+                     a [ca] with a cert_file so the Akamu CA is used as fallback"
+                        .into(),
+                );
+            }
+            tracing::info!(
+                "client_auth.ca_files is empty; using Akamu CA certificate(s) as trust anchor"
+            );
+        }
         let verifier = Arc::new(
             verifier::SyntaClientCertVerifier::new(&ca_ders, client_auth)
                 .map_err(|e| format!("client-auth verifier: {e}"))?,

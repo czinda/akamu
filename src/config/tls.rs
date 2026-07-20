@@ -36,6 +36,8 @@ pub struct ClientAuthConfig {
     #[serde(default)]
     pub required: bool,
     /// PEM files containing trusted root CA certificates for client auth.
+    /// When empty, the Akamu CA certificate(s) are used as fallback.
+    #[serde(default)]
     pub ca_files: Vec<String>,
     /// Validation profile: "webpki" (CAB Forum, default) or "rfc5280".
     #[serde(default = "default_tls_profile")]

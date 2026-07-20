@@ -1170,8 +1170,11 @@ async fn run() -> Result<(), String> {
             .await
             .map_err(|e| format!("server error: {e}"))?;
     } else if config.tls.enabled {
-        let mut server_cfg = akamu::tls::build_rustls_server_config(&config.tls)
-            .map_err(|e| format!("TLS config: {e}"))?;
+        let ca_cert_files: Vec<String> =
+            config.cas.iter().map(|c| c.cert_file.clone()).collect();
+        let mut server_cfg =
+            akamu::tls::build_rustls_server_config(&config.tls, &ca_cert_files)
+                .map_err(|e| format!("TLS config: {e}"))?;
         server_cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_cfg));
 

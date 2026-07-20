@@ -497,7 +497,7 @@ async fn start_tls_server() -> TlsTestServer {
     tls::init::load_or_generate(&config.tls, &ca_state).unwrap();
     tracing::info!("TLS server certificate written: {}", cert_file);
 
-    let mut server_cfg = tls::build_rustls_server_config(&config.tls).unwrap();
+    let mut server_cfg = tls::build_rustls_server_config(&config.tls, &[]).unwrap();
     server_cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let tls_acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_cfg));
     let listener = tokio::net::TcpListener::from_std(listener).unwrap();

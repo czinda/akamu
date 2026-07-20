@@ -43,8 +43,5 @@ pub fn load_ca_certs(ca_files: &[String]) -> Result<Vec<Vec<u8>>, String> {
         }
         all.extend(ders);
     }
-    if all.is_empty() {
-        return Err("client_auth.ca_files must contain at least one CA certificate".into());
-    }
     Ok(all)
 }
