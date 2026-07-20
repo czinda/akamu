@@ -161,7 +161,7 @@ async fn multi_domain_http01_issue() {
     // Build and start the ACME server.
     let base_url = format!("http://127.0.0.1:{akamu_port}");
     let state = build_test_state(dir.path(), &base_url, http01_port).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let listener = TcpListener::from_std(akamu_std_listener).expect("tokio TcpListener from std");
     tokio::spawn(async move {

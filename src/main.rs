@@ -1166,7 +1166,8 @@ async fn run(config_path: &str) -> Result<(), String> {
         .as_ref()
         .and_then(|w| w.static_dir.as_deref())
         .map(std::path::PathBuf::from);
-    let router = routes::build_router(Arc::clone(&state), static_dir.as_deref());
+    let webui_enabled = config.server.webui.is_some();
+    let router = routes::build_router(Arc::clone(&state), static_dir.as_deref(), webui_enabled);
 
     // ── Systemd socket activation (try listenfd before config-based bind) ─────
     let mut listenfd = listenfd::ListenFd::from_env();

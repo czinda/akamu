@@ -274,7 +274,7 @@ async fn spawn_node(params: SpawnParams) -> NodeHandle {
         tokio::spawn(akamu::gossip::gossip_loop::run(Arc::clone(&state)));
     }
 
-    let router: Router = routes::build_router(Arc::clone(&state), None);
+    let router: Router = routes::build_router(Arc::clone(&state), None, false);
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });

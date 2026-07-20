@@ -1,5 +1,7 @@
 //! Axum route assembly and shared request-handling utilities.
 
+mod embedded_ui;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -457,7 +459,11 @@ fn build_admin_router() -> Router<Arc<AppState>> {
 /// When `static_dir` is `Some`, serves the PatternFly SPA from `/ui/*` and
 /// redirects `GET /` to `/ui/`.  Admin routes intentionally bypass `halt_check`
 /// so operators can query status even when the ACME listener is halted.
-pub fn build_router(state: Arc<AppState>, static_dir: Option<&std::path::Path>) -> Router {
+pub fn build_router(
+    state: Arc<AppState>,
+    static_dir: Option<&std::path::Path>,
+    webui_enabled: bool,
+) -> Router {
     let max_body = state.config.server.max_body_bytes;
 
     let mut router = Router::new()
@@ -476,6 +482,22 @@ pub fn build_router(state: Arc<AppState>, static_dir: Option<&std::path::Path>) 
         router = router
             .nest_service("/ui", serve_with_headers)
             .route("/", get(|| async { Redirect::permanent("/ui/") }));
+    } else if webui_enabled {
+        #[cfg(feature = "embed-webui")]
+        {
+            router = router
+                .route("/ui/{*path}", embedded_ui::embedded_ui_service())
+                .route("/ui", embedded_ui::embedded_ui_service())
+                .route("/ui/", embedded_ui::embedded_ui_service())
+                .route("/", get(|| async { Redirect::permanent("/ui/") }));
+        }
+        #[cfg(not(feature = "embed-webui"))]
+        {
+            tracing::error!(
+                "[server.webui] is configured without static_dir but the binary was \
+                 not compiled with the embed-webui feature"
+            );
+        }
     }
 
     router

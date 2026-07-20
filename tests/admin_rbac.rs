@@ -424,7 +424,7 @@ static RBAC_TABLE: &[RbacRow] = &[
 #[tokio::test]
 async fn admin_rbac_table() {
     let (state, _dir) = build_admin_state().await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     // Re-seed helper: some routes (DELETE /admin/session) consume session tokens;
     // re-insert the 4 test tokens before each row so all rows start clean.
@@ -494,7 +494,7 @@ async fn admin_rbac_table() {
 #[tokio::test]
 async fn scoped_ca_operations_sees_own_ca_resource() {
     let (state, _dir) = build_admin_state().await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let req = Request::builder()
         .method(Method::GET)
@@ -516,7 +516,7 @@ async fn scoped_ca_operations_sees_own_ca_resource() {
 #[tokio::test]
 async fn put_operator_ca_id_on_administrator_is_bad_request() {
     let (state, _dir) = build_admin_state().await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let req = Request::builder()
         .method(Method::PUT)
@@ -537,7 +537,7 @@ async fn put_operator_ca_id_on_administrator_is_bad_request() {
 #[tokio::test]
 async fn put_operator_empty_ca_id_on_ca_ra_is_bad_request() {
     let (state, _dir) = build_admin_state().await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let req = Request::builder()
         .method(Method::PUT)
@@ -575,7 +575,7 @@ async fn put_operator_ca_id_on_ca_operations_is_accepted() {
     let ops = db::operators::list(&state.db, 10, 0).await.unwrap();
     let op_id = ops[0].id;
 
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let body = format!(r#"{{"role":"ca_operations","ca_id":"default"}}"#);
     let req = Request::builder()
@@ -602,7 +602,7 @@ async fn put_operator_ca_id_on_ca_operations_is_accepted() {
 #[tokio::test]
 async fn scoped_ca_operations_blocked_from_other_ca_resource() {
     let (state, _dir) = build_admin_state().await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let req = Request::builder()
         .method(Method::GET)

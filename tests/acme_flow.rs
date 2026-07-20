@@ -487,7 +487,7 @@ async fn full_acme_flow() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
     let db = state.db.clone();
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     // ── Step 1: GET /acme/directory ───────────────────────────────────────────
     let (status, dir, _) = get(&router, "/acme/directory").await;
@@ -603,7 +603,7 @@ async fn setup_account_and_order(
     state: &Arc<AppState>,
     domain: &str,
 ) -> (axum::Router, TestKey, String, Value, String) {
-    let router = routes::build_router(Arc::clone(state), None);
+    let router = routes::build_router(Arc::clone(state), None, false);
     let key = TestKey::generate();
 
     // Account
@@ -755,7 +755,7 @@ async fn test_renewal_info() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
     let db = state.db.clone();
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
     let domain = "ari-test.example";
 
     // Create account
@@ -835,7 +835,7 @@ async fn test_renewal_info_explicit_window() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
     let db = state.db.clone();
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
     let domain = "ari-explicit.example";
 
     // Create account
@@ -919,7 +919,7 @@ async fn test_renewal_info_explicit_window() {
 async fn test_renewal_info_not_found() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     // Well-formed cert_id with correct AKI but no matching serial → 404.
     let unknown = cert_id_from_serial_hex("deadbeefdeadbeef", &state.default_ca().aki_bytes);
@@ -937,7 +937,7 @@ async fn test_renewal_info_not_found() {
 async fn test_key_change() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     // Create account with old key
     let old_key = TestKey::generate();
@@ -977,7 +977,7 @@ async fn issue_cert_for_domain(
     domain: &str,
 ) -> (axum::Router, String) {
     let db = state.db.clone();
-    let router = routes::build_router(Arc::clone(state), None);
+    let router = routes::build_router(Arc::clone(state), None, false);
     let key = TestKey::generate();
 
     let nonce = head_nonce(&router).await;
@@ -1095,7 +1095,7 @@ async fn test_revoke_cert_by_account() {
 async fn test_revoke_cert_not_found() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     // Create account
     let key = TestKey::generate();
@@ -1133,7 +1133,7 @@ async fn test_revoke_cert_not_found() {
 async fn test_update_account_post_as_get() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
@@ -1158,7 +1158,7 @@ async fn test_update_account_post_as_get() {
 async fn test_update_account_deactivate() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
@@ -1187,7 +1187,7 @@ async fn test_update_account_deactivate() {
 async fn test_get_nonce_via_get() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     // GET /acme/new-nonce returns 204 No Content
     let (status, _, headers) = get(&router, "/acme/new-nonce").await;
@@ -1202,7 +1202,7 @@ async fn test_get_nonce_via_get() {
 async fn test_new_account_with_kid_requires_jwk() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     // First create a valid account to get a kid URL.
     let key = TestKey::generate();
@@ -1235,7 +1235,7 @@ async fn test_new_account_with_kid_requires_jwk() {
 async fn test_new_account_returns_existing_when_key_matches() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
@@ -1274,7 +1274,7 @@ async fn test_new_account_returns_existing_when_key_matches() {
 async fn test_new_account_only_return_existing_not_found() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
@@ -1295,7 +1295,7 @@ async fn test_new_account_only_return_existing_not_found() {
 async fn test_update_account_contact() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
@@ -1326,7 +1326,7 @@ async fn test_update_account_contact() {
 async fn test_update_account_kid_mismatch() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
@@ -1360,7 +1360,7 @@ async fn test_update_account_kid_mismatch() {
 async fn test_revoke_cert_success_with_owner_account() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
     let db = state.db.clone();
 
     let key = TestKey::generate();
@@ -1535,7 +1535,7 @@ async fn test_revoke_invalid_reason_code() {
 async fn test_new_order_empty_identifiers() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
@@ -1566,7 +1566,7 @@ async fn test_new_order_empty_identifiers() {
 async fn test_new_order_unsupported_identifier_type() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
@@ -1597,7 +1597,7 @@ async fn test_new_order_unsupported_identifier_type() {
 async fn test_new_order_ip_identifier() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
@@ -1630,7 +1630,7 @@ async fn test_new_order_ip_identifier() {
 async fn test_get_order() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
     let db = state.db.clone();
 
     let key = TestKey::generate();
@@ -1673,7 +1673,7 @@ async fn test_get_order() {
 async fn test_finalize_wrong_account() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
     let db = state.db.clone();
 
     // Create two accounts: owner and attacker.
@@ -1739,7 +1739,7 @@ async fn test_finalize_wrong_account() {
 async fn test_finalize_order_not_ready() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
     let db = state.db.clone();
 
     let key = TestKey::generate();
@@ -1790,7 +1790,7 @@ async fn test_finalize_order_not_ready() {
 async fn test_key_change_no_payload() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
@@ -1818,7 +1818,7 @@ async fn test_key_change_no_payload() {
 async fn test_key_change_inner_uses_kid() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let old_key = TestKey::generate();
     let nonce = head_nonce(&router).await;
@@ -1855,7 +1855,7 @@ async fn test_key_change_inner_uses_kid() {
 async fn test_jws_url_mismatch() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
@@ -1879,7 +1879,7 @@ async fn test_jws_url_mismatch() {
 async fn test_bad_nonce() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let key = TestKey::generate();
     // Use a completely invalid nonce.
@@ -1901,7 +1901,7 @@ async fn test_bad_nonce() {
 async fn test_key_change_wrong_inner_account_url() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let old_key = TestKey::generate();
     let nonce = head_nonce(&router).await;
@@ -1934,7 +1934,7 @@ async fn test_key_change_wrong_inner_account_url() {
 async fn test_key_change_new_key_already_in_use() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     // Create account A with key1.
     let key1 = TestKey::generate();
@@ -1974,7 +1974,7 @@ async fn test_key_change_new_key_already_in_use() {
 async fn test_new_order_deactivated_account() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
@@ -2020,7 +2020,7 @@ async fn test_new_order_deactivated_account() {
 async fn test_get_order_wrong_account() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
     let db = state.db.clone();
 
     // Owner creates an order.
@@ -2301,7 +2301,7 @@ async fn test_directory_with_optional_fields() {
     )
     .node_id(Arc::new("test".to_string()))
     .build();
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
     let (status, dir_body, _) = get(&router, "/acme/directory").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
@@ -2478,7 +2478,7 @@ async fn test_revoke_cert_by_jwk() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
     let db = state.db.clone();
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     // Account key used to create the account and order.
     let account_key = TestKey::generate();
@@ -2695,7 +2695,7 @@ async fn test_finalize_with_mtc_enabled() {
     .node_id(Arc::new("test".to_string()))
     .build();
 
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     // Run a full ACME flow to finalize a cert (triggers MTC log append).
     let key = TestKey::generate();
@@ -2755,7 +2755,7 @@ async fn test_finalize_ip_san() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
     let db = state.db.clone();
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
@@ -2813,7 +2813,7 @@ async fn test_finalize_ip_san() {
 async fn test_new_order_with_deactivated_account() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let key = TestKey::generate();
 
@@ -2958,7 +2958,7 @@ async fn test_finalize_with_aia_and_cdp() {
     .node_id(Arc::new("test".to_string()))
     .build();
 
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;
     let jws = key.jws_with_jwk(
@@ -3015,7 +3015,7 @@ async fn test_finalize_with_aia_and_cdp() {
 async fn test_crl_endpoint_contains_revoked_serial() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
     let db = state.db.clone();
 
     // Issue a certificate via the full ACME flow.
@@ -3214,7 +3214,7 @@ fn build_ocsp_request_der(ca_cert_der: &[u8], serial_bytes: &[u8]) -> Vec<u8> {
 async fn test_ocsp_endpoint_post_and_get() {
     let base_url = "https://acme.test";
     let (state, _tmp) = build_test_state(base_url).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
     let db = state.db.clone();
 
     // Issue a certificate so there is a valid serial in the DB.
@@ -3500,7 +3500,7 @@ async fn test_smime_email_reply_00_full_flow() {
     .node_id(Arc::new("test".to_string()))
     .build();
     let db = state.db.clone();
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     // ── Step 1: create account ─────────────────────────────────────────────────
     let acme_key = TestKey::generate();

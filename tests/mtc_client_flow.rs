@@ -197,7 +197,7 @@ async fn mtc_client_queries_and_verify() {
 
     let base_url = format!("http://127.0.0.1:{akamu_port}");
     let state = build_state(dir.path(), &base_url, http01_port).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let listener = TcpListener::from_std(akamu_std_listener).expect("tokio TcpListener");
     tokio::spawn(async move {

@@ -518,7 +518,7 @@ async fn start_tls_server() -> TlsTestServer {
     .node_id(Arc::new("test".to_string()))
     .build();
 
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     tracing::info!("Binding TLS server on {}", addr);
     let handle = tokio::spawn(async move {

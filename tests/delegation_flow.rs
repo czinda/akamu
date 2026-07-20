@@ -394,8 +394,8 @@ async fn build_delegation_state() -> (
     )))
     .build();
 
-    let acme_router = routes::build_router(Arc::clone(&state), None);
-    let admin_router = routes::build_router(Arc::clone(&state), None);
+    let acme_router = routes::build_router(Arc::clone(&state), None, false);
+    let admin_router = routes::build_router(Arc::clone(&state), None, false);
 
     (state, admin_router, acme_router, admin_token, dir)
 }
@@ -1335,7 +1335,7 @@ async fn delegation_disabled_returns_404() {
     .link_headers(Arc::new(std::collections::HashMap::new()))
     .build();
 
-    let acme = routes::build_router(Arc::clone(&state), None);
+    let acme = routes::build_router(Arc::clone(&state), None, false);
 
     // delegation_enabled = false: POST-as-GET for delegation list must return 404.
     let (status, _, _) = post_acme(

@@ -163,7 +163,7 @@ pub async fn start(
     .node_id(Arc::new("seedgen".to_string()))
     .build();
 
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
     let tokio_listener = tokio::net::TcpListener::from_std(listener).expect("tokio listener");
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
     // Store the JoinHandle so panics inside the server task propagate rather than

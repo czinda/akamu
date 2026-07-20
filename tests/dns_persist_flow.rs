@@ -478,7 +478,7 @@ async fn dns_persist_01_non_wildcard_flow() {
 
     let dns_addr = format!("127.0.0.1:{}", mock_dns.port);
     let (state, _tmp) = build_state(base_url, issuer, &dns_addr).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     // 2. Create ACME account.
     let key = TestKey::generate();
@@ -638,7 +638,7 @@ async fn dns_persist_01_wildcard_flow() {
     let mock_dns = MockDns::start().await;
     let dns_addr = format!("127.0.0.1:{}", mock_dns.port);
     let (state, _tmp) = build_state(base_url, issuer, &dns_addr).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     // Create account.
     let key = TestKey::generate();
@@ -730,7 +730,7 @@ async fn dns_persist_01_wildcard_missing_policy_fails() {
     let mock_dns = MockDns::start().await;
     let dns_addr = format!("127.0.0.1:{}", mock_dns.port);
     let (state, _tmp) = build_state(base_url, issuer, &dns_addr).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let key = TestKey::generate();
     let nonce = head_nonce(&router).await;

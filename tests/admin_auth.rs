@@ -237,7 +237,7 @@ async fn get_stats_bearer(router: &axum::Router, token: &str) -> axum::response:
 #[tokio::test]
 async fn bearer_token_grants_access() {
     let (state, sessions, _dir) = build_state(3600, 20).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     sessions.lock().await.insert(
         "test-bearer-token".to_string(),
@@ -268,7 +268,7 @@ async fn bearer_token_grants_access() {
 #[tokio::test]
 async fn mtls_cert_issues_session_token_usable_as_bearer() {
     let (state, _sessions, _dir) = build_state(3600, 20).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     // Generate a cert and derive its fingerprint.
     let op_key = BackendPrivateKey::generate_ec("P-256").unwrap();
@@ -326,7 +326,7 @@ async fn mtls_cert_issues_session_token_usable_as_bearer() {
 #[tokio::test]
 async fn expired_token_returns_401() {
     let (state, sessions, _dir) = build_state(1, 20).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     // Insert a session whose last_active_at is 2 seconds in the past
     // so it is already beyond the 1-second TTL on the very first lookup.
@@ -357,7 +357,7 @@ async fn expired_token_returns_401() {
 #[tokio::test]
 async fn operator_deactivation_purges_sessions() {
     let (state, sessions, _dir) = build_state(3600, 20).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     // Seed an administrator session for the operator who performs the PATCH.
     sessions.lock().await.insert(
@@ -444,7 +444,7 @@ async fn operator_deactivation_purges_sessions() {
 #[tokio::test]
 async fn audit_event_visible_via_admin_api() {
     let (state, sessions, _dir) = build_state(3600, 20).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     // Seed an auditor session (GET /admin/audit is allowed for auditor role).
     sessions.lock().await.insert(
@@ -522,7 +522,7 @@ async fn audit_event_visible_via_admin_api() {
 async fn create_session_sweeps_expired_entries() {
     // TTL of 1 second; sessions seeded 2 s in the past are already expired.
     let (state, sessions, _dir) = build_state(1, 20).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let stale = Instant::now() - Duration::from_secs(2);
 
@@ -591,7 +591,7 @@ async fn create_session_sweeps_expired_entries() {
 #[tokio::test]
 async fn bearer_lookup_refreshes_last_active_at() {
     let (state, sessions, _dir) = build_state(3600, 20).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let before = Instant::now();
     sessions.lock().await.insert(
@@ -633,7 +633,7 @@ async fn bearer_lookup_refreshes_last_active_at() {
 #[tokio::test]
 async fn login_via_handler_emits_audit_event() {
     let (state, sessions, _dir) = build_state(3600, 20).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     // Seed an auditor session to call GET /admin/audit.
     sessions.lock().await.insert(
@@ -724,7 +724,7 @@ async fn auth_rate_limit_returns_429_after_limit_exceeded() {
 
     // Use a very low rate limit (2 per 5 minutes) so we can trigger it easily.
     let (state, _sessions, _dir) = build_state(3600, 2).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     // A fake source IP that will be tracked by the rate limiter.
     let peer: SocketAddr = SocketAddr::new(Ipv4Addr::new(10, 0, 0, 1).into(), 55000);
@@ -947,7 +947,7 @@ async fn proxy_nginx_trusted_ip_issues_session() {
         &["127.0.0.1/32"],
     )
     .await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let op_key = BackendPrivateKey::generate_ec("P-256").unwrap();
     let cert_der = generate_cert_der(&op_key);
@@ -1006,7 +1006,7 @@ async fn proxy_untrusted_ip_ignores_header() {
         &["10.0.0.0/8"],
     )
     .await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let op_key = BackendPrivateKey::generate_ec("P-256").unwrap();
     let cert_der = generate_cert_der(&op_key);
@@ -1056,7 +1056,7 @@ async fn proxy_apache_raw_pem_issues_session() {
         &["127.0.0.1/32"],
     )
     .await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let op_key = BackendPrivateKey::generate_ec("P-256").unwrap();
     let cert_der = generate_cert_der(&op_key);
@@ -1101,7 +1101,7 @@ async fn proxy_xfcc_cert_issues_session() {
 
     let (state, _sessions, _dir) =
         build_state_with_proxy(akamu::config::ProxyHeaderFormat::Xfcc, &["127.0.0.1/32"]).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let op_key = BackendPrivateKey::generate_ec("P-256").unwrap();
     let cert_der = generate_cert_der(&op_key);
@@ -1148,7 +1148,7 @@ async fn proxy_xfcc_no_cert_key_falls_through() {
 
     let (state, _sessions, _dir) =
         build_state_with_proxy(akamu::config::ProxyHeaderFormat::Xfcc, &["127.0.0.1/32"]).await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let peer: SocketAddr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 55000);
     let mut req = Request::builder()
@@ -1178,7 +1178,7 @@ async fn proxy_malformed_pem_returns_400() {
         &["127.0.0.1/32"],
     )
     .await;
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let encoded = percent_encoding::utf8_percent_encode(
         "not-a-certificate",
@@ -1336,7 +1336,7 @@ async fn proxy_cert_rate_limited() {
     )))
     .build();
 
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
 
     let op_key = BackendPrivateKey::generate_ec("P-256").unwrap();
     let cert_der_bytes = generate_cert_der(&op_key);

@@ -510,7 +510,7 @@ async fn tlog_checkpoint_endpoint_returns_valid_note() {
     let base_url = format!("http://127.0.0.1:{port}");
     let state = build_test_state(dir.path(), &base_url).await;
 
-    let app = routes::build_router(Arc::clone(&state), None);
+    let app = routes::build_router(Arc::clone(&state), None, false);
     let addr: SocketAddr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -551,7 +551,7 @@ async fn tlog_tile_entries_returns_501() {
     let base_url = format!("http://127.0.0.1:{port}");
     let state = build_test_state(dir.path(), &base_url).await;
 
-    let app = routes::build_router(Arc::clone(&state), None);
+    let app = routes::build_router(Arc::clone(&state), None, false);
     let addr: SocketAddr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -572,7 +572,7 @@ async fn tlog_tile_level0_partial_returns_one_hash() {
     let base_url = format!("http://127.0.0.1:{port}");
     let state = build_test_state(dir.path(), &base_url).await;
 
-    let app = routes::build_router(Arc::clone(&state), None);
+    let app = routes::build_router(Arc::clone(&state), None, false);
     let addr: SocketAddr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -616,7 +616,7 @@ async fn tlog_tile_level0_full_returns_404_for_small_log() {
         assert_eq!(size, 1, "fresh log must have 1 null_entry leaf");
     }
 
-    let app = routes::build_router(Arc::clone(&state), None);
+    let app = routes::build_router(Arc::clone(&state), None, false);
     let addr: SocketAddr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -646,7 +646,7 @@ async fn tlog_cosignature_endpoint_structure() {
     let base_url = format!("http://127.0.0.1:{port}");
     let state = build_test_state(dir.path(), &base_url).await;
 
-    let app = routes::build_router(Arc::clone(&state), None);
+    let app = routes::build_router(Arc::clone(&state), None, false);
     let addr: SocketAddr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();

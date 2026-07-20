@@ -19,6 +19,7 @@ backend-mariadb  = ["sqlx/mysql"]
 # Expose test-only helpers (e.g. build_cosigner_client_http) to integration tests.
 # Pass --features test-utils when running `cargo test`.
 test-utils = []
+embed-webui = ["dep:include_dir"]
 
 [dependencies]
 # Async runtime
@@ -144,6 +145,9 @@ zstd = "0.13"
 # HTTP client for outbound gossip pushes and Dogtag REST API (CMS provides
 # auth+confidentiality for gossip; TLS client certs for Dogtag RA auth).
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "cookies"] }
+
+# Compile-time embedding of webui/dist/ for the embed-webui feature
+include_dir = { version = "0.7", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
