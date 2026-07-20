@@ -1,7 +1,15 @@
 //! Hybrid composite ML-DSA TLS 1.3 SignatureScheme code points.
 //!
-//! Source: draft-reddy-tls-composite-mldsa (provisional; code points are TBD
-//! pending IANA allocation).  Verify against the current draft before shipping.
+//! Source: draft-reddy-tls-composite-mldsa-10 (all code points are TBD, pending
+//! IANA allocation).  The 0x0901–0x090C values below are internally-assigned
+//! provisionals that do NOT match any draft version.  Update these when IANA
+//! publishes final allocations.
+//!
+//! NOTE: `MLDSA65_ECDSA_P256_SHA512` is a valid LAMPS composite algorithm
+//! (draft-ietf-lamps-pq-composite-sigs sub-arc 46) but the TLS draft only maps
+//! `mldsa65_ecdsa_secp384r1_sha384` at the ML-DSA-65 level.  The P-256 variant
+//! may need removal from the TLS scheme list if it is not added in a future
+//! draft revision.
 //!
 //! These are advertised via `SignatureScheme::Unknown(u16)` in rustls, which
 //! allows arbitrary 16-bit code points.  The corresponding
