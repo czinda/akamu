@@ -56,6 +56,8 @@ struct ProfilePayload {
     ms_upn_san_template: Option<String>,
     #[serde(default)]
     inject_account_kpn: bool,
+    #[serde(default)]
+    linter: Option<String>,
 }
 
 fn default_profile_validity_days() -> u32 {
@@ -94,7 +96,7 @@ impl ProfilePayload {
             inject_account_kpn: self.inject_account_kpn,
             trust_jwks_urls: vec![],
             dogtag_profile_id: None,
-            linter: None,
+            linter: self.linter,
         }
     }
 }
