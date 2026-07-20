@@ -289,10 +289,7 @@ pub fn sign_checkpoint_as_operator(
         // C2SP tlog-checkpoint: "Logs SHOULD use ML-DSA-44 cosignatures to
         // sign the checkpoint."  Uses the cosigned_message format (type 0x06)
         // with the operator's key_name as the signer identity.
-        let timestamp_unix = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let timestamp_unix = crate::util::unix_now() as u64;
 
         let msg = build_ml_dsa_cosigned_message(
             key_name,
