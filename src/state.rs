@@ -58,6 +58,7 @@ use crate::profiles::ProfileRegistry;
 pub struct NonceBucket {
     inner: Mutex<HashMap<String, i64>>,
     pub node_prefix: String,
+    prefix_dot: String,
 }
 
 impl Default for NonceBucket {
@@ -72,14 +73,21 @@ impl NonceBucket {
         Self {
             inner: Mutex::new(HashMap::new()),
             node_prefix: String::new(),
+            prefix_dot: String::new(),
         }
     }
 
     /// Create a bucket with a node-specific prefix for multi-node deployments.
     pub fn with_prefix(prefix: String) -> Self {
+        let prefix_dot = if prefix.is_empty() {
+            String::new()
+        } else {
+            format!("{prefix}.")
+        };
         Self {
             inner: Mutex::new(HashMap::new()),
             node_prefix: prefix,
+            prefix_dot,
         }
     }
 
@@ -87,11 +95,10 @@ impl NonceBucket {
     ///
     /// When `node_prefix` is empty (single-node mode) every nonce is accepted.
     pub fn has_local_prefix(&self, nonce: &str) -> bool {
-        if self.node_prefix.is_empty() {
+        if self.prefix_dot.is_empty() {
             return true;
         }
-        let expected = format!("{}.", self.node_prefix);
-        nonce.starts_with(expected.as_str())
+        nonce.starts_with(&self.prefix_dot)
     }
 
     /// Store a new nonce with its creation timestamp.
