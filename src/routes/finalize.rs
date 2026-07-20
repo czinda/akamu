@@ -156,6 +156,25 @@ pub async fn finalize_order(
     // Validate CSR (after auth to avoid timing oracle on CSR structure).
     let validated_csr = ca::csr::validate_csr(&csr_der, &allowed)?;
 
+    // RFC 9115 §4: for delegation orders, validate the CSR against the
+    // delegation's CSR template.
+    if let Some(ref delegation_id) = order.delegation_id {
+        let delegation = db::delegations::get_by_id(&state.db_ro, delegation_id)
+            .await?
+            .ok_or_else(|| {
+                AcmeError::Internal(format!(
+                    "order references unknown delegation '{delegation_id}'"
+                ))
+            })?;
+        let template: ca::csr_template::CsrTemplate =
+            serde_json::from_str(&delegation.csr_template).map_err(|e| {
+                AcmeError::Internal(format!(
+                    "corrupt csr_template in delegation {delegation_id}: {e}"
+                ))
+            })?;
+        ca::csr_template::validate_csr_against_template(&csr_der, &template)?;
+    }
+
     // CAA check (RFC 8659 + RFC 8657): only when caa_identities is configured.
     // Per-CA identities take precedence; fall back to server-level when the CA
     // does not override them (matching the behaviour in directory.rs).
@@ -177,6 +196,22 @@ pub async fn finalize_order(
             if let Ok(id_obj) = serde_json::from_str::<serde_json::Value>(&authz.identifier) {
                 if let (Some(t), Some(v)) = (id_obj["type"].as_str(), id_obj["value"].as_str()) {
                     identifier_to_authz.insert((t.to_string(), v.to_string()), authz.id.clone());
+                    // RFC 9444 §5: an ancestor authz with subdomainAuthAllowed
+                    // covers all descendant subdomains; record the mapping for
+                    // each order identifier that is a subdomain of this authz.
+                    if authz.subdomain_auth_allowed != 0 && t == "dns" {
+                        for (id_type, id_value) in &allowed {
+                            if *id_type == "dns" && *id_value != v {
+                                let suffix = format!(".{v}");
+                                let bare = id_value.strip_prefix("*.").unwrap_or(id_value);
+                                if bare.ends_with(&suffix) {
+                                    identifier_to_authz
+                                        .entry((id_type.to_string(), id_value.to_string()))
+                                        .or_insert_with(|| authz.id.clone());
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

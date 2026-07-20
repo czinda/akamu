@@ -200,6 +200,52 @@ pub async fn find_valid_by_account_and_identifier(
     Ok(row)
 }
 
+/// Find a valid, unexpired authorization for an ancestor domain of `domain`
+/// with `subdomain_auth_allowed = 1` (RFC 9444 §4.3).
+///
+/// Iterates through ancestor labels (`foo.example.com` → `example.com`)
+/// and returns the first matching valid authorization, or `None`.
+pub async fn find_valid_subdomain_ancestor(
+    pool: &sqlx::AnyPool,
+    account_id: &str,
+    domain: &str,
+    ca_id: &str,
+    now: i64,
+) -> Result<Option<AuthorizationRow>, AcmeError> {
+    let mut remaining = domain;
+    while let Some(dot_pos) = remaining.find('.') {
+        remaining = &remaining[dot_pos + 1..];
+        if !remaining.contains('.') {
+            break;
+        }
+        let identifier_json =
+            serde_json::to_string(&serde_json::json!({"type": "dns", "value": remaining}))
+                .map_err(|e| AcmeError::Internal(format!("serialize ancestor identifier: {e}")))?;
+        let row = super::query_as::<AuthorizationRow>(
+            "SELECT id, order_id, account_id, status, identifier, expires, wildcard,
+                    subdomain_auth_allowed, created, updated, ca_id
+             FROM authorizations
+             WHERE account_id = ?
+               AND identifier = ?
+               AND subdomain_auth_allowed = 1
+               AND (ca_id = ? OR ca_id = 'default' OR ca_id = '')
+               AND status = 'valid'
+               AND (expires IS NULL OR expires > ?)
+             LIMIT 1",
+        )
+        .bind(account_id)
+        .bind(&identifier_json)
+        .bind(ca_id)
+        .bind(now)
+        .fetch_optional(pool)
+        .await?;
+        if row.is_some() {
+            return Ok(row);
+        }
+    }
+    Ok(None)
+}
+
 pub async fn update_status(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
