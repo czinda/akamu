@@ -389,7 +389,7 @@ pub fn issue_certificate(params: IssueCertParams<'_>) -> Result<IssuedCert, Acme
         .map_err(|e| AcmeError::Builder(format!("sign: {e}")))?;
 
     // Pre-issuance policy lint — STAR renewal always uses the built-in WebPKI profile.
-    lint_issued_cert(&cert_der, ca_cert_der, now, &WEBPKI_PROFILE)?;
+    lint_issued_cert(&cert_der, ca_cert_der, now, &WEBPKI_PROFILE, None)?;
 
     // ── Build PEM bundle: leaf + CA ────────────────────────────────────────────
     // der_to_pem returns Vec<u8> (ASCII PEM bytes); concatenate and convert.
@@ -536,52 +536,37 @@ pub fn issue_with_params(args: IssueWithParamsArgs<'_>) -> Result<IssuedCert, Ac
         extra_dns_names,
         linter,
     } = args;
-    // ── Extract CA name, SPKI DER, AKI DER (cached per CA cert) ────────
-    struct CaCachedDer {
-        cert_der: Vec<u8>,
-        name_der: Vec<u8>,
-        spki_der: Vec<u8>,
-        aki_der: Vec<u8>,
-    }
-
-    let (ca_name_der, _ca_spki_der, ca_aki_der) = {
-        use std::sync::Mutex;
-        static CACHE: Mutex<Option<CaCachedDer>> = Mutex::new(None);
-        let mut guard = CACHE.lock().unwrap_or_else(|poisoned| {
-            tracing::warn!("CA cache mutex was poisoned; recovering");
-            poisoned.into_inner()
-        });
-        match &*guard {
-            Some(c) if c.cert_der == ca.cert_der => {
-                (c.name_der.clone(), c.spki_der.clone(), c.aki_der.clone())
-            }
-            _ => {
-                let name = extract_ca_subject_der(&ca.cert_der)?;
-                let ca_key = ca.local_key().ok_or_else(|| {
-                    AcmeError::Internal("issue_with_params called on non-local CA".into())
-                })?;
-                let spki = ca_key
-                    .public_key()
-                    .map_err(|e| AcmeError::Crypto(format!("CA public key: {e}")))?
-                    .spki_der()
-                    .to_vec();
-                let hasher = default_key_id_hasher();
-                let aki = encode_authority_key_identifier(
-                    &spki,
-                    KeyIdMethod::Rfc7093Method1Sha256,
-                    &hasher,
-                )
-                .ok_or_else(|| AcmeError::Builder("AKI encode".into()))?;
-                *guard = Some(CaCachedDer {
-                    cert_der: ca.cert_der.clone(),
-                    name_der: name.clone(),
-                    spki_der: spki.clone(),
-                    aki_der: aki.clone(),
-                });
-                (name, spki, aki)
-            }
+    // ── Extract CA name, SPKI DER, AKI DER (cached per CA in OnceLock) ─
+    let cached = match ca.cached_der.get() {
+        Some(c) => c,
+        None => {
+            let name = extract_ca_subject_der(&ca.cert_der)?;
+            let ca_key = ca.local_key().ok_or_else(|| {
+                AcmeError::Internal("issue_with_params called on non-local CA".into())
+            })?;
+            let spki = ca_key
+                .public_key()
+                .map_err(|e| AcmeError::Crypto(format!("CA public key: {e}")))?
+                .spki_der()
+                .to_vec();
+            let hasher = default_key_id_hasher();
+            let aki = encode_authority_key_identifier(
+                &spki,
+                KeyIdMethod::Rfc7093Method1Sha256,
+                &hasher,
+            )
+            .ok_or_else(|| AcmeError::Builder("AKI encode".into()))?;
+            let val = crate::state::CaCachedDer {
+                name_der: name,
+                spki_der: spki,
+                aki_der: aki,
+            };
+            let _ = ca.cached_der.set(val);
+            ca.cached_der.get().unwrap()
         }
     };
+    let (ca_name_der, _ca_spki_der, ca_aki_der) =
+        (&cached.name_der, &cached.spki_der, &cached.aki_der);
 
     // ── Random serial ────────────────────────────────────────────────────────
     let mut serial_bytes = [0u8; 16];
@@ -771,7 +756,7 @@ pub fn issue_with_params(args: IssueWithParamsArgs<'_>) -> Result<IssuedCert, Ac
         .map_err(|e| AcmeError::Builder(format!("sign: {e}")))?;
 
     // Pre-issuance policy lint using the resolved linter profile.
-    lint_issued_cert(&cert_der, &ca.cert_der, now, linter)?;
+    lint_issued_cert(&cert_der, &ca.cert_der, now, linter, Some(&ca.lint_store))?;
 
     let mut pem_bytes = der_to_pem("CERTIFICATE", &cert_der);
     pem_bytes.extend_from_slice(&der_to_pem("CERTIFICATE", &ca.cert_der));
@@ -1065,27 +1050,25 @@ fn lint_issued_cert(
     ca_cert_der: &[u8],
     now: i64,
     profile: &ResolvedLinterProfile,
+    store_cache: Option<&std::sync::OnceLock<std::sync::Arc<OwnedStore>>>,
 ) -> Result<(), AcmeError> {
-    use std::sync::Mutex;
-
-    static STORE_CACHE: Mutex<Option<(Vec<u8>, std::sync::Arc<OwnedStore>)>> = Mutex::new(None);
-
-    let store = {
-        let mut guard = STORE_CACHE.lock().unwrap_or_else(|poisoned| {
-            tracing::warn!("X509Store cache mutex was poisoned; recovering");
-            poisoned.into_inner()
-        });
-        match &*guard {
-            Some((cached_der, store)) if cached_der == ca_cert_der => std::sync::Arc::clone(store),
-            _ => {
+    let store = if let Some(cache) = store_cache {
+        match cache.get() {
+            Some(s) => s.clone(),
+            None => {
                 let s = std::sync::Arc::new(
                     OwnedStore::try_new(std::iter::once(ca_cert_der))
                         .map_err(|e| AcmeError::Internal(format!("lint: parse CA cert: {e}")))?,
                 );
-                *guard = Some((ca_cert_der.to_vec(), std::sync::Arc::clone(&s)));
-                s
+                let _ = cache.set(s);
+                cache.get().unwrap().clone()
             }
         }
+    } else {
+        std::sync::Arc::new(
+            OwnedStore::try_new(std::iter::once(ca_cert_der))
+                .map_err(|e| AcmeError::Internal(format!("lint: parse CA cert: {e}")))?,
+        )
     };
 
     // Parse the just-issued leaf.
@@ -1969,6 +1952,8 @@ mod tests {
             caa_identities: vec![],
             mtc: Arc::new(MtcState::disabled()),
             default_linter: None,
+            cached_der: std::sync::OnceLock::new(),
+            lint_store: std::sync::OnceLock::new(),
         };
 
         let params = crate::profiles::CertificateParameters {
@@ -2043,6 +2028,8 @@ mod tests {
             caa_identities: vec![],
             mtc: Arc::new(MtcState::disabled()),
             default_linter: None,
+            cached_der: std::sync::OnceLock::new(),
+            lint_store: std::sync::OnceLock::new(),
         };
 
         let params = crate::profiles::CertificateParameters {
@@ -2278,6 +2265,8 @@ mod tests {
             caa_identities: vec![],
             mtc: Arc::new(MtcState::disabled()),
             default_linter: None,
+            cached_der: std::sync::OnceLock::new(),
+            lint_store: std::sync::OnceLock::new(),
         }
     }
 

@@ -485,6 +485,8 @@ async fn start_tls_server() -> TlsTestServer {
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
         default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
     });
 
     // Bootstrap TLS cert/key signed by the CA.

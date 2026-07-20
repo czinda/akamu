@@ -118,6 +118,8 @@ async fn build_test_state(
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
         default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
     });
 
     AppStateBuilder::new(

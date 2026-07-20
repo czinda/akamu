@@ -209,6 +209,8 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
         default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
     });
     let cas: Arc<indexmap::IndexMap<String, Arc<CaState>>> = {
         let mut _ca_map = indexmap::IndexMap::new();

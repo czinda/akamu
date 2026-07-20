@@ -357,6 +357,8 @@ async fn build_delegation_state() -> (
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
         default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
     });
 
     let admin_token = "test-admin-token".to_string();
@@ -1315,6 +1317,8 @@ async fn delegation_disabled_returns_404() {
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
         default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
     });
 
     let state = AppStateBuilder::new(

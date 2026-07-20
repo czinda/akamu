@@ -170,6 +170,8 @@ async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState
             logid_issuer_dn_der: None,
         }),
         default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
     });
 
     let cas = {

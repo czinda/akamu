@@ -990,6 +990,8 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
         default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
     });
     let default_ca_id = Arc::new("bench".to_string());
     let cas: Arc<IndexMap<String, Arc<CaState>>> =

@@ -726,6 +726,8 @@ mod tests {
             caa_identities: vec![],
             mtc: Arc::new(MtcState::disabled()),
             default_linter: None,
+            cached_der: std::sync::OnceLock::new(),
+            lint_store: std::sync::OnceLock::new(),
         });
         let mut cas_map = indexmap::IndexMap::new();
         cas_map.insert("default".to_string(), ca.clone());
@@ -1221,6 +1223,8 @@ mod tests {
             caa_identities: vec![],
             mtc: Arc::new(MtcState::disabled()),
             default_linter: None,
+            cached_der: std::sync::OnceLock::new(),
+            lint_store: std::sync::OnceLock::new(),
         });
         let mut cas_map = indexmap::IndexMap::new();
         cas_map.insert("default".to_string(), ca.clone());
@@ -1519,6 +1523,8 @@ mod tests {
             caa_identities: vec![],
             mtc: Arc::new(MtcState::disabled()),
             default_linter: None,
+            cached_der: std::sync::OnceLock::new(),
+            lint_store: std::sync::OnceLock::new(),
         });
         let mut cas_map = indexmap::IndexMap::new();
         cas_map.insert("default".to_string(), ca.clone());

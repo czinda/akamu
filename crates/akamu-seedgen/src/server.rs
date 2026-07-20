@@ -141,6 +141,8 @@ pub async fn start(
             caa_identities: vec![],
             mtc: Arc::new(akamu::state::MtcState::disabled()),
             default_linter: None,
+            cached_der: std::sync::OnceLock::new(),
+            lint_store: std::sync::OnceLock::new(),
         });
 
         if spec.is_default {

@@ -142,6 +142,8 @@ async fn build_two_ca_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
         default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
     });
     let ca_ec = Arc::new(CaState {
         id: "ec".into(),
@@ -160,6 +162,8 @@ async fn build_two_ca_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
         default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
     });
 
     let mut cas_map = indexmap::IndexMap::new();
@@ -622,6 +626,8 @@ async fn admin_cas_list_returns_both_cas() {
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
         default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
     });
     let ca_ec = Arc::new(CaState {
         id: "ec".into(),
@@ -640,6 +646,8 @@ async fn admin_cas_list_returns_both_cas() {
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
         default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
     });
 
     let mut cas_map = indexmap::IndexMap::new();
@@ -866,6 +874,8 @@ async fn build_two_ca_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
         default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
     });
     let ca_ec = Arc::new(CaState {
         id: "ec".into(),
@@ -884,6 +894,8 @@ async fn build_two_ca_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
         default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
     });
 
     let mut cas_map = indexmap::IndexMap::new();

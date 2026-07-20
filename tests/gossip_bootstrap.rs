@@ -221,6 +221,8 @@ async fn spawn_node(params: SpawnParams) -> NodeHandle {
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
         default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
     });
 
     let now_ts = std::time::SystemTime::now()

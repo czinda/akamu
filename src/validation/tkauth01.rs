@@ -1300,6 +1300,8 @@ mod tests {
             caa_identities: vec![],
             mtc: Arc::new(MtcState::disabled()),
             default_linter: None,
+            cached_der: std::sync::OnceLock::new(),
+            lint_store: std::sync::OnceLock::new(),
         });
 
         let mut cas_map: IndexMap<String, Arc<CaState>> = IndexMap::new();

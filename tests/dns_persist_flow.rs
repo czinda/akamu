@@ -227,6 +227,8 @@ async fn build_state(
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
         default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
     });
     let cas = {
         let mut _ca_map = indexmap::IndexMap::new();

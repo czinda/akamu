@@ -693,6 +693,8 @@ async fn run() -> Result<(), String> {
             caa_identities: ca_cfg.caa_identities.clone(),
             mtc: ca_mtc,
             default_linter: ca_cfg.default_linter.clone(),
+            cached_der: std::sync::OnceLock::new(),
+            lint_store: std::sync::OnceLock::new(),
         });
         crl_caches_map.insert(ca_cfg.id.clone(), Default::default());
         cas_map.insert(ca_cfg.id.clone(), ca_state);

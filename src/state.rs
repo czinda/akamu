@@ -656,6 +656,13 @@ pub enum SigningBackend {
     Dogtag(Arc<crate::ca::dogtag::DogtagSigner>),
 }
 
+/// Lazily-parsed CA certificate components (subject DER, SPKI DER, AKI DER).
+pub struct CaCachedDer {
+    pub name_der: Vec<u8>,
+    pub spki_der: Vec<u8>,
+    pub aki_der: Vec<u8>,
+}
+
 /// CA key material and issuance policy.
 ///
 /// # Concurrency
@@ -698,6 +705,10 @@ pub struct CaState {
     /// Default linter profile name for this CA.  Applied when an order's cert
     /// profile omits the `linter` field.  Falls back to `"webpki"` when `None`.
     pub default_linter: Option<String>,
+    /// Lazily-parsed CA subject DER, SPKI DER, and AKI DER.
+    pub cached_der: std::sync::OnceLock<CaCachedDer>,
+    /// Lazily-built X.509 verification store for pre-issuance linting.
+    pub lint_store: std::sync::OnceLock<std::sync::Arc<synta_x509_verification::OwnedStore>>,
 }
 
 impl CaState {

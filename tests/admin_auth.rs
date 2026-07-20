@@ -193,6 +193,8 @@ async fn build_state(
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
         default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
     });
 
     let sessions: Arc<tokio::sync::Mutex<HashMap<String, AdminSession>>> =
@@ -903,6 +905,8 @@ async fn build_state_with_proxy(
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
         default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
     });
 
     let sessions: Arc<tokio::sync::Mutex<HashMap<String, AdminSession>>> =
@@ -1308,6 +1312,8 @@ async fn proxy_cert_rate_limited() {
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
         default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
     });
 
     let sessions: Arc<tokio::sync::Mutex<HashMap<String, AdminSession>>> =

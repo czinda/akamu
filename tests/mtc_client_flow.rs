@@ -163,6 +163,8 @@ async fn build_state(dir: &std::path::Path, base_url: &str, http01_port: u16) ->
             })
         },
         default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
     });
 
     let cas = {

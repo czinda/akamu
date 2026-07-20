@@ -272,6 +272,8 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
         default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
     });
     let cas = {
         let mut m = indexmap::IndexMap::new();
@@ -2282,6 +2284,8 @@ async fn test_directory_with_optional_fields() {
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
         default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
     });
     let cas = {
         let mut m = indexmap::IndexMap::new();
@@ -2673,6 +2677,8 @@ async fn test_finalize_with_mtc_enabled() {
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
         default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
     });
     let cas = {
         let mut m = indexmap::IndexMap::new();
@@ -2934,6 +2940,8 @@ async fn test_finalize_with_aia_and_cdp() {
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
         default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
     });
     let cas = {
         let mut m = indexmap::IndexMap::new();
@@ -3454,6 +3462,8 @@ async fn test_smime_email_reply_00_full_flow() {
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
         default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
     });
     // Build a profile registry with the S/MIME profile so the finalize route
     // picks up the emailProtection EKU instead of the CA default server_auth.

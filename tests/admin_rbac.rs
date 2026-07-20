@@ -127,6 +127,8 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         caa_identities: vec![],
         mtc: Arc::new(MtcState::disabled()),
         default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
     });
 
     let sessions: Arc<tokio::sync::Mutex<HashMap<String, AdminSession>>> =

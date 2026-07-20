@@ -354,6 +354,8 @@ async fn build_akamu_state(
         enforce_validity_cap: false,
         caa_identities: vec![],
         default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
         mtc: {
             let mtc_spki = mtc_key.public_key().unwrap().spki_der().to_vec();
             let logid_dn =

@@ -743,6 +743,8 @@ mod tests {
             caa_identities: vec![],
             mtc: Arc::new(MtcState::disabled()),
             default_linter: None,
+            cached_der: std::sync::OnceLock::new(),
+            lint_store: std::sync::OnceLock::new(),
         });
 
         let acc_id = "acc-vr-001".to_string();
