@@ -13,7 +13,7 @@ use synta_x509_verification::policy::{
     WEBPKI_PERMITTED_SPKI_ALGORITHMS_WITH_PQ,
 };
 
-use crate::config::LinterConfig;
+use crate::config::{AlgorithmsConfig, ExtPresenceConfig, LinterBase, LinterConfig};
 use crate::error::AcmeError;
 
 // ── Built-in profiles ─────────────────────────────────────────────────────────
@@ -97,63 +97,38 @@ impl LinterRegistry {
         profiles.insert("rfc5280".to_string(), RFC5280_PROFILE);
 
         for (name, pcfg) in &cfg.profiles {
-            let base_name = pcfg.base.as_deref().unwrap_or("webpki");
-            let base = match base_name {
-                "webpki" => WEBPKI_PROFILE,
-                "rfc5280" => RFC5280_PROFILE,
-                other => {
-                    return Err(AcmeError::Config(format!(
-                        "linter profile '{name}': unknown base '{other}'; \
-                         expected 'webpki' or 'rfc5280'"
-                    )));
-                }
+            let base = match pcfg.base.unwrap_or(LinterBase::Webpki) {
+                LinterBase::Webpki => WEBPKI_PROFILE,
+                LinterBase::Rfc5280 => RFC5280_PROFILE,
             };
 
-            let san = match pcfg.san.as_deref() {
-                Some("optional") | Some("maybe") => ExtPresence::Optional,
-                Some("absent") | Some("none") => ExtPresence::Absent,
-                Some("required") => ExtPresence::Required,
+            let san = match pcfg.san {
+                Some(ExtPresenceConfig::Optional) => ExtPresence::Optional,
+                Some(ExtPresenceConfig::Absent) => ExtPresence::Absent,
+                Some(ExtPresenceConfig::Required) => ExtPresence::Required,
                 None => base.san,
-                Some(other) => {
-                    return Err(AcmeError::Config(format!(
-                        "linter profile '{name}': unknown san value '{other}'; \
-                         expected 'required', 'optional', or 'absent'"
-                    )));
-                }
             };
 
-            let name_constraints = match pcfg.name_constraints.as_deref() {
-                Some("optional") | Some("maybe") => ExtPresence::Optional,
-                Some("absent") | Some("none") => ExtPresence::Absent,
-                Some("required") => ExtPresence::Required,
+            let name_constraints = match pcfg.name_constraints {
+                Some(ExtPresenceConfig::Optional) => ExtPresence::Optional,
+                Some(ExtPresenceConfig::Absent) => ExtPresence::Absent,
+                Some(ExtPresenceConfig::Required) => ExtPresence::Required,
                 None => base.name_constraints,
-                Some(other) => {
-                    return Err(AcmeError::Config(format!(
-                        "linter profile '{name}': unknown name_constraints value '{other}'; \
-                         expected 'required', 'optional', or 'absent'"
-                    )));
-                }
             };
 
-            let (spki_algs, sig_algs, include_composite_algs) = match pcfg.algorithms.as_deref() {
-                Some("webpki") => (
+            let (spki_algs, sig_algs, include_composite_algs) = match pcfg.algorithms {
+                Some(AlgorithmsConfig::Webpki) => (
                     WEBPKI_PERMITTED_SPKI_ALGORITHMS,
                     WEBPKI_PERMITTED_SIGNATURE_ALGORITHMS,
                     false,
                 ),
-                Some("pq_only") | Some("pq") => (
+                Some(AlgorithmsConfig::PqOnly) => (
                     POSTQUANTUM_PERMITTED_SPKI_ALGORITHMS,
                     POSTQUANTUM_PERMITTED_SIGNATURE_ALGORITHMS,
                     false,
                 ),
-                None | Some("webpki_pq") | Some("webpki+pq") => {
+                None | Some(AlgorithmsConfig::WebpkiPq) => {
                     (base.spki_algs, base.sig_algs, base.include_composite_algs)
-                }
-                Some(other) => {
-                    return Err(AcmeError::Config(format!(
-                        "linter profile '{name}': unknown algorithms value '{other}'; \
-                         expected 'webpki', 'webpki_pq', or 'pq_only'"
-                    )));
                 }
             };
 

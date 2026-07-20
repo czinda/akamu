@@ -14,37 +14,63 @@ pub struct LinterConfig {
     pub profiles: HashMap<String, LinterProfileConfig>,
 }
 
+/// Base validation profile for a linter configuration.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LinterBase {
+    /// CA/B Forum Baseline Requirements profile.
+    Webpki,
+    /// Plain RFC 5280 profile.
+    Rfc5280,
+}
+
+/// Extension presence policy for SAN and Name Constraints.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ExtPresenceConfig {
+    Required,
+    Optional,
+    Absent,
+}
+
+/// Algorithm allowlist tier.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AlgorithmsConfig {
+    /// Classical algorithms only (RSA, EC, Ed25519, Ed448).
+    Webpki,
+    /// Classical + ML-DSA + composite ML-DSA (default).
+    WebpkiPq,
+    /// ML-DSA-44/65/87 and ML-KEM-512/768/1024 only.
+    PqOnly,
+}
+
 /// Configuration for a single named linter profile.
 ///
 /// All fields are optional; omitting a field inherits the value from the chosen base.
 #[derive(Debug, Deserialize)]
 pub struct LinterProfileConfig {
     /// Base profile to start from: `"webpki"` (default) or `"rfc5280"`.
-    ///
-    /// - `"webpki"`: CA/B Forum Baseline Requirements profile.  SAN required,
-    ///   name constraints absent on EE, `cA=FALSE` enforced.
-    /// - `"rfc5280"`: plain RFC 5280 profile.  SAN optional, name constraints
-    ///   may be present on EE, `cA=TRUE` allowed.
-    pub base: Option<String>,
+    pub base: Option<LinterBase>,
 
     /// Subject Alternative Name extension handling.
     ///
     /// `"required"` (default for `webpki`), `"optional"` (default for `rfc5280`),
     /// or `"absent"`.
-    pub san: Option<String>,
+    pub san: Option<ExtPresenceConfig>,
 
     /// Name Constraints extension handling.
     ///
     /// `"required"`, `"optional"` (default for `rfc5280`), or `"absent"` (default
     /// for `webpki`).
-    pub name_constraints: Option<String>,
+    pub name_constraints: Option<ExtPresenceConfig>,
 
     /// Algorithm allowlist tier.
     ///
     /// - `"webpki"`: classical algorithms only (RSA, EC, Ed25519, Ed448).
     /// - `"webpki_pq"` (default): classical + ML-DSA + composite ML-DSA.
     /// - `"pq_only"`: ML-DSA-44/65/87 and ML-KEM-512/768/1024 only.
-    pub algorithms: Option<String>,
+    pub algorithms: Option<AlgorithmsConfig>,
 
     /// Minimum RSA public key modulus size in bits.  Default: 2048.
     pub minimum_rsa_bits: Option<u32>,
