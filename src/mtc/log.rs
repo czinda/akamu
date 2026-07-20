@@ -372,6 +372,36 @@ pub async fn compute_root_at_size(
     .map_err(|e| AcmeError::Mtc(format!("spawn_blocking panicked: {e}")))?
 }
 
+/// Compute Merkle roots for two prefixes of the log atomically.
+///
+/// Both roots are computed under the same `blocking_lock` guard so the
+/// hash ranges cannot diverge if the log grows between the two reads.
+pub async fn compute_roots_at_sizes(
+    log: &SharedLog,
+    algorithm: HashAlgorithm,
+    from_size: u64,
+    to_size: u64,
+) -> Result<(Vec<u8>, Vec<u8>), AcmeError> {
+    let log_clone = Arc::clone(log);
+    tokio::task::spawn_blocking(move || {
+        let mut guard = log_clone.blocking_lock();
+        let to_hashes = guard.read_hash_range(0, to_size as usize)?;
+        if to_hashes.is_empty() {
+            return Err(AcmeError::Mtc("cannot compute root of empty tree".into()));
+        }
+        let from_root = synta_mtc::crypto::hash::compute_root(
+            algorithm,
+            to_hashes[..from_size as usize].to_vec(),
+        )
+        .map_err(|e| AcmeError::Mtc(format!("compute_root (from): {e}")))?;
+        let to_root = synta_mtc::crypto::hash::compute_root(algorithm, to_hashes)
+            .map_err(|e| AcmeError::Mtc(format!("compute_root (to): {e}")))?;
+        Ok((from_root, to_root))
+    })
+    .await
+    .map_err(|e| AcmeError::Mtc(format!("spawn_blocking panicked: {e}")))?
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

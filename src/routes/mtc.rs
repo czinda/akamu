@@ -454,8 +454,8 @@ pub async fn get_consistency_proof(
         )));
     }
 
-    let from_root = log::compute_root_at_size(shared_log, ca.mtc.algorithm, params.from).await?;
-    let to_root = log::compute_root_at_size(shared_log, ca.mtc.algorithm, params.to).await?;
+    let (from_root, to_root) =
+        log::compute_roots_at_sizes(shared_log, ca.mtc.algorithm, params.from, params.to).await?;
 
     Ok((
         StatusCode::OK,
