@@ -6,6 +6,7 @@
 pub mod admin;
 pub mod audit;
 pub mod ca;
+pub mod cli;
 pub mod config;
 pub mod crdt_hooks;
 pub mod db;

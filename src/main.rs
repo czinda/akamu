@@ -1,6 +1,7 @@
 //! ACME server binary entry point.
 //!
-//! Usage: `akamu [/path/to/config.toml]`
+//! Usage: `akamu serve -c /path/to/config.toml`
+//! Legacy: `akamu /path/to/config.toml` (rewritten to `serve -c` for compat)
 //! Defaults to `config.toml` in the current working directory.
 
 use std::sync::Arc;
@@ -20,17 +21,62 @@ use akamu::gossip;
 
 #[tokio::main]
 async fn main() {
-    // ── Logging ───────────────────────────────────────────────────────────────
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
 
-    if let Err(e) = run().await {
+    if let Err(e) = dispatch().await {
         tracing::error!("fatal: {e}");
         std::process::exit(1);
     }
+}
+
+async fn dispatch() -> Result<(), String> {
+    use clap::Parser;
+
+    let args: Vec<String> = std::env::args().collect();
+    let effective_args = rewrite_legacy_args(args);
+    let cli =
+        akamu::cli::Cli::try_parse_from(&effective_args).map_err(|e| e.to_string())?;
+
+    match cli.command {
+        Some(akamu::cli::Commands::Init {
+            base_url,
+            output,
+            data_dir,
+            force,
+        }) => akamu::cli::run_init(&base_url, &output, data_dir.as_deref(), force),
+        Some(akamu::cli::Commands::Version) => {
+            println!("akamu {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
+        Some(akamu::cli::Commands::Serve { config }) => {
+            run(config.to_str().unwrap_or("config.toml")).await
+        }
+        None => run("config.toml").await,
+    }
+}
+
+/// Backward compatibility: if args[1] is not a known subcommand and looks
+/// like a file path, rewrite to `["akamu", "serve", "-c", <path>]`.
+fn rewrite_legacy_args(args: Vec<String>) -> Vec<String> {
+    if args.len() == 2 {
+        let arg = &args[1];
+        let known = ["serve", "init", "version", "--help", "-h", "--version", "-V"];
+        if !known.contains(&arg.as_str())
+            && (arg.contains('.') || arg.contains('/') || std::path::Path::new(arg).exists())
+        {
+            return vec![
+                args[0].clone(),
+                "serve".to_string(),
+                "-c".to_string(),
+                arg.clone(),
+            ];
+        }
+    }
+    args
 }
 
 /// Derive a stable node identity string from a signing public key's SPKI DER.
@@ -206,12 +252,7 @@ fn derive_crdt_db_url(main_url: &str) -> String {
     main_url.to_string()
 }
 
-async fn run() -> Result<(), String> {
-    // ── Configuration ─────────────────────────────────────────────────────────
-    let config_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "config.toml".to_string());
-
+async fn run(config_path: &str) -> Result<(), String> {
     tracing::info!("loading config from '{config_path}'");
     let config = Config::from_file(&config_path)?;
 

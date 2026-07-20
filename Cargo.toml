@@ -48,6 +48,10 @@ ciborium = "0.2"
 # Configuration
 toml = "0.8"
 
+# CLI
+clap = { version = "4", default-features = false, features = ["std", "help", "usage", "error-context", "derive"] }
+url = "2"
+
 # Identifiers
 uuid = { version = "1", features = ["v4", "serde"] }
 
