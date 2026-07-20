@@ -13,6 +13,9 @@ pub enum AcmeError {
     #[error("bad nonce")]
     BadNonce(String),
 
+    #[error("bad public key: {0}")]
+    BadPublicKey(String),
+
     #[error("bad signature algorithm: {0}")]
     BadSignatureAlgorithm(String),
 
@@ -58,6 +61,9 @@ pub enum AcmeError {
     #[error("CAA check failed: {0}")]
     Caa(String),
 
+    #[error("rate limited: {0}")]
+    RateLimited(String),
+
     #[error("external account binding required")]
     ExternalAccountRequired,
 
@@ -77,12 +83,19 @@ pub enum AcmeError {
     #[error("invalid profile: {0}")]
     InvalidProfile(String),
 
+    // ── RFC 9799 onion errors ─────────────────────────────────────────────────
+    #[error("onion CAA check required: {0}")]
+    OnionCaaRequired(String),
+
     // ── RFC 8739 STAR errors ──────────────────────────────────────────────────
     #[error("auto-renewal has been canceled")]
     AutoRenewalCanceled,
 
     #[error("auto-renewal cancellation invalid: order not in valid state")]
     AutoRenewalCancellationInvalid,
+
+    #[error("auto-renewal has expired")]
+    AutoRenewalExpired,
 
     #[error("auto-renewal certificates cannot be revoked")]
     AutoRenewalRevocationNotSupported,
@@ -164,6 +177,7 @@ impl AcmeError {
     fn acme_type(&self) -> &'static str {
         match self {
             AcmeError::BadNonce(_) => "urn:ietf:params:acme:error:badNonce",
+            AcmeError::BadPublicKey(_) => "urn:ietf:params:acme:error:badPublicKey",
             AcmeError::BadSignatureAlgorithm(_) => {
                 "urn:ietf:params:acme:error:badSignatureAlgorithm"
             }
@@ -187,10 +201,13 @@ impl AcmeError {
             AcmeError::Dns(_) => "urn:ietf:params:acme:error:dns",
             AcmeError::IncorrectResponse(_) => "urn:ietf:params:acme:error:incorrectResponse",
             AcmeError::Tls(_) => "urn:ietf:params:acme:error:tls",
+            AcmeError::RateLimited(_) => "urn:ietf:params:acme:error:rateLimited",
             AcmeError::ExternalAccountRequired => {
                 "urn:ietf:params:acme:error:externalAccountRequired"
             }
+            AcmeError::OnionCaaRequired(_) => "urn:ietf:params:acme:error:onionCAARequired",
             AcmeError::AutoRenewalCanceled => "urn:ietf:params:acme:error:autoRenewalCanceled",
+            AcmeError::AutoRenewalExpired => "urn:ietf:params:acme:error:autoRenewalExpired",
             AcmeError::AutoRenewalCancellationInvalid => {
                 "urn:ietf:params:acme:error:autoRenewalCancellationInvalid"
             }
@@ -208,6 +225,7 @@ impl AcmeError {
     fn http_status(&self) -> StatusCode {
         match self {
             AcmeError::BadNonce(_) => StatusCode::BAD_REQUEST,
+            AcmeError::BadPublicKey(_) => StatusCode::BAD_REQUEST,
             AcmeError::BadSignatureAlgorithm(_) => StatusCode::BAD_REQUEST,
             AcmeError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             AcmeError::AccountDoesNotExist => StatusCode::BAD_REQUEST,
@@ -235,13 +253,59 @@ impl AcmeError {
             AcmeError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AcmeError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             AcmeError::Dogtag(_) => StatusCode::BAD_GATEWAY,
+            AcmeError::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
             AcmeError::ExternalAccountRequired => StatusCode::FORBIDDEN,
+            AcmeError::OnionCaaRequired(_) => StatusCode::FORBIDDEN,
             AcmeError::AutoRenewalCanceled => StatusCode::FORBIDDEN,
+            AcmeError::AutoRenewalExpired => StatusCode::FORBIDDEN,
             AcmeError::AutoRenewalCancellationInvalid => StatusCode::BAD_REQUEST,
             AcmeError::AutoRenewalRevocationNotSupported => StatusCode::FORBIDDEN,
             AcmeError::UnknownDelegation => StatusCode::FORBIDDEN,
             AcmeError::InvalidProfile(_) => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+
+    fn title(&self) -> &'static str {
+        match self {
+            AcmeError::BadNonce(_) => "Bad Nonce",
+            AcmeError::BadPublicKey(_) => "Bad Public Key",
+            AcmeError::BadSignatureAlgorithm(_) => "Bad Signature Algorithm",
+            AcmeError::Unauthorized(_) => "Unauthorized",
+            AcmeError::AccountDoesNotExist => "Account Does Not Exist",
+            AcmeError::AccountAlreadyExists => "Account Already Exists",
+            AcmeError::InvalidContact(_) => "Invalid Contact",
+            AcmeError::UnsupportedContact => "Unsupported Contact",
+            AcmeError::UserActionRequired(_) => "User Action Required",
+            AcmeError::RejectedIdentifier(_) => "Rejected Identifier",
+            AcmeError::UnsupportedIdentifier(_) => "Unsupported Identifier",
+            AcmeError::OrderNotReady => "Order Not Ready",
+            AcmeError::CertAlreadyReplaced => "Certificate Already Replaced",
+            AcmeError::BadCsr(_) => "Bad CSR",
+            AcmeError::BadRevocationReason => "Bad Revocation Reason",
+            AcmeError::AlreadyRevoked => "Already Revoked",
+            AcmeError::Caa(_) => "CAA Policy Forbids Issuance",
+            AcmeError::Connection(_) => "Connection Error",
+            AcmeError::Dns(_) => "DNS Error",
+            AcmeError::IncorrectResponse(_) => "Incorrect Response",
+            AcmeError::Tls(_) => "TLS Error",
+            AcmeError::RateLimited(_) => "Rate Limited",
+            AcmeError::ExternalAccountRequired => "External Account Required",
+            AcmeError::OnionCaaRequired(_) => "Onion CAA Required",
+            AcmeError::AutoRenewalCanceled => "Auto-Renewal Canceled",
+            AcmeError::AutoRenewalExpired => "Auto-Renewal Expired",
+            AcmeError::AutoRenewalCancellationInvalid => "Auto-Renewal Cancellation Invalid",
+            AcmeError::AutoRenewalRevocationNotSupported => "Auto-Renewal Revocation Not Supported",
+            AcmeError::UnknownDelegation => "Unknown Delegation",
+            AcmeError::InvalidProfile(_) => "Invalid Profile",
+            AcmeError::NotFound => "Not Found",
+            AcmeError::MethodNotAllowed => "Method Not Allowed",
+            AcmeError::Conflict(_) => "Conflict",
+            AcmeError::UnsupportedMediaType => "Unsupported Media Type",
+            AcmeError::PayloadTooLarge => "Payload Too Large",
+            AcmeError::BadRequest(_) => "Bad Request",
+            AcmeError::ServiceUnavailable(_) => "Service Unavailable",
+            _ => "Server Internal Error",
         }
     }
 }
@@ -265,6 +329,7 @@ impl IntoResponse for AcmeError {
         };
         let body = json!({
             "type": self.acme_type(),
+            "title": self.title(),
             "status": status.as_u16(),
             "detail": detail,
         });
@@ -296,6 +361,10 @@ mod tests {
         assert_eq!(
             AcmeError::BadNonce(String::new()).acme_type(),
             "urn:ietf:params:acme:error:badNonce"
+        );
+        assert_eq!(
+            AcmeError::BadPublicKey("x".into()).acme_type(),
+            "urn:ietf:params:acme:error:badPublicKey"
         );
         assert_eq!(
             AcmeError::BadSignatureAlgorithm("x".into()).acme_type(),
@@ -374,12 +443,20 @@ mod tests {
             "urn:ietf:params:acme:error:tls"
         );
         assert_eq!(
+            AcmeError::RateLimited("x".into()).acme_type(),
+            "urn:ietf:params:acme:error:rateLimited"
+        );
+        assert_eq!(
             AcmeError::ExternalAccountRequired.acme_type(),
             "urn:ietf:params:acme:error:externalAccountRequired"
         );
         assert_eq!(
             AcmeError::AutoRenewalCanceled.acme_type(),
             "urn:ietf:params:acme:error:autoRenewalCanceled"
+        );
+        assert_eq!(
+            AcmeError::AutoRenewalExpired.acme_type(),
+            "urn:ietf:params:acme:error:autoRenewalExpired"
         );
         assert_eq!(
             AcmeError::AutoRenewalCancellationInvalid.acme_type(),
@@ -416,6 +493,10 @@ mod tests {
     fn http_status_codes() {
         assert_eq!(
             AcmeError::BadNonce(String::new()).http_status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            AcmeError::BadPublicKey("x".into()).http_status(),
             StatusCode::BAD_REQUEST
         );
         assert_eq!(
@@ -536,11 +617,19 @@ mod tests {
             StatusCode::INTERNAL_SERVER_ERROR
         );
         assert_eq!(
+            AcmeError::RateLimited("x".into()).http_status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
             AcmeError::ExternalAccountRequired.http_status(),
             StatusCode::FORBIDDEN
         );
         assert_eq!(
             AcmeError::AutoRenewalCanceled.http_status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            AcmeError::AutoRenewalExpired.http_status(),
             StatusCode::FORBIDDEN
         );
         assert_eq!(
