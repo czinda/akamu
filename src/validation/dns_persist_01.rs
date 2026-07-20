@@ -40,6 +40,12 @@ pub async fn validate(
     validate_dnssec: bool,
     dot_server_name: Option<&str>,
 ) -> Result<(), AcmeError> {
+    // dns-persist-01 is only valid for DNS identifiers, not IP addresses.
+    if domain.parse::<std::net::IpAddr>().is_ok() {
+        return Err(AcmeError::IncorrectResponse(
+            "dns-persist-01 cannot validate IP address identifiers".into(),
+        ));
+    }
     let addr = resolver_addr.unwrap_or_else(crate::dns::system_resolver_addr);
     validate_with_resolver(
         domain,
