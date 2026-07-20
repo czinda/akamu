@@ -301,6 +301,13 @@ pub async fn produce_checkpoint(params: CheckpointParams<'_>) -> Result<(), Acme
     }
 
     // ── Async: gather cosignatures from external cosigners ────────────────────
+    if !cosigners.is_empty() && log_origin.is_none() {
+        tracing::warn!(
+            ca_id,
+            cosigner_count = cosigners.len(),
+            "cosigners configured but log_origin is not set; skipping cosignature gathering"
+        );
+    }
     if let (false, Some(origin)) = (cosigners.is_empty(), log_origin) {
         let external =
             crate::mtc::cosign::gather_cosignatures(&checkpoint_der, cosigners, origin).await;
