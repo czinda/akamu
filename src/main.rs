@@ -216,10 +216,17 @@ async fn run() -> Result<(), String> {
     let config = Config::from_file(&config_path)?;
 
     if config.dns_persist_issuer_domains().is_empty() {
-        tracing::warn!(
-            "dns-persist-01 challenge type is disabled: \
-             set [server].dns_persist_issuer_domains to enable it"
-        );
+        if config.server.dns_persist_issuer_domains.is_some() {
+            tracing::warn!(
+                "dns-persist-01 challenge type is disabled: \
+                 [server].dns_persist_issuer_domains is explicitly empty"
+            );
+        } else {
+            tracing::debug!(
+                "dns-persist-01 challenge type is disabled: \
+                 set [server].dns_persist_issuer_domains to enable it"
+            );
+        }
     }
 
     // Set GSS_USE_PROXY before the first GSSAPI call so MIT Kerberos intercepts
@@ -523,13 +530,17 @@ async fn run() -> Result<(), String> {
         }
     };
 
-    // C-4: node private keys are stored unencrypted (PKCS#8 plaintext) in the
-    // local DB.  In a production deployment the DB file should reside on an
-    // encrypted volume.  HSM-backed key storage is not yet supported.
-    tracing::warn!(
-        "gossip node private keys are stored as plaintext PKCS#8 in the local DB — \
-         ensure the database file resides on an encrypted volume"
-    );
+    if config.gossip.is_some() {
+        tracing::warn!(
+            "gossip node private keys are stored as plaintext PKCS#8 in the local DB — \
+             ensure the database file resides on an encrypted volume"
+        );
+    } else {
+        tracing::info!(
+            "node private keys are stored as plaintext PKCS#8 in the local DB — \
+             ensure the database file resides on an encrypted volume"
+        );
+    }
 
     // Load CRDT state from the local DB, then insert/refresh this node's own
     // entry so delta gossip can identify which entries originated here.

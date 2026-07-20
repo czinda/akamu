@@ -61,8 +61,8 @@ pub struct ServerConfig {
     /// # or
     /// dns_persist_issuer_domains = ["acme.example.com", "acme.example.org"]
     /// ```
-    #[serde(default, deserialize_with = "deserialize_string_or_vec")]
-    pub dns_persist_issuer_domains: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_option_string_or_vec")]
+    pub dns_persist_issuer_domains: Option<Vec<String>>,
     /// Override the DNS resolver used for challenge validation (dns-01,
     /// dns-persist-01, and CAA).  Format: `"ip:port"`, e.g. `"127.0.0.1:5353"`.
     /// When absent the system default resolver is used.
@@ -264,6 +264,48 @@ where
     deserializer.deserialize_any(StringOrVec)
 }
 
+fn deserialize_option_string_or_vec<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+    use std::fmt;
+
+    struct OptionStringOrVec;
+
+    impl<'de> Visitor<'de> for OptionStringOrVec {
+        type Value = Option<Vec<String>>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("null, a string, or a list of strings")
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(Some(vec![v.to_owned()]))
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut out = Vec::new();
+            while let Some(s) = seq.next_element::<String>()? {
+                out.push(s);
+            }
+            Ok(Some(out))
+        }
+    }
+
+    deserializer.deserialize_any(OptionStringOrVec)
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -283,7 +325,7 @@ impl Default for ServerConfig {
             max_body_bytes: 0,
             http_validation_port: 0,
             http_validation_allow_private_ips: false,
-            dns_persist_issuer_domains: vec![],
+            dns_persist_issuer_domains: None,
             dns_resolver_addr: None,
             dns_persist01_resolver_addr: None,
             dns_dot_server_name: None,

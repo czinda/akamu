@@ -605,7 +605,12 @@ impl Config {
             }
         }
 
-        if self.server.dns_persist_issuer_domains.len() > 10 {
+        if self
+            .server
+            .dns_persist_issuer_domains
+            .as_ref()
+            .is_some_and(|d| d.len() > 10)
+        {
             return Err(
                 "[server].dns_persist_issuer_domains must not contain more than 10 entries \
                  (draft-ietf-acme-dns-persist Section 3.1)"
@@ -713,15 +718,20 @@ impl Config {
     /// operator's responsibility.
     /// When empty, dns-persist-01 is not offered.
     pub fn dns_persist_issuer_domains(&self) -> &[String] {
-        &self.server.dns_persist_issuer_domains
+        self.server
+            .dns_persist_issuer_domains
+            .as_deref()
+            .unwrap_or(&[])
     }
 
     /// Normalize config values that need canonical form.
     /// Called once after deserialization + validation.
     fn normalize(&mut self) {
-        for d in &mut self.server.dns_persist_issuer_domains {
-            let normalized = d.to_lowercase().trim_end_matches('.').to_owned();
-            *d = normalized;
+        if let Some(ref mut domains) = self.server.dns_persist_issuer_domains {
+            for d in domains {
+                let normalized = d.to_lowercase().trim_end_matches('.').to_owned();
+                *d = normalized;
+            }
         }
     }
 }
@@ -798,7 +808,7 @@ enabled = false
         assert!(cfg.server.caa_identities.is_empty());
         assert!(cfg.server.terms_of_service_url.is_none());
         assert!(cfg.server.website_url.is_none());
-        assert!(cfg.server.dns_persist_issuer_domains.is_empty());
+        assert!(cfg.server.dns_persist_issuer_domains.is_none());
         assert_eq!(cfg.server.ari_retry_after_secs, 21600);
     }
 
@@ -843,6 +853,27 @@ enabled = false
     fn dns_persist_issuer_domains_empty_when_unconfigured() {
         let cfg: Config = toml::from_str(minimal_toml()).unwrap();
         assert!(cfg.dns_persist_issuer_domains().is_empty());
+    }
+
+    #[test]
+    fn dns_persist_issuer_domains_none_when_absent() {
+        let cfg: Config = toml::from_str(minimal_toml()).unwrap();
+        assert!(cfg.server.dns_persist_issuer_domains.is_none());
+    }
+
+    #[test]
+    fn dns_persist_issuer_domains_some_empty_when_explicit_empty() {
+        let cfg: Config = toml::from_str(&format!(
+            "{}\n[server]\ndns_persist_issuer_domains = []\n",
+            minimal_toml()
+        ))
+        .unwrap();
+        assert!(cfg
+            .server
+            .dns_persist_issuer_domains
+            .as_ref()
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
