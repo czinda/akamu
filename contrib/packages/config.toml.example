@@ -1,4 +1,12 @@
-# ACME server configuration — copy to config.toml and adjust as needed.
+# ACME server configuration — full reference.
+#
+# ┌──────────────────────────────────────────────────────────────────────────┐
+# │  FIRST TIME?  Run `akamu init` to generate a working config instantly. │
+# │  See contrib/configs/quickstart.toml for the minimal quickstart.       │
+# └──────────────────────────────────────────────────────────────────────────┘
+#
+# Copy to config.toml and adjust as needed.  Values shown below are
+# defaults unless marked otherwise; commented-out fields are optional.
 
 # Address to listen on.
 #   TCP:              "host:port"        e.g. "0.0.0.0:8080" or "127.0.0.1:8080"
@@ -9,6 +17,11 @@ listen_addr = "0.0.0.0:8080"
 
 # Public base URL of the ACME server, used in all URLs returned to clients.
 base_url = "https://acme.example.com"
+
+# Optional SQLite URL for the dedicated CRDT database (multi-node clustering only).
+# When absent, CRDT tables are created in the main [database] database.
+# Only applicable when [gossip] is configured.
+# crdt_db_url = "sqlite:///var/lib/akamu/crdt.db"
 
 # ── Database ──────────────────────────────────────────────────────────────────
 [database]
@@ -29,27 +42,36 @@ url = "sqlite:///var/lib/akamu/acme.db"
 # require_tls = false
 
 # ── CA ────────────────────────────────────────────────────────────────────────
+# Single CA (backward-compatible [ca] table) or multiple CAs ([[ca]] array).
+# When using [[ca]], each entry must have a unique `id` and exactly one must
+# have `is_default = true`.
 [ca]
+# id = "default"        # required for [[ca]] array, auto-set for single [ca]
+# is_default = true     # required for exactly one [[ca]] entry
+# caa_identities = []   # per-CA CAA identities; falls back to [server].caa_identities
+
 # Paths to the CA private key and certificate PEM files.
 # Both are auto-generated on first run if neither exists.
-# PKCS#11 URIs (pkcs11:token=…;object=…;type=private) are also accepted for
+# PKCS#11 URIs (pkcs11:token=...;object=...;type=private) are also accepted for
 # HSM-backed keys; the pkcs11-provider OpenSSL module must be loaded beforehand.
 key_file  = "/etc/akamu/certs/ca.key.pem"
 cert_file = "/etc/akamu/certs/ca.cert.pem"
 
 # Key algorithm for the auto-generated CA key.
-# Choices: "ec:P-256", "ec:P-384", "ec:P-521", "rsa:2048", "rsa:3072", "rsa:4096", "ed25519"
-key_type = "ec:P-256"
+# Choices: "ec:P-256", "ec:P-384", "ec:P-521", "rsa:2048", "rsa:3072", "rsa:4096",
+#          "ed25519", "ed448", "ml-dsa-44", "ml-dsa-65", "ml-dsa-87",
+#          and composite ML-DSA variants (see docs for full list).
+# key_type = "ec:P-256"
 
 # Hash algorithm for certificate/CRL signing.
 # Choices: "sha256", "sha384", "sha512"
-hash_alg = "sha256"
+# hash_alg = "sha256"
 
 # Default validity of issued end-entity certificates (days).
-validity_days = 90
+# validity_days = 90
 
 # CA key pair validity when auto-generating (years).
-ca_validity_years = 10
+# ca_validity_years = 10
 
 # Distinguished name for the auto-generated CA certificate.
 common_name  = "Example ACME CA"
@@ -67,7 +89,7 @@ organization = "Example Org"
 # Default: 86400 (1 day).
 # crl_next_update_secs = 86400
 
-# Enforce the CA/B Forum BR §6.3.2 maximum 200-day validity cap at issuance time.
+# Enforce the CA/B Forum BR 6.3.2 maximum 200-day validity cap at issuance time.
 # Default: false.  Public WebPKI CAs should set this to true.
 # enforce_validity_cap = false
 
@@ -83,13 +105,68 @@ organization = "Example Org"
 # The file is read once at startup; trailing newlines are stripped.
 # key_password_file = "/etc/akamu/ca-key-passphrase"
 
+# Default pre-issuance linter profile for this CA.  Applied when a certificate
+# profile does not specify its own linter.  Built-ins: "webpki" (CA/B Forum BR,
+# the default) and "rfc5280" (plain RFC 5280).  Custom profiles are defined in
+# the [linter] section below.
+# default_linter = "webpki"
+
+# Per-CA MTC configuration (preferred over the global [mtc] section).
+# When present, this CA participates in a Merkle Tree Certificate log.
+# [ca.mtc]
+# log_path = "/var/lib/akamu/mtc.log"
+# enabled  = true
+
+# ── External signing backend (Dogtag PKI) ─────────────────────────────────────
+# Uncomment to delegate certificate signing to a Dogtag PKI CA.
+# When [ca.signer] is set, omit key_file — Akāmu acts as a Registration
+# Authority and forwards CSRs to Dogtag's REST API.
+#
+# [[ca]]
+# id        = "dogtag-ca"
+# cert_file = "/etc/akamu/certs/dogtag-ca-chain.pem"
+# key_type  = "ec:P-256"
+# hash_alg  = "sha256"
+# crl_url   = "https://pki.example.com:8443/ca/crl"
+# ocsp_url  = "https://pki.example.com:8443/ca/ocsp"
+#
+# [ca.signer]
+# type              = "dogtag"
+# url               = "https://pki.example.com:8443"
+# ra_cert_file      = "/etc/akamu/dogtag/ra-agent.pem"
+# ra_key_file       = "/etc/akamu/dogtag/ra-agent.key.pem"
+# ra_key_password_file = "/etc/akamu/dogtag/ra-pass"   # optional
+# ca_cert_file      = "/etc/pki/tls/certs/dogtag-tls.pem"  # optional extra trust anchor
+# profile_id        = "caServerCert"                        # default enrollment profile
+# timeout_secs      = 30                                    # default 30
+# tls_danger_accept_invalid_hostnames = false                # dev/demo only
+
 # ── Merkle Tree Certificates ──────────────────────────────────────────────────
+# Deprecated: prefer per-CA [ca.mtc] sub-table for new deployments.
+# When a CA has its own [ca.mtc], this global section is ignored for that CA.
 [mtc]
 # Path for the MTC (Merkle Tree Certificate) transparency log.
 log_path = "/var/lib/akamu/mtc.log"
 
 # Set to true to append issued certificates to the MTC log.
 enabled = false
+
+# Hash algorithm for Merkle tree leaf hashing. Default: "sha256".
+# Valid: "sha256", "sha384", "sha512", "sha3-256", "sha3-384", "sha3-512".
+# Stored in the log file header at creation; cannot be changed for an existing log.
+# hash_alg = "sha256"
+
+# Log number for serialNumber encoding per draft-04 6.1.
+# Serial = (log_number << 48) | entry_index.  Default: 1.
+# log_number = 1
+
+# Minimum valid entry index (5.2.3 log pruning).
+# When set, entries below this index may have been pruned from the log.
+# tree_minimum_index = 0
+
+# CA's own TrustAnchorID OID (dotted-decimal) for the mandatory CA cosigner.
+# When set, a self-cosignature is produced during checkpoint production.
+# trust_anchor_id = "1.3.6.1.4.1.44363.47.10.1"
 
 # How often the checkpoint background task fires (seconds). Default: 3600 (1 h).
 # checkpoint_interval_secs = 3600
@@ -103,8 +180,8 @@ enabled = false
 # Maximum number of checkpoints to retain in the database. Default: 1000.
 # checkpoint_retention_count = 1000
 
-# MTC signing key for checkpoint production.  Absent → checkpoints are disabled.
-# Must use a key distinct from the X.509 CA key (MTC §5.5).
+# MTC signing key for checkpoint production.  Absent -> checkpoints are disabled.
+# Must use a key distinct from the X.509 CA key (MTC 5.5).
 # [mtc.signing_key]
 # key_file = "/var/lib/akamu/mtc-signing.key"   # auto-generated if absent
 # key_type = "ec:P-256"
@@ -115,6 +192,7 @@ enabled = false
 # [[mtc.cosigners]]
 # url = "https://cosigner.example.com/sign"
 # cosigner_id_cert_pem = "/etc/akamu/cosigner.pem"  # optional; verifies the signature
+# trust_anchor_id = "1.3.6.1.4.1.44363.47.10.1"    # optional; verifies cosigner OID
 
 # ── ACME server behaviour ─────────────────────────────────────────────────────
 [server]
@@ -123,6 +201,11 @@ enabled = false
 # instead of the systemd journal namespace.  When absent, the server writes
 # to the "akamu" journal namespace (see contrib/systemd/journald@akamu.conf).
 # audit_log_file = "/var/log/akamu/audit.jsonl"
+
+# Account scoping for multi-CA deployments.
+# "server" (default) — one account works with all CAs.
+# "ca" — accounts are isolated per CA.
+# account_scope = "server"
 
 # Optional Terms of Service URL advertised in /acme/directory.
 # terms_of_service_url = "https://acme.example.com/tos.html"
@@ -134,17 +217,17 @@ enabled = false
 # caa_identities = ["acme.example.com"]
 
 # Set to true to require External Account Binding (EAB) for new accounts.
-external_account_required = false
+# external_account_required = false
 
 # Order and authorization expiry (seconds).
-order_expiry_secs = 86400   # 1 day
-authz_expiry_secs = 86400   # 1 day
+# order_expiry_secs = 86400   # 1 day
+# authz_expiry_secs = 86400   # 1 day
 
 # Maximum JOSE+JSON request body size (bytes).
-max_body_bytes = 65536
+# max_body_bytes = 65536
 
 # TCP port used when fetching http-01 challenge responses.
-# RFC 8555 §8.3 requires port 80 in production.  Override only for testing.
+# RFC 8555 8.3 requires port 80 in production.  Override only for testing.
 # http_validation_port = 80
 
 # Allow http-01 redirect targets that resolve to private/loopback IP addresses.
@@ -172,15 +255,15 @@ max_body_bytes = 65536
 # dns_dot_server_name = "cloudflare-dns.com"
 
 # Enable DNSSEC validation for dns-01, dns-persist-01, and CAA lookups.
-# Required by CA/B Forum BR §3.2.2.4 since 2026-03-15.
+# Required by CA/B Forum BR 3.2.2.4 since 2026-03-15.
 # Set to false only for testing or in DNSSEC-unsigned environments (non-compliant).
-validate_dnssec = true
+# validate_dnssec = true
 
-# Retry-After interval (seconds) in GET /acme/renewal-info responses (RFC 9773 §4.3).
+# Retry-After interval (seconds) in GET /acme/renewal-info responses (RFC 9773 4.3).
 # Default: 21600 (6 hours).
 # ari_retry_after_secs = 21600
 
-# URL included in GET /acme/renewal-info responses as explanationURL (RFC 9773 §4.1).
+# URL included in GET /acme/renewal-info responses as explanationURL (RFC 9773 4.1).
 # ari_explanation_url = "https://acme.example.com/renewal-info"
 
 # Advertise RFC 9444 subdomain authorization support in the directory meta.
@@ -191,45 +274,105 @@ validate_dnssec = true
 # star_max_duration_secs  = 31536000   # maximum STAR order duration (1 year)
 # star_allow_certificate_get = true    # allow unauthenticated GET of STAR certs
 
-# Enable RFC 9115 delegated certificates API surface.
-# When true, the directory advertises delegation support and the /acme/delegations/*
-# and /acme/delegation/* endpoints become active.  Delegations are managed via
-# /admin/delegations.  Default: false.
+# Enable RFC 9115 delegated certificates API surface. Default: false.
 # delegation_enabled = false
 
-# Advertise and allow unauthenticated GET of delegation order certificates (RFC 9115 §2.3.5).
-# Distinct from star_allow_certificate_get which covers STAR orders only.
-# Default: false.
+# Advertise and allow unauthenticated GET of delegation order certificates
+# (RFC 9115 2.3.5). Distinct from star_allow_certificate_get. Default: false.
 # allow_certificate_get = false
 
-# Enable Tor network connectivity for .onion identifiers (RFC 9799 §4).
+# Enable Tor network connectivity for .onion identifiers (RFC 9799 4).
 # Set to true only when the server can reach the Tor network outbound.
 # tor_connectivity_enabled = false
 
 # CIDR blocks trusted to supply X-Remote-User (set by a Kerberos/SPNEGO reverse proxy).
 # Requests from other source IPs never have X-Remote-User honoured.
+# The special literal "local addresses" expands to all local interface IPs.
+# Mutually exclusive with [server.gssapi].
 # trusted_proxies = ["127.0.0.1/32", "::1/128"]
 
-# Base64url-encoded master secret for HKDF-based EAB key derivation (≥ 32 bytes).
+# Base64url-encoded master secret for HKDF-based EAB key derivation (>= 32 bytes).
 # Generate with: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
 # eab_master_secret = "..."
 
-# Static EAB pre-shared keys seeded into the database at startup (RFC 8555 §7.3.4).
+# Static EAB pre-shared keys seeded into the database at startup (RFC 8555 7.3.4).
 # Keys are inserted with INSERT OR IGNORE — runtime-provisioned keys are never overwritten.
 # [server.eab_keys]
 # "my-kid" = "base64url-encoded-hmac-key"
 
 # Standalone GSSAPI/SPNEGO authentication (alternative to a Kerberos reverse proxy).
+# Mutually exclusive with trusted_proxies.
 # When set, akamu handles Authorization: Negotiate directly.
 # [server.gssapi]
 # keytab_file  = "/etc/akamu/http.keytab"
 # service_name = "HTTP"   # MIT Kerberos appends @<hostname> automatically
+# gssproxy     = false     # set true to delegate credential acquisition to gssproxy
 
 # Web UI static file serving.
 # When static_dir is set, GET /ui/* serves files from that directory and
 # GET / redirects to /ui/.  When absent, the /ui/ routes are not registered.
 # [server.webui]
 # static_dir = "/usr/share/akamu/webui"
+
+# ── S/MIME email challenge (RFC 8823) ────────────────────────────────────────
+# When absent or enabled = false, the email-reply-00 challenge type is not
+# advertised and email identifier orders are rejected.
+# [email_challenge]
+# enabled = false
+#
+# Envelope From address used in challenge emails.  Must be a valid RFC 5321
+# address that recipients can reply to.
+# from_address = "acme@acme.example.com"
+#
+# Absolute path to an executable that delivers the challenge email.
+# The server invokes it with env_clear(), injecting only these variables:
+#   ACME_TO            — recipient address (the identifier being validated)
+#   ACME_FROM          — from_address value
+#   ACME_SUBJECT       — "ACME: <token-part1-base64url>"
+#   ACME_MESSAGE_ID    — RFC 5322 Message-ID (angle-bracket form)
+#   ACME_AUTO_SUBMITTED — "auto-generated; type=acme" (set this as a header)
+#   ACME_TOKEN_PART2   — base64url token-part2 (include verbatim in body)
+# Exit code 0 = success; any other exit code marks the challenge invalid.
+# send_script = "/etc/akamu/send-email.sh"
+#
+# Timeout for the send_script invocation (seconds).  Min: 1.  Default: 30.
+# send_script_timeout_secs = 30
+#
+# HMAC-SHA256 secret authenticating inbound webhook requests.
+# The webhook caller must supply X-Akamu-Signature: sha256=<hex> where <hex>
+# is the HMAC-SHA256 of the raw request body using this secret.
+# Must be at least 32 characters.
+# Generate with: openssl rand -hex 32
+# webhook_hmac_secret = "replace-with-output-of--openssl-rand-hex-32"
+
+# ── RFC 9447 / RFC 9448 tkauth-01 challenge support ──────────────────────────
+# When absent or enabled = false, TNAuthList and JWTClaimConstraints identifier
+# orders are rejected.  When enabled, a tkauth-01 challenge is created for each
+# such authorization.  The client must obtain a signed JWT from the Token Authority
+# and submit it in the challenge response.
+# [tkauth]
+# enabled = false
+#
+# PEM file(s) containing the CA certificate(s) that sign Token Authority certs.
+# The signing cert presented in the authority token (via x5u or x5c) must chain
+# to one of these anchors.  Required when enabled = true.
+# trusted_ta_ca_files = ["/etc/akamu/ta-root.pem"]
+#
+# Optional Token Authority URL hint included in tkauth-01 challenge objects.
+# The client uses this to locate the TA if not already known.
+# token_authority_url = "https://ta.example.com"
+#
+# Maximum accepted token validity window (exp - now) in seconds.  Default: 3600.
+# max_validity_secs = 3600
+#
+# Interval (seconds) between automatic expired-JTI cache pruning runs.  Default: 3600.
+# jti_prune_interval_secs = 3600
+#
+# Claim-to-extension encoder entries for JWTClaimConstraints finalize injection.
+# [[tkauth.claim_encoders]]
+# claim   = "sub"
+# encoder = "krb5-kpn"
+# default_realm = "EXAMPLE.COM"   # optional; appended when claim value has no '@'
 
 # ── Server-side TLS ───────────────────────────────────────────────────────────
 # When absent or enabled = false, the server speaks plain HTTP.
@@ -244,26 +387,20 @@ validate_dnssec = true
 # server_name        = "acme.example.com"
 # bootstrap_key_type = "ec:P-256"
 #
-# Mutual TLS client certificate authentication.
-# This section serves two purposes:
-#   1. Restricting ACME access to clients with valid certs (set required = true).
-#   2. Supplying CA certs for admin operator mTLS authentication (required = false
-#      lets ACME clients without certs connect while admin routes still check the
-#      peer cert via the OperatorContext extractor).
+# Mutual TLS client certificate authentication:
 # [tls.client_auth]
 # required             = false
-# ca_files             = ["/etc/akamu/operator-ca.pem"]
+# ca_files             = ["/etc/akamu/client-ca.pem"]
 # profile              = "webpki"   # "webpki" or "rfc5280"
 # allow_post_quantum   = false      # accept ML-DSA / hybrid composite keys
 # max_chain_depth      = 8
 # minimum_rsa_modulus  = 2048
 
 # ── Admin API ─────────────────────────────────────────────────────────────────
+# Admin endpoints (/admin/*) are served on the same listener as the ACME API.
 # When absent, all /admin/* endpoints return 404.
-# Admin endpoints are served on the same listener as the ACME and webui routes.
-# Operator authentication is enforced per-route by the OperatorContext extractor.
-# Use [tls.client_auth] to supply CA certs for mTLS operator authentication;
-# use [admin.gssapi] for Kerberos/SPNEGO authentication.
+# At least one of [tls.client_auth], [admin.proxy_auth], or [admin.gssapi]
+# must be configured for operator authentication.
 # [admin]
 #
 # Inactive session expiry (seconds). Default: 3600 (1 hour).
@@ -287,14 +424,20 @@ validate_dnssec = true
 # Prevents audit-log floods. Default: 20.
 # auth_rate_limit = 20
 #
-# Audit log overflow policy (FAU_STG.4).
-# audit_max_events = 1000000      # absent = unlimited (alias: audit_max_rows)
-# audit_overflow = "drop_oldest"  # "drop_oldest" or "halt"
+# Audit event overflow policy (FAU_STG.4).  Events are written to a systemd
+# journal namespace (see contrib/systemd/journald@akamu.conf); the counter
+# tracks events since startup.  journald manages its own disk retention.
+# audit_max_events = 1000000      # absent = unlimited (events since startup)
+#                                 # (backward-compatible alias: audit_max_rows)
+# audit_overflow = "drop_oldest"  # "drop_oldest" (continue) or "halt"
 #
 # Security alarm (FAU_ARP.1): fires when this many SecurityViolation events occur
 # within a rolling 5-minute window.
 # audit_alarm_threshold = 10
 # audit_alarm_action    = "syslog"   # "syslog" or "halt"
+#
+# Key algorithm for the bootstrap operator certificate. Default: "ec:P-256".
+# bootstrap_key_type = "ec:P-256"
 #
 # Bootstrap an initial Administrator operator on first run (optional).
 # The operator is registered only when the operators table is empty.
@@ -302,13 +445,17 @@ validate_dnssec = true
 # bootstrap_operator_key_file  = "/etc/akamu/bootstrap-admin.key"
 # bootstrap_operator_name      = "admin"
 #
+# Bootstrap operator (PKCS#12) — alternative to PEM pair above.
+# bootstrap_operator_pkcs12_file     = "/etc/akamu/bootstrap-admin.p12"
+# bootstrap_operator_pkcs12_password = ""
+#
 # Bootstrap operator (GSSAPI) — can be combined with cert bootstrap above.
 # When operators table is empty at startup, registers this principal as Administrator.
 # bootstrap_operator_gssapi_principal = "admin@EXAMPLE.COM"
 #
 # GSSAPI/Kerberos authentication for admin operators.
 # [admin.gssapi]
-# keytab_file  = "/etc/akamu/admin-http.keytab"
+# keytab_file  = "/etc/akamu/http.keytab"
 # service_name = "HTTP"
 # gssproxy     = false     # set true to delegate credential acquisition to gssproxy
 #
@@ -334,8 +481,20 @@ validate_dnssec = true
 #   # Exit 0 = success.  Called after akamu triggers the upstream challenge.
 # challenge_cleanup_script = "/etc/akamu/upstream-dns-cleanup.sh"
 #   # Optional.  Called after the upstream authz transitions to valid.
-#   # Also receives CERTBOT_AUTH_OUTPUT="" in addition to the deploy vars.
 # poll_interval_secs       = 10    # how often to poll the upstream CA (seconds)
+
+# ── CRDT gossip replication ──────────────────────────────────────────────────
+# When present, akamu gossips CRDT deltas to the listed peer nodes over HTTP.
+# All domain state is replicated to every cluster member.
+# When absent, the node operates in single-node mode with no replication.
+# [gossip]
+# peers                        = ["https://node2.example.com", "https://node3.example.com"]
+# interval_secs                = 15       # gossip round interval. Default: 15.
+# tombstone_ttl_secs           = 604800   # 7 days. Default: 604800.
+# ownership_ttl_secs           = 150      # write-ownership lease. Default: 150.
+# gossip_envelope_max_age_secs = 300      # reject old envelopes. Default: 300.
+# clock_skew_tolerance_secs    = 30       # future-envelope tolerance. Default: 30.
+# fan_out                      = 3        # peers per round; 0 = all. Default: 0.
 
 # ── Certificate profiles ──────────────────────────────────────────────────────
 # When absent, the deprecated [server].profiles map governs directory advertisement
@@ -353,6 +512,7 @@ validate_dnssec = true
 # hash_alg      = "sha256"           # inherits from [ca] when absent
 # key_usage     = ["digital_signature", "key_encipherment"]
 # eku           = ["server_auth"]
+# # ca_ids                 = ["rsa"]                  # restrict to specific CAs
 # # allowed_key_types      = ["ec:P-256", "ec:P-384"]   # empty = any key type
 # # certificate_policies   = [{oid = "2.23.140.1.2.1"}]  # BR DV-SSL OID
 # # crl_url                = ""                           # "" suppresses inherited CDP
@@ -363,6 +523,11 @@ validate_dnssec = true
 # # auth_hook              = "/usr/libexec/akamu/authorize"
 # # auth_hook_timeout_secs = 30
 # # issue_as               = "x509"  # "x509" or "mtc"
+# # kpn_san_templates      = ["HTTP/{dns}@EXAMPLE.COM"]
+# # ms_upn_san_template    = "{dns}@example.com"
+# # inject_account_kpn     = false
+# # trust_jwks_urls        = ["https://idp.example.com/jwks"]
+# # linter                 = "webpki"  # named linter profile; see [linter] section
 #
 # Dogtag PKI profiles from the filesystem:
 # [profiles.providers.dogtag]
@@ -386,3 +551,19 @@ validate_dnssec = true
 # # tls_ca_cert_file = "/etc/ipa/ca.crt"
 # # srv_domain       = "example.com"   # discover via _ldap._tcp SRV records
 # # srv_scheme       = "ldap"          # "ldap" or "ldaps" for SRV-discovered servers
+
+# ── Pre-issuance linter ────────────────────────────────────────────────────────
+# Named linter profiles that compose on top of the built-in "webpki" (CA/B Forum
+# BR) and "rfc5280" (plain RFC 5280) profiles.  Reference a profile by name from
+# a certificate profile's `linter` field or from a CA's `default_linter` field.
+#
+# Resolution order: cert profile `linter` → CA `default_linter` → "webpki".
+#
+# [linter]
+#
+# [linter.profiles.internal]
+# base                   = "rfc5280"    # "webpki" (default) or "rfc5280"
+# san                    = "optional"   # "required" | "optional" | "absent"
+# name_constraints       = "optional"   # "required" | "optional" | "absent"
+# algorithms             = "webpki_pq" # "webpki" | "webpki_pq" (default) | "pq_only"
+# minimum_rsa_bits       = 2048        # default: 2048

@@ -1,4 +1,12 @@
-# ACME server configuration — copy to config.toml and adjust as needed.
+# ACME server configuration — full reference.
+#
+# ┌──────────────────────────────────────────────────────────────────────────┐
+# │  FIRST TIME?  Run `akamu init` to generate a working config instantly. │
+# │  See contrib/configs/quickstart.toml for the minimal quickstart.       │
+# └──────────────────────────────────────────────────────────────────────────┘
+#
+# Copy to config.toml and adjust as needed.  Values shown below are
+# defaults unless marked otherwise; commented-out fields are optional.
 
 # Address to listen on.
 #   TCP:              "host:port"        e.g. "0.0.0.0:8080" or "127.0.0.1:8080"
@@ -53,17 +61,17 @@ cert_file = "/etc/akamu/certs/ca.cert.pem"
 # Choices: "ec:P-256", "ec:P-384", "ec:P-521", "rsa:2048", "rsa:3072", "rsa:4096",
 #          "ed25519", "ed448", "ml-dsa-44", "ml-dsa-65", "ml-dsa-87",
 #          and composite ML-DSA variants (see docs for full list).
-key_type = "ec:P-256"
+# key_type = "ec:P-256"
 
 # Hash algorithm for certificate/CRL signing.
 # Choices: "sha256", "sha384", "sha512"
-hash_alg = "sha256"
+# hash_alg = "sha256"
 
 # Default validity of issued end-entity certificates (days).
-validity_days = 90
+# validity_days = 90
 
 # CA key pair validity when auto-generating (years).
-ca_validity_years = 10
+# ca_validity_years = 10
 
 # Distinguished name for the auto-generated CA certificate.
 common_name  = "Example ACME CA"
@@ -209,14 +217,14 @@ enabled = false
 # caa_identities = ["acme.example.com"]
 
 # Set to true to require External Account Binding (EAB) for new accounts.
-external_account_required = false
+# external_account_required = false
 
 # Order and authorization expiry (seconds).
-order_expiry_secs = 86400   # 1 day
-authz_expiry_secs = 86400   # 1 day
+# order_expiry_secs = 86400   # 1 day
+# authz_expiry_secs = 86400   # 1 day
 
 # Maximum JOSE+JSON request body size (bytes).
-max_body_bytes = 65536
+# max_body_bytes = 65536
 
 # TCP port used when fetching http-01 challenge responses.
 # RFC 8555 8.3 requires port 80 in production.  Override only for testing.
@@ -249,7 +257,7 @@ max_body_bytes = 65536
 # Enable DNSSEC validation for dns-01, dns-persist-01, and CAA lookups.
 # Required by CA/B Forum BR 3.2.2.4 since 2026-03-15.
 # Set to false only for testing or in DNSSEC-unsigned environments (non-compliant).
-validate_dnssec = true
+# validate_dnssec = true
 
 # Retry-After interval (seconds) in GET /acme/renewal-info responses (RFC 9773 4.3).
 # Default: 21600 (6 hours).
