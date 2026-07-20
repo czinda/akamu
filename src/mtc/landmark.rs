@@ -104,8 +104,8 @@ pub async fn maybe_allocate_landmark(
 
     // Build the LandmarkCertificate in a blocking thread (disk I/O + crypto).
     //
-    // NOTE: `read_all_hashes()` loads every leaf hash into memory (32 bytes each),
-    // which is O(tree_size).  For a log with 10 million leaves that is ~320 MB.
+    // NOTE: reads `tree_size` leaf hashes into memory (32 bytes each), which is
+    // O(tree_size).  For a log with 10 million leaves that is ~320 MB.
     // Operators should plan memory capacity accordingly, or reduce
     // `landmark_interval_secs` to produce more frequent (smaller) snapshots.
     let landmark_cert_der = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, AcmeError> {
@@ -115,15 +115,12 @@ pub async fn maybe_allocate_landmark(
             .spki_der()
             .to_vec();
 
-        // Read ALL leaf hashes for the landmark tree_size.  LandmarkCertificateBuilder
+        // Read exactly `tree_size` leaf hashes.  LandmarkCertificateBuilder
         // requires the full tree to generate the inclusion proof internally.
-        let all_leaves = {
+        let tree_leaves = {
             let mut guard = log_clone.blocking_lock();
-            guard.read_all_hashes()?
+            guard.read_hash_range(0, tree_size as usize)?
         };
-
-        // Trim to landmark.tree_size in case the log has grown since we checked.
-        let tree_leaves: Vec<Vec<u8>> = all_leaves.into_iter().take(tree_size as usize).collect();
 
         build_landmark_cert_der(LandmarkCertParams {
             cert_der: &cert_row.der,
