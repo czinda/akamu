@@ -955,7 +955,7 @@ async fn run() -> Result<(), String> {
     .profiles(profile_registry.clone())
     .linter_registry(Arc::new(
         akamu::linter::LinterRegistry::new(&config.linter)
-            .unwrap_or_else(|e| panic!("linter config error: {e}")),
+            .map_err(|e| format!("linter config error: {e}"))?,
     ))
     .nonces(Arc::clone(&nonces))
     .link_headers(Arc::new(link_headers_map))
