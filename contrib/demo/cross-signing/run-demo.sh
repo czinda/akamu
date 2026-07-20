@@ -150,26 +150,21 @@ url = "sqlite://${A_DIR}/acme.db"
 
 [tls]
 enabled     = true
-cert_file   = "${A_DIR}/server.pem"
-key_file    = "${A_DIR}/server.key"
 server_name = "127.0.0.1"
 
 [tls.client_auth]
 required = false
-ca_files = ["${A_DIR}/ca.cert.pem"]
 
 [ca]
-key_file          = "${A_DIR}/ca.key.pem"
-cert_file         = "${A_DIR}/ca.cert.pem"
-key_type          = "rsa:4096"
-common_name       = "Cross-Sign Demo RSA CA"
-organization      = "Akamu Demo"
-validity_days     = 90
-ca_validity_years = 10
+key_file      = "${A_DIR}/ca.key.pem"
+cert_file     = "${A_DIR}/ca.cert.pem"
+key_type      = "rsa:4096"
+common_name   = "Cross-Sign Demo RSA CA"
+organization  = "Akamu Demo"
+validity_days = 90
 
 [mtc]
-log_path = "${A_DIR}/mtc.log"
-enabled  = false
+enabled = false
 
 [server]
 http_validation_port              = ${A_HTTP_PORT}
@@ -177,8 +172,7 @@ http_validation_allow_private_ips = true
 validate_dnssec                   = false
 
 [admin]
-bootstrap_operator_cert_file = "${A_DIR}/admin.cert.pem"
-bootstrap_operator_key_file  = "${A_DIR}/admin.key.pem"
+bootstrap_operator_pkcs12_file = "${A_DIR}/admin.p12"
 EOF
 
 # ── Instance B config (EC CA) ────────────────────────────────────────────────
@@ -193,26 +187,20 @@ url = "sqlite://${B_DIR}/acme.db"
 
 [tls]
 enabled     = true
-cert_file   = "${B_DIR}/server.pem"
-key_file    = "${B_DIR}/server.key"
 server_name = "127.0.0.1"
 
 [tls.client_auth]
 required = false
-ca_files = ["${B_DIR}/ca.cert.pem"]
 
 [ca]
-key_file          = "${B_DIR}/ca.key.pem"
-cert_file         = "${B_DIR}/ca.cert.pem"
-key_type          = "ec:P-256"
-common_name       = "Cross-Sign Demo EC CA"
-organization      = "Akamu Demo"
-validity_days     = 90
-ca_validity_years = 10
+key_file      = "${B_DIR}/ca.key.pem"
+cert_file     = "${B_DIR}/ca.cert.pem"
+common_name   = "Cross-Sign Demo EC CA"
+organization  = "Akamu Demo"
+validity_days = 90
 
 [mtc]
-log_path = "${B_DIR}/mtc.log"
-enabled  = false
+enabled = false
 
 [server]
 http_validation_port              = ${B_HTTP_PORT}
@@ -220,8 +208,7 @@ http_validation_allow_private_ips = true
 validate_dnssec                   = false
 
 [admin]
-bootstrap_operator_cert_file = "${B_DIR}/admin.cert.pem"
-bootstrap_operator_key_file  = "${B_DIR}/admin.key.pem"
+bootstrap_operator_pkcs12_file = "${B_DIR}/admin.p12"
 EOF
 
 # ── start both instances ─────────────────────────────────────────────────────
@@ -229,17 +216,17 @@ EOF
 section "Starting two Akamu instances"
 
 echo "[demo] Starting instance A (RSA CA, port ${A_PORT})..."
-"$AKAMU_BIN" "$A_DIR/akamu.toml" > "$A_DIR/akamu.log" 2>&1 &
+"$AKAMU_BIN" serve -c "$A_DIR/akamu.toml" > "$A_DIR/akamu.log" 2>&1 &
 A_PID=$!
 wait_for_port 127.0.0.1 "$A_PORT" "instance A"
-wait_for_file "$A_DIR/ca.cert.pem" "instance A CA certificate"
+wait_for_file "$A_DIR/admin.p12" "instance A admin credentials"
 echo "[demo] Instance A ready (pid $A_PID)"
 
 echo "[demo] Starting instance B (EC CA, port ${B_PORT})..."
-"$AKAMU_BIN" "$B_DIR/akamu.toml" > "$B_DIR/akamu.log" 2>&1 &
+"$AKAMU_BIN" serve -c "$B_DIR/akamu.toml" > "$B_DIR/akamu.log" 2>&1 &
 B_PID=$!
 wait_for_port 127.0.0.1 "$B_PORT" "instance B"
-wait_for_file "$B_DIR/ca.cert.pem" "instance B CA certificate"
+wait_for_file "$B_DIR/admin.p12" "instance B admin credentials"
 echo "[demo] Instance B ready (pid $B_PID)"
 
 # ── display CA certificates ──────────────────────────────────────────────────
@@ -262,13 +249,11 @@ section "Authenticating with admin APIs"
 
 AKAMUCTL_A="$AKAMUCTL --server-url https://127.0.0.1:${A_PORT} \
     --ca-cert $A_DIR/ca.cert.pem \
-    --cert $A_DIR/admin.cert.pem \
-    --key $A_DIR/admin.key.pem"
+    --pkcs12 $A_DIR/admin.p12"
 
 AKAMUCTL_B="$AKAMUCTL --server-url https://127.0.0.1:${B_PORT} \
     --ca-cert $B_DIR/ca.cert.pem \
-    --cert $B_DIR/admin.cert.pem \
-    --key $B_DIR/admin.key.pem"
+    --pkcs12 $B_DIR/admin.p12"
 
 echo "[demo] Logging into instance A..."
 $AKAMUCTL_A login
