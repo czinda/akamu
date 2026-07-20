@@ -96,7 +96,7 @@ pub async fn revoke_cert(
 
     if let Some(idx) = cert.mtc_log_index {
         if let Err(e) = db::revoked_ranges::insert(&state.db, &cert.ca_id, idx, idx, now).await {
-            tracing::warn!(error = %e, cert_id = %cert.id, "failed to insert MTC revoked range on ACME revoke");
+            tracing::error!(error = %e, cert_id = %cert.id, ca_id = %cert.ca_id, log_index = idx, "failed to insert MTC revoked range on ACME revoke");
         }
     }
 

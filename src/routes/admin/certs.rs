@@ -340,9 +340,11 @@ pub async fn post_revoke(
                     if let Err(e) =
                         db::revoked_ranges::insert(&state.db, &ca_id, idx, idx, now).await
                     {
-                        tracing::warn!(
+                        tracing::error!(
                             error = %e,
                             cert_id = %payload.cert_id,
+                            ca_id = %ca_id,
+                            log_index = idx,
                             "failed to insert MTC revoked range on admin revoke"
                         );
                     }
