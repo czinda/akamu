@@ -59,7 +59,7 @@ async fn run(cli: Cli) -> Result<(), String> {
             AccountCommands::Update(args) => account::cmd_update(args).await,
             AccountCommands::KeyChange(args) => account::cmd_key_change(args).await,
         },
-        Commands::Issue(args) => issue::cmd_issue(args.common).await,
+        Commands::Issue(args) => issue::cmd_issue(args.common, args.delegation.as_deref()).await,
         Commands::Renew(args) => renew::cmd_renew(args).await,
         Commands::Revoke(args) => revoke::cmd_revoke(args).await,
         Commands::Import { source } => match source {

@@ -32,7 +32,10 @@ pub(crate) async fn poll_with_timeout(
 
 // ── issue ─────────────────────────────────────────────────────────────────────
 
-pub(crate) async fn cmd_issue(args: CommonCertArgs) -> Result<(), String> {
+pub(crate) async fn cmd_issue(
+    args: CommonCertArgs,
+    delegation: Option<&str>,
+) -> Result<(), String> {
     let using_jwtcc = args.challenge_type == "tkauth-01" && args.jwtcc.is_some();
     if args.domains.is_empty() && !using_jwtcc {
         return Err("at least one --domain is required (or --jwtcc for tkauth-01)".into());
@@ -82,50 +85,50 @@ pub(crate) async fn cmd_issue(args: CommonCertArgs) -> Result<(), String> {
         acct
     };
 
-    // Validate challenge type and wildcard compatibility.
-    match args.challenge_type.as_str() {
-        "http-01" | "tls-alpn-01" => {
-            // http-01 and tls-alpn-01 cannot validate wildcard identifiers
-            // (RFC 8555 §8.3 and RFC 8737 §3).
-            let wildcards: Vec<&str> = args
-                .domains
-                .iter()
-                .filter(|d| d.starts_with("*."))
-                .map(String::as_str)
-                .collect();
-            if !wildcards.is_empty() {
+    // Validate challenge type and wildcard compatibility (not needed for delegation orders).
+    if delegation.is_none() {
+        match args.challenge_type.as_str() {
+            "http-01" | "tls-alpn-01" => {
+                // http-01 and tls-alpn-01 cannot validate wildcard identifiers
+                // (RFC 8555 §8.3 and RFC 8737 §3).
+                let wildcards: Vec<&str> = args
+                    .domains
+                    .iter()
+                    .filter(|d| d.starts_with("*."))
+                    .map(String::as_str)
+                    .collect();
+                if !wildcards.is_empty() {
+                    return Err(format!(
+                        "{} cannot validate wildcard identifiers: {}; use --challenge dns-01",
+                        args.challenge_type,
+                        wildcards.join(", ")
+                    ));
+                }
+            }
+            "dns-01" | "dns-persist-01" => {}
+            "onion-csr-01" => {
+                if args.onion_key.is_none() {
+                    return Err("--onion-key is required for onion-csr-01 challenges".to_string());
+                }
+            }
+            "tkauth-01" => {
+                if args.tkauth_url.is_none() {
+                    return Err("--tkauth-url is required for tkauth-01 challenges".to_string());
+                }
+                if args.tkauth_keytab.is_none() {
+                    return Err("--tkauth-keytab is required for tkauth-01 challenges".to_string());
+                }
+            }
+            other => {
                 return Err(format!(
-                    "{} cannot validate wildcard identifiers: {}; use --challenge dns-01",
-                    args.challenge_type,
-                    wildcards.join(", ")
+                    "unsupported challenge type '{other}'; supported: http-01, dns-01, dns-persist-01, tls-alpn-01, onion-csr-01, tkauth-01"
                 ));
             }
         }
-        "dns-01" | "dns-persist-01" => {
-            // DNS-based challenges work for both apex and wildcard domains.
-        }
-        "onion-csr-01" => {
-            if args.onion_key.is_none() {
-                return Err("--onion-key is required for onion-csr-01 challenges".to_string());
-            }
-        }
-        "tkauth-01" => {
-            if args.tkauth_url.is_none() {
-                return Err("--tkauth-url is required for tkauth-01 challenges".to_string());
-            }
-            if args.tkauth_keytab.is_none() {
-                return Err("--tkauth-keytab is required for tkauth-01 challenges".to_string());
-            }
-        }
-        other => {
-            return Err(format!(
-                "unsupported challenge type '{other}'; supported: http-01, dns-01, dns-persist-01, tls-alpn-01, onion-csr-01, tkauth-01"
-            ));
-        }
     }
 
-    // Start the http-01 challenge responder only when needed.
-    let solver = if args.challenge_type == "http-01" {
+    // Start the http-01 challenge responder only when needed (skip for delegation).
+    let solver = if delegation.is_none() && args.challenge_type == "http-01" {
         let s = Http01Solver::new(args.http_port);
         s.start()
             .await
@@ -135,26 +138,28 @@ pub(crate) async fn cmd_issue(args: CommonCertArgs) -> Result<(), String> {
         None
     };
 
-    // Start the tls-alpn-01 challenge responder only when needed.
-    let mut tls_solver: Option<TlsAlpn01Solver> = if args.challenge_type == "tls-alpn-01" {
-        let mut s = TlsAlpn01Solver::new(args.tls_port);
-        s.start()
-            .await
-            .map_err(|e| format!("start tls-alpn-01 solver: {e}"))?;
-        Some(s)
-    } else {
-        None
-    };
+    // Start the tls-alpn-01 challenge responder only when needed (skip for delegation).
+    let mut tls_solver: Option<TlsAlpn01Solver> =
+        if delegation.is_none() && args.challenge_type == "tls-alpn-01" {
+            let mut s = TlsAlpn01Solver::new(args.tls_port);
+            s.start()
+                .await
+                .map_err(|e| format!("start tls-alpn-01 solver: {e}"))?;
+            Some(s)
+        } else {
+            None
+        };
 
     // Compute the RFC 9447 fingerprint once (needed per-authz for tkauth-01).
-    let tkauth_fingerprint: Option<String> = if args.challenge_type == "tkauth-01" {
-        Some(
-            akamu_client::rfc9447_fingerprint(account.thumbprint())
-                .map_err(|e| format!("rfc9447 fingerprint: {e}"))?,
-        )
-    } else {
-        None
-    };
+    let tkauth_fingerprint: Option<String> =
+        if delegation.is_none() && args.challenge_type == "tkauth-01" {
+            Some(
+                akamu_client::rfc9447_fingerprint(account.thumbprint())
+                    .map_err(|e| format!("rfc9447 fingerprint: {e}"))?,
+            )
+        } else {
+            None
+        };
 
     // Place the order.
     let ids: Vec<Identifier> = if using_jwtcc {
@@ -165,13 +170,27 @@ pub(crate) async fn cmd_issue(args: CommonCertArgs) -> Result<(), String> {
     } else {
         args.domains.iter().map(Identifier::dns).collect()
     };
-    let order = client
-        .new_order_with_profile(&account, &ids, args.profile.as_deref())
-        .await
-        .map_err(|e| e.to_string())?;
+    let order = if let Some(deleg_url) = delegation {
+        client
+            .new_order_with_delegation(&account, &ids, deleg_url, args.profile.as_deref())
+            .await
+            .map_err(|e| e.to_string())?
+    } else {
+        client
+            .new_order_with_profile(&account, &ids, args.profile.as_deref())
+            .await
+            .map_err(|e| e.to_string())?
+    };
     // Capture the server-echoed profile (may differ from args.profile if the server
     // auto-selected a default; used when writing the .renewal.toml sidecar).
     let server_profile = order.profile.clone();
+
+    // Delegation orders should have no authorizations.
+    if delegation.is_some() && !order.authorizations.is_empty() {
+        return Err(
+            "delegation order returned authorizations; server may not support RFC 9115".into(),
+        );
+    }
 
     // Satisfy all authorizations.
     //

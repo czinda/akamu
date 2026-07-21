@@ -380,6 +380,12 @@ pub(crate) struct CommonCertArgs {
 pub(crate) struct IssueArgs {
     #[command(flatten)]
     pub(crate) common: CommonCertArgs,
+
+    /// RFC 9115 delegation URL.  When set, the order is placed as a delegated
+    /// order: no challenges are solved locally and the server's upstream CA
+    /// issues the certificate.
+    #[arg(long, value_name = "URL")]
+    pub(crate) delegation: Option<String>,
 }
 
 // ── renew ─────────────────────────────────────────────────────────────────────

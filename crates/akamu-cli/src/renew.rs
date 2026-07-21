@@ -171,7 +171,7 @@ pub(crate) async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
             server_ca: args.common.server_ca.clone(),
             eab,
         };
-        return crate::issue::cmd_issue(common).await;
+        return crate::issue::cmd_issue(common, None).await;
     }
 
     let dir_url = resolve_directory_url(&args.common.server, args.common.ca.as_deref());
@@ -183,7 +183,7 @@ pub(crate) async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
         }
     }
 
-    crate::issue::cmd_issue(args.common).await
+    crate::issue::cmd_issue(args.common, None).await
 }
 
 #[cfg(test)]
