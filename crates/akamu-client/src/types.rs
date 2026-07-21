@@ -81,6 +81,9 @@ pub struct Order {
     /// Profile echoed back by the server (draft-ietf-acme-profiles-01).
     #[serde(default)]
     pub profile: Option<String>,
+    /// RFC 9115 §2.3.2: delegation URL echoed by the server.
+    #[serde(default)]
+    pub delegation: Option<String>,
 }
 
 /// ACME authorization object (RFC 8555 §7.1.4).
@@ -288,6 +291,9 @@ impl std::fmt::Debug for RenewalConfig {
             .field("gssapi_keytab", &self.gssapi_keytab)
             .field("dns_hook", &self.dns_hook)
             .field("profile", &self.profile)
+            .field("tkauth_url", &self.tkauth_url)
+            .field("tkauth_keytab", &self.tkauth_keytab)
+            .field("jwtcc", &self.jwtcc)
             .finish()
     }
 }

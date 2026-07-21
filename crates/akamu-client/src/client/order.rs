@@ -47,6 +47,35 @@ impl AcmeClient {
         parse_order(&body, order_url)
     }
 
+    /// Place a delegation order (RFC 9115 §2.3.2).
+    ///
+    /// The `delegation_url` is included in the newOrder payload.
+    /// The resulting order starts in `"ready"` with no authorizations.
+    pub async fn new_order_with_delegation(
+        &self,
+        acct: &Account,
+        ids: &[Identifier],
+        delegation_url: &str,
+        profile: Option<&str>,
+    ) -> Result<Order, ClientError> {
+        let url = &self.new_order_url;
+        let mut payload = serde_json::json!({
+            "identifiers": ids,
+            "delegation": delegation_url,
+        });
+        if let Some(p) = profile {
+            payload["profile"] = serde_json::json!(p);
+        }
+        let payload_bytes = serde_json::to_vec(&payload)
+            .map_err(|e| ClientError::Http(format!("serialize new-order payload: {e}")))?;
+        let (status, body, headers) = self.post_kid(acct, url, Some(&payload_bytes)).await?;
+        if status != StatusCode::CREATED {
+            return Err(acme_error(&body, status, "new-order"));
+        }
+        let order_url = super::location_hdr(&headers)?;
+        parse_order(&body, order_url)
+    }
+
     /// Fetch an authorization object by URL (POST-as-GET).
     pub async fn get_authorization(
         &self,
@@ -77,10 +106,6 @@ impl AcmeClient {
         Ok(())
     }
 
-    /// Trigger an onion-csr-01 challenge (RFC 9799 §3.2).
-    ///
-    /// Posts `{"csr": "<base64url DER>"}` to the challenge URL and returns
-    /// the updated [`Challenge`] object from the server response.
     /// Respond to a `tkauth-01` challenge with an authority token.
     ///
     /// Posts `{"tkauth": authority_token}` to the challenge URL, triggering
@@ -101,6 +126,10 @@ impl AcmeClient {
         serde_json::from_value(body).map_err(|e| ClientError::Http(format!("parse challenge: {e}")))
     }
 
+    /// Trigger an onion-csr-01 challenge (RFC 9799 §3.2).
+    ///
+    /// Posts `{"csr": "<base64url DER>"}` to the challenge URL and returns
+    /// the updated [`Challenge`] object from the server response.
     pub async fn trigger_challenge_onion(
         &self,
         acct: &Account,
@@ -119,6 +148,15 @@ impl AcmeClient {
             return Err(acme_error(&body, status, "trigger-challenge-onion"));
         }
         serde_json::from_value(body).map_err(|e| ClientError::Http(format!("parse challenge: {e}")))
+    }
+
+    /// Fetch the current state of an order (single POST-as-GET, no polling).
+    pub async fn get_order(&self, acct: &Account, order_url: &str) -> Result<Order, ClientError> {
+        let (status, body, _) = self.post_kid(acct, order_url, None).await?;
+        if status != StatusCode::OK {
+            return Err(acme_error(&body, status, "get-order"));
+        }
+        parse_order(&body, order_url.to_owned())
     }
 
     /// Poll an order URL until status is `"ready"` or `"valid"`.
@@ -242,6 +280,8 @@ fn parse_order(body: &Value, url: String) -> Result<Order, ClientError> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    let delegation = body["delegation"].as_str().map(String::from);
+
     Ok(Order {
         status,
         url,
@@ -250,5 +290,6 @@ fn parse_order(body: &Value, url: String) -> Result<Order, ClientError> {
         certificate,
         identifiers,
         profile,
+        delegation,
     })
 }
