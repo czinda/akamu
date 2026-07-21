@@ -588,7 +588,7 @@ async fn test_renewal_info_explanation_url() {
         _lh_map
     }))
     .build();
-    let router = routes::build_router(Arc::clone(&state2), None);
+    let router = routes::build_router(Arc::clone(&state2), None, false);
 
     let key = TestKey::generate();
     let (_, _, cert_id) = issue_cert(

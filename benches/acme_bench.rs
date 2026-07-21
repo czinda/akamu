@@ -911,7 +911,7 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
         }),
         server: ServerConfig {
             http_validation_port: infra.http_validation_port,
-            dns_persist_issuer_domains: infra.issuer_domain.clone().into_iter().collect(),
+            dns_persist_issuer_domains: Some(infra.issuer_domain.clone().into_iter().collect()),
             dns_resolver_addr: infra.dns_resolver_addr.clone(),
             // The bench challenge responder binds to 127.0.0.1; allow the
             // SSRF guard to follow redirects to loopback for in-process testing.
@@ -1056,7 +1056,7 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
         tokio::spawn(akamu::gossip::gossip_loop::run(Arc::clone(&state)));
     }
 
-    let router = routes::build_router(Arc::clone(&state), None);
+    let router = routes::build_router(Arc::clone(&state), None, false);
     tokio::spawn(async move {
         axum::serve(listener, router).await.ok();
     });

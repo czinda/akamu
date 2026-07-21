@@ -192,7 +192,7 @@ async fn build_state(
             contact: None,
         }),
         server: ServerConfig {
-            dns_persist_issuer_domains: vec![issuer_domain.into()],
+            dns_persist_issuer_domains: Some(vec![issuer_domain.into()]),
             dns_resolver_addr: Some(dns_resolver_addr.into()),
             ..ServerConfig::default()
         },
