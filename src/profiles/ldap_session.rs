@@ -42,19 +42,13 @@ pub(crate) async fn load_profiles_from_ldap(
                  'bind_password_file' is required when 'bind_dn' is set"
             )
         })?;
-        let bind_password = std::fs::read_to_string(pw_file).map_err(|e| {
-            format!(
-                "profiles provider '{provider_name}': \
-                 read bind_password_file '{pw_file}': {e}"
-            )
-        })?;
-        let bind_password = bind_password
-            .trim_end_matches('\n')
-            .trim_end_matches('\r')
-            .to_owned();
+        let bind_password = akamu_util::util::read_password_from_file(
+            std::path::Path::new(pw_file),
+            &format!("profiles provider '{provider_name}' ({kind})"),
+        )?;
         Auth::Simple {
             bind_dn: akamu_util::SecretBuffer::from_string(bind_dn.to_owned()),
-            password: akamu_util::SecretBuffer::from_string(bind_password),
+            password: bind_password,
         }
     };
 

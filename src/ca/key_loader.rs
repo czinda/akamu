@@ -73,7 +73,7 @@ impl<'a> CaKeyLoader<'a> {
                     None
                 };
 
-                BackendPrivateKey::from_pem(&pem, password.as_deref().map(|s| s.as_bytes()))
+                BackendPrivateKey::from_pem(&pem, password.as_ref().map(|s| s.as_bytes()))
                     .map_err(|e| AcmeError::Crypto(format!("parse CA key: {e}")))
             }
             CaKeySource::Pkcs11Uri(uri) => BackendPrivateKey::from_pkcs11_uri(uri)
@@ -97,15 +97,14 @@ impl<'a> CaKeyLoader<'a> {
     }
 
     /// Read the decryption passphrase from `key_password_file`.
-    fn read_password(config: &CaConfig) -> Result<String, AcmeError> {
+    fn read_password(config: &CaConfig) -> Result<akamu_util::SecretBuffer, AcmeError> {
         let path = config.key_password_file.as_deref().ok_or_else(|| {
             AcmeError::Config(
                 "ca.require_encrypted_key is set but ca.key_password_file is not configured"
                     .to_owned(),
             )
         })?;
-        let raw = std::fs::read_to_string(path)
-            .map_err(|e| AcmeError::Config(format!("read ca.key_password_file '{}': {e}", path)))?;
-        Ok(raw.trim_end_matches('\n').trim_end_matches('\r').to_owned())
+        akamu_util::util::read_password_from_file(std::path::Path::new(path), "")
+            .map_err(AcmeError::Config)
     }
 }
