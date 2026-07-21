@@ -165,10 +165,6 @@ common_name   = "Cross-Sign Demo RSA CA"
 organization  = "Akamu Demo"
 validity_days = 90
 
-[mtc]
-log_path = "${A_DIR}/mtc.log"
-enabled  = false
-
 [server]
 http_validation_port              = ${A_HTTP_PORT}
 http_validation_allow_private_ips = true
@@ -203,10 +199,6 @@ cert_file     = "${B_DIR}/ca.cert.pem"
 common_name   = "Cross-Sign Demo EC CA"
 organization  = "Akamu Demo"
 validity_days = 90
-
-[mtc]
-log_path = "${B_DIR}/mtc.log"
-enabled  = false
 
 [server]
 http_validation_port              = ${B_HTTP_PORT}
