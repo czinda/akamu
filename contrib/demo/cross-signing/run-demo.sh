@@ -111,9 +111,10 @@ done
 # ── prerequisite checks ──────────────────────────────────────────────────────
 
 echo "[demo] Checking prerequisites..."
-require_cmd openssl "openssl"
-require_cmd curl    "curl"
-require_cmd cargo   "rustup / cargo"
+require_cmd openssl  "openssl"
+require_cmd curl     "curl"
+require_cmd cargo    "rustup / cargo"
+require_cmd python3  "python3"
 
 echo "[demo] All prerequisites found."
 
@@ -251,18 +252,18 @@ section "Authenticating with admin APIs"
 # akamuctl needs to target each instance separately.
 # We use --server-url, --ca-cert (server TLS), --cert/--key (mTLS operator).
 
-AKAMUCTL_A="$AKAMUCTL --server-url https://127.0.0.1:${A_PORT} \
-    --ca-cert $A_DIR/ca.cert.pem \
-    --pkcs12 $A_DIR/admin.p12"
+AKAMUCTL_A=("$AKAMUCTL" --server-url "https://127.0.0.1:${A_PORT}" \
+    --ca-cert "$A_DIR/ca.cert.pem" \
+    --pkcs12 "$A_DIR/admin.p12")
 
-AKAMUCTL_B="$AKAMUCTL --server-url https://127.0.0.1:${B_PORT} \
-    --ca-cert $B_DIR/ca.cert.pem \
-    --pkcs12 $B_DIR/admin.p12"
+AKAMUCTL_B=("$AKAMUCTL" --server-url "https://127.0.0.1:${B_PORT}" \
+    --ca-cert "$B_DIR/ca.cert.pem" \
+    --pkcs12 "$B_DIR/admin.p12")
 
 echo "[demo] Logging into instance A..."
-$AKAMUCTL_A login
+"${AKAMUCTL_A[@]}" login
 echo "[demo] Logging into instance B..."
-$AKAMUCTL_B login
+"${AKAMUCTL_B[@]}" login
 
 echo "[demo] Both admin sessions established."
 
@@ -271,11 +272,11 @@ echo "[demo] Both admin sessions established."
 section "Listing CAs on each instance"
 
 echo "[demo] Instance A CAs:"
-$AKAMUCTL_A ca list
+"${AKAMUCTL_A[@]}" ca list
 echo
 
 echo "[demo] Instance B CAs:"
-$AKAMUCTL_B ca list
+"${AKAMUCTL_B[@]}" ca list
 
 # ── cross-sign ───────────────────────────────────────────────────────────────
 
@@ -284,7 +285,7 @@ section "Cross-signing CAs"
 # Instance A (RSA) cross-signs Instance B's (EC) CA certificate
 echo "[demo] Instance A (RSA) cross-signs Instance B (EC)..."
 echo "[demo]   akamuctl ca cross-sign default --subject-cert $B_DIR/ca.cert.pem --validity-years 5"
-$AKAMUCTL_A -o json ca cross-sign default \
+"${AKAMUCTL_A[@]}" -o json ca cross-sign default \
     --subject-cert "$B_DIR/ca.cert.pem" \
     --validity-years 5
 echo
@@ -292,7 +293,7 @@ echo
 # Instance B (EC) cross-signs Instance A's (RSA) CA certificate
 echo "[demo] Instance B (EC) cross-signs Instance A (RSA)..."
 echo "[demo]   akamuctl ca cross-sign default --subject-cert $A_DIR/ca.cert.pem --validity-years 5"
-$AKAMUCTL_B -o json ca cross-sign default \
+"${AKAMUCTL_B[@]}" -o json ca cross-sign default \
     --subject-cert "$A_DIR/ca.cert.pem" \
     --validity-years 5
 
@@ -301,24 +302,26 @@ $AKAMUCTL_B -o json ca cross-sign default \
 section "Listing cross-certificates"
 
 echo "[demo] Cross-certificates on instance A:"
-$AKAMUCTL_A cross-cert list
+"${AKAMUCTL_A[@]}" cross-cert list
 echo
 
 echo "[demo] Cross-certificates on instance B:"
-$AKAMUCTL_B cross-cert list
+"${AKAMUCTL_B[@]}" cross-cert list
 
 # Download cross-certs
 echo
 echo "[demo] Downloading cross-certificates..."
 
 # A signed B's CA → cross-cert stored on instance A
-A_CROSS_ID=$($AKAMUCTL_A -o json cross-cert list | python3 -c "import sys,json; print(json.load(sys.stdin)['cross_certs'][0]['id'])")
-$AKAMUCTL_A cross-cert download "$A_CROSS_ID" -o "$TESTDIR/a-signs-b.pem"
+A_CROSS_ID=$("${AKAMUCTL_A[@]}" -o json cross-cert list | python3 -c "import sys,json; print(json.load(sys.stdin)['cross_certs'][0]['id'])")
+[[ -n "$A_CROSS_ID" ]] || die "failed to extract cross-cert ID from instance A"
+"${AKAMUCTL_A[@]}" cross-cert download "$A_CROSS_ID" -o "$TESTDIR/a-signs-b.pem"
 echo "[demo]   A→B cross-cert: $TESTDIR/a-signs-b.pem"
 
 # B signed A's CA → cross-cert stored on instance B
-B_CROSS_ID=$($AKAMUCTL_B -o json cross-cert list | python3 -c "import sys,json; print(json.load(sys.stdin)['cross_certs'][0]['id'])")
-$AKAMUCTL_B cross-cert download "$B_CROSS_ID" -o "$TESTDIR/b-signs-a.pem"
+B_CROSS_ID=$("${AKAMUCTL_B[@]}" -o json cross-cert list | python3 -c "import sys,json; print(json.load(sys.stdin)['cross_certs'][0]['id'])")
+[[ -n "$B_CROSS_ID" ]] || die "failed to extract cross-cert ID from instance B"
+"${AKAMUCTL_B[@]}" cross-cert download "$B_CROSS_ID" -o "$TESTDIR/b-signs-a.pem"
 echo "[demo]   B→A cross-cert: $TESTDIR/b-signs-a.pem"
 
 # ── inspect cross-certificates ───────────────────────────────────────────────
