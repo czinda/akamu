@@ -58,6 +58,8 @@ cert_file = "{data_dir}/ca.cert.pem"
 
 [tls]
 enabled     = true
+cert_file   = "{data_dir}/server.pem"
+key_file    = "{data_dir}/server.key"
 server_name = "{server_name}"
 
 [tls.client_auth]
