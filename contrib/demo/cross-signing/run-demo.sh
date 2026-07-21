@@ -150,6 +150,8 @@ url = "sqlite://${A_DIR}/acme.db"
 
 [tls]
 enabled     = true
+cert_file   = "${A_DIR}/server.pem"
+key_file    = "${A_DIR}/server.key"
 server_name = "127.0.0.1"
 
 [tls.client_auth]
@@ -164,7 +166,8 @@ organization  = "Akamu Demo"
 validity_days = 90
 
 [mtc]
-enabled = false
+log_path = "${A_DIR}/mtc.log"
+enabled  = false
 
 [server]
 http_validation_port              = ${A_HTTP_PORT}
@@ -187,6 +190,8 @@ url = "sqlite://${B_DIR}/acme.db"
 
 [tls]
 enabled     = true
+cert_file   = "${B_DIR}/server.pem"
+key_file    = "${B_DIR}/server.key"
 server_name = "127.0.0.1"
 
 [tls.client_auth]
@@ -200,7 +205,8 @@ organization  = "Akamu Demo"
 validity_days = 90
 
 [mtc]
-enabled = false
+log_path = "${B_DIR}/mtc.log"
+enabled  = false
 
 [server]
 http_validation_port              = ${B_HTTP_PORT}
