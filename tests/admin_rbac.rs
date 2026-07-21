@@ -577,7 +577,7 @@ async fn put_operator_ca_id_on_ca_operations_is_accepted() {
 
     let router = routes::build_router(Arc::clone(&state), None, false);
 
-    let body = format!(r#"{{"role":"ca_operations","ca_id":"default"}}"#);
+    let body = r#"{"role":"ca_operations","ca_id":"default"}"#.to_string();
     let req = Request::builder()
         .method(Method::PUT)
         .uri(format!("/admin/operators/{op_id}"))

@@ -233,6 +233,18 @@ pub async fn delete(
     Ok(result.rows_affected())
 }
 
+/// Count EAB keys matching the same filter as [`list`], without LIMIT/OFFSET.
+pub async fn count_list(db: &crate::db::Db, used_filter: Option<bool>) -> Result<i64, AcmeError> {
+    let mut qb = super::DynQueryBuilder::new("SELECT COUNT(*) FROM eab_keys WHERE 1=1");
+    match used_filter {
+        Some(true) => qb.push(" AND used_at IS NOT NULL"),
+        Some(false) => qb.push(" AND used_at IS NULL"),
+        None => qb.push(""),
+    };
+    let row: (i64,) = qb.fetch_one(db).await?;
+    Ok(row.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,16 +360,4 @@ mod tests {
         let row = get_by_kid(&db, "kid8").await.unwrap().unwrap();
         assert!(row.profile_grants.is_none());
     }
-}
-
-/// Count EAB keys matching the same filter as [`list`], without LIMIT/OFFSET.
-pub async fn count_list(db: &crate::db::Db, used_filter: Option<bool>) -> Result<i64, AcmeError> {
-    let mut qb = super::DynQueryBuilder::new("SELECT COUNT(*) FROM eab_keys WHERE 1=1");
-    match used_filter {
-        Some(true) => qb.push(" AND used_at IS NOT NULL"),
-        Some(false) => qb.push(" AND used_at IS NULL"),
-        None => qb.push(""),
-    };
-    let row: (i64,) = qb.fetch_one(db).await?;
-    Ok(row.0)
 }

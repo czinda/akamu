@@ -109,6 +109,25 @@ pub async fn list(
     Ok(rows)
 }
 
+/// Count cross-certificates matching the same filters as [`list`], without LIMIT/OFFSET.
+pub async fn count_list(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    issuer_ca_id: Option<&str>,
+    subject_ca_id: Option<&str>,
+) -> Result<i64, crate::error::AcmeError> {
+    let mut qb = super::DynQueryBuilder::new("SELECT COUNT(*) FROM cross_certs WHERE 1=1");
+    if let Some(issuer) = issuer_ca_id {
+        qb.push(" AND issuer_ca_id = ");
+        qb.push_bind(issuer);
+    }
+    if let Some(subject) = subject_ca_id {
+        qb.push(" AND subject_ca_id = ");
+        qb.push_bind(subject);
+    }
+    let row: (i64,) = qb.fetch_one(executor).await?;
+    Ok(row.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,23 +273,4 @@ mod tests {
         let got = get_by_id(&pool, "xc-ext").await.unwrap().unwrap();
         assert!(got.subject_ca_id.is_none());
     }
-}
-
-/// Count cross-certificates matching the same filters as [`list`], without LIMIT/OFFSET.
-pub async fn count_list(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
-    issuer_ca_id: Option<&str>,
-    subject_ca_id: Option<&str>,
-) -> Result<i64, crate::error::AcmeError> {
-    let mut qb = super::DynQueryBuilder::new("SELECT COUNT(*) FROM cross_certs WHERE 1=1");
-    if let Some(issuer) = issuer_ca_id {
-        qb.push(" AND issuer_ca_id = ");
-        qb.push_bind(issuer);
-    }
-    if let Some(subject) = subject_ca_id {
-        qb.push(" AND subject_ca_id = ");
-        qb.push_bind(subject);
-    }
-    let row: (i64,) = qb.fetch_one(executor).await?;
-    Ok(row.0)
 }

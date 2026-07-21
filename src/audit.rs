@@ -950,9 +950,8 @@ mod tests {
         .await;
         // journalctl may not be available or namespace may not exist —
         // either an empty vec or an error is acceptable
-        match result {
-            Ok(rows) => assert!(rows.len() <= 10),
-            Err(_) => {} // journalctl not found or namespace error — expected in CI
+        if let Ok(rows) = result {
+            assert!(rows.len() <= 10);
         }
     }
 
@@ -1048,9 +1047,8 @@ mod tests {
         .await;
         // On systems with journalctl: succeeds (likely empty).
         // On systems without: returns Err (journalctl not found).
-        match result {
-            Ok(rows) => assert!(rows.len() <= 5),
-            Err(_) => {}
+        if let Ok(rows) = result {
+            assert!(rows.len() <= 5)
         }
     }
 
@@ -1117,7 +1115,7 @@ mod tests {
         let output = r#"{"AKAMU_EVENT_TYPE":"cert.issue","AKAMU_OUTCOME":"success"}"#;
         let rows = parse_journalctl_json(output, 0, 100);
         assert_eq!(rows.len(), 1);
-        assert!(rows[0].occurred_at.is_empty() || rows[0].occurred_at == "");
+        assert!(rows[0].occurred_at.is_empty() || rows[0].occurred_at.is_empty());
     }
 
     #[test]

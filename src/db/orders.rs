@@ -473,6 +473,29 @@ pub async fn list_authz_ids(
         .await?;
     Ok(ids.into_iter().map(|(id,)| id).collect())
 }
+/// Count orders matching the same filters as [`list`], without LIMIT/OFFSET.
+pub async fn count_list(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    account_id: Option<&str>,
+    status: Option<&str>,
+    ca_id: Option<&str>,
+) -> Result<i64, AcmeError> {
+    let mut qb = super::DynQueryBuilder::new("SELECT COUNT(*) FROM orders WHERE 1=1");
+    if let Some(a) = account_id {
+        qb.push(" AND account_id = ");
+        qb.push_bind(a);
+    }
+    if let Some(st) = status {
+        qb.push(" AND status = ");
+        qb.push_bind(st);
+    }
+    if let Some(ca) = ca_id {
+        qb.push(" AND ca_id = ");
+        qb.push_bind(ca);
+    }
+    let row: (i64,) = qb.fetch_one(executor).await?;
+    Ok(row.0)
+}
 
 #[cfg(test)]
 mod tests {
@@ -916,28 +939,4 @@ mod tests {
         let row = get_by_id(&db, "order-nrpl").await.unwrap().unwrap();
         assert!(row.replaces.is_none());
     }
-}
-
-/// Count orders matching the same filters as [`list`], without LIMIT/OFFSET.
-pub async fn count_list(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
-    account_id: Option<&str>,
-    status: Option<&str>,
-    ca_id: Option<&str>,
-) -> Result<i64, AcmeError> {
-    let mut qb = super::DynQueryBuilder::new("SELECT COUNT(*) FROM orders WHERE 1=1");
-    if let Some(a) = account_id {
-        qb.push(" AND account_id = ");
-        qb.push_bind(a);
-    }
-    if let Some(st) = status {
-        qb.push(" AND status = ");
-        qb.push_bind(st);
-    }
-    if let Some(ca) = ca_id {
-        qb.push(" AND ca_id = ");
-        qb.push_bind(ca);
-    }
-    let row: (i64,) = qb.fetch_one(executor).await?;
-    Ok(row.0)
 }

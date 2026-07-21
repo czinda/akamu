@@ -3328,7 +3328,6 @@ async fn test_ocsp_endpoint_post_and_get() {
 // ── RFC 8823 S/MIME end-to-end flow ──────────────────────────────────────────
 
 /// Helper: decode the first PEM certificate block to DER.
-
 /// Full RFC 8823 S/MIME issuance: email identifier → email-reply-00 challenge →
 /// webhook verification → finalize with rfc822Name CSR → certificate.
 ///

@@ -497,6 +497,23 @@ async fn load_all_providers(
     Ok(merged)
 }
 
+/// Return `true` when at least one provider uses SRV-based LDAP discovery.
+fn needs_dns_resolver(cfg: &ProfilesConfig) -> bool {
+    cfg.providers.values().any(|p| match p {
+        ProviderConfig::Dogtag(d) => d
+            .ldap
+            .as_ref()
+            .map(|l| l.srv_domain.is_some())
+            .unwrap_or(false),
+        ProviderConfig::Ipa(i) => i
+            .ldap
+            .as_ref()
+            .map(|l| l.srv_domain.is_some())
+            .unwrap_or(false),
+        ProviderConfig::Builtin(_) => false,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -556,7 +573,8 @@ mod tests {
         profiles: HashMap<String, (String, CertificateParameters)>,
     ) -> Arc<ProfileRegistry> {
         let ca = make_ca();
-        let reg = Arc::new(ProfileRegistry {
+
+        Arc::new(ProfileRegistry {
             cache: RwLock::new(ProfileCache {
                 profiles,
                 loaded_at: Instant::now(),
@@ -564,8 +582,7 @@ mod tests {
             providers_cfg: ProfilesConfig::default(),
             ca_defaults: CaDefaults::from_ca(&ca),
             dns_resolver: None,
-        });
-        reg
+        })
     }
 
     #[test]
@@ -627,21 +644,4 @@ mod tests {
         let reg = make_registry(HashMap::new());
         assert!(reg.resolve_for_ca("nonexistent", "default").is_none());
     }
-}
-
-/// Return `true` when at least one provider uses SRV-based LDAP discovery.
-fn needs_dns_resolver(cfg: &ProfilesConfig) -> bool {
-    cfg.providers.values().any(|p| match p {
-        ProviderConfig::Dogtag(d) => d
-            .ldap
-            .as_ref()
-            .map(|l| l.srv_domain.is_some())
-            .unwrap_or(false),
-        ProviderConfig::Ipa(i) => i
-            .ldap
-            .as_ref()
-            .map(|l| l.srv_domain.is_some())
-            .unwrap_or(false),
-        ProviderConfig::Builtin(_) => false,
-    })
 }

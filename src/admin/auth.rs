@@ -1294,6 +1294,39 @@ pub async fn delete_session(
     resp
 }
 
+/// Return a 403 response if `$ctx.role` is not one of the listed `OperatorRole`
+/// variants.  Emits an `AdminAction` failure audit event before returning.
+///
+/// Usage: `require_role!(ctx, state, Administrator | CaOperations);`
+#[macro_export]
+macro_rules! require_role {
+    ($ctx:expr, $state:expr, $($role:ident)|+) => {{
+        let allowed = false $(|| $ctx.role == $crate::state::OperatorRole::$role)+;
+        if !allowed {
+            let required = concat!($(stringify!($role), " | "),+);
+            let required = required.trim_end_matches(" | ");
+            $state
+                .record_audit(
+                    $crate::audit::AuditEvent::failure($crate::audit::AuditEventType::AdminAction)
+                        .with_principal($ctx.name.clone())
+                        .with_detail(serde_json::json!({
+                            "error": "insufficient role",
+                            "required": required,
+                            "actual": $ctx.role.as_str(),
+                        }).to_string()),
+                )
+                .await;
+            return (
+                axum::http::StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({
+                    "status": 403,
+                    "detail": "insufficient role for this operation",
+                })),
+            ).into_response();
+        }
+    }};
+}
+
 // ── Role enforcement macro ────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1392,37 +1425,4 @@ mod tests {
         let hdr = r#"Subject="CN=a;b";Cert=MYCERT"#;
         assert_eq!(super::parse_xfcc_cert(hdr), Some("MYCERT".to_string()));
     }
-}
-
-/// Return a 403 response if `$ctx.role` is not one of the listed `OperatorRole`
-/// variants.  Emits an `AdminAction` failure audit event before returning.
-///
-/// Usage: `require_role!(ctx, state, Administrator | CaOperations);`
-#[macro_export]
-macro_rules! require_role {
-    ($ctx:expr, $state:expr, $($role:ident)|+) => {{
-        let allowed = false $(|| $ctx.role == $crate::state::OperatorRole::$role)+;
-        if !allowed {
-            let required = concat!($(stringify!($role), " | "),+);
-            let required = required.trim_end_matches(" | ");
-            $state
-                .record_audit(
-                    $crate::audit::AuditEvent::failure($crate::audit::AuditEventType::AdminAction)
-                        .with_principal($ctx.name.clone())
-                        .with_detail(serde_json::json!({
-                            "error": "insufficient role",
-                            "required": required,
-                            "actual": $ctx.role.as_str(),
-                        }).to_string()),
-                )
-                .await;
-            return (
-                axum::http::StatusCode::FORBIDDEN,
-                axum::Json(serde_json::json!({
-                    "status": 403,
-                    "detail": "insufficient role for this operation",
-                })),
-            ).into_response();
-        }
-    }};
 }

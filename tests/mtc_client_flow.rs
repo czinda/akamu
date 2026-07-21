@@ -88,11 +88,10 @@ async fn build_state(dir: &std::path::Path, base_url: &str, http01_port: u16) ->
             trust_anchor_id: Some("32473.2".into()),
             contact: None,
         }),
-        server: {
-            let mut s = ServerConfig::default();
-            s.http_validation_port = http01_port;
-            s.http_validation_allow_private_ips = true;
-            s
+        server: ServerConfig {
+            http_validation_port: http01_port,
+            http_validation_allow_private_ips: true,
+            ..Default::default()
         },
         tls: Default::default(),
         profiles: Default::default(),
@@ -242,7 +241,7 @@ async fn mtc_client_queries_and_verify() {
             .write()
             .unwrap()
             .insert(token.to_owned(), key_auth);
-        acme.trigger_challenge(&account, &challenge)
+        acme.trigger_challenge(&account, challenge)
             .await
             .expect("trigger_challenge");
     }

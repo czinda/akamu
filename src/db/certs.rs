@@ -428,6 +428,46 @@ pub async fn search(
     Ok(rows)
 }
 
+/// Count certificates matching the same filters as [`search`], without LIMIT/OFFSET.
+pub async fn count_search(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    params: CertSearchParams<'_>,
+) -> Result<i64, crate::error::AcmeError> {
+    let CertSearchParams {
+        serial,
+        account_id,
+        status,
+        subject_dn,
+        ca_id,
+        ..
+    } = params;
+    let mut qb = super::DynQueryBuilder::new("SELECT COUNT(*) FROM certificates WHERE 1=1");
+    if let Some(s) = serial {
+        qb.push(" AND serial_number = ");
+        qb.push_bind(s);
+    }
+    if let Some(a) = account_id {
+        qb.push(" AND account_id = ");
+        qb.push_bind(a);
+    }
+    if let Some(st) = status {
+        qb.push(" AND status = ");
+        qb.push_bind(st);
+    }
+    if let Some(dn) = subject_dn {
+        let escaped = dn.replace('!', "!!").replace('%', "!%").replace('_', "!_");
+        qb.push(" AND subject_dn LIKE ");
+        qb.push_bind(format!("%{escaped}%"));
+        qb.push(" ESCAPE '!'");
+    }
+    if let Some(ca) = ca_id {
+        qb.push(" AND ca_id = ");
+        qb.push_bind(ca);
+    }
+    let row: (i64,) = qb.fetch_one(executor).await?;
+    Ok(row.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -964,44 +1004,4 @@ mod tests {
             .unwrap();
         assert!(result.is_none());
     }
-}
-
-/// Count certificates matching the same filters as [`search`], without LIMIT/OFFSET.
-pub async fn count_search(
-    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
-    params: CertSearchParams<'_>,
-) -> Result<i64, crate::error::AcmeError> {
-    let CertSearchParams {
-        serial,
-        account_id,
-        status,
-        subject_dn,
-        ca_id,
-        ..
-    } = params;
-    let mut qb = super::DynQueryBuilder::new("SELECT COUNT(*) FROM certificates WHERE 1=1");
-    if let Some(s) = serial {
-        qb.push(" AND serial_number = ");
-        qb.push_bind(s);
-    }
-    if let Some(a) = account_id {
-        qb.push(" AND account_id = ");
-        qb.push_bind(a);
-    }
-    if let Some(st) = status {
-        qb.push(" AND status = ");
-        qb.push_bind(st);
-    }
-    if let Some(dn) = subject_dn {
-        let escaped = dn.replace('!', "!!").replace('%', "!%").replace('_', "!_");
-        qb.push(" AND subject_dn LIKE ");
-        qb.push_bind(format!("%{escaped}%"));
-        qb.push(" ESCAPE '!'");
-    }
-    if let Some(ca) = ca_id {
-        qb.push(" AND ca_id = ");
-        qb.push_bind(ca);
-    }
-    let row: (i64,) = qb.fetch_one(executor).await?;
-    Ok(row.0)
 }

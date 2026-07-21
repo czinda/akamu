@@ -1688,12 +1688,12 @@ mod tests {
 
     #[test]
     fn hex_encode_empty() {
-        assert_eq!(hex_encode(&[]), "");
+        assert_eq!(hex_encode([]), "");
     }
 
     #[test]
     fn hex_encode_bytes() {
-        assert_eq!(hex_encode(&[0xde, 0xad, 0xbe, 0xef]), "deadbeef");
+        assert_eq!(hex_encode([0xde, 0xad, 0xbe, 0xef]), "deadbeef");
     }
 
     /// Construct a ValidatedCsr with a bogus "ip" SAN value.

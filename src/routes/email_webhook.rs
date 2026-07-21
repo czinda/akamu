@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn hex_encode_known_value() {
-        assert_eq!(hex_encode(&[0x00, 0xff, 0xab, 0x12]), "00ffab12");
-        assert_eq!(hex_encode(&[]), "");
+        assert_eq!(hex_encode([0x00, 0xff, 0xab, 0x12]), "00ffab12");
+        assert_eq!(hex_encode([]), "");
     }
 }
