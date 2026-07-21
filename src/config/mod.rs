@@ -492,7 +492,7 @@ impl Config {
         }
 
         if let Some(du) = &self.delegation_upstream {
-            const VALID_SOLVERS: &[&str] = &["dns-01", "http-01", "tls-alpn-01"];
+            const VALID_SOLVERS: &[&str] = &["dns-01"];
             if du.directory_url.is_empty() {
                 return Err("[delegation_upstream].directory_url must not be empty".into());
             }
@@ -537,6 +537,13 @@ impl Config {
                 if !std::path::Path::new(script).is_absolute() {
                     return Err(format!(
                         "[delegation_upstream].challenge_cleanup_script {script:?} must be an absolute path"
+                    ));
+                }
+            }
+            if let Some(ref ca_cert) = du.ca_cert_file {
+                if !std::path::Path::new(ca_cert).is_absolute() {
+                    return Err(format!(
+                        "[delegation_upstream].ca_cert_file {ca_cert:?} must be an absolute path"
                     ));
                 }
             }

@@ -218,6 +218,30 @@ pub async fn set_status_processing(
     Ok(())
 }
 
+/// Transition a delegation order from `processing` to `valid` and set its
+/// certificate_id.  Used by the delegation upstream task after downloading and
+/// storing the upstream certificate locally.
+pub async fn set_valid_with_certificate(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    id: &str,
+    certificate_id: &str,
+    now: i64,
+) -> Result<(), AcmeError> {
+    let result = super::query(
+        "UPDATE orders SET status = 'valid', certificate_id = ?, updated = ? \
+         WHERE id = ? AND status = 'processing'",
+    )
+    .bind(certificate_id)
+    .bind(now)
+    .bind(id)
+    .execute(executor)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(AcmeError::Conflict("order not in processing state".into()));
+    }
+    Ok(())
+}
+
 /// Update the `certificate_id` on a STAR order, guarded against canceled orders.
 ///
 /// Returns `true` if the order was found and updated, `false` if it was already
@@ -473,6 +497,7 @@ pub async fn list_authz_ids(
         .await?;
     Ok(ids.into_iter().map(|(id,)| id).collect())
 }
+
 /// Count orders matching the same filters as [`list`], without LIMIT/OFFSET.
 pub async fn count_list(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,

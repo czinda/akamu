@@ -79,9 +79,18 @@ async fn init_client_and_account(
         .map_err(|e| format!("read account_key_file {:?}: {e}", du.account_key_file))?;
     let key =
         Arc::new(AccountKey::from_pem(&pem).map_err(|e| format!("parse account key PEM: {e}"))?);
-    let client = AcmeClient::new_https_only(&du.directory_url)
-        .await
-        .map_err(|e| format!("AcmeClient::new({}): {e}", du.directory_url))?;
+    let client = if let Some(ref ca_cert_path) = du.ca_cert_file {
+        let ca_pem = tokio::fs::read(ca_cert_path)
+            .await
+            .map_err(|e| format!("read ca_cert_file {:?}: {e}", ca_cert_path))?;
+        AcmeClient::new_with_extra_root(&du.directory_url, &ca_pem)
+            .await
+            .map_err(|e| format!("AcmeClient::new_with_extra_root({}): {e}", du.directory_url))?
+    } else {
+        AcmeClient::new_https_only(&du.directory_url)
+            .await
+            .map_err(|e| format!("AcmeClient::new({}): {e}", du.directory_url))?
+    };
 
     let contact_refs: Vec<&str> = du.contacts.iter().map(|s| s.as_str()).collect();
 
@@ -130,9 +139,33 @@ async fn run_once(
         }
     };
 
+    let now = unix_now();
     for order in orders {
         let order_id = order.id.clone();
         let upstream_url = order.upstream_order_url.clone();
+
+        // Check if the order has expired before attempting to drive it.
+        if let Some(expires) = order.expires {
+            if now > expires {
+                tracing::warn!(
+                    order_id = %order_id,
+                    "delegation_upstream: order expired; marking invalid"
+                );
+                let err_json = serde_json::json!({
+                    "type": "urn:ietf:params:acme:error:serverInternal",
+                    "detail": "delegation order expired while processing"
+                })
+                .to_string();
+                if let Err(e) =
+                    db::orders::update_status(&state.db, &order_id, "invalid", Some(err_json), now)
+                        .await
+                {
+                    tracing::error!(order_id = %order_id, "update_status to invalid: {e}");
+                }
+                continue;
+            }
+        }
+
         if let Err(e) = drive_order(state, du, client, account, order).await {
             tracing::error!(
                 order_id = %order_id,
@@ -200,11 +233,11 @@ async fn drive_order(
         url
     };
 
-    // ── Step 2: poll Order2 status ────────────────────────────────────────────
+    // ── Step 2: fetch Order2 status (single check, not blocking poll) ────────
     let order2 = client
-        .poll_order(account, &upstream_order_url, Duration::from_secs(30))
+        .get_order(account, &upstream_order_url)
         .await
-        .map_err(|e| format!("poll_order: {e}"))?;
+        .map_err(|e| format!("get_order: {e}"))?;
 
     match order2.status.as_str() {
         "pending" => {
@@ -226,7 +259,7 @@ async fn drive_order(
         }
         "valid" => {
             // Cert is ready.
-            complete_order(state, &order2, &order.id, now).await?;
+            complete_order(state, client, account, &order2, &order, now).await?;
         }
         "invalid" => {
             tracing::warn!(
@@ -401,6 +434,7 @@ async fn finalize_upstream(
     order1: &OrderRow,
     now: i64,
 ) -> Result<(), String> {
+    // star_csr_der is reused for delegation orders (set by set_processing_with_csr_der).
     let csr_der = order1
         .star_csr_der
         .clone()
@@ -421,14 +455,22 @@ async fn finalize_upstream(
         finalize_url = %order2.finalize,
         "delegation_upstream: submitted finalize to upstream CA"
     );
+
+    // If the upstream CA finalized synchronously, complete immediately.
+    if finalized.status == "valid" {
+        complete_order(state, client, account, &finalized, order1, now).await?;
+    }
     Ok(())
 }
 
-/// Order2 is `valid` — store the cert URL and advance Order1 to `valid`.
+/// Order2 is `valid` — download the cert from upstream, store it locally,
+/// and advance Order1 to `valid`.
 async fn complete_order(
     state: &AppState,
+    client: &AcmeClient,
+    account: &Arc<Account>,
     order2: &Order,
-    order1_id: &str,
+    order1: &OrderRow,
     now: i64,
 ) -> Result<(), String> {
     let cert_url = order2
@@ -436,21 +478,92 @@ async fn complete_order(
         .as_deref()
         .ok_or("upstream Order2 is valid but has no certificate URL")?;
 
-    db::orders::set_upstream_cert_url(&state.db, order1_id, cert_url, now)
+    // Download the full PEM chain from the upstream CA.
+    let pem_bytes = client
+        .download_certificate(account, cert_url)
+        .await
+        .map_err(|e| format!("download_certificate({cert_url}): {e}"))?;
+    let pem_str = String::from_utf8(pem_bytes)
+        .map_err(|e| format!("upstream cert PEM is not valid UTF-8: {e}"))?;
+
+    // Parse the leaf certificate to extract serial, validity, and subject DN.
+    let ders = synta_certificate::pem_to_der(pem_str.as_bytes());
+    let leaf_der = ders
+        .first()
+        .ok_or("upstream cert PEM contains no certificates")?
+        .clone();
+    let cert: synta_certificate::Certificate = synta::Decoder::new(&leaf_der, synta::Encoding::Der)
+        .decode()
+        .map_err(|e| format!("parse upstream leaf cert DER: {e}"))?;
+
+    let serial_hex: String = cert
+        .tbs_certificate
+        .serial_number
+        .as_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let not_before = time_to_unix(&cert.tbs_certificate.validity.not_before)?;
+    let not_after = time_to_unix(&cert.tbs_certificate.validity.not_after)?;
+    let subject_dn = synta_certificate::format_dn(cert.tbs_certificate.subject.as_bytes());
+
+    let cert_id = uuid::Uuid::new_v4().to_string();
+
+    let cert_row = db::schema::CertificateRow {
+        id: cert_id.clone(),
+        order_id: order1.id.clone(),
+        account_id: order1.account_id.clone(),
+        serial_number: serial_hex,
+        status: "valid".to_string(),
+        der: leaf_der,
+        pem: pem_str,
+        not_before,
+        not_after,
+        revoked_at: None,
+        revocation_reason: None,
+        mtc_log_index: None,
+        created: now,
+        suggested_window_start: None,
+        suggested_window_end: None,
+        replaced_by: None,
+        subject_dn: Some(subject_dn),
+        ca_id: order1.ca_id.clone(),
+    };
+
+    let mut tx = db::begin_write(&state.db, state.db_kind)
+        .await
+        .map_err(|e| format!("begin tx: {e}"))?;
+    db::certs::insert(&mut *tx, cert_row)
+        .await
+        .map_err(|e| format!("insert upstream certificate: {e}"))?;
+    db::orders::set_valid_with_certificate(&mut *tx, &order1.id, &cert_id, now)
+        .await
+        .map_err(|e| format!("set_valid_with_certificate: {e}"))?;
+    db::orders::set_upstream_cert_url(&mut *tx, &order1.id, cert_url, now)
         .await
         .map_err(|e| format!("set_upstream_cert_url: {e}"))?;
-
-    // Advance Order1 to valid.
-    db::orders::update_status(&state.db, order1_id, "valid", None, now)
-        .await
-        .map_err(|e| format!("update_status to valid: {e}"))?;
+    tx.commit().await.map_err(|e| format!("commit: {e}"))?;
 
     tracing::info!(
-        order_id = %order1_id,
+        order_id = %order1.id,
+        cert_id = %cert_id,
         cert_url = %cert_url,
-        "delegation_upstream: Order1 completed; cert URL stored"
+        "delegation_upstream: Order1 completed; upstream cert stored locally"
     );
     Ok(())
+}
+
+/// Convert an X.509 `Time` to a Unix timestamp.
+fn time_to_unix(t: &synta_certificate::Time) -> Result<i64, String> {
+    use synta_certificate::Time;
+    match t {
+        Time::GeneralTime(gt) => Ok(gt.to_unix()),
+        Time::UtcTime(ut) => synta::GeneralizedTime::new(
+            ut.year, ut.month, ut.day, ut.hour, ut.minute, ut.second, None,
+        )
+        .map(|gt| gt.to_unix())
+        .map_err(|_| "invalid UtcTime in upstream certificate".to_string()),
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

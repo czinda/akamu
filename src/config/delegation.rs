@@ -40,6 +40,11 @@ pub struct DelegationUpstreamConfig {
     /// Seconds between upstream order status checks. Default: 10.
     #[serde(default = "default_upstream_poll_secs")]
     pub poll_interval_secs: u64,
+    /// PEM file containing an additional CA certificate to trust for the
+    /// upstream CA's TLS connection.  Use when the upstream server uses a
+    /// private CA not in the system trust store.
+    #[serde(default)]
+    pub ca_cert_file: Option<String>,
 }
 
 fn default_upstream_poll_secs() -> u64 {

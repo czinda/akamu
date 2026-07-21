@@ -216,6 +216,7 @@ pub async fn validate_challenge(
         http_port,
         http_allow_private_ips,
         issuer_domains: &issuer_domain_refs,
+        dns_resolver_addr,
         dns_persist01_resolver_addr,
         validate_dnssec,
         dot_server_name: dot_server_name.as_deref(),
@@ -253,6 +254,7 @@ struct DispatchParams<'a> {
     http_port: u16,
     http_allow_private_ips: bool,
     issuer_domains: &'a [&'a str],
+    dns_resolver_addr: Option<std::net::SocketAddr>,
     dns_persist01_resolver_addr: Option<std::net::SocketAddr>,
     validate_dnssec: bool,
     dot_server_name: Option<&'a str>,
@@ -275,6 +277,7 @@ async fn dispatch(
         http_port,
         http_allow_private_ips,
         issuer_domains,
+        dns_resolver_addr,
         dns_persist01_resolver_addr,
         validate_dnssec,
         dot_server_name,
@@ -295,7 +298,16 @@ async fn dispatch(
             )
             .await
         }
-        "dns-01" => dns01::validate(id_value, key_auth, validate_dnssec, dot_server_name).await,
+        "dns-01" => {
+            dns01::validate(
+                id_value,
+                key_auth,
+                dns_resolver_addr,
+                validate_dnssec,
+                dot_server_name,
+            )
+            .await
+        }
         "tls-alpn-01" => tls_alpn01::validate(id_type, id_value, key_auth).await,
         "dns-persist-01" => {
             dns_persist_01::validate(
@@ -804,6 +816,7 @@ mod tests {
             http_port: 80,
             http_allow_private_ips: false,
             issuer_domains: &["acme.test"],
+            dns_resolver_addr: None,
             dns_persist01_resolver_addr: None,
             validate_dnssec: false,
             dot_server_name: None,

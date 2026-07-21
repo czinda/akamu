@@ -23,10 +23,11 @@ use crate::error::AcmeError;
 pub async fn validate(
     domain: &str,
     key_auth: &str,
+    resolver_addr: Option<std::net::SocketAddr>,
     validate_dnssec: bool,
     dot_server_name: Option<&str>,
 ) -> Result<(), AcmeError> {
-    let resolver_addr = crate::dns::system_resolver_addr();
+    let resolver_addr = resolver_addr.unwrap_or_else(crate::dns::system_resolver_addr);
     validate_with_resolver(
         domain,
         key_auth,
@@ -196,6 +197,7 @@ mod tests {
         let result = validate(
             "invalid.localhost.acme-test-nonexistent.invalid",
             "token.thumbprint",
+            None,
             false,
             None,
         )
@@ -212,6 +214,7 @@ mod tests {
         let result = validate(
             "*.acme-test-nonexistent.invalid",
             "token.thumbprint",
+            None,
             false,
             None,
         )
