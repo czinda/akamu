@@ -6,7 +6,7 @@ use crate::client::AdminClient;
 use crate::config::{CosignerConfig, SessionCache};
 use crate::error::CtlError;
 use crate::output::{print, Format};
-use crate::{read_file_opt, resolve_pkcs12};
+use crate::{read_file_opt, resolve_pkcs12, resolve_pkcs12_password};
 
 /// Construct an `AdminClient` pointed at the cosigner admin endpoint.
 ///
@@ -33,10 +33,15 @@ pub fn build_client(
         .and_then(|c| c.pkcs12_file.as_deref())
         .map(std::path::Path::new);
     let (cos_cert, cos_key) = if let Some(p12) = p12_path {
-        let password = cosigner_cfg
-            .and_then(|c| c.pkcs12_password.as_deref())
-            .unwrap_or("");
-        let (cert, key) = resolve_pkcs12(p12, password)?;
+        let password = resolve_pkcs12_password(
+            None,
+            None,
+            cosigner_cfg
+                .and_then(|c| c.pkcs12_password_file.as_deref())
+                .map(std::path::Path::new),
+            cosigner_cfg.and_then(|c| c.pkcs12_password.as_deref()),
+        )?;
+        let (cert, key) = resolve_pkcs12(p12, &password)?;
         (Some(cert), Some(key))
     } else {
         let cos_cert = read_file_opt(

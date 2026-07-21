@@ -13,7 +13,6 @@ path = "src/main.rs"
 # TLS and crypto
 rustls         = { version = "0.23", default-features = false, features = ["std", "tls12"] }
 rustls-pki-types = "1"
-native-ossl    = { workspace = true }
 rustls-native-ossl = "0.1"
 rustls-native-certs = "0.8"
 
@@ -47,6 +46,7 @@ hickory-resolver = { version = "0.24" }
 # GSSAPI / Kerberos (ccache-based login)
 akamu-gssapi   = { path = "../akamu-gssapi" }
 akamu-client   = { path = "../akamu-client" }
+akamu-util     = { path = "../akamu-util" }
 base64         = "0.22"
 libc           = "0.2"
 

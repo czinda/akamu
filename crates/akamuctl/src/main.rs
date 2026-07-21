@@ -42,7 +42,16 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
     // Load config.
     let config_path = cli.config.clone().unwrap_or_else(Config::default_path);
     let cfg = if config_path.exists() {
-        Config::from_file(&config_path).unwrap_or_default()
+        match Config::from_file(&config_path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!(
+                    "warning: cannot parse '{}': {e}; using defaults",
+                    config_path.display()
+                );
+                Config::default()
+            }
+        }
     } else {
         Config::default()
     };
@@ -64,19 +73,21 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
     )?;
 
     // Resolve client identity: PKCS#12 (CLI or config) takes precedence over PEM.
-    let pkcs12_path = cli.pkcs12.as_deref().or_else(|| {
-        cfg.server
-            .pkcs12_file
-            .as_deref()
-            .map(std::path::Path::new)
-    });
+    let pkcs12_path = cli
+        .pkcs12
+        .as_deref()
+        .or_else(|| cfg.server.pkcs12_file.as_deref().map(std::path::Path::new));
     let (cert_bytes, key_bytes) = if let Some(p12_path) = pkcs12_path {
-        let password = cli
-            .pkcs12_password
-            .as_deref()
-            .or(cfg.server.pkcs12_password.as_deref())
-            .unwrap_or("");
-        let (cert, key) = resolve_pkcs12(p12_path, password)?;
+        let password = resolve_pkcs12_password(
+            cli.pkcs12_password_file.as_deref(),
+            cli.pkcs12_password.as_deref(),
+            cfg.server
+                .pkcs12_password_file
+                .as_deref()
+                .map(std::path::Path::new),
+            cfg.server.pkcs12_password.as_deref(),
+        )?;
+        let (cert, key) = resolve_pkcs12(p12_path, &password)?;
         (Some(cert), Some(key))
     } else {
         let cert_bytes = read_file_opt(
@@ -514,27 +525,66 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+pub(crate) fn resolve_pkcs12_password(
+    cli_file: Option<&std::path::Path>,
+    cli_password: Option<&str>,
+    cfg_file: Option<&std::path::Path>,
+    cfg_password: Option<&str>,
+) -> Result<akamu_util::SecretBuffer, CtlError> {
+    if let Some(path) = cli_file {
+        return akamu_util::util::read_password_from_file(path, "").map_err(CtlError::Config);
+    }
+    if let Some(pw) = cli_password {
+        return Ok(akamu_util::SecretBuffer::from_bytes(pw.as_bytes()));
+    }
+    if let Some(path) = cfg_file {
+        return akamu_util::util::read_password_from_file(path, "").map_err(CtlError::Config);
+    }
+    if let Some(pw) = cfg_password {
+        return Ok(akamu_util::SecretBuffer::from_bytes(pw.as_bytes()));
+    }
+    eprintln!("info: no PKCS#12 password provided; trying empty password");
+    Ok(akamu_util::SecretBuffer::from_bytes(b""))
+}
+
 pub(crate) fn resolve_pkcs12(
     path: &std::path::Path,
-    password: &str,
+    password: &akamu_util::SecretBuffer,
 ) -> Result<(Vec<u8>, Vec<u8>), CtlError> {
-    let data = std::fs::read(path)?;
+    let data = std::fs::read(path)
+        .map_err(|e| CtlError::Config(format!("read PKCS#12 '{}': {e}", path.display())))?;
     let pki = synta_certificate::pki_from_pkcs12(
         &data,
         password.as_bytes(),
         &synta_certificate::OpensslDecryptor,
     )
     .map_err(|e| CtlError::Config(format!("parse PKCS#12 '{}': {e}", path.display())))?;
-    let cert_der = pki
-        .certs
-        .into_iter()
-        .next()
-        .ok_or_else(|| CtlError::Config("PKCS#12 file contains no certificates".into()))?;
-    let key_der = pki
-        .keys
-        .into_iter()
-        .next()
-        .ok_or_else(|| CtlError::Config("PKCS#12 file contains no private keys".into()))?;
+    if pki.certs.len() > 1 {
+        eprintln!(
+            "info: PKCS#12 '{}' contains {} certificates; using only the first (end-entity)",
+            path.display(),
+            pki.certs.len()
+        );
+    }
+    if pki.keys.len() > 1 {
+        eprintln!(
+            "warning: PKCS#12 '{}' contains {} private keys; using only the first",
+            path.display(),
+            pki.keys.len()
+        );
+    }
+    let cert_der = pki.certs.into_iter().next().ok_or_else(|| {
+        CtlError::Config(format!(
+            "PKCS#12 '{}' contains no certificates",
+            path.display()
+        ))
+    })?;
+    let key_der = pki.keys.into_iter().next().ok_or_else(|| {
+        CtlError::Config(format!(
+            "PKCS#12 '{}' contains no private keys",
+            path.display()
+        ))
+    })?;
     let cert_pem = synta_certificate::der_to_pem("CERTIFICATE", &cert_der);
     let key_pem = synta_certificate::der_to_pem("PRIVATE KEY", &key_der);
     Ok((cert_pem, key_pem))
@@ -553,16 +603,5 @@ pub(crate) fn urlenc(s: &str) -> String {
 }
 
 pub(crate) fn sha256_hex(data: &[u8]) -> Result<String, CtlError> {
-    use native_ossl::digest::DigestAlg;
-    let alg = DigestAlg::fetch(c"SHA2-256", None)
-        .map_err(|e| CtlError::Config(format!("SHA2-256 fetch: {e}")))?;
-    let mut ctx = alg
-        .new_context()
-        .map_err(|e| CtlError::Config(format!("digest context: {e}")))?;
-    ctx.update(data)
-        .map_err(|e| CtlError::Config(format!("digest update: {e}")))?;
-    let mut out = [0u8; 32];
-    ctx.finish(&mut out)
-        .map_err(|e| CtlError::Config(format!("digest finish: {e}")))?;
-    Ok(native_ossl::util::hex_encode(out))
+    akamu_util::util::sha256_hex(data).map_err(CtlError::Config)
 }

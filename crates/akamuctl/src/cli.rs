@@ -30,8 +30,23 @@ pub(crate) struct Cli {
     pub pkcs12: Option<PathBuf>,
 
     /// Password for the PKCS#12 file (default: empty).
-    #[arg(long, value_name = "PASSWORD", requires = "pkcs12")]
+    /// WARNING: visible in process listings; prefer --pkcs12-password-file.
+    #[arg(
+        long,
+        value_name = "PASSWORD",
+        requires = "pkcs12",
+        conflicts_with = "pkcs12_password_file"
+    )]
     pub pkcs12_password: Option<String>,
+
+    /// Read the PKCS#12 password from FILE (use "-" for stdin).
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "pkcs12",
+        conflicts_with = "pkcs12_password"
+    )]
+    pub pkcs12_password_file: Option<PathBuf>,
 
     /// Output format: `table` (default) or `json`.
     #[arg(long, short = 'o', default_value = "table")]

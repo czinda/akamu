@@ -23,8 +23,9 @@ url = "https://akamu.example.com:9443"
 # key_file  = "/home/alice/.config/akamu/operator.key.pem"
 
 # Alternatively, supply a PKCS#12 bundle containing both cert and key.
-# pkcs12_file     = "/home/alice/.config/akamu/operator.p12"
-# pkcs12_password = ""
+# pkcs12_file          = "/home/alice/.config/akamu/operator.p12"
+# pkcs12_password      = ""
+# pkcs12_password_file = "/run/secrets/p12-pass"
 
 # GSSAPI/Kerberos authentication (alternative to mTLS).
 # Used by 'akamuctl login --gssapi'. Requires a valid Kerberos TGT in the
@@ -40,6 +41,9 @@ url = "https://akamu.example.com:9443"
 # ca_cert = "/etc/akamu/certs/ca.cert.pem"
 # cert_file = "/home/alice/.config/akamu/cosigner-operator.cert.pem"
 # key_file  = "/home/alice/.config/akamu/cosigner-operator.key.pem"
+# pkcs12_file          = "/home/alice/.config/akamu/cosigner-operator.p12"
+# pkcs12_password      = ""
+# pkcs12_password_file = "/run/secrets/cosigner-p12-pass"
 # gssapi_service = "HTTP@cosigner.example.com"
 "#;
 
@@ -65,6 +69,7 @@ pub struct ServerConfig {
     pub key_file: Option<String>,
     pub pkcs12_file: Option<String>,
     pub pkcs12_password: Option<String>,
+    pub pkcs12_password_file: Option<String>,
     /// GSSAPI service principal name for Negotiate login (e.g. `HTTP@akamu.example.com`).
     /// When set, `akamuctl login` uses the ambient Kerberos ccache instead of mTLS.
     pub gssapi_service: Option<String>,
@@ -79,6 +84,7 @@ pub struct CosignerConfig {
     pub key_file: Option<String>,
     pub pkcs12_file: Option<String>,
     pub pkcs12_password: Option<String>,
+    pub pkcs12_password_file: Option<String>,
     /// GSSAPI service principal name for Negotiate login to the cosigner admin API.
     pub gssapi_service: Option<String>,
 }

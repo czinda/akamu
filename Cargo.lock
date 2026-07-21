@@ -249,6 +249,7 @@ version = "0.1.0"
 dependencies = [
  "akamu-client",
  "akamu-gssapi",
+ "akamu-util",
  "base64",
  "clap",
  "clap_complete",
@@ -258,7 +259,6 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "libc",
- "native-ossl",
  "percent-encoding",
  "rustls",
  "rustls-native-certs",
