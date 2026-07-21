@@ -44,7 +44,7 @@ Replace `acme.example.com` with the actual hostname your ACME clients will use.
 ## 3. Start the server
 
 ```
-akamu /etc/akamu/config.toml
+akamu serve -c /etc/akamu/config.toml
 ```
 
 On first run, because neither `ca.key.pem` nor `ca.cert.pem` exist, the server generates a new EC P-256 CA key and a 10-year self-signed CA certificate and writes them to the configured paths. You will see log output like:
@@ -147,7 +147,7 @@ For the full endpoint reference, see [Admin API and Operator Management](../user
 The server uses the `tracing` crate. Control log verbosity with the `RUST_LOG` environment variable:
 
 ```
-RUST_LOG=debug akamu /etc/akamu/config.toml
+RUST_LOG=debug akamu serve -c /etc/akamu/config.toml
 ```
 
 Useful levels: `error`, `warn`, `info` (default), `debug`, `trace`.
@@ -187,7 +187,7 @@ base_url    = "https://acme.example.com"
 The `AKAMU_LISTEN` environment variable overrides `listen_addr` without touching the config file:
 
 ```
-AKAMU_LISTEN=unix:/run/akamu/akamu.sock akamu /etc/akamu/config.toml
+AKAMU_LISTEN=unix:/run/akamu/akamu.sock akamu serve -c /etc/akamu/config.toml
 ```
 
 ### nginx

@@ -62,5 +62,5 @@ VOLUME ["/app/data", "/app/conf"]
 EXPOSE 8080
 
 ENTRYPOINT ["/app/entrypoint.sh"]
-# The entrypoint passes this as the config path argument to akamu.
-CMD ["/app/conf/config.toml"]
+# The entrypoint passes these arguments to akamu (subcommand + config path).
+CMD ["serve", "-c", "/app/conf/config.toml"]

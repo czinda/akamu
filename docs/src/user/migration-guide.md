@@ -6,6 +6,46 @@ your `config.toml`.
 
 ---
 
+## CLI subcommands: `serve`, `init`, `version`
+
+The `akamu` binary now uses subcommands:
+
+- **`akamu serve -c config.toml`** -- start the ACME server (previously `akamu config.toml`)
+- **`akamu init`** -- generate a quickstart configuration file
+- **`akamu version`** -- print version and build information
+
+**Backward compatibility is preserved:** running `akamu` without a subcommand
+still defaults to `serve` behaviour, and `akamu /path/to/config.toml` is
+automatically rewritten to `akamu serve -c /path/to/config.toml` when the
+argument looks like a file path.
+
+### Before
+
+```bash
+akamu /etc/akamu/config.toml
+RUST_LOG=debug akamu /etc/akamu/config.toml
+```
+
+### After (canonical form)
+
+```bash
+akamu serve -c /etc/akamu/config.toml
+RUST_LOG=debug akamu serve -c /etc/akamu/config.toml
+```
+
+### Quickstart workflow
+
+```bash
+akamu init --system -u https://acme.example.com:9443
+systemctl enable --now akamu
+```
+
+Update any custom systemd units or wrapper scripts to use the new
+`akamu serve -c` form.  The shipped `akamu.service` unit already uses
+the canonical invocation.
+
+---
+
 ## Global `[mtc]` moved to per-CA `[ca.mtc]`
 
 The top-level `[mtc]` section is **deprecated**.  MTC transparency log

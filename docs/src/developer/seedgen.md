@@ -247,7 +247,7 @@ The script:
 2. Locates the `akamu` binary (`target/debug/akamu`, `target/release/akamu`,
    or builds it if absent; override with `$AKAMU_BIN`).
 3. Parses the `listen_addr` port from `akamu.toml`.
-4. Starts `akamu akamu.toml` from inside the artifacts directory so the
+4. Starts `akamu serve -c akamu.toml` from inside the artifacts directory so the
    relative database path resolves correctly.
 5. Polls `GET /acme/directory` until Akāmu accepts connections (timeout: 30 s;
    exits early with the log if the process crashes).

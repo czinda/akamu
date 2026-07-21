@@ -142,7 +142,7 @@ not exist.
 ### 3. Run
 
 ```bash
-akamu /etc/akamu/config.toml
+akamu serve -c /etc/akamu/config.toml
 ```
 
 ```bash
@@ -279,7 +279,7 @@ Key sections:
 cargo test
 
 # Run with debug logging
-RUST_LOG=debug cargo run -- config.toml
+RUST_LOG=debug cargo run -- serve -c config.toml
 
 # Lint
 cargo clippy --all-targets

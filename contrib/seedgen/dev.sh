@@ -116,7 +116,7 @@ echo "==> listen:     $AKAMU_SERVER_URL"
 echo ""
 echo "starting akamu..."
 
-(cd "$ARTIFACTS_DIR" && exec env RUST_LOG="${AKAMU_LOG:-warn}" "$AKAMU" "$CONFIG") \
+(cd "$ARTIFACTS_DIR" && exec env RUST_LOG="${AKAMU_LOG:-warn}" "$AKAMU" serve -c "$CONFIG") \
     >"$ARTIFACTS_DIR/akamu.log" 2>&1 &
 AKAMU_PID=$!
 

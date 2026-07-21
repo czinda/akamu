@@ -20,7 +20,7 @@ The CA key and certificate are generated on first run if the files do not exist.
 ```toml
 # minimal.toml -- smallest viable ACME server.
 #
-# Start with:   akamu minimal.toml
+# Start with:   akamu serve -c minimal.toml
 # Directory at: https://acme.example.com/acme/directory
 
 # Bind on all interfaces, port 8080.  Put a TLS-terminating reverse proxy

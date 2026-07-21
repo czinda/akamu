@@ -6,6 +6,12 @@ akamu - ACME certificate authority server with MTC transparency support
 
 # SYNOPSIS
 
+*akamu* *serve* [*-c* _config-file_]
+
+*akamu* *init* [*-u* _base-url_] [*-o* _output_] [*--data-dir* _dir_] [*--system*] [*--template* _file_] [*--force*]
+
+*akamu* *version*
+
 *akamu* [_config-file_]
 
 # DESCRIPTION
@@ -36,12 +42,60 @@ Key features:
 Configuration is supplied via a TOML file.  An annotated example is
 installed at */etc/akamu/config.toml.example*.
 
-# ARGUMENTS
+# SUBCOMMANDS
 
-_config-file_
-	Path to the TOML configuration file.  Defaults to *config.toml*
-	in the current working directory.  When running under systemd the
-	unit file passes */etc/akamu/config.toml*.
+*serve* [*-c* _config-file_]
+	Start the ACME server.  This is the default when no subcommand is
+	given.
+
+	*-c*, *--config* _config-file_
+		Path to the TOML configuration file.  Defaults to *config.toml*
+		in the current working directory.  When running under systemd the
+		unit file passes */etc/akamu/config.toml*.
+
+*init* [_options_]
+	Generate a quickstart configuration file.
+
+	*-u*, *--base-url* _url_
+		Base URL of the ACME server (e.g. *https://acme.example.com:9443*).
+		Determines *listen_addr*, *base_url*, and the TLS *server_name*.
+		Default: *https://localhost:8443*.
+
+	*-o*, *--output* _path_
+		Output path for the generated configuration file.  Default:
+		*./config.toml* (or */etc/akamu/config.toml* with *--system*).
+
+	*--data-dir* _dir_
+		Data directory for database, keys, and certificates.  Default:
+		*~/.local/share/akamu* (or */var/lib/akamu* with *--system*).
+
+	*--system*
+		Use FHS paths for system-wide deployment (*/etc/akamu*,
+		*/var/lib/akamu*) and listen on all interfaces (*0.0.0.0*).
+
+	*--template* _file_
+		Path to a custom quickstart template file (overrides the built-in
+		default and the system template at */usr/share/akamu/quickstart.toml.in*).
+
+	*--force*
+		Overwrite an existing configuration file.
+
+*version*
+	Print version and build information.
+
+# BACKWARD COMPATIBILITY
+
+Running *akamu* without a subcommand defaults to *serve* behaviour.
+When the first positional argument looks like a file path (contains
+*.* or */*, or exists on disk), it is rewritten to
+*akamu serve -c* _path_.  This preserves compatibility with the
+previous single-argument invocation style:
+
+	akamu /etc/akamu/config.toml
+
+is equivalent to:
+
+	akamu serve -c /etc/akamu/config.toml
 
 # ENVIRONMENT
 
@@ -89,7 +143,15 @@ _config-file_
 
 Start the server with a non-default configuration file:
 
-	akamu /etc/akamu/staging.toml
+	akamu serve -c /etc/akamu/staging.toml
+
+Generate a quickstart configuration for system-wide deployment:
+
+	akamu init --system -u https://acme.example.com:9443
+
+Generate a quickstart configuration for local development:
+
+	akamu init
 
 Minimal single-CA configuration with SQLite and no TLS (behind a reverse
 proxy):

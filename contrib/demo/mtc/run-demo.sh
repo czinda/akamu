@@ -271,7 +271,7 @@ echo "[demo] akamu config written to $AKAMU_CFG"
 # ── akamu server ──────────────────────────────────────────────────────────────
 
 echo "[demo] Starting akamu ACME server (port ${AKAMU_PORT})..."
-"$AKAMU_BIN" "$AKAMU_CFG" \
+"$AKAMU_BIN" serve -c "$AKAMU_CFG" \
     > "$TESTDIR/akamu.log" 2>&1 &
 AKAMU_PID=$!
 wait_for_port 127.0.0.1 "$AKAMU_PORT" "akamu"

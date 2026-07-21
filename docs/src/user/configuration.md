@@ -1,12 +1,12 @@
 # Configuration Reference
 
-`Akāmu` reads a single TOML configuration file whose path is passed as the first command-line argument:
+`Akāmu` reads a single TOML configuration file whose path is passed via the `serve` subcommand:
 
 ```
-akamu /etc/akamu/config.toml
+akamu serve -c /etc/akamu/config.toml
 ```
 
-If no argument is given, the server looks for `config.toml` in the current working directory.
+If no config path is given, the server looks for `config.toml` in the current working directory. For backward compatibility, `akamu /etc/akamu/config.toml` (without a subcommand) is also accepted and automatically rewritten to `akamu serve -c /etc/akamu/config.toml`.
 
 The file is parsed once at startup. Changes require a restart. Unknown keys produce a parse error on startup (serde's strict TOML parser).
 

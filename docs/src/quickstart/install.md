@@ -122,7 +122,7 @@ cargo build --bin akamu-cli --release
 ./target/release/akamu --help
 ```
 
-The binary accepts a single optional argument: the path to the configuration file (defaults to `config.toml` in the current directory).
+The binary supports subcommands: `serve` (start the server), `init` (generate a quickstart config), and `version` (print version info). Running without a subcommand defaults to `serve` behaviour for backward compatibility.
 
 ## Installing the binary
 
@@ -145,7 +145,7 @@ After=network.target
 Type=simple
 User=akamu
 Group=akamu
-ExecStart=/usr/local/bin/akamu /etc/akamu/config.toml
+ExecStart=/usr/local/bin/akamu serve -c /etc/akamu/config.toml
 Restart=on-failure
 RestartSec=5s
 

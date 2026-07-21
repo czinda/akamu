@@ -472,7 +472,7 @@ echo "[demo]   - 'dogtag' (Dogtag-backed, for ACME issuance)"
 section "Starting Akamu"
 
 echo "[demo] Starting Akamu server..."
-"$AKAMU_BIN" "$AKAMU_DIR/akamu.toml" > "$AKAMU_DIR/akamu.log" 2>&1 &
+"$AKAMU_BIN" serve -c "$AKAMU_DIR/akamu.toml" > "$AKAMU_DIR/akamu.log" 2>&1 &
 AKAMU_PID=$!
 wait_for_port 127.0.0.1 "$AKAMU_PORT" "Akamu"
 wait_for_file "$AKAMU_DIR/local-ca.cert.pem" "Akamu local CA certificate"
