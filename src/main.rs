@@ -38,8 +38,7 @@ async fn dispatch() -> Result<(), String> {
 
     let args: Vec<String> = std::env::args().collect();
     let effective_args = rewrite_legacy_args(args);
-    let cli =
-        akamu::cli::Cli::try_parse_from(&effective_args).map_err(|e| e.to_string())?;
+    let cli = akamu::cli::Cli::try_parse_from(&effective_args).map_err(|e| e.to_string())?;
 
     match cli.command {
         Some(akamu::cli::Commands::Init {
@@ -47,7 +46,16 @@ async fn dispatch() -> Result<(), String> {
             output,
             data_dir,
             force,
-        }) => akamu::cli::run_init(&base_url, &output, data_dir.as_deref(), force),
+            system,
+            template,
+        }) => akamu::cli::run_init(&akamu::cli::InitOptions {
+            base_url: &base_url,
+            output: output.as_deref(),
+            data_dir: data_dir.as_deref(),
+            force,
+            system,
+            template: template.as_deref(),
+        }),
         Some(akamu::cli::Commands::Version) => {
             println!("akamu {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -1230,11 +1238,9 @@ async fn run(config_path: &str) -> Result<(), String> {
             .await
             .map_err(|e| format!("server error: {e}"))?;
     } else if config.tls.enabled {
-        let ca_cert_files: Vec<String> =
-            config.cas.iter().map(|c| c.cert_file.clone()).collect();
-        let mut server_cfg =
-            akamu::tls::build_rustls_server_config(&config.tls, &ca_cert_files)
-                .map_err(|e| format!("TLS config: {e}"))?;
+        let ca_cert_files: Vec<String> = config.cas.iter().map(|c| c.cert_file.clone()).collect();
+        let mut server_cfg = akamu::tls::build_rustls_server_config(&config.tls, &ca_cert_files)
+            .map_err(|e| format!("TLS config: {e}"))?;
         server_cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_cfg));
 
