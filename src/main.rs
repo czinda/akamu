@@ -53,7 +53,10 @@ async fn dispatch() -> Result<(), String> {
             Ok(())
         }
         Some(akamu::cli::Commands::Serve { config }) => {
-            run(config.to_str().unwrap_or("config.toml")).await
+            let path = config
+                .to_str()
+                .ok_or_else(|| format!("config path is not valid UTF-8: {}", config.display()))?;
+            run(path).await
         }
         None => run("config.toml").await,
     }
@@ -62,10 +65,16 @@ async fn dispatch() -> Result<(), String> {
 /// Backward compatibility: if args[1] is not a known subcommand and looks
 /// like a file path, rewrite to `["akamu", "serve", "-c", <path>]`.
 fn rewrite_legacy_args(args: Vec<String>) -> Vec<String> {
+    use clap::CommandFactory;
+
     if args.len() == 2 {
         let arg = &args[1];
-        let known = ["serve", "init", "version", "--help", "-h", "--version", "-V"];
-        if !known.contains(&arg.as_str())
+        if arg.starts_with('-') {
+            return args;
+        }
+        let cmd = akamu::cli::Cli::command();
+        let is_subcommand = cmd.get_subcommands().any(|sc| sc.get_name() == arg);
+        if !is_subcommand
             && (arg.contains('.') || arg.contains('/') || std::path::Path::new(arg).exists())
         {
             return vec![
@@ -369,7 +378,7 @@ async fn run(config_path: &str) -> Result<(), String> {
     // Sweep DB nonces older than 24 h at startup (best-effort; handles any
     // nonces written by a previous process that used the DB-backed store).
     if let Err(e) = db::nonces::sweep_expired(&db, 86400).await {
-        tracing::debug!("nonce sweep at startup: {e}");
+        tracing::warn!("nonce sweep at startup failed (non-fatal): {e}");
     }
 
     // ── CRDT database (separate pool for cluster tables) ─────────────────────
