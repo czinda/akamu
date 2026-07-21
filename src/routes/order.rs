@@ -973,14 +973,14 @@ pub(crate) fn order_json<'a>(
         None
     };
 
-    // Non-STAR certificate URL: prefer upstream_cert_url, else local cert path.
+    // Non-STAR certificate URL: prefer local cert (stored by delegation_upstream),
+    // fall back to upstream_cert_url only when no local copy exists.
     let certificate = if order.status == "valid" && order.star_end_date.is_none() {
-        order.upstream_cert_url.clone().or_else(|| {
-            order
-                .certificate_id
-                .as_ref()
-                .map(|c| format!("{acme_pfx}/cert/{c}"))
-        })
+        order
+            .certificate_id
+            .as_ref()
+            .map(|c| format!("{acme_pfx}/cert/{c}"))
+            .or_else(|| order.upstream_cert_url.clone())
     } else {
         None
     };
