@@ -170,6 +170,9 @@ http_validation_port              = ${A_HTTP_PORT}
 http_validation_allow_private_ips = true
 validate_dnssec                   = false
 
+[server.webui]
+static_dir = "${REPO_ROOT}/webui/dist"
+
 [admin]
 bootstrap_operator_pkcs12_file = "${A_DIR}/admin.p12"
 EOF
@@ -204,6 +207,9 @@ validity_days = 90
 http_validation_port              = ${B_HTTP_PORT}
 http_validation_allow_private_ips = true
 validate_dnssec                   = false
+
+[server.webui]
+static_dir = "${REPO_ROOT}/webui/dist"
 
 [admin]
 bootstrap_operator_pkcs12_file = "${B_DIR}/admin.p12"
