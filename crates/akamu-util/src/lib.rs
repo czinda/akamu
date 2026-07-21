@@ -12,7 +12,7 @@
 //!   `uds_marker_layer`, `UdsConnection`
 //! - [`tls`] — `load_server_cert_chain`, `load_server_private_key`
 //! - [`auth`] — `PeerClientCert`, `generate_token`, `find_session_token`
-//! - [`util`] — `sha256_hex`
+//! - [`util`] — `sha256_hex`, `read_password_from_file`
 
 pub mod auth;
 pub mod listen;
