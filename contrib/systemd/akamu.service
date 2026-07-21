@@ -8,7 +8,16 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/akamu /etc/akamu/config.toml
+# On first start, generate a quickstart config if none exists.
+# Uses the system FQDN and port 9443; override with a manual config.
+# ProtectHostname=yes prevents *changing* the hostname; reading it still works.
+ExecStartPre=/bin/sh -c '\
+    test -f /etc/akamu/config.toml || { \
+        _fqdn=$(/usr/bin/hostname -f 2>/dev/null) || _fqdn=""; \
+        [ -n "$_fqdn" ] || { echo >&2 "akamu: hostname -f returned empty; set hostname or create /etc/akamu/config.toml manually"; exit 1; }; \
+        /usr/bin/akamu init --system -u "https://${_fqdn}:9443"; \
+    }'
+ExecStart=/usr/bin/akamu serve -c /etc/akamu/config.toml
 Restart=on-failure
 RestartSec=5s
 
