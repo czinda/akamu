@@ -1167,6 +1167,15 @@ async fn run(config_path: &str) -> Result<(), String> {
         .and_then(|w| w.static_dir.as_deref())
         .map(std::path::PathBuf::from);
     let webui_enabled = config.server.webui.is_some();
+    if webui_enabled && static_dir.is_none() {
+        #[cfg(not(feature = "embed-webui"))]
+        return Err(
+            "[server.webui] is configured without static_dir but the binary was \
+             not compiled with the embed-webui feature; either set static_dir \
+             or rebuild with --features embed-webui"
+                .into(),
+        );
+    }
     let router = routes::build_router(Arc::clone(&state), static_dir.as_deref(), webui_enabled);
 
     // ── Systemd socket activation (try listenfd before config-based bind) ─────

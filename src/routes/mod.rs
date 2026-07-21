@@ -471,6 +471,8 @@ pub fn build_router(
         .merge(build_other_router())
         .merge(build_admin_router());
 
+    let mut has_ui = false;
+
     if let Some(dir) = static_dir {
         let index = ServeFile::new(dir.join("index.html"));
         let serve = ServeDir::new(dir)
@@ -479,17 +481,15 @@ pub fn build_router(
         let serve_with_headers = tower::ServiceBuilder::new()
             .layer(axum::middleware::from_fn(ui_security_headers))
             .service(serve);
-        router = router
-            .nest_service("/ui", serve_with_headers)
-            .route("/", get(|| async { Redirect::permanent("/ui/") }));
+        router = router.nest_service("/ui", serve_with_headers);
+        has_ui = true;
     } else if webui_enabled {
         #[cfg(feature = "embed-webui")]
         {
-            router = router
-                .route("/ui/{*path}", embedded_ui::embedded_ui_service())
-                .route("/ui", embedded_ui::embedded_ui_service())
-                .route("/ui/", embedded_ui::embedded_ui_service())
-                .route("/", get(|| async { Redirect::permanent("/ui/") }));
+            let ui =
+                embedded_ui::webui_router().layer(axum::middleware::from_fn(ui_security_headers));
+            router = router.nest("/ui", ui);
+            has_ui = true;
         }
         #[cfg(not(feature = "embed-webui"))]
         {
@@ -498,6 +498,10 @@ pub fn build_router(
                  not compiled with the embed-webui feature"
             );
         }
+    }
+
+    if has_ui {
+        router = router.route("/", get(|| async { Redirect::permanent("/ui/") }));
     }
 
     router
@@ -514,7 +518,7 @@ pub fn build_router(
 
 /// Middleware that adds security headers to every `/ui/*` response.
 async fn ui_security_headers(req: Request, next: Next) -> Response {
-    let is_hashed_asset = req.uri().path().starts_with("/ui/assets/");
+    let is_hashed_asset = req.uri().path().starts_with("/assets/");
     let mut resp = next.run(req).await;
     let headers = resp.headers_mut();
     headers.insert(
