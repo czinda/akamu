@@ -15,7 +15,7 @@
 #
 # Full reference: config.toml.example
 
-listen_addr = "0.0.0.0:{port}"
+listen_addr = "127.0.0.1:{port}"
 base_url    = "{base_url}"
 
 [database]
