@@ -1796,6 +1796,7 @@ challenge_solver        = "dns-01"
 challenge_deploy_script = "/etc/akamu/upstream-dns-deploy.sh"
 # challenge_cleanup_script = "/etc/akamu/upstream-dns-cleanup.sh"
 # poll_interval_secs = 10
+# ca_cert_file = "/etc/akamu/upstream-ca-trust.pem"
 ```
 
 ### `directory_url`
@@ -1826,7 +1827,7 @@ contacts = ["mailto:admin@example.com"]
 
 ### `challenge_solver`
 
-**Required within `[delegation_upstream]`.** Challenge type used to satisfy the upstream CA's authorizations. Accepted values: `"dns-01"`, `"http-01"`, `"tls-alpn-01"`.
+**Required within `[delegation_upstream]`.** Challenge type used to satisfy the upstream CA's authorizations. Only `"dns-01"` is accepted; delegation profiles require DNS-based validation.
 
 ```toml
 challenge_solver = "dns-01"
@@ -1867,6 +1868,16 @@ How often the background task polls the upstream CA for order and authorization 
 
 ```toml
 poll_interval_secs = 10
+```
+
+### `ca_cert_file`
+
+**Optional. Default: absent (system trust store only).**
+
+Path to a PEM file containing an additional CA certificate to trust when connecting to the upstream CA's ACME directory and API endpoints. Use this when the upstream server uses a private CA certificate that is not in the system trust store. The path must be absolute.
+
+```toml
+ca_cert_file = "/etc/akamu/upstream-ca-trust.pem"
 ```
 
 ---

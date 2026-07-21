@@ -1074,6 +1074,10 @@ challenge_deploy_script = "/etc/akamu/upstream-dns-deploy.sh"
 
 # Polling interval for the upstream order status (seconds). Default: 10.
 # poll_interval_secs = 10
+
+# PEM file containing an additional CA certificate to trust for the upstream
+# CA's TLS connection.  Use when the upstream server uses a private CA.
+# ca_cert_file = "/etc/akamu/upstream-ca-trust.pem"
 ```
 
 The deploy script is invoked after Akāmu has triggered the challenge at the upstream CA. The cleanup script is called once the authorization has transitioned to `valid` — not immediately after the deploy script, which allows the TXT record to remain in place long enough for the upstream CA's validators to query it.

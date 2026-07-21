@@ -62,16 +62,19 @@ Akāmu is written in Rust and organized as a Cargo workspace.
 - [RFC 8737](https://www.rfc-editor.org/rfc/rfc8737) — ACME TLS-ALPN-01 Challenge Type
 - [RFC 8738](https://www.rfc-editor.org/rfc/rfc8738) — ACME IP Identifier Validation
 - [RFC 8739](https://www.rfc-editor.org/rfc/rfc8739) — ACME Short-Term, Automatically Renewed (STAR) Certificates
+- [RFC 9115](https://www.rfc-editor.org/rfc/rfc9115) — ACME Profile for Delegated Certificates
 - [RFC 9444](https://www.rfc-editor.org/rfc/rfc9444) — ACME for Subdomains
 - [RFC 9447](https://www.rfc-editor.org/rfc/rfc9447) — ACME Challenges Using an Authority Token (tkauth-01)
 - [RFC 9448](https://www.rfc-editor.org/rfc/rfc9448) — ACME TNAuthList Authority Token
 - [RFC 9773](https://www.rfc-editor.org/rfc/rfc9773) — ACME Renewal Information (ARI)
+- [RFC 8823](https://www.rfc-editor.org/rfc/rfc8823) — ACME Extensions for S/MIME Certificates
 - [RFC 9799](https://www.rfc-editor.org/rfc/rfc9799) — ACME Extensions for .onion Special-Use Domain Names
 - [RFC 7807](https://www.rfc-editor.org/rfc/rfc7807) — Problem Details for HTTP APIs (error responses)
 - [RFC 5280](https://www.rfc-editor.org/rfc/rfc5280) — X.509 Certificate and CRL profile
 - [RFC 6960](https://www.rfc-editor.org/rfc/rfc6960) — Online Certificate Status Protocol (OCSP)
 - [Let's Encrypt dns-persist-01](https://letsencrypt.org/2026/02/18/dns-persist-01) — Persistent DNS challenge type
 - [draft-ietf-acme-profiles-01](https://datatracker.ietf.org/doc/draft-ietf-acme-profiles/) — ACME certificate profiles
+- [RFC 9964](https://www.rfc-editor.org/rfc/rfc9964) — ML-DSA for JOSE and COSE
 - [draft-ietf-lamps-pq-composite-sigs](https://datatracker.ietf.org/doc/draft-ietf-lamps-pq-composite-sigs/) — ML-DSA composite TLS signature schemes (provisional code points)
 - [draft-ietf-plants-merkle-tree-certs-05](https://datatracker.ietf.org/doc/draft-ietf-plants-merkle-tree-certs/05/) — Merkle Tree Certificates (MTC), transparency-log-backed certificate format (experimental OIDs, pre-IANA)
 
