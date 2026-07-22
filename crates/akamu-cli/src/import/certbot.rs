@@ -49,7 +49,16 @@ pub fn discover_accounts(certbot_dir: &Path) -> Vec<CertbotAccount> {
         }
     };
 
-    for ca_entry in ca_dirs.flatten() {
+    for ca_entry in ca_dirs.filter_map(|e| match e {
+        Ok(e) => Some(e),
+        Err(e) => {
+            eprintln!(
+                "Warning: cannot read entry in {}: {e}",
+                accounts_dir.display()
+            );
+            None
+        }
+    }) {
         let ca_path = ca_entry.path();
         if !ca_path.is_dir() {
             continue;
@@ -83,7 +92,13 @@ fn collect_accounts_recursive(
         }
     };
 
-    for entry in entries.flatten() {
+    for entry in entries.filter_map(|e| match e {
+        Ok(e) => Some(e),
+        Err(e) => {
+            eprintln!("Warning: cannot read entry in {}: {e}", dir.display());
+            None
+        }
+    }) {
         let path = entry.path();
         if !path.is_dir() {
             continue;
@@ -154,8 +169,17 @@ fn parse_regr_json(path: &Path) -> (Option<String>, Vec<String>) {
 }
 
 fn parse_meta_json(path: &Path) -> Option<String> {
-    let text = fs::read_to_string(path).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let text = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => return None,
+    };
+    let v: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Warning: cannot parse {}: {e}", path.display());
+            return None;
+        }
+    };
     v["creation_dt"].as_str().map(str::to_string)
 }
 
@@ -177,7 +201,16 @@ pub fn discover_renewals(certbot_dir: &Path) -> Vec<CertbotRenewal> {
         }
     };
 
-    for entry in entries.flatten() {
+    for entry in entries.filter_map(|e| match e {
+        Ok(e) => Some(e),
+        Err(e) => {
+            eprintln!(
+                "Warning: cannot read entry in {}: {e}",
+                renewal_dir.display()
+            );
+            None
+        }
+    }) {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("conf") {
             continue;
@@ -272,7 +305,12 @@ pub fn pem_key_type(pem: &[u8]) -> String {
                 );
                 "rsa:2048".into()
             }
-            _ => "ec:P-256".into(),
+            other => {
+                eprintln!(
+                    "Warning: unrecognised key algorithm '{other}'; defaulting cert_key_type to ec:P-256"
+                );
+                "ec:P-256".into()
+            }
         },
         Err(e) => {
             eprintln!("Warning: could not determine key type ({e}); defaulting to ec:P-256");
@@ -287,6 +325,7 @@ pub fn pem_key_type(pem: &[u8]) -> String {
 /// `"ec:P-256"` when the JWK cannot be parsed or the type is unrecognised.
 pub fn jwk_key_type(json: &str) -> String {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+        eprintln!("Warning: could not parse account JWK; defaulting account_key_type to ec:P-256");
         return "ec:P-256".into();
     };
     match v["kty"].as_str() {
@@ -319,7 +358,13 @@ pub fn jwk_key_type(json: &str) -> String {
                 .unwrap_or(2048);
             format!("rsa:{bits}")
         }
-        _ => "ec:P-256".into(),
+        other => {
+            eprintln!(
+                "Warning: unsupported JWK kty '{}'; defaulting account_key_type to ec:P-256",
+                other.unwrap_or("(missing)")
+            );
+            "ec:P-256".into()
+        }
     }
 }
 

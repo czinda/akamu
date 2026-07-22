@@ -64,7 +64,7 @@ pub struct CertbotImportArgs {
 
 // ── command handler ───────────────────────────────────────────────────────────
 
-pub async fn cmd_import_certbot(args: CertbotImportArgs) -> Result<(), String> {
+pub(crate) async fn cmd_import_certbot(args: CertbotImportArgs) -> Result<(), String> {
     let accounts = discover_accounts(&args.certbot_dir);
     let renewals = discover_renewals(&args.certbot_dir);
 
