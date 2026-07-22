@@ -487,15 +487,19 @@ pub(crate) async fn cmd_issue(
     .await;
 
     // Phase 4: cleanup (always runs).
-    if let Some(s) = solver.as_ref() {
+    if let Some(s) = solver {
         for token in &http01_tokens {
-            let _ = s.cleanup(token).await;
+            if let Err(e) = s.cleanup(token).await {
+                eprintln!("Warning: http-01 cleanup for token {token}: {e}");
+            }
         }
     }
     if let Some(hook) = &args.dns_hook {
         let s = DnsHookSolver::new(hook.clone());
         for (domain, token, key_auth) in &dns01_cleanups {
-            let _ = s.clean(domain, token, key_auth).await;
+            if let Err(e) = s.clean(domain, token, key_auth).await {
+                eprintln!("Warning: dns-01 cleanup for {domain}: {e}");
+            }
         }
     }
     if let Some(mut s) = tls_solver.take() {
