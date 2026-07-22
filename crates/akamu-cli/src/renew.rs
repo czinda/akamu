@@ -69,11 +69,23 @@ fn parse_rfc3339_utc(s: &str) -> Option<u64> {
 /// or `Err(...)` if the certificate file cannot be read.
 /// When the ARI endpoint is unavailable, logs a warning and returns `Ok(true)`.
 /// Skips the check when `cert_path` does not exist.
-async fn check_ari_window(dir_url: &str, cert_path: &Path) -> Result<bool, String> {
+async fn check_ari_window(
+    dir_url: &str,
+    cert_path: &Path,
+    server_ca: Option<&Path>,
+) -> Result<bool, String> {
     if !cert_path.exists() {
         return Ok(true);
     }
-    let client = AcmeClient::new(dir_url).await.map_err(|e| e.to_string())?;
+    let client = if let Some(ca_path) = server_ca {
+        let pem = std::fs::read(ca_path)
+            .map_err(|e| format!("--server-ca {}: {e}", ca_path.display()))?;
+        AcmeClient::new_with_extra_root(dir_url, &pem)
+            .await
+            .map_err(|e| e.to_string())?
+    } else {
+        AcmeClient::new(dir_url).await.map_err(|e| e.to_string())?
+    };
     let cert_bytes =
         fs::read(cert_path).map_err(|e| format!("read {}: {e}", cert_path.display()))?;
     match client.get_renewal_info(&cert_bytes).await {
@@ -138,7 +150,7 @@ pub(crate) async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
         // Check ARI if --cert or cert_path from config exists and --force is not set.
         if !args.force {
             let cert_path = args.cert.as_deref().unwrap_or(&cfg.cert_path);
-            if !check_ari_window(&cfg_dir_url, cert_path).await? {
+            if !check_ari_window(&cfg_dir_url, cert_path, args.common.server_ca.as_deref()).await? {
                 return Ok(());
             }
         }
@@ -178,7 +190,7 @@ pub(crate) async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
     let dir_url = resolve_directory_url(&args.common.server, args.common.ca.as_deref());
     if !args.force {
         if let Some(ref cert_path) = args.cert {
-            if !check_ari_window(&dir_url, cert_path).await? {
+            if !check_ari_window(&dir_url, cert_path, args.common.server_ca.as_deref()).await? {
                 return Ok(());
             }
         }
