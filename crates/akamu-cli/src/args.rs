@@ -307,7 +307,7 @@ pub(crate) struct CommonCertArgs {
 
     /// PEM file for the account key (generated and saved if absent)
     #[arg(long)]
-    pub(crate) account_key: PathBuf,
+    pub(crate) account_key: Option<PathBuf>,
 
     /// Certificate key type (used when generating the CSR signing key)
     #[arg(long = "cert-key-type", default_value = "ec:P-256")]
@@ -340,7 +340,7 @@ pub(crate) struct CommonCertArgs {
 
     /// Write the PEM certificate chain to this file
     #[arg(long)]
-    pub(crate) out: PathBuf,
+    pub(crate) out: Option<PathBuf>,
 
     /// Hook script for DNS TXT record management (invoked as `<script> add|remove`
     /// with values in AKAMU_DOMAIN / AKAMU_TOKEN / AKAMU_TXT / AKAMU_KEY_AUTH env vars)

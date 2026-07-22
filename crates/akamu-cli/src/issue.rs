@@ -36,6 +36,9 @@ pub(crate) async fn cmd_issue(
     args: CommonCertArgs,
     delegation: Option<&str>,
 ) -> Result<(), String> {
+    let account_key_path = args.account_key.ok_or("--account-key is required")?;
+    let out_path = args.out.ok_or("--out is required")?;
+
     let using_jwtcc = args.challenge_type == "tkauth-01" && args.jwtcc.is_some();
     if args.domains.is_empty() && !using_jwtcc {
         return Err("at least one --domain is required (or --jwtcc for tkauth-01)".into());
@@ -44,7 +47,7 @@ pub(crate) async fn cmd_issue(
     let dir_url = resolve_directory_url(&args.server, args.ca.as_deref());
 
     // Load or generate the account key.
-    let key = load_or_generate_key(&args.account_key, &args.key_type)?;
+    let key = load_or_generate_key(&account_key_path, &args.key_type)?;
     let key = Arc::new(key);
 
     let client = if let Some(ca_path) = &args.server_ca {
@@ -58,7 +61,7 @@ pub(crate) async fn cmd_issue(
     };
 
     // Load existing account or register a new one.
-    let account = if let Ok(url) = load_account_url_for_ca(&args.account_key, args.ca.as_deref()) {
+    let account = if let Ok(url) = load_account_url_for_ca(&account_key_path, args.ca.as_deref()) {
         akamu_client::Account::new(url, "valid".to_string(), vec![], Arc::clone(&key))
     } else {
         let gssapi_eab = match args.eab.gssapi_keytab.as_ref() {
@@ -80,7 +83,7 @@ pub(crate) async fn cmd_issue(
             .new_account(Arc::clone(&key), &opts)
             .await
             .map_err(|e| format!("register: {e}"))?;
-        save_account_url_for_ca(&args.account_key, args.ca.as_deref(), &acct.url)?;
+        save_account_url_for_ca(&account_key_path, args.ca.as_deref(), &acct.url)?;
         println!("Registered new account: {}", acct.url);
         acct
     };
@@ -453,7 +456,7 @@ pub(crate) async fn cmd_issue(
 
     // Load or generate the certificate private key.
     let cert_key_path: PathBuf = args.cert_key.clone().unwrap_or_else(|| {
-        let mut p = args.out.clone();
+        let mut p = out_path.clone();
         let mut name = p.file_name().unwrap_or_default().to_os_string();
         name.push(".key.pem");
         p.set_file_name(name);
@@ -508,8 +511,8 @@ pub(crate) async fn cmd_issue(
         .await
         .map_err(|e| e.to_string())?;
 
-    fs::write(&args.out, &pem).map_err(|e| format!("write {}: {e}", args.out.display()))?;
-    println!("Certificate written to {}", args.out.display());
+    fs::write(&out_path, &pem).map_err(|e| format!("write {}: {e}", out_path.display()))?;
+    println!("Certificate written to {}", out_path.display());
     println!("Certificate URL:  {}", cert_url);
     println!("Certificate key:  {}", cert_key_path.display());
 
@@ -518,9 +521,9 @@ pub(crate) async fn cmd_issue(
         server: args.server.clone(),
         ca: args.ca.clone(),
         domains: ids,
-        account_key: args.account_key.clone(),
+        account_key: account_key_path.clone(),
         account_key_type: args.key_type.clone(),
-        cert_path: args.out.clone(),
+        cert_path: out_path.clone(),
         cert_key_path: cert_key_path.clone(),
         cert_key_type: args.cert_key_type.clone(),
         challenge_type: args.challenge_type.clone(),
@@ -541,7 +544,7 @@ pub(crate) async fn cmd_issue(
     };
     let toml_str = toml::to_string_pretty(&renewal_config)
         .map_err(|e| format!("serialize renewal config: {e}"))?;
-    let mut renewal_path = args.out.clone().into_os_string();
+    let mut renewal_path = out_path.clone().into_os_string();
     renewal_path.push(".renewal.toml");
     let renewal_path = std::path::PathBuf::from(renewal_path);
     write_private_file(&renewal_path, toml_str.as_bytes())?;
