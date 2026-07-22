@@ -100,18 +100,7 @@ pub async fn cmd_import_certbot(args: CertbotImportArgs) -> Result<(), String> {
     let matching_accounts: Vec<&certbot::CertbotAccount> = if let Some(ref srv) = args.server {
         accounts
             .iter()
-            .filter(|a| {
-                a.account_url
-                    .as_deref()
-                    .map(|u| u.contains(srv.trim_end_matches('/')))
-                    .unwrap_or(false)
-                    || a.ca_hostname.contains(
-                        srv.trim_start_matches("https://")
-                            .split('/')
-                            .next()
-                            .unwrap_or(""),
-                    )
-            })
+            .filter(|a| account_matches_server(a, srv))
             .collect()
     } else {
         accounts.iter().collect()
@@ -358,4 +347,95 @@ pub async fn cmd_import_certbot(args: CertbotImportArgs) -> Result<(), String> {
         println!("Import complete: 1 account, {certs_imported} certificate(s).");
     }
     Ok(())
+}
+
+fn account_matches_server(acct: &certbot::CertbotAccount, server: &str) -> bool {
+    if let Some(ref url) = acct.account_url {
+        if url.contains(server.trim_end_matches('/')) {
+            return true;
+        }
+    }
+    let after_scheme = if let Some(rest) = server.strip_prefix("https://") {
+        rest
+    } else if let Some(rest) = server.strip_prefix("http://") {
+        rest
+    } else {
+        server
+    };
+    let host = after_scheme.split('/').next().unwrap_or("");
+    if host.is_empty() {
+        return false;
+    }
+    acct.ca_hostname == host
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_account(ca_hostname: &str, account_url: Option<&str>) -> certbot::CertbotAccount {
+        certbot::CertbotAccount {
+            ca_hostname: ca_hostname.into(),
+            account_id: "test".into(),
+            jwk_json: String::new(),
+            account_url: account_url.map(|s| s.into()),
+            contacts: vec![],
+            creation_dt: None,
+        }
+    }
+
+    #[test]
+    fn server_filter_https_url() {
+        let acct = make_account("acme-v02.api.letsencrypt.org", None);
+        assert!(account_matches_server(
+            &acct,
+            "https://acme-v02.api.letsencrypt.org/directory"
+        ));
+    }
+
+    #[test]
+    fn server_filter_http_url() {
+        let acct = make_account("certproxysqa.hr.asseco-see.local:8080", None);
+        assert!(account_matches_server(
+            &acct,
+            "http://certproxysqa.hr.asseco-see.local:8080/certiligent/acme/v2/directory"
+        ));
+    }
+
+    #[test]
+    fn server_filter_by_account_url() {
+        let acct = make_account(
+            "example.com:8080",
+            Some("http://example.com:8080/acme/acct/1"),
+        );
+        assert!(account_matches_server(
+            &acct,
+            "http://example.com:8080/acme"
+        ));
+    }
+
+    #[test]
+    fn server_filter_no_match() {
+        let acct = make_account("acme.example.com", None);
+        assert!(!account_matches_server(
+            &acct,
+            "https://other.example.com/directory"
+        ));
+    }
+
+    #[test]
+    fn server_filter_rejects_substring_match() {
+        let acct = make_account("notexample.com", None);
+        assert!(!account_matches_server(
+            &acct,
+            "https://example.com/directory"
+        ));
+    }
+
+    #[test]
+    fn server_filter_empty_host_matches_nothing() {
+        let acct = make_account("acme.example.com", None);
+        assert!(!account_matches_server(&acct, "https://"));
+        assert!(!account_matches_server(&acct, "http://"));
+    }
 }
