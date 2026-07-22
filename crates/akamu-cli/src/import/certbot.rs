@@ -28,8 +28,12 @@ pub struct CertbotRenewal {
 
 // ── Account discovery ─────────────────────────────────────────────────────────
 
-/// Walk `<certbot-dir>/accounts/<ca-hostname>/<account-id>/` and return all
-/// found accounts.  Skips directories that are missing required files.
+/// Walk `<certbot-dir>/accounts/` and return all found accounts.
+///
+/// Certbot stores accounts at `accounts/<server-netloc>/<url-path…>/<hash>/`
+/// where the URL-path depth varies by CA (e.g. Let's Encrypt v2 uses
+/// `acme-v02.api.letsencrypt.org/directory/<hash>/`).  We recurse up to 8
+/// levels to find any directory containing `private_key.json`.
 pub fn discover_accounts(certbot_dir: &Path) -> Vec<CertbotAccount> {
     let accounts_dir = certbot_dir.join("accounts");
     let mut accounts = Vec::new();
@@ -56,54 +60,70 @@ pub fn discover_accounts(certbot_dir: &Path) -> Vec<CertbotAccount> {
             .to_string_lossy()
             .into_owned();
 
-        let acct_dirs = match fs::read_dir(&ca_path) {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!(
-                    "Warning: cannot read certbot CA dir {}: {e}",
-                    ca_path.display()
-                );
-                continue;
-            }
-        };
+        collect_accounts_recursive(&ca_path, &ca_hostname, &mut accounts, 8);
+    }
 
-        for acct_entry in acct_dirs.flatten() {
-            let acct_path = acct_entry.path();
-            if !acct_path.is_dir() {
-                continue;
-            }
-            let account_id = acct_path
+    accounts
+}
+
+/// Recurse into `dir` looking for subdirectories that contain
+/// `private_key.json`.  When found, load the account; otherwise recurse
+/// deeper (up to `depth` levels) to handle multi-segment URL paths.
+fn collect_accounts_recursive(
+    dir: &Path,
+    ca_hostname: &str,
+    accounts: &mut Vec<CertbotAccount>,
+    depth: u8,
+) {
+    let entries = match fs::read_dir(dir) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("Warning: cannot read certbot dir {}: {e}", dir.display());
+            return;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let key_path = path.join("private_key.json");
+        if key_path.exists() {
+            let account_id = path
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned();
 
-            let jwk_json = match fs::read_to_string(acct_path.join("private_key.json")) {
+            let jwk_json = match fs::read_to_string(&key_path) {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!(
-                        "Warning: skipping account {account_id} ({}): cannot read private_key.json: {e}",
-                        acct_path.display()
+                        "Warning: skipping account {account_id} ({}): \
+                         cannot read private_key.json: {e}",
+                        path.display()
                     );
                     continue;
                 }
             };
 
-            let (account_url, contacts) = parse_regr_json(&acct_path.join("regr.json"));
-            let creation_dt = parse_meta_json(&acct_path.join("meta.json"));
+            let (account_url, contacts) = parse_regr_json(&path.join("regr.json"));
+            let creation_dt = parse_meta_json(&path.join("meta.json"));
 
             accounts.push(CertbotAccount {
-                ca_hostname: ca_hostname.clone(),
+                ca_hostname: ca_hostname.to_string(),
                 account_id,
                 jwk_json,
                 account_url,
                 contacts,
                 creation_dt,
             });
+        } else if depth > 0 {
+            collect_accounts_recursive(&path, ca_hostname, accounts, depth - 1);
         }
     }
-
-    accounts
 }
 
 fn parse_regr_json(path: &Path) -> (Option<String>, Vec<String>) {
@@ -552,6 +572,76 @@ account = abc123
     fn jwk_key_type_unknown_falls_back() {
         let jwk = r#"{"kty":"OKP","crv":"Ed25519"}"#;
         assert_eq!(jwk_key_type(jwk), "ec:P-256");
+    }
+
+    #[test]
+    fn discover_accounts_deep_directory_structure() {
+        let tmp = std::env::temp_dir().join("akamu_test_deep_accounts");
+        let _ = fs::remove_dir_all(&tmp);
+
+        // Simulate: accounts/<host:port>/<path>/<to>/<directory>/<hash>/
+        let acct_dir = tmp
+            .join("accounts")
+            .join("acme.example.com:8080")
+            .join("app")
+            .join("acme")
+            .join("v2")
+            .join("directory")
+            .join("abc123hash");
+        fs::create_dir_all(&acct_dir).unwrap();
+        fs::write(
+            acct_dir.join("private_key.json"),
+            r#"{"kty":"EC","crv":"P-256","x":"a","y":"b","d":"c"}"#,
+        )
+        .unwrap();
+        fs::write(
+            acct_dir.join("regr.json"),
+            r#"{"uri":"https://acme.example.com:8080/acct/1","body":{"contact":["mailto:a@b"]}}"#,
+        )
+        .unwrap();
+        fs::write(
+            acct_dir.join("meta.json"),
+            r#"{"creation_dt":"2025-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+
+        let accounts = discover_accounts(&tmp);
+        let _ = fs::remove_dir_all(&tmp);
+
+        assert_eq!(accounts.len(), 1, "should find the deeply nested account");
+        assert_eq!(accounts[0].ca_hostname, "acme.example.com:8080");
+        assert_eq!(accounts[0].account_id, "abc123hash");
+        assert_eq!(
+            accounts[0].account_url.as_deref(),
+            Some("https://acme.example.com:8080/acct/1")
+        );
+        assert_eq!(accounts[0].contacts, vec!["mailto:a@b"]);
+    }
+
+    #[test]
+    fn discover_accounts_shallow_directory_structure() {
+        let tmp = std::env::temp_dir().join("akamu_test_shallow_accounts");
+        let _ = fs::remove_dir_all(&tmp);
+
+        // Simulate the v1 layout: accounts/<host>/<hash>/
+        let acct_dir = tmp
+            .join("accounts")
+            .join("acme-v01.example.com")
+            .join("deadbeef");
+        fs::create_dir_all(&acct_dir).unwrap();
+        fs::write(
+            acct_dir.join("private_key.json"),
+            r#"{"kty":"EC","crv":"P-384","x":"a","y":"b","d":"c"}"#,
+        )
+        .unwrap();
+        fs::write(acct_dir.join("regr.json"), r#"{}"#).unwrap();
+
+        let accounts = discover_accounts(&tmp);
+        let _ = fs::remove_dir_all(&tmp);
+
+        assert_eq!(accounts.len(), 1, "should find the shallow account");
+        assert_eq!(accounts[0].ca_hostname, "acme-v01.example.com");
+        assert_eq!(accounts[0].account_id, "deadbeef");
     }
 
     #[test]
