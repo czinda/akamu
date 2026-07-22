@@ -176,7 +176,9 @@ fn alg_for_key(key: &BackendPrivateKey) -> Result<&'static str, ClientError> {
         "ed25519" => Ok("EdDSA"),
         "ed448" => Ok("EdDSA"),
         _ => {
-            // ML-DSA: inspect SPKI OID discriminant byte at offset 16.
+            // ML-DSA: OID arc 2.16.840.1.101.3.4.3.{17,18,19} = ML-DSA-{44,65,87}.
+            // The 8-byte PREFIX is the DER encoding of 2.16.840.1.101.3.4.3;
+            // the discriminant byte at offset 16 selects the variant.
             let spki = pub_key.spki_der();
             const PREFIX: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03];
             if spki.len() > 17 && spki[8..16] == *PREFIX {
@@ -208,22 +210,24 @@ pub fn compute_thumbprint(jwk: &JwkPublic) -> Result<String, ClientError> {
 ///
 /// Supports EC (`P-256`, `P-384`, `P-521`) and RSA keys.  The JWK fields are
 /// expected in base64url-no-padding encoding, as produced by certbot.
+///
+/// Keys are constructed by encoding a PKCS#8 DER from the JWK components
+/// and loading via [`BackendPrivateKey::from_der`].  This avoids the
+/// `EVP_PKEY_fromdata` → `to_pkcs8_der` round-trip which panics on some
+/// OpenSSL 3.x builds with "illegal zero content".
 fn jwk_private_to_backend_key(json: &str) -> Result<BackendPrivateKey, String> {
     let v: serde_json::Value = serde_json::from_str(json).map_err(|e| format!("parse JWK: {e}"))?;
     let kty = v["kty"].as_str().unwrap_or("").to_uppercase();
     match kty.as_str() {
         "EC" => {
-            let crv = v["crv"].as_str().unwrap_or("");
-            let curve = match crv {
-                "P-256" => "P-256",
-                "P-384" => "P-384",
-                "P-521" => "P-521",
-                other => return Err(format!("unsupported EC curve: {other}")),
-            };
+            let crv = v["crv"]
+                .as_str()
+                .ok_or_else(|| "EC JWK missing required 'crv' field".to_string())?;
             let d = jwk_b64u(&v, "d")?;
             let x = jwk_b64u(&v, "x")?;
             let y = jwk_b64u(&v, "y")?;
-            BackendPrivateKey::from_ec_private_scalar(&d, &x, &y, curve).map_err(|e| e.to_string())
+            let pkcs8 = ec_jwk_to_pkcs8(&d, &x, &y, crv)?;
+            BackendPrivateKey::from_der(&pkcs8).map_err(|e| e.to_string())
         }
         "RSA" => {
             let n = jwk_b64u(&v, "n")?;
@@ -244,10 +248,135 @@ fn jwk_private_to_backend_key(json: &str) -> Result<BackendPrivateKey, String> {
                 dq: &dq,
                 qi: &qi,
             };
-            BackendPrivateKey::from_rsa_private_components(&components).map_err(|e| e.to_string())
+            let pkcs8 = rsa_jwk_to_pkcs8(&components)?;
+            BackendPrivateKey::from_der(&pkcs8).map_err(|e| e.to_string())
         }
         other => Err(format!("unsupported JWK kty: {other}")),
     }
+}
+
+/// Encode an RSA private key as unencrypted PKCS#8 DER.
+fn rsa_jwk_to_pkcs8(c: &synta_certificate::RsaPrivateComponents<'_>) -> Result<Vec<u8>, String> {
+    use synta::types::string::OctetStringRef;
+    use synta::{Element, Encoder, Encoding, Integer, Null, ObjectIdentifier, Tag};
+
+    let rsa_oid = ObjectIdentifier::new(synta_certificate::oids::RSA_ENCRYPTION)
+        .map_err(|e| format!("RSA OID: {e}"))?;
+
+    // RSAPrivateKey ::= SEQUENCE { version, n, e, d, p, q, dp, dq, qi }
+    let mut inner = Encoder::new(Encoding::Der);
+    inner
+        .start_constructed_no_guard(Tag::universal_constructed(16))
+        .map_err(|e| format!("RSA seq: {e}"))?;
+    inner
+        .encode(&Integer::from_i64(0))
+        .map_err(|e| format!("RSA version: {e}"))?;
+    for (label, bytes) in [
+        ("n", c.n),
+        ("e", c.e),
+        ("d", c.d),
+        ("p", c.p),
+        ("q", c.q),
+        ("dp", c.dp),
+        ("dq", c.dq),
+        ("qi", c.qi),
+    ] {
+        inner
+            .encode(&Integer::from_unsigned_bytes(bytes))
+            .map_err(|e| format!("RSA {label}: {e}"))?;
+    }
+    inner
+        .end_constructed()
+        .map_err(|e| format!("RSA end: {e}"))?;
+    let rsa_der = inner.finish().map_err(|e| format!("RSA inner: {e}"))?;
+
+    let pki = synta_certificate::pkcs8_types::OneAsymmetricKey {
+        version: Integer::from_i64(0),
+        private_key_algorithm: synta_certificate::AlgorithmIdentifier {
+            algorithm: rsa_oid,
+            parameters: Some(Element::Null(Null)),
+        },
+        private_key: OctetStringRef::new(&rsa_der),
+        attributes: None,
+        public_key: None,
+    };
+    pki.to_der()
+        .map_err(|e| format!("PKCS#8 DER encoding failed: {e}"))
+}
+
+/// Encode an EC private key (from JWK big-endian unsigned components) as
+/// unencrypted PKCS#8 DER (RFC 5915 ECPrivateKey wrapped in PKCS#8).
+fn ec_jwk_to_pkcs8(d: &[u8], x: &[u8], y: &[u8], crv: &str) -> Result<Vec<u8>, String> {
+    use synta::types::string::OctetStringRef;
+    use synta::{
+        BitString, Element, Encoder, Encoding, Integer, ObjectIdentifier, OctetString, Tag,
+    };
+
+    use synta_certificate::oids;
+
+    let (curve_oid_components, expected_len): (&[u32], usize) = match crv {
+        "P-256" => (oids::EC_CURVE_P256, 32),
+        "P-384" => (oids::EC_CURVE_P384, 48),
+        "P-521" => (oids::EC_CURVE_P521, 66),
+        other => return Err(format!("unsupported EC curve: {other}")),
+    };
+
+    if d.len() != expected_len || x.len() != expected_len || y.len() != expected_len {
+        return Err(format!(
+            "EC {crv} coordinates must be {expected_len} bytes; got d={}, x={}, y={}",
+            d.len(),
+            x.len(),
+            y.len()
+        ));
+    }
+
+    let ec_oid = ObjectIdentifier::new(oids::EC_PUBLIC_KEY).map_err(|e| format!("EC OID: {e}"))?;
+    let curve_oid =
+        ObjectIdentifier::new(curve_oid_components).map_err(|e| format!("curve OID: {e}"))?;
+
+    // ECPrivateKey ::= SEQUENCE { version, privateKey, [1] publicKey }
+    let uncompressed_point: Vec<u8> = std::iter::once(0x04)
+        .chain(x.iter().copied())
+        .chain(y.iter().copied())
+        .collect();
+
+    let mut inner = Encoder::new(Encoding::Der);
+    inner
+        .start_constructed_no_guard(Tag::universal_constructed(16))
+        .map_err(|e| format!("EC seq: {e}"))?;
+    inner
+        .encode(&Integer::from_i64(1))
+        .map_err(|e| format!("EC version: {e}"))?;
+    inner
+        .encode(&OctetString::new(d.to_vec()))
+        .map_err(|e| format!("EC d: {e}"))?;
+    // [1] EXPLICIT BIT STRING (uncompressed point)
+    inner
+        .start_constructed_no_guard(Tag::context_specific_constructed(1))
+        .map_err(|e| format!("EC [1]: {e}"))?;
+    inner
+        .encode(&BitString::new(uncompressed_point, 0).map_err(|e| format!("EC BitString: {e}"))?)
+        .map_err(|e| format!("EC pubkey: {e}"))?;
+    inner
+        .end_constructed()
+        .map_err(|e| format!("EC [1] end: {e}"))?;
+    inner
+        .end_constructed()
+        .map_err(|e| format!("EC seq end: {e}"))?;
+    let ec_der = inner.finish().map_err(|e| format!("EC inner: {e}"))?;
+
+    let pki = synta_certificate::pkcs8_types::OneAsymmetricKey {
+        version: Integer::from_i64(0),
+        private_key_algorithm: synta_certificate::AlgorithmIdentifier {
+            algorithm: ec_oid,
+            parameters: Some(Element::ObjectIdentifier(curve_oid)),
+        },
+        private_key: OctetStringRef::new(&ec_der),
+        attributes: None,
+        public_key: None,
+    };
+    pki.to_der()
+        .map_err(|e| format!("PKCS#8 DER encoding failed: {e}"))
 }
 
 fn jwk_b64u(v: &serde_json::Value, field: &str) -> Result<Vec<u8>, String> {
