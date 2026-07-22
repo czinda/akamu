@@ -441,4 +441,29 @@ mod tests {
         let result = AccountKey::generate("bogus:999");
         assert!(result.is_err());
     }
+
+    /// RFC 7517 Appendix A.2 — EC P-256 private key test vector.
+    #[test]
+    fn jwk_ec_p256_import_and_pem_export() {
+        let jwk = r#"{"kty":"EC","crv":"P-256",
+            "x":"f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU",
+            "y":"x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0",
+            "d":"jpsQnnGQmL-YBIffS1BSyVKhrlRhKHaP9-GmMdg3Fys"}"#;
+        let k = AccountKey::from_jwk_private(jwk).unwrap();
+        assert_eq!(k.alg(), "ES256");
+        let pem = k.to_pem().unwrap();
+        let k2 = AccountKey::from_pem(&pem).unwrap();
+        assert_eq!(k.thumbprint(), k2.thumbprint());
+    }
+
+    /// RSA 2048 private key test vector
+    #[test]
+    fn jwk_rsa_certbot_regression() {
+        let jwk = r#"{"n": "lWk7nDnd_14t-Nu-c_vLlC76ISsohbZMHtXdjb7R6UpooYIBkNHy-n7HJFroUv9VhN82F5E-yZQ24k1wTEAMGdMK1Us6eMI29FZ1Ic-JkzSoiQXL9W_NMyU0Z7aw-d4WJXRfpJOX_OLBxXl6z1iq4SOdShfqfLPxKtn2ncxB4cHtxIsuVEKK_b2Bpw8VKflasKUjmjZCMCr2j3RSBAZFIe9rdkNRgE7gYiFxynGW9-hlqaL3jGlzw9LlnW6r1Ex68Djl5FljTelNTZzxFmUSFPFMgrmXGCFSIpPvpwTRC3D-CMtm2qCWuwgIF2WH1RJrPmpE7tACIi6QomxhcQWUZQ", "e": "AQAB", "d": "HPiZgC7BUt_Mar2TRbKclDhytGVFt320b2M5UV-fnMyakryeeJoZMwTLsQs2ksdjaf8NIk893UDxznpFDOf7YLOJHXg3l4xTMxgjoMF5E_PpPR6EYKxD3ge4DGdClETBxxP0arlaxoSinZuzWkq_YaXx_Ri7lWAf4pb-iLT_TlqsF9liHtiTfxD-s-5NuPceUGtLI-4wmBr_2-TLxBl3OQb8INAPq3PMpJ2kW3I--PXti6-kMGJOClJAP2XLmiXtoGKeIELFcKuHvebTqnX4NfglBzXLMLQuHlCX8mybMuqlAyAFZYv89qf_SIiJnKzGO6MMYnAmy7w35C68ZtnrKQ", "p": "x09UiMN-jkaA2VZINKU_Twyg-mROJbGMzZ1vgMZvHXQhYQcXRAgGUeZhgiPoi3aPHU7UdYFrXLhNqUeg-h2p2fdD1gfOz0GndCvICZKFYw7cYIeTlnmdyhMHzuv_gMG1yXCMntzgHpFRcga8B5iLZVFPAr0tSVKTMxsOOok4_h0", "q": "v-iKQ9YpapRn9YxzqgultVPv3Q6oPts5LYkdWyLxmv14R5GkR4m_-vjTUkZI2pvWLsNTgk8xtq2Os9k5i-bsNByVixeQUhf-DSNpY1yojtaILCbEMIEdUDfna6pN4Q-Ztyud3wAtNoB4Id311Uj-m1mRSe4O0PeilbiCaBVdvOk", "dp": "QKSyPklp2qtzTwp1EN4n0nO-Ing2AHO9v1K4v4OctmjcCqRKH36aziVyqssKuXESqebPce0v7Tq5tZXN2FGWrWNNVTXjFcWtkjhBARnMuXwwbf6LF9sKGmhht_NDQ3eQhm1CrqPk7QUk7V7RzYTkcVAV2EWTUpy9sW2tB79KBOE", "dq": "T1Z9wunJGYzdJcC5GLXT_hEDeypSGBpdmxuyjTj3FZJwpXXqqsCiI8m2466289m1RIPwBFFlRhaehm_pwJLpV-nxUR2exrGwkBHxwehOry62ATrNpRfb3IwgGny_0am3bOiVTdou1vdpsuameVTCHct7q0rFyVJ3Xtp23zzmEfE", "qi": "RaG4iNHwLHugXstkmW74JfIiPeB4wAX1aZGeG-mKxIwKKbyVv7MCZzO4EUZpvxicANDujO0vvHj4BLbAm2Bw0oSuzo3r08lnkFhB26w8da6e5Bz3QyISK-OGm02hCj6mazbmYOG1vJTX7UwHpCDWcO7uOeJte7MM0CwrLTZeXpI", "kty": "RSA"}"#;
+        let k = AccountKey::from_jwk_private(jwk).unwrap();
+        assert_eq!(k.alg(), "PS256");
+        let pem = k.to_pem().unwrap();
+        let k2 = AccountKey::from_pem(&pem).unwrap();
+        assert_eq!(k.thumbprint(), k2.thumbprint());
+    }
 }
