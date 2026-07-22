@@ -15,6 +15,7 @@ use std::{
     collections::HashMap,
     net::SocketAddr,
     sync::{Arc, RwLock},
+    time::Duration,
 };
 
 use http_body_util::Full;
@@ -44,6 +45,7 @@ pub trait ChallengeSolver: Send + Sync {
 // ── http-01 solver ────────────────────────────────────────────────────────────
 
 type TokenStore = Arc<RwLock<HashMap<String, String>>>;
+type ValidationNotifiers = Arc<RwLock<HashMap<String, Arc<tokio::sync::Notify>>>>;
 
 /// Serves `/.well-known/acme-challenge/<token>` via a minimal HTTP/1.1 server.
 ///
@@ -52,6 +54,7 @@ type TokenStore = Arc<RwLock<HashMap<String, String>>>;
 pub struct Http01Solver {
     port: u16,
     store: TokenStore,
+    notifiers: ValidationNotifiers,
 }
 
 impl Http01Solver {
@@ -59,6 +62,7 @@ impl Http01Solver {
         Http01Solver {
             port,
             store: Arc::new(RwLock::new(HashMap::new())),
+            notifiers: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -69,6 +73,7 @@ impl Http01Solver {
         let addr = SocketAddr::from(([0, 0, 0, 0], self.port));
         let listener = TcpListener::bind(addr).await?;
         let store = Arc::clone(&self.store);
+        let notifiers = Arc::clone(&self.notifiers);
         tokio::spawn(async move {
             loop {
                 let Ok((stream, _)) = listener.accept().await else {
@@ -76,13 +81,15 @@ impl Http01Solver {
                 };
                 let io = TokioIo::new(stream);
                 let store = Arc::clone(&store);
+                let notifiers = Arc::clone(&notifiers);
                 tokio::spawn(async move {
                     let _ = http1::Builder::new()
                         .serve_connection(
                             io,
                             service_fn(move |req: Request<hyper::body::Incoming>| {
                                 let store = Arc::clone(&store);
-                                async move { handle_challenge(&store, req) }
+                                let notifiers = Arc::clone(&notifiers);
+                                async move { handle_challenge(&store, &notifiers, req) }
                             }),
                         )
                         .await;
@@ -91,10 +98,37 @@ impl Http01Solver {
         });
         Ok(())
     }
+
+    /// Wait until the ACME server has fetched the challenge token via HTTP.
+    ///
+    /// Per RFC 8555 §7.5.1, the client SHOULD NOT begin polling the
+    /// authorization until it has seen the validation request from the server.
+    /// Returns `Ok(())` when the token has been served, or `Err` on timeout.
+    pub async fn wait_for_validation(
+        &self,
+        token: &str,
+        timeout: Duration,
+    ) -> Result<(), ClientError> {
+        let notify = {
+            let notifiers = self.notifiers.read().unwrap();
+            notifiers.get(token).cloned()
+        };
+        let Some(notify) = notify else {
+            return Ok(());
+        };
+        tokio::time::timeout(timeout, notify.notified())
+            .await
+            .map_err(|_| {
+                ClientError::Http(format!(
+                    "timed out waiting for http-01 validation request for token {token}"
+                ))
+            })
+    }
 }
 
 fn handle_challenge(
     store: &TokenStore,
+    notifiers: &ValidationNotifiers,
     req: Request<hyper::body::Incoming>,
 ) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
     const PREFIX: &str = "/.well-known/acme-challenge/";
@@ -106,6 +140,13 @@ fn handle_challenge(
             .get(token)
             .cloned()
             .unwrap_or_default();
+        if !body.is_empty() {
+            if let Ok(notifiers) = notifiers.read() {
+                if let Some(n) = notifiers.get(token) {
+                    n.notify_one();
+                }
+            }
+        }
         Ok(Response::new(Full::new(Bytes::from(body))))
     } else {
         Ok(Response::builder()
@@ -125,7 +166,12 @@ impl ChallengeSolver for Http01Solver {
         let token = token.to_owned();
         let key_auth = key_auth.to_owned();
         let store = Arc::clone(&self.store);
+        let notifiers = Arc::clone(&self.notifiers);
         Box::pin(async move {
+            notifiers
+                .write()
+                .unwrap()
+                .insert(token.clone(), Arc::new(tokio::sync::Notify::new()));
             store.write().unwrap().insert(token, key_auth);
             Ok(())
         })
@@ -334,6 +380,7 @@ impl DnsHookSolver {
 #[derive(Debug)]
 struct SniResolver {
     certs: Arc<RwLock<HashMap<String, Arc<rustls::sign::CertifiedKey>>>>,
+    notifiers: ValidationNotifiers,
 }
 
 impl rustls::server::ResolvesServerCert for SniResolver {
@@ -342,6 +389,11 @@ impl rustls::server::ResolvesServerCert for SniResolver {
         client_hello: rustls::server::ClientHello<'_>,
     ) -> Option<Arc<rustls::sign::CertifiedKey>> {
         let sni = client_hello.server_name()?;
+        if let Ok(notifiers) = self.notifiers.read() {
+            if let Some(n) = notifiers.get(sni) {
+                n.notify_one();
+            }
+        }
         let certs = self.certs.read().ok()?;
         certs.get(sni).cloned()
     }
@@ -356,6 +408,7 @@ impl rustls::server::ResolvesServerCert for SniResolver {
 pub struct TlsAlpn01Solver {
     port: u16,
     certs: Arc<RwLock<HashMap<String, Arc<rustls::sign::CertifiedKey>>>>,
+    notifiers: ValidationNotifiers,
     handle: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -365,6 +418,7 @@ impl TlsAlpn01Solver {
         TlsAlpn01Solver {
             port,
             certs: Arc::new(RwLock::new(HashMap::new())),
+            notifiers: Arc::new(RwLock::new(HashMap::new())),
             handle: None,
         }
     }
@@ -383,6 +437,7 @@ impl TlsAlpn01Solver {
         .with_no_client_auth()
         .with_cert_resolver(Arc::new(SniResolver {
             certs: Arc::clone(&self.certs),
+            notifiers: Arc::clone(&self.notifiers),
         }));
 
         let mut config = config;
@@ -514,13 +569,44 @@ impl TlsAlpn01Solver {
             signing_key,
         ));
 
-        // 10. Register in the SNI store.
+        // 10. Register in the SNI store and create a validation notifier.
+        self.notifiers
+            .write()
+            .unwrap()
+            .insert(domain.to_string(), Arc::new(tokio::sync::Notify::new()));
         self.certs
             .write()
             .unwrap()
             .insert(domain.to_string(), certified);
 
         Ok(())
+    }
+
+    /// Wait until the ACME server has connected via TLS to validate the domain.
+    ///
+    /// Per RFC 8555 §7.5.1, the client SHOULD NOT begin polling the
+    /// authorization until it has seen the validation request from the server.
+    /// Returns `Ok(())` when the TLS handshake with matching SNI has been
+    /// observed, or `Err` on timeout.
+    pub async fn wait_for_validation(
+        &self,
+        domain: &str,
+        timeout: Duration,
+    ) -> Result<(), ClientError> {
+        let notify = {
+            let notifiers = self.notifiers.read().unwrap();
+            notifiers.get(domain).cloned()
+        };
+        let Some(notify) = notify else {
+            return Ok(());
+        };
+        tokio::time::timeout(timeout, notify.notified())
+            .await
+            .map_err(|_| {
+                ClientError::Http(format!(
+                    "timed out waiting for tls-alpn-01 validation request for {domain}"
+                ))
+            })
     }
 
     /// Abort the background TLS listener.

@@ -209,8 +209,10 @@ pub(crate) async fn cmd_issue(
     // dns-01 / dns-persist-01 challenges prompt the user per-domain and defer
     // triggering until all TXT records are in place.
     let mut http01_tokens: Vec<String> = Vec::new();
+    let mut tls_alpn01_domains: Vec<String> = Vec::new();
     let mut dns01_cleanups: Vec<(String, String, String)> = Vec::new();
     let mut deferred_challenges: Vec<Challenge> = Vec::new();
+    let mut pending_authz_urls: Vec<String> = Vec::new();
     let mut any_challenged = false;
 
     for authz_url in &order.authorizations {
@@ -222,6 +224,7 @@ pub(crate) async fn cmd_issue(
         if authz.status == "valid" {
             continue; // already satisfied
         }
+        pending_authz_urls.push(authz_url.clone());
         any_challenged = true;
 
         match args.challenge_type.as_str() {
@@ -370,6 +373,8 @@ pub(crate) async fn cmd_issue(
                     .trigger_challenge(&account, challenge)
                     .await
                     .map_err(|e| format!("trigger tls-alpn-01: {e}"))?;
+
+                tls_alpn01_domains.push(authz.identifier.value.clone());
             }
             "onion-csr-01" => {
                 let challenge = authz.find_challenge("onion-csr-01").ok_or_else(|| {
@@ -436,8 +441,45 @@ pub(crate) async fn cmd_issue(
                 .map_err(|e| e.to_string())?;
         }
 
-        // Phase 3: poll the order once, after all challenges have been triggered.
+        // Phase 2b: briefly wait for the ACME server's validation requests
+        // before polling (RFC 8555 §7.5.1).  Use a short timeout — the
+        // validation request may arrive via a path invisible to the client
+        // (proxied, internal, or test environments), so a timeout here is
+        // expected and non-fatal; we proceed to poll the authorization
+        // regardless.
+        let validation_wait = std::time::Duration::from_secs(10);
+        if let Some(s) = solver.as_ref() {
+            for token in &http01_tokens {
+                if s.wait_for_validation(token, validation_wait).await.is_err() {
+                    eprintln!(
+                        "Note: did not observe http-01 validation request; proceeding to poll"
+                    );
+                }
+            }
+        }
+        if let Some(s) = tls_solver.as_ref() {
+            for domain in &tls_alpn01_domains {
+                if s.wait_for_validation(domain, validation_wait)
+                    .await
+                    .is_err()
+                {
+                    eprintln!(
+                        "Note: did not observe tls-alpn-01 validation request; proceeding to poll"
+                    );
+                }
+            }
+        }
+
+        // Phase 3: poll each authorization until valid/invalid (RFC 8555 §7.5.1),
+        // then poll the order until "ready".
+        let timeout = std::time::Duration::from_secs(args.poll_timeout);
         if any_challenged {
+            for authz_url in &pending_authz_urls {
+                client
+                    .poll_authorization(&account, authz_url, timeout)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
             poll_with_timeout(&client, &account, &order.url, args.poll_timeout).await?;
         }
         Ok(())

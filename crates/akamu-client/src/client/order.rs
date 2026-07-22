@@ -212,6 +212,83 @@ impl AcmeClient {
         }
     }
 
+    /// Poll an authorization URL until status is `"valid"` or `"invalid"`.
+    ///
+    /// On `"valid"`, returns `Ok(Authorization)`.
+    /// On `"invalid"`, returns an error containing challenge error details.
+    /// Polls with exponential backoff (250 ms → doubles → cap 2 s).
+    /// Respects the `Retry-After` header from the server when present.
+    pub async fn poll_authorization(
+        &self,
+        acct: &Account,
+        authz_url: &str,
+        timeout: Duration,
+    ) -> Result<Authorization, ClientError> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut delay_ms: u64 = 250;
+
+        loop {
+            if tokio::time::Instant::now() > deadline {
+                return Err(ClientError::Http(format!(
+                    "timed out polling authorization {authz_url}"
+                )));
+            }
+
+            let (status, body, headers) = self.post_kid(acct, authz_url, None).await?;
+            if status != StatusCode::OK {
+                return Err(acme_error(&body, status, "poll-authorization"));
+            }
+
+            let authz: Authorization = serde_json::from_value(body)
+                .map_err(|e| ClientError::Http(format!("parse authorization: {e}")))?;
+
+            match authz.status.as_str() {
+                "valid" => return Ok(authz),
+                "invalid" => {
+                    let errors: Vec<String> = authz
+                        .challenges
+                        .iter()
+                        .filter_map(|c| {
+                            c.error.as_ref().map(|e| {
+                                let fallback = e.to_string();
+                                let detail = e["detail"].as_str().unwrap_or(&fallback);
+                                format!("{}: {detail}", c.r#type)
+                            })
+                        })
+                        .collect();
+                    let detail = if errors.is_empty() {
+                        format!("authorization for {} is invalid", authz.identifier.value)
+                    } else {
+                        format!(
+                            "authorization for {} failed: {}",
+                            authz.identifier.value,
+                            errors.join("; ")
+                        )
+                    };
+                    return Err(ClientError::Http(detail));
+                }
+                other => {
+                    tracing::debug!(
+                        authz_url,
+                        status = other,
+                        identifier = %authz.identifier.value,
+                        "poll_authorization: waiting"
+                    );
+                }
+            }
+
+            let retry_after = headers
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok());
+            let sleep_ms = retry_after.map(|s| s * 1000).unwrap_or(delay_ms);
+            sleep(Duration::from_millis(sleep_ms)).await;
+            if retry_after.is_none() {
+                delay_ms = (delay_ms * 2).min(2000);
+            }
+        }
+    }
+
     /// Finalize an order by posting the DER-encoded CSR.
     ///
     /// Returns the updated order (which should have `status: "valid"` and a

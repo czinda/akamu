@@ -118,6 +118,9 @@ pub struct Challenge {
     /// Token Authority URL hint for `tkauth-01` challenges (RFC 9447).
     #[serde(default, rename = "token-authority")]
     pub token_authority: Option<String>,
+    /// Error object returned when challenge validation fails (RFC 8555 §7.1.5).
+    #[serde(default)]
+    pub error: Option<serde_json::Value>,
 }
 
 /// Renewal information from the ACME server (RFC 9773).
