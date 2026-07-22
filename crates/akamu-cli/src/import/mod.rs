@@ -292,6 +292,7 @@ pub async fn cmd_import_certbot(args: CertbotImportArgs) -> Result<(), String> {
             renewal: r,
             account_key_jwk: &acct.jwk_json,
             account_key_path,
+            account_url: acct.account_url.as_deref(),
             cert_path: &cert_path,
             cert_key_path: &cert_key_path,
             cert_key_type: &cert_key_type,

@@ -208,6 +208,10 @@ pub struct RenewalConfig {
     pub domains: Vec<Identifier>,
     /// Path to the account private key PEM.
     pub account_key: PathBuf,
+    /// ACME account URL (kid).  When present, the existing account is used
+    /// instead of attempting registration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_url: Option<String>,
     /// Key type for the account key (`"ec:P-256"`, `"rsa:2048"`, etc.).
     #[serde(default = "defaults::key_type")]
     pub account_key_type: String,
@@ -275,6 +279,7 @@ impl std::fmt::Debug for RenewalConfig {
             .field("ca", &self.ca)
             .field("domains", &self.domains)
             .field("account_key", &self.account_key)
+            .field("account_url", &self.account_url)
             .field("account_key_type", &self.account_key_type)
             .field("cert_path", &self.cert_path)
             .field("cert_key_path", &self.cert_key_path)

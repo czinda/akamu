@@ -35,6 +35,7 @@ pub(crate) async fn poll_with_timeout(
 pub(crate) async fn cmd_issue(
     args: CommonCertArgs,
     delegation: Option<&str>,
+    account_url: Option<&str>,
 ) -> Result<(), String> {
     let account_key_path = args.account_key.ok_or("--account-key is required")?;
     let out_path = args.out.ok_or("--out is required")?;
@@ -61,7 +62,14 @@ pub(crate) async fn cmd_issue(
     };
 
     // Load existing account or register a new one.
-    let account = if let Ok(url) = load_account_url_for_ca(&account_key_path, args.ca.as_deref()) {
+    let account = if let Some(url) = account_url {
+        akamu_client::Account::new(
+            url.to_string(),
+            "valid".to_string(),
+            vec![],
+            Arc::clone(&key),
+        )
+    } else if let Ok(url) = load_account_url_for_ca(&account_key_path, args.ca.as_deref()) {
         akamu_client::Account::new(url, "valid".to_string(), vec![], Arc::clone(&key))
     } else {
         let gssapi_eab = match args.eab.gssapi_keytab.as_ref() {
@@ -522,6 +530,7 @@ pub(crate) async fn cmd_issue(
         ca: args.ca.clone(),
         domains: ids,
         account_key: account_key_path.clone(),
+        account_url: Some(account.url.clone()),
         account_key_type: args.key_type.clone(),
         cert_path: out_path.clone(),
         cert_key_path: cert_key_path.clone(),

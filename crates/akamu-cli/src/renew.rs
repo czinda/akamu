@@ -149,6 +149,7 @@ pub(crate) async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
             eab_alg: cfg.eab_alg,
             gssapi_keytab: cfg.gssapi_keytab,
         };
+        let account_url = cfg.account_url.clone();
         let common = CommonCertArgs {
             server: cfg.server,
             ca: cfg.ca,
@@ -171,7 +172,7 @@ pub(crate) async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
             server_ca: args.common.server_ca.clone(),
             eab,
         };
-        return crate::issue::cmd_issue(common, None).await;
+        return crate::issue::cmd_issue(common, None, account_url.as_deref()).await;
     }
 
     let dir_url = resolve_directory_url(&args.common.server, args.common.ca.as_deref());
@@ -183,7 +184,7 @@ pub(crate) async fn cmd_renew(args: RenewArgs) -> Result<(), String> {
         }
     }
 
-    crate::issue::cmd_issue(args.common, None).await
+    crate::issue::cmd_issue(args.common, None, None).await
 }
 
 #[cfg(test)]
