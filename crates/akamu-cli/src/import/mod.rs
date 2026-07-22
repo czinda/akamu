@@ -191,7 +191,10 @@ pub async fn cmd_import_certbot(args: CertbotImportArgs) -> Result<(), String> {
         .collect();
 
     if matching_renewals.is_empty() {
-        println!("No renewal configurations found to import.");
+        if !args.dry_run {
+            println!();
+            println!("Import complete: 1 account, 0 certificate(s).");
+        }
         return Ok(());
     }
 
