@@ -4,6 +4,11 @@ resolver = "2"
 
 [workspace.dependencies]
 native-ossl = "0.1.12"
+synta = { version = ">=0.3.1", default-features = false, features = ["std", "derive"] }
+synta-certificate = { version = ">=0.3.1", features = ["std", "pqc"] }
+synta-x509-verification = { version = ">=0.3.1" }
+synta-mtc = { version = ">=0.3.1", features = ["std"] }
+synta-krb5 = { version = ">=0.3.1", default-features = false, features = ["std", "derive"] }
 
 [package]
 name = "akamu"
@@ -127,14 +132,12 @@ akamu-ldap = { path = "crates/akamu-ldap" }
 akamu-util = { path = "crates/akamu-util" }
 
 # Base ASN.1 library (needed for Decoder/Encoder and Integer type)
-synta = { version = ">=0.3.0", default-features = false, features = ["std", "derive"] }
+synta = { workspace = true }
 
 # Synta crates for all X.509 / MTC operations
-# >=0.2.4: CosignerID redesigned as TrustAnchorID OID, MtcProof gains extensions field
-# (draft-ietf-plants-merkle-tree-certs-05).
-synta-certificate =  { version = ">=0.3.0", features = ["std", "pqc"] }
-synta-x509-verification =  { version = ">=0.3.0" }
-synta-mtc = { version = ">=0.3.0", features = ["std"] }
+synta-certificate = { workspace = true }
+synta-x509-verification = { workspace = true }
+synta-mtc = { workspace = true }
 
 # Native Rust bindings to system OpenSSL (composite ML-DSA TLS verify)
 native-ossl = { workspace = true }

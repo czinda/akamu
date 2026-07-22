@@ -33,7 +33,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 indexmap = "2"
 
-synta-certificate = { version = ">=0.3.0", features = ["std"] }
+synta-certificate = { workspace = true }
 reqwest = { version = "0.12", default-features = false }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "rustls-native-certs", "ring"] }
 hyper-util = { version = "0.1", features = ["tokio", "client-legacy"] }

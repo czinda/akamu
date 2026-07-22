@@ -8,10 +8,10 @@ description = "ACME client library with ML-DSA account key support (draft-ietf-c
 [dependencies]
 akamu-jose = { path = "../akamu-jose" }
 akamu-gssapi = { path = "../akamu-gssapi" }
-synta = { version = "0.3", default-features = false, features = ["std", "derive"] }
-synta-certificate = { version = "0.3", features = ["std", "pqc"] }
-synta-krb5 = { version = "0.3", default-features = false, features = ["std", "derive"] }
-synta-mtc = { version = "0.3", features = ["std"] }
+synta = { workspace = true }
+synta-certificate = { workspace = true }
+synta-krb5 = { workspace = true }
+synta-mtc = { workspace = true }
 
 percent-encoding = "2"
 base64 = "0.22"

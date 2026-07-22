@@ -35,7 +35,7 @@ clap           = { version = "4", default-features = false, features = ["std", "
 clap_complete  = "4"
 
 # PEM parsing for cert/key files
-synta-certificate = { version = ">=0.3.0", features = ["std", "pqc"] }
+synta-certificate = { workspace = true }
 
 # URL encoding for query parameters
 percent-encoding = "2"

@@ -11,10 +11,10 @@ path = "src/main.rs"
 
 [dependencies]
 # MTC crypto: leaf hashing, Merkle tree, inclusion proofs, subtree hashes
-synta-mtc = { version = ">=0.3.0", features = ["std"] }
+synta-mtc = { workspace = true }
 # X.509 / DER building for log entry construction
-synta-certificate = { version = ">=0.3.0", features = ["std", "pqc"] }
-synta = { version = ">=0.3.0", default-features = false, features = ["std", "derive"] }
+synta-certificate = { workspace = true }
+synta = { workspace = true }
 
 # Test vector format
 serde = { version = "1", features = ["derive"] }

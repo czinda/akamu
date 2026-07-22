@@ -6,5 +6,5 @@ license = "GPL-3.0-or-later"
 description = "MTC wire-format helpers shared between akamu-cosigner and integration tests"
 
 [dependencies]
-synta     = { version = ">=0.3.0", default-features = false, features = ["std", "derive"] }
-synta-mtc = { version = ">=0.3.0", features = ["std"] }
+synta = { workspace = true }
+synta-mtc = { workspace = true }
