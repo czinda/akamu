@@ -350,22 +350,23 @@ pub(crate) async fn cmd_import_certbot(args: CertbotImportArgs) -> Result<(), St
     Ok(())
 }
 
+fn url_host(url: &str) -> &str {
+    let after_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    after_scheme.split('/').next().unwrap_or("")
+}
+
 fn account_matches_server(acct: &certbot::CertbotAccount, server: &str) -> bool {
-    if let Some(ref url) = acct.account_url {
-        if url.contains(server.trim_end_matches('/')) {
-            return true;
-        }
-    }
-    let after_scheme = if let Some(rest) = server.strip_prefix("https://") {
-        rest
-    } else if let Some(rest) = server.strip_prefix("http://") {
-        rest
-    } else {
-        server
-    };
-    let host = after_scheme.split('/').next().unwrap_or("");
+    let host = url_host(server);
     if host.is_empty() {
         return false;
+    }
+    if let Some(ref url) = acct.account_url {
+        if url_host(url) == host {
+            return true;
+        }
     }
     acct.ca_hostname == host
 }
