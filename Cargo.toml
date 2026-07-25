@@ -169,6 +169,10 @@ name = "acme_bench"
 harness = false
 
 [[test]]
+name = "mtc_client_flow"
+required-features = ["test-utils"]
+
+[[test]]
 name = "mtc_cosigner_flow"
 required-features = ["test-utils"]
 

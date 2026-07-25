@@ -10,8 +10,10 @@
 Run all tests:
 
 ```
-cargo test
+cargo test --features test-utils
 ```
+
+Several integration tests (`mtc_client_flow`, `mtc_cosigner_flow`, `multi_domain_flow`) require the `test-utils` feature flag. Without it, those tests are silently skipped by Cargo. Always pass `--features test-utils` to get full coverage.
 
 Run a specific test by name:
 
@@ -240,6 +242,7 @@ All integration test files live under `tests/`.  Each builds a full `AppState` w
 | `tests/multi_ca.rs` | Multi-CA routing: per-CA directory and CRL endpoints, legacy path falls through to default CA, unknown CA ID returns 404, CRL isolation across CAs, order CA isolation |
 | `tests/tls_server.rs` | Helper module providing a local TLS server for tls-alpn-01 integration tests |
 | `tests/mtc_playground_compat.rs` | Wire-compatibility tests for the C2SP tlog-tiles and signed-note implementation (RFC 9162 Merkle hashing, tile path encoding, checkpoint/cosignature note format, live HTTP endpoint smoke tests); optional DigiCert playground integration gated behind `MTC_PLAYGROUND_DIR` env var and `--ignored` |
+| `tests/mtc_cosigners_interop.rs` | Interop tests against external MTC cosigner stores (Google, Geomys): fetches store JSON, parses issuer/mirror metadata, verifies tlog checkpoints and tiles from live endpoints; external tests gated behind `#[ignore]`; includes a local `akamu_self_test` that exercises the shared tlog verification harness |
 | `crates/akamu-mtc-validator/tests/mtc_vectors_compat.rs` | Layer B internal consistency suite against `contrib/test-vectors/mtc/mtc.json` (plants-04, 2036 entries); runs offline without Go reference artifacts |
 
 ## Adding new tests
@@ -269,9 +272,20 @@ For tests that need a CA, call `crate::ca::init::load_or_generate(&config).unwra
 
 For tests that need a full `AppState` with multi-CA support, build `cas` as an `IndexMap` and populate `crl_caches` and `link_headers` as `HashMap`s keyed by CA ID. See the "Building a test AppState" section below for the canonical pattern.
 
+## Shared test helpers (`tests/common/mod.rs`)
+
+`tests/common/mod.rs` provides shared helpers for integration tests, gated behind `#![cfg(feature = "test-utils")]`. All integration test binaries include it via `mod common;`.
+
+Key helpers:
+
+- `common::bind_free_port()` — bind an ephemeral TCP port and return `(port, std::net::TcpListener)`.
+- `common::bind_ephemeral()` — same, but returns a tokio `TcpListener`.
+- `common::start_http01_solver(listener)` — start a minimal HTTP-01 challenge responder.
+- `common::build_test_state(dir, base_url)` — build a full `AppState` with in-memory SQLite, a generated EC P-256 CA, and an Ed25519 MTC signing key. This is the preferred way to set up test state for MTC integration tests.
+
 ## Building a test AppState
 
-Integration tests that exercise ACME handlers need a full `AppState`. The multi-CA refactor changed several fields; the canonical test-setup pattern is:
+For MTC integration tests, use `common::build_test_state()` (see above). For ACME handler tests that need finer control over the `AppState` fields, construct it manually. The canonical pattern is:
 
 ```rust
 use std::collections::HashMap;

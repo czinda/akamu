@@ -20,176 +20,13 @@
 //!   cargo test --test mtc_playground_compat digicert -- --ignored
 //! ```
 
-use std::net::SocketAddr;
-use std::sync::Arc;
+mod common;
 
 use synta_certificate::{default_data_hasher, BackendPrivateKey, DataHasher};
 use synta_mtc::crypto::{hash_interior, hash_leaf, HashAlgorithm};
-use tokio::net::TcpListener;
 
-use akamu::config::{
-    CaConfig, Config, DatabaseConfig, MtcConfig, MtcSigningKeyConfig, ServerConfig,
-};
+use akamu::mtc::tlog;
 use akamu::mtc::tlog::NoteSigningRole;
-use akamu::mtc::{log, tlog};
-use akamu::state::{AppState, AppStateBuilder, CaState, MtcState};
-use akamu::{ca, db, routes};
-
-// ── Port utility ──────────────────────────────────────────────────────────────
-
-/// Bind an ephemeral port and return the listener together with its port.
-///
-/// Keeping the listener open eliminates the TOCTOU race that a
-/// "get port, drop, re-bind" approach would introduce.
-fn bind_ephemeral() -> (u16, TcpListener) {
-    let std_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    std_l.set_nonblocking(true).unwrap();
-    let port = std_l.local_addr().unwrap().port();
-    let tokio_l = TcpListener::from_std(std_l).unwrap();
-    (port, tokio_l)
-}
-
-// ── Test state builder ────────────────────────────────────────────────────────
-
-async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppState> {
-    let mtc_log_path = dir.join("mtc.log").to_string_lossy().into_owned();
-    let mtc_key_file = dir.join("mtc.key").to_string_lossy().into_owned();
-
-    let config = Arc::new(Config {
-        listen_addr: "127.0.0.1:0".into(),
-        base_url: base_url.into(),
-        database: DatabaseConfig {
-            url: "sqlite::memory:".into(),
-            max_connections: None,
-            require_tls: false,
-        },
-        cas: vec![CaConfig {
-            id: "default".to_owned(),
-
-            is_default: true,
-
-            caa_identities: vec![],
-            key_file: Some(dir.join("ca.key").to_string_lossy().into_owned()),
-            cert_file: dir.join("ca.crt").to_string_lossy().into_owned(),
-            key_type: "ec:P-256".into(),
-            hash_alg: "sha256".into(),
-            validity_days: 90,
-            crl_url: None,
-            ocsp_url: None,
-            common_name: "Compat Test CA".into(),
-            organization: "Test".into(),
-            ca_validity_years: 10,
-            crl_next_update_secs: 86400,
-            enforce_validity_cap: false,
-            require_encrypted_key: false,
-            key_password_file: None,
-            mtc: None,
-            default_linter: None,
-            signer: None,
-        }],
-        mtc: Some(MtcConfig {
-            log_path: mtc_log_path.clone(),
-            enabled: true,
-            signing_key: Some(MtcSigningKeyConfig {
-                key_file: mtc_key_file.clone(),
-                key_type: "ed25519".into(),
-                hash_alg: "sha256".into(),
-            }),
-            checkpoint_interval_secs: 3600,
-            cosigners: vec![],
-            landmark_interval_secs: 86400,
-            max_active_landmarks: 100,
-            checkpoint_retention_count: 1000,
-            hash_alg: "sha256".into(),
-            log_number: 1,
-            tree_minimum_index: None,
-            trust_anchor_id: Some("32473.2".into()),
-            contact: None,
-        }),
-        server: ServerConfig::default(),
-        tls: Default::default(),
-        profiles: Default::default(),
-        linter: Default::default(),
-        admin: None,
-        email_challenge: None,
-        delegation_upstream: None,
-        gossip: None,
-        crdt_db_url: None,
-        tkauth: None,
-    });
-
-    let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
-    let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();
-    let ca_aki_bytes = ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
-
-    db::install_drivers();
-    let db_conn = db::open("sqlite::memory:", 1, false).await.unwrap();
-
-    let mtc_key = BackendPrivateKey::generate_ed25519().unwrap();
-    let mtc_key_pem = mtc_key.to_pem(None).unwrap();
-    std::fs::write(&mtc_key_file, &mtc_key_pem).unwrap();
-
-    let raw_log = log::open_or_create(&mtc_log_path, HashAlgorithm::Sha256).unwrap();
-    let shared_log = Arc::new(tokio::sync::Mutex::new(raw_log));
-
-    let ca = Arc::new(CaState {
-        id: "default".into(),
-        key_type: "ec:P-256".into(),
-        crl_next_update_secs: 86400,
-        signing: akamu::state::SigningBackend::Local {
-            key: Box::new(ca_key),
-        },
-        cert_der: ca_cert_der,
-        hash_alg: "sha256".into(),
-        validity_days: 90,
-        crl_url: None,
-        ocsp_url: None,
-        aki_bytes: ca_aki_bytes,
-        enforce_validity_cap: false,
-        caa_identities: vec![],
-        mtc: Arc::new(MtcState {
-            log: Some(shared_log),
-            algorithm: HashAlgorithm::Sha256,
-            signing_key: Some(mtc_key),
-            signing_hash_alg: "sha256".into(),
-            cosigner_clients: vec![],
-            _log_lock: None,
-            checkpoint_interval_secs: 3600,
-            checkpoint_retention_count: 1000,
-            landmark_interval_secs: 86400,
-            max_active_landmarks: 100,
-            last_checkpoint: std::sync::atomic::AtomicI64::new(0),
-            last_landmark: std::sync::atomic::AtomicI64::new(0),
-            log_number: 1,
-            tree_minimum_index: None,
-            trust_anchor_id_der: None,
-            trust_anchor_id: Some("32473.2".into()),
-            contact: None,
-            tlog_origin: Some("oid/1.3.6.1.4.1.32473.2.0.1".into()),
-            cosigner_name: Some("oid/1.3.6.1.4.1.32473.2".into()),
-            logid_issuer_dn_der: None,
-        }),
-        default_linter: None,
-        cached_der: std::sync::OnceLock::new(),
-        lint_store: std::sync::OnceLock::new(),
-    });
-
-    let cas = {
-        let mut ca_map = indexmap::IndexMap::new();
-        ca_map.insert("default".to_string(), ca.clone());
-        Arc::new(ca_map)
-    };
-
-    AppStateBuilder::new(
-        Arc::clone(&config),
-        db_conn.clone(),
-        db::DbKind::Sqlite,
-        cas,
-        Arc::new("default".to_string()),
-    )
-    .node_id(Arc::new("test".to_string()))
-    .build()
-}
 
 // ── RFC 9162 hash conformance ─────────────────────────────────────────────────
 
@@ -500,179 +337,183 @@ fn c2sp_cosignature_mldsa44_blob_structure() {
 }
 
 // ── Live tlog-tiles HTTP endpoint tests ───────────────────────────────────────
+//
+// These tests spin up an in-process Akāmu server and require `test-utils`.
 
-/// Spin up an in-process Akāmu server and verify the checkpoint endpoint
-/// returns a valid C2SP signed-note.
-#[tokio::test]
-async fn tlog_checkpoint_endpoint_returns_valid_note() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let (port, listener) = bind_ephemeral();
-    let base_url = format!("http://127.0.0.1:{port}");
-    let state = build_test_state(dir.path(), &base_url).await;
+#[cfg(feature = "test-utils")]
+mod live_tlog {
+    use std::net::SocketAddr;
+    use std::sync::Arc;
 
-    let app = routes::build_router(Arc::clone(&state), None, false);
-    let addr: SocketAddr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
+    use akamu::mtc::log;
+    use akamu::routes;
 
-    let url = format!("http://{addr}/acme/mtc/checkpoint");
-    let resp = reqwest::get(&url).await.unwrap();
-    assert_eq!(resp.status(), 200, "checkpoint must return 200");
+    use super::common;
 
-    let ct = resp
-        .headers()
-        .get("content-type")
-        .unwrap()
-        .to_str()
-        .unwrap();
-    assert!(
-        ct.contains("text/plain"),
-        "checkpoint must be text/plain, got: {ct}"
-    );
+    /// Spin up an in-process Akāmu server and verify the checkpoint endpoint
+    /// returns a valid C2SP signed-note.
+    #[tokio::test]
+    async fn tlog_checkpoint_endpoint_returns_valid_note() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (port, listener) = common::bind_ephemeral();
+        let base_url = format!("http://127.0.0.1:{port}");
+        let state = common::build_test_state(dir.path(), &base_url).await;
 
-    let body = resp.text().await.unwrap();
-    // Must contain the tlog origin as the first line (OID-based per C2SP mtc-tlog).
-    assert!(
-        body.starts_with("oid/1.3.6.1.4.1.32473.2.0.1"),
-        "first line must be OID-based origin, got: {}",
-        body.lines().next().unwrap_or("")
-    );
+        let app = routes::build_router(Arc::clone(&state), None, false);
+        let addr: SocketAddr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
 
-    // Must contain an em-dash signature line.
-    assert!(body.contains('\u{2014}'), "must contain em-dash signature");
-}
+        let url = format!("http://{addr}/acme/mtc/checkpoint");
+        let resp = reqwest::get(&url).await.unwrap();
+        assert_eq!(resp.status(), 200, "checkpoint must return 200");
 
-/// The tile endpoint must return 501 for entry bundle requests.
-#[tokio::test]
-async fn tlog_tile_entries_returns_501() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let (port, listener) = bind_ephemeral();
-    let base_url = format!("http://127.0.0.1:{port}");
-    let state = build_test_state(dir.path(), &base_url).await;
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            ct.contains("text/plain"),
+            "checkpoint must be text/plain, got: {ct}"
+        );
 
-    let app = routes::build_router(Arc::clone(&state), None, false);
-    let addr: SocketAddr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
+        let body = resp.text().await.unwrap();
+        assert!(
+            body.starts_with("oid/1.3.6.1.4.1.32473.2.0.1"),
+            "first line must be OID-based origin, got: {}",
+            body.lines().next().unwrap_or("")
+        );
 
-    let resp = reqwest::get(format!("http://{addr}/acme/mtc/tile/entries/000"))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 501, "entry bundle tiles must return 501");
-}
-
-/// A level-0 tile for the freshly-opened log (which has one null_entry) must
-/// return a partial tile containing exactly one hash (32 bytes).
-#[tokio::test]
-async fn tlog_tile_level0_partial_returns_one_hash() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let (port, listener) = bind_ephemeral();
-    let base_url = format!("http://127.0.0.1:{port}");
-    let state = build_test_state(dir.path(), &base_url).await;
-
-    let app = routes::build_router(Arc::clone(&state), None, false);
-    let addr: SocketAddr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
-
-    // A fresh log has exactly 1 leaf (null_entry).
-    // Requesting tile 0 at level 0, partial width 1.
-    let resp = reqwest::get(format!("http://{addr}/acme/mtc/tile/0/000.p/1"))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-
-    let ct = resp
-        .headers()
-        .get("content-type")
-        .unwrap()
-        .to_str()
-        .unwrap();
-    assert!(
-        ct.contains("application/octet-stream"),
-        "hash tile must be octet-stream"
-    );
-
-    let bytes = resp.bytes().await.unwrap();
-    assert_eq!(bytes.len(), 32, "one SHA-256 leaf hash = 32 bytes");
-}
-
-/// Requesting a full (256-entry) tile for a log with 1 leaf must return 404
-/// (the tile is not complete and no .p/1 suffix was given).
-#[tokio::test]
-async fn tlog_tile_level0_full_returns_404_for_small_log() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let (port, listener) = bind_ephemeral();
-    let base_url = format!("http://127.0.0.1:{port}");
-    let state = build_test_state(dir.path(), &base_url).await;
-
-    // Peek at the internal log size to confirm it's 1.
-    {
-        let log = state.default_ca().mtc.log.as_ref().unwrap();
-        let size = log::tree_size(log).await.unwrap();
-        assert_eq!(size, 1, "fresh log must have 1 null_entry leaf");
+        assert!(body.contains('\u{2014}'), "must contain em-dash signature");
     }
 
-    let app = routes::build_router(Arc::clone(&state), None, false);
-    let addr: SocketAddr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
+    /// The tile endpoint must return 501 for entry bundle requests.
+    #[tokio::test]
+    async fn tlog_tile_entries_returns_501() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (port, listener) = common::bind_ephemeral();
+        let base_url = format!("http://127.0.0.1:{port}");
+        let state = common::build_test_state(dir.path(), &base_url).await;
 
-    // A full tile URL (no .p/W suffix) for a log with fewer than 256 leaves must
-    // return 404 per C2SP tlog-tiles: a full-tile URL promises exactly 256 entries.
-    let resp = reqwest::get(format!("http://{addr}/acme/mtc/tile/0/000"))
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status().as_u16(),
-        404,
-        "full tile URL must return 404 when log has < 256 entries"
-    );
-}
+        let app = routes::build_router(Arc::clone(&state), None, false);
+        let addr: SocketAddr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
 
-/// The cosignature endpoint must return a valid C2SP signed-note with a
-/// type 0x04 signature line (Ed25519 cosig, blob = key_id + timestamp + sig).
-#[tokio::test]
-async fn tlog_cosignature_endpoint_structure() {
-    use base64::engine::general_purpose::STANDARD as BASE64;
-    use base64::Engine;
+        let resp = reqwest::get(format!("http://{addr}/acme/mtc/tile/entries/000"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 501, "entry bundle tiles must return 501");
+    }
 
-    let dir = tempfile::TempDir::new().unwrap();
-    let (port, listener) = bind_ephemeral();
-    let base_url = format!("http://127.0.0.1:{port}");
-    let state = build_test_state(dir.path(), &base_url).await;
+    /// A level-0 tile for the freshly-opened log (which has one null_entry) must
+    /// return a partial tile containing exactly one hash (32 bytes).
+    #[tokio::test]
+    async fn tlog_tile_level0_partial_returns_one_hash() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (port, listener) = common::bind_ephemeral();
+        let base_url = format!("http://127.0.0.1:{port}");
+        let state = common::build_test_state(dir.path(), &base_url).await;
 
-    let app = routes::build_router(Arc::clone(&state), None, false);
-    let addr: SocketAddr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
+        let app = routes::build_router(Arc::clone(&state), None, false);
+        let addr: SocketAddr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
 
-    let resp = reqwest::get(format!("http://{addr}/acme/mtc/cosignature"))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
+        let resp = reqwest::get(format!("http://{addr}/acme/mtc/tile/0/000.p/1"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
 
-    let body = resp.text().await.unwrap();
-    let sig_line = body.lines().find(|l| l.starts_with('\u{2014}')).unwrap();
-    let b64_part = sig_line.splitn(3, ' ').nth(2).unwrap();
-    let blob = BASE64.decode(b64_part).unwrap();
-    // Wire format: key_id(4) || timestamp_be(8) || ed25519_sig(64) = 76 bytes
-    assert_eq!(
-        blob.len(),
-        4 + 8 + 64,
-        "Ed25519 cosig blob must be 76 bytes"
-    );
-    // Timestamp must be a recent-ish Unix time (after 2020-01-01).
-    let ts = u64::from_be_bytes(blob[4..12].try_into().unwrap());
-    assert!(
-        ts > 1_577_836_800,
-        "embedded timestamp must be after 2020-01-01"
-    );
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            ct.contains("application/octet-stream"),
+            "hash tile must be octet-stream"
+        );
+
+        let bytes = resp.bytes().await.unwrap();
+        assert_eq!(bytes.len(), 32, "one SHA-256 leaf hash = 32 bytes");
+    }
+
+    /// Requesting a full (256-entry) tile for a log with 1 leaf must return 404
+    /// (the tile is not complete and no .p/1 suffix was given).
+    #[tokio::test]
+    async fn tlog_tile_level0_full_returns_404_for_small_log() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (port, listener) = common::bind_ephemeral();
+        let base_url = format!("http://127.0.0.1:{port}");
+        let state = common::build_test_state(dir.path(), &base_url).await;
+
+        {
+            let log = state.default_ca().mtc.log.as_ref().unwrap();
+            let size = log::tree_size(log).await.unwrap();
+            assert_eq!(size, 1, "fresh log must have 1 null_entry leaf");
+        }
+
+        let app = routes::build_router(Arc::clone(&state), None, false);
+        let addr: SocketAddr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{addr}/acme/mtc/tile/0/000"))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status().as_u16(),
+            404,
+            "full tile URL must return 404 when log has < 256 entries"
+        );
+    }
+
+    /// The cosignature endpoint must return a valid C2SP signed-note with a
+    /// type 0x04 signature line (Ed25519 cosig, blob = key_id + timestamp + sig).
+    #[tokio::test]
+    async fn tlog_cosignature_endpoint_structure() {
+        use base64::engine::general_purpose::STANDARD as BASE64;
+        use base64::Engine;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let (port, listener) = common::bind_ephemeral();
+        let base_url = format!("http://127.0.0.1:{port}");
+        let state = common::build_test_state(dir.path(), &base_url).await;
+
+        let app = routes::build_router(Arc::clone(&state), None, false);
+        let addr: SocketAddr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{addr}/acme/mtc/cosignature"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        let body = resp.text().await.unwrap();
+        let sig_line = body.lines().find(|l| l.starts_with('\u{2014}')).unwrap();
+        let b64_part = sig_line.splitn(3, ' ').nth(2).unwrap();
+        let blob = BASE64.decode(b64_part).unwrap();
+        assert_eq!(
+            blob.len(),
+            4 + 8 + 64,
+            "Ed25519 cosig blob must be 76 bytes"
+        );
+        let ts = u64::from_be_bytes(blob[4..12].try_into().unwrap());
+        assert!(
+            ts > 1_577_836_800,
+            "embedded timestamp must be after 2020-01-01"
+        );
+    }
 }
 
 // ── Standalone certificate format conformance ─────────────────────────────────
