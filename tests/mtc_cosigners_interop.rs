@@ -178,7 +178,14 @@ async fn verify_issuer_tlog(
         }
     };
 
-    if resp.status() != 200 {
+    if resp.status() == 404 {
+        results.push(CheckResult::pass(
+            "checkpoint_fetch",
+            "tlog not deployed yet (404) — skipping remaining checks",
+        ));
+        return results;
+    }
+    if !resp.status().is_success() {
         results.push(CheckResult::fail(
             "checkpoint_fetch",
             format!("expected 200, got {}", resp.status()),
@@ -261,23 +268,30 @@ async fn verify_issuer_tlog(
         ),
     ));
 
-    // Check 3: Fetch a level-0 tile
-    let tile_width = std::cmp::min(tree_size, 256) as usize;
-    let tile_url = format!("{}/tile/0/000.p/{tile_width}", endpoint.base_url);
+    // Check 3: Fetch a level-0 tile.
+    // Full tiles have exactly 256 hashes — use the plain path without `.p/N`
+    // since some servers (Cloudflare) don't support partial-tile URL syntax.
+    // Only use `.p/N` when tree_size < 256 (an actual partial tile).
+    let (tile_url, expected_hashes) = if tree_size >= 256 {
+        (format!("{}/tile/0/000", endpoint.base_url), 256_usize)
+    } else {
+        let w = tree_size as usize;
+        (format!("{}/tile/0/000.p/{w}", endpoint.base_url), w)
+    };
     match client.get(&tile_url).send().await {
         Ok(resp) if resp.status() == 200 => match resp.bytes().await {
-            Ok(bytes) if bytes.len() == tile_width * 32 => {
+            Ok(bytes) if bytes.len() == expected_hashes * 32 => {
                 results.push(CheckResult::pass(
                     "tile_fetch",
-                    format!("{tile_width} hashes, {} bytes", bytes.len()),
+                    format!("{expected_hashes} hashes, {} bytes", bytes.len()),
                 ));
             }
             Ok(bytes) => {
                 results.push(CheckResult::fail(
                     "tile_fetch",
                     format!(
-                        "expected {} bytes ({tile_width} * 32), got {}",
-                        tile_width * 32,
+                        "expected {} bytes ({expected_hashes} * 32), got {}",
+                        expected_hashes * 32,
                         bytes.len()
                     ),
                 ));
@@ -300,9 +314,15 @@ async fn verify_issuer_tlog(
         }
     }
 
-    // Check 4: Fetch cosignature
+    // Check 4: Fetch cosignature (optional — not all servers implement it)
     let cosig_url = format!("{}/cosignature", endpoint.base_url);
     match client.get(&cosig_url).send().await {
+        Ok(resp) if resp.status() == 404 => {
+            results.push(CheckResult::pass(
+                "cosignature_fetch",
+                "not implemented (404) — optional endpoint",
+            ));
+        }
         Ok(resp) if resp.status() == 200 => match resp.text().await {
             Ok(cosig_body) => {
                 if let Some(sig_line) = cosig_body.lines().find(|l| l.starts_with('\u{2014}')) {
@@ -471,6 +491,8 @@ async fn google_cosigners_store() {
         store.operators.len(),
     );
 
+    let mut all_failures: Vec<String> = Vec::new();
+
     for signer in &store.issuers {
         let ep = CosignerEndpoint::from_google_signer(signer);
         eprintln!("  Testing issuer: {} ({})", ep.name, ep.base_url);
@@ -483,7 +505,18 @@ async fn google_cosigners_store() {
                 r.detail,
             );
         }
-        assert_all_passed(&ep.name, &results);
+        let failures: Vec<_> = results.iter().filter(|r| !r.passed).collect();
+        if !failures.is_empty() {
+            all_failures.push(format!(
+                "Issuer '{}': {}",
+                ep.name,
+                failures
+                    .iter()
+                    .map(|f| format!("[{}] {}", f.check_name, f.detail))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ));
+        }
     }
 
     for signer in &store.mirrors {
@@ -498,7 +531,26 @@ async fn google_cosigners_store() {
                 r.detail,
             );
         }
-        assert_all_passed(&ep.name, &results);
+        let failures: Vec<_> = results.iter().filter(|r| !r.passed).collect();
+        if !failures.is_empty() {
+            all_failures.push(format!(
+                "Mirror '{}': {}",
+                ep.name,
+                failures
+                    .iter()
+                    .map(|f| format!("[{}] {}", f.check_name, f.detail))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ));
+        }
+    }
+
+    if !all_failures.is_empty() {
+        panic!(
+            "{} cosigner(s) failed:\n  {}",
+            all_failures.len(),
+            all_failures.join("\n  ")
+        );
     }
 }
 
