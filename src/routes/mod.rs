@@ -238,9 +238,9 @@ fn build_acme_router(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     r = dual_acme_route(r, "mtc/landmark-list", get(mtc::get_landmark_list));
     r = dual_acme_route(r, "mtc/landmarks/{seq}/cert", get(mtc::get_landmark_cert));
     // C2SP tlog-tiles API
-    r = dual_acme_route(r, "mtc/tlog/checkpoint", get(mtc::get_tlog_checkpoint));
-    r = dual_acme_route(r, "mtc/tlog/cosignature", get(mtc::get_tlog_cosignature));
-    r = dual_acme_route(r, "mtc/tlog/tile/{*path}", get(mtc::get_tlog_tile));
+    r = dual_acme_route(r, "mtc/checkpoint", get(mtc::get_tlog_checkpoint));
+    r = dual_acme_route(r, "mtc/cosignature", get(mtc::get_tlog_cosignature));
+    r = dual_acme_route(r, "mtc/tile/{*path}", get(mtc::get_tlog_tile));
     // Consistency proof for monitors
     r = dual_acme_route(r, "mtc/consistency-proof", get(mtc::get_consistency_proof));
     // Subtree root hash

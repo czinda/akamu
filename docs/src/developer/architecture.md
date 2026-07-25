@@ -254,8 +254,8 @@ src/
     renewal_info.rs GET /acme/renewal-info/{cert_id}
     mtc.rs         GET /acme/mtc/tree-size, /root, /inclusion-proof/{id},
                    /cert/{id}/standalone, /landmarks, /landmarks/{seq}/cert;
-                   C2SP tlog-tiles: /acme/mtc/tlog/checkpoint, /tlog/cosignature,
-                   /tlog/tile/{*path}
+                   C2SP tlog-tiles: /acme/mtc/checkpoint, /cosignature,
+                   /tile/{*path}
     crl.rs         GET /ca/crl, GET /ca/{ca_id}/crl — serve DER-encoded CRLs (cached);
                    GET /ca/cross-certs, GET /ca/{ca_id}/cross-certs — PEM cross-cert bundles
     ocsp.rs        POST /ca/ocsp, GET /ca/ocsp/{request},

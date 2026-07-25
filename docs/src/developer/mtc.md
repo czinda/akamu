@@ -222,9 +222,9 @@ The following read-only endpoints are served under `/acme/mtc/` and return 404 w
 | `GET /acme/mtc/landmark-list` | `mtc::get_landmark_list` |
 | `GET /acme/mtc/landmarks` | `mtc::get_landmarks` |
 | `GET /acme/mtc/landmarks/{seq}/cert` | `mtc::get_landmark_cert` |
-| `GET /acme/mtc/tlog/checkpoint` | `mtc::get_tlog_checkpoint` |
-| `GET /acme/mtc/tlog/tile/{*path}` | `mtc::get_tlog_tile` |
-| `GET /acme/mtc/tlog/cosignature` | `mtc::get_tlog_cosignature` |
+| `GET /acme/mtc/checkpoint` | `mtc::get_tlog_checkpoint` |
+| `GET /acme/mtc/tile/{*path}` | `mtc::get_tlog_tile` |
+| `GET /acme/mtc/cosignature` | `mtc::get_tlog_cosignature` |
 | `GET /acme/mtc/consistency-proof` | `mtc::get_consistency_proof` |
 | `GET /acme/mtc/subtree-root` | `mtc::get_subtree_root` |
 | `GET /acme/mtc/revoked-ranges` | `mtc::get_revoked_ranges` |
@@ -257,11 +257,11 @@ The three tlog-tiles endpoints are registered in `src/routes/mod.rs` and dispatc
 
 | Endpoint | Handler |
 |---|---|
-| `GET /acme/mtc/tlog/checkpoint` | `mtc::get_tlog_checkpoint` |
-| `GET /acme/mtc/tlog/tile/{*path}` | `mtc::get_tlog_tile` |
-| `GET /acme/mtc/tlog/cosignature` | `mtc::get_tlog_cosignature` |
+| `GET /acme/mtc/checkpoint` | `mtc::get_tlog_checkpoint` |
+| `GET /acme/mtc/tile/{*path}` | `mtc::get_tlog_tile` |
+| `GET /acme/mtc/cosignature` | `mtc::get_tlog_cosignature` |
 
-The log origin string used in checkpoint notes is `{base_url}/acme/mtc/tlog`.
+The log origin string used in checkpoint notes is OID-based (e.g. `oid/1.3.6.1.4.1.{trust_anchor_id}.0.{log_number}`), not URL-based. The published `base_url` for cosigners stores is `{host}/acme/{ca_id}/mtc`.
 
 ## MTC validator and test vector tooling
 

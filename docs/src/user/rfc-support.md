@@ -1215,8 +1215,8 @@ The format uses experimental OIDs (pre-IANA). OID arcs will change when the draf
 | §6.2 | Checkpoint DER encoding and storage | Yes — `mtc_checkpoints` database table |
 | §6.3.1 | `LandmarkCertificate` construction | Yes — landmark background task |
 | §7 | Relying-party verification (server side) | Not applicable — Akāmu is the log operator |
-| C2SP tlog-tiles | Hash tile serving (`tile/0/…`, `tile/1/…`) | Yes — `GET /acme/mtc/tlog/tile/{*path}` |
-| C2SP tlog-tiles | Signed-note checkpoint | Yes — `GET /acme/mtc/tlog/checkpoint` |
+| C2SP tlog-tiles | Hash tile serving (`tile/0/…`, `tile/1/…`) | Yes — `GET /acme/mtc/tile/{*path}` |
+| C2SP tlog-tiles | Signed-note checkpoint | Yes — `GET /acme/mtc/checkpoint` |
 | C2SP tlog-tiles | `tile/entries/…` | Not implemented — Akāmu stores only leaf hashes |
 
 ### Compliance testing

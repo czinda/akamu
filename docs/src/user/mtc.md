@@ -270,9 +270,9 @@ Returns 404 when MTC is disabled.
 
 When `[mtc.signing_key]` is configured, three additional endpoints implement the [C2SP tlog-tiles](https://c2sp.org/tlog-tiles) and [C2SP signed-note](https://c2sp.org/signed-note) specifications, enabling compatibility with transparency-log clients that speak the tlog-tiles protocol.
 
-All three endpoints return 404 when MTC is disabled. `GET /acme/mtc/tlog/checkpoint` and `GET /acme/mtc/tlog/cosignature` additionally require a signing key to be configured; without one they return 503.
+All three endpoints return 404 when MTC is disabled. `GET /acme/mtc/checkpoint` and `GET /acme/mtc/cosignature` additionally require a signing key to be configured; without one they return 503.
 
-### `GET /acme/mtc/tlog/checkpoint`
+### `GET /acme/mtc/checkpoint`
 
 Returns the current tree as a C2SP signed-note checkpoint signed by the MTC signing key acting as the primary log operator.
 
@@ -289,7 +289,7 @@ Response `Content-Type` is `text/plain; charset=utf-8`. The note body format is:
 — <key_name> <base64(key_id || signature)>
 ```
 
-### `GET /acme/mtc/tlog/tile/{*path}`
+### `GET /acme/mtc/tile/{*path}`
 
 Serves a C2SP hash tile. The path component encodes `{level}/{tile_index_path}[.p/{width}]`:
 
@@ -301,7 +301,7 @@ Response `Content-Type` is `application/octet-stream`; each hash entry is 32, 48
 
 Returns 404 when the tile is entirely beyond the current log size. Returns 501 for `tile/entries/...` paths because Akāmu stores only leaf hashes, not raw entry data.
 
-### `GET /acme/mtc/tlog/cosignature`
+### `GET /acme/mtc/cosignature`
 
 Returns a C2SP cosignature note for the current checkpoint, produced by the MTC signing key acting as a cosigner. The current POSIX timestamp is embedded in the signature blob.
 

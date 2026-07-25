@@ -190,9 +190,9 @@ These endpoints implement the
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/acme[/{ca_id}]/mtc/tlog/checkpoint` | Signed checkpoint (text/plain, signed-note format) |
-| `GET` | `/acme[/{ca_id}]/mtc/tlog/cosignature` | Cosigner checkpoint (text/plain, signed-note format) |
-| `GET` | `/acme[/{ca_id}]/mtc/tlog/tile/{*path}` | Hash tile data (application/octet-stream) |
+| `GET` | `/acme[/{ca_id}]/mtc/checkpoint` | Signed checkpoint (text/plain, signed-note format) |
+| `GET` | `/acme[/{ca_id}]/mtc/cosignature` | Cosigner checkpoint (text/plain, signed-note format) |
+| `GET` | `/acme[/{ca_id}]/mtc/tile/{*path}` | Hash tile data (application/octet-stream) |
 
 The checkpoint and cosignature endpoints return `text/plain` in C2SP signed-note
 format. The origin line uses the OID-based format

@@ -331,16 +331,16 @@ impl MtcClient {
     }
 
     pub async fn tlog_checkpoint(&self) -> Result<String, ClientError> {
-        let body = self.get_bytes_ok("/tlog/checkpoint").await?;
+        let body = self.get_bytes_ok("/checkpoint").await?;
         String::from_utf8(body).map_err(|e| ClientError::Http(format!("invalid UTF-8: {e}")))
     }
 
     pub async fn tlog_tile(&self, path: &str) -> Result<Vec<u8>, ClientError> {
-        self.get_bytes_ok(&format!("/tlog/tile/{path}")).await
+        self.get_bytes_ok(&format!("/tile/{path}")).await
     }
 
     pub async fn tlog_cosignature(&self) -> Result<String, ClientError> {
-        let body = self.get_bytes_ok("/tlog/cosignature").await?;
+        let body = self.get_bytes_ok("/cosignature").await?;
         String::from_utf8(body).map_err(|e| ClientError::Http(format!("invalid UTF-8: {e}")))
     }
 }

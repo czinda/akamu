@@ -516,7 +516,7 @@ async fn tlog_checkpoint_endpoint_returns_valid_note() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    let url = format!("http://{addr}/acme/mtc/tlog/checkpoint");
+    let url = format!("http://{addr}/acme/mtc/checkpoint");
     let resp = reqwest::get(&url).await.unwrap();
     assert_eq!(resp.status(), 200, "checkpoint must return 200");
 
@@ -557,7 +557,7 @@ async fn tlog_tile_entries_returns_501() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    let resp = reqwest::get(format!("http://{addr}/acme/mtc/tlog/tile/entries/000"))
+    let resp = reqwest::get(format!("http://{addr}/acme/mtc/tile/entries/000"))
         .await
         .unwrap();
     assert_eq!(resp.status(), 501, "entry bundle tiles must return 501");
@@ -580,7 +580,7 @@ async fn tlog_tile_level0_partial_returns_one_hash() {
 
     // A fresh log has exactly 1 leaf (null_entry).
     // Requesting tile 0 at level 0, partial width 1.
-    let resp = reqwest::get(format!("http://{addr}/acme/mtc/tlog/tile/0/000.p/1"))
+    let resp = reqwest::get(format!("http://{addr}/acme/mtc/tile/0/000.p/1"))
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
@@ -624,7 +624,7 @@ async fn tlog_tile_level0_full_returns_404_for_small_log() {
 
     // A full tile URL (no .p/W suffix) for a log with fewer than 256 leaves must
     // return 404 per C2SP tlog-tiles: a full-tile URL promises exactly 256 entries.
-    let resp = reqwest::get(format!("http://{addr}/acme/mtc/tlog/tile/0/000"))
+    let resp = reqwest::get(format!("http://{addr}/acme/mtc/tile/0/000"))
         .await
         .unwrap();
     assert_eq!(
@@ -652,7 +652,7 @@ async fn tlog_cosignature_endpoint_structure() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    let resp = reqwest::get(format!("http://{addr}/acme/mtc/tlog/cosignature"))
+    let resp = reqwest::get(format!("http://{addr}/acme/mtc/cosignature"))
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
