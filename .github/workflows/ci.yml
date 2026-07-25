@@ -231,6 +231,44 @@ jobs:
       - name: Build benchmarks
         run: ./contrib/ci/local-ci.sh --no-deps bench
 
+  # ── External interop ───────────────────────────────────────────────────────
+  # Runs #[ignore]-gated MTC cosigners interop tests that contact external
+  # servers (Google, Geomys).  Non-fatal: external server downtime must not
+  # block the pipeline.
+  interop:
+    name: MTC Interop (external)
+    needs: [build]
+    runs-on: vdali
+    timeout-minutes: 10
+    continue-on-error: true
+    container: quay.io/hummingbird/rust:latest-builder
+    steps:
+      - name: Install build dependencies
+        run: |
+          if rpm -q $DNF_PACKAGES >/dev/null 2>&1; then
+            echo "All required packages already installed"
+          else
+            dnf install -y $DNF_PACKAGES
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Restore cargo registry cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: ~/.cargo/registry
+          key: cargo-registry-v1-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-registry-v1-
+      - name: Restore debug build artifacts
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: |
+            target/debug/.fingerprint
+            target/debug/deps
+            target/debug/build
+            target/debug/examples
+          key: cargo-target-debug-v1-${{ github.sha }}
+      - name: Run external cosigners interop tests
+        run: ./contrib/ci/local-ci.sh --no-deps interop:akamu
+
   # ── Workflow lint ───────────────────────────────────────────────────────────
   # Validates .github/workflows/*.yml with actionlint; no Rust toolchain needed.
   lint-workflows:

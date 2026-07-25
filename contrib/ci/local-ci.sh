@@ -135,7 +135,7 @@ declare -A JOB_STATUS=()
 declare -A JOB_SECS=()
 FAILED_JOBS=()
 
-ALL_JOBS=(build fmt clippy doc test bench lint-workflows)
+ALL_JOBS=(build fmt clippy doc test bench interop lint-workflows)
 
 # Mirrors the dependency ordering that would be expressed via 'needs:' in a
 # GitHub Actions workflow.  When --no-deps is NOT set, a job whose prerequisite
@@ -145,6 +145,7 @@ declare -A JOB_DEPS=(
     [doc]="build"
     [test]="build"
     [bench]="build"
+    [interop]="build"
 )
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
@@ -282,6 +283,43 @@ job_bench() {
     ok "bench binary compiles successfully"
 }
 
+job_interop() {
+    if [[ "$has_cargo" -eq 0 ]]; then
+        fail "cargo not found"; return 1
+    fi
+
+    local filter="${1:-}"
+    local test_args=(--features test-utils -p akamu --test mtc_cosigners_interop --)
+
+    case "$filter" in
+        google)
+            echo "Running Google cosigners store interop test…"
+            test_args+=(--ignored --nocapture google_cosigners_store)
+            ;;
+        geomys)
+            echo "Running Geomys mirroring cosigner interop test…"
+            test_args+=(--ignored --nocapture geomys_mirror)
+            ;;
+        akamu)
+            echo "Running local Akamu tlog self-test…"
+            test_args+=(--nocapture akamu_self_test)
+            ;;
+        "")
+            echo "Running all MTC cosigners interop tests (includes external servers)…"
+            test_args+=(--include-ignored --nocapture)
+            ;;
+        *)
+            fail "unknown interop target: $filter (use google, geomys, or akamu)"
+            return 1
+            ;;
+    esac
+
+    if ! cargo test "${test_args[@]}"; then
+        warn "interop tests failed — external servers may be unavailable"
+        return 1
+    fi
+}
+
 job_lint_workflows() {
     echo "Validating GitHub Actions workflow files…"
 
@@ -326,6 +364,8 @@ dispatch_job() {
         doc)            run_job doc            job_doc ;;
         test)           run_job test           job_test ;;
         bench)          run_job bench          job_bench ;;
+        interop)        run_job interop        job_interop ;;
+        interop:*)      run_job "$1"           job_interop "${1#interop:}" ;;
         lint-workflows) run_job lint-workflows job_lint_workflows ;;
         *)
             echo "Unknown job: $1" >&2
@@ -388,6 +428,10 @@ Available jobs:
   doc            cargo doc --no-deps [+ mdbook build docs/]
   test           cargo test
   bench          compile bench binary (no measurements)
+  interop        all MTC cosigners interop tests (network)
+  interop:google Google cosigners store test only
+  interop:geomys Geomys mirroring cosigner test only
+  interop:akamu  local Akamu tlog self-test only
   lint-workflows actionlint / yamllint on .github/workflows/*.yml
 
 Options:
