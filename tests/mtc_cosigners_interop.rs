@@ -18,10 +18,8 @@ use synta_certificate::DataHasher;
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const GOOGLE_COSIGNERS_URL: &str =
-    "https://www.gstatic.com/mtcs/cosigners/v1/cosigners.json";
-const GEOMYS_MIRROR_URL: &str =
-    "https://witness.navigli.sunlight.geomys.org/mirror/mirror.v0.json";
+const GOOGLE_COSIGNERS_URL: &str = "https://www.gstatic.com/mtcs/cosigners/v1/cosigners.json";
+const GEOMYS_MIRROR_URL: &str = "https://witness.navigli.sunlight.geomys.org/mirror/mirror.v0.json";
 
 // ── Google cosigners store types ─────────────────────────────────────────────
 
@@ -298,10 +296,7 @@ async fn verify_issuer_tlog(
             ));
         }
         Err(e) => {
-            results.push(CheckResult::fail(
-                "tile_fetch",
-                format!("HTTP error: {e}"),
-            ));
+            results.push(CheckResult::fail("tile_fetch", format!("HTTP error: {e}")));
         }
     }
 
@@ -314,15 +309,11 @@ async fn verify_issuer_tlog(
                     if let Some(b64_part) = sig_line.splitn(3, ' ').nth(2) {
                         match BASE64.decode(b64_part) {
                             Ok(blob) if blob.len() >= 12 => {
-                                let ts =
-                                    u64::from_be_bytes(blob[4..12].try_into().unwrap());
+                                let ts = u64::from_be_bytes(blob[4..12].try_into().unwrap());
                                 if ts > 1_577_836_800 {
                                     results.push(CheckResult::pass(
                                         "cosignature_fetch",
-                                        format!(
-                                            "blob {} bytes, timestamp={ts}",
-                                            blob.len()
-                                        ),
+                                        format!("blob {} bytes, timestamp={ts}", blob.len()),
                                     ));
                                 } else {
                                     results.push(CheckResult::fail(
@@ -448,6 +439,67 @@ async fn verify_mirror_metadata(
     }
 
     results
+}
+
+// ── External interop tests (require network) ─────────────────────────────────
+
+#[tokio::test]
+#[ignore]
+async fn google_cosigners_store() {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(GOOGLE_COSIGNERS_URL)
+        .send()
+        .await
+        .expect("failed to fetch Google cosigners store");
+    assert_eq!(resp.status(), 200, "Google store returned non-200");
+
+    let store: CosignersStore = resp
+        .json()
+        .await
+        .expect("failed to parse Google cosigners store JSON");
+
+    eprintln!(
+        "Google store v{}: {} issuers, {} mirrors, {} operators",
+        store.version,
+        store.issuers.len(),
+        store.mirrors.len(),
+        store.operators.len(),
+    );
+
+    for signer in &store.issuers {
+        let ep = CosignerEndpoint::from_google_signer(signer);
+        eprintln!("  Testing issuer: {} ({})", ep.name, ep.base_url);
+        let results = verify_issuer_tlog(&client, &ep).await;
+        for r in &results {
+            eprintln!(
+                "    [{}] {}: {}",
+                if r.passed { "PASS" } else { "FAIL" },
+                r.check_name,
+                r.detail,
+            );
+        }
+        assert_all_passed(&ep.name, &results);
+    }
+
+    for signer in &store.mirrors {
+        let ep = CosignerEndpoint::from_google_signer(signer);
+        eprintln!("  Testing mirror: {} ({})", ep.name, ep.base_url);
+        let results = verify_mirror_metadata(&client, &ep, None).await;
+        for r in &results {
+            eprintln!(
+                "    [{}] {}: {}",
+                if r.passed { "PASS" } else { "FAIL" },
+                r.check_name,
+                r.detail,
+            );
+        }
+        assert_all_passed(&ep.name, &results);
+    }
 }
 
 // ── Unit tests for JSON parsing ──────────────────────────────────────────────
