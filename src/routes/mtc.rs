@@ -566,8 +566,9 @@ pub async fn get_discovery(
         .cosigner_clients
         .iter()
         .map(|c| {
+            let discovery_url = c.base_url.as_deref().unwrap_or(&c.url);
             let mut obj = json!({
-                "base_url": c.url,
+                "base_url": discovery_url,
                 "type": "COSIGNER",
             });
             if let Some(ref name) = c.friendly_name {

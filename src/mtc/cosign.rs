@@ -209,6 +209,8 @@ pub struct CosignerClient {
     pub(crate) trust_anchor_id: Option<String>,
     /// Hex-encoded SHA-256 hash of the cosigner's SPKI DER.
     pub(crate) key_sha256: Option<String>,
+    /// Base URL for the cosigner's tlog-tiles endpoints (discovery).
+    pub(crate) base_url: Option<String>,
 }
 
 /// Build a `CosignerClient` that connects over plain HTTP (no TLS).
@@ -230,6 +232,7 @@ pub fn build_cosigner_client_http(url: String) -> CosignerClient {
         friendly_name: None,
         trust_anchor_id: None,
         key_sha256: None,
+        base_url: None,
     }
 }
 
@@ -284,6 +287,7 @@ pub fn build_cosigner_client(cfg: &CosignerConfig) -> Result<CosignerClient, Acm
         friendly_name: cfg.friendly_name.clone(),
         trust_anchor_id: cfg.trust_anchor_id.clone(),
         key_sha256,
+        base_url: cfg.base_url.clone(),
     })
 }
 

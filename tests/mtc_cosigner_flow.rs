@@ -290,6 +290,7 @@ async fn build_akamu_state(
             checkpoint_interval_secs: 3600,
             cosigners: vec![CosignerConfig {
                 url: cosigner_url.into(),
+                base_url: None,
                 cosigner_id_cert_pem: None,
                 trust_anchor_id: Some(TEST_COSIGNER_OID.into()),
                 friendly_name: None,

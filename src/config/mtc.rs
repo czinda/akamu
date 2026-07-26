@@ -39,6 +39,11 @@ pub struct CosignerConfig {
     /// when absent.
     #[serde(default)]
     pub friendly_name: Option<String>,
+    /// Base URL prefix for the cosigner's tlog-tiles endpoints.  When set, this
+    /// value appears in the discovery endpoint's `base_url` field.  When absent,
+    /// `url` is used as a fallback.
+    #[serde(default)]
+    pub base_url: Option<String>,
     /// Path to the cosigner's X.509 certificate PEM file.  When set, the
     /// signature in the returned `SubtreeSignature` is verified against the
     /// cosigner's public key before the signature is stored.
