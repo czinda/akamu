@@ -305,11 +305,10 @@ async fn build_akamu_state(
             contact: None,
             friendly_name: None,
         }),
-        server: {
-            let mut s = ServerConfig::default();
-            s.http_validation_port = http01_port;
-            s.http_validation_allow_private_ips = true;
-            s
+        server: ServerConfig {
+            http_validation_port: http01_port,
+            http_validation_allow_private_ips: true,
+            ..Default::default()
         },
         tls: Default::default(),
         profiles: Default::default(),
@@ -494,7 +493,7 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
             .unwrap()
             .insert(token.to_owned(), key_auth);
 
-        acme.trigger_challenge(&account, &challenge)
+        acme.trigger_challenge(&account, challenge)
             .await
             .expect("trigger_challenge");
     }
@@ -703,7 +702,7 @@ async fn acme_issue_and_mtc_standalone_with_cosigner() {
             .write()
             .unwrap()
             .insert(token.to_owned(), key_auth);
-        acme.trigger_challenge(&account, &challenge)
+        acme.trigger_challenge(&account, challenge)
             .await
             .expect("trigger_challenge (2nd)");
     }
@@ -948,7 +947,7 @@ async fn verify_mtc_proof(
 
 fn parse_hex_hash(hex_str: &str) -> Vec<u8> {
     assert!(
-        hex_str.len() % 2 == 0,
+        hex_str.len().is_multiple_of(2),
         "hex hash must have even length, got: {hex_str:?}"
     );
     (0..hex_str.len())
