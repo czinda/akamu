@@ -502,6 +502,43 @@ async fn google_cosigners_store() {
     }
 }
 
+#[tokio::test]
+#[ignore]
+async fn geomys_mirror() {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(GEOMYS_MIRROR_URL)
+        .send()
+        .await
+        .expect("failed to fetch Geomys mirror config");
+    assert_eq!(resp.status(), 200, "Geomys mirror config returned non-200");
+
+    let mirror: MirrorConfig = resp
+        .json()
+        .await
+        .expect("failed to parse Geomys mirror config JSON");
+
+    eprintln!(
+        "Geomys mirror: name={}, cosigner_id={}, monitoring={}",
+        mirror.name, mirror.cosigner_id, mirror.monitoring_url,
+    );
+
+    let ep = CosignerEndpoint::from_geomys_mirror(&mirror);
+    let results = verify_mirror_metadata(&client, &ep, Some(&mirror.key)).await;
+    for r in &results {
+        eprintln!(
+            "  [{}] {}: {}",
+            if r.passed { "PASS" } else { "FAIL" },
+            r.check_name,
+            r.detail,
+        );
+    }
+    assert_all_passed(&ep.name, &results);
+}
 // ── Unit tests for JSON parsing ──────────────────────────────────────────────
 
 #[cfg(test)]
