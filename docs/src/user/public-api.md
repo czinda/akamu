@@ -192,6 +192,7 @@ These endpoints implement the
 |--------|------|-------------|
 | `GET` | `/acme[/{ca_id}]/mtc/checkpoint` | Signed checkpoint (text/plain, signed-note format) |
 | `GET` | `/acme[/{ca_id}]/mtc/cosignature` | Cosigner checkpoint (text/plain, signed-note format) |
+| `GET` | `/acme[/{ca_id}]/mtc/discovery` | Issuer and cosigner metadata (JSON, CosignersStore-compatible) |
 | `GET` | `/acme[/{ca_id}]/mtc/tile/{*path}` | Hash tile data (application/octet-stream) |
 
 The checkpoint and cosignature endpoints return `text/plain` in C2SP signed-note

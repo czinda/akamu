@@ -80,6 +80,7 @@ hash_alg                 = "sha256"  # leaf hash algorithm: sha256 | sha384 | sh
 log_number               = 1        # serial encoding: (log_number << 48) | entry_index
 # tree_minimum_index     = 0        # §5.2.3 log pruning; absent = no pruning
 # trust_anchor_id        = "1.3.6.1.4.1.44363.47.10.1"  # CA self-cosigner OID (§5.4)
+# friendly_name          = "My MTC Issuer"               # human-readable name for discovery
 
 [mtc.signing_key]
 key_file = "/var/lib/akamu/mtc-signing.key"   # auto-generated if absent
@@ -104,8 +105,10 @@ After each checkpoint, Akāmu can POST the checkpoint to external cosigner serve
 ```toml
 [[mtc.cosigners]]
 url                  = "https://cosigner.example.com/sign"
+base_url             = "https://cosigner.example.com/mtc" # optional; tlog-tiles base URL for discovery
 cosigner_id_cert_pem = "/etc/akamu/cosigner1.pem"  # optional; path to cosigner X.509 cert PEM
 trust_anchor_id      = "1.3.6.1.4.1.44363.47.10.1" # optional; expected TrustAnchorID OID
+friendly_name        = "External Cosigner"           # optional; human-readable name for discovery
 ```
 
 Multiple `[[mtc.cosigners]]` entries are supported. For each entry:
@@ -114,6 +117,8 @@ Multiple `[[mtc.cosigners]]` entries are supported. For each entry:
 - The cosigner returns a DER-encoded signature with HTTP 200.
 - Each request has a 30-second per-cosigner timeout.
 - Failures are logged and skipped — partial success is acceptable; the standalone certificate is still built with whatever signatures arrive.
+
+When `base_url` is set, the discovery endpoint uses this value as the cosigner's `base_url` field. This should be the base URL prefix where the cosigner serves tlog-tiles endpoints. When absent, the POST `url` is used as a fallback.
 
 When `cosigner_id_cert_pem` is set, the PEM file is loaded at startup and added to the TLS trust store for that cosigner's HTTPS connection, in addition to the system root CAs. The certificate's public key is also used for cryptographic verification of received `SubtreeSignature` values. This allows cosigners whose TLS certificate chains to an operator-provisioned CA to be used without installing that CA system-wide.
 
@@ -268,9 +273,9 @@ Returns 404 when MTC is disabled.
 
 ## C2SP tlog-tiles API
 
-When `[mtc.signing_key]` is configured, three additional endpoints implement the [C2SP tlog-tiles](https://c2sp.org/tlog-tiles) and [C2SP signed-note](https://c2sp.org/signed-note) specifications, enabling compatibility with transparency-log clients that speak the tlog-tiles protocol.
+When `[mtc.signing_key]` is configured, additional endpoints implement the [C2SP tlog-tiles](https://c2sp.org/tlog-tiles) and [C2SP signed-note](https://c2sp.org/signed-note) specifications, enabling compatibility with transparency-log clients that speak the tlog-tiles protocol.
 
-All three endpoints return 404 when MTC is disabled. `GET /acme/mtc/checkpoint` and `GET /acme/mtc/cosignature` additionally require a signing key to be configured; without one they return 503.
+All endpoints return 404 when MTC is disabled. `GET /acme/mtc/checkpoint`, `GET /acme/mtc/cosignature`, and `GET /acme/mtc/discovery` additionally require a signing key and `trust_anchor_id` to be configured; without them they return 503.
 
 ### `GET /acme/mtc/checkpoint`
 
@@ -310,6 +315,45 @@ Returns a C2SP cosignature note for the current checkpoint, produced by the MTC 
 - ECDSA key: uses the operator format (type 0x02) because no dedicated ECDSA cosignature type is defined by C2SP.
 
 Response `Content-Type` is `text/plain; charset=utf-8`.
+
+### `GET /acme/mtc/discovery`
+
+Returns a JSON object describing this issuer and its configured external cosigners, compatible with Google's CosignersStore schema. This enables automated onboarding into cosigners stores and monitoring tools.
+
+Response `Content-Type` is `application/json` with `Cache-Control: public, max-age=3600`.
+
+```json
+{
+  "version": "1.0",
+  "issuers": [
+    {
+      "friendly_name": "My MTC Issuer",
+      "base_id": "32473.2",
+      "base_url": "https://acme.example.com/acme/mtc",
+      "type": "ISSUER",
+      "key_sha256": "abcdef012345...",
+      "max_cert_lifetime_seconds": 7776000
+    }
+  ],
+  "cosigners": [
+    {
+      "friendly_name": "External Cosigner",
+      "base_id": "12345.6",
+      "base_url": "https://cosigner.example.com/mtc",
+      "type": "COSIGNER",
+      "key_sha256": "fedcba987654..."
+    }
+  ]
+}
+```
+
+Fields:
+
+- `friendly_name` — from `[mtc].friendly_name` (issuer) or `[[mtc.cosigners]].friendly_name` (cosigner); defaults to CA ID or cosigner URL when absent.
+- `base_id` — the `trust_anchor_id` OID.
+- `base_url` — the base URL prefix for tlog-tiles endpoints.
+- `key_sha256` — hex-encoded SHA-256 hash of the signing key's SPKI DER.
+- `max_cert_lifetime_seconds` — `validity_days * 86400` for issuers.
 
 ## Landmark management
 
