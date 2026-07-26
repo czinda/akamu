@@ -35,6 +35,10 @@ pub struct MtcSigningKeyConfig {
 pub struct CosignerConfig {
     /// URL to POST the DER checkpoint to.
     pub url: String,
+    /// Human-readable name for the discovery endpoint.  Defaults to the URL
+    /// when absent.
+    #[serde(default)]
+    pub friendly_name: Option<String>,
     /// Path to the cosigner's X.509 certificate PEM file.  When set, the
     /// signature in the returned `SubtreeSignature` is verified against the
     /// cosigner's public key before the signature is stored.
@@ -104,6 +108,10 @@ pub struct MtcConfig {
     /// or an email address.
     #[serde(default)]
     pub contact: Option<String>,
+    /// Human-readable name for the discovery endpoint.  Defaults to the CA ID
+    /// when absent.
+    #[serde(default)]
+    pub friendly_name: Option<String>,
 }
 
 fn default_checkpoint_interval_secs() -> u64 {

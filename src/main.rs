@@ -199,18 +199,22 @@ fn init_mtc_for_ca(
         })
         .transpose()?;
 
-    let logid_issuer_dn_der = if let Some(ref key) = mtc_signing_key {
+    let (logid_issuer_dn_der, signing_key_sha256) = if let Some(ref key) = mtc_signing_key {
         let spki_der = key
             .public_key()
             .map_err(|e| format!("CA '{ca_id}': MTC signing key SPKI: {e}"))?
             .spki_der()
             .to_vec();
-        Some(
-            mtc::standalone::build_logid_issuer_dn_der(&spki_der, mtc_algorithm)
-                .map_err(|e| format!("CA '{ca_id}': build LogID issuer DN: {e}"))?,
-        )
+        let dn = mtc::standalone::build_logid_issuer_dn_der(&spki_der, mtc_algorithm)
+            .map_err(|e| format!("CA '{ca_id}': build LogID issuer DN: {e}"))?;
+        use synta_certificate::DataHasher as _;
+        let hash = synta_certificate::default_data_hasher()
+            .hash_data("sha256", &spki_der)
+            .map_err(|e| format!("CA '{ca_id}': hash MTC signing key SPKI: {e}"))?;
+        let hex = native_ossl::util::hex_encode(&hash);
+        (Some(dn), Some(hex))
     } else {
-        None
+        (None, None)
     };
 
     if trust_anchor_id_der.is_none() && mtc_cfg.enabled {
@@ -238,6 +242,8 @@ fn init_mtc_for_ca(
         trust_anchor_id: mtc_cfg.trust_anchor_id.clone(),
         trust_anchor_id_der,
         contact: mtc_cfg.contact.clone(),
+        friendly_name: mtc_cfg.friendly_name.clone(),
+        signing_key_sha256,
         tlog_origin: mtc_cfg
             .trust_anchor_id
             .as_deref()

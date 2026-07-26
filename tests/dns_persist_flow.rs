@@ -190,6 +190,7 @@ async fn build_state(
             tree_minimum_index: None,
             trust_anchor_id: None,
             contact: None,
+            friendly_name: None,
         }),
         server: ServerConfig {
             dns_persist_issuer_domains: Some(vec![issuer_domain.into()]),

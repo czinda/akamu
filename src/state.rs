@@ -783,6 +783,10 @@ pub struct MtcState {
     pub trust_anchor_id_der: Option<Vec<u8>>,
     /// Operator contact string for log-list entries.
     pub contact: Option<String>,
+    /// Human-readable name for the discovery endpoint.  Defaults to CA ID.
+    pub friendly_name: Option<String>,
+    /// Hex-encoded SHA-256 hash of the issuer's SPKI DER.
+    pub signing_key_sha256: Option<String>,
     /// Precomputed C2SP tlog origin: `oid/1.3.6.1.4.1.<ta_id>.0.<log_number>`.
     pub tlog_origin: Option<String>,
     /// Precomputed C2SP cosigner name: `oid/1.3.6.1.4.1.<ta_id>`.
@@ -865,6 +869,8 @@ impl MtcState {
             trust_anchor_id: None,
             trust_anchor_id_der: None,
             contact: None,
+            friendly_name: None,
+            signing_key_sha256: None,
             tlog_origin: None,
             cosigner_name: None,
             logid_issuer_dn_der: None,

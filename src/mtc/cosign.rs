@@ -30,7 +30,8 @@ use synta::traits::Encode;
 use synta::{Decoder, Encoder, Encoding, RelativeOid};
 use synta_certificate::owned::Certificate;
 use synta_certificate::{
-    pem_to_der, AlgorithmIdentifier, OpensslSignatureVerifier, SignatureVerifier as _,
+    pem_to_der, AlgorithmIdentifier, DataHasher as _, OpensslSignatureVerifier,
+    SignatureVerifier as _,
 };
 use synta_mtc::cosignature::{
     validate_cosignature_quorum_with_crypto, CosignaturePolicy,
@@ -202,6 +203,12 @@ pub struct CosignerClient {
     client: HttpsClient,
     /// Verification material — `Some` when `cosigner_id_cert_pem` is configured.
     verifier: Option<AkamuCosignerVerifier>,
+    /// Human-readable name for the discovery endpoint.
+    pub(crate) friendly_name: Option<String>,
+    /// Dotted-decimal TrustAnchorID OID of this cosigner.
+    pub(crate) trust_anchor_id: Option<String>,
+    /// Hex-encoded SHA-256 hash of the cosigner's SPKI DER.
+    pub(crate) key_sha256: Option<String>,
 }
 
 /// Build a `CosignerClient` that connects over plain HTTP (no TLS).
@@ -220,6 +227,9 @@ pub fn build_cosigner_client_http(url: String) -> CosignerClient {
         url,
         client,
         verifier: None,
+        friendly_name: None,
+        trust_anchor_id: None,
+        key_sha256: None,
     }
 }
 
@@ -256,10 +266,24 @@ pub fn build_cosigner_client(cfg: &CosignerConfig) -> Result<CosignerClient, Acm
         None
     };
 
+    let key_sha256 = verifier
+        .as_ref()
+        .filter(|v| !v.spki_der.is_empty())
+        .map(|v| {
+            synta_certificate::default_data_hasher()
+                .hash_data("sha256", &v.spki_der)
+                .map(|hash| native_ossl::util::hex_encode(&hash))
+        })
+        .transpose()
+        .map_err(|e| AcmeError::Tls(format!("hash cosigner SPKI: {e}")))?;
+
     Ok(CosignerClient {
         url: cfg.url.clone(),
         client,
         verifier,
+        friendly_name: cfg.friendly_name.clone(),
+        trust_anchor_id: cfg.trust_anchor_id.clone(),
+        key_sha256,
     })
 }
 

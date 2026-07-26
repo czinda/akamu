@@ -236,6 +236,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
             tree_minimum_index: None,
             trust_anchor_id: None,
             contact: None,
+            friendly_name: None,
         }),
         server: ServerConfig::default(),
         tls: Default::default(),
@@ -2246,6 +2247,7 @@ async fn test_directory_with_optional_fields() {
             tree_minimum_index: None,
             trust_anchor_id: None,
             contact: None,
+            friendly_name: None,
         }),
         server: akamu::config::ServerConfig {
             terms_of_service_url: Some("https://example.org/tos".into()),
@@ -2640,6 +2642,7 @@ async fn test_finalize_with_mtc_enabled() {
             tree_minimum_index: None,
             trust_anchor_id: None,
             contact: None,
+            friendly_name: None,
         }),
         server: akamu::config::ServerConfig::default(),
         tls: Default::default(),
@@ -2908,6 +2911,7 @@ async fn test_finalize_with_aia_and_cdp() {
             tree_minimum_index: None,
             trust_anchor_id: None,
             contact: None,
+            friendly_name: None,
         }),
         server: ServerConfig::default(),
         tls: Default::default(),
@@ -3412,6 +3416,7 @@ async fn test_smime_email_reply_00_full_flow() {
             tree_minimum_index: None,
             trust_anchor_id: None,
             contact: None,
+            friendly_name: None,
         }),
         server: ServerConfig {
             // Non-zero expiry: ServerConfig::default() uses 0, which sets

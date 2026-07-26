@@ -72,6 +72,7 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
             tree_minimum_index: None,
             trust_anchor_id: None,
             contact: None,
+            friendly_name: None,
         }),
         server: ServerConfig::default(),
         tls: Default::default(),

@@ -292,6 +292,7 @@ async fn build_akamu_state(
                 url: cosigner_url.into(),
                 cosigner_id_cert_pem: None,
                 trust_anchor_id: Some(TEST_COSIGNER_OID.into()),
+                friendly_name: None,
             }],
             landmark_interval_secs: 86400,
             max_active_landmarks: 100,
@@ -301,6 +302,7 @@ async fn build_akamu_state(
             tree_minimum_index: None,
             trust_anchor_id: Some(TEST_CA_TRUST_ANCHOR_OID.into()),
             contact: None,
+            friendly_name: None,
         }),
         server: {
             let mut s = ServerConfig::default();
@@ -361,6 +363,11 @@ async fn build_akamu_state(
             let logid_dn =
                 akamu::mtc::standalone::build_logid_issuer_dn_der(&mtc_spki, HashAlgorithm::Sha256)
                     .unwrap();
+            use synta_certificate::DataHasher as _;
+            let mtc_key_hash = synta_certificate::default_data_hasher()
+                .hash_data("sha256", &mtc_spki)
+                .unwrap();
+            let mtc_key_sha256 = native_ossl::util::hex_encode(&mtc_key_hash);
             Arc::new(MtcState {
                 log: Some(shared_log),
                 algorithm: HashAlgorithm::Sha256,
@@ -379,6 +386,8 @@ async fn build_akamu_state(
                 trust_anchor_id_der: Some(encode_oid_der(TEST_CA_TRUST_ANCHOR_OID)),
                 trust_anchor_id: Some(TEST_CA_TRUST_ANCHOR_OID.into()),
                 contact: None,
+                friendly_name: None,
+                signing_key_sha256: Some(mtc_key_sha256),
                 tlog_origin: Some(format!("oid/{TEST_CA_TRUST_ANCHOR_OID}.0.1")),
                 cosigner_name: Some(format!("oid/{TEST_CA_TRUST_ANCHOR_OID}")),
                 logid_issuer_dn_der: Some(logid_dn),

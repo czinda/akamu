@@ -87,6 +87,7 @@ async fn build_state(dir: &std::path::Path, base_url: &str, http01_port: u16) ->
             tree_minimum_index: None,
             trust_anchor_id: Some("32473.2".into()),
             contact: None,
+            friendly_name: None,
         }),
         server: ServerConfig {
             http_validation_port: http01_port,
@@ -138,6 +139,11 @@ async fn build_state(dir: &std::path::Path, base_url: &str, http01_port: u16) ->
             let logid_dn =
                 akamu::mtc::standalone::build_logid_issuer_dn_der(&mtc_spki, HashAlgorithm::Sha256)
                     .unwrap();
+            use synta_certificate::DataHasher as _;
+            let mtc_key_hash = synta_certificate::default_data_hasher()
+                .hash_data("sha256", &mtc_spki)
+                .unwrap();
+            let mtc_key_sha256 = native_ossl::util::hex_encode(&mtc_key_hash);
             Arc::new(MtcState {
                 log: Some(shared_log),
                 algorithm: HashAlgorithm::Sha256,
@@ -156,6 +162,8 @@ async fn build_state(dir: &std::path::Path, base_url: &str, http01_port: u16) ->
                 trust_anchor_id_der: None,
                 trust_anchor_id: Some("32473.2".into()),
                 contact: None,
+                friendly_name: None,
+                signing_key_sha256: Some(mtc_key_sha256),
                 tlog_origin: Some("oid/1.3.6.1.4.1.32473.2.0.1".into()),
                 cosigner_name: Some("oid/1.3.6.1.4.1.32473.2".into()),
                 logid_issuer_dn_der: Some(logid_dn),
