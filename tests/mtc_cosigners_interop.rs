@@ -539,6 +539,200 @@ async fn geomys_mirror() {
     }
     assert_all_passed(&ep.name, &results);
 }
+
+// ── Akamu self-test (local, no network) ──────────────────────────────────────
+
+#[tokio::test]
+#[cfg(feature = "test-utils")]
+async fn akamu_self_test() {
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+
+    use synta_certificate::BackendPrivateKey;
+    use synta_mtc::crypto::HashAlgorithm;
+    use tokio::net::TcpListener;
+
+    use akamu::config::{
+        CaConfig, Config, DatabaseConfig, MtcConfig, MtcSigningKeyConfig, ServerConfig,
+    };
+    use akamu::mtc::log;
+    use akamu::state::{AppStateBuilder, CaState, MtcState};
+    use akamu::{ca, db, routes};
+
+    let std_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    std_l.set_nonblocking(true).unwrap();
+    let port = std_l.local_addr().unwrap().port();
+    let listener = TcpListener::from_std(std_l).unwrap();
+    let base_url = format!("http://127.0.0.1:{port}");
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let mtc_log_path = dir.path().join("mtc.log").to_string_lossy().into_owned();
+    let mtc_key_file = dir.path().join("mtc.key").to_string_lossy().into_owned();
+
+    let config = Arc::new(Config {
+        listen_addr: "127.0.0.1:0".into(),
+        base_url: base_url.clone(),
+        database: DatabaseConfig {
+            url: "sqlite::memory:".into(),
+            max_connections: None,
+            require_tls: false,
+        },
+        cas: vec![CaConfig {
+            id: "default".to_owned(),
+            is_default: true,
+            caa_identities: vec![],
+            key_file: Some(dir.path().join("ca.key").to_string_lossy().into_owned()),
+            cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
+            key_type: "ec:P-256".into(),
+            hash_alg: "sha256".into(),
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            common_name: "Interop Self-Test CA".into(),
+            organization: "Test".into(),
+            ca_validity_years: 10,
+            crl_next_update_secs: 86400,
+            enforce_validity_cap: false,
+            require_encrypted_key: false,
+            key_password_file: None,
+            mtc: None,
+            signer: None,
+            default_linter: None,
+        }],
+        mtc: Some(MtcConfig {
+            log_path: mtc_log_path.clone(),
+            enabled: true,
+            signing_key: Some(MtcSigningKeyConfig {
+                key_file: mtc_key_file.clone(),
+                key_type: "ed25519".into(),
+                hash_alg: "sha256".into(),
+            }),
+            checkpoint_interval_secs: 3600,
+            cosigners: vec![],
+            landmark_interval_secs: 86400,
+            max_active_landmarks: 100,
+            checkpoint_retention_count: 1000,
+            hash_alg: "sha256".into(),
+            log_number: 1,
+            tree_minimum_index: None,
+            trust_anchor_id: Some("32473.2".into()),
+            contact: None,
+        }),
+        server: ServerConfig::default(),
+        tls: Default::default(),
+        profiles: Default::default(),
+        linter: Default::default(),
+        admin: None,
+        email_challenge: None,
+        delegation_upstream: None,
+        gossip: None,
+        crdt_db_url: None,
+        tkauth: None,
+    });
+
+    let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
+    let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();
+    let ca_aki_bytes = ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
+
+    db::install_drivers();
+    let db_conn = db::open("sqlite::memory:", 1, false).await.unwrap();
+
+    let mtc_key = BackendPrivateKey::generate_ed25519().unwrap();
+    let mtc_key_pem = mtc_key.to_pem(None).unwrap();
+    std::fs::write(&mtc_key_file, &mtc_key_pem).unwrap();
+
+    let raw_log = log::open_or_create(&mtc_log_path, HashAlgorithm::Sha256).unwrap();
+    let shared_log = Arc::new(tokio::sync::Mutex::new(raw_log));
+
+    let ca = Arc::new(CaState {
+        id: "default".into(),
+        key_type: "ec:P-256".into(),
+        crl_next_update_secs: 86400,
+        signing: akamu::state::SigningBackend::Local {
+            key: Box::new(ca_key),
+        },
+        cert_der: ca_cert_der,
+        hash_alg: "sha256".into(),
+        validity_days: 90,
+        crl_url: None,
+        ocsp_url: None,
+        aki_bytes: ca_aki_bytes,
+        enforce_validity_cap: false,
+        caa_identities: vec![],
+        mtc: Arc::new(MtcState {
+            log: Some(shared_log),
+            algorithm: HashAlgorithm::Sha256,
+            signing_key: Some(mtc_key),
+            signing_hash_alg: "sha256".into(),
+            cosigner_clients: vec![],
+            _log_lock: None,
+            checkpoint_interval_secs: 3600,
+            checkpoint_retention_count: 1000,
+            landmark_interval_secs: 86400,
+            max_active_landmarks: 100,
+            last_checkpoint: std::sync::atomic::AtomicI64::new(0),
+            last_landmark: std::sync::atomic::AtomicI64::new(0),
+            log_number: 1,
+            tree_minimum_index: None,
+            trust_anchor_id_der: None,
+            trust_anchor_id: Some("32473.2".into()),
+            contact: None,
+            tlog_origin: Some("oid/1.3.6.1.4.1.32473.2.0.1".into()),
+            cosigner_name: Some("oid/1.3.6.1.4.1.32473.2".into()),
+            logid_issuer_dn_der: None,
+        }),
+        default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
+    });
+
+    let cas = {
+        let mut ca_map = indexmap::IndexMap::new();
+        ca_map.insert("default".to_string(), ca.clone());
+        Arc::new(ca_map)
+    };
+
+    let state = AppStateBuilder::new(
+        Arc::clone(&config),
+        db_conn.clone(),
+        db::DbKind::Sqlite,
+        cas,
+        Arc::new("default".to_string()),
+    )
+    .node_id(Arc::new("test".to_string()))
+    .build();
+
+    let app = routes::build_router(Arc::clone(&state), None, false);
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let ep = CosignerEndpoint {
+        name: "akamu-self-test".to_string(),
+        base_url: format!("http://{addr}/acme/default/mtc"),
+        cosigner_id: "32473.2".to_string(),
+        key_sha256: None,
+        cosigner_type: CosignerType::Issuer,
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap();
+
+    let results = verify_issuer_tlog(&client, &ep).await;
+    for r in &results {
+        eprintln!(
+            "  [{}] {}: {}",
+            if r.passed { "PASS" } else { "FAIL" },
+            r.check_name,
+            r.detail,
+        );
+    }
+    assert_all_passed(&ep.name, &results);
+}
+
 // ── Unit tests for JSON parsing ──────────────────────────────────────────────
 
 #[cfg(test)]
