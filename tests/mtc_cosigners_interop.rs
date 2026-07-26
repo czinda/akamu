@@ -638,6 +638,56 @@ async fn akamu_self_test() {
         );
     }
     assert_all_passed(&ep.name, &results);
+
+    // ── Discovery endpoint ──────────────────────────────────────────────
+    let discovery_url = format!("http://{addr}/acme/default/mtc/discovery");
+    let resp = client.get(&discovery_url).send().await.unwrap();
+    assert_eq!(resp.status(), 200, "discovery should return 200");
+
+    let cache_control = resp
+        .headers()
+        .get("cache-control")
+        .expect("Cache-Control header")
+        .to_str()
+        .unwrap();
+    assert!(
+        cache_control.contains("public"),
+        "Cache-Control should be public, got: {cache_control}"
+    );
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["version"], "1.0");
+
+    let issuers = body["issuers"].as_array().expect("issuers array");
+    assert_eq!(issuers.len(), 1, "should have exactly one issuer");
+
+    let issuer = &issuers[0];
+    assert_eq!(issuer["base_id"], "32473.2");
+    assert_eq!(issuer["type"], "ISSUER");
+    assert_eq!(
+        issuer["max_cert_lifetime_seconds"],
+        90 * 86400,
+        "90 validity_days * 86400"
+    );
+
+    let key_hash = issuer["key_sha256"].as_str().expect("key_sha256 string");
+    assert_eq!(key_hash.len(), 64, "SHA-256 hex should be 64 chars");
+    assert!(
+        key_hash.chars().all(|c| c.is_ascii_hexdigit()),
+        "key_sha256 should be hex"
+    );
+
+    let base_url = issuer["base_url"].as_str().expect("base_url string");
+    assert!(
+        base_url.ends_with("/acme/mtc"),
+        "base_url should end with /acme/mtc, got: {base_url}"
+    );
+
+    let cosigners = body["cosigners"].as_array().expect("cosigners array");
+    assert!(
+        cosigners.is_empty(),
+        "test config has no external cosigners"
+    );
 }
 
 // ── Unit tests for JSON parsing ──────────────────────────────────────────────
