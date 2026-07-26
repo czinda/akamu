@@ -529,6 +529,76 @@ pub async fn get_subtree_root(
         .into_response())
 }
 
+/// GET /acme/mtc/discovery  or  GET /acme/{ca_id}/mtc/discovery
+///
+/// Returns a CosignersStore-compatible JSON object describing this issuer
+/// and its configured external cosigners.
+pub async fn get_discovery(
+    State(state): State<Arc<AppState>>,
+    ca_id: CaId,
+) -> Result<Response, AcmeError> {
+    let ca = state.get_ca(&ca_id.0).ok_or(AcmeError::NotFound)?;
+    ca.mtc.log.as_ref().ok_or(AcmeError::NotFound)?;
+
+    let key_sha256 =
+        ca.mtc.signing_key_sha256.as_deref().ok_or_else(|| {
+            AcmeError::ServiceUnavailable("MTC signing key not configured".into())
+        })?;
+    let base_id = ca.mtc.trust_anchor_id.as_deref().ok_or_else(|| {
+        AcmeError::ServiceUnavailable("mtc.trust_anchor_id not configured".into())
+    })?;
+
+    let pfx = super::acme_prefix(&state.config.base_url, &ca_id.0, &state.default_ca_id);
+
+    let friendly = ca.mtc.friendly_name.as_deref().unwrap_or(&ca_id.0);
+
+    let issuer = json!({
+        "friendly_name": friendly,
+        "base_id": base_id,
+        "base_url": format!("{pfx}/mtc"),
+        "type": "ISSUER",
+        "key_sha256": key_sha256,
+        "max_cert_lifetime_seconds": u64::from(ca.validity_days) * 86400,
+    });
+
+    let cosigners: Vec<_> = ca
+        .mtc
+        .cosigner_clients
+        .iter()
+        .map(|c| {
+            let mut obj = json!({
+                "base_url": c.url,
+                "type": "COSIGNER",
+            });
+            if let Some(ref name) = c.friendly_name {
+                obj["friendly_name"] = json!(name);
+            } else {
+                obj["friendly_name"] = json!(&c.url);
+            }
+            if let Some(ref id) = c.trust_anchor_id {
+                obj["base_id"] = json!(id);
+            }
+            if let Some(ref hash) = c.key_sha256 {
+                obj["key_sha256"] = json!(hash);
+            }
+            obj
+        })
+        .collect();
+
+    let body = json!({
+        "version": "1.0",
+        "issuers": [issuer],
+        "cosigners": cosigners,
+    });
+
+    let mut resp = (StatusCode::OK, axum::Json(body)).into_response();
+    resp.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=3600"),
+    );
+    Ok(resp)
+}
+
 /// GET /acme/mtc/revoked-ranges  or  GET /acme/{ca_id}/mtc/revoked-ranges
 ///
 /// Returns a JSON array of `[start, end]` pairs representing revoked log entry

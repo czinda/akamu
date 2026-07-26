@@ -240,6 +240,7 @@ fn build_acme_router(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     // C2SP tlog-tiles API
     r = dual_acme_route(r, "mtc/checkpoint", get(mtc::get_tlog_checkpoint));
     r = dual_acme_route(r, "mtc/cosignature", get(mtc::get_tlog_cosignature));
+    r = dual_acme_route(r, "mtc/discovery", get(mtc::get_discovery));
     r = dual_acme_route(r, "mtc/tile/{*path}", get(mtc::get_tlog_tile));
     // Consistency proof for monitors
     r = dual_acme_route(r, "mtc/consistency-proof", get(mtc::get_consistency_proof));
