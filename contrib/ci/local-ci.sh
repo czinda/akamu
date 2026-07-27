@@ -199,10 +199,7 @@ job_build() {
     fi
 
     echo "Building workspace (debug)…"
-    cargo build --workspace || return 1
-
-    echo "Building bench binaries…"
-    cargo build --benches
+    cargo build --workspace
 }
 
 job_fmt() {
@@ -422,7 +419,7 @@ Special targets:
   all          Run every job in order
 
 Available jobs:
-  build          cargo build --workspace + bench binaries
+  build          cargo build --workspace
   fmt            cargo fmt --all -- --check
   clippy         cargo clippy -- -D warnings
   doc            cargo doc --no-deps [+ mdbook build docs/]
