@@ -1300,6 +1300,145 @@ All delegation management endpoints are wrapped by `akamuctl delegation`.  See
 reference including flags and examples.
 
 
+## Policy rule management endpoints
+
+ABAC policy rules control certificate issuance decisions and other server
+behaviors.  Rules are organized by scope (e.g. `issuance`, `admin`) and
+evaluated with deny-override semantics: if any enabled `deny` rule matches a
+request, the request is denied regardless of `allow` rules.
+
+### `GET /admin/policy/scopes`
+
+**Roles:** `administrator`, `ca_operations`, `auditor`
+
+Returns the distinct policy scopes present in the database as a JSON array of
+strings:
+
+```json
+["admin", "issuance"]
+```
+
+### `GET /admin/policy/rules?scope=issuance`
+
+**Roles:** `administrator`, `ca_operations`, `auditor`
+
+Returns all policy rules for the specified scope.  If the operator has a CA
+scope, only rules whose `ca` dimension includes the operator's CA (or rules
+with no `ca` restriction) are returned.
+
+**Query parameters:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `scope` | `issuance` | Filter rules to this scope |
+
+**Response (200):**
+
+```json
+[
+  {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "scope": "issuance",
+    "name": "deny-rsa2048-prod",
+    "rule_json": "{\"type\":\"deny\",\"ca\":[\"prod\"],\"key_type\":[\"rsa-2048\"]}",
+    "enabled": true,
+    "created_at": "2026-07-28T10:00:00Z",
+    "updated_at": "2026-07-28T10:00:00Z",
+    "created_by": "alice"
+  }
+]
+```
+
+### `GET /admin/policy/rules/{id}`
+
+**Roles:** `administrator`, `ca_operations`, `auditor`
+
+Returns a single policy rule by ID.  Returns `404` if the rule does not exist
+or is not visible to the operator's CA scope.
+
+### `POST /admin/policy/rules`
+
+**Roles:** `administrator`
+
+Create a new policy rule.
+
+**Request body:**
+
+```json
+{
+  "scope": "issuance",
+  "name": "deny-rsa2048-prod",
+  "rule": {
+    "type": "deny",
+    "ca": ["prod"],
+    "key_type": ["rsa-2048"]
+  },
+  "enabled": true
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `scope` | No | Policy scope (default: `issuance`) |
+| `name` | Yes | Unique rule name |
+| `rule` | Yes | JSON object with dimension constraints and a `type` field (`allow` or `deny`) |
+| `enabled` | No | Whether the rule is active (default: `true`) |
+
+**Response (201):**
+
+```json
+{"id": "550e8400-...", "name": "deny-rsa2048-prod"}
+```
+
+### `PUT /admin/policy/rules/{id}`
+
+**Roles:** `administrator`
+
+Update an existing policy rule.  The scope cannot be changed (delete and
+recreate to change scope).
+
+**Request body:**
+
+```json
+{
+  "name": "deny-rsa2048-prod-updated",
+  "rule": {
+    "type": "deny",
+    "ca": ["prod"],
+    "key_type": ["rsa-2048", "rsa-3072"]
+  },
+  "enabled": true
+}
+```
+
+**Response:** `204 No Content`
+
+### `DELETE /admin/policy/rules/{id}`
+
+**Roles:** `administrator`
+
+Delete a policy rule.
+
+**Response:** `204 No Content` on success, `404 Not Found` if the rule does not
+exist.
+
+### CA-scope filtering
+
+When an operator has a `ca_id` scope (any role), the policy rule list and
+single-rule GET endpoints filter results:
+
+- Rules whose `ca` dimension array includes the operator's CA are visible.
+- Rules with no `ca` dimension (applies to all CAs) are visible.
+- Rules whose `ca` dimension does not include the operator's CA are hidden
+  (returned as `404` for single-rule GET).
+
+### CLI
+
+All policy rule management endpoints are wrapped by `akamuctl policy`.  See
+[akamuctl — Admin CLI](akamuctl.md#policy-management) for the full command
+reference including flags and examples.
+
+
 ## Audit trail
 
 Every admin operation is written to a structured audit backend.  Three

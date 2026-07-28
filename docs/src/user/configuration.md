@@ -2010,7 +2010,7 @@ A `permittedValues` entry with exactly one value is injected as a SAN using the 
 
 ## `[gossip]`
 
-The `[gossip]` section enables multi-node clustering via CRDT replication. When present, Akāmu gossips CRDT deltas to the listed peer nodes over HTTP (`POST /gossip/sync`). All domain state — accounts, orders, authorizations, challenges, certificates, EAB keys, operators, delegations, and MTC data — is replicated to every cluster member. When absent, the node operates in single-node mode with no replication.
+The `[gossip]` section enables multi-node clustering via CRDT replication. When present, Akāmu gossips CRDT deltas to the listed peer nodes over HTTP (`POST /gossip/sync`). All domain state — accounts, orders, authorizations, challenges, certificates, EAB keys, operators, delegations, MTC data, and policy rules — is replicated to every cluster member. When absent, the node operates in single-node mode with no replication.
 
 Gossip envelopes are signed with ML-KEM-768 + ECDSA-P256 to authenticate the source. Before gossip can proceed between two nodes, each node's keys must be registered on the other node via `POST /admin/gossip/register`.
 
@@ -2776,6 +2776,12 @@ header_format   = "xfcc"
 | `DELETE` | `/admin/delegations/{id}` | Y | Y | | |
 | `GET` | `/admin/gossip/status` | Y | Y | Y | Y |
 | `POST` | `/admin/gossip/register` | Y | | | |
+| `GET` | `/admin/policy/scopes` | Y | Y | | Y |
+| `GET` | `/admin/policy/rules` | Y | Y | | Y |
+| `GET` | `/admin/policy/rules/{id}` | Y | Y | | Y |
+| `POST` | `/admin/policy/rules` | Y | | | |
+| `PUT` | `/admin/policy/rules/{id}` | Y | | | |
+| `DELETE` | `/admin/policy/rules/{id}` | Y | | | |
 | `POST` | `/admin/tkauth/prune-jti` | Y | Y | | |
 
 See [Admin API and Operator Management](admin-api.md) for the full request/response format of each endpoint.

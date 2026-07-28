@@ -25,7 +25,8 @@ For a detailed breakdown of RFC and draft coverage — including which sections 
 - Generates and serves CRLs (Certificate Revocation Lists) at `GET /ca/crl`.
 - Serves OCSP responses at `GET /ca/ocsp/{request}` and `POST /ca/ocsp` (RFC 6960).
 - Optionally terminates TLS directly, with an auto-generated certificate on first run. Supports mutual TLS (mTLS) client certificate authentication with configurable CA trust anchors, chain depth, RSA modulus enforcement, and post-quantum client certificate acceptance.
-- Supports multi-node clustering through a built-in CRDT + gossip replication layer. All domain state (accounts, orders, authorizations, challenges, certificates, EAB keys, operators, delegations, MTC) is replicated to every cluster member via signed gossip envelopes. Nodes are registered with each other via the `POST /admin/gossip/register` admin endpoint. When the `[gossip]` section is absent the node runs in single-node mode with no replication overhead.
+- Provides an attribute-based access control (ABAC) issuance policy engine that evaluates certificate issuance requests against configurable rules. Supports shadow mode (log-only divergence detection) and enforce mode. Policy rules are managed via the admin API and CLI, and replicated across cluster nodes.
+- Supports multi-node clustering through a built-in CRDT + gossip replication layer. All domain state (accounts, orders, authorizations, challenges, certificates, EAB keys, operators, delegations, MTC, policy rules) is replicated to every cluster member via signed gossip envelopes. Nodes are registered with each other via the `POST /admin/gossip/register` admin endpoint. When the `[gossip]` section is absent the node runs in single-node mode with no replication overhead.
 
 ## What it does not do
 

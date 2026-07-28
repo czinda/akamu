@@ -213,9 +213,17 @@ akamuctl operator add \
     --name bob \
     --role auditor \
     --gssapi-principal bob@EXAMPLE.COM
+
+# CA-scoped ca_ra operator (--ca-id is required for ca_ra)
+akamuctl operator add \
+    --name carol \
+    --role ca_ra \
+    --cert-file /etc/akamu/carol-client.pem \
+    --ca-id default
 ```
 
 Accepted roles: `administrator`, `ca_operations`, `ca_ra`, `auditor`.
+All roles support optional CA scoping via `--ca-id`; `ca_ra` requires it.
 
 When `--cert-file` is given, `akamuctl` computes the SHA-256 fingerprint of the
 DER-encoded certificate leaf locally and sends only the fingerprint to the server.
@@ -709,6 +717,87 @@ akamuctl delegation remove <delegation-uuid>
 ```
 
 Returns a `409 Conflict` error when active orders reference the delegation.
+
+## Policy management
+
+Manage ABAC (Attribute-Based Access Control) policy rules that control
+certificate issuance and other server decisions.
+
+### `policy list-rules`
+
+List policy rules, optionally filtered by scope:
+
+```bash
+# List all issuance policy rules (default scope)
+akamuctl policy list-rules
+
+# List rules for a specific scope
+akamuctl policy list-rules --scope admin
+
+# JSON output for scripting
+akamuctl policy list-rules --output json
+```
+
+Columns: ID, Name, Scope, Type (allow/deny), Enabled, Created By, Created At.
+
+### `policy add-rule`
+
+Create a new policy rule:
+
+```bash
+# Deny RSA-2048 keys for the 'prod' CA
+akamuctl policy add-rule \
+    --name deny-rsa2048-prod \
+    --type deny \
+    --scope issuance \
+    --ca prod \
+    --key-type rsa-2048
+
+# Allow only the 'webserver' profile for a specific account group
+akamuctl policy add-rule \
+    --name allow-webserver-only \
+    --type allow \
+    --scope issuance \
+    --profile webserver \
+    --account-group web-team
+
+# Create a disabled rule (for testing before activation)
+akamuctl policy add-rule \
+    --name experimental-deny \
+    --type deny \
+    --scope issuance \
+    --enabled false \
+    --identifier "*.internal.example.com"
+```
+
+Flags:
+
+| Flag | Description |
+|------|-------------|
+| `--name` | Unique rule name (required) |
+| `--type` | `allow` or `deny` (required) |
+| `--scope` | Policy scope, e.g. `issuance` (default: `issuance`) |
+| `--profile` | Restrict to a certificate profile |
+| `--ca` | Restrict to a specific CA (repeatable) |
+| `--account` | Restrict to an ACME account ID |
+| `--account-group` | Restrict to an account group |
+| `--identifier` | Restrict to identifiers matching a pattern |
+| `--key-type` | Restrict to a key type (e.g. `rsa-2048`, `ecdsa-p256`) |
+| `--valid-from` | Rule effective at or after this RFC 3339 timestamp |
+| `--valid-until` | Rule effective at or before this RFC 3339 timestamp |
+| `--enabled` | `true` (default) or `false` |
+
+### `policy remove-rule`
+
+Delete a policy rule by name or ID:
+
+```bash
+# Delete by name
+akamuctl policy remove-rule --name deny-rsa2048-prod
+
+# Delete by UUID
+akamuctl policy remove-rule --id 550e8400-e29b-41d4-a716-446655440000
+```
 
 ## Profile management
 
