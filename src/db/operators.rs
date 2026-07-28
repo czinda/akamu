@@ -165,6 +165,25 @@ pub async fn list(
     Ok(rows)
 }
 
+pub async fn list_by_ca(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    ca_id: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<OperatorRow>, AcmeError> {
+    let rows = super::query_as::<OperatorRow>(
+        "SELECT id, name, role, cert_fingerprint, gssapi_principal, \
+         created_at, last_seen_at, active, failed_attempts, locked_until, ca_id \
+         FROM operators WHERE ca_id = ? ORDER BY id ASC LIMIT ? OFFSET ?",
+    )
+    .bind(ca_id)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(executor)
+    .await?;
+    Ok(rows)
+}
+
 /// Set `active = 1` or `active = 0` and update `last_seen_at`.
 ///
 /// Returns the number of rows updated; callers should treat 0 as "not found".

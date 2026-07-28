@@ -59,7 +59,13 @@ pub async fn get_operators(
         .unwrap_or(0)
         .max(0);
 
-    match db::operators::list(&state.db, limit, offset).await {
+    let ca_scope = operator.ca_scope().map(|s| s.to_string());
+    let result = if let Some(ref scope_ca) = ca_scope {
+        db::operators::list_by_ca(&state.db, scope_ca, limit, offset).await
+    } else {
+        db::operators::list(&state.db, limit, offset).await
+    };
+    match result {
         Ok(rows) => {
             let list: Vec<_> = rows
                 .into_iter()
@@ -106,18 +112,28 @@ pub async fn post_operators(
 
     let payload: NewOperatorPayload = match serde_json::from_slice(&body) {
         Ok(p) => p,
-        Err(e) => return (StatusCode::BAD_REQUEST, format!("JSON: {e}")).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"status": 400, "detail": format!("invalid JSON: {e}")})),
+            )
+                .into_response()
+        }
     };
 
     if payload.name.is_empty() {
-        return (StatusCode::BAD_REQUEST, "name is required").into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"status": 400, "detail": "name is required"})),
+        )
+            .into_response();
     }
     match payload.role.as_str() {
         "administrator" | "ca_operations" | "ca_ra" | "auditor" => {}
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
-                "role must be administrator, ca_operations, ca_ra, or auditor",
+                Json(json!({"status": 400, "detail": "role must be administrator, ca_operations, ca_ra, or auditor"})),
             )
                 .into_response()
         }
@@ -125,23 +141,29 @@ pub async fn post_operators(
     if payload.cert_fingerprint.is_none() && payload.gssapi_principal.is_none() {
         return (
             StatusCode::BAD_REQUEST,
-            "at least one of cert_fingerprint or gssapi_principal is required",
+            Json(json!({"status": 400, "detail": "at least one of cert_fingerprint or gssapi_principal is required"})),
         )
             .into_response();
     }
-    // Validate ca_id: only meaningful for ca_ra and ca_operations; must reference an existing CA.
-    if !payload.ca_id.is_empty() {
-        if payload.role != "ca_ra" && payload.role != "ca_operations" {
+    if !payload.ca_id.is_empty() && !state.cas.contains_key(payload.ca_id.as_str()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"status": 400, "detail": format!("unknown ca_id '{}'", payload.ca_id)})),
+        )
+            .into_response();
+    }
+    if payload.ca_id.is_empty() && payload.role == "ca_ra" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"status": 400, "detail": "ca_ra operators must have a non-empty ca_id"})),
+        )
+            .into_response();
+    }
+    if let Some(scope_ca) = operator.ca_scope() {
+        if payload.ca_id != scope_ca {
             return (
-                StatusCode::BAD_REQUEST,
-                "ca_id is only valid for the ca_ra and ca_operations roles",
-            )
-                .into_response();
-        }
-        if !state.cas.contains_key(payload.ca_id.as_str()) {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("unknown ca_id '{}'", payload.ca_id),
+                StatusCode::FORBIDDEN,
+                Json(json!({"status": 403, "detail": "CA-scoped operator can only create operators for their own CA"})),
             )
                 .into_response();
         }
@@ -214,11 +236,11 @@ pub async fn post_operators(
                 .into_response()
         }
         Err(crate::error::AcmeError::Database(ref msg))
-            if msg.contains("UNIQUE") || msg.contains("unique") || msg.contains("Duplicate") =>
+            if crate::db::is_unique_constraint_violation(msg) =>
         {
             (
                 StatusCode::CONFLICT,
-                "operator with this fingerprint or principal already exists",
+                Json(json!({"status": 409, "detail": "operator with this fingerprint or principal already exists"})),
             )
                 .into_response()
         }
@@ -247,8 +269,42 @@ pub async fn patch_operator(
 
     let payload: PatchOperatorPayload = match serde_json::from_slice(&body) {
         Ok(p) => p,
-        Err(e) => return (StatusCode::BAD_REQUEST, format!("JSON: {e}")).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"status": 400, "detail": format!("invalid JSON: {e}")})),
+            )
+                .into_response()
+        }
     };
+
+    if let Some(scope_ca) = operator.ca_scope() {
+        match db::operators::get_by_id(&state.db, id).await {
+            Ok(Some(ref op)) if op.ca_id != scope_ca => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"status": 404, "detail": "operator not found"})),
+                )
+                    .into_response();
+            }
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"status": 404, "detail": "operator not found"})),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "patch_operator: db lookup for ca_scope check");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"status": 500, "detail": "database error"})),
+                )
+                    .into_response();
+            }
+            _ => {}
+        }
+    }
 
     let now = crate::util::rfc3339_now();
     match db::operators::set_active(&state.db, id, payload.active, &now).await {
@@ -303,6 +359,34 @@ pub async fn unlock_operator(
 ) -> Response {
     require_role!(operator, state, Administrator);
 
+    if let Some(scope_ca) = operator.ca_scope() {
+        match db::operators::get_by_id(&state.db, id).await {
+            Ok(Some(ref op)) if op.ca_id != scope_ca => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"status": 404, "detail": "operator not found"})),
+                )
+                    .into_response();
+            }
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"status": 404, "detail": "operator not found"})),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "unlock_operator: db lookup for ca_scope check");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"status": 500, "detail": "database error"})),
+                )
+                    .into_response();
+            }
+            _ => {}
+        }
+    }
+
     match db::operators::unlock(&state.db, id).await {
         Ok(false) => (
             StatusCode::NOT_FOUND,
@@ -344,23 +428,34 @@ pub async fn get_operator(
     require_role!(operator, state, Administrator);
 
     match db::operators::get_by_id(&state.db, id).await {
-        Ok(Some(r)) => (
-            StatusCode::OK,
-            Json(json!({
-                "id": r.id,
-                "name": r.name,
-                "role": r.role,
-                "ca_id": r.ca_id,
-                "cert_fingerprint": r.cert_fingerprint,
-                "gssapi_principal": r.gssapi_principal,
-                "created_at": r.created_at,
-                "last_seen_at": r.last_seen_at,
-                "active": r.active != 0,
-                "failed_attempts": r.failed_attempts,
-                "locked_until": r.locked_until,
-            })),
-        )
-            .into_response(),
+        Ok(Some(r)) => {
+            if let Some(scope_ca) = operator.ca_scope() {
+                if r.ca_id != scope_ca {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(json!({"status": 404, "detail": "operator not found"})),
+                    )
+                        .into_response();
+                }
+            }
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "id": r.id,
+                    "name": r.name,
+                    "role": r.role,
+                    "ca_id": r.ca_id,
+                    "cert_fingerprint": r.cert_fingerprint,
+                    "gssapi_principal": r.gssapi_principal,
+                    "created_at": r.created_at,
+                    "last_seen_at": r.last_seen_at,
+                    "active": r.active != 0,
+                    "failed_attempts": r.failed_attempts,
+                    "locked_until": r.locked_until,
+                })),
+            )
+                .into_response()
+        }
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(json!({"status": 404, "detail": "operator not found"})),
@@ -396,105 +491,118 @@ pub async fn put_operator(
         role: Option<String>,
         cert_fingerprint: Option<String>,
         gssapi_principal: Option<String>,
-        /// CA scope for `ca_ra` and `ca_operations` roles.  Empty string clears the
-        /// scope (server-wide; rejected for `ca_ra`, allowed for `ca_operations`).
-        /// Omitting the field leaves the existing value unchanged.
+        /// CA scope.  Empty string clears the scope (server-wide; rejected
+        /// for `ca_ra`).  Omitting the field leaves the existing value
+        /// unchanged.  CA-scoped operators cannot widen scope.
         ca_id: Option<String>,
     }
 
     let payload: PutOperatorPayload = match serde_json::from_slice(&body) {
         Ok(p) => p,
-        Err(e) => return (StatusCode::BAD_REQUEST, format!("JSON: {e}")).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"status": 400, "detail": format!("invalid JSON: {e}")})),
+            )
+                .into_response()
+        }
     };
 
-    let effective_role = payload.role.as_deref().unwrap_or("");
     if let Some(ref r) = payload.role {
         match r.as_str() {
             "administrator" | "ca_operations" | "ca_ra" | "auditor" => {}
             _ => {
                 return (
                     StatusCode::BAD_REQUEST,
-                    "role must be administrator, ca_operations, ca_ra, or auditor",
+                    Json(json!({"status": 400, "detail": "role must be administrator, ca_operations, ca_ra, or auditor"})),
                 )
                     .into_response()
             }
         }
     }
 
-    // When ca_id is supplied, validate it.
-    let ca_id_update: Option<&str> = if let Some(ref cid) = payload.ca_id {
-        let target_role = if effective_role.is_empty() {
-            // Role not being changed — we need to know the current role to validate.
-            // Fetch the operator to determine its current role.
-            match db::operators::get_by_id(&state.db, id).await {
-                Ok(Some(ref op)) => {
-                    if cid.is_empty() && op.role == "ca_ra" {
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            "ca_ra operators must have a non-empty ca_id",
-                        )
-                            .into_response();
-                    }
-                    if !cid.is_empty() && op.role != "ca_ra" && op.role != "ca_operations" {
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            "ca_id is only valid for the ca_ra and ca_operations roles",
-                        )
-                            .into_response();
-                    }
-                    op.role.clone()
-                }
-                Ok(None) => {
-                    return (
-                        StatusCode::NOT_FOUND,
-                        Json(json!({"status": 404, "detail": "operator not found"})),
-                    )
-                        .into_response();
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "put_operator: db lookup for ca_id validation");
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({"status": 500, "detail": "database error"})),
-                    )
-                        .into_response();
-                }
-            }
-        } else {
-            effective_role.to_string()
-        };
-
-        if !cid.is_empty() && target_role != "ca_ra" && target_role != "ca_operations" {
+    // Fetch the target operator up front — needed for CA-scope checks and ca_id
+    // validation regardless of which fields are being changed.
+    let target_op = match db::operators::get_by_id(&state.db, id).await {
+        Ok(Some(op)) => op,
+        Ok(None) => {
             return (
-                StatusCode::BAD_REQUEST,
-                "ca_id is only valid for the ca_ra and ca_operations roles",
+                StatusCode::NOT_FOUND,
+                Json(json!({"status": 404, "detail": "operator not found"})),
             )
                 .into_response();
         }
+        Err(e) => {
+            tracing::error!(error = %e, "put_operator: db lookup");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": 500, "detail": "database error"})),
+            )
+                .into_response();
+        }
+    };
+
+    // CA-scoped operators can only modify operators scoped to the same CA.
+    if let Some(scope_ca) = operator.ca_scope() {
+        if target_op.ca_id != scope_ca {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"status": 404, "detail": "operator not found"})),
+            )
+                .into_response();
+        }
+    }
+
+    // When ca_id is supplied, validate it.
+    let ca_id_update: Option<&str> = if let Some(ref cid) = payload.ca_id {
+        // CA-scoped operators cannot widen scope.
+        if let Some(scope_ca) = operator.ca_scope() {
+            if cid.is_empty() || cid != scope_ca {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(json!({"status": 403, "detail": "CA-scoped operator cannot change ca_id outside their own CA"})),
+                )
+                    .into_response();
+            }
+        }
+
+        let target_role = payload.role.as_deref().unwrap_or(&target_op.role);
+
         if cid.is_empty() && target_role == "ca_ra" {
             return (
                 StatusCode::BAD_REQUEST,
-                "ca_ra operators must have a non-empty ca_id",
+                Json(
+                    json!({"status": 400, "detail": "ca_ra operators must have a non-empty ca_id"}),
+                ),
             )
                 .into_response();
         }
         if !cid.is_empty() && !state.cas.contains_key(cid.as_str()) {
-            return (StatusCode::BAD_REQUEST, format!("unknown ca_id '{cid}'")).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"status": 400, "detail": format!("unknown ca_id '{cid}'")})),
+            )
+                .into_response();
         }
         Some(cid.as_str())
-    } else if effective_role == "ca_ra" {
-        // Role changing to ca_ra but no ca_id provided — require it.
+    } else if payload.role.as_deref() == Some("ca_ra") {
         return (
             StatusCode::BAD_REQUEST,
-            "ca_id is required when setting role to ca_ra",
+            Json(json!({"status": 400, "detail": "ca_id is required when setting role to ca_ra"})),
         )
             .into_response();
-    } else if matches!(effective_role, "administrator" | "auditor") {
-        // Role changing to a role that never has CA scope — clear ca_id.
+    } else if matches!(payload.role.as_deref(), Some("administrator" | "auditor")) {
+        if operator.ca_scope().is_some() {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({"status": 403, "detail": "CA-scoped operator cannot clear ca_id"})),
+            )
+                .into_response();
+        }
         Some("")
     } else {
-        // ca_operations: ca_id is optional — preserve the existing value.
-        // No role change: leave ca_id untouched.
+        // ca_operations with no ca_id change, or no role change at all:
+        // preserve the existing ca_id value.
         None
     };
 

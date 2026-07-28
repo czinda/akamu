@@ -381,8 +381,8 @@ impl OperatorContext {
     /// Returns `Some(ca_id)` when this operator is scoped to a specific CA,
     /// `None` when they have server-wide access.
     ///
-    /// Meaningful for `ca_ra` (always scoped) and `ca_operations` (optionally scoped).
-    /// `administrator` and `auditor` always return `None` (they are server-wide by design).
+    /// All roles support optional CA scoping.  `ca_ra` requires a non-empty
+    /// `ca_id`; all other roles treat it as optional (empty = server-wide).
     ///
     /// This is the single authoritative point for CA-scope enforcement.  All route
     /// handlers that restrict visibility to a specific CA MUST call this method.

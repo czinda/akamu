@@ -419,6 +419,54 @@ static RBAC_TABLE: &[RbacRow] = &[
         "/admin/ca/default/crl/force",
         &[OperatorRole::Administrator, OperatorRole::CaOperations],
     ),
+    (
+        "GET /admin/policy/scopes",
+        Method::GET,
+        "/admin/policy/scopes",
+        &[
+            OperatorRole::Administrator,
+            OperatorRole::CaOperations,
+            OperatorRole::Auditor,
+        ],
+    ),
+    (
+        "GET /admin/policy/rules",
+        Method::GET,
+        "/admin/policy/rules",
+        &[
+            OperatorRole::Administrator,
+            OperatorRole::CaOperations,
+            OperatorRole::Auditor,
+        ],
+    ),
+    (
+        "GET /admin/policy/rules/{id}",
+        Method::GET,
+        "/admin/policy/rules/nonexistent-id",
+        &[
+            OperatorRole::Administrator,
+            OperatorRole::CaOperations,
+            OperatorRole::Auditor,
+        ],
+    ),
+    (
+        "POST /admin/policy/rules",
+        Method::POST,
+        "/admin/policy/rules",
+        &[OperatorRole::Administrator, OperatorRole::CaOperations],
+    ),
+    (
+        "PUT /admin/policy/rules/{id}",
+        Method::PUT,
+        "/admin/policy/rules/nonexistent-id",
+        &[OperatorRole::Administrator, OperatorRole::CaOperations],
+    ),
+    (
+        "DELETE /admin/policy/rules/{id}",
+        Method::DELETE,
+        "/admin/policy/rules/nonexistent-id",
+        &[OperatorRole::Administrator, OperatorRole::CaOperations],
+    ),
 ];
 
 // ── Test ──────────────────────────────────────────────────────────────────────
@@ -514,9 +562,11 @@ async fn scoped_ca_operations_sees_own_ca_resource() {
 
 // ── PUT /admin/operators/{id} ca_id validation tests ─────────────────────────
 
-/// Setting a non-empty ca_id on an administrator role must return 400.
+/// Setting a non-empty ca_id on an administrator role is accepted (CA scope
+/// is valid for all roles).  The request reaches the DB layer, which returns
+/// 404 because the in-memory test harness has no operator rows.
 #[tokio::test]
-async fn put_operator_ca_id_on_administrator_is_bad_request() {
+async fn put_operator_ca_id_on_administrator_is_accepted() {
     let (state, _dir) = build_admin_state().await;
     let router = routes::build_router(Arc::clone(&state), None, false);
 
@@ -528,10 +578,10 @@ async fn put_operator_ca_id_on_administrator_is_bad_request() {
         .body(Body::from(r#"{"role":"administrator","ca_id":"default"}"#))
         .unwrap();
     let resp = router.oneshot(req).await.unwrap();
-    assert_eq!(
+    assert_ne!(
         resp.status(),
         StatusCode::BAD_REQUEST,
-        "setting ca_id on administrator must be 400"
+        "ca_id on administrator must not be rejected as 400"
     );
 }
 
@@ -539,11 +589,27 @@ async fn put_operator_ca_id_on_administrator_is_bad_request() {
 #[tokio::test]
 async fn put_operator_empty_ca_id_on_ca_ra_is_bad_request() {
     let (state, _dir) = build_admin_state().await;
+
+    let now = akamu::util::rfc3339_now();
+    db::operators::insert(
+        &state.db,
+        "test-cara-op",
+        "ca_ra",
+        Some("ca:ra:fp:00"),
+        None,
+        "default",
+        &now,
+    )
+    .await
+    .unwrap();
+    let ops = db::operators::list(&state.db, 10, 0).await.unwrap();
+    let op_id = ops[0].id;
+
     let router = routes::build_router(Arc::clone(&state), None, false);
 
     let req = Request::builder()
         .method(Method::PUT)
-        .uri("/admin/operators/1")
+        .uri(format!("/admin/operators/{op_id}"))
         .header(header::AUTHORIZATION, "Bearer tok-admin")
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(r#"{"role":"ca_ra","ca_id":""}"#))
