@@ -55,7 +55,7 @@ export default function OperatorEdit({ createMode }: Props) {
   const [cas, setCas] = useState<CaInfo[]>([]);
 
   useEffect(() => {
-    listCas().then(r => setCas(r.cas)).catch(() => {});
+    listCas().then(r => setCas(r.cas)).catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load CAs'));
   }, []);
 
   useEffect(() => {
@@ -84,14 +84,17 @@ export default function OperatorEdit({ createMode }: Props) {
         if (caId) opts.ca_id = caId;
         const { id: newId } = await createOperator(opts);
         navigate(`/operators/${newId}`);
-      } else {
+      } else if (id) {
         const opts: UpdateOperatorOptions = { name, role };
         if (certFingerprint !== '') opts.cert_fingerprint = certFingerprint;
         if (gssapiPrincipal !== '') opts.gssapi_principal = gssapiPrincipal;
-        if (role === 'ca_ra' || role === 'ca_operations') opts.ca_id = caId;
-        else opts.ca_id = '';
-        await updateOperator(id!, opts);
+        opts.ca_id = caId;
+        await updateOperator(id, opts);
         navigate(`/operators/${id}`);
+      } else {
+        setError('Missing operator ID');
+        setSaving(false);
+        return;
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Save failed');
@@ -120,16 +123,11 @@ export default function OperatorEdit({ createMode }: Props) {
                   <TextInput id="op-name" value={name} onChange={(_e, v) => setName(v)} isRequired />
                 </FormGroup>
                 <FormGroup label="Role" isRequired fieldId="op-role">
-                  <select id="op-role" value={role} onChange={e => {
-                    const r = e.target.value;
-                    setRole(r);
-                    if (r === 'administrator' || r === 'auditor') setCaId('');
-                  }} style={selectStyle}>
+                  <select id="op-role" value={role} onChange={e => setRole(e.target.value)} style={selectStyle}>
                     {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
                   </select>
                 </FormGroup>
-                {(role === 'ca_ra' || role === 'ca_operations') && (
-                  <FormGroup label="CA Scope" isRequired={role === 'ca_ra'} fieldId="op-ca-id">
+                <FormGroup label="CA Scope" isRequired={role === 'ca_ra'} fieldId="op-ca-id">
                     {cas.length > 0
                       ? (
                         <select id="op-ca-id" value={caId} onChange={e => setCaId(e.target.value)} style={selectStyle} required={role === 'ca_ra'}>
@@ -141,10 +139,9 @@ export default function OperatorEdit({ createMode }: Props) {
                         <TextInput id="op-ca-id" value={caId} onChange={(_e, v) => setCaId(v)} isRequired={role === 'ca_ra'} placeholder="CA ID" />
                       )}
                     <p style={{ fontSize: '0.75rem', color: '#6a6e73', marginTop: '0.25rem' }}>
-                      {role === 'ca_ra' ? 'ca_ra operators must be scoped to a single CA.' : 'ca_operations operators may optionally be scoped to a single CA.'}
+                      {role === 'ca_ra' ? 'ca_ra operators must be scoped to a single CA.' : 'Optional — restricts this operator to a single CA.'}
                     </p>
                   </FormGroup>
-                )}
               </FormSection>
             </CardBody>
           </Card>
