@@ -515,6 +515,55 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
                 commands::tkauth::prune_jti(&server_client, dry_run).await?;
             }
         },
+        Commands::Policy(policy_cmd) => match policy_cmd {
+            PolicyCmd::ListRules { scope } => {
+                commands::policy::list_rules(&server_client, &fmt, &scope).await?;
+            }
+            PolicyCmd::AddRule {
+                name,
+                r#type,
+                profile,
+                ca,
+                account,
+                account_group,
+                identifier,
+                key_type,
+                valid_from,
+                valid_until,
+                scope,
+                enabled,
+            } => {
+                commands::policy::add_rule(
+                    &server_client,
+                    &fmt,
+                    commands::policy::AddRuleParams {
+                        name: &name,
+                        rule_type: &r#type,
+                        profile: &profile,
+                        ca: &ca,
+                        account: &account,
+                        account_group: &account_group,
+                        identifier: &identifier,
+                        key_type: &key_type,
+                        valid_from: valid_from.as_deref(),
+                        valid_until: valid_until.as_deref(),
+                        scope: &scope,
+                        enabled,
+                    },
+                )
+                .await?;
+            }
+            PolicyCmd::RemoveRule { name, id, scope } => {
+                commands::policy::remove_rule(
+                    &server_client,
+                    &fmt,
+                    name.as_deref(),
+                    id.as_deref(),
+                    &scope,
+                )
+                .await?;
+            }
+        },
         Commands::Completions { shell } => {
             commands::config_cmd::completions(shell);
         }

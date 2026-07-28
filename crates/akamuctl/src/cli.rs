@@ -145,6 +145,9 @@ pub(crate) enum Commands {
     /// MTC transparency log queries and actions.
     #[command(subcommand)]
     Mtc(MtcCmd),
+    /// Manage issuance policy rules.
+    #[command(subcommand)]
+    Policy(PolicyCmd),
     /// RFC 9447 authority token administration.
     #[command(subcommand)]
     Tkauth(TkauthCmd),
@@ -162,6 +165,60 @@ pub(crate) enum TkauthCmd {
         /// Print the count of expired entries without deleting them.
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum PolicyCmd {
+    /// List active policy rules.
+    ListRules {
+        /// Filter by scope (default: issuance).
+        #[arg(long, default_value = "issuance")]
+        scope: String,
+    },
+    /// Add a new policy rule.
+    AddRule {
+        #[arg(long)]
+        name: String,
+        /// Rule type: allow or deny.
+        #[arg(long, value_name = "TYPE", value_parser = ["allow", "deny"])]
+        r#type: String,
+        #[arg(long, value_name = "PROFILE")]
+        profile: Vec<String>,
+        #[arg(long, value_name = "CA")]
+        ca: Vec<String>,
+        /// Restrict to a specific ACME account ID (repeatable).
+        #[arg(long, value_name = "ACCOUNT")]
+        account: Vec<String>,
+        #[arg(long, value_name = "GROUP")]
+        account_group: Vec<String>,
+        #[arg(long, value_name = "PATTERN")]
+        identifier: Vec<String>,
+        #[arg(long, value_name = "KEY_TYPE")]
+        key_type: Vec<String>,
+        #[arg(long)]
+        valid_from: Option<String>,
+        #[arg(long)]
+        valid_until: Option<String>,
+        /// Scope (default: issuance).
+        #[arg(long, default_value = "issuance")]
+        scope: String,
+        /// Create the rule enabled or disabled (default: true).
+        #[arg(long, default_value = "true")]
+        enabled: bool,
+    },
+    /// Remove a policy rule by name or ID.
+    #[command(group(clap::ArgGroup::new("target").required(true).args(["name", "id"])))]
+    RemoveRule {
+        /// Rule name.
+        #[arg(long)]
+        name: Option<String>,
+        /// Rule UUID.
+        #[arg(long)]
+        id: Option<String>,
+        /// Scope to search when using --name (default: issuance).
+        #[arg(long, default_value = "issuance")]
+        scope: String,
     },
 }
 

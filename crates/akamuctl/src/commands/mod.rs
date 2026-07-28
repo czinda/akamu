@@ -15,6 +15,7 @@ pub mod delegation;
 pub mod eab;
 pub mod mtc;
 pub mod operator;
+pub mod policy;
 pub mod server;
 pub mod session;
 pub mod tkauth;
