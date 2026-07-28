@@ -64,7 +64,7 @@ cert_file      = "/etc/akamu/certs/operator.cert.pem"
 key_file       = "/etc/akamu/certs/operator.key.pem"
 # Optional: override the GSSAPI SPN used by 'akamuctl login --gssapi'.
 # When absent the SPN is derived automatically as HTTP@<hostname>.
-# gssapi_service = "HTTP@admin.example.com"
+# gssapi_service = "HTTP@akamu.example.com"
 
 [cosigner]
 url            = "https://cosigner.example.com:9444"
@@ -78,7 +78,7 @@ key_file       = "/etc/akamu/certs/operator.key.pem"
 
 | Key | Description |
 |-----|-------------|
-| `url` | Admin listener URL (e.g. `https://127.0.0.1:9443`). |
+| `url` | Base URL used to access the Akamu Admin API. Admin endpoints are served on the same listener as the ACME API (e.g. `https://akamu.example.com:9443`). |
 | `ca_cert` | PEM CA certificate used to verify the server's TLS certificate. When absent, the system trust store is used. |
 | `cert_file` | PEM client certificate presented for mTLS authentication. |
 | `key_file` | PEM private key matching `cert_file`. |
@@ -94,7 +94,7 @@ Falls back to `[server]` values for any field that is absent.
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--config FILE` | `-c` | Path to the `akamuctl.toml` config file. |
-| `--server-url URL` | | Admin listener URL (overrides config). |
+| `--server-url URL` | | Base URL used to access the Akamu Admin API (overrides config). |
 | `--ca-cert FILE` | | CA certificate for server TLS verification. |
 | `--cert FILE` | | mTLS client certificate (mutually exclusive with `--pkcs12`). |
 | `--key FILE` | | mTLS client private key (mutually exclusive with `--pkcs12`). |

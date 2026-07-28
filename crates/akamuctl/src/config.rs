@@ -9,8 +9,8 @@ pub const EXAMPLE_CONFIG: &str = r#"# akamuctl configuration file.
 
 # ── Server admin API ──────────────────────────────────────────────────────────
 [server]
-# Base URL of the akamu admin API listener.
-# Corresponds to [admin].listen_addr in the akamu server configuration.
+# Base URL used to access the Akamu Admin API.
+# Admin endpoints are served on the same listener as the ACME API.
 url = "https://akamu.example.com:9443"
 
 # CA certificate used to verify the admin TLS endpoint.

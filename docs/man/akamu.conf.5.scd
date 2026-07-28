@@ -634,34 +634,21 @@ return 404.
 
 Operator authentication uses one or more of:
 
-- *mTLS client certificates* — configure *ca_certs* with the operator
-  CA(s).
+- *mTLS client certificates* — configure *[tls.client_auth]* and its
+  *ca_files* option.
 - *Proxy-forwarded client certificates* — configure *[admin.proxy_auth]*
   when Akamu runs behind a TLS-terminating reverse proxy (Nginx, Apache,
   Envoy).
 - *GSSAPI/Kerberos* — configure *[admin.gssapi]*.
 
-At least one of *ca_certs*, *[admin.proxy_auth]*, or *[admin.gssapi]*
-must be configured; the server exits at startup if none is set.
+At least one operator authentication mechanism must be configured:
+mTLS client certificates (configured via *[tls.client_auth]*),
+proxy-forwarded client certificates (*[admin.proxy_auth]*), or
+GSSAPI/Kerberos (*[admin.gssapi]*).
 
-*listen_addr* = _addr_
-	Address and port for the dedicated admin TLS listener.  Follows the
-	same format as the top-level *listen_addr*.  Example:
-	*127.0.0.1:9443*.
-
-*cert_file* = _path_
-	Path to the admin listener TLS certificate PEM file (leaf then
-	chain).  Required when *listen_addr* is set and *server_name* is
-	not set.
-
-*key_file* = _path_
-	Path to the admin listener TLS private key PEM file.  Required when
-	*listen_addr* is set and *server_name* is not set.
-
-*ca_certs* = _[path, ...]_
-	List of PEM files containing CA certificates trusted for operator
-	mTLS client certificate verification.  Omit when using GSSAPI-only
-	authentication.
+The Admin API does not have a dedicated listener or separate TLS
+certificate configuration.  It uses the main ACME listener and the
+top-level TLS configuration.
 
 *session_ttl_secs* = _integer_
 	Inactive session expiry.  Sessions with no activity for this
