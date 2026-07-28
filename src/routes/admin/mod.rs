@@ -73,6 +73,12 @@
 //! | `GET /admin/ca/{id}/mtc/log-list-entry` | ✓ | ✓ | | ✓ |
 //! | `GET /admin/gossip/status` | | | | ✓ |
 //! | `POST /admin/gossip/register` | ✓ | | | |
+//! | `GET /admin/policy/scopes` | ✓ | ✓ | | ✓ |
+//! | `GET /admin/policy/rules` | ✓ | ✓ | | ✓ |
+//! | `GET /admin/policy/rules/{id}` | ✓ | ✓ | | ✓ |
+//! | `POST /admin/policy/rules` | ✓ | ✓ | | |
+//! | `PUT /admin/policy/rules/{id}` | ✓ | ✓ | | |
+//! | `DELETE /admin/policy/rules/{id}` | ✓ | ✓ | | |
 
 pub mod accounts;
 pub mod audit;
@@ -82,6 +88,7 @@ pub mod delegations;
 pub mod eab;
 pub mod mtc;
 pub mod operators;
+pub mod policy;
 pub mod profiles;
 pub mod stats;
 pub mod tkauth;
@@ -118,6 +125,8 @@ pub use self::mtc::{
 pub use self::operators::{
     get_operator, get_operators, patch_operator, post_operators, put_operator, unlock_operator,
 };
+pub use self::policy::{delete_policy_rule, get_policy_rules, post_policy_rule};
+pub(crate) use self::policy::rebuild_issuance_policy;
 pub use self::profiles::{delete_profile, get_profile, get_profiles, post_profiles, put_profile};
 pub use self::stats::{get_config, get_stats};
 pub use self::tkauth::post_tkauth_prune_jti;
