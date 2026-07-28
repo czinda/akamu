@@ -23,6 +23,7 @@ pub mod landmarks;
 pub mod nonces;
 pub mod operators;
 pub mod orders;
+pub mod policy_rules;
 pub mod revoked_ranges;
 pub mod schema;
 pub mod stats;
@@ -32,6 +33,12 @@ use crate::error::AcmeError;
 
 /// Type alias for the shared connection pool (runtime-dispatch Any backend).
 pub type Db = sqlx::AnyPool;
+
+/// Check whether a database error message indicates a unique constraint violation.
+/// Works across SQLite ("UNIQUE"), PostgreSQL ("unique"), and MariaDB ("Duplicate").
+pub fn is_unique_constraint_violation(msg: &str) -> bool {
+    msg.contains("UNIQUE") || msg.contains("unique") || msg.contains("Duplicate")
+}
 
 /// Which database backend is active.
 ///

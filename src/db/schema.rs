@@ -207,6 +207,20 @@ pub struct RevokedRangeRow {
     pub created: i64,
 }
 
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct PolicyRuleRow {
+    pub id: String,
+    pub scope: String,
+    pub name: String,
+    pub rule_json: String,
+    /// Stored as `i64` for SQLite compatibility (no native boolean type).
+    /// CRDT layer uses `bool`; convert with `i64::from(b)` / `v != 0`.
+    pub enabled: i64,
+    pub created_at: String,
+    pub updated_at: String,
+    pub created_by: Option<String>,
+}
+
 /// RFC 9115 delegation configuration object (NDC-facing).
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct DelegationRow {
