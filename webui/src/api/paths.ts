@@ -20,6 +20,7 @@ export function apiPath(type: ObjType, id: string): string {
     case 'eab':        return `/admin/eab/${id}`;
     case 'operator':   return `/admin/operators/${id}`;
     case 'order':      return `/admin/orders/${id}`;
+    case 'policy':     return `/admin/policy/rules/${id}`;
     case 'profile':    return `/admin/profiles/${id}`;
   }
 }
@@ -48,6 +49,7 @@ export function apiListPath(type: ObjType): string {
     case 'eab':        return '/admin/eab';
     case 'operator':   return '/admin/operators';
     case 'order':      return '/admin/orders';
+    case 'policy':     return '/admin/policy/rules';
     case 'profile':    return '/admin/profiles';
   }
 }

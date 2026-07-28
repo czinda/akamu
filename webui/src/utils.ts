@@ -48,6 +48,7 @@ export type ObjType =
   | 'eab'
   | 'operator'
   | 'order'
+  | 'policy'
   | 'profile';
 
 /** Return the canonical detail-page path for an object. Single source of truth for URLs. */
@@ -61,6 +62,7 @@ export function objectPath(type: ObjType, id: string): string {
     case 'eab':        return `/eab/${id}`;
     case 'operator':   return `/operators/${id}`;
     case 'order':      return `/orders/${id}`;
+    case 'policy':     return `/policies/${id}/edit`;
     case 'profile':    return `/profiles/${id}`;
   }
 }

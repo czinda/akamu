@@ -47,6 +47,8 @@ const DelegationEdit = React.lazy(() => import('./pages/Delegations/Edit'));
 const DelegationDetail = React.lazy(() => import('./pages/Delegations/Detail'));
 const CADetail = React.lazy(() => import('./pages/CAs/Detail'));
 const CrossCertDetail = React.lazy(() => import('./pages/CrossCerts/Detail'));
+const Policies = React.lazy(() => import('./pages/Policies'));
+const PolicyEdit = React.lazy(() => import('./pages/Policies/Edit'));
 const OperatorDetail = React.lazy(() => import('./pages/Operators/Detail'));
 
 class PageErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -113,6 +115,7 @@ function AppSidebar({ role }: { role: Role | null }) {
   const canSeeAudit = role === 'administrator' || role === 'auditor';
   const canSeeCrossCerts = role === 'administrator' || role === 'ca_operations' || role === 'auditor';
   const canSeeMtc = role === 'administrator' || role === 'ca_operations' || role === 'auditor';
+  const canSeePolicies = role === 'administrator' || role === 'ca_operations' || role === 'auditor';
 
   return (
     <PageSidebar>
@@ -134,6 +137,7 @@ function AppSidebar({ role }: { role: Role | null }) {
             {isAtLeastCaOps && <NavItem><NavLink to="/cas">CAs</NavLink></NavItem>}
             {canSeeCrossCerts && <NavItem><NavLink to="/cross-certs">Cross-Certs</NavLink></NavItem>}
             {canSeeMtc && <NavItem><NavLink to="/mtc">Transparency Log</NavLink></NavItem>}
+            {canSeePolicies && <NavItem><NavLink to="/policies">Policies</NavLink></NavItem>}
             {isAdmin && (
               <>
                 <NavItem><NavLink to="/operators">Operators</NavLink></NavItem>
@@ -233,6 +237,15 @@ export default function App() {
         <Route path="/operators/new" element={<RequireRole minRole="administrator"><OperatorEdit createMode /></RequireRole>} />
         <Route path="/delegations/:id/edit" element={<RequireRole minRole="ca_operations"><DelegationEdit /></RequireRole>} />
         <Route path="/delegations/new" element={<RequireRole minRole="ca_operations"><DelegationEdit createMode /></RequireRole>} />
+        <Route path="/policies" element={
+          <RequireAnyRole roles={['administrator', 'ca_operations', 'auditor']}><Policies /></RequireAnyRole>
+        } />
+        <Route path="/policies/new" element={
+          <RequireAnyRole roles={['administrator', 'ca_operations']}><PolicyEdit createMode /></RequireAnyRole>
+        } />
+        <Route path="/policies/:id/edit" element={
+          <RequireAnyRole roles={['administrator', 'ca_operations']}><PolicyEdit /></RequireAnyRole>
+        } />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
