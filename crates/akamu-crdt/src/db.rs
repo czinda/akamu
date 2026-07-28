@@ -18,6 +18,7 @@ use crate::lww_register::LwwRegister;
 use crate::types::{
     AccountEntry, AkaNodeEntry, AuthzEntry, CertEntry, ChallengeEntry, DelegationEntry,
     EabKeyEntry, MtcCheckpointEntry, MtcWriter, OperatorEntry, OrderEntry, OrderOwner,
+    PolicyRuleEntry,
 };
 
 // ── PostgreSQL placeholder rewriting ──────────────────────────────────────────
@@ -247,6 +248,19 @@ struct DelegationLoad {
     csr_template: String,
     created: i64,
     ca_id: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct PolicyRuleLoad {
+    id: String,
+    scope: String,
+    name: String,
+    rule_json: String,
+    enabled: i64,
+    created_at: String,
+    updated_at: String,
+    created_by: Option<String>,
+    local_gen: i64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -541,6 +555,31 @@ pub async fn load_from_db(
         };
         crdt.delegations
             .load_entry(row.id, entry, row.created, false, None, gen);
+    }
+
+    // ── Policy rules ─────────────────────────────────────────────────────────
+    let rows: Vec<PolicyRuleLoad> = sqlx::query_as(
+        "SELECT id, scope, name, rule_json, enabled, created_at, updated_at, \
+         created_by, local_gen FROM policy_rules",
+    )
+    .fetch_all(pool)
+    .await?;
+    for row in rows {
+        let gen = row.local_gen as u64;
+        max_gen = max_gen.max(gen);
+        let created = rfc3339_utc_to_unix(&row.created_at);
+        let entry = PolicyRuleEntry {
+            id: row.id.clone(),
+            scope: row.scope,
+            name: row.name,
+            rule_json: row.rule_json,
+            enabled: row.enabled != 0,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+            created_by: row.created_by,
+        };
+        crdt.policy_rules
+            .load_entry(row.id, entry, created, false, None, gen);
     }
 
     // ── MTC Checkpoints ───────────────────────────────────────────────────────
@@ -950,6 +989,60 @@ pub async fn persist_crdt_acme(pool: &AnyPool, crdt: &AkaCrdt) -> Result<(), sql
             .bind(id.as_str())
             .execute(&mut *tx)
             .await?;
+    }
+
+    for (id, entry) in crdt.policy_rules.all_entries() {
+        if entry.tombstone {
+            q("DELETE FROM policy_rules WHERE id = ?")
+                .bind(id.as_str())
+                .execute(&mut *tx)
+                .await?;
+        } else {
+            // Evict any stale row that holds the same (scope, name) under a
+            // different id — prevents UNIQUE-constraint failures when two
+            // nodes independently create rules with the same name.
+            q("DELETE FROM policy_rules WHERE scope = ? AND name = ? AND id != ?")
+                .bind(&entry.value.scope)
+                .bind(&entry.value.name)
+                .bind(id.as_str())
+                .execute(&mut *tx)
+                .await?;
+
+            q_upsert(
+                "INSERT INTO policy_rules \
+                 (id, scope, name, rule_json, enabled, created_at, updated_at, created_by, local_gen) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 ON CONFLICT(id) DO UPDATE SET \
+                 scope = excluded.scope, name = excluded.name, \
+                 rule_json = excluded.rule_json, enabled = excluded.enabled, \
+                 updated_at = excluded.updated_at, local_gen = excluded.local_gen",
+                "INSERT INTO policy_rules \
+                 (id, scope, name, rule_json, enabled, created_at, updated_at, created_by, local_gen) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 ON DUPLICATE KEY UPDATE \
+                 scope = VALUES(scope), name = VALUES(name), \
+                 rule_json = VALUES(rule_json), enabled = VALUES(enabled), \
+                 updated_at = VALUES(updated_at), local_gen = VALUES(local_gen)",
+                "INSERT INTO policy_rules \
+                 (id, scope, name, rule_json, enabled, created_at, updated_at, created_by, local_gen) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+                 ON CONFLICT (id) DO UPDATE SET \
+                 scope = EXCLUDED.scope, name = EXCLUDED.name, \
+                 rule_json = EXCLUDED.rule_json, enabled = EXCLUDED.enabled, \
+                 updated_at = EXCLUDED.updated_at, local_gen = EXCLUDED.local_gen",
+            )
+            .bind(id.as_str())
+            .bind(&entry.value.scope)
+            .bind(&entry.value.name)
+            .bind(&entry.value.rule_json)
+            .bind(entry.value.enabled as i64)
+            .bind(&entry.value.created_at)
+            .bind(&entry.value.updated_at)
+            .bind(entry.value.created_by.as_deref())
+            .bind(entry.local_gen as i64)
+            .execute(&mut *tx)
+            .await?;
+        }
     }
 
     for (tree_size, register) in crdt.mtc_checkpoints.all_entries() {

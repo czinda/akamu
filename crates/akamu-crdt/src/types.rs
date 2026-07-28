@@ -151,3 +151,15 @@ pub struct MtcWriter {
     pub node_id: String,
     pub claimed_at: i64,
 }
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PolicyRuleEntry {
+    pub id: String,
+    pub scope: String,
+    pub name: String,
+    pub rule_json: String,
+    pub enabled: bool,
+    pub created_at: String,
+    pub updated_at: String,
+    pub created_by: Option<String>,
+}

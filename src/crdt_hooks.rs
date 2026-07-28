@@ -7,8 +7,11 @@
 use crate::state::AppState;
 use akamu_crdt::{
     AccountEntry, AuthzEntry, CertEntry, ChallengeEntry, DelegationEntry, EabKeyEntry,
-    OperatorEntry, OrderEntry,
+    OperatorEntry, OrderEntry, PolicyRuleEntry,
 };
+use std::time::Duration;
+
+const WRITE_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 // ── Parameter structs ─────────────────────────────────────────────────────────
 
@@ -78,13 +81,37 @@ pub struct CertUpsertParams<'a> {
     pub ca_id: &'a str,
 }
 
+/// Acquire the CRDT write lock with a timeout to prevent admin handlers from
+/// hanging indefinitely if the lock is held by a blocked reader.
+macro_rules! write_lock_or_return {
+    ($state:expr) => {
+        match tokio::time::timeout(WRITE_LOCK_TIMEOUT, $state.crdt.write()).await {
+            Ok(guard) => guard,
+            Err(_) => {
+                tracing::error!(
+                    timeout_secs = WRITE_LOCK_TIMEOUT.as_secs(),
+                    "CRDT write-lock acquisition timed out — skipping update (gossip will recover)"
+                );
+                return;
+            }
+        }
+    };
+}
+
 // ── Gossip gate ───────────────────────────────────────────────────────────────
 // In single-node deployments (no gossip configured) there are no peers to
 // replicate to, so maintaining the in-memory CRDT and persisting local_gen
 // would be pure overhead.  Every public hook returns early when gossip is off.
 #[inline(always)]
 fn gossip_enabled(state: &AppState) -> bool {
-    state.config.gossip.is_some()
+    let enabled = state.config.gossip.is_some();
+    if !enabled {
+        static LOGGED: std::sync::Once = std::sync::Once::new();
+        LOGGED.call_once(|| {
+            tracing::debug!("CRDT hooks disabled — gossip not configured (single-node mode)");
+        });
+    }
+    enabled
 }
 
 // ── Accounts ──────────────────────────────────────────────────────────────────
@@ -105,7 +132,7 @@ pub async fn on_account_upsert(state: &AppState, p: AccountUpsertParams<'_>) {
         ca_id: p.ca_id.to_string(),
     };
     {
-        let mut crdt = state.crdt.write().await;
+        let mut crdt = write_lock_or_return!(state);
         crdt.accounts.upsert(p.id.to_string(), entry, p.updated)
     };
     state.write_notify.notify_one();
@@ -116,7 +143,7 @@ pub async fn on_account_tombstone(state: &AppState, id: &str, now: i64) {
         return;
     }
     {
-        let mut crdt = state.crdt.write().await;
+        let mut crdt = write_lock_or_return!(state);
         crdt.accounts.remove(&id.to_string(), now)
     };
     state.write_notify.notify_one();
@@ -145,7 +172,7 @@ pub async fn on_order_upsert(state: &AppState, p: OrderUpsertParams<'_>) {
         processing_claimed_at: None,
     };
     {
-        let mut crdt = state.crdt.write().await;
+        let mut crdt = write_lock_or_return!(state);
         crdt.orders.upsert(p.id.to_string(), entry, p.updated)
     };
     state.write_notify.notify_one();
@@ -156,7 +183,7 @@ pub async fn on_order_tombstone(state: &AppState, id: &str, now: i64) {
         return;
     }
     {
-        let mut crdt = state.crdt.write().await;
+        let mut crdt = write_lock_or_return!(state);
         crdt.orders.remove(&id.to_string(), now)
     };
     state.write_notify.notify_one();
@@ -181,7 +208,7 @@ pub async fn on_authz_upsert(state: &AppState, p: AuthzUpsertParams<'_>) {
         ca_id: p.ca_id.to_string(),
     };
     {
-        let mut crdt = state.crdt.write().await;
+        let mut crdt = write_lock_or_return!(state);
         crdt.authorizations
             .upsert(p.id.to_string(), entry, p.updated)
     };
@@ -193,7 +220,7 @@ pub async fn on_authz_tombstone(state: &AppState, id: &str, now: i64) {
         return;
     }
     {
-        let mut crdt = state.crdt.write().await;
+        let mut crdt = write_lock_or_return!(state);
         crdt.authorizations.remove(&id.to_string(), now)
     };
     state.write_notify.notify_one();
@@ -217,7 +244,7 @@ pub async fn on_challenge_set(state: &AppState, p: ChallengeSetParams<'_>) {
         updated: p.updated,
     };
     {
-        let mut crdt = state.crdt.write().await;
+        let mut crdt = write_lock_or_return!(state);
         crdt.challenges
             .set(p.id.to_string(), entry, p.updated, &state.node_id)
     };
@@ -244,7 +271,7 @@ pub async fn on_cert_upsert(state: &AppState, p: CertUpsertParams<'_>) {
         ca_id: p.ca_id.to_string(),
     };
     {
-        let mut crdt = state.crdt.write().await;
+        let mut crdt = write_lock_or_return!(state);
         crdt.certificates.upsert(p.id.to_string(), entry, p.created)
     };
     state.write_notify.notify_one();
@@ -255,7 +282,7 @@ pub async fn on_cert_tombstone(state: &AppState, id: &str, now: i64) {
         return;
     }
     {
-        let mut crdt = state.crdt.write().await;
+        let mut crdt = write_lock_or_return!(state);
         crdt.certificates.remove(&id.to_string(), now)
     };
     state.write_notify.notify_one();
@@ -282,7 +309,7 @@ pub async fn on_eab_key_set(
         profile_grants,
     };
     {
-        let mut crdt = state.crdt.write().await;
+        let mut crdt = write_lock_or_return!(state);
         let ts = used_at.unwrap_or(created);
         crdt.eab_keys
             .set(kid.to_string(), entry, ts, &state.node_id)
@@ -311,7 +338,7 @@ pub async fn on_operator_upsert(
         created,
     };
     {
-        let mut crdt = state.crdt.write().await;
+        let mut crdt = write_lock_or_return!(state);
         crdt.operators.upsert(id.to_string(), entry, created)
     };
     state.write_notify.notify_one();
@@ -322,7 +349,7 @@ pub async fn on_operator_tombstone(state: &AppState, id: i64, now: i64) {
         return;
     }
     {
-        let mut crdt = state.crdt.write().await;
+        let mut crdt = write_lock_or_return!(state);
         crdt.operators.remove(&id.to_string(), now)
     };
     state.write_notify.notify_one();
@@ -349,7 +376,7 @@ pub async fn on_delegation_upsert(
         ca_id: ca_id.to_string(),
     };
     {
-        let mut crdt = state.crdt.write().await;
+        let mut crdt = write_lock_or_return!(state);
         crdt.delegations.upsert(id.to_string(), entry, created)
     };
     state.write_notify.notify_one();
@@ -360,8 +387,53 @@ pub async fn on_delegation_tombstone(state: &AppState, id: &str, now: i64) {
         return;
     }
     {
-        let mut crdt = state.crdt.write().await;
+        let mut crdt = write_lock_or_return!(state);
         crdt.delegations.remove(&id.to_string(), now)
+    };
+    state.write_notify.notify_one();
+}
+
+// ── Policy rules ─────────────────────────────────────────────────────────────
+
+pub struct PolicyRuleUpsertParams<'a> {
+    pub id: &'a str,
+    pub scope: &'a str,
+    pub name: &'a str,
+    pub rule_json: &'a str,
+    pub enabled: bool,
+    pub created_at: &'a str,
+    pub updated_at: &'a str,
+    pub created_by: Option<&'a str>,
+}
+
+pub async fn on_policy_rule_upsert(state: &AppState, p: PolicyRuleUpsertParams<'_>, now: i64) {
+    if !gossip_enabled(state) {
+        return;
+    }
+    let entry = PolicyRuleEntry {
+        id: p.id.to_string(),
+        scope: p.scope.to_string(),
+        name: p.name.to_string(),
+        rule_json: p.rule_json.to_string(),
+        enabled: p.enabled,
+        created_at: p.created_at.to_string(),
+        updated_at: p.updated_at.to_string(),
+        created_by: p.created_by.map(str::to_string),
+    };
+    {
+        let mut crdt = write_lock_or_return!(state);
+        crdt.policy_rules.upsert(p.id.to_string(), entry, now)
+    };
+    state.write_notify.notify_one();
+}
+
+pub async fn on_policy_rule_remove(state: &AppState, id: &str, now: i64) {
+    if !gossip_enabled(state) {
+        return;
+    }
+    {
+        let mut crdt = write_lock_or_return!(state);
+        crdt.policy_rules.remove(&id.to_string(), now)
     };
     state.write_notify.notify_one();
 }

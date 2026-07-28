@@ -8,7 +8,7 @@ use crate::{
     types::{
         AccountEntry, AkaNodeEntry, AuthzEntry, CertEntry, ChallengeEntry, DelegationEntry,
         EabKeyEntry, MtcCheckpointEntry, MtcCosigEntry, MtcWriter, OperatorEntry, OrderEntry,
-        OrderOwner,
+        OrderOwner, PolicyRuleEntry,
     },
 };
 
@@ -27,6 +27,7 @@ pub struct AkaCrdtCounts {
     pub eab_keys: usize,
     pub operators: usize,
     pub delegations: usize,
+    pub policy_rules: usize,
     pub mtc_checkpoints: usize,
     pub mtc_cosignatures: usize,
 }
@@ -46,6 +47,7 @@ pub struct AkaCrdt {
     pub eab_keys: LwwMap<String, EabKeyEntry>,
     pub operators: OrMap<String, OperatorEntry>,
     pub delegations: OrMap<String, DelegationEntry>,
+    pub policy_rules: OrMap<String, PolicyRuleEntry>,
     pub mtc_checkpoints: LwwMap<u64, MtcCheckpointEntry>,
     pub mtc_cosignatures: LwwMap<CosigKey, MtcCosigEntry>,
     /// Gossip-consensus ownership: order_id → owning node + claim timestamp.
@@ -69,6 +71,7 @@ impl AkaCrdt {
             eab_keys: self.eab_keys.delta_since(gen),
             operators: self.operators.delta_since(gen),
             delegations: self.delegations.delta_since(gen),
+            policy_rules: self.policy_rules.delta_since(gen),
             mtc_checkpoints: self.mtc_checkpoints.delta_since(gen),
             mtc_cosignatures: self.mtc_cosignatures.delta_since(gen),
             order_owners: self.order_owners.delta_since(gen),
@@ -88,6 +91,7 @@ impl AkaCrdt {
             eab_keys: self.eab_keys.delta_range(since, until),
             operators: self.operators.delta_range(since, until),
             delegations: self.delegations.delta_range(since, until),
+            policy_rules: self.policy_rules.delta_range(since, until),
             mtc_checkpoints: self.mtc_checkpoints.delta_range(since, until),
             mtc_cosignatures: self.mtc_cosignatures.delta_range(since, until),
             order_owners: self.order_owners.delta_range(since, until),
@@ -109,6 +113,7 @@ impl AkaCrdt {
         self.eab_keys.purge_old_tombstones(cutoff);
         self.operators.purge_old_tombstones(cutoff);
         self.delegations.purge_old_tombstones(cutoff);
+        self.policy_rules.purge_old_tombstones(cutoff);
         self.mtc_checkpoints.purge_old_tombstones(cutoff);
         self.mtc_cosignatures.purge_old_tombstones(cutoff);
         self.order_owners.purge_old_tombstones(cutoff);
@@ -127,6 +132,7 @@ impl AkaCrdt {
         max = max.max(self.eab_keys.max_local_gen());
         max = max.max(self.operators.max_local_gen());
         max = max.max(self.delegations.max_local_gen());
+        max = max.max(self.policy_rules.max_local_gen());
         max = max.max(self.mtc_checkpoints.max_local_gen());
         max = max.max(self.mtc_cosignatures.max_local_gen());
         max = max.max(self.order_owners.max_local_gen());
@@ -146,6 +152,7 @@ impl AkaCrdt {
             eab_keys: self.eab_keys.count_live(),
             operators: self.operators.count_live(),
             delegations: self.delegations.count_live(),
+            policy_rules: self.policy_rules.count_live(),
             mtc_checkpoints: self.mtc_checkpoints.count_live(),
             mtc_cosignatures: self.mtc_cosignatures.count_live(),
         }
@@ -224,6 +231,7 @@ impl Merge for AkaCrdt {
         self.eab_keys.merge(other.eab_keys);
         self.operators.merge(other.operators);
         self.delegations.merge(other.delegations);
+        self.policy_rules.merge(other.policy_rules);
         self.mtc_checkpoints.merge(other.mtc_checkpoints);
         self.mtc_cosignatures.merge(other.mtc_cosignatures);
         self.order_owners.merge(other.order_owners);
@@ -322,6 +330,20 @@ mod tests {
             },
             now,
         );
+        c.policy_rules.upsert(
+            "rule-1".to_owned(),
+            PolicyRuleEntry {
+                id: "rule-1".to_owned(),
+                scope: "global".to_owned(),
+                name: "allow-web".to_owned(),
+                rule_json: r#"{"type":"allow"}"#.to_owned(),
+                enabled: true,
+                created_at: "2023-11-14T22:13:20Z".to_owned(),
+                updated_at: "2023-11-14T22:13:20Z".to_owned(),
+                created_by: Some("admin".to_owned()),
+            },
+            now,
+        );
         c.mtc_checkpoints.set(
             1u64,
             MtcCheckpointEntry {
@@ -357,6 +379,7 @@ mod tests {
         assert!(decoded.accounts.get("acct-1").is_some());
         assert!(decoded.orders.get("ord-1").is_some());
         assert!(decoded.certificates.get("cert-1").is_some());
+        assert!(decoded.policy_rules.get("rule-1").is_some());
         assert_eq!(decoded.mtc_cosignatures.count_live(), 1);
     }
 
