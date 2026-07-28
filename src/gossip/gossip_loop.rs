@@ -110,6 +110,7 @@ pub async fn run(state: Arc<AppState>) {
     // Persisting on every gossip receive would starve ACME requests on a shared pool.
     let persist_interval = Duration::from_secs(30);
     let mut last_persist = std::time::Instant::now();
+    let mut persist_fail_streak: u32 = 0;
 
     loop {
         // Wake on whichever fires first: the scheduled interval, or a CRDT write
@@ -148,11 +149,26 @@ pub async fn run(state: Arc<AppState>) {
                 let crdt = state.crdt.read().await;
                 crdt.clone()
             };
+            let mut failed = false;
             if let Err(e) = akamu_crdt::db::persist_crdt_cluster(&state.crdt_db, &snap).await {
                 tracing::warn!(error = %e, "gossip: periodic CRDT cluster persist failed");
+                failed = true;
             }
             if let Err(e) = akamu_crdt::db::persist_crdt_acme(&state.db, &snap).await {
                 tracing::warn!(error = %e, "gossip: periodic ACME persist failed");
+                failed = true;
+            }
+            if failed {
+                persist_fail_streak += 1;
+                if persist_fail_streak >= 3 {
+                    tracing::error!(
+                        consecutive_failures = persist_fail_streak,
+                        "gossip: DB persist has failed {persist_fail_streak} consecutive times — \
+                         in-memory state may be lost on restart"
+                    );
+                }
+            } else {
+                persist_fail_streak = 0;
             }
         }
 
@@ -173,6 +189,15 @@ pub async fn run(state: Arc<AppState>) {
                 cutoff_secs = cutoff,
                 "gossip: tombstone GC applied in-memory — DB will sync on next periodic persist"
             );
+        }
+
+        // Retry policy rebuild if a previous round failed.
+        if state
+            .policy_rebuild_needed
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            tracing::info!("retrying deferred policy rebuild from previous gossip round");
+            crate::policy::rebuild_or_defer(&state, "deferred policy rebuild still failing").await;
         }
 
         // Build peer list from config + CRDT-discovered peers (deduplicated).
@@ -533,13 +558,45 @@ pub async fn run(state: Arc<AppState>) {
         // Then merge the accumulator into the live CRDT under a single brief write-lock.
         // This reduces both the number of write-lock acquisitions (N→1) and the
         // lock-hold duration (proportional to one merge instead of N merges).
-        if !peer_crdts.is_empty() {
+        let policy_changed = if !peer_crdts.is_empty() {
+            let policy_gen_before = {
+                let crdt = state.crdt.read().await;
+                crdt.policy_rules.max_local_gen()
+            };
             let mut combined = AkaCrdt::default();
             for peer_crdt in peer_crdts {
                 Merge::merge(&mut combined, peer_crdt);
             }
-            let mut crdt = state.crdt.write().await;
-            Merge::merge(&mut *crdt, combined);
+            {
+                let mut crdt = state.crdt.write().await;
+                Merge::merge(&mut *crdt, combined);
+            }
+            let policy_gen_after = {
+                let crdt = state.crdt.read().await;
+                crdt.policy_rules.max_local_gen()
+            };
+            policy_gen_after > policy_gen_before
+        } else {
+            false
+        };
+
+        if policy_changed {
+            tracing::info!(
+                "policy_rules changed via gossip, persisting and rebuilding issuance policy"
+            );
+            let snap = {
+                let crdt = state.crdt.read().await;
+                crdt.clone()
+            };
+            if let Err(e) = akamu_crdt::db::persist_crdt_acme(&state.db, &snap).await {
+                tracing::error!(error = %e, "gossip: policy-triggered ACME persist failed — skipping rebuild (DB state is stale)");
+            } else {
+                crate::policy::rebuild_or_defer(
+                    &state,
+                    "failed to rebuild policy after gossip merge",
+                )
+                .await;
+            }
         }
 
         // H-10: Acquire ordering so we see all generation bumps from the merges above.
