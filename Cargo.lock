@@ -65,6 +65,7 @@ dependencies = [
  "akamu-jose",
  "akamu-ldap",
  "akamu-mtc-wire",
+ "akamu-policy",
  "akamu-util",
  "axum",
  "base64",

@@ -21,6 +21,7 @@ pub mod journal;
 pub mod linter;
 pub mod listen;
 pub mod mtc;
+pub mod policy;
 pub mod profiles;
 pub mod routes;
 pub mod star;

@@ -104,6 +104,7 @@ pub async fn start(
         tkauth: None,
         gossip: None,
         crdt_db_url: None,
+        policy: None,
     });
 
     // Open the database.

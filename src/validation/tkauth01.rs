@@ -1274,6 +1274,7 @@ mod tests {
                 claim_encoders: vec![],
                 token_authority_url: None,
             }),
+            policy: None,
         });
 
         let (ca_key, ca_cert_der) = crate::ca::init::load_or_generate(config.default_ca()).unwrap();

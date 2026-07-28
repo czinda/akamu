@@ -926,6 +926,7 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
         email_challenge: None,
         delegation_upstream: None,
         tkauth: None,
+        policy: None,
         gossip: gossip_cfg,
         crdt_db_url: None,
     });

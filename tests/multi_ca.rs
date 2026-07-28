@@ -110,6 +110,7 @@ async fn build_two_ca_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir
         gossip: None,
         crdt_db_url: None,
         tkauth: None,
+        policy: None,
     });
 
     db::install_drivers();
@@ -596,6 +597,7 @@ async fn admin_cas_list_returns_both_cas() {
         gossip: None,
         crdt_db_url: None,
         tkauth: None,
+        policy: None,
     });
 
     db::install_drivers();
@@ -845,6 +847,7 @@ async fn build_two_ca_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         gossip: None,
         crdt_db_url: None,
         tkauth: None,
+        policy: None,
     });
 
     db::install_drivers();

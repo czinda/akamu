@@ -1021,6 +1021,61 @@ async fn run(config_path: &str) -> Result<(), String> {
     } else {
         JournalWriter::new("akamu")
     });
+    // ── Issuance policy engine ─────────────────────────────────────────────
+    let policy_engine = {
+        let (mode, toml_rules) = if let Some(ref policy_cfg) = config.policy {
+            let mut rules = policy_cfg.rules.clone();
+            if let Some(ref rules_file) = policy_cfg.rules_file {
+                let ext = std::fs::read_to_string(rules_file)
+                    .map_err(|e| format!("policy rules_file '{rules_file}': {e}"))?;
+                let ext_cfg: akamu_policy::config::PolicyConfig = toml::from_str(&ext)
+                    .map_err(|e| format!("policy rules_file '{rules_file}': {e}"))?;
+                rules.extend(ext_cfg.rules);
+            }
+            (policy_cfg.mode, rules)
+        } else {
+            (akamu_policy::config::PolicyMode::Shadow, vec![])
+        };
+
+        let mut compat_rules = Vec::new();
+        for (profile_name, _desc) in profile_registry.all_profiles() {
+            if let Some(params) = profile_registry.resolve(&profile_name) {
+                compat_rules.push(akamu_policy::compat::translate_profile_to_rule(
+                    &profile_name,
+                    &params.ca_ids,
+                    &params.allowed_identifier_patterns,
+                    params.require_account_grant,
+                ));
+            }
+        }
+        let all_toml: Vec<_> = compat_rules.into_iter().chain(toml_rules).collect();
+
+        let db_rule_rows = akamu::db::policy_rules::list_by_scope(&db, "issuance")
+            .await
+            .map_err(|e| format!("load policy rules: {e}"))?;
+        let parsed = akamu::policy::parse_db_rules(&db_rule_rows);
+        if parsed.skipped > 0 {
+            if mode == akamu_policy::config::PolicyMode::Enforce {
+                tracing::error!(
+                    skipped = parsed.skipped,
+                    ids = ?parsed.skipped_ids,
+                    "startup: corrupt policy rules skipped in ENFORCE mode — policy set is incomplete"
+                );
+            } else {
+                tracing::warn!(
+                    skipped = parsed.skipped,
+                    ids = ?parsed.skipped_ids,
+                    "startup: some policy rules have corrupt JSON and were skipped"
+                );
+            }
+        }
+
+        Arc::new(
+            akamu_policy::engine::IssuancePolicyEngine::new(mode, all_toml, parsed.rules)
+                .map_err(|e| format!("issuance policy engine: {e}"))?,
+        )
+    };
+
     let mut builder = AppStateBuilder::new(
         Arc::clone(&config),
         db.clone(),
@@ -1030,6 +1085,7 @@ async fn run(config_path: &str) -> Result<(), String> {
     )
     .db_ro(db_ro)
     .profiles(profile_registry.clone())
+    .issuance_policy(policy_engine)
     .linter_registry(Arc::new(
         akamu::linter::LinterRegistry::new(&config.linter)
             .map_err(|e| format!("linter config error: {e}"))?,

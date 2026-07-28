@@ -103,6 +103,7 @@ async fn build_admin_state() -> (Arc<AppState>, tempfile::TempDir) {
         gossip: None,
         crdt_db_url: None,
         tkauth: None,
+        policy: None,
     });
 
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();

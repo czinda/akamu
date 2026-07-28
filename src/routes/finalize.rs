@@ -156,6 +156,19 @@ pub async fn finalize_order(
     // Validate CSR (after auth to avoid timing oracle on CSR structure).
     let validated_csr = ca::csr::validate_csr(&csr_der, &allowed)?;
 
+    // Policy engine evaluation — runs after CSR validation so key_type is available.
+    crate::policy::evaluate_issuance_policy(
+        &state,
+        &crate::policy::PolicyCheckParams {
+            account_id: &account_id,
+            ca_id: &order.ca_id,
+            effective_profile,
+            allowed: &allowed,
+            key_type: validated_csr.key_type.as_deref(),
+        },
+    )
+    .await?;
+
     // RFC 9115 §4: for delegation orders, validate the CSR against the
     // delegation's CSR template.
     if let Some(ref delegation_id) = order.delegation_id {

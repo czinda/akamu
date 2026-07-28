@@ -119,6 +119,9 @@ akamu-jose = { path = "crates/akamu-jose" }
 # CRDT primitives for cluster state replication
 akamu-crdt = { path = "crates/akamu-crdt", features = ["db"] }
 
+# ABAC issuance policy engine
+akamu-policy = { path = "crates/akamu-policy" }
+
 # MTC cosigned-message wire format shared between server and cosigner daemon
 akamu-mtc-wire = { path = "crates/akamu-mtc-wire" }
 

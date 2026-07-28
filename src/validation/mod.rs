@@ -722,6 +722,7 @@ mod tests {
             gossip: None,
             crdt_db_url: None,
             tkauth: None,
+            policy: None,
         });
 
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
@@ -1224,6 +1225,7 @@ mod tests {
             gossip: None,
             crdt_db_url: None,
             tkauth: None,
+            policy: None,
         });
         let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
         db::install_drivers();
@@ -1527,6 +1529,7 @@ mod tests {
             gossip: None,
             crdt_db_url: None,
             tkauth: None,
+            policy: None,
         });
         let (ca_key, ca_cert_der) = crate::ca::init::load_or_generate(config.default_ca()).unwrap();
         let ca = Arc::new(CaState {

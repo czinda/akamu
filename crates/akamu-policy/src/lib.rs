@@ -5,6 +5,8 @@ pub mod engine;
 pub(crate) mod matcher;
 pub mod request;
 
+pub use abac_rs::Decision;
+
 #[derive(Debug, thiserror::Error)]
 pub enum PolicyError {
     #[error("request error: {0}")]

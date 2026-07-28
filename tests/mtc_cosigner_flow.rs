@@ -316,6 +316,7 @@ async fn build_akamu_state(
         email_challenge: None,
         delegation_upstream: None,
         tkauth: None,
+        policy: None,
         gossip: None,
         crdt_db_url: None,
         linter: Default::default(),

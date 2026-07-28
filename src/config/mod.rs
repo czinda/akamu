@@ -81,6 +81,10 @@ pub struct Config {
     /// or reusing the same URL with a separate pool (non-SQLite).
     #[serde(default)]
     pub crdt_db_url: Option<String>,
+    /// Issuance policy engine configuration (ABAC rules + mode).
+    /// Absent → shadow mode with only profile-level backward-compat rules.
+    #[serde(default)]
+    pub policy: Option<akamu_policy::config::PolicyConfig>,
 }
 
 /// RFC 8823 S/MIME email-reply-00 challenge configuration.

@@ -316,6 +316,13 @@ pub struct AppState {
     pub jwks_cache: Option<JwksCache>,
     /// Write coalescer for SQLite hot-path writes.  `None` for PostgreSQL/MariaDB.
     pub write_coalescer: Option<std::sync::Arc<crate::db::coalescer::WriteCoalescer>>,
+    /// ABAC issuance policy engine.  Evaluates access-control rules at finalize
+    /// time.  In shadow mode, mismatches with the legacy `check_profile_auth`
+    /// gate are logged but not enforced.
+    pub issuance_policy: Arc<akamu_policy::engine::IssuancePolicyEngine>,
+    /// Set to `true` when a policy rebuild fails (gossip or admin CRUD).
+    /// The gossip loop checks this flag at the start of each round and retries.
+    pub policy_rebuild_needed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl AppState {
@@ -430,6 +437,7 @@ pub struct AppStateBuilder {
     claim_encoder_registry: Option<Arc<crate::validation::claim_encoder::ClaimEncoderRegistry>>,
     jwks_cache: Option<JwksCache>,
     write_coalescer: Option<Arc<crate::db::coalescer::WriteCoalescer>>,
+    issuance_policy: Option<Arc<akamu_policy::engine::IssuancePolicyEngine>>,
 }
 
 macro_rules! builder_setter {
@@ -487,6 +495,7 @@ impl AppStateBuilder {
             claim_encoder_registry: None,
             jwks_cache: None,
             write_coalescer: None,
+            issuance_policy: None,
         }
     }
 
@@ -534,6 +543,10 @@ impl AppStateBuilder {
     );
     builder_setter!(jwks_cache, JwksCache);
     builder_setter!(write_coalescer, Arc<crate::db::coalescer::WriteCoalescer>);
+    builder_setter!(
+        issuance_policy,
+        Arc<akamu_policy::engine::IssuancePolicyEngine>
+    );
 
     pub fn build(self) -> Arc<AppState> {
         let db_ro = self.db_ro.unwrap_or_else(|| self.db.clone());
@@ -641,6 +654,17 @@ impl AppStateBuilder {
             claim_encoder_registry: self.claim_encoder_registry,
             jwks_cache: self.jwks_cache,
             write_coalescer: self.write_coalescer,
+            issuance_policy: self.issuance_policy.unwrap_or_else(|| {
+                Arc::new(
+                    akamu_policy::engine::IssuancePolicyEngine::new(
+                        akamu_policy::config::PolicyMode::Shadow,
+                        vec![],
+                        vec![],
+                    )
+                    .expect("empty policy engine always succeeds"),
+                )
+            }),
+            policy_rebuild_needed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 }

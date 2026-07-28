@@ -455,6 +455,7 @@ async fn start_tls_server() -> TlsTestServer {
         gossip: None,
         crdt_db_url: None,
         tkauth: None,
+        policy: None,
     });
 
     // Initialise CA.

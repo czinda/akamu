@@ -187,6 +187,7 @@ async fn build_test_state(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) 
         gossip: None,
         crdt_db_url: None,
         tkauth: None,
+        policy: None,
     });
     let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
     let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();
@@ -570,6 +571,7 @@ async fn test_renewal_info_explanation_url() {
         gossip: None,
         crdt_db_url: None,
         tkauth: None,
+        policy: None,
     });
     let state2 = AppStateBuilder::new(
         Arc::clone(&config),
