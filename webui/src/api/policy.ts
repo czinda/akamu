@@ -35,6 +35,10 @@ export async function listRules(scope: string): Promise<PolicyRule[]> {
   return apiJson(`${POLICY_BASE}/rules?scope=${encodeURIComponent(scope)}`);
 }
 
+export async function getRule(id: string): Promise<PolicyRule> {
+  return apiJson(`${POLICY_BASE}/rules/${encodeURIComponent(id)}`);
+}
+
 export async function createRule(
   payload: CreatePolicyRulePayload,
 ): Promise<{ id: string; name: string }> {
