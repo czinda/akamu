@@ -48,6 +48,53 @@ pub async fn list_by_scope(
     Ok(rows)
 }
 
+pub async fn list_scopes(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+) -> Result<Vec<String>, AcmeError> {
+    let rows =
+        super::query_as::<(String,)>("SELECT DISTINCT scope FROM policy_rules ORDER BY scope")
+            .fetch_all(executor)
+            .await?;
+    Ok(rows.into_iter().map(|r| r.0).collect())
+}
+
+pub async fn update(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    id: &str,
+    name: &str,
+    rule_json: &str,
+    enabled: i64,
+    updated_at: &str,
+) -> Result<bool, AcmeError> {
+    let result = super::query(
+        "UPDATE policy_rules SET name = ?, rule_json = ?, enabled = ?, updated_at = ? WHERE id = ?",
+    )
+    .bind(name)
+    .bind(rule_json)
+    .bind(enabled)
+    .bind(updated_at)
+    .bind(id)
+    .execute(executor)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn get_by_scope_and_name(
+    executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
+    scope: &str,
+    name: &str,
+) -> Result<Option<PolicyRuleRow>, AcmeError> {
+    let row = super::query_as::<PolicyRuleRow>(
+        "SELECT id, scope, name, rule_json, enabled, created_at, updated_at, created_by \
+         FROM policy_rules WHERE scope = ? AND name = ?",
+    )
+    .bind(scope)
+    .bind(name)
+    .fetch_optional(executor)
+    .await?;
+    Ok(row)
+}
+
 pub async fn get_by_id(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,

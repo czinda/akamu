@@ -358,12 +358,16 @@ fn build_admin_router() -> Router<Arc<AppState>> {
                 .delete(admin::delete_delegation),
         )
         .route(
+            "/admin/policy/scopes",
+            axum::routing::get(admin::get_policy_scopes),
+        )
+        .route(
             "/admin/policy/rules",
             axum::routing::get(admin::get_policy_rules).post(admin::post_policy_rule),
         )
         .route(
             "/admin/policy/rules/{id}",
-            axum::routing::delete(admin::delete_policy_rule),
+            axum::routing::put(admin::put_policy_rule).delete(admin::delete_policy_rule),
         )
         .route("/admin/config", axum::routing::get(admin::get_config))
         .route("/admin/crl/force", post(admin::post_crl_force))

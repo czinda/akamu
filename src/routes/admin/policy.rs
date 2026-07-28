@@ -19,6 +19,77 @@ use crate::state::AppState;
 
 use super::super::unix_now;
 
+#[derive(Deserialize)]
+pub struct CreatePolicyRulePayload {
+    pub scope: Option<String>,
+    pub name: String,
+    pub rule: serde_json::Value,
+    pub enabled: Option<bool>,
+}
+
+/// Payload for `PUT /admin/policy/rules/{id}`.  Scope is immutable after
+/// creation and intentionally excluded — delete and recreate to change scope.
+#[derive(Deserialize)]
+pub struct UpdatePolicyRulePayload {
+    pub name: Option<String>,
+    pub rule: serde_json::Value,
+    pub enabled: Option<bool>,
+}
+
+fn ca_scope_visible(rule_json: &str, scope_ca: &str) -> bool {
+    match serde_json::from_str::<serde_json::Value>(rule_json) {
+        Ok(v) => match v.get("ca") {
+            Some(serde_json::Value::Array(cas)) => cas
+                .iter()
+                .any(|c| c.as_str().is_some_and(|s| s == scope_ca)),
+            None => true,
+            Some(_) => {
+                tracing::warn!(rule_json, "unexpected non-array 'ca' field in policy rule");
+                false
+            }
+        },
+        Err(e) => {
+            tracing::warn!(rule_json, error = %e, "corrupt policy rule JSON in CA-scope filter");
+            false
+        }
+    }
+}
+
+/// Like [`ca_scope_visible`] but operates on a pre-serialisation JSON value
+/// (the `rule` field from a create/update payload).
+fn ca_scope_visible_json(rule: &serde_json::Value, scope_ca: &str) -> bool {
+    match rule.get("ca") {
+        Some(serde_json::Value::Array(cas)) => cas
+            .iter()
+            .any(|c| c.as_str().is_some_and(|s| s == scope_ca)),
+        None => false,
+        Some(_) => false,
+    }
+}
+
+fn validate_rule_json(
+    rule: &serde_json::Value,
+) -> Result<akamu_policy::config::PolicyRuleConfig, AcmeError> {
+    let cfg: akamu_policy::config::PolicyRuleConfig = serde_json::from_value(rule.clone())
+        .map_err(|e| AcmeError::BadRequest(format!("invalid rule: {e}")))?;
+    cfg.to_abac_rule()
+        .map_err(|e| AcmeError::BadRequest(format!("invalid rule: {e}")))?;
+    Ok(cfg)
+}
+
+/// `GET /admin/policy/scopes`
+pub async fn get_policy_scopes(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    require_role!(operator, state, Administrator | CaOperations | Auditor);
+
+    match db::policy_rules::list_scopes(&state.db_ro).await {
+        Ok(scopes) => axum::Json(json!(scopes)).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
 /// `GET /admin/policy/rules?scope=issuance`
 pub async fn get_policy_rules(
     operator: OperatorContext,
@@ -31,25 +102,20 @@ pub async fn get_policy_rules(
         .get("scope")
         .map(String::as_str)
         .unwrap_or("issuance");
-    let rows = match db::policy_rules::list_by_scope(&state.db_ro, scope).await {
+    let all_rows = match db::policy_rules::list_by_scope(&state.db_ro, scope).await {
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
-    let items: Vec<serde_json::Value> = rows
-        .iter()
-        .map(|r| {
-            json!({
-                "id": r.id,
-                "scope": r.scope,
-                "name": r.name,
-                "rule_json": r.rule_json,
-                "enabled": r.enabled != 0,
-                "created_at": r.created_at,
-                "updated_at": r.updated_at,
-                "created_by": r.created_by,
-            })
-        })
-        .collect();
+    let ca_scope = operator.ca_scope().map(|s| s.to_string());
+    let rows: Vec<_> = if let Some(ref scope_ca) = ca_scope {
+        all_rows
+            .into_iter()
+            .filter(|r| ca_scope_visible(&r.rule_json, scope_ca))
+            .collect()
+    } else {
+        all_rows
+    };
+    let items: Vec<serde_json::Value> = rows.iter().map(rule_row_to_json).collect();
     axum::Json(json!(items)).into_response()
 }
 
@@ -172,6 +238,125 @@ pub async fn post_policy_rule(
         axum::Json(json!({"id": id, "name": payload.name})),
     )
         .into_response()
+}
+
+/// `PUT /admin/policy/rules/{id}`
+pub async fn put_policy_rule(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    axum::Json(payload): axum::Json<UpdatePolicyRulePayload>,
+) -> Response {
+    require_role!(operator, state, Administrator);
+
+    let existing = match db::policy_rules::get_by_id(&state.db_ro, &id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return AcmeError::NotFound.into_response(),
+        Err(e) => return e.into_response(),
+    };
+
+    if let Some(scope_ca) = operator.ca_scope() {
+        if !ca_scope_visible(&existing.rule_json, scope_ca) {
+            return AcmeError::NotFound.into_response();
+        }
+        if !ca_scope_visible_json(&payload.rule, scope_ca) {
+            return AcmeError::Unauthorized(
+                "CA-scoped operator cannot move rule outside assigned CA".into(),
+            )
+            .into_response();
+        }
+    }
+
+    if let Some(ref n) = payload.name {
+        if n.is_empty() {
+            return AcmeError::BadRequest("name must not be empty".into()).into_response();
+        }
+    }
+
+    let name = payload.name.as_deref().unwrap_or(&existing.name);
+    if name != existing.name {
+        match db::policy_rules::get_by_scope_and_name(&state.db_ro, &existing.scope, name).await {
+            Ok(Some(_)) => {
+                return AcmeError::Conflict(format!(
+                    "rule '{name}' already exists in scope '{}'",
+                    existing.scope
+                ))
+                .into_response();
+            }
+            Err(e) => return e.into_response(),
+            Ok(None) => {}
+        }
+    }
+
+    let mut rule_value = payload.rule.clone();
+    if let Some(obj) = rule_value.as_object_mut() {
+        obj.insert(
+            "name".to_string(),
+            serde_json::Value::String(name.to_string()),
+        );
+    }
+
+    let _cfg = match validate_rule_json(&rule_value) {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+
+    let enabled = payload.enabled.unwrap_or(existing.enabled != 0);
+    let now = crate::util::rfc3339_now();
+    let rule_json = match serde_json::to_string(&rule_value) {
+        Ok(s) => s,
+        Err(e) => return AcmeError::Internal(format!("serialize rule: {e}")).into_response(),
+    };
+
+    match db::policy_rules::update(&state.db, &id, name, &rule_json, enabled as i64, &now).await {
+        Ok(false) => return AcmeError::NotFound.into_response(),
+        Err(e) => return e.into_response(),
+        Ok(true) => {}
+    }
+
+    let unix = unix_now();
+    crdt_hooks::on_policy_rule_upsert(
+        &state,
+        crdt_hooks::PolicyRuleUpsertParams {
+            id: &id,
+            scope: &existing.scope,
+            name,
+            rule_json: &rule_json,
+            enabled,
+            created_at: &existing.created_at,
+            updated_at: &now,
+            created_by: existing.created_by.as_deref(),
+        },
+        unix,
+    )
+    .await;
+
+    state
+        .record_audit(
+            AuditEvent::success(AuditEventType::AdminAction)
+                .with_principal(&operator.name)
+                .with_detail(
+                    json!({"action": "policy_rule.update", "id": id, "name": name}).to_string(),
+                ),
+        )
+        .await;
+
+    if let Err(e) = rebuild_issuance_policy(&state).await {
+        tracing::error!("failed to rebuild policy after updating rule {id}: {e}");
+        state
+            .policy_rebuild_needed
+            .store(true, std::sync::atomic::Ordering::Release);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({
+                "status": 500,
+                "detail": "rule updated but policy engine rebuild failed; change will take effect on next server restart",
+            })),
+        )
+            .into_response();
+    }
+
+    StatusCode::NO_CONTENT.into_response()
 }
 
 /// `DELETE /admin/policy/rules/{id}`

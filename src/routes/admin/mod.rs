@@ -125,8 +125,9 @@ pub use self::mtc::{
 pub use self::operators::{
     get_operator, get_operators, patch_operator, post_operators, put_operator, unlock_operator,
 };
-pub use self::policy::{delete_policy_rule, get_policy_rules, post_policy_rule};
-pub(crate) use self::policy::rebuild_issuance_policy;
+pub use self::policy::{
+    delete_policy_rule, get_policy_rules, get_policy_scopes, post_policy_rule, put_policy_rule,
+};
 pub use self::profiles::{delete_profile, get_profile, get_profiles, post_profiles, put_profile};
 pub use self::stats::{get_config, get_stats};
 pub use self::tkauth::post_tkauth_prune_jti;
