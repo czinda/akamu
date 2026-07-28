@@ -367,7 +367,9 @@ fn build_admin_router() -> Router<Arc<AppState>> {
         )
         .route(
             "/admin/policy/rules/{id}",
-            axum::routing::put(admin::put_policy_rule).delete(admin::delete_policy_rule),
+            axum::routing::get(admin::get_policy_rule)
+                .put(admin::put_policy_rule)
+                .delete(admin::delete_policy_rule),
         )
         .route("/admin/config", axum::routing::get(admin::get_config))
         .route("/admin/crl/force", post(admin::post_crl_force))
