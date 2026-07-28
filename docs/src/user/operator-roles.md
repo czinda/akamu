@@ -60,6 +60,11 @@ it for automated service accounts.
 **Key restrictions:**
 - None. This role has full access.
 
+**CA scope (optional):** An `administrator` operator can be assigned a `ca_id`
+scope.  When scoped, the administrator's visibility of policy rules is limited
+to rules matching the assigned CA.  An unscoped `administrator` has server-wide
+access to all endpoints.
+
 **Typical use case:** A human PKI administrator who needs to bootstrap the
 system, manage other operators, update certificate profiles, or respond to a
 security incident that requires account deactivation or forced revocation.
@@ -160,8 +165,7 @@ any CA infrastructure operations.
 - **Requires a `ca_id` scope to be assigned.** An unscoped `ca_ra` operator is
   rejected at every restricted endpoint with `403 Forbidden`.
 
-**Special requirement — `ca_id`:** See [CA scope for `ca_ra`](#ca-scope-for-ca_ra)
-below.
+**Special requirement — `ca_id`:** See [CA scope](#ca-scope) below.
 
 **Typical use case:** A registration authority system at a branch office that
 accepts certificate requests for a specific CA (for example, `rsa`), issues EAB
@@ -202,6 +206,10 @@ able to make changes.
 - Cannot download certificate content (PEM/DER).
 - Cannot view server configuration.
 - Cannot manage operators.
+
+**CA scope (optional):** An `auditor` operator can be assigned a `ca_id` scope.
+When scoped, the auditor only sees policy rules that match the assigned CA.  An
+unscoped `auditor` sees all policy rules.
 
 **Typical use case:** A security operations center tool that polls the audit log
 for anomalies, or a compliance dashboard that tracks certificate issuance counts
@@ -285,6 +293,12 @@ filter — the operator only sees data belonging to its assigned CA.
 | `GET` | `/admin/mtc/cosignature` | Y | Y | | Y |
 | `POST` | `/admin/ca/{id}/mtc/force-checkpoint` | Y | Y | | |
 | `POST` | `/admin/ca/{id}/mtc/force-landmark` | Y | Y | | |
+| `GET` | `/admin/policy/scopes` | Y | Y | | Y |
+| `GET` | `/admin/policy/rules` | Y | Y | | Y |
+| `GET` | `/admin/policy/rules/{id}` | Y | Y | | Y |
+| `POST` | `/admin/policy/rules` | Y | | | |
+| `PUT` | `/admin/policy/rules/{id}` | Y | | | |
+| `DELETE` | `/admin/policy/rules/{id}` | Y | | | |
 
 **Note on `ca_ra` scoping:** When `ca_ra` is listed as permitted on a cert,
 account, or order endpoint, the server silently overrides any `ca_id` query
@@ -317,6 +331,13 @@ akamuctl operator add \
     --role ca_ra \
     --ca-id rsa \
     --cert-file /etc/akamu/branch-ra.pem
+
+# administrator scoped to a single CA for policy management
+akamuctl operator add \
+    --name ca-admin \
+    --role administrator \
+    --ca-id prod \
+    --cert-file /etc/akamu/ca-admin.pem
 
 # auditor — read-only monitoring
 akamuctl operator add \
@@ -378,18 +399,22 @@ Use this guide to decide which role to assign:
 | Security operations center monitoring tool | `auditor` |
 | Compliance dashboard that tracks issuance counts | `auditor` |
 | Human auditor reviewing the audit log for a compliance audit | `auditor` |
+| Administrator managing policy rules for a specific CA only | `administrator` (with `--ca-id`) |
+| Viewing policy rules across all CAs (read-only) | `auditor` or `ca_operations` |
 
 When in doubt, start with `auditor` and escalate only when a required operation
 fails. The server returns `403 Forbidden` with a clear error message when a role
 is insufficient for a requested endpoint.
 
-## CA scope for `ca_ra`
+## CA scope
 
-The `ca_id` field on a `ca_ra` operator is a mandatory scope that restricts the
-operator to data belonging to a single CA. It must be the ID string of a CA
-configured in the server's `[ca.*]` sections (for example, `"rsa"` or `"ec"`).
+All operator roles support an optional `ca_id` scope that restricts the
+operator to data belonging to a single CA.  The `ca_id` must be the ID string
+of a CA configured in the server's `[ca.*]` sections (for example, `"rsa"` or
+`"ec"`).  For `ca_ra`, a CA scope is mandatory; for all other roles it is
+optional (empty = server-wide).
 
-**Why it is required:** Without a CA scope, a `ca_ra` operator would have
+**Why `ca_ra` requires it:** Without a CA scope, a `ca_ra` operator would have
 server-wide revocation and EAB-issuance authority, which defeats the purpose of
 the role. The server enforces this: any `ca_ra` operator that reaches a
 restricted endpoint with an empty `ca_id` receives `403 Forbidden`.
@@ -422,9 +447,9 @@ akamuctl operator add \
 akamuctl operator update 5 --role ca_ra --ca-id ec
 ```
 
-The `--ca-id` flag is only accepted when `--role ca_ra` is also provided (or
-the operator already has the `ca_ra` role). Supplying `--ca-id` for any other
-role is rejected by the server.
+The `--ca-id` flag is accepted for all roles.  For `ca_ra`, it is mandatory;
+for all other roles, it is optional (empty = server-wide).  CA-scoped operators
+of any role see only policy rules that match their assigned CA.
 
 **Revoking without a scope:** If you need to create a `ca_ra` operator without
 a CA scope initially and assign the scope in a second step, use `operator add`
