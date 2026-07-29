@@ -106,7 +106,10 @@ impl NonceBucket {
         let now = nonce_now_secs();
         self.inner
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| {
+                tracing::error!("nonce store mutex was poisoned, recovering");
+                e.into_inner()
+            })
             .insert(nonce, now);
     }
 
@@ -115,7 +118,10 @@ impl NonceBucket {
     /// Returns `true` if `old_nonce` was present and successfully replaced,
     /// `false` if it was not found (replay or unknown).
     pub fn consume_and_insert(&self, old_nonce: &str, new_nonce: &str) -> bool {
-        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self.inner.lock().unwrap_or_else(|e| {
+            tracing::error!("nonce store mutex was poisoned, recovering");
+            e.into_inner()
+        });
         if map.remove(old_nonce).is_none() {
             return false;
         }
@@ -128,7 +134,10 @@ impl NonceBucket {
     /// removed entries.
     pub fn sweep_expired(&self, max_age_secs: i64) -> usize {
         let cutoff = nonce_now_secs().saturating_sub(max_age_secs);
-        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self.inner.lock().unwrap_or_else(|e| {
+            tracing::error!("nonce store mutex was poisoned, recovering");
+            e.into_inner()
+        });
         let before = map.len();
         map.retain(|_, &mut created| created >= cutoff);
         before - map.len()
