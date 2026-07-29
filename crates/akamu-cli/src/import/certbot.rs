@@ -611,7 +611,7 @@ account = abc123
         // 512 bytes of 0xFF → 4096 significant bits after leading-zero stripping.
         // "A".repeat(683) would decode to all zeros, which strip to 0 bits.
         use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-        let n_512_bytes = URL_SAFE_NO_PAD.encode(&vec![0xFFu8; 512]);
+        let n_512_bytes = URL_SAFE_NO_PAD.encode(vec![0xFFu8; 512]);
         let jwk = format!(r#"{{"kty":"RSA","e":"AQAB","n":"{n_512_bytes}"}}"#);
         assert_eq!(jwk_key_type(&jwk), "rsa:4096");
     }

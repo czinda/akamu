@@ -512,8 +512,8 @@ mod tests {
 
         let hdr = format!(
             r#"{{"alg":"{alg}","nonce":"testnonce","url":"https://acme.test/new-account","jwk":{{"kty":"EC","crv":"{curve}","x":"{}","y":"{}"}}}}"#,
-            URL_SAFE_NO_PAD.encode(&vec![0u8; half]),
-            URL_SAFE_NO_PAD.encode(&vec![0u8; half]),
+            URL_SAFE_NO_PAD.encode(vec![0u8; half]),
+            URL_SAFE_NO_PAD.encode(vec![0u8; half]),
         );
         let protected = URL_SAFE_NO_PAD.encode(hdr.as_bytes());
         let payload = URL_SAFE_NO_PAD.encode(b"{}");
@@ -653,7 +653,7 @@ mod tests {
         let jws = JwsFlattened {
             protected,
             payload: URL_SAFE_NO_PAD.encode(b"{}"),
-            signature: URL_SAFE_NO_PAD.encode(&[0u8; 64]),
+            signature: URL_SAFE_NO_PAD.encode([0u8; 64]),
         };
         assert!(matches!(
             jws.verify(&spki_der),
@@ -784,7 +784,7 @@ mod tests {
         let jws = JwsFlattened {
             protected,
             payload: URL_SAFE_NO_PAD.encode(b"{}"),
-            signature: URL_SAFE_NO_PAD.encode(&[0u8; 64]),
+            signature: URL_SAFE_NO_PAD.encode([0u8; 64]),
         };
         let result = jws.verify(&spki_der);
         assert!(matches!(result, Err(JoseError::BadRequest(_))));

@@ -700,7 +700,7 @@ mod tests {
         let jwk = JwkPublic {
             kty: "OKP".to_string(),
             crv: Some("X25519".to_string()),
-            x: Some(URL_SAFE_NO_PAD.encode(&[0u8; 32])),
+            x: Some(URL_SAFE_NO_PAD.encode([0u8; 32])),
             y: None,
             n: None,
             e: None,
@@ -753,8 +753,8 @@ mod tests {
         let jwk = JwkPublic {
             kty: "EC".to_string(),
             crv: Some("secp256k1".to_string()),
-            x: Some(URL_SAFE_NO_PAD.encode(&[0u8; 32])),
-            y: Some(URL_SAFE_NO_PAD.encode(&[0u8; 32])),
+            x: Some(URL_SAFE_NO_PAD.encode([0u8; 32])),
+            y: Some(URL_SAFE_NO_PAD.encode([0u8; 32])),
             n: None,
             e: None,
             alg: None,
@@ -836,7 +836,7 @@ mod tests {
             kty: "EC".to_string(),
             crv: Some("P-256".to_string()),
             x: None,
-            y: Some(URL_SAFE_NO_PAD.encode(&[0u8; 32])),
+            y: Some(URL_SAFE_NO_PAD.encode([0u8; 32])),
             n: None,
             e: None,
             alg: None,
@@ -854,7 +854,7 @@ mod tests {
         let jwk = JwkPublic {
             kty: "EC".to_string(),
             crv: Some("P-256".to_string()),
-            x: Some(URL_SAFE_NO_PAD.encode(&[0u8; 32])),
+            x: Some(URL_SAFE_NO_PAD.encode([0u8; 32])),
             y: None,
             n: None,
             e: None,
@@ -873,7 +873,7 @@ mod tests {
         let jwk = JwkPublic {
             kty: "OKP".to_string(),
             crv: None,
-            x: Some(URL_SAFE_NO_PAD.encode(&[0u8; 32])),
+            x: Some(URL_SAFE_NO_PAD.encode([0u8; 32])),
             y: None,
             n: None,
             e: None,
@@ -893,7 +893,7 @@ mod tests {
             kty: "EC".to_string(),
             crv: Some("P-256".to_string()),
             x: None,
-            y: Some(URL_SAFE_NO_PAD.encode(&[0u8; 32])),
+            y: Some(URL_SAFE_NO_PAD.encode([0u8; 32])),
             n: None,
             e: None,
             alg: None,
@@ -911,7 +911,7 @@ mod tests {
         let jwk = JwkPublic {
             kty: "EC".to_string(),
             crv: Some("P-256".to_string()),
-            x: Some(URL_SAFE_NO_PAD.encode(&[0u8; 32])),
+            x: Some(URL_SAFE_NO_PAD.encode([0u8; 32])),
             y: None,
             n: None,
             e: None,
@@ -930,7 +930,7 @@ mod tests {
         let jwk = JwkPublic {
             kty: "OKP".to_string(),
             crv: None,
-            x: Some(URL_SAFE_NO_PAD.encode(&[0u8; 32])),
+            x: Some(URL_SAFE_NO_PAD.encode([0u8; 32])),
             y: None,
             n: None,
             e: None,
@@ -1080,7 +1080,7 @@ mod tests {
             n: None,
             e: None,
             alg: None,
-            pub_key: Some(URL_SAFE_NO_PAD.encode(&[0u8; 2592])),
+            pub_key: Some(URL_SAFE_NO_PAD.encode([0u8; 2592])),
         };
         assert!(
             matches!(jwk.thumbprint(), Err(JoseError::BadRequest(_))),
@@ -1124,7 +1124,7 @@ mod tests {
             n: None,
             e: None,
             alg: Some("ML-DSA-87".to_string()),
-            pub_key: Some(URL_SAFE_NO_PAD.encode(&[0u8; 2591])),
+            pub_key: Some(URL_SAFE_NO_PAD.encode([0u8; 2591])),
         };
         assert!(
             matches!(jwk.to_spki_der(), Err(JoseError::BadRequest(_))),
@@ -1142,7 +1142,7 @@ mod tests {
             n: None,
             e: None,
             alg: Some("ML-KEM-768".to_string()),
-            pub_key: Some(URL_SAFE_NO_PAD.encode(&[0u8; 1184])),
+            pub_key: Some(URL_SAFE_NO_PAD.encode([0u8; 1184])),
         };
         assert!(
             matches!(jwk.to_spki_der(), Err(JoseError::UnsupportedAlgorithm(_))),
