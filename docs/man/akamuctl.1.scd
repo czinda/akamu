@@ -42,6 +42,18 @@ Session tokens obtained after *login* are cached in
 
 *--key* _FILE_
 	mTLS client private key file (overrides *[server].key_file*).
+	Mutually exclusive with *--pkcs12*.
+
+*--pkcs12* _FILE_
+	PKCS#12 file containing both the client certificate and private
+	key.  Mutually exclusive with *--cert* and *--key*.
+
+*--pkcs12-password* _PASSWORD_
+	Password for the PKCS#12 file (default: empty).  Warning:
+	visible in process listings; prefer *--pkcs12-password-file*.
+
+*--pkcs12-password-file* _FILE_
+	Read the PKCS#12 password from _FILE_.  Use *-* for stdin.
 
 *-o*, *--output* _FORMAT_
 	Output format.  *table* (default) or *json*.

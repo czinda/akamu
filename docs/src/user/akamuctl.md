@@ -96,8 +96,11 @@ Falls back to `[server]` values for any field that is absent.
 | `--config FILE` | `-c` | Path to the `akamuctl.toml` config file. |
 | `--server-url URL` | | Admin listener URL (overrides config). |
 | `--ca-cert FILE` | | CA certificate for server TLS verification. |
-| `--cert FILE` | | mTLS client certificate. |
-| `--key FILE` | | mTLS client private key. |
+| `--cert FILE` | | mTLS client certificate (mutually exclusive with `--pkcs12`). |
+| `--key FILE` | | mTLS client private key (mutually exclusive with `--pkcs12`). |
+| `--pkcs12 FILE` | | PKCS#12 file with client cert and key (mutually exclusive with `--cert`/`--key`). |
+| `--pkcs12-password PW` | | PKCS#12 password (visible in process listings; prefer `--pkcs12-password-file`). |
+| `--pkcs12-password-file FILE` | | Read PKCS#12 password from file (use `-` for stdin). |
 | `--output FORMAT` | `-o` | Output format: `table` (default) or `json`. |
 
 ## Session management
