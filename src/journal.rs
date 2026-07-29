@@ -89,10 +89,10 @@ impl JournalWriter {
             .ok();
 
         if socket.is_none() {
-            tracing::warn!(
+            tracing::info!(
                 namespace,
                 path,
-                "journal namespace socket not found — audit events will use tracing fallback",
+                "journal namespace socket not found — audit events will be logged via tracing",
             );
         } else {
             tracing::info!(namespace, path, "connected to journal namespace socket");
@@ -415,7 +415,7 @@ impl JournalWriter {
             subject,
             principal,
             detail,
-            "audit event (journal fallback)",
+            "audit event",
         );
     }
 }
@@ -436,19 +436,32 @@ fn file_writer_loop(rx: mpsc::Receiver<FileCmd>, file: File) {
                 for (key, value) in fields {
                     obj.insert(key, serde_json::Value::String(value));
                 }
-                if let Ok(line) = serde_json::to_string(&serde_json::Value::Object(obj)) {
-                    let _ = writer.write_all(line.as_bytes());
-                    let _ = writer.write_all(b"\n");
-                    let _ = writer.flush();
+                match serde_json::to_string(&serde_json::Value::Object(obj)) {
+                    Ok(line) => {
+                        if let Err(e) = writer
+                            .write_all(line.as_bytes())
+                            .and_then(|()| writer.write_all(b"\n"))
+                            .and_then(|()| writer.flush())
+                        {
+                            tracing::error!(error = %e, "audit file write failed — event may be lost");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "audit event JSON serialization failed — event lost");
+                    }
                 }
             }
             FileCmd::Flush { ack } => {
-                let _ = writer.flush();
+                if let Err(e) = writer.flush() {
+                    tracing::error!(error = %e, "audit file flush failed");
+                }
                 let _ = ack.send(());
             }
         }
     }
-    let _ = writer.flush();
+    if let Err(e) = writer.flush() {
+        tracing::error!(error = %e, "audit file final flush failed");
+    }
 }
 
 fn filter_entry(occurred_at: &str, fields: &HashMap<String, String>, q: &AuditQuery) -> bool {
