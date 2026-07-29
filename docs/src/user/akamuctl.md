@@ -1228,6 +1228,18 @@ akamuctl mtc force-landmark --ca default
 |------|----------|-------------|
 | `--ca CA_ID` | Yes | CA identifier (required). |
 
+### `mtc log-list-entry`
+
+Print the Witness Network log-list entry for a CA's MTC log:
+
+```bash
+akamuctl mtc log-list-entry --ca default
+```
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--ca CA_ID` | Yes | CA identifier (required). |
+
 ## tkauth JTI cache management
 
 These commands require `administrator` or `ca_operations` role and are only available when `[tkauth]` is enabled in the server configuration.

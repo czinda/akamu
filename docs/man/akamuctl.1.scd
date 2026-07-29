@@ -534,14 +534,69 @@ Read operations are available to all authenticated roles.  Write operations
 	*--scope* _SCOPE_
 		Scope to search when using *--name* (default: *issuance*).
 
+## MTC transparency log
+
+*mtc tree-size* [--ca _CA_ID_]
+	Show the current Merkle tree size.
+
+*mtc root* [--ca _CA_ID_]
+	Show the current tree root hash.
+
+*mtc landmarks* [--ca _CA_ID_]
+	List landmarks as JSON.
+
+*mtc landmark-list* [--ca _CA_ID_]
+	Show the landmark list in spec text/plain format.
+
+*mtc landmark-cert* _SEQ_ [--ca _CA_ID_] [-o _FILE_]
+	Download a landmark certificate DER by sequence number.
+
+*mtc landmark-cert-show* _SEQ_ [--ca _CA_ID_]
+	Show parsed details of a landmark certificate.
+
+*mtc inclusion-proof* _CERT_ID_
+	Show an inclusion proof for a certificate by UUID.
+
+*mtc standalone* _CERT_ID_ [-o _FILE_]
+	Download a standalone MTC certificate DER.
+
+*mtc consistency-proof* --from _SIZE_ --to _SIZE_ [--ca _CA_ID_]
+	Show a consistency proof between two tree sizes.
+
+*mtc subtree-root* --start _INDEX_ --end _INDEX_ [--ca _CA_ID_]
+	Show the subtree root hash for an index range.
+
+*mtc revoked-ranges* [--ca _CA_ID_]
+	Show revoked index ranges.
+
+*mtc checkpoint* [--ca _CA_ID_]
+	Show the C2SP tlog checkpoint.
+
+*mtc cosignature* [--ca _CA_ID_]
+	Show the C2SP tlog cosignature.
+
+*mtc force-checkpoint* --ca _CA_ID_
+	Force an immediate checkpoint.  Requires *administrator* or
+	*ca_operations* role.
+
+*mtc force-landmark* --ca _CA_ID_
+	Force an immediate landmark allocation.  Requires *administrator*
+	or *ca_operations* role.
+
+*mtc log-list-entry* --ca _CA_ID_
+	Print the Witness Network log-list entry for a CA's MTC log.
+
 ## Token authority management
 
-*tkauth prune-jti*
+*tkauth prune-jti* [OPTIONS]
 	Trigger immediate pruning of expired JWT ID (JTI) replay-prevention
 	entries from the database (RFC 9447 §4.2).  Normally performed
 	automatically by a background task; use this command to run it on
 	demand.  Requires *administrator* or *ca_operations* role.  Only
 	effective when *[tkauth].enabled = true* in *akamu.conf*(5).
+
+	*--dry-run*
+		Print the count of expired entries without deleting them.
 
 ## Server configuration
 
