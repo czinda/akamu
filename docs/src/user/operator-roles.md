@@ -97,6 +97,7 @@ operators or read the server configuration.
 - Manage RFC 9115 delegation objects (create, update, delete).
 - Query and force MTC transparency log operations (checkpoints, landmarks).
 - Manage ACME account profile grants (set but not clear).
+- Create, update, and delete issuance policy rules. When CA-scoped, the operator can only create/modify rules that exclusively target their assigned CA.
 - View accounts, orders, profiles, EAB keys, stats.
 - Query the audit log.
 
@@ -296,9 +297,9 @@ filter — the operator only sees data belonging to its assigned CA.
 | `GET` | `/admin/policy/scopes` | Y | Y | | Y |
 | `GET` | `/admin/policy/rules` | Y | Y | | Y |
 | `GET` | `/admin/policy/rules/{id}` | Y | Y | | Y |
-| `POST` | `/admin/policy/rules` | Y | | | |
-| `PUT` | `/admin/policy/rules/{id}` | Y | | | |
-| `DELETE` | `/admin/policy/rules/{id}` | Y | | | |
+| `POST` | `/admin/policy/rules` | Y | Y | | |
+| `PUT` | `/admin/policy/rules/{id}` | Y | Y | | |
+| `DELETE` | `/admin/policy/rules/{id}` | Y | Y | | |
 
 **Note on `ca_ra` scoping:** When `ca_ra` is listed as permitted on a cert,
 account, or order endpoint, the server silently overrides any `ca_id` query

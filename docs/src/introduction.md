@@ -54,6 +54,7 @@ Akāmu is written in Rust and organized as a Cargo workspace.
 | ACME client library | akamu-client (workspace crate) |
 | CLI | akamu-cli (workspace crate) |
 | CRDT replication | akamu-crdt (workspace crate) — LWW-register, OR-map, LWW-map, GrowSet primitives |
+| ABAC policy engine | akamu-policy (workspace crate) — deny-override evaluation, shadow/enforce modes |
 
 ## Standards implemented
 

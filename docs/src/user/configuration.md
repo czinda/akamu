@@ -2097,6 +2097,112 @@ fan_out = 3   # recommended for clusters of 5+ nodes
 
 ---
 
+## `[policy]`
+
+The `[policy]` section configures the attribute-based access control (ABAC) issuance policy engine. When absent, the engine runs in shadow mode with no rules loaded -- all issuance proceeds as before and no policy decisions are enforced. Rules loaded from the TOML configuration are seeded into the database at startup; runtime management of rules is done via the admin API (`/admin/policy/rules`) and the `akamuctl policy` CLI subcommands.
+
+```toml
+[policy]
+mode = "shadow"
+# rules_file = "/etc/akamu/policy-rules.toml"   # optional external rules file
+
+[[policy.rules]]
+name = "deny-rsa2048-prod"
+type = "deny"
+ca = ["prod"]
+key_type = ["rsa-2048"]
+```
+
+### `mode`
+
+**Optional. Default: `"shadow"`.**
+
+Controls how the policy engine acts on deny decisions.
+
+| Value | Behaviour |
+|-------|-----------|
+| `"shadow"` | Log divergence between the policy decision and legacy behavior but do not block issuance. Use this to validate rules before enforcement. |
+| `"enforce"` | Block certificate issuance when the policy denies the request. Returns `urn:ietf:params:acme:error:unauthorized` to the ACME client. In enforce mode, corrupt or unparseable rules cause a rebuild rejection to prevent silent policy bypass. |
+
+```toml
+[policy]
+mode = "shadow"
+```
+
+### `rules_file`
+
+**Optional. Default: absent.**
+
+Path to an external TOML file containing additional policy rules. The file must contain a `rules` array at the top level. Rules from this file are merged with any inline `[[policy.rules]]` entries and seeded into the database at startup.
+
+```toml
+[policy]
+rules_file = "/etc/akamu/policy-rules.toml"
+```
+
+### `[[policy.rules]]`
+
+Optional array of inline policy rule definitions. Each entry is seeded into the database at startup. Runtime changes (via the admin API or CLI) take precedence over config-file rules -- the config-file version is only inserted if no rule with the same name exists in the given scope.
+
+Each rule has the following fields:
+
+#### `name`
+
+**Required.** Unique name for the rule within its scope.
+
+#### `type`
+
+**Required.** `"allow"` or `"deny"`. Deny rules take precedence over allow rules (deny-override semantics). When no rules match, the default decision is deny.
+
+#### `profile`
+
+**Optional.** List of certificate profile names this rule applies to.
+
+#### `ca`
+
+**Optional.** List of CA IDs this rule applies to.
+
+#### `account`
+
+**Optional.** List of ACME account IDs this rule applies to.
+
+#### `account_group`
+
+**Optional.** List of account groups (profile grants, Kerberos principals) this rule applies to.
+
+#### `identifier`
+
+**Optional.** List of regex patterns matched against identifiers in `"type:value"` format (e.g. `"dns:.*\\.prod\\.example\\.com$"`).
+
+#### `key_type`
+
+**Optional.** List of key type strings (e.g. `"ec:P-256"`, `"rsa-2048"`).
+
+#### `valid_from`
+
+**Optional.** RFC 3339 timestamp. The rule activates at this time (inclusive).
+
+#### `valid_until`
+
+**Optional.** RFC 3339 timestamp. The rule deactivates at this time (exclusive).
+
+#### `enabled`
+
+**Optional. Default: `true`.** When `false`, the rule is stored but not evaluated.
+
+```toml
+[[policy.rules]]
+name       = "allow-web-team"
+type       = "allow"
+profile    = ["tlsserver"]
+ca         = ["prod"]
+account_group = ["web-team"]
+identifier = ["dns:.*\\.example\\.com$"]
+enabled    = true
+```
+
+---
+
 ## `[profiles]`
 
 The `[profiles]` section configures the certificate profile subsystem. Profiles are loaded from one or more *providers* at startup, cached in memory, and refreshed periodically by a background task. `Akāmu`'s own CA always signs; profiles only control which extensions are included and with what values. When no providers are configured, every order falls back to CA defaults (`digitalSignature` KeyUsage, `serverAuth` EKU, and the `[ca]` validity/URL settings).
@@ -2779,9 +2885,9 @@ header_format   = "xfcc"
 | `GET` | `/admin/policy/scopes` | Y | Y | | Y |
 | `GET` | `/admin/policy/rules` | Y | Y | | Y |
 | `GET` | `/admin/policy/rules/{id}` | Y | Y | | Y |
-| `POST` | `/admin/policy/rules` | Y | | | |
-| `PUT` | `/admin/policy/rules/{id}` | Y | | | |
-| `DELETE` | `/admin/policy/rules/{id}` | Y | | | |
+| `POST` | `/admin/policy/rules` | Y | Y | | |
+| `PUT` | `/admin/policy/rules/{id}` | Y | Y | | |
+| `DELETE` | `/admin/policy/rules/{id}` | Y | Y | | |
 | `POST` | `/admin/tkauth/prune-jti` | Y | Y | | |
 
 See [Admin API and Operator Management](admin-api.md) for the full request/response format of each endpoint.
