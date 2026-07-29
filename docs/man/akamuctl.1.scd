@@ -307,6 +307,11 @@ Session tokens obtained after *login* are cached in
 	including validity period, hash algorithm, extended key usages,
 	and MTC issuance settings.
 
+*profile show* _ID_
+	Show the full parameters of a single certificate profile.
+	Returns all profile fields including allowed key types,
+	certificate policies, identifier patterns, and CA restrictions.
+
 *profile add* _ID_ --params-file _FILE_
 	Add a new certificate profile to the runtime cache (FPT_NPE_EXT.1).
 	_FILE_ must be a JSON file whose fields match the profile payload
