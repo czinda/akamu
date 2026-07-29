@@ -176,6 +176,39 @@ static_dir = "${REPO_ROOT}/webui/dist"
 
 [admin]
 bootstrap_operator_pkcs12_file = "${A_DIR}/admin.p12"
+
+[profiles.providers.local]
+type = "builtin"
+
+[profiles.providers.local.profiles.tls-server]
+description   = "TLS server certificate (90 days)"
+validity_days = 90
+eku           = ["server_auth"]
+
+[profiles.providers.local.profiles.short-lived]
+description   = "Short-lived certificate (7 days)"
+validity_days = 7
+eku           = ["server_auth"]
+
+[profiles.providers.local.profiles.restricted]
+description   = "Restricted maintenance certificate (1 day)"
+validity_days = 1
+eku           = ["server_auth"]
+
+[policy]
+mode = "enforce"
+
+[[policy.rules]]
+name = "allow-tls-server"
+type = "allow"
+profile = ["tls-server"]
+
+[[policy.rules]]
+name = "allow-short-lived-scheduled"
+type = "allow"
+profile = ["short-lived"]
+valid_from  = "2020-01-01T00:00:00Z"
+valid_until = "2099-12-31T23:59:59Z"
 EOF
 
 # ── Instance B config (EC CA) ────────────────────────────────────────────────
@@ -214,6 +247,14 @@ static_dir = "${REPO_ROOT}/webui/dist"
 
 [admin]
 bootstrap_operator_pkcs12_file = "${B_DIR}/admin.p12"
+
+[profiles.providers.local]
+type = "builtin"
+
+[profiles.providers.local.profiles.tls-server]
+description   = "TLS server certificate (90 days)"
+validity_days = 90
+eku           = ["server_auth"]
 EOF
 
 # ── start both instances ─────────────────────────────────────────────────────
@@ -350,6 +391,7 @@ echo "[demo] Requesting certificate from instance A for dns:${A_DOMAIN}..."
     --challenge  http-01 \
     --http-port  "$A_HTTP_PORT" \
     --domain     "$A_DOMAIN" \
+    --profile    tls-server \
     --server-ca  "$A_DIR/ca.cert.pem"
 
 echo "[demo] EE cert from A:"
@@ -365,6 +407,7 @@ echo "[demo] Requesting certificate from instance B for dns:${B_DOMAIN}..."
     --challenge  http-01 \
     --http-port  "$B_HTTP_PORT" \
     --domain     "$B_DOMAIN" \
+    --profile    tls-server \
     --server-ca  "$B_DIR/ca.cert.pem"
 
 echo "[demo] EE cert from B:"
@@ -427,6 +470,105 @@ echo "[demo]"
 echo "[demo] The admin-authenticated 'akamuctl cross-cert list' shown above"
 echo "[demo] lists all cross-certs regardless of subject_ca_id."
 
+# ── profile-based issuance with temporal policy ─────────────────────────────
+
+section "Profile-based issuance with temporal policy"
+
+echo "[demo] Instance A has enforce-mode policy with two TOML rules:"
+echo "[demo]   allow-tls-server            — no time bounds (always active)"
+echo "[demo]   allow-short-lived-scheduled — active 2020-01-01 to 2099-12-31"
+echo "[demo]"
+echo "[demo] Adding a temporal deny rule for 'restricted' profile via admin API..."
+"${AKAMUCTL_A[@]}" policy add-rule \
+    --name "deny-restricted-until-release" \
+    --type deny \
+    --profile restricted \
+    --valid-until "2099-06-01T00:00:00Z"
+
+echo
+echo "[demo] Policy rules on instance A (DB rules):"
+"${AKAMUCTL_A[@]}" policy list-rules
+echo
+
+# Issue with short-lived profile — temporal allow is within its 2020–2099 window
+echo "[demo] Issuing cert with 'short-lived' profile (temporal allow active)..."
+"$AKAMU_CLI" issue \
+    --server     "https://127.0.0.1:${A_PORT}" \
+    --ca         default \
+    --account-key "$TESTDIR/account-a.key.pem" \
+    --out        "$TESTDIR/ee-a-short.cert.pem" \
+    --challenge  http-01 \
+    --http-port  "$A_HTTP_PORT" \
+    --domain     "short.${A_DOMAIN}" \
+    --profile    short-lived \
+    --server-ca  "$A_DIR/ca.cert.pem"
+
+echo "[demo] Short-lived cert issued:"
+openssl x509 -in "$TESTDIR/ee-a-short.cert.pem" -noout -subject -dates
+echo
+
+# Attempt with restricted profile — temporal deny blocks until 2099
+echo "[demo] Attempting to issue with 'restricted' profile (should fail)..."
+echo "[demo] The deny-restricted-until-release rule blocks until 2099-06-01"
+if "$AKAMU_CLI" issue \
+    --server     "https://127.0.0.1:${A_PORT}" \
+    --ca         default \
+    --account-key "$TESTDIR/account-a.key.pem" \
+    --out        "$TESTDIR/ee-a-maint.cert.pem" \
+    --challenge  http-01 \
+    --http-port  "$A_HTTP_PORT" \
+    --domain     "maint.${A_DOMAIN}" \
+    --profile    restricted \
+    --server-ca  "$A_DIR/ca.cert.pem" 2>&1; then
+    die "Expected issuance to fail (temporal deny rule active)"
+else
+    echo "[demo] Correctly denied — temporal deny rule active until 2099"
+fi
+
+# ── dynamic policy management ───────────────────────────────────────────────
+
+section "Dynamic policy management"
+
+echo "[demo] Removing the temporal deny rule for 'restricted'..."
+"${AKAMUCTL_A[@]}" policy remove-rule --name "deny-restricted-until-release"
+
+echo
+echo "[demo] Updated policy rules on instance A (DB rules):"
+"${AKAMUCTL_A[@]}" policy list-rules
+echo
+
+echo "[demo] Re-issuing with 'restricted' profile (should succeed now)..."
+"$AKAMU_CLI" issue \
+    --server     "https://127.0.0.1:${A_PORT}" \
+    --ca         default \
+    --account-key "$TESTDIR/account-a.key.pem" \
+    --out        "$TESTDIR/ee-a-maint.cert.pem" \
+    --challenge  http-01 \
+    --http-port  "$A_HTTP_PORT" \
+    --domain     "maint.${A_DOMAIN}" \
+    --profile    restricted \
+    --server-ca  "$A_DIR/ca.cert.pem"
+
+echo "[demo] Restricted cert issued (note 1-day validity):"
+openssl x509 -in "$TESTDIR/ee-a-maint.cert.pem" -noout -subject -dates
+
+# ── cross-signing with profiled certificates ────────────────────────────────
+
+section "Cross-signing with profiled certificates"
+
+echo "[demo] Verifying that profiled certs work through cross-signed chains..."
+echo "[demo] EE-A (short-lived) → [B→A cross-cert] → CA-B root:"
+openssl verify \
+    -CAfile "$B_DIR/ca.cert.pem" \
+    -untrusted "$TESTDIR/b-signs-a.pem" \
+    "$TESTDIR/ee-a-short.cert.pem"
+
+echo "[demo] EE-A (restricted/maintenance) → [B→A cross-cert] → CA-B root:"
+openssl verify \
+    -CAfile "$B_DIR/ca.cert.pem" \
+    -untrusted "$TESTDIR/b-signs-a.pem" \
+    "$TESTDIR/ee-a-maint.cert.pem"
+
 # ── summary ──────────────────────────────────────────────────────────────────
 
 section "Demo complete"
@@ -440,12 +582,24 @@ echo "[demo]     A→B: $TESTDIR/a-signs-b.pem  (RSA CA signed EC CA)"
 echo "[demo]     B→A: $TESTDIR/b-signs-a.pem  (EC CA signed RSA CA)"
 echo "[demo]"
 echo "[demo]   End-entity certificates:"
-echo "[demo]     EE-A: $TESTDIR/ee-a.cert.pem  (issued by RSA CA for $A_DOMAIN)"
-echo "[demo]     EE-B: $TESTDIR/ee-b.cert.pem  (issued by EC CA for $B_DOMAIN)"
+echo "[demo]     EE-A:       $TESTDIR/ee-a.cert.pem       (tls-server, 90d)"
+echo "[demo]     EE-A short: $TESTDIR/ee-a-short.cert.pem (short-lived, 7d)"
+echo "[demo]     EE-A maint: $TESTDIR/ee-a-maint.cert.pem (restricted, 1d)"
+echo "[demo]     EE-B:       $TESTDIR/ee-b.cert.pem       (tls-server, 90d)"
 echo "[demo]"
 echo "[demo]   Verification results:"
 echo "[demo]     EE-A verified via CA-B root + B→A cross-cert  ✓"
 echo "[demo]     EE-B verified via CA-A root + A→B cross-cert  ✓"
+echo "[demo]"
+echo "[demo]   Temporal policy results:"
+echo "[demo]     tls-server   (non-temporal allow)       → issued  ✓"
+echo "[demo]     short-lived  (temporal allow, active)    → issued  ✓"
+echo "[demo]     restricted   (temporal deny, active)     → denied  ✓"
+echo "[demo]     restricted   (after deny rule removed)   → issued  ✓"
+echo "[demo]"
+echo "[demo]   Cross-signed chain with profiled certs:"
+echo "[demo]     EE-A (short-lived) via B→A cross-cert  ✓"
+echo "[demo]     EE-A (restricted)  via B→A cross-cert  ✓"
 echo "[demo]"
 echo "[demo] Working directory: $TESTDIR"
 echo
