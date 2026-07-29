@@ -137,6 +137,10 @@ Session tokens obtained after *login* are cached in
 	*--gssapi-principal* _PRINCIPAL_
 		Kerberos principal (e.g. *alice@REALM*) for GSSAPI auth.
 
+	*--ca-id* _CA_ID_
+		Restrict the operator to a specific CA.  Required for *ca_ra*;
+		optional for all other roles.
+
 *operator update* _ID_ [OPTIONS]
 	Update fields of an existing operator.  Only provided fields are
 	changed; omitted fields remain unchanged.
@@ -148,11 +152,10 @@ Session tokens obtained after *login* are cached in
 		New role: *administrator*, *ca_operations*, *ca_ra*, or *auditor*.
 
 	*--ca-id* _CA_ID_
-		Assign a CA scope to a *ca_ra* operator.  The operator may
-		then only revoke and view certificates issued by that CA.
-		Setting *--role ca_ra* without *--ca-id* is rejected.  Pass
-		an empty string to clear the CA scope (only valid when
-		changing the role away from *ca_ra*).
+		Assign a CA scope.  All roles support optional CA scoping;
+		*ca_ra* requires it.  A scoped operator may only access
+		resources belonging to the assigned CA.  Pass an empty string
+		to clear the CA scope (only valid when the role is not *ca_ra*).
 
 	*--cert-file* _FILE_
 		Path to a new client certificate.  The SHA-256 fingerprint

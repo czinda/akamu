@@ -254,6 +254,9 @@ pub(crate) enum OperatorCmd {
         /// GSSAPI Kerberos principal.
         #[arg(long)]
         gssapi_principal: Option<String>,
+        /// Restrict the operator to a specific CA (required for ca_ra).
+        #[arg(long)]
+        ca_id: Option<String>,
     },
     /// Update an operator's fields.
     Update {
@@ -269,6 +272,9 @@ pub(crate) enum OperatorCmd {
         /// GSSAPI Kerberos principal.
         #[arg(long)]
         gssapi_principal: Option<String>,
+        /// Restrict the operator to a specific CA (required for ca_ra).
+        #[arg(long)]
+        ca_id: Option<String>,
     },
     /// Deactivate an operator.
     Remove {

@@ -26,6 +26,7 @@ pub async fn add(
     role: String,
     cert_file: Option<PathBuf>,
     gssapi_principal: Option<String>,
+    ca_id: Option<String>,
 ) -> Result<(), CtlError> {
     let cert_fp = if let Some(path) = cert_file {
         let pem = std::fs::read(&path)?;
@@ -43,6 +44,7 @@ pub async fn add(
         "role": role,
         "cert_fingerprint": cert_fp,
         "gssapi_principal": gssapi_principal,
+        "ca_id": ca_id.unwrap_or_default(),
     });
     let resp = client.post("/admin/operators", Some(&body)).await?;
     print(fmt, &resp);
@@ -64,6 +66,7 @@ pub async fn update(
     role: Option<String>,
     cert_file: Option<PathBuf>,
     gssapi_principal: Option<String>,
+    ca_id: Option<String>,
 ) -> Result<(), CtlError> {
     let cert_fp = if let Some(path) = cert_file {
         let pem = std::fs::read(&path)?;
@@ -76,12 +79,15 @@ pub async fn update(
     } else {
         None
     };
-    let body = json!({
+    let mut body = json!({
         "name": name,
         "role": role,
         "cert_fingerprint": cert_fp,
         "gssapi_principal": gssapi_principal,
     });
+    if let Some(cid) = ca_id {
+        body["ca_id"] = serde_json::Value::String(cid);
+    }
     client.put(&format!("/admin/operators/{id}"), &body).await?;
     println!("operator {id} updated");
     Ok(())

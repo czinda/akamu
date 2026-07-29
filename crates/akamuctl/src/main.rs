@@ -166,6 +166,7 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
                 role,
                 cert_file,
                 gssapi_principal,
+                ca_id,
             } => {
                 commands::operator::add(
                     &server_client,
@@ -174,6 +175,7 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
                     role,
                     cert_file,
                     gssapi_principal,
+                    ca_id,
                 )
                 .await?;
             }
@@ -183,6 +185,7 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
                 role,
                 cert_file,
                 gssapi_principal,
+                ca_id,
             } => {
                 commands::operator::update(
                     &server_client,
@@ -191,6 +194,7 @@ async fn run(cli: Cli) -> Result<(), CtlError> {
                     role,
                     cert_file,
                     gssapi_principal,
+                    ca_id,
                 )
                 .await?;
             }
