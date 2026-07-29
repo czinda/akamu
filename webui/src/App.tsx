@@ -1,5 +1,5 @@
 import React, { Component, type ReactNode, Suspense, useCallback, useMemo } from 'react';
-import { Routes, Route, Navigate, NavLink, Outlet } from 'react-router-dom';
+import { Routes, Route, Navigate, NavLink, Outlet, useLocation } from 'react-router-dom';
 import {
   Page,
   Masthead,
@@ -73,6 +73,11 @@ class PageErrorBoundary extends Component<{ children: ReactNode }, { error: Erro
     }
     return this.props.children;
   }
+}
+
+function LocationResetErrorBoundary({ children }: { children: ReactNode }) {
+  const { pathname } = useLocation();
+  return <PageErrorBoundary key={pathname}>{children}</PageErrorBoundary>;
 }
 
 function RequireRole({ minRole, children }: { minRole: Role; children: React.ReactElement }) {
@@ -175,11 +180,11 @@ function AuthenticatedLayout() {
       sidebar={sidebar}
       isManagedSidebar
     >
-      <PageErrorBoundary>
+      <LocationResetErrorBoundary>
         <Suspense fallback={<Spinner />}>
           <Outlet />
         </Suspense>
-      </PageErrorBoundary>
+      </LocationResetErrorBoundary>
     </Page>
   );
 }
