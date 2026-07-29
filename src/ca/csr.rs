@@ -6,8 +6,8 @@
 use synta::traits::Encode;
 use synta::{Decoder, Encoder, Encoding};
 use synta_certificate::{
-    csr::CertificationRequest, general_name, oids, parse_general_names, BackendPublicKey,
-    BasicConstraints,
+    csr::CertificationRequest, general_name, identify_public_key_algorithm, oids,
+    parse_general_names, BackendPublicKey, BasicConstraints,
 };
 
 use crate::error::AcmeError;
@@ -33,6 +33,8 @@ pub struct ValidatedCsr {
     /// True if the CSR includes BasicConstraints with cA=TRUE.
     /// Callers (finalize) must match this against authority token atc.ca flags.
     pub ca_cert: bool,
+    /// Identified public key algorithm (e.g. "RSA", "ECDSA", "Ed25519").
+    pub key_type: Option<String>,
 }
 
 /// Parse and validate a DER-encoded PKCS #10 CSR.
@@ -80,7 +82,16 @@ pub fn validate_csr(
         .finish()
         .map_err(|e| AcmeError::BadCsr(format!("SPKI finish: {e}")))?;
 
-    // 5. Verify self-signature.
+    // 5. Identify the public key algorithm from the SPKI.
+    let key_type = identify_public_key_algorithm(
+        &csr.certification_request_info
+            .subject_pkinfo
+            .algorithm
+            .algorithm,
+    )
+    .map(|s| s.to_string());
+
+    // 6. Verify self-signature.
     //    BitStringRef::as_bytes() strips the unused-bits leading octet.
     let sig_bytes = csr.signature.as_bytes();
     let pub_key = BackendPublicKey::from_spki_der(spki_der.clone());
@@ -192,6 +203,7 @@ pub fn validate_csr(
         subject_der,
         sans,
         ca_cert,
+        key_type,
     })
 }
 

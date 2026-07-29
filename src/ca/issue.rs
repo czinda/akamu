@@ -1712,6 +1712,7 @@ mod tests {
                 value: "not-an-ip".into(),
             }],
             ca_cert: false,
+            key_type: None,
         };
         let result = issue_certificate(IssueCertParams {
             ca_key: &ca_key,
@@ -1747,6 +1748,7 @@ mod tests {
                 value: "user@example.com".into(),
             }],
             ca_cert: false,
+            key_type: None,
         };
         let result = issue_certificate(IssueCertParams {
             ca_key: &ca_key,
