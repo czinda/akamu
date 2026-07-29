@@ -475,6 +475,65 @@ Read operations are available to all authenticated roles.  Write operations
 	Delete a delegation object.  Returns HTTP 409 Conflict when
 	one or more active orders still reference the delegation.
 
+## Issuance policy management
+
+*policy list-rules* [OPTIONS]
+	List active issuance policy rules.
+
+	*--scope* _SCOPE_
+		Filter by policy scope (default: *issuance*).
+
+*policy add-rule* --name _NAME_ --type _TYPE_ [OPTIONS]
+	Add a new policy rule.
+
+	*--name* _NAME_
+		Unique rule name (required).
+
+	*--type* _TYPE_
+		Rule type: *allow* or *deny* (required).
+
+	*--scope* _SCOPE_
+		Policy scope (default: *issuance*).
+
+	*--profile* _PROFILE_
+		Restrict to a certificate profile (repeatable).
+
+	*--ca* _CA_ID_
+		Restrict to a specific CA (repeatable).
+
+	*--account* _ACCOUNT_ID_
+		Restrict to a specific ACME account ID (repeatable).
+
+	*--account-group* _GROUP_
+		Restrict to an account group (repeatable).
+
+	*--identifier* _PATTERN_
+		Restrict to identifiers matching a regex pattern (repeatable).
+
+	*--key-type* _KEY_TYPE_
+		Restrict to a key type (repeatable).
+
+	*--valid-from* _RFC3339_
+		Rule is only effective at or after this timestamp.
+
+	*--valid-until* _RFC3339_
+		Rule is only effective at or before this timestamp.
+
+	*--enabled* _BOOL_
+		Create the rule enabled or disabled (default: *true*).
+
+*policy remove-rule* (--name _NAME_ | --id _UUID_) [OPTIONS]
+	Remove a policy rule by name or UUID.
+
+	*--name* _NAME_
+		Rule name to delete.
+
+	*--id* _UUID_
+		Rule UUID to delete.
+
+	*--scope* _SCOPE_
+		Scope to search when using *--name* (default: *issuance*).
+
 ## Token authority management
 
 *tkauth prune-jti*
