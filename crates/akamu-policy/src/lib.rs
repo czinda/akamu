@@ -8,6 +8,7 @@ pub mod request;
 pub use abac_rs::Decision;
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum PolicyError {
     #[error("request error: {0}")]
     Request(#[from] abac_rs::RequestError),
@@ -17,4 +18,8 @@ pub enum PolicyError {
     InvalidRule(String),
     #[error("regex error: {0}")]
     Regex(#[from] regex::Error),
+    #[error("temporal error: {0}")]
+    Temporal(#[from] abac_rs::TemporalError),
+    #[error("validation error: {0}")]
+    Validation(String),
 }

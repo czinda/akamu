@@ -12,6 +12,7 @@ serde_json = "1"
 regex = "1"
 glob-match = "0.2"
 thiserror = "2"
+time = { version = "0.3", features = ["parsing"] }
 tracing = "0.1"
 toml = "0.8"
 uuid = { version = "1", features = ["v5"] }

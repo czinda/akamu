@@ -1,19 +1,29 @@
-use crate::config::{PolicyMode, PolicyRuleConfig};
+use crate::config::{AbacRuleKind, PolicyMode, PolicyRuleConfig};
 use crate::matcher::{GlobMatcher, RegexMatcher};
 use crate::request::IssuanceRequest;
 use crate::{dimension, PolicyError};
-use abac_rs::{AbacPolicy, Decision, ExplainedDecision};
+use abac_rs::{AbacPolicy, AbacRule, Decision, ExplainedDecision, TemporalAbacRule};
 use std::sync::Mutex;
 
 /// Thread-safe issuance policy engine.
 ///
 /// Uses `std::sync::Mutex` because `AbacPolicy::evaluate` requires `&mut self`
 /// (for internal bloom-filter and LRU cache updates). The lock hold-time is
-/// microseconds for typical rule counts, so contention is minimal in practice.
+/// microseconds for typical rule counts (expected max ~1000 rules), so
+/// contention is minimal in practice.
 pub struct IssuancePolicyEngine {
     policy: Mutex<AbacPolicy>,
     mode: PolicyMode,
     toml_rules: Vec<PolicyRuleConfig>,
+}
+
+impl std::fmt::Debug for IssuancePolicyEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IssuancePolicyEngine")
+            .field("mode", &self.mode)
+            .field("toml_rules", &self.toml_rules.len())
+            .finish()
+    }
 }
 
 impl IssuancePolicyEngine {
@@ -34,17 +44,26 @@ impl IssuancePolicyEngine {
         toml_rules: &[PolicyRuleConfig],
         db_rules: &[PolicyRuleConfig],
     ) -> Result<AbacPolicy, PolicyError> {
-        let mut abac_rules = Vec::new();
+        let mut regular_rules: Vec<AbacRule> = Vec::new();
+        let mut temporal_rules: Vec<TemporalAbacRule> = Vec::new();
+
         for cfg in toml_rules.iter().chain(db_rules.iter()) {
-            abac_rules.push(cfg.to_abac_rule()?);
+            match cfg.to_abac_rule()? {
+                AbacRuleKind::Regular(r) => regular_rules.push(r),
+                AbacRuleKind::Temporal(t) => temporal_rules.push(t),
+            }
         }
 
-        let policy = AbacPolicy::builder()
-            .rules(abac_rules)
+        let mut builder = AbacPolicy::builder()
+            .rules(regular_rules)
             .matcher(dimension::IDENTIFIER, Box::new(RegexMatcher::new()))
-            .matcher(dimension::ACCOUNT_GROUP, Box::new(GlobMatcher))
-            .build()
-            .map_err(PolicyError::Policy)?;
+            .matcher(dimension::ACCOUNT_GROUP, Box::new(GlobMatcher));
+
+        if !temporal_rules.is_empty() {
+            builder = builder.temporal_rules(temporal_rules);
+        }
+
+        let policy = builder.build().map_err(PolicyError::Policy)?;
 
         Ok(policy)
     }
@@ -207,5 +226,66 @@ mod tests {
         let explained = engine.evaluate_explained(&req);
         assert_eq!(explained.decision, Decision::Allow);
         assert_eq!(explained.matched_rules[0].name, "my-allow-rule");
+    }
+
+    #[test]
+    fn temporal_rule_expired_does_not_match() {
+        let rule = PolicyRuleConfig {
+            name: "expired-allow".into(),
+            rule_type: RuleTypeConfig::Allow,
+            profile: Some(vec!["tls-server".into()]),
+            valid_until: Some("2020-01-01T00:00:00Z".into()),
+            ..Default::default()
+        };
+        let engine = IssuancePolicyEngine::new(PolicyMode::Enforce, vec![rule], vec![]).unwrap();
+
+        let req = IssuanceRequest::builder()
+            .profile("tls-server")
+            .ca("prod")
+            .build()
+            .unwrap();
+
+        assert_eq!(engine.evaluate(&req), Decision::Deny);
+    }
+
+    #[test]
+    fn temporal_rule_future_does_not_match() {
+        let rule = PolicyRuleConfig {
+            name: "future-allow".into(),
+            rule_type: RuleTypeConfig::Allow,
+            profile: Some(vec!["tls-server".into()]),
+            valid_from: Some("2099-01-01T00:00:00Z".into()),
+            ..Default::default()
+        };
+        let engine = IssuancePolicyEngine::new(PolicyMode::Enforce, vec![rule], vec![]).unwrap();
+
+        let req = IssuanceRequest::builder()
+            .profile("tls-server")
+            .ca("prod")
+            .build()
+            .unwrap();
+
+        assert_eq!(engine.evaluate(&req), Decision::Deny);
+    }
+
+    #[test]
+    fn temporal_rule_within_window_matches() {
+        let rule = PolicyRuleConfig {
+            name: "active-allow".into(),
+            rule_type: RuleTypeConfig::Allow,
+            profile: Some(vec!["tls-server".into()]),
+            valid_from: Some("2020-01-01T00:00:00Z".into()),
+            valid_until: Some("2099-12-31T23:59:59Z".into()),
+            ..Default::default()
+        };
+        let engine = IssuancePolicyEngine::new(PolicyMode::Enforce, vec![rule], vec![]).unwrap();
+
+        let req = IssuanceRequest::builder()
+            .profile("tls-server")
+            .ca("prod")
+            .build()
+            .unwrap();
+
+        assert_eq!(engine.evaluate(&req), Decision::Allow);
     }
 }

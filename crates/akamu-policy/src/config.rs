@@ -1,6 +1,7 @@
 use crate::{dimension, PolicyError};
-use abac_rs::{AbacRule, AttributeType};
+use abac_rs::{AbacRule, AttributeType, TemporalAbacRule};
 use serde::{Deserialize, Serialize};
+use time::format_description::well_known::Rfc3339;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -20,7 +21,11 @@ pub enum RuleTypeConfig {
     Deny,
 }
 
+/// Shared config type for TOML config files and JSON DB storage.
+/// A future schema evolution may require a separate DB record type;
+/// tracked as tech debt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[non_exhaustive]
 pub struct PolicyRuleConfig {
     pub name: String,
     #[serde(rename = "type")]
@@ -45,6 +50,24 @@ pub struct PolicyConfig {
     pub rules: Vec<PolicyRuleConfig>,
 }
 
+#[derive(Debug)]
+pub enum AbacRuleKind {
+    Regular(AbacRule),
+    Temporal(TemporalAbacRule),
+}
+
+fn parse_rfc3339_millis(s: &str) -> Result<u64, PolicyError> {
+    let dt = time::OffsetDateTime::parse(s, &Rfc3339)
+        .map_err(|e| PolicyError::InvalidRule(format!("invalid RFC 3339 timestamp '{s}': {e}")))?;
+    let secs = dt.unix_timestamp();
+    if secs < 0 {
+        return Err(PolicyError::InvalidRule(format!(
+            "timestamp '{s}' is before Unix epoch"
+        )));
+    }
+    Ok(secs as u64 * 1000 + dt.millisecond() as u64)
+}
+
 impl PolicyRuleConfig {
     pub fn uuid_v5(&self, scope: &str) -> String {
         let namespace = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_DNS, b"akamu.policy");
@@ -52,16 +75,15 @@ impl PolicyRuleConfig {
         uuid::Uuid::new_v5(&namespace, key.as_bytes()).to_string()
     }
 
-    pub fn to_abac_rule(&self) -> Result<AbacRule, PolicyError> {
+    pub fn to_abac_rule(&self) -> Result<AbacRuleKind, PolicyError> {
         self.to_abac_rule_scoped("issuance")
     }
 
-    pub fn to_abac_rule_scoped(&self, scope: &str) -> Result<AbacRule, PolicyError> {
-        if self.valid_from.is_some() || self.valid_until.is_some() {
-            tracing::warn!(
-                rule = %self.name,
-                "valid_from/valid_until are not yet enforced — rule will be active regardless of time bounds"
-            );
+    pub fn to_abac_rule_scoped(&self, scope: &str) -> Result<AbacRuleKind, PolicyError> {
+        if self.name.is_empty() {
+            return Err(PolicyError::InvalidRule(
+                "rule name must not be empty".into(),
+            ));
         }
 
         if let Some(ref patterns) = self.identifier {
@@ -81,11 +103,33 @@ impl PolicyRuleConfig {
         builder = set_dimension(builder, dimension::PROFILE, self.profile.as_deref());
         builder = set_dimension(builder, dimension::CA, self.ca.as_deref());
         builder = set_dimension(builder, dimension::ACCOUNT, self.account.as_deref());
-        builder = set_dimension(builder, dimension::ACCOUNT_GROUP, self.account_group.as_deref());
+        builder = set_dimension(
+            builder,
+            dimension::ACCOUNT_GROUP,
+            self.account_group.as_deref(),
+        );
         builder = set_dimension(builder, dimension::IDENTIFIER, self.identifier.as_deref());
         builder = set_dimension(builder, dimension::KEY_TYPE, self.key_type.as_deref());
 
-        Ok(builder.build())
+        let rule = builder.build();
+
+        let from = self
+            .valid_from
+            .as_deref()
+            .map(parse_rfc3339_millis)
+            .transpose()?;
+        let until = self
+            .valid_until
+            .as_deref()
+            .map(parse_rfc3339_millis)
+            .transpose()?;
+
+        if from.is_some() || until.is_some() {
+            let temporal = TemporalAbacRule::new(rule, from, until)?;
+            Ok(AbacRuleKind::Temporal(temporal))
+        } else {
+            Ok(AbacRuleKind::Regular(rule))
+        }
     }
 }
 
@@ -143,9 +187,72 @@ mod tests {
             profile: Some(vec!["tls".into()]),
             ..Default::default()
         };
-        let rule = cfg.to_abac_rule().unwrap();
-        assert_eq!(rule.name, "test");
-        assert!(rule.is_enabled());
+        let kind = cfg.to_abac_rule().unwrap();
+        match kind {
+            AbacRuleKind::Regular(rule) => {
+                assert_eq!(rule.name, "test");
+                assert!(rule.is_enabled());
+            }
+            AbacRuleKind::Temporal(_) => panic!("expected Regular, got Temporal"),
+        }
+    }
+
+    #[test]
+    fn parse_rfc3339_millis_valid() {
+        let ms = parse_rfc3339_millis("2026-01-15T12:30:00Z").unwrap();
+        assert_eq!(ms, 1768480200000);
+    }
+
+    #[test]
+    fn parse_rfc3339_millis_with_subseconds() {
+        let ms = parse_rfc3339_millis("2026-01-15T12:30:00.500Z").unwrap();
+        assert_eq!(ms, 1768480200500);
+    }
+
+    #[test]
+    fn parse_rfc3339_millis_rejects_invalid() {
+        assert!(parse_rfc3339_millis("not-a-timestamp").is_err());
+    }
+
+    #[test]
+    fn to_abac_rule_returns_temporal_with_valid_from() {
+        let cfg = PolicyRuleConfig {
+            name: "timed".into(),
+            rule_type: RuleTypeConfig::Allow,
+            valid_from: Some("2026-01-01T00:00:00Z".into()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            cfg.to_abac_rule().unwrap(),
+            AbacRuleKind::Temporal(_)
+        ));
+    }
+
+    #[test]
+    fn to_abac_rule_returns_temporal_with_valid_until() {
+        let cfg = PolicyRuleConfig {
+            name: "expiring".into(),
+            rule_type: RuleTypeConfig::Allow,
+            valid_until: Some("2026-12-31T23:59:59Z".into()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            cfg.to_abac_rule().unwrap(),
+            AbacRuleKind::Temporal(_)
+        ));
+    }
+
+    #[test]
+    fn to_abac_rule_returns_regular_without_temporal() {
+        let cfg = PolicyRuleConfig {
+            name: "always".into(),
+            rule_type: RuleTypeConfig::Deny,
+            ..Default::default()
+        };
+        assert!(matches!(
+            cfg.to_abac_rule().unwrap(),
+            AbacRuleKind::Regular(_)
+        ));
     }
 
     #[test]
@@ -177,5 +284,38 @@ mod tests {
         "#;
         let cfg: PolicyConfig = toml::from_str(toml_str).unwrap();
         assert!(matches!(cfg.mode, PolicyMode::Shadow));
+    }
+
+    #[test]
+    fn all_dimensions_have_config_fields() {
+        let dims = [
+            dimension::ACCOUNT,
+            dimension::ACCOUNT_GROUP,
+            dimension::PROFILE,
+            dimension::CA,
+            dimension::IDENTIFIER,
+            dimension::KEY_TYPE,
+        ];
+        let cfg = PolicyRuleConfig {
+            name: "dim-check".into(),
+            rule_type: RuleTypeConfig::Allow,
+            account: Some(vec!["a".into()]),
+            account_group: Some(vec!["g".into()]),
+            profile: Some(vec!["p".into()]),
+            ca: Some(vec!["c".into()]),
+            identifier: Some(vec!["dns:.*".into()]),
+            key_type: Some(vec!["ec:P-256".into()]),
+            ..Default::default()
+        };
+        let rule = match cfg.to_abac_rule().unwrap() {
+            AbacRuleKind::Regular(r) => r,
+            AbacRuleKind::Temporal(t) => t.into_inner(),
+        };
+        for dim in dims {
+            assert!(
+                rule.get_dimension(dim).is_some(),
+                "dimension '{dim}' missing from AbacRule — PolicyRuleConfig or set_dimension is out of sync"
+            );
+        }
     }
 }
