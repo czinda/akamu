@@ -394,6 +394,11 @@ for i in $(seq -w 1 "$CERT_COUNT"); do
         --profile       mtc-tls 2>&1)
 
     CERT_URL=$(echo "$ISSUE_OUTPUT" | grep 'Certificate URL:' | awk '{print $NF}')
+    if [ -z "$CERT_URL" ]; then
+        echo "[demo] ERROR: failed to extract Certificate URL from issue output" >&2
+        echo "$ISSUE_OUTPUT" >&2
+        exit 1
+    fi
     CERT_ID="${CERT_URL##*/}"
     CERT_IDS+=("$CERT_ID")
 
