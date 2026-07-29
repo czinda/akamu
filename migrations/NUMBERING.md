@@ -41,10 +41,12 @@ migration 0007 onward:
 | 0031   | 0033/0032          | drop audit_events (moved to journald namespace) |
 | 0032   | 0034/0033          | revoked_ranges (MTC serial-number ranges) |
 | 0033   | 0035/0034          | policy_rules (ABAC issuance policy)       |
+| 0034   | 0036/0035          | policy_rules_tombstone (CRDT soft-delete)  |
+| 0035   | 0037/0036          | policy_rules_unique_fix (partial unique index) |
 
 **Rule for future migrations:**
-- SQLite: use the next number in `migrations/sqlite/` (currently `0034_…`)
-- Postgres: use the next number in `migrations/postgres/` (currently `0036_…`)
-- MariaDB: use the next number in `migrations/mariadb/` (currently `0035_…`)
+- SQLite: use the next number in `migrations/sqlite/` (currently `0036_…`)
+- Postgres: use the next number in `migrations/postgres/` (currently `0038_…`)
+- MariaDB: use the next number in `migrations/mariadb/` (currently `0037_…`)
 
 The divergence is intentional and permanent.  Do not attempt to renumber.

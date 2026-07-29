@@ -26,11 +26,16 @@ pub async fn insert(
 pub async fn delete(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
+    tombstone_at: i64,
 ) -> Result<bool, AcmeError> {
-    let result = super::query("DELETE FROM policy_rules WHERE id = ?")
-        .bind(id)
-        .execute(executor)
-        .await?;
+    let result = super::query(
+        "UPDATE policy_rules SET tombstone = 1, tombstone_at = ?, enabled = 0 \
+         WHERE id = ? AND tombstone = 0",
+    )
+    .bind(tombstone_at)
+    .bind(id)
+    .execute(executor)
+    .await?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -40,7 +45,7 @@ pub async fn list_by_scope(
 ) -> Result<Vec<PolicyRuleRow>, AcmeError> {
     let rows = super::query_as::<PolicyRuleRow>(
         "SELECT id, scope, name, rule_json, enabled, created_at, updated_at, created_by \
-         FROM policy_rules WHERE scope = ? ORDER BY name",
+         FROM policy_rules WHERE scope = ? AND tombstone = 0 ORDER BY name",
     )
     .bind(scope)
     .fetch_all(executor)
@@ -51,10 +56,11 @@ pub async fn list_by_scope(
 pub async fn list_scopes(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
 ) -> Result<Vec<String>, AcmeError> {
-    let rows =
-        super::query_as::<(String,)>("SELECT DISTINCT scope FROM policy_rules ORDER BY scope")
-            .fetch_all(executor)
-            .await?;
+    let rows = super::query_as::<(String,)>(
+        "SELECT DISTINCT scope FROM policy_rules WHERE tombstone = 0 ORDER BY scope",
+    )
+    .fetch_all(executor)
+    .await?;
     Ok(rows.into_iter().map(|r| r.0).collect())
 }
 
@@ -67,7 +73,8 @@ pub async fn update(
     updated_at: &str,
 ) -> Result<bool, AcmeError> {
     let result = super::query(
-        "UPDATE policy_rules SET name = ?, rule_json = ?, enabled = ?, updated_at = ? WHERE id = ?",
+        "UPDATE policy_rules SET name = ?, rule_json = ?, enabled = ?, updated_at = ? \
+         WHERE id = ? AND tombstone = 0",
     )
     .bind(name)
     .bind(rule_json)
@@ -86,7 +93,7 @@ pub async fn get_by_scope_and_name(
 ) -> Result<Option<PolicyRuleRow>, AcmeError> {
     let row = super::query_as::<PolicyRuleRow>(
         "SELECT id, scope, name, rule_json, enabled, created_at, updated_at, created_by \
-         FROM policy_rules WHERE scope = ? AND name = ?",
+         FROM policy_rules WHERE scope = ? AND name = ? AND tombstone = 0",
     )
     .bind(scope)
     .bind(name)
@@ -101,7 +108,7 @@ pub async fn get_by_id(
 ) -> Result<Option<PolicyRuleRow>, AcmeError> {
     let row = super::query_as::<PolicyRuleRow>(
         "SELECT id, scope, name, rule_json, enabled, created_at, updated_at, created_by \
-         FROM policy_rules WHERE id = ?",
+         FROM policy_rules WHERE id = ? AND tombstone = 0",
     )
     .bind(id)
     .fetch_optional(executor)
@@ -188,8 +195,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(delete(&db, "r1").await.unwrap());
-        assert!(!delete(&db, "r1").await.unwrap());
+        assert!(delete(&db, "r1", 1722100000).await.unwrap());
+        // second soft-delete is a no-op (already tombstoned)
+        assert!(!delete(&db, "r1", 1722100001).await.unwrap());
+        // tombstoned rows are invisible to get_by_id
+        assert!(get_by_id(&db, "r1").await.unwrap().is_none());
     }
 
     #[tokio::test]
