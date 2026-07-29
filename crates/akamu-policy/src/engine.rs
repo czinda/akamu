@@ -288,4 +288,65 @@ mod tests {
 
         assert_eq!(engine.evaluate(&req), Decision::Allow);
     }
+
+    #[test]
+    fn temporal_rule_expired_does_not_match() {
+        let rule = PolicyRuleConfig {
+            name: "expired-allow".into(),
+            rule_type: RuleTypeConfig::Allow,
+            profile: Some(vec!["tls-server".into()]),
+            valid_until: Some("2020-01-01T00:00:00Z".into()),
+            ..Default::default()
+        };
+        let engine = IssuancePolicyEngine::new(PolicyMode::Enforce, vec![rule], vec![]).unwrap();
+
+        let req = IssuanceRequest::builder()
+            .profile("tls-server")
+            .ca("prod")
+            .build()
+            .unwrap();
+
+        assert_eq!(engine.evaluate(&req), Decision::Deny);
+    }
+
+    #[test]
+    fn temporal_rule_future_does_not_match() {
+        let rule = PolicyRuleConfig {
+            name: "future-allow".into(),
+            rule_type: RuleTypeConfig::Allow,
+            profile: Some(vec!["tls-server".into()]),
+            valid_from: Some("2099-01-01T00:00:00Z".into()),
+            ..Default::default()
+        };
+        let engine = IssuancePolicyEngine::new(PolicyMode::Enforce, vec![rule], vec![]).unwrap();
+
+        let req = IssuanceRequest::builder()
+            .profile("tls-server")
+            .ca("prod")
+            .build()
+            .unwrap();
+
+        assert_eq!(engine.evaluate(&req), Decision::Deny);
+    }
+
+    #[test]
+    fn temporal_rule_within_window_matches() {
+        let rule = PolicyRuleConfig {
+            name: "active-allow".into(),
+            rule_type: RuleTypeConfig::Allow,
+            profile: Some(vec!["tls-server".into()]),
+            valid_from: Some("2020-01-01T00:00:00Z".into()),
+            valid_until: Some("2099-12-31T23:59:59Z".into()),
+            ..Default::default()
+        };
+        let engine = IssuancePolicyEngine::new(PolicyMode::Enforce, vec![rule], vec![]).unwrap();
+
+        let req = IssuanceRequest::builder()
+            .profile("tls-server")
+            .ca("prod")
+            .build()
+            .unwrap();
+
+        assert_eq!(engine.evaluate(&req), Decision::Allow);
+    }
 }
