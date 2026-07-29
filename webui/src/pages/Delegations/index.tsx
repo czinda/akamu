@@ -29,6 +29,7 @@ import { listDelegations, deleteDelegation, DelegationRow } from '../../api/dele
 import { fmtTs } from '../../utils';
 import { ObjLink } from '../../components/ObjLink';
 import { useAuth, hasRole } from '../../auth/AuthContext';
+import { errorMessage } from '../../api/client';
 
 const PAGE_SIZE = 20;
 
@@ -59,7 +60,7 @@ export default function Delegations() {
       setDelegations(result.delegations);
       setTotal(result.total);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to load delegations');
+      setError(errorMessage(e, 'Failed to load delegations'));
     } finally {
       setLoading(false);
     }
@@ -75,7 +76,7 @@ export default function Delegations() {
       setDeleteId(null);
       await load();
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Delete failed');
+      setError(errorMessage(e, 'Delete failed'));
     } finally {
       setSaving(false);
     }

@@ -20,6 +20,7 @@ import {
   updateDelegation,
 } from '../../api/delegations';
 import { useAuth, hasRole } from '../../auth/AuthContext';
+import { errorMessage } from '../../api/client';
 
 const taStyle: React.CSSProperties = {
   width: '100%',
@@ -69,7 +70,7 @@ export default function DelegationEdit({ createMode }: Props) {
         setCsrTemplate(toJsonString(d.csr_template));
         setCnameMap(d.cname_map != null ? toJsonString(d.cname_map) : '');
       })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load delegation'))
+      .catch((e: unknown) => setError(errorMessage(e, 'Failed to load delegation')))
       .finally(() => setLoading(false));
   }, [id, createMode]);
 
@@ -109,7 +110,7 @@ export default function DelegationEdit({ createMode }: Props) {
         navigate(`/delegations/${id}`);
       }
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Save failed');
+      setError(errorMessage(err, 'Save failed'));
       setSaving(false);
     }
   }

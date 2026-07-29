@@ -18,6 +18,7 @@ import {
 } from '@patternfly/react-core';
 import { getProfile, updateProfile, createProfile, ProfilePayload } from '../../api/profiles';
 import { listCas, CaInfo } from '../../api/cas';
+import { errorMessage } from '../../api/client';
 
 /* ── Key Usage bit positions (from synta-certificate / RFC 5280) ── */
 const KEY_USAGE_BITS: { bit: number; label: string }[] = [
@@ -213,7 +214,7 @@ export default function ProfileEdit({ createMode }: Props) {
           ca_ids: p.ca_ids ?? [],
         });
       })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load profile'))
+      .catch((e: unknown) => setError(errorMessage(e, 'Failed to load profile')))
       .finally(() => setLoading(false));
   }, [id, createMode]);
 
@@ -239,7 +240,7 @@ export default function ProfileEdit({ createMode }: Props) {
         navigate(`/profiles/${id}`);
       }
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Save failed');
+      setError(errorMessage(err, 'Save failed'));
       setSaving(false);
     }
   }

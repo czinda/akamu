@@ -26,6 +26,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { listProfiles, deleteProfile, ProfileEntry } from '../../api/profiles';
 import { useAuth, hasRole } from '../../auth/AuthContext';
+import { errorMessage } from '../../api/client';
 
 export default function Profiles() {
   const { role } = useAuth();
@@ -45,7 +46,7 @@ export default function Profiles() {
       const result = await listProfiles();
       setProfiles(result.profiles);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to load profiles');
+      setError(errorMessage(e, 'Failed to load profiles'));
     } finally {
       setLoading(false);
     }
@@ -61,7 +62,7 @@ export default function Profiles() {
       setDeleteId(null);
       await load();
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Delete failed');
+      setError(errorMessage(e, 'Delete failed'));
     } finally {
       setSaving(false);
     }

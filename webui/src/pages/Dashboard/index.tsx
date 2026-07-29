@@ -18,6 +18,7 @@ import {
 import { getStats, ServerStats } from '../../api/stats';
 import { fmtTs } from '../../utils';
 import { useAuth } from '../../auth/AuthContext';
+import { errorMessage } from '../../api/client';
 
 function StatRow({ label, value }: { label: string; value: number | string }) {
   return (
@@ -51,7 +52,7 @@ export default function Dashboard() {
   useEffect(() => {
     getStats()
       .then(setStats)
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load stats'));
+      .catch((e: unknown) => setError(errorMessage(e, 'Failed to load stats')));
   }, []);
 
   return (

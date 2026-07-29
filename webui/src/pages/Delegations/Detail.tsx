@@ -13,6 +13,7 @@ import {
 import { getDelegation, DelegationRow } from '../../api/delegations';
 import { fmtTs } from '../../utils';
 import { ObjLink } from '../../components/ObjLink';
+import { errorMessage } from '../../api/client';
 
 export default function DelegationDetail() {
   const { id } = useParams<{ id: string }>();
@@ -24,7 +25,7 @@ export default function DelegationDetail() {
     if (!id) return;
     getDelegation(id)
       .then(setData)
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load'))
+      .catch((e: unknown) => setError(errorMessage(e, 'Failed to load')))
       .finally(() => setLoading(false));
   }, [id]);
 

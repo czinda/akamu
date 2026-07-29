@@ -15,6 +15,7 @@ import { getCa, CaInfo } from '../../api/cas';
 import { getStats, type ServerStats } from '../../api/stats';
 import { fmtTs } from '../../utils';
 import { CertTextBlock } from '../../components/CertTextBlock';
+import { errorMessage } from '../../api/client';
 
 export default function CADetail() {
   const { id } = useParams<{ id: string }>();
@@ -28,14 +29,14 @@ export default function CADetail() {
     if (!id) return;
     getCa(id)
       .then(setData)
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load'))
+      .catch((e: unknown) => setError(errorMessage(e, 'Failed to load')))
       .finally(() => setLoading(false));
     getStats()
       .then((stats) => {
         const ca = stats.mtc.find((m) => m.ca_id === id);
         if (ca) setMtcStats(ca);
       })
-      .catch((e: unknown) => setMtcError(e instanceof Error ? e.message : 'Failed to load MTC stats'));
+      .catch((e: unknown) => setMtcError(errorMessage(e, 'Failed to load MTC stats')));
   }, [id]);
 
   return (

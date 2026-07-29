@@ -14,6 +14,7 @@ import { getCrossCert, CrossCertRow } from '../../api/crosscerts';
 import { fmtTs } from '../../utils';
 import { ObjLink } from '../../components/ObjLink';
 import { CertTextBlock } from '../../components/CertTextBlock';
+import { errorMessage } from '../../api/client';
 
 export default function CrossCertDetail() {
   const { id } = useParams<{ id: string }>();
@@ -25,7 +26,7 @@ export default function CrossCertDetail() {
     if (!id) return;
     getCrossCert(id)
       .then(setData)
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load'))
+      .catch((e: unknown) => setError(errorMessage(e, 'Failed to load')))
       .finally(() => setLoading(false));
   }, [id]);
 

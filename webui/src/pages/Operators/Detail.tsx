@@ -16,6 +16,7 @@ import {
 } from '@patternfly/react-core';
 import { getOperator, activateOperator, deactivateOperator, unlockOperator, OperatorRow } from '../../api/operators';
 import { fmtIso } from '../../utils';
+import { errorMessage } from '../../api/client';
 
 export default function OperatorDetail() {
   const { id } = useParams<{ id: string }>();
@@ -29,7 +30,7 @@ export default function OperatorDetail() {
     if (!id) return;
     getOperator(id)
       .then(setData)
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load'))
+      .catch((e: unknown) => setError(errorMessage(e, 'Failed to load')))
       .finally(() => setLoading(false));
   }
 
@@ -41,7 +42,7 @@ export default function OperatorDetail() {
       await action();
       reload();
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Action failed');
+      setError(errorMessage(e, 'Action failed'));
     } finally {
       setSaving(false);
     }

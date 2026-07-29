@@ -8,6 +8,7 @@ import {
   CodeBlockCode,
 } from '@patternfly/react-core';
 import { getConfig, ServerConfig as ServerConfigData } from '../../api/stats';
+import { errorMessage } from '../../api/client';
 
 export default function ServerConfig() {
   const [config, setConfig] = useState<ServerConfigData | null>(null);
@@ -16,7 +17,7 @@ export default function ServerConfig() {
   useEffect(() => {
     getConfig()
       .then(setConfig)
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load config'));
+      .catch((e: unknown) => setError(errorMessage(e, 'Failed to load config')));
   }, []);
 
   return (

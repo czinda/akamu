@@ -62,7 +62,7 @@ export function objectPath(type: ObjType, id: string): string {
     case 'eab':        return `/eab/${id}`;
     case 'operator':   return `/operators/${id}`;
     case 'order':      return `/orders/${id}`;
-    case 'policy':     return `/policies/${id}/edit`;
+    case 'policy':     return `/policies`;
     case 'profile':    return `/profiles/${id}`;
   }
 }

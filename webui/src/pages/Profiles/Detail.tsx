@@ -17,6 +17,7 @@ import {
 } from '@patternfly/react-core';
 import { getProfile, ProfileEntry } from '../../api/profiles';
 import { useAuth, hasRole } from '../../auth/AuthContext';
+import { errorMessage } from '../../api/client';
 
 const KEY_USAGE_NAMES: Record<number, string> = {
   0: 'digitalSignature', 1: 'nonRepudiation', 2: 'keyEncipherment',
@@ -53,7 +54,7 @@ export default function ProfileDetail() {
     if (!id) return;
     getProfile(id)
       .then(setData)
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load'))
+      .catch((e: unknown) => setError(errorMessage(e, 'Failed to load')))
       .finally(() => setLoading(false));
   }, [id]);
 

@@ -32,6 +32,7 @@ import {
 } from '@patternfly/react-table';
 import { queryAudit, AuditEntry, AuditQueryParams } from '../../api/audit';
 import { fmtIso, auditSubjectPath } from '../../utils';
+import { errorMessage } from '../../api/client';
 
 const PAGE_SIZE = 50;
 
@@ -68,7 +69,7 @@ export default function AuditLog() {
       setEntries(result.events);
       setTotal(result.total);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to load audit log');
+      setError(errorMessage(e, 'Failed to load audit log'));
     } finally {
       setLoading(false);
     }

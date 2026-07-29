@@ -29,6 +29,7 @@ import {
   OperatorRow,
 } from '../../api/operators';
 import { fmtIso } from '../../utils';
+import { errorMessage } from '../../api/client';
 
 export default function Operators() {
   const navigate = useNavigate();
@@ -44,7 +45,7 @@ export default function Operators() {
       const result = await listOperators();
       setOperators(result.operators);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to load operators');
+      setError(errorMessage(e, 'Failed to load operators'));
     } finally {
       setLoading(false);
     }
@@ -58,7 +59,7 @@ export default function Operators() {
       await action();
       await load();
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Action failed');
+      setError(errorMessage(e, 'Action failed'));
     } finally {
       setSaving(false);
     }

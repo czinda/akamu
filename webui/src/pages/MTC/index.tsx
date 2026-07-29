@@ -19,6 +19,7 @@ import {
 import { Link } from 'react-router-dom';
 import { getStats, type ServerStats } from '../../api/stats';
 import { fmtTs } from '../../utils';
+import { errorMessage } from '../../api/client';
 
 type MtcCaStats = ServerStats['mtc'][0];
 
@@ -30,7 +31,7 @@ export default function MtcOverview() {
   useEffect(() => {
     getStats()
       .then((stats) => setMtcStats(stats.mtc))
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load'))
+      .catch((e: unknown) => setError(errorMessage(e, 'Failed to load')))
       .finally(() => setLoading(false));
   }, []);
 

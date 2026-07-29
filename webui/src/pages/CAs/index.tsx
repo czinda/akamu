@@ -34,6 +34,7 @@ import { useNavigate } from 'react-router-dom';
 import { listCas, forceCrl, crossSign, CrossSignResult, CaInfo } from '../../api/cas';
 import { useAuth, hasRole } from '../../auth/AuthContext';
 import { fmtTs } from '../../utils';
+import { errorMessage } from '../../api/client';
 
 export default function CAs() {
   const { role } = useAuth();
@@ -63,7 +64,7 @@ export default function CAs() {
       const result = await listCas();
       setCas(result.cas);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to load CAs');
+      setError(errorMessage(e, 'Failed to load CAs'));
     } finally {
       setLoading(false);
     }
@@ -92,7 +93,7 @@ export default function CAs() {
       await forceCrl(crlCaId || undefined);
       setCrlCaId(null);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Force CRL failed');
+      setError(errorMessage(e, 'Force CRL failed'));
     } finally {
       setSaving(false);
     }
@@ -110,7 +111,7 @@ export default function CAs() {
       const result = await crossSign(crossSignIssuerId, opts);
       setCrossSignResult(result);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Cross-sign failed');
+      setError(errorMessage(err, 'Cross-sign failed'));
     } finally {
       setSaving(false);
     }

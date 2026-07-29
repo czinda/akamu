@@ -21,6 +21,7 @@ import { useNavigate } from 'react-router-dom';
 import { listCrossCerts, downloadCrossCert, CrossCertRow } from '../../api/crosscerts';
 import { fmtTs } from '../../utils';
 import { ObjLink } from '../../components/ObjLink';
+import { errorMessage } from '../../api/client';
 
 const PAGE_SIZE = 20;
 
@@ -40,7 +41,7 @@ export default function CrossCerts() {
       setCerts(result.cross_certs);
       setTotal(result.total);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to load cross-certs');
+      setError(errorMessage(e, 'Failed to load cross-certs'));
     } finally {
       setLoading(false);
     }
@@ -61,7 +62,7 @@ export default function CrossCerts() {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Download failed');
+      setError(errorMessage(e, 'Download failed'));
     }
   }
 

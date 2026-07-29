@@ -47,6 +47,7 @@ import {
 import MtcTree from '../../components/MtcTree';
 import { fmtTs, triggerBlobDownload } from '../../utils';
 import { useAuth, hasRole } from '../../auth/AuthContext';
+import { errorMessage } from '../../api/client';
 
 export default function MtcDetail() {
   const { caId } = useParams<{ caId: string }>();
@@ -111,22 +112,22 @@ export default function MtcDetail() {
     if (signal?.aborted) return;
 
     if (rootRes.status === 'fulfilled') setRoot(rootRes.value);
-    else setRootError(rootRes.reason instanceof Error ? rootRes.reason.message : 'Failed to load tree root');
+    else setRootError(errorMessage(rootRes.reason, 'Failed to load tree root'));
 
     if (landmarksRes.status === 'fulfilled') setLandmarks(landmarksRes.value);
-    else setLandmarksError(landmarksRes.reason instanceof Error ? landmarksRes.reason.message : 'Failed to load landmarks');
+    else setLandmarksError(errorMessage(landmarksRes.reason, 'Failed to load landmarks'));
 
     if (checkpointRes.status === 'fulfilled') setCheckpoint(checkpointRes.value);
-    else setCheckpointError(checkpointRes.reason instanceof Error ? checkpointRes.reason.message : 'Unavailable');
+    else setCheckpointError(errorMessage(checkpointRes.reason, 'Unavailable'));
 
     if (cosignatureRes.status === 'fulfilled') setCosignature(cosignatureRes.value);
-    else setCosignatureError(cosignatureRes.reason instanceof Error ? cosignatureRes.reason.message : 'Unavailable');
+    else setCosignatureError(errorMessage(cosignatureRes.reason, 'Unavailable'));
 
     if (logListRes.status === 'fulfilled') setLogListEntry(logListRes.value);
-    else setLogListEntryError(logListRes.reason instanceof Error ? logListRes.reason.message : 'Unavailable');
+    else setLogListEntryError(errorMessage(logListRes.reason, 'Unavailable'));
 
     if (revokedRes.status === 'fulfilled') setRevokedRanges(revokedRes.value);
-    else setRevokedError(revokedRes.reason instanceof Error ? revokedRes.reason.message : 'Failed to load revoked ranges');
+    else setRevokedError(errorMessage(revokedRes.reason, 'Failed to load revoked ranges'));
 
     setLoading(false);
   }, [caId]);
@@ -147,7 +148,7 @@ export default function MtcDetail() {
       setConfirmAction(null);
       await loadData();
     } catch (e: unknown) {
-      setActionError(e instanceof Error ? e.message : 'Action failed');
+      setActionError(errorMessage(e, 'Action failed'));
     } finally {
       setActionBusy(false);
     }
@@ -159,7 +160,7 @@ export default function MtcDetail() {
       const blob = await downloadLandmarkCert(seq, caId);
       triggerBlobDownload(blob, `landmark-${seq}.der`);
     } catch (e: unknown) {
-      setLandmarksError(e instanceof Error ? e.message : 'Download failed');
+      setLandmarksError(errorMessage(e, 'Download failed'));
     }
   }
 
@@ -175,7 +176,7 @@ export default function MtcDetail() {
       const result = await getConsistencyProof(caId, from, to);
       setCpResult(result);
     } catch (e: unknown) {
-      setCpError(e instanceof Error ? e.message : 'Failed');
+      setCpError(errorMessage(e, 'Failed'));
     } finally {
       setCpLoading(false);
     }
@@ -193,7 +194,7 @@ export default function MtcDetail() {
       const result = await getSubtreeRoot(caId, start, end);
       setSrResult(result);
     } catch (e: unknown) {
-      setSrError(e instanceof Error ? e.message : 'Failed');
+      setSrError(errorMessage(e, 'Failed'));
     } finally {
       setSrLoading(false);
     }

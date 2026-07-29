@@ -1,5 +1,5 @@
 import React, { Component, type ReactNode, Suspense, useCallback, useMemo } from 'react';
-import { Routes, Route, Navigate, NavLink, Outlet, useLocation } from 'react-router-dom';
+import { Routes, Route, Navigate, NavLink, Outlet, useLocation, Link } from 'react-router-dom';
 import {
   Page,
   Masthead,
@@ -17,8 +17,9 @@ import {
   FlexItem,
   Spinner,
 } from '@patternfly/react-core';
-import { useAuth, hasRole, Role } from './auth/AuthContext';
+import { useAuth, type Role } from './auth/AuthContext';
 import { logout as apiLogout } from './api/session';
+import { NAV_ITEMS, canAccess, accessForPath, type RouteAccess } from './nav';
 
 const LoginPage = React.lazy(() => import('./auth/LoginPage'));
 const Dashboard = React.lazy(() => import('./pages/Dashboard'));
@@ -80,16 +81,20 @@ function LocationResetErrorBoundary({ children }: { children: ReactNode }) {
   return <PageErrorBoundary key={pathname}>{children}</PageErrorBoundary>;
 }
 
-function RequireRole({ minRole, children }: { minRole: Role; children: React.ReactElement }) {
+function RouteGuard({ access, children }: { access: RouteAccess; children: React.ReactElement }) {
   const { role } = useAuth();
-  if (!hasRole(role, minRole)) return <Navigate to="/" replace />;
+  if (!canAccess(role, access)) return <Navigate to="/" replace />;
   return children;
 }
 
-function RequireAnyRole({ roles, children }: { roles: Role[]; children: React.ReactElement }) {
-  const { role } = useAuth();
-  if (!role || !roles.includes(role)) return <Navigate to="/" replace />;
-  return children;
+function NotFound() {
+  return (
+    <div style={{ textAlign: 'center', padding: '4rem 1rem' }}>
+      <h1>404 — Page Not Found</h1>
+      <p>The page you requested does not exist.</p>
+      <Link to="/">Back to Dashboard</Link>
+    </div>
+  );
 }
 
 function AppHeader({ onLogout }: { onLogout: () => void }) {
@@ -114,41 +119,16 @@ function AppHeader({ onLogout }: { onLogout: () => void }) {
 }
 
 function AppSidebar({ role }: { role: Role | null }) {
-  const isAtLeastCaRa = hasRole(role, 'ca_ra');
-  const isAtLeastCaOps = hasRole(role, 'ca_operations');
-  const isAdmin = hasRole(role, 'administrator');
-  const canSeeAudit = role === 'administrator' || role === 'auditor';
-  const canSeeCrossCerts = role === 'administrator' || role === 'ca_operations' || role === 'auditor';
-  const canSeeMtc = role === 'administrator' || role === 'ca_operations' || role === 'auditor';
-  const canSeePolicies = role === 'administrator' || role === 'ca_operations' || role === 'auditor';
-
   return (
     <PageSidebar>
       <PageSidebarBody>
         <Nav>
           <NavList>
-            <NavItem><NavLink to="/" end>Dashboard</NavLink></NavItem>
-            <NavItem><NavLink to="/certs">Certificates</NavLink></NavItem>
-            <NavItem><NavLink to="/orders">Orders</NavLink></NavItem>
-            <NavItem><NavLink to="/accounts">Accounts</NavLink></NavItem>
-            {canSeeAudit && <NavItem><NavLink to="/audit">Audit Log</NavLink></NavItem>}
-            {isAtLeastCaRa && (
-              <>
-                <NavItem><NavLink to="/eab">EAB Keys</NavLink></NavItem>
-                <NavItem><NavLink to="/delegations">Delegations</NavLink></NavItem>
-                <NavItem><NavLink to="/profiles">Profiles</NavLink></NavItem>
-              </>
-            )}
-            {isAtLeastCaOps && <NavItem><NavLink to="/cas">CAs</NavLink></NavItem>}
-            {canSeeCrossCerts && <NavItem><NavLink to="/cross-certs">Cross-Certs</NavLink></NavItem>}
-            {canSeeMtc && <NavItem><NavLink to="/mtc">Transparency Log</NavLink></NavItem>}
-            {canSeePolicies && <NavItem><NavLink to="/policies">Policies</NavLink></NavItem>}
-            {isAdmin && (
-              <>
-                <NavItem><NavLink to="/operators">Operators</NavLink></NavItem>
-                <NavItem><NavLink to="/config">Server Config</NavLink></NavItem>
-              </>
-            )}
+            {NAV_ITEMS.filter(item => canAccess(role, item.access)).map(item => (
+              <NavItem key={item.path}>
+                <NavLink to={item.path} end={item.end}>{item.label}</NavLink>
+              </NavItem>
+            ))}
           </NavList>
         </Nav>
       </PageSidebarBody>
@@ -199,59 +179,59 @@ export default function App() {
         <Route path="/orders" element={<Orders />} />
         <Route path="/accounts" element={<Accounts />} />
         <Route path="/audit" element={
-          <RequireAnyRole roles={['administrator', 'auditor']}><AuditLog /></RequireAnyRole>
+          <RouteGuard access={accessForPath('/audit')}><AuditLog /></RouteGuard>
         } />
         <Route path="/eab" element={
-          <RequireRole minRole="ca_ra"><EabKeys /></RequireRole>
+          <RouteGuard access={accessForPath('/eab')}><EabKeys /></RouteGuard>
         } />
         <Route path="/delegations" element={
-          <RequireRole minRole="ca_ra"><Delegations /></RequireRole>
+          <RouteGuard access={accessForPath('/delegations')}><Delegations /></RouteGuard>
         } />
         <Route path="/profiles" element={
-          <RequireRole minRole="ca_ra"><Profiles /></RequireRole>
+          <RouteGuard access={accessForPath('/profiles')}><Profiles /></RouteGuard>
         } />
         <Route path="/cas" element={
-          <RequireRole minRole="ca_operations"><CAs /></RequireRole>
+          <RouteGuard access={accessForPath('/cas')}><CAs /></RouteGuard>
         } />
         <Route path="/cross-certs" element={
-          <RequireAnyRole roles={['administrator', 'ca_operations', 'auditor']}><CrossCerts /></RequireAnyRole>
+          <RouteGuard access={accessForPath('/cross-certs')}><CrossCerts /></RouteGuard>
         } />
         <Route path="/mtc" element={
-          <RequireAnyRole roles={['administrator', 'ca_operations', 'auditor']}><MtcOverview /></RequireAnyRole>
+          <RouteGuard access={accessForPath('/mtc')}><MtcOverview /></RouteGuard>
         } />
         <Route path="/operators" element={
-          <RequireRole minRole="administrator"><Operators /></RequireRole>
+          <RouteGuard access={accessForPath('/operators')}><Operators /></RouteGuard>
         } />
         <Route path="/config" element={
-          <RequireRole minRole="administrator"><ServerConfig /></RequireRole>
+          <RouteGuard access={accessForPath('/config')}><ServerConfig /></RouteGuard>
         } />
         <Route path="/certs/:id" element={<CertDetail />} />
         <Route path="/orders/:id" element={<OrderDetail />} />
         <Route path="/accounts/:id" element={<AccountDetail />} />
-        <Route path="/eab/:kid" element={<RequireRole minRole="ca_ra"><EabKeyDetail /></RequireRole>} />
-        <Route path="/profiles/:id" element={<RequireRole minRole="ca_ra"><ProfileDetail /></RequireRole>} />
-        <Route path="/profiles/:id/edit" element={<RequireRole minRole="administrator"><ProfileEdit /></RequireRole>} />
-        <Route path="/profiles/new" element={<RequireRole minRole="administrator"><ProfileEdit createMode /></RequireRole>} />
-        <Route path="/delegations/:id" element={<RequireRole minRole="ca_ra"><DelegationDetail /></RequireRole>} />
-        <Route path="/cas/:id" element={<RequireRole minRole="ca_operations"><CADetail /></RequireRole>} />
-        <Route path="/cross-certs/:id" element={<RequireAnyRole roles={['administrator', 'ca_operations', 'auditor']}><CrossCertDetail /></RequireAnyRole>} />
-        <Route path="/mtc/:caId" element={<RequireAnyRole roles={['administrator', 'ca_operations', 'auditor']}><MtcDetail /></RequireAnyRole>} />
-        <Route path="/mtc/:caId/landmarks/:seq" element={<RequireAnyRole roles={['administrator', 'ca_operations', 'auditor']}><MtcLandmarkDetail /></RequireAnyRole>} />
-        <Route path="/operators/:id" element={<RequireRole minRole="administrator"><OperatorDetail /></RequireRole>} />
-        <Route path="/operators/:id/edit" element={<RequireRole minRole="administrator"><OperatorEdit /></RequireRole>} />
-        <Route path="/operators/new" element={<RequireRole minRole="administrator"><OperatorEdit createMode /></RequireRole>} />
-        <Route path="/delegations/:id/edit" element={<RequireRole minRole="ca_operations"><DelegationEdit /></RequireRole>} />
-        <Route path="/delegations/new" element={<RequireRole minRole="ca_operations"><DelegationEdit createMode /></RequireRole>} />
+        <Route path="/eab/:kid" element={<RouteGuard access={accessForPath('/eab')}><EabKeyDetail /></RouteGuard>} />
+        <Route path="/profiles/:id" element={<RouteGuard access={accessForPath('/profiles')}><ProfileDetail /></RouteGuard>} />
+        <Route path="/profiles/:id/edit" element={<RouteGuard access={{ minRole: 'administrator' }}><ProfileEdit /></RouteGuard>} />
+        <Route path="/profiles/new" element={<RouteGuard access={{ minRole: 'administrator' }}><ProfileEdit createMode /></RouteGuard>} />
+        <Route path="/delegations/:id" element={<RouteGuard access={accessForPath('/delegations')}><DelegationDetail /></RouteGuard>} />
+        <Route path="/cas/:id" element={<RouteGuard access={accessForPath('/cas')}><CADetail /></RouteGuard>} />
+        <Route path="/cross-certs/:id" element={<RouteGuard access={accessForPath('/cross-certs')}><CrossCertDetail /></RouteGuard>} />
+        <Route path="/mtc/:caId" element={<RouteGuard access={accessForPath('/mtc')}><MtcDetail /></RouteGuard>} />
+        <Route path="/mtc/:caId/landmarks/:seq" element={<RouteGuard access={accessForPath('/mtc')}><MtcLandmarkDetail /></RouteGuard>} />
+        <Route path="/operators/:id" element={<RouteGuard access={accessForPath('/operators')}><OperatorDetail /></RouteGuard>} />
+        <Route path="/operators/:id/edit" element={<RouteGuard access={accessForPath('/operators')}><OperatorEdit /></RouteGuard>} />
+        <Route path="/operators/new" element={<RouteGuard access={accessForPath('/operators')}><OperatorEdit createMode /></RouteGuard>} />
+        <Route path="/delegations/:id/edit" element={<RouteGuard access={{ minRole: 'ca_operations' }}><DelegationEdit /></RouteGuard>} />
+        <Route path="/delegations/new" element={<RouteGuard access={{ minRole: 'ca_operations' }}><DelegationEdit createMode /></RouteGuard>} />
         <Route path="/policies" element={
-          <RequireAnyRole roles={['administrator', 'ca_operations', 'auditor']}><Policies /></RequireAnyRole>
+          <RouteGuard access={accessForPath('/policies')}><Policies /></RouteGuard>
         } />
         <Route path="/policies/new" element={
-          <RequireAnyRole roles={['administrator', 'ca_operations']}><PolicyEdit createMode /></RequireAnyRole>
+          <RouteGuard access={{ anyOf: ['administrator', 'ca_operations'] }}><PolicyEdit createMode /></RouteGuard>
         } />
         <Route path="/policies/:id/edit" element={
-          <RequireAnyRole roles={['administrator', 'ca_operations']}><PolicyEdit /></RequireAnyRole>
+          <RouteGuard access={{ anyOf: ['administrator', 'ca_operations'] }}><PolicyEdit /></RouteGuard>
         } />
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="*" element={<NotFound />} />
       </Route>
     </Routes>
   );

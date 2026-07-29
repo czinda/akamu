@@ -29,6 +29,7 @@ import { listOrders, OrderRow, OrderListParams } from '../../api/orders';
 import { useAuth } from '../../auth/AuthContext';
 import { fmtTs, fmtIdentifiers } from '../../utils';
 import { ObjLink } from '../../components/ObjLink';
+import { errorMessage } from '../../api/client';
 
 const PAGE_SIZE = 20;
 
@@ -66,7 +67,7 @@ export default function Orders() {
       setOrders(result.orders);
       setTotal(result.total ?? result.orders.length);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to load orders');
+      setError(errorMessage(e, 'Failed to load orders'));
     } finally {
       setLoading(false);
     }

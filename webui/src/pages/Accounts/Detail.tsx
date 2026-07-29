@@ -16,6 +16,7 @@ import { getAccount, setGrants, clearGrants, AccountRow } from '../../api/accoun
 import { fmtTs } from '../../utils';
 import { ObjLink } from '../../components/ObjLink';
 import { useAuth, hasRole } from '../../auth/AuthContext';
+import { errorMessage } from '../../api/client';
 
 export default function AccountDetail() {
   const { id } = useParams<{ id: string }>();
@@ -34,7 +35,7 @@ export default function AccountDetail() {
     if (!id) return;
     getAccount(id)
       .then(setData)
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load'))
+      .catch((e: unknown) => setError(errorMessage(e, 'Failed to load')))
       .finally(() => setLoading(false));
   }, [id]);
 
@@ -54,7 +55,7 @@ export default function AccountDetail() {
       setData(updated);
       setEditingGrants(false);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to save grants');
+      setError(errorMessage(e, 'Failed to save grants'));
     } finally {
       setSaving(false);
     }
@@ -69,7 +70,7 @@ export default function AccountDetail() {
       setData(updated);
       setEditingGrants(false);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to clear grants');
+      setError(errorMessage(e, 'Failed to clear grants'));
     } finally {
       setSaving(false);
     }

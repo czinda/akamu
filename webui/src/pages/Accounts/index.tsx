@@ -36,6 +36,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth, hasRole } from '../../auth/AuthContext';
 import { fmtTs } from '../../utils';
 import { ObjLink } from '../../components/ObjLink';
+import { errorMessage } from '../../api/client';
 
 const PAGE_SIZE = 20;
 
@@ -63,7 +64,7 @@ export default function Accounts() {
       setAccounts(result.accounts);
       setTotal(result.total ?? result.accounts.length);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to load accounts');
+      setError(errorMessage(e, 'Failed to load accounts'));
     } finally {
       setLoading(false);
     }
@@ -79,7 +80,7 @@ export default function Accounts() {
       setDeactivateId(null);
       await load();
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Deactivation failed');
+      setError(errorMessage(e, 'Deactivation failed'));
     } finally {
       setDeactivating(false);
     }

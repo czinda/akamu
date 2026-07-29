@@ -30,6 +30,7 @@ import { useNavigate } from 'react-router-dom';
 import { listCerts, revokeCert, CertRow, CertListParams } from '../../api/certs';
 import { useAuth, hasRole } from '../../auth/AuthContext';
 import { fmtTs } from '../../utils';
+import { errorMessage } from '../../api/client';
 
 const PAGE_SIZE = 20;
 
@@ -79,7 +80,7 @@ export default function Certificates() {
       setCerts(result.certs);
       setTotal(result.total ?? result.certs.length);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to load certificates');
+      setError(errorMessage(e, 'Failed to load certificates'));
     } finally {
       setLoading(false);
     }
@@ -110,7 +111,7 @@ export default function Certificates() {
       setRevokeId(null);
       await load();
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Revocation failed');
+      setError(errorMessage(e, 'Revocation failed'));
     } finally {
       setRevoking(false);
     }

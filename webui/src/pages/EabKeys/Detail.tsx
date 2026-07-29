@@ -13,6 +13,7 @@ import {
 import { getEab, EabKeyRow } from '../../api/eab';
 import { fmtTs } from '../../utils';
 import { ObjLink } from '../../components/ObjLink';
+import { errorMessage } from '../../api/client';
 
 export default function EabKeyDetail() {
   const { kid } = useParams<{ kid: string }>();
@@ -24,7 +25,7 @@ export default function EabKeyDetail() {
     if (!kid) return;
     getEab(kid)
       .then(setData)
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load'))
+      .catch((e: unknown) => setError(errorMessage(e, 'Failed to load')))
       .finally(() => setLoading(false));
   }, [kid]);
 

@@ -19,6 +19,7 @@ import { fmtTs } from '../../utils';
 import { ObjLink } from '../../components/ObjLink';
 import { CertTextBlock } from '../../components/CertTextBlock';
 import { useAuth, hasRole } from '../../auth/AuthContext';
+import { errorMessage } from '../../api/client';
 
 export default function CertDetail() {
   const { id } = useParams<{ id: string }>();
@@ -37,7 +38,7 @@ export default function CertDetail() {
     if (!id) return;
     getCert(id)
       .then(setData)
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load'))
+      .catch((e: unknown) => setError(errorMessage(e, 'Failed to load')))
       .finally(() => setLoading(false));
   }, [id]);
 
@@ -45,7 +46,7 @@ export default function CertDetail() {
     if (showInclusionProof && !inclusionProof && !proofError && id) {
       getInclusionProof(id)
         .then(setInclusionProof)
-        .catch((e: unknown) => setProofError(e instanceof Error ? e.message : 'Failed to load proof'));
+        .catch((e: unknown) => setProofError(errorMessage(e, 'Failed to load proof')));
     }
   }, [showInclusionProof, inclusionProof, proofError, id]);
 
@@ -55,7 +56,7 @@ export default function CertDetail() {
       const blob = await downloadStandalone(id);
       triggerBlobDownload(blob, `mtc-${id}.der`);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Download failed');
+      setError(errorMessage(e, 'Download failed'));
     }
   }
 
@@ -71,7 +72,7 @@ export default function CertDetail() {
       a.click();
       URL.revokeObjectURL(url);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Download failed');
+      setError(errorMessage(e, 'Download failed'));
     }
   }
 
@@ -82,7 +83,7 @@ export default function CertDetail() {
       await revokeCert(id, 0);
       setData({ ...data, status: 'revoked' });
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Revoke failed');
+      setError(errorMessage(e, 'Revoke failed'));
     } finally {
       setRevoking(false);
     }

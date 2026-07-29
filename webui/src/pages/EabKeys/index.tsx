@@ -34,6 +34,7 @@ import { listEab, createEab, deleteEab, EabKeyRow } from '../../api/eab';
 import { fmtTs } from '../../utils';
 import { useAuth, hasRole } from '../../auth/AuthContext';
 import { ObjLink } from '../../components/ObjLink';
+import { errorMessage } from '../../api/client';
 
 const PAGE_SIZE = 20;
 
@@ -65,7 +66,7 @@ export default function EabKeys() {
       setKeys(result.eab_keys);
       setTotal(result.total);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to load EAB keys');
+      setError(errorMessage(e, 'Failed to load EAB keys'));
     } finally {
       setLoading(false);
     }
@@ -90,7 +91,7 @@ export default function EabKeys() {
       setNewForOperatorId('');
       await load();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Create failed');
+      setError(errorMessage(err, 'Create failed'));
     } finally {
       setCreateSaving(false);
     }
@@ -104,7 +105,7 @@ export default function EabKeys() {
       setDeleteKid(null);
       await load();
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Delete failed');
+      setError(errorMessage(e, 'Delete failed'));
     } finally {
       setDeleteSaving(false);
     }

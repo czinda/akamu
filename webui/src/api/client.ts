@@ -87,3 +87,11 @@ export async function apiVoid(path: string, init?: RequestInit): Promise<void> {
     throw new ApiError(resp.status, extractErrorMessage(resp.status, text, resp.statusText));
   }
 }
+
+export function errorMessage(e: unknown, fallback = 'An error occurred'): string {
+  if (e instanceof ApiError) return e.message;
+  if (e instanceof TypeError && e.message === 'Failed to fetch')
+    return 'Network error — check your connection';
+  if (e instanceof Error) return e.message;
+  return fallback;
+}

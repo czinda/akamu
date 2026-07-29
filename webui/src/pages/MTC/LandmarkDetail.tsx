@@ -15,6 +15,7 @@ import { getLandmarks, downloadLandmarkCert, getLandmarkCertDetails, type MtcLan
 import { CertTextBlock } from '../../components/CertTextBlock';
 import { fmtTs, triggerBlobDownload } from '../../utils';
 import { useAuth, hasRole } from '../../auth/AuthContext';
+import { errorMessage } from '../../api/client';
 
 export default function MtcLandmarkDetail() {
   const { caId, seq } = useParams<{ caId: string; seq: string }>();
@@ -42,11 +43,11 @@ export default function MtcLandmarkDetail() {
     const detailsPromise = getLandmarkCertDetails(seqNo, caId)
       .then((details) => setCertText(details.cert_text))
       .catch((e: unknown) => {
-        setCertError(e instanceof Error ? e.message : 'Failed to load certificate details');
+        setCertError(errorMessage(e, 'Failed to load certificate details'));
       });
 
     Promise.all([landmarkPromise, detailsPromise])
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load'))
+      .catch((e: unknown) => setError(errorMessage(e, 'Failed to load')))
       .finally(() => setLoading(false));
   }, [caId, seqNo]);
 
@@ -57,7 +58,7 @@ export default function MtcLandmarkDetail() {
       const blob = await downloadLandmarkCert(seqNo, caId);
       triggerBlobDownload(blob, `landmark-${seqNo}.der`);
     } catch (e: unknown) {
-      setDownloadError(e instanceof Error ? e.message : 'Download failed');
+      setDownloadError(errorMessage(e, 'Download failed'));
     }
   }
 
