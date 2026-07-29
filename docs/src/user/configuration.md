@@ -2752,7 +2752,7 @@ header_format   = "xfcc"
 | `GET` | `/admin/certs` | Y | Y | | Y |
 | `GET` | `/admin/certs/{id}` | Y | Y | | Y |
 | `GET` | `/admin/certs/{id}/download` | Y | Y | | |
-| `POST` | `/admin/eab` | Y | Y | Y | |
+| `POST` | `/admin/eab` | Y | Y | | |
 | `GET` | `/admin/eab/{kid}` | Y | Y | Y | Y |
 | `DELETE` | `/admin/eab/{kid}` | Y | Y | | |
 | `GET` | `/admin/eab` | Y | Y | Y | Y |

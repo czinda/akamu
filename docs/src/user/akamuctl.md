@@ -443,7 +443,6 @@ akamuctl account list --status deactivated
 
 | Flag | Description |
 |------|-------------|
-| `--ca CA_ID` | Filter by CA ID. Only accounts registered via the named CA's `new-account` endpoint are returned. |
 | `--status VALUE` | `valid` or `deactivated`. |
 | `--limit N` | Maximum results (default 100). |
 | `--offset N` | Pagination offset (default 0). |
@@ -604,7 +603,7 @@ Download a cross-certificate by UUID:
 
 ```bash
 akamuctl cross-cert download <cross-cert-uuid>
-akamuctl cross-cert download <cross-cert-uuid> --format pem -o cross.pem
+akamuctl cross-cert download <cross-cert-uuid> -o cross.pem
 ```
 
 Requires any authenticated role.

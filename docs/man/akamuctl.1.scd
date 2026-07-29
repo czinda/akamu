@@ -260,10 +260,6 @@ Session tokens obtained after *login* are cached in
 *account list* [OPTIONS]
 	List ACME accounts.
 
-	*--ca* _CA_ID_
-		Filter by CA ID.  Only accounts registered through the named
-		CA's *new-account* endpoint are returned.
-
 	*--status* _STATUS_
 		Filter by status: *valid* or *deactivated*.
 
@@ -402,10 +398,7 @@ Session tokens obtained after *login* are cached in
 	validity window, creation timestamp, and the full PEM.
 
 *cross-cert download* _CROSS_CERT_ID_ [OPTIONS]
-	Download a cross-certificate by its UUID.
-
-	*--format* _FORMAT_
-		Output format: *pem* (default) or *der*.
+	Download a cross-certificate PEM by its UUID.
 
 	*-o*, *--output* _FILE_
 		Write to file instead of standard output.
