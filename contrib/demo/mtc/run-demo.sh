@@ -329,10 +329,15 @@ for OP_ROLE in ca_operations ca_ra auditor; do
         -extfile <(printf 'basicConstraints = CA:FALSE\nkeyUsage = critical,digitalSignature\nextendedKeyUsage = clientAuth\nsubjectKeyIdentifier = hash\nauthorityKeyIdentifier = keyid,issuer\nsubjectAltName = dirName:san_dn\n[san_dn]\nCN = %s' "$OP_NAME") 2>/dev/null
 
     echo "[demo] Registering operator '${OP_NAME}' with role '${OP_ROLE}'..."
+    CA_ID_ARGS=()
+    if [[ "$OP_ROLE" = "ca_ra" ]]; then
+        CA_ID_ARGS=(--ca-id "$AKAMU_CA_ID")
+    fi
     akamuctl_admin operator add \
         --name "$OP_NAME" \
         --role "$OP_ROLE" \
-        --cert-file "$OP_CERT"
+        --cert-file "$OP_CERT" \
+        "${CA_ID_ARGS[@]}"
     echo
 done
 
