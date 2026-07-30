@@ -32,6 +32,45 @@ pub struct AkaCrdtCounts {
     pub mtc_cosignatures: usize,
 }
 
+/// Per-field counts, optionally restricted to entries belonging to a single
+/// CA. `None` marks a field whose entry type carries no `ca_id` and therefore
+/// cannot be attributed to a CA — used so a CA-scoped caller is told "not
+/// available" rather than silently receiving the cluster-wide total.
+#[derive(Debug, Clone, Default)]
+pub struct AkaCrdtScopedCounts {
+    pub cluster_nodes: Option<usize>,
+    pub accounts: Option<usize>,
+    pub orders: Option<usize>,
+    pub authorizations: Option<usize>,
+    pub challenges: Option<usize>,
+    pub certificates: Option<usize>,
+    pub eab_keys: Option<usize>,
+    pub operators: Option<usize>,
+    pub delegations: Option<usize>,
+    pub policy_rules: Option<usize>,
+    pub mtc_checkpoints: Option<usize>,
+    pub mtc_cosignatures: Option<usize>,
+}
+
+impl From<AkaCrdtCounts> for AkaCrdtScopedCounts {
+    fn from(c: AkaCrdtCounts) -> Self {
+        Self {
+            cluster_nodes: Some(c.cluster_nodes),
+            accounts: Some(c.accounts),
+            orders: Some(c.orders),
+            authorizations: Some(c.authorizations),
+            challenges: Some(c.challenges),
+            certificates: Some(c.certificates),
+            eab_keys: Some(c.eab_keys),
+            operators: Some(c.operators),
+            delegations: Some(c.delegations),
+            policy_rules: Some(c.policy_rules),
+            mtc_checkpoints: Some(c.mtc_checkpoints),
+            mtc_cosignatures: Some(c.mtc_cosignatures),
+        }
+    }
+}
+
 /// Top-level CRDT for Akamu cluster state.
 ///
 /// All ACME protocol state, admin state, and MTC state lives here. Nonces,
@@ -155,6 +194,66 @@ impl AkaCrdt {
             policy_rules: self.policy_rules.count_live(),
             mtc_checkpoints: self.mtc_checkpoints.count_live(),
             mtc_cosignatures: self.mtc_cosignatures.count_live(),
+        }
+    }
+
+    /// Count of live entries per field, restricted to `ca_scope` when given.
+    ///
+    /// Entry types without a `ca_id` field (cluster nodes, challenges, EAB
+    /// keys, MTC checkpoints/cosignatures) can't be attributed to a CA, so
+    /// their counts are `None` for a CA-scoped caller instead of leaking the
+    /// cluster-wide total — see `GET /admin/gossip/status`, which must not
+    /// give a CA-scoped operator visibility into other CAs' entity volume.
+    pub fn entry_counts_scoped(&self, ca_scope: Option<&str>) -> AkaCrdtScopedCounts {
+        let Some(scope) = ca_scope else {
+            return self.entry_counts().into();
+        };
+        AkaCrdtScopedCounts {
+            cluster_nodes: None,
+            accounts: Some(
+                self.accounts
+                    .live_values()
+                    .filter(|(_, v)| v.ca_id == scope)
+                    .count(),
+            ),
+            orders: Some(
+                self.orders
+                    .live_values()
+                    .filter(|(_, v)| v.ca_id == scope)
+                    .count(),
+            ),
+            authorizations: Some(
+                self.authorizations
+                    .live_values()
+                    .filter(|(_, v)| v.ca_id == scope)
+                    .count(),
+            ),
+            challenges: None,
+            certificates: Some(
+                self.certificates
+                    .live_values()
+                    .filter(|(_, v)| v.ca_id == scope)
+                    .count(),
+            ),
+            eab_keys: None,
+            operators: Some(
+                self.operators
+                    .live_values()
+                    .filter(|(_, v)| v.ca_id == scope)
+                    .count(),
+            ),
+            delegations: Some(
+                self.delegations
+                    .live_values()
+                    .filter(|(_, v)| v.ca_id == scope)
+                    .count(),
+            ),
+            // `PolicyRuleEntry::scope` is the rule's functional scope (e.g.
+            // "issuance"), not a CA identifier — per-CA policy scoping lives
+            // in the rule's own JSON payload, not this CRDT entry.
+            policy_rules: None,
+            mtc_checkpoints: None,
+            mtc_cosignatures: None,
         }
     }
 
@@ -381,6 +480,83 @@ mod tests {
         assert!(decoded.certificates.get("cert-1").is_some());
         assert!(decoded.policy_rules.get("rule-1").is_some());
         assert_eq!(decoded.mtc_cosignatures.count_live(), 1);
+    }
+
+    #[test]
+    fn entry_counts_scoped_none_matches_global_counts() {
+        let crdt = sample_crdt();
+        let global = crdt.entry_counts();
+        let scoped = crdt.entry_counts_scoped(None);
+
+        assert_eq!(scoped.accounts, Some(global.accounts));
+        assert_eq!(scoped.certificates, Some(global.certificates));
+        assert_eq!(scoped.eab_keys, Some(global.eab_keys));
+        assert_eq!(scoped.cluster_nodes, Some(global.cluster_nodes));
+    }
+
+    #[test]
+    fn entry_counts_scoped_filters_by_ca_id_and_hides_unscopable_fields() {
+        let mut crdt = AkaCrdt::default();
+        let now = 1_700_000_000i64;
+
+        crdt.accounts.upsert(
+            "acct-a".to_owned(),
+            AccountEntry {
+                account_id: "acct-a".to_owned(),
+                ca_id: "ca-a".to_owned(),
+                ..Default::default()
+            },
+            now,
+        );
+        crdt.accounts.upsert(
+            "acct-b".to_owned(),
+            AccountEntry {
+                account_id: "acct-b".to_owned(),
+                ca_id: "ca-b".to_owned(),
+                ..Default::default()
+            },
+            now,
+        );
+        crdt.certificates.upsert(
+            "cert-a".to_owned(),
+            CertEntry {
+                cert_id: "cert-a".to_owned(),
+                ca_id: "ca-a".to_owned(),
+                ..Default::default()
+            },
+            now,
+        );
+        crdt.eab_keys.set(
+            "kid-1".to_owned(),
+            EabKeyEntry {
+                kid: "kid-1".to_owned(),
+                ..Default::default()
+            },
+            now,
+            "node-1",
+        );
+
+        let scoped_a = crdt.entry_counts_scoped(Some("ca-a"));
+        assert_eq!(
+            scoped_a.accounts,
+            Some(1),
+            "a CA-scoped caller must only see accounts belonging to its own CA"
+        );
+        assert_eq!(scoped_a.certificates, Some(1));
+        assert_eq!(
+            scoped_a.eab_keys, None,
+            "EAB keys carry no ca_id in the CRDT model — the cluster-wide \
+             count must not leak to a CA-scoped caller"
+        );
+        assert_eq!(scoped_a.cluster_nodes, None);
+
+        let scoped_b = crdt.entry_counts_scoped(Some("ca-b"));
+        assert_eq!(scoped_b.accounts, Some(1));
+        assert_eq!(
+            scoped_b.certificates,
+            Some(0),
+            "ca-b has no certificates of its own and must not see ca-a's"
+        );
     }
 
     #[test]

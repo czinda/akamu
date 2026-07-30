@@ -411,8 +411,9 @@ pub async fn gossip_status(
         state,
         Administrator | CaOperations | CaRa | Auditor
     );
+    let ca_scope = operator.ca_scope();
     let crdt = state.crdt.read().await;
-    let counts = crdt.entry_counts();
+    let counts = crdt.entry_counts_scoped(ca_scope);
     let crdt_generation = CRDT_GENERATION.load(std::sync::atomic::Ordering::Acquire);
 
     let node_entry = crdt.cluster_nodes.get(state.node_id.as_str());
@@ -423,15 +424,26 @@ pub async fn gossip_status(
         .map(|e| !e.gossip_signing_pub_key_der.is_empty())
         .unwrap_or(false);
 
-    let peers = state
-        .config
-        .gossip
-        .as_ref()
-        .map(|g| g.peers.clone())
-        .unwrap_or_default();
+    // Cluster topology (node id, peer URLs) is only meaningful to callers
+    // with server-wide visibility; a CA-scoped operator has no legitimate
+    // need for it and must not learn it via this endpoint.
+    let (node_id, peers) = if ca_scope.is_none() {
+        (
+            Some(state.node_id.as_str()),
+            state
+                .config
+                .gossip
+                .as_ref()
+                .map(|g| g.peers.clone())
+                .unwrap_or_default(),
+        )
+    } else {
+        (None, Vec::new())
+    };
 
     Json(serde_json::json!({
-        "node_id": state.node_id.as_str(),
+        "node_id": node_id,
+        "ca_scope": ca_scope,
         "crdt_generation": crdt_generation,
         "kem_enrolled": kem_enrolled,
         "gossip_signing_enrolled": gossip_signing_enrolled,
