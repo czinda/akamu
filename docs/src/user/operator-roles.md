@@ -300,7 +300,7 @@ filter — the operator only sees data belonging to its assigned CA.
 | `POST` | `/admin/policy/rules` | Y | Y | | |
 | `PUT` | `/admin/policy/rules/{id}` | Y | Y | | |
 | `DELETE` | `/admin/policy/rules/{id}` | Y | Y | | |
-| `GET` | `/admin/gossip/status` | | | | Y |
+| `GET` | `/admin/gossip/status` | Y | Y | Y | Y |
 | `POST` | `/admin/gossip/register` | Y | | | |
 | `POST` | `/admin/tkauth/prune-jti` | Y | Y | | |
 

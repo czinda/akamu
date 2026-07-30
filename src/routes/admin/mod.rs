@@ -71,7 +71,7 @@
 //! | `POST /admin/ca/{id}/mtc/force-checkpoint` | ✓ | ✓ | | |
 //! | `POST /admin/ca/{id}/mtc/force-landmark` | ✓ | ✓ | | |
 //! | `GET /admin/ca/{id}/mtc/log-list-entry` | ✓ | ✓ | | ✓ |
-//! | `GET /admin/gossip/status` | | | | ✓ |
+//! | `GET /admin/gossip/status` | ✓ | ✓ | ✓ | ✓ |
 //! | `POST /admin/gossip/register` | ✓ | | | |
 //! | `GET /admin/policy/scopes` | ✓ | ✓ | | ✓ |
 //! | `GET /admin/policy/rules` | ✓ | ✓ | | ✓ |

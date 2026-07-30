@@ -406,7 +406,11 @@ pub async fn gossip_status(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    require_role!(operator, state, Auditor);
+    require_role!(
+        operator,
+        state,
+        Administrator | CaOperations | CaRa | Auditor
+    );
     let crdt = state.crdt.read().await;
     let counts = crdt.entry_counts();
     let crdt_generation = CRDT_GENERATION.load(std::sync::atomic::Ordering::Acquire);
