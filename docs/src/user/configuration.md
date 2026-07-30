@@ -2834,61 +2834,9 @@ header_format   = "xfcc"
 
 **Admin endpoints and RBAC roles:**
 
-| Method | Path | administrator | ca_operations | ca_ra | auditor |
-|--------|------|:---:|:---:|:---:|:---:|
-| `POST` | `/admin/session` | Y | Y | Y | Y |
-| `DELETE` | `/admin/session` | Y | Y | Y | Y |
-| `GET` | `/admin/operators` | Y | | | |
-| `POST` | `/admin/operators` | Y | | | |
-| `GET` | `/admin/operators/{id}` | Y | | | |
-| `PUT` | `/admin/operators/{id}` | Y | | | |
-| `PATCH` | `/admin/operators/{id}` | Y | | | |
-| `POST` | `/admin/operators/{id}/unlock` | Y | | | |
-| `GET` | `/admin/audit` | Y | | | Y |
-| `GET` | `/admin/profiles` | Y | Y | Y | Y |
-| `POST` | `/admin/profiles` | Y | | | |
-| `PUT` | `/admin/profiles/{id}` | Y | | | |
-| `DELETE` | `/admin/profiles/{id}` | Y | | | |
-| `GET` | `/admin/accounts` | Y | Y | Y | Y |
-| `GET` | `/admin/account/{id}` | Y | Y | Y | Y |
-| `POST` | `/admin/account/{id}/deactivate` | Y | | | |
-| `GET` | `/admin/account/{id}/profile-grants` | Y | Y | Y | Y |
-| `PUT` | `/admin/account/{id}/profile-grants` | Y | Y | | |
-| `DELETE` | `/admin/account/{id}/profile-grants` | Y | | | |
-| `GET` | `/admin/certs` | Y | Y | | Y |
-| `GET` | `/admin/certs/{id}` | Y | Y | | Y |
-| `GET` | `/admin/certs/{id}/download` | Y | Y | | |
-| `POST` | `/admin/eab` | Y | Y | | |
-| `GET` | `/admin/eab/{kid}` | Y | Y | Y | Y |
-| `DELETE` | `/admin/eab/{kid}` | Y | Y | | |
-| `GET` | `/admin/eab` | Y | Y | Y | Y |
-| `GET` | `/admin/orders` | Y | Y | Y | Y |
-| `GET` | `/admin/orders/{id}` | Y | Y | Y | Y |
-| `GET` | `/admin/config` | Y | | | |
-| `POST` | `/admin/crl/force` | Y | Y | | |
-| `POST` | `/admin/revoke` | Y | Y | Y | |
-| `GET` | `/admin/stats` | Y | Y | Y | Y |
-| `GET` | `/admin/cas` | Y | Y | | |
-| `GET` | `/admin/cas/{id}` | Y | Y | | |
-| `GET` | `/admin/cas/{id}/cert` | Y | Y | | |
-| `POST` | `/admin/ca/{id}/crl/force` | Y | Y | | |
-| `POST` | `/admin/ca/{id}/cross-sign` | Y | Y | | |
-| `GET` | `/admin/cross-certs` | Y | Y | | Y |
-| `GET` | `/admin/cross-certs/{id}` | Y | Y | | Y |
-| `GET` | `/admin/delegations` | Y | Y | Y | Y |
-| `POST` | `/admin/delegations` | Y | Y | | |
-| `GET` | `/admin/delegations/{id}` | Y | Y | Y | Y |
-| `PUT` | `/admin/delegations/{id}` | Y | Y | | |
-| `DELETE` | `/admin/delegations/{id}` | Y | Y | | |
-| `GET` | `/admin/gossip/status` | Y | Y | Y | Y |
-| `POST` | `/admin/gossip/register` | Y | | | |
-| `GET` | `/admin/policy/scopes` | Y | Y | | Y |
-| `GET` | `/admin/policy/rules` | Y | Y | | Y |
-| `GET` | `/admin/policy/rules/{id}` | Y | Y | | Y |
-| `POST` | `/admin/policy/rules` | Y | Y | | |
-| `PUT` | `/admin/policy/rules/{id}` | Y | Y | | |
-| `DELETE` | `/admin/policy/rules/{id}` | Y | Y | | |
-| `POST` | `/admin/tkauth/prune-jti` | Y | Y | | |
+See the [permission matrix](operator-roles.md#permission-matrix) in the
+operator roles reference for the full route-by-role table.
 
-See [Admin API and Operator Management](admin-api.md) for the full request/response format of each endpoint.
+See [Admin API and Operator Management](admin-api.md) for the full
+request/response format of each endpoint.
 

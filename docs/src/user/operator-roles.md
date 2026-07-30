@@ -300,6 +300,9 @@ filter — the operator only sees data belonging to its assigned CA.
 | `POST` | `/admin/policy/rules` | Y | Y | | |
 | `PUT` | `/admin/policy/rules/{id}` | Y | Y | | |
 | `DELETE` | `/admin/policy/rules/{id}` | Y | Y | | |
+| `GET` | `/admin/gossip/status` | | | | Y |
+| `POST` | `/admin/gossip/register` | Y | | | |
+| `POST` | `/admin/tkauth/prune-jti` | Y | Y | | |
 
 **Note on `ca_ra` scoping:** When `ca_ra` is listed as permitted on a cert,
 account, or order endpoint, the server silently overrides any `ca_id` query
