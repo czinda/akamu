@@ -775,6 +775,13 @@ pub struct CachedAccount {
     pub jwk_thumbprint: String,
     /// Account status string: `"valid"`, `"deactivated"`, or `"revoked"`.
     pub status: String,
+    /// When this entry was cached. Entries older than `SPKI_CACHE_TTL` are
+    /// treated as a cache miss and refreshed from the database, bounding how
+    /// long a deactivated/rotated account can keep authenticating via a
+    /// stale entry that an eviction call site missed (e.g. a status change
+    /// gossiped in from another cluster node, which does not evict this
+    /// node's cache at all).
+    pub cached_at: Instant,
 }
 
 /// MTC transparency log state for a single CA.

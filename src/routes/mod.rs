@@ -23,6 +23,10 @@ use crate::error::AcmeError;
 use crate::jose::jws::{JwsFlattened, JwsKeyRef, JwsProtectedHeader};
 use crate::state::{AppState, CachedAccount};
 
+/// Maximum age of a `spki_cache` entry before it is treated as a cache miss
+/// and refreshed from the database. See the cache read site in `parse_jws`.
+const SPKI_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
 // ── CaId extractor ────────────────────────────────────────────────────────────
 
 /// Carries the CA identifier for the current request.
@@ -642,11 +646,17 @@ pub(crate) async fn parse_jws(
         JwsKeyRef::Kid { kid } => {
             let id = crate::jose::kid::account_id_from_kid(&state.config.base_url, kid)?;
             // Try the in-memory account cache first to avoid a DB round-trip.
+            // Entries older than SPKI_CACHE_TTL are treated as a miss: an
+            // admin deactivation on another cluster node (propagated via
+            // gossip, which does not evict this node's cache) or any missed
+            // eviction call site is picked up within one TTL window instead
+            // of persisting for the life of the process.
             let cached = state
                 .spki_cache
                 .read()
                 .unwrap_or_else(|e| e.into_inner())
                 .get(&id)
+                .filter(|acc| acc.cached_at.elapsed() <= SPKI_CACHE_TTL)
                 .cloned();
             let cached_account = if let Some(acc) = cached {
                 if acc.status != "valid" {
@@ -670,6 +680,7 @@ pub(crate) async fn parse_jws(
                     spki_der: account.public_key,
                     jwk_thumbprint: account.jwk_thumbprint,
                     status: account.status,
+                    cached_at: std::time::Instant::now(),
                 };
                 state
                     .spki_cache
