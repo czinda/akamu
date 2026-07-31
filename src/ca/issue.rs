@@ -246,6 +246,62 @@ fn bundle_leaf_and_ca_pem(leaf_der: &[u8], ca_der: &[u8]) -> Result<String, Acme
         .map_err(|_| AcmeError::Internal("PEM contains invalid UTF-8".into()))
 }
 
+/// Sign a "bootstrap" leaf certificate (self-hosted TLS server cert, admin
+/// operator client cert) with the standard extension set: BasicConstraints
+/// cA=FALSE, KeyUsage digitalSignature, the given EKU, SKI/AKI, and a single
+/// SubjectAlternativeName. Shared by `sign_server_cert` and
+/// `sign_admin_cert`, which differ only in subject/SAN construction and EKU
+/// choice — validity is `ca.validity_days` days from now, no clamping (these
+/// are operator/bootstrap-issued, not subscriber certs under RFC 8555
+/// §7.1.3 override rules).
+fn sign_standard_leaf(
+    ca: &CaState,
+    ca_name_der: &[u8],
+    ca_spki_der: &[u8],
+    subject_der: &[u8],
+    spki_der: &[u8],
+    san_der: &[u8],
+    eku_der: &[u8],
+) -> Result<Vec<u8>, AcmeError> {
+    let (_serial_bytes, serial, _serial_hex) = generate_random_serial()?;
+    let now = unix_now();
+    let (not_before, not_after) =
+        parse_validity_window(now, now + ca.validity_days as i64 * 86400)?;
+
+    let hasher = default_key_id_hasher();
+    let bc_der = encode_basic_constraints(false, None)
+        .ok_or_else(|| AcmeError::Builder("BasicConstraints".into()))?;
+    let ku_der = encode_key_usage(1u16 << KEY_USAGE_DIGITAL_SIGNATURE)
+        .ok_or_else(|| AcmeError::Builder("KeyUsage".into()))?;
+    let ski_der =
+        encode_subject_key_identifier(spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
+            .ok_or_else(|| AcmeError::Builder("SKI".into()))?;
+    let aki_der =
+        encode_authority_key_identifier(ca_spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
+            .ok_or_else(|| AcmeError::Builder("AKI".into()))?;
+
+    let ca_key = ca
+        .local_key()
+        .ok_or_else(|| AcmeError::Internal("sign_standard_leaf requires local CA key".into()))?;
+    let signer = ca_key.as_signer(&ca.hash_alg);
+
+    CertificateBuilder::new()
+        .issuer_name(ca_name_der)
+        .subject_name(subject_der)
+        .public_key_der(spki_der)
+        .serial_number(serial)
+        .not_valid_before(not_before)
+        .not_valid_after(not_after)
+        .add_extension_oid(oids::BASIC_CONSTRAINTS, false, &bc_der)
+        .add_extension_oid(oids::KEY_USAGE, true, &ku_der)
+        .add_extension_oid(oids::EXTENDED_KEY_USAGE, false, eku_der)
+        .add_extension_oid(oids::SUBJECT_KEY_IDENTIFIER, false, &ski_der)
+        .add_extension_oid(oids::AUTHORITY_KEY_IDENTIFIER, false, &aki_der)
+        .add_extension_oid(oids::SUBJECT_ALT_NAME, false, san_der)
+        .sign(&signer)
+        .map_err(|e| AcmeError::Builder(format!("sign leaf cert: {e}")))
+}
+
 /// Build a SubjectAlternativeName extension DER value from a CSR's parsed
 /// SANs plus any additional other-name/dns-name entries.
 ///
@@ -787,17 +843,14 @@ pub fn sign_server_cert(
     server_key: &synta_certificate::BackendPrivateKey,
     ca: &CaState,
 ) -> Result<Vec<u8>, AcmeError> {
-    // Extract CA subject name for the issuer field.
     let ca_name_der = extract_ca_subject_der(&ca.cert_der)?;
 
-    // Server public key SPKI.
     let spki_der = server_key
         .public_key()
         .map_err(|e| AcmeError::Crypto(format!("server public key: {e}")))?
         .spki_der()
         .to_vec();
 
-    // CA public key for AKI.
     let ca_key = ca
         .local_key()
         .ok_or_else(|| AcmeError::Internal("sign_server_cert requires local CA key".into()))?;
@@ -807,41 +860,16 @@ pub fn sign_server_cert(
         .spki_der()
         .to_vec();
 
-    // Random 16-byte positive serial.
-    let (_serial_bytes, serial, _serial_hex) = generate_random_serial()?;
-
-    // Validity window.
-    let now = unix_now();
-    let (not_before, not_after) =
-        parse_validity_window(now, now + ca.validity_days as i64 * 86400)?;
-
     // Subject: CN=server_name.
     let subject_der = NameBuilder::new()
         .common_name(server_name)
         .build()
         .map_err(|e| AcmeError::Builder(format!("subject name: {e}")))?;
 
-    // Extensions.
-    let hasher = default_key_id_hasher();
-
-    let bc_der = encode_basic_constraints(false, None)
-        .ok_or_else(|| AcmeError::Builder("BasicConstraints".into()))?;
-
-    let ku_der = encode_key_usage(1u16 << KEY_USAGE_DIGITAL_SIGNATURE)
-        .ok_or_else(|| AcmeError::Builder("KeyUsage".into()))?;
-
     let eku_der = ExtendedKeyUsageBuilder::new()
         .server_auth()
         .build()
         .map_err(|e| AcmeError::Builder(format!("EKU: {e}")))?;
-
-    let ski_der =
-        encode_subject_key_identifier(&spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
-            .ok_or_else(|| AcmeError::Builder("SKI".into()))?;
-
-    let aki_der =
-        encode_authority_key_identifier(&ca_spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
-            .ok_or_else(|| AcmeError::Builder("AKI".into()))?;
 
     let mut san_builder = SubjectAlternativeNameBuilder::new();
     san_builder = if let Some(ip_bytes) = ip_string_to_bytes(server_name) {
@@ -853,22 +881,15 @@ pub fn sign_server_cert(
         .build()
         .map_err(|e| AcmeError::Builder(format!("SAN: {e}")))?;
 
-    let signer = ca_key.as_signer(&ca.hash_alg);
-    CertificateBuilder::new()
-        .issuer_name(&ca_name_der)
-        .subject_name(&subject_der)
-        .public_key_der(&spki_der)
-        .serial_number(serial)
-        .not_valid_before(not_before)
-        .not_valid_after(not_after)
-        .add_extension_oid(oids::BASIC_CONSTRAINTS, false, &bc_der)
-        .add_extension_oid(oids::KEY_USAGE, true, &ku_der)
-        .add_extension_oid(oids::EXTENDED_KEY_USAGE, false, &eku_der)
-        .add_extension_oid(oids::SUBJECT_KEY_IDENTIFIER, false, &ski_der)
-        .add_extension_oid(oids::AUTHORITY_KEY_IDENTIFIER, false, &aki_der)
-        .add_extension_oid(oids::SUBJECT_ALT_NAME, false, &san_der)
-        .sign(&signer)
-        .map_err(|e| AcmeError::Builder(format!("sign server cert: {e}")))
+    sign_standard_leaf(
+        ca,
+        &ca_name_der,
+        &ca_spki_der,
+        &subject_der,
+        &spki_der,
+        &san_der,
+        &eku_der,
+    )
 }
 
 /// SAN type for an admin operator certificate, derived from prefix parsing.
@@ -958,33 +979,15 @@ pub fn sign_admin_cert(
         .spki_der()
         .to_vec();
 
-    let (_serial_bytes, serial, _serial_hex) = generate_random_serial()?;
-
-    let now = unix_now();
-    let (not_before, not_after) =
-        parse_validity_window(now, now + ca.validity_days as i64 * 86400)?;
-
     let subject_der = NameBuilder::new()
         .common_name(cn)
         .build()
         .map_err(|e| AcmeError::Builder(format!("subject name: {e}")))?;
 
-    let hasher = default_key_id_hasher();
-
-    let bc_der = encode_basic_constraints(false, None)
-        .ok_or_else(|| AcmeError::Builder("BasicConstraints".into()))?;
-    let ku_der = encode_key_usage(1u16 << KEY_USAGE_DIGITAL_SIGNATURE)
-        .ok_or_else(|| AcmeError::Builder("KeyUsage".into()))?;
     let eku_der = ExtendedKeyUsageBuilder::new()
         .client_auth()
         .build()
         .map_err(|e| AcmeError::Builder(format!("EKU: {e}")))?;
-    let ski_der =
-        encode_subject_key_identifier(&spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
-            .ok_or_else(|| AcmeError::Builder("SKI".into()))?;
-    let aki_der =
-        encode_authority_key_identifier(&ca_spki_der, KeyIdMethod::Rfc7093Method1Sha256, &hasher)
-            .ok_or_else(|| AcmeError::Builder("AKI".into()))?;
 
     let san_der = match &san_kind {
         OperatorSanKind::Dns(name) => SubjectAlternativeNameBuilder::new().dns_name(name),
@@ -998,22 +1001,15 @@ pub fn sign_admin_cert(
     .build()
     .map_err(|e| AcmeError::Builder(format!("SAN: {e}")))?;
 
-    let signer = ca_key.as_signer(&ca.hash_alg);
-    CertificateBuilder::new()
-        .issuer_name(&ca_name_der)
-        .subject_name(&subject_der)
-        .public_key_der(&spki_der)
-        .serial_number(serial)
-        .not_valid_before(not_before)
-        .not_valid_after(not_after)
-        .add_extension_oid(oids::BASIC_CONSTRAINTS, false, &bc_der)
-        .add_extension_oid(oids::KEY_USAGE, true, &ku_der)
-        .add_extension_oid(oids::EXTENDED_KEY_USAGE, false, &eku_der)
-        .add_extension_oid(oids::SUBJECT_KEY_IDENTIFIER, false, &ski_der)
-        .add_extension_oid(oids::AUTHORITY_KEY_IDENTIFIER, false, &aki_der)
-        .add_extension_oid(oids::SUBJECT_ALT_NAME, false, &san_der)
-        .sign(&signer)
-        .map_err(|e| AcmeError::Builder(format!("sign admin cert: {e}")))
+    sign_standard_leaf(
+        ca,
+        &ca_name_der,
+        &ca_spki_der,
+        &subject_der,
+        &spki_der,
+        &san_der,
+        &eku_der,
+    )
 }
 
 /// Apply CA/B Forum BR §4.3.1.2 pre-issuance policy linting to a just-signed certificate.
@@ -1425,7 +1421,7 @@ mod tests {
     use super::{
         ip_string_to_bytes, issue_certificate, issue_with_params, parse_operator_san,
         permitted_sig_algs_with_composite, permitted_spki_algs_with_composite, sign_admin_cert,
-        IssueCertParams, IssueWithParamsArgs, OperatorSanKind,
+        sign_server_cert, IssueCertParams, IssueWithParamsArgs, OperatorSanKind,
     };
     use crate::ca::csr::{validate_csr, SanEntry, ValidatedCsr};
     use crate::linter::WEBPKI_PROFILE;
@@ -2274,6 +2270,58 @@ mod tests {
             RevocationChecks::default(),
         )
         .expect("admin cert with directoryName SAN must pass client verification");
+    }
+
+    #[test]
+    fn sign_server_cert_dns_name_passes_server_verification() {
+        let ca = make_test_ca_state();
+        let server_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let domain = "bootstrap.example.com";
+        let cert_der = sign_server_cert(domain, &server_key, &ca).unwrap();
+
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let ca_parsed: Certificate = Decoder::new(&ca.cert_der, Encoding::Der).decode().unwrap();
+        let ca_vcert = VerificationCertificate::new(ca_parsed, &ca.cert_der);
+        let store = Store::new(vec![ca_vcert]);
+
+        let leaf_parsed: Certificate = Decoder::new(&cert_der, Encoding::Der).decode().unwrap();
+        let leaf_vcert = VerificationCertificate::new(leaf_parsed, &cert_der);
+
+        let dns_name = DNSName::new(domain).unwrap();
+        let policy = PolicyDefinition::new_server(
+            OpensslSignatureVerifier,
+            vec![Subject::Dns(dns_name)],
+            now_unix,
+        );
+
+        verify(
+            &leaf_vcert,
+            &[],
+            &policy,
+            &store,
+            RevocationChecks::default(),
+        )
+        .expect("bootstrap server cert must pass serverAuth chain verification");
+    }
+
+    #[test]
+    fn sign_server_cert_ip_address_produces_ip_san() {
+        let ca = make_test_ca_state();
+        let server_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+        let cert_der = sign_server_cert("127.0.0.1", &server_key, &ca).unwrap();
+        let cert = synta_certificate::Certificate::from_der(&cert_der).unwrap();
+        let sans = cert.subject_alt_names();
+        assert!(
+            sans.iter().any(
+                |(tag, val)| *tag == synta_certificate::general_name::IP_ADDRESS
+                    && val == &[127, 0, 0, 1]
+            ),
+            "expected iPAddress SAN 127.0.0.1, got: {sans:?}"
+        );
     }
 
     #[test]
