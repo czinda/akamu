@@ -3007,6 +3007,131 @@ async fn test_new_order_with_deactivated_account() {
     );
 }
 
+/// Regression test: admin-initiated deactivation must evict the account's
+/// `spki_cache` entry, the same way self-service deactivation does (see
+/// `test_new_order_with_deactivated_account`). Without eviction, a JWS
+/// request that already warmed the cache would keep authenticating against
+/// the stale "valid" entry indefinitely, even though the account is now
+/// deactivated in the database.
+#[tokio::test]
+async fn admin_deactivate_evicts_spki_cache() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let router = routes::build_router(Arc::clone(&state), None, false);
+
+    let key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
+    let (status, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    // A kid-authenticated request warms the spki_cache for this account.
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": "admin-deactivate.test"}]})),
+    );
+    let (status, body, _) = post_acme(&router, "/acme/new-order", jws).await;
+    assert_eq!(status, StatusCode::CREATED, "warm-up order failed: {body}");
+
+    let account_id: String =
+        sqlx::query_as::<_, (String,)>("SELECT id FROM accounts ORDER BY created DESC LIMIT 1")
+            .fetch_one(&state.db)
+            .await
+            .unwrap()
+            .0;
+    assert!(
+        state.spki_cache.read().unwrap().contains_key(&account_id),
+        "spki_cache should be warm after the kid-authenticated request"
+    );
+
+    // Deactivate via the admin API handler directly (bypassing the HTTP auth
+    // middleware — this test targets the handler's cache-eviction behavior,
+    // not the admin authentication path, which is covered elsewhere).
+    let operator = akamu::admin::auth::OperatorContext {
+        operator_id: 1,
+        name: "test-admin".into(),
+        role: akamu::state::OperatorRole::Administrator,
+        ca_id: String::new(),
+        auth_method: akamu::state::AdminAuthMethod::Cert,
+        session_token: None,
+    };
+    let resp = akamu::routes::admin::accounts::post_account_deactivate(
+        operator,
+        axum::extract::State(Arc::clone(&state)),
+        axum::extract::Path(account_id.clone()),
+    )
+    .await;
+    assert_eq!(
+        axum::response::IntoResponse::into_response(resp).status(),
+        StatusCode::NO_CONTENT
+    );
+
+    assert!(
+        !state.spki_cache.read().unwrap().contains_key(&account_id),
+        "admin deactivation must evict the spki_cache entry, not leave a stale 'valid' entry \
+         that would keep authenticating this account"
+    );
+}
+
+/// Regression test for a challenge-eligibility divergence between
+/// pre-authorization (`authz.rs`) and new-order (`order.rs`): both now share
+/// `eligible_challenge_types`, so `.onion` domains must not be offered
+/// `http-01`/`tls-alpn-01` via pre-authorization when the server has no Tor
+/// connectivity — previously `new-authz` unconditionally offered them
+/// regardless of `tor_connectivity_enabled`, unlike `new-order`.
+#[tokio::test]
+async fn new_authz_onion_without_tor_connectivity_only_offers_onion_csr() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    assert!(
+        !state.config.server.tor_connectivity_enabled,
+        "test assumes the default has no Tor connectivity"
+    );
+    let router = routes::build_router(Arc::clone(&state), None, false);
+
+    let key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    const V3_ONION: &str = "bbcweb3hytmzhn5d532owbu6oqadra5z3ar726vq5kgwwn6aucdccrad.onion";
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/new-authz"),
+        Some(json!({"identifier": {"type": "dns", "value": V3_ONION}})),
+    );
+    let (status, body, _) = post_acme(&router, "/acme/new-authz", jws).await;
+    assert_eq!(status, StatusCode::CREATED, "new-authz failed: {body}");
+
+    let types: Vec<&str> = body["challenges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        types,
+        vec!["onion-csr-01"],
+        "without Tor connectivity, pre-authorization for a .onion domain must offer only \
+         onion-csr-01, matching new-order's behavior"
+    );
+}
+
 /// Finalize a certificate when OCSP and CRL URLs are configured — covers ca/issue.rs lines 145-158.
 #[tokio::test]
 async fn test_finalize_with_aia_and_cdp() {
