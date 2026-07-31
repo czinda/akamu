@@ -539,8 +539,13 @@ async fn ui_security_headers(req: Request, next: Next) -> Response {
     headers.insert(
         HeaderName::from_static("content-security-policy"),
         HeaderValue::from_static(
+            // script-src has no 'unsafe-inline': the built webui only loads
+            // external module scripts. style-src still needs it because React's
+            // `style={{...}}` prop (used throughout webui/src) compiles to
+            // inline `style="..."` attributes, which CSP has no nonce/hash
+            // mechanism for short of a broader refactor away from inline styles.
             "default-src 'self'; \
-             script-src 'self' 'unsafe-inline'; \
+             script-src 'self'; \
              style-src 'self' 'unsafe-inline'; \
              img-src 'self' data:; \
              font-src 'self'; \
