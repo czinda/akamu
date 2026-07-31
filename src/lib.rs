@@ -27,6 +27,7 @@ pub mod profiles;
 pub mod routes;
 pub mod star;
 pub mod state;
+pub mod status;
 pub mod tls;
 pub mod trusted_proxy;
 pub mod util;
