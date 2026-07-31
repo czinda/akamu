@@ -369,6 +369,41 @@ pub async fn open(url: &str, max_connections: u32, require_tls: bool) -> Result<
         .await
         .map_err(|e| AcmeError::Database(format!("open database '{url}': {e}")))?;
 
+    if IS_POSTGRES
+        .set(matches!(DbKind::from_url(url), DbKind::Postgres))
+        .is_err()
+    {
+        tracing::warn!("IS_POSTGRES already set — concurrent database pool opens detected");
+    }
+
+    // Migrations run before the SQLite pragmas below, in particular before
+    // `PRAGMA foreign_keys=ON`.  sqlx unconditionally wraps each SQLite
+    // migration file in a transaction (unlike the Postgres driver, which
+    // honors a `-- no-transaction` marker), and PRAGMA foreign_keys is a
+    // documented no-op once a transaction is already open — so a migration
+    // that rebuilds a table with live rows in a referencing child table
+    // (SQLite has no ALTER TABLE ADD CONSTRAINT, so this drop+recreate
+    // pattern is the only way to change a table's schema) would fail with
+    // "FOREIGN KEY constraint failed" if enforcement were already active.
+    // A fresh SQLite connection defaults foreign_keys to off, so running
+    // migrations first is safe; enforcement is still turned on immediately
+    // after, before this pool is handed to any caller.
+    let map_err = |e| AcmeError::Database(format!("migration failed: {e}"));
+    match DbKind::from_url(url) {
+        DbKind::Sqlite => sqlx::migrate!("migrations/sqlite")
+            .run(&pool)
+            .await
+            .map_err(map_err)?,
+        DbKind::Postgres => sqlx::migrate!("migrations/postgres")
+            .run(&pool)
+            .await
+            .map_err(map_err)?,
+        DbKind::MariaDb => sqlx::migrate!("migrations/mariadb")
+            .run(&pool)
+            .await
+            .map_err(map_err)?,
+    }
+
     // SQLite-specific connection pragmas.  The Any driver forwards these as
     // plain SQL; non-SQLite backends ignore them (PRAGMA is not valid SQL for
     // PostgreSQL/MariaDB and the queries are sent but produce no effect — the
@@ -392,29 +427,6 @@ pub async fn open(url: &str, max_connections: u32, require_tls: bool) -> Result<
                 tracing::warn!(pragma, error = %e, "non-critical SQLite PRAGMA failed");
             }
         }
-    }
-
-    if IS_POSTGRES
-        .set(matches!(DbKind::from_url(url), DbKind::Postgres))
-        .is_err()
-    {
-        tracing::warn!("IS_POSTGRES already set — concurrent database pool opens detected");
-    }
-
-    let map_err = |e| AcmeError::Database(format!("migration failed: {e}"));
-    match DbKind::from_url(url) {
-        DbKind::Sqlite => sqlx::migrate!("migrations/sqlite")
-            .run(&pool)
-            .await
-            .map_err(map_err)?,
-        DbKind::Postgres => sqlx::migrate!("migrations/postgres")
-            .run(&pool)
-            .await
-            .map_err(map_err)?,
-        DbKind::MariaDb => sqlx::migrate!("migrations/mariadb")
-            .run(&pool)
-            .await
-            .map_err(map_err)?,
     }
 
     Ok(pool)
