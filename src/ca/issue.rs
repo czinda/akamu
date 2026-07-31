@@ -1069,16 +1069,7 @@ fn lint_issued_cert(
 
     // Algorithm lists from the linter profile.  The composite-extension helper
     // is applied on top when the profile includes PQ algorithms.
-    policy.permitted_spki_algorithms = if profile.include_composite_algs {
-        permitted_spki_algs_with_composite()
-    } else {
-        profile.spki_algs
-    };
-    policy.permitted_signature_algorithms = if profile.include_composite_algs {
-        permitted_sig_algs_with_composite()
-    } else {
-        profile.sig_algs
-    };
+    resolve_permitted_algorithms(&mut policy, profile);
 
     // RSA modulus floor.
     policy.minimum_rsa_modulus = profile.minimum_rsa_bits;
@@ -1093,27 +1084,14 @@ fn lint_issued_cert(
         profile.name_constraints,
     );
 
-    let result = store
-        .verify(&leaf, &[], &policy, RevocationChecks::default())
-        .map(|_| ());
-    match result {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let msg = e.to_string();
-            if akamu_client::tls_verify::is_mtc_extension_error(&msg) {
-                akamu_client::tls_verify::validate_mtc_ca_extensions(
-                    std::iter::once(cert_der).chain(std::iter::once(ca_cert_der)),
-                )
-                .map_err(|mtc_err| {
-                    AcmeError::Internal(format!("pre-issuance lint failed: {mtc_err}"))
-                })
-            } else {
-                Err(AcmeError::Internal(format!(
-                    "pre-issuance lint failed: {e}"
-                )))
-            }
-        }
-    }
+    verify_and_map_mtc_fallback(
+        &store,
+        &leaf,
+        &policy,
+        &[cert_der, ca_cert_der],
+        "pre-issuance lint failed",
+        AcmeError::Internal,
+    )
 }
 
 /// Apply an [`ExtPresence`] override to an [`ExtensionValidator`] field,
@@ -1138,6 +1116,59 @@ fn apply_ext_presence<B: synta_x509_verification::ops::CryptoOps>(
         },
         ExtPresence::Absent => ExtensionValidator::NotPresent,
     };
+}
+
+/// Set `policy.permitted_spki_algorithms`/`permitted_signature_algorithms`
+/// from the linter profile, extending with composite ML-DSA OIDs on top when
+/// the profile requests them (see the `permitted_*_algs_with_composite`
+/// helpers above).
+fn resolve_permitted_algorithms<B: synta_x509_verification::ops::CryptoOps>(
+    policy: &mut PolicyDefinition<'_, B>,
+    profile: &ResolvedLinterProfile,
+) {
+    policy.permitted_spki_algorithms = if profile.include_composite_algs {
+        permitted_spki_algs_with_composite()
+    } else {
+        profile.spki_algs
+    };
+    policy.permitted_signature_algorithms = if profile.include_composite_algs {
+        permitted_sig_algs_with_composite()
+    } else {
+        profile.sig_algs
+    };
+}
+
+/// Run `store.verify(...)` against `leaf` and, on failure, apply the
+/// MTC-extension fallback shared by `check_is_ca_cert`, `lint_issued_cert`,
+/// and `lint_issued_ca_cert`: an MTC-flavoured extension error is retried via
+/// `validate_mtc_ca_extensions` (with `mtc_check_ders` as the cert set to
+/// check — leaf alone for `check_is_ca_cert`, leaf + issuing CA for the two
+/// lint functions) before giving up. `err_ctx` names the failure in the
+/// final error message; `err_ctor` selects the `AcmeError` variant
+/// (`Internal` for lint failures, `BadRequest` for the CA-cert-shape check).
+fn verify_and_map_mtc_fallback<B: synta_x509_verification::ops::CryptoOps>(
+    store: &OwnedStore,
+    leaf: &VerificationCertificate<'_>,
+    policy: &PolicyDefinition<'_, B>,
+    mtc_check_ders: &[&[u8]],
+    err_ctx: &str,
+    err_ctor: fn(String) -> AcmeError,
+) -> Result<(), AcmeError> {
+    let result = store
+        .verify(leaf, &[], policy, RevocationChecks::default())
+        .map(|_| ());
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let msg = e.to_string();
+            if akamu_client::tls_verify::is_mtc_extension_error(&msg) {
+                akamu_client::tls_verify::validate_mtc_ca_extensions(mtc_check_ders.iter().copied())
+                    .map_err(|mtc_err| err_ctor(format!("{err_ctx}: {mtc_err}")))
+            } else {
+                Err(err_ctor(format!("{err_ctx}: {e}")))
+            }
+        }
+    }
 }
 
 /// Output of `issue_ca_cert`.
@@ -1183,27 +1214,14 @@ pub(crate) fn check_is_ca_cert(cert_der: &[u8], now: i64) -> Result<(), AcmeErro
     // Apply CA extension policy to the "leaf" so cA=TRUE is required.
     policy.ee_extension_policy = ExtensionPolicy::new_default_webpki_ca();
 
-    let result = store
-        .verify(&leaf, &[], &policy, RevocationChecks::default())
-        .map(|_| ());
-    match result {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let msg = e.to_string();
-            if akamu_client::tls_verify::is_mtc_extension_error(&msg) {
-                akamu_client::tls_verify::validate_mtc_ca_extensions(std::iter::once(cert_der))
-                    .map_err(|mtc_err| {
-                        AcmeError::BadRequest(format!(
-                            "subject certificate is not a valid CA certificate: {mtc_err}"
-                        ))
-                    })
-            } else {
-                Err(AcmeError::BadRequest(format!(
-                    "subject certificate is not a valid CA certificate: {e}"
-                )))
-            }
-        }
-    }
+    verify_and_map_mtc_fallback(
+        &store,
+        &leaf,
+        &policy,
+        &[cert_der],
+        "subject certificate is not a valid CA certificate",
+        AcmeError::BadRequest,
+    )
 }
 
 /// Lint a just-issued CA certificate by re-verifying it against the signing CA.
@@ -1239,16 +1257,7 @@ fn lint_issued_ca_cert(
 
     // Apply configurable fields from the profile.
     policy.minimum_rsa_modulus = profile.minimum_rsa_bits;
-    policy.permitted_spki_algorithms = if profile.include_composite_algs {
-        permitted_spki_algs_with_composite()
-    } else {
-        profile.spki_algs
-    };
-    policy.permitted_signature_algorithms = if profile.include_composite_algs {
-        permitted_sig_algs_with_composite()
-    } else {
-        profile.sig_algs
-    };
+    resolve_permitted_algorithms(&mut policy, profile);
     // CA certificates do not carry SAN — force Optional regardless of profile.
     apply_ext_presence(
         &mut policy.ee_extension_policy.subject_alt_name,
@@ -1259,27 +1268,14 @@ fn lint_issued_ca_cert(
         profile.name_constraints,
     );
 
-    let result = store
-        .verify(&leaf, &[], &policy, RevocationChecks::default())
-        .map(|_| ());
-    match result {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let msg = e.to_string();
-            if akamu_client::tls_verify::is_mtc_extension_error(&msg) {
-                akamu_client::tls_verify::validate_mtc_ca_extensions(
-                    std::iter::once(cert_der).chain(std::iter::once(ca_cert_der)),
-                )
-                .map_err(|mtc_err| {
-                    AcmeError::Internal(format!("cross-cert pre-issuance lint failed: {mtc_err}"))
-                })
-            } else {
-                Err(AcmeError::Internal(format!(
-                    "cross-cert pre-issuance lint failed: {e}"
-                )))
-            }
-        }
-    }
+    verify_and_map_mtc_fallback(
+        &store,
+        &leaf,
+        &policy,
+        &[cert_der, ca_cert_der],
+        "cross-cert pre-issuance lint failed",
+        AcmeError::Internal,
+    )
 }
 
 /// Issue a CA certificate signed by `issuer_ca` for the subject public key
