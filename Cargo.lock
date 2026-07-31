@@ -71,6 +71,7 @@ dependencies = [
  "base64",
  "ciborium",
  "clap",
+ "futures-util",
  "hickory-resolver",
  "http-body-util",
  "hyper",

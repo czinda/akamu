@@ -98,23 +98,32 @@ pub async fn set_valid(
     Ok(())
 }
 
-/// Return the challenge type (`"http-01"`, `"dns-01"`, etc.) of the single
-/// validated challenge for an authorization, or `None` if no challenge is
-/// in the `"valid"` state yet.
+/// Return a map of `authz_id` to validated challenge type (`"http-01"`,
+/// `"dns-01"`, etc.) for every authz_id in `authz_ids` that has a challenge
+/// in the `"valid"` state, in a single query instead of one round trip per
+/// authz_id.
 ///
-/// Used by the finalize handler to supply a real challenge type to the CAA
-/// `validationmethods` check (RFC 8657).
-pub async fn get_validated_type(
+/// Used by the finalize handler's CAA check (RFC 8657 `validationmethods`),
+/// which previously queried once per identifier on the order.
+pub async fn get_validated_types_for_authzs(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
-    authz_id: &str,
-) -> Result<Option<String>, AcmeError> {
-    let row: Option<(String,)> = super::query_as(
-        "SELECT type FROM challenges WHERE authz_id = ? AND status = 'valid' LIMIT 1",
-    )
-    .bind(authz_id)
-    .fetch_optional(executor)
-    .await?;
-    Ok(row.map(|(t,)| t))
+    authz_ids: &[&str],
+) -> Result<std::collections::HashMap<String, String>, AcmeError> {
+    if authz_ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let mut qb = super::DynQueryBuilder::new(
+        "SELECT authz_id, type FROM challenges WHERE status = 'valid' AND authz_id IN (",
+    );
+    for (i, authz_id) in authz_ids.iter().enumerate() {
+        if i > 0 {
+            qb.push(", ");
+        }
+        qb.push_bind(*authz_id);
+    }
+    qb.push(")");
+    let rows: Vec<(String, String)> = qb.fetch_all(executor).await?;
+    Ok(rows.into_iter().collect())
 }
 
 pub async fn set_invalid(
@@ -457,16 +466,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_validated_type_returns_none_when_no_valid_challenge() {
+    async fn get_validated_types_for_authzs_empty_input_returns_empty_map() {
         let db = open_db().await;
-        insert_challenge(&db, "chall-v1", "acct-v1", "order-v1", "authz-v1").await;
-        // Challenge is still "pending" — no valid type yet.
-        let result = get_validated_type(&db, "authz-v1").await.unwrap();
-        assert!(result.is_none());
+        let result = get_validated_types_for_authzs(&db, &[]).await.unwrap();
+        assert!(result.is_empty());
     }
 
     #[tokio::test]
-    async fn get_validated_type_returns_type_after_set_valid() {
+    async fn get_validated_types_for_authzs_omits_authz_without_valid_challenge() {
+        let db = open_db().await;
+        insert_challenge(&db, "chall-v1", "acct-v1", "order-v1", "authz-v1").await;
+        // Challenge is still "pending" — no valid type yet.
+        let result = get_validated_types_for_authzs(&db, &["authz-v1"])
+            .await
+            .unwrap();
+        assert!(!result.contains_key("authz-v1"));
+    }
+
+    #[tokio::test]
+    async fn get_validated_types_for_authzs_batches_multiple_ids_in_one_query() {
         let db = open_db().await;
         insert_parents(&db, "acct-v2", "order-v2", "authz-v2").await;
         insert(
@@ -490,15 +508,18 @@ mod tests {
         .await
         .unwrap();
         set_valid(&db, "chall-v2", 1_700_000_099).await.unwrap();
-        let result = get_validated_type(&db, "authz-v2").await.unwrap();
-        assert_eq!(result, Some("dns-01".to_string()));
-    }
+        insert_challenge(&db, "chall-v3", "acct-v3", "order-v3", "authz-v3").await;
 
-    #[tokio::test]
-    async fn get_validated_type_no_such_authz_returns_none() {
-        let db = open_db().await;
-        let result = get_validated_type(&db, "nonexistent-authz").await.unwrap();
-        assert!(result.is_none());
+        // authz-v2 has a valid challenge, authz-v3 does not, and
+        // nonexistent-authz has no rows at all — one query must return the
+        // correct partial result across all three cases.
+        let result =
+            get_validated_types_for_authzs(&db, &["authz-v2", "authz-v3", "nonexistent-authz"])
+                .await
+                .unwrap();
+        assert_eq!(result.get("authz-v2"), Some(&"dns-01".to_string()));
+        assert!(!result.contains_key("authz-v3"));
+        assert!(!result.contains_key("nonexistent-authz"));
     }
 
     #[tokio::test]

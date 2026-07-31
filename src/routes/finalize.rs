@@ -273,47 +273,62 @@ pub async fn finalize_order(
             }
         }
 
+        // Batch-fetch the validated challenge type for every authz referenced
+        // above in one query instead of one round trip per dns identifier.
+        let referenced_authz_ids: Vec<&str> =
+            identifier_to_authz.values().map(String::as_str).collect();
+        let validated_types =
+            db::challenges::get_validated_types_for_authzs(&state.db_ro, &referenced_authz_ids)
+                .await?;
+
+        // Account URL is intentionally server-scoped (not per-CA): RFC 8657
+        // accounturi refers to the ACME account resource, which is shared
+        // across all CAs in server-scoped mode.
+        let account_url = format!("{}/acme/account/{account_id}", state.config.base_url);
+
+        // Collect each dns identifier's CAA-check inputs up front so the
+        // lookups themselves (independent DNS queries) can run concurrently
+        // below instead of one at a time.
+        let mut caa_inputs: Vec<(String, bool, String)> = Vec::new();
         for (id_type, id_value) in &allowed {
-            if *id_type == "dns" {
-                let is_wildcard = id_value.starts_with("*.");
-                let domain = if is_wildcard {
-                    &id_value[2..]
-                } else {
-                    id_value
+            if *id_type != "dns" {
+                continue; // IP identifiers: CAA is not applicable per RFC 8659.
+            }
+            let is_wildcard = id_value.starts_with("*.");
+            let domain = if is_wildcard {
+                id_value[2..].to_string()
+            } else {
+                id_value.to_string()
+            };
+            let challenge_type =
+                match identifier_to_authz.get(&(id_type.to_string(), id_value.to_string())) {
+                    Some(authz_id) => validated_types.get(authz_id).cloned().ok_or_else(|| {
+                        AcmeError::Internal(format!(
+                            "no validated challenge type found for authz {authz_id}"
+                        ))
+                    })?,
+                    None => String::new(),
                 };
-                let challenge_type = if let Some(authz_id) =
-                    identifier_to_authz.get(&(id_type.to_string(), id_value.to_string()))
-                {
-                    db::challenges::get_validated_type(&state.db_ro, authz_id)
-                        .await?
-                        .ok_or_else(|| {
-                            AcmeError::Internal(format!(
-                                "no validated challenge type found for authz {authz_id}"
-                            ))
-                        })?
-                } else {
-                    String::new()
-                };
-                // Account URL is intentionally server-scoped (not per-CA): RFC 8657
-                // accounturi refers to the ACME account resource, which is shared
-                // across all CAs in server-scoped mode.
-                let account_url = format!("{}/acme/account/{account_id}", state.config.base_url);
+            caa_inputs.push((domain, is_wildcard, challenge_type));
+        }
+
+        let checks = caa_inputs
+            .iter()
+            .map(|(domain, is_wildcard, challenge_type)| {
                 crate::validation::caa::check_caa(
                     crate::validation::caa::CaaParams {
                         domain,
                         ca_identities: effective_caa,
-                        is_wildcard,
-                        challenge_type: &challenge_type,
+                        is_wildcard: *is_wildcard,
+                        challenge_type,
                         account_url: Some(account_url.as_str()),
                         validate_dnssec: state.config.server.validate_dnssec,
                         dot_server_name: state.config.server.dns_dot_server_name.as_deref(),
                     },
                     state.config.server.dns_resolver_addr.as_deref(),
                 )
-                .await?;
-            }
-            // IP identifiers: CAA is not applicable per RFC 8659.
-        }
+            });
+        futures_util::future::try_join_all(checks).await?;
     }
 
     // Option A: expand KPN/MS-UPN templates against CSR DNS SANs.

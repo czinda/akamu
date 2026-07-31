@@ -29,6 +29,7 @@ embed-webui = ["dep:include_dir"]
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
+futures-util = { version = "0.3", default-features = false }
 
 # HTTP server
 axum = { version = "0.8", features = ["http1", "http2", "macros"] }
