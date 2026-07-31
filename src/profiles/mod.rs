@@ -148,7 +148,7 @@ pub struct CertificateParameters {
     /// KPN SAN templates expanded against the CSR's DNS SANs at issuance time.
     /// Each entry follows the syntax `"SERVICE/{dns}@REALM"` (NT-SRV-HST) or
     /// `"{dns}@REALM"` (NT-PRINCIPAL).  Templates without `{dns}` are static
-    /// and injected exactly once.  See `ca::krb5_san::expand_kpn_template`.
+    /// and injected exactly once.  See `krb5_san::expand_kpn_template`.
     pub kpn_san_templates: Vec<String>,
     /// MS-UPN SAN template expanded against the first CSR DNS SAN.  Produces
     /// an OtherName SAN with OID 1.3.6.1.4.1.311.20.2.3 (UTF-8 UPN value).
@@ -319,7 +319,10 @@ impl ProfileRegistry {
             load_all_providers(&self.providers_cfg, &self.ca_defaults, self.dns_resolver).await?;
         let count = profiles.len();
         {
-            let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
+            let mut cache = self.cache.write().unwrap_or_else(|e| {
+                tracing::error!("profile cache lock was poisoned, recovering");
+                e.into_inner()
+            });
             cache.profiles = profiles;
             cache.loaded_at = Instant::now();
         }
@@ -335,7 +338,10 @@ impl ProfileRegistry {
     pub fn resolve(&self, profile_name: &str) -> Option<CertificateParameters> {
         self.cache
             .read()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| {
+                tracing::error!("profile cache lock was poisoned, recovering");
+                e.into_inner()
+            })
             .profiles
             .get(profile_name)
             .map(|(_, p)| p.clone())
@@ -348,7 +354,10 @@ impl ProfileRegistry {
     pub fn all_profiles(&self) -> HashMap<String, String> {
         self.cache
             .read()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| {
+                tracing::error!("profile cache lock was poisoned, recovering");
+                e.into_inner()
+            })
             .profiles
             .iter()
             .map(|(id, (desc, _))| (id.clone(), desc.clone()))
@@ -362,7 +371,10 @@ impl ProfileRegistry {
     pub fn profiles_for_ca(&self, ca_id: &str) -> HashMap<String, String> {
         self.cache
             .read()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| {
+                tracing::error!("profile cache lock was poisoned, recovering");
+                e.into_inner()
+            })
             .profiles
             .iter()
             .filter(|(_, (_, p))| p.ca_ids.is_empty() || p.ca_ids.iter().any(|id| id == ca_id))
@@ -377,7 +389,10 @@ impl ProfileRegistry {
     pub fn resolve_for_ca(&self, profile_name: &str, ca_id: &str) -> Option<CertificateParameters> {
         self.cache
             .read()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| {
+                tracing::error!("profile cache lock was poisoned, recovering");
+                e.into_inner()
+            })
             .profiles
             .get(profile_name)
             .filter(|(_, p)| p.ca_ids.is_empty() || p.ca_ids.iter().any(|id| id == ca_id))
@@ -388,7 +403,10 @@ impl ProfileRegistry {
     pub fn is_empty(&self) -> bool {
         self.cache
             .read()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| {
+                tracing::error!("profile cache lock was poisoned, recovering");
+                e.into_inner()
+            })
             .profiles
             .is_empty()
     }
@@ -402,7 +420,10 @@ impl ProfileRegistry {
         description: String,
         params: CertificateParameters,
     ) -> bool {
-        let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
+        let mut cache = self.cache.write().unwrap_or_else(|e| {
+            tracing::error!("profile cache lock was poisoned, recovering");
+            e.into_inner()
+        });
         if cache.profiles.contains_key(&id) {
             return false;
         }
@@ -416,7 +437,10 @@ impl ProfileRegistry {
     pub fn remove_profile(&self, id: &str) -> bool {
         self.cache
             .write()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| {
+                tracing::error!("profile cache lock was poisoned, recovering");
+                e.into_inner()
+            })
             .profiles
             .remove(id)
             .is_some()
@@ -431,7 +455,10 @@ impl ProfileRegistry {
         description: String,
         params: CertificateParameters,
     ) -> bool {
-        let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
+        let mut cache = self.cache.write().unwrap_or_else(|e| {
+            tracing::error!("profile cache lock was poisoned, recovering");
+            e.into_inner()
+        });
         if let Some(entry) = cache.profiles.get_mut(id) {
             *entry = (description, params);
             true
