@@ -8,7 +8,7 @@ pub mod claim_encoder;
 mod dns01;
 mod dns_persist_01;
 pub mod email_reply_00;
-mod http01;
+pub(crate) mod http01;
 pub mod onion_csr_01;
 pub(crate) mod tkauth01;
 mod tls_alpn01;
@@ -308,7 +308,9 @@ async fn dispatch(
             )
             .await
         }
-        "tls-alpn-01" => tls_alpn01::validate(id_type, id_value, key_auth).await,
+        "tls-alpn-01" => {
+            tls_alpn01::validate(id_type, id_value, key_auth, http_allow_private_ips).await
+        }
         "dns-persist-01" => {
             dns_persist_01::validate(
                 id_value,

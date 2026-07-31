@@ -20,18 +20,29 @@ use tokio_rustls::TlsConnector;
 
 use crate::error::AcmeError;
 
+use super::http01::check_redirect_host;
+
 /// Validate a tls-alpn-01 challenge.
 ///
 /// * `id_type`  — `"dns"` or `"ip"`.
 /// * `id_value` — the identifier value (DNS name or IP address string).
 /// * `key_auth` — `{token}.{jwk_thumbprint}`.
+/// * `allow_private_ips` — when `false` (the default), `id_value` is checked
+///   against private/loopback/link-local ranges before connecting (SSRF
+///   guard), the same check `http01::validate` applies to its target. Set to
+///   `true` only in isolated test environments.
 ///
 /// For IP identifiers (RFC 8738 §4) the TLS SNI is sent as the reverse-DNS
 /// form of the address (`n.n.n.n.in-addr.arpa` or nibble `.ip6.arpa`) rather
 /// than the raw IP string.  The SAN check also uses the `iPAddress` general
 /// name type (tag `0x87`) instead of `dNSName`.
-pub async fn validate(id_type: &str, id_value: &str, key_auth: &str) -> Result<(), AcmeError> {
-    validate_inner(id_type, id_value, key_auth, 443).await
+pub async fn validate(
+    id_type: &str,
+    id_value: &str,
+    key_auth: &str,
+    allow_private_ips: bool,
+) -> Result<(), AcmeError> {
+    validate_inner(id_type, id_value, key_auth, 443, allow_private_ips).await
 }
 
 /// Inner implementation that allows injecting a custom port for testing.
@@ -40,7 +51,15 @@ async fn validate_inner(
     id_value: &str,
     key_auth: &str,
     port: u16,
+    allow_private_ips: bool,
 ) -> Result<(), AcmeError> {
+    // SSRF guard: reject private/loopback/link-local targets before making
+    // any connection, mirroring http01::validate's check. Without this,
+    // an attacker controlling DNS for `id_value` could point it at internal
+    // infrastructure (including cloud metadata endpoints) and have this
+    // server open a TLS handshake against it.
+    check_redirect_host(id_value, allow_private_ips, id_value).await?;
+
     let expected_hash: [u8; 32] = default_data_hasher()
         .hash_data("sha256", key_auth.as_bytes())
         .map_err(|e| AcmeError::Crypto(format!("SHA-256: {e}")))?
@@ -480,8 +499,10 @@ mod tests {
     /// Covers tls_alpn01.rs (ServerName::try_from error path).
     #[tokio::test]
     async fn validate_invalid_server_name_returns_error() {
-        // An empty string is not a valid DNS name.
-        let result = validate("dns", "", "token.thumbprint").await;
+        // An empty string is not a valid DNS name. allow_private_ips=true
+        // bypasses the SSRF guard so the test reaches the ServerName parse
+        // path this test is actually targeting.
+        let result = validate("dns", "", "token.thumbprint", true).await;
         assert!(result.is_err(), "expected error for invalid server name");
         match result.unwrap_err() {
             crate::error::AcmeError::Tls(_) => {}
@@ -494,7 +515,9 @@ mod tests {
     #[tokio::test]
     async fn validate_connection_refused_returns_error() {
         // 127.0.0.1:443 will be immediately refused on a test machine (no TLS server).
-        let result = validate("ip", "127.0.0.1", "token.thumbprint").await;
+        // allow_private_ips=true bypasses the SSRF guard so the test reaches
+        // the TCP-connect path this test is actually targeting.
+        let result = validate("ip", "127.0.0.1", "token.thumbprint", true).await;
         assert!(
             result.is_err(),
             "expected connection error for unreachable host"
@@ -626,7 +649,7 @@ mod tests {
 
         // TLS handshake succeeds (lines 52-68 covered).
         // verify_acme_cert returns IncorrectResponse because there is no ACME extension.
-        let result = validate_inner("dns", "127.0.0.1", "token.thumbprint", port).await;
+        let result = validate_inner("dns", "127.0.0.1", "token.thumbprint", port, true).await;
         assert!(
             matches!(
                 result,
@@ -649,7 +672,7 @@ mod tests {
         let port = start_acme_tls12_server(cert_der, &key).await;
 
         // TLS 1.2 handshake: verify_tls12_signature is called (lines 894-901 covered).
-        let result = validate_inner("dns", "127.0.0.1", "token.thumbprint", port).await;
+        let result = validate_inner("dns", "127.0.0.1", "token.thumbprint", port, true).await;
         assert!(
             matches!(
                 result,
@@ -657,6 +680,18 @@ mod tests {
                     | Err(crate::error::AcmeError::Tls(_))
             ),
             "expected IncorrectResponse or Tls error after TLS 1.2 handshake: {result:?}"
+        );
+    }
+
+    /// Regression test for a missing SSRF guard: without
+    /// `allow_private_ips = true`, a loopback target must be rejected before
+    /// any TLS connection is attempted.
+    #[tokio::test]
+    async fn validate_inner_blocks_private_ip_without_allow_private_ips() {
+        let result = validate_inner("dns", "127.0.0.1", "token.thumbprint", 4433, false).await;
+        assert!(
+            matches!(result, Err(crate::error::AcmeError::IncorrectResponse(_))),
+            "expected the SSRF guard to reject a loopback target: {result:?}"
         );
     }
 }
