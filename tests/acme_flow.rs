@@ -15,8 +15,8 @@ use axum::http::{header, Method, Request, StatusCode};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Value};
 use synta_certificate::{
-    BackendPrivateKey, CertificateSigner as _, CsrBuilder, NameBuilder, PrivateKey as _,
-    SubjectAlternativeNameBuilder,
+    BackendPrivateKey, CertificateBuilder, CertificateSigner as _, CsrBuilder, NameBuilder,
+    PrivateKey as _, SubjectAlternativeNameBuilder,
 };
 use tower::ServiceExt;
 
@@ -2584,6 +2584,150 @@ async fn test_revoke_cert_by_jwk() {
         status,
         StatusCode::OK,
         "jwk-based cert revoke failed: {body}"
+    );
+}
+
+/// Build a minimal self-signed certificate DER reusing an arbitrary hex serial number.
+fn make_self_signed_cert_der_with_serial(key: &BackendPrivateKey, serial_hex: &str) -> Vec<u8> {
+    let pub_key = key.public_key().unwrap();
+    let spki_der = pub_key.spki_der().to_vec();
+    let name_der = NameBuilder::new().common_name("attacker").build().unwrap();
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let gt = |secs: i64| {
+        let gt = synta::GeneralizedTime::from_unix(secs).unwrap();
+        format!(
+            "{:04}{:02}{:02}{:02}{:02}{:02}Z",
+            gt.year, gt.month, gt.day, gt.hour, gt.minute, gt.second
+        )
+    };
+    let nb = synta_certificate::parse_time(&gt(now_secs)).unwrap();
+    let na = synta_certificate::parse_time(&gt(now_secs + 365 * 86400)).unwrap();
+
+    let serial_bytes = native_ossl::util::hex_decode(serial_hex);
+    let signer = key.as_signer("sha256");
+    CertificateBuilder::new()
+        .issuer_name(&name_der)
+        .subject_name(&name_der)
+        .public_key_der(&spki_der)
+        .serial_number(synta::Integer::from_unsigned_bytes(&serial_bytes))
+        .not_valid_before(nb)
+        .not_valid_after(na)
+        .sign(&signer)
+        .unwrap()
+}
+
+/// Regression test for a certificate-revocation authorization bypass: the
+/// self-authorized (jwk) revocation path must derive the comparison SPKI from
+/// the DB-stored certificate, not from the attacker-submitted DER blob.
+/// Otherwise anyone who knows a certificate's (public) serial number can
+/// revoke it by forging a self-signed DER that reuses that serial with their
+/// own key and signing the revocation JWS with that same key.
+#[tokio::test]
+async fn test_revoke_cert_by_jwk_rejects_forged_der_with_real_serial() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let db = state.db.clone();
+    let router = routes::build_router(Arc::clone(&state), None, false);
+
+    // Issue a real certificate owned by `account_key`.
+    let account_key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = account_key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    let jws = account_key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": "forged-revoke.test"}]})),
+    );
+    let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
+    let nonce = nonce_header(&order_headers);
+
+    let order_id: String =
+        sqlx::query_as::<_, (String,)>("SELECT id FROM orders ORDER BY created DESC LIMIT 1")
+            .fetch_one(&db)
+            .await
+            .unwrap()
+            .0;
+    mark_order_ready(&db, &order_id).await;
+
+    let cert_backend_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+    let csr_der = make_csr_der_with_key("forged-revoke.test", &cert_backend_key);
+    let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
+    let finalize_url = format!("{base_url}/acme/order/{order_id}/finalize");
+    let jws = account_key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &finalize_url,
+        Some(json!({"csr": csr_b64})),
+    );
+    let (status, final_body, _) =
+        post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
+    assert_eq!(status, StatusCode::OK, "finalize failed: {final_body}");
+
+    let real_serial: String = sqlx::query_as::<_, (String,)>(
+        "SELECT serial_number FROM certificates ORDER BY created DESC LIMIT 1",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap()
+    .0;
+
+    // Forge a self-signed certificate that reuses the real certificate's
+    // serial number but embeds the attacker's own key.
+    let attacker_key = BackendPrivateKey::generate_ec("P-256").unwrap();
+    let forged_der = make_self_signed_cert_der_with_serial(&attacker_key, &real_serial);
+    let forged_b64url = URL_SAFE_NO_PAD.encode(&forged_der);
+
+    let attacker_test_key = {
+        let pub_key = attacker_key.public_key().unwrap();
+        let (x_bytes, y_bytes) = pub_key.ec_affine_coordinates().unwrap().unwrap();
+        let x_b64 = encode_coord(&x_bytes, 32);
+        let y_b64 = encode_coord(&y_bytes, 32);
+        let _spki_der = pub_key.spki_der().to_vec();
+        TestKey {
+            key: attacker_key,
+            x_b64,
+            y_b64,
+            _spki_der,
+        }
+    };
+
+    let nonce = head_nonce(&router).await;
+    let revoke_url = format!("{base_url}/acme/revoke-cert");
+    let jws = attacker_test_key.jws_with_jwk(
+        &nonce,
+        &revoke_url,
+        Some(json!({"certificate": forged_b64url})),
+    );
+    let (status, body, _) = post_acme(&router, "/acme/revoke-cert", jws).await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "forged certificate reusing a real serial number must not be accepted for revocation: {body}"
+    );
+
+    let status_in_db: String =
+        sqlx::query_as::<_, (String,)>("SELECT status FROM certificates WHERE serial_number = ?")
+            .bind(&real_serial)
+            .fetch_one(&db)
+            .await
+            .unwrap()
+            .0;
+    assert_ne!(
+        status_in_db, "revoked",
+        "the real certificate must not have been revoked by the forged request"
     );
 }
 

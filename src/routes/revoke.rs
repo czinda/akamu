@@ -77,7 +77,15 @@ pub async fn revoke_cert(
         None => {
             // jwk was used — RFC 8555 §7.6: the signing key must be the certificate's
             // public key. JWS signature is already verified; compare SPKIs.
-            let cert_spki = extract_spki_der(&cert_der)?;
+            //
+            // The SPKI MUST be derived from the DB-stored certificate (`cert.der`),
+            // not the attacker-supplied `cert_der` payload: the submitted DER is
+            // only used above to extract a serial number for the DB lookup, and an
+            // attacker fully controls its contents (including its embedded public
+            // key). Comparing the submitted DER's own SPKI against the submitted
+            // JWS key is a tautology that lets anyone revoke any certificate by
+            // serial number alone.
+            let cert_spki = extract_spki_der(&cert.der)?;
             if cert_spki != ctx.spki_der {
                 return Err(AcmeError::Unauthorized(
                     "signing key does not match certificate public key".into(),
