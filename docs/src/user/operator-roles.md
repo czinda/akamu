@@ -192,7 +192,7 @@ systems that need read access to the server's operational data but must never be
 able to make changes.
 
 **Key capabilities:**
-- Query the audit event log (`GET /admin/audit`).
+- Query the audit event log (`GET /admin/audit`) — unscoped (server-wide) operators only. Audit events carry no `ca_id`, so a CA-scoped `auditor` cannot be given a correctly-filtered view and is instead denied with `403 Forbidden`.
 - Query MTC transparency log state (tree size, root, landmarks, proofs, checkpoint).
 - List and view issued certificates (across all CAs).
 - List and view EAB keys.
@@ -236,13 +236,14 @@ filter — the operator only sees data belonging to its assigned CA.
 |--------|------|:---:|:---:|:---:|:---:|
 | `POST` | `/admin/session` | Y | Y | Y | Y |
 | `DELETE` | `/admin/session` | Y | Y | Y | Y |
+| `POST` | `/admin/session/eab` | Y | Y | Y | Y |
 | `GET` | `/admin/operators` | Y | | | |
 | `POST` | `/admin/operators` | Y | | | |
 | `GET` | `/admin/operators/{id}` | Y | | | |
 | `PUT` | `/admin/operators/{id}` | Y | | | |
 | `PATCH` | `/admin/operators/{id}` | Y | | | |
 | `POST` | `/admin/operators/{id}/unlock` | Y | | | |
-| `GET` | `/admin/audit` | Y | | | Y |
+| `GET` | `/admin/audit` | Y (unscoped only) | | | Y (unscoped only) |
 | `GET` | `/admin/profiles` | Y | Y | Y | Y |
 | `GET` | `/admin/profiles/{id}` | Y | Y | Y | Y |
 | `POST` | `/admin/profiles` | Y | | | |
@@ -294,6 +295,7 @@ filter — the operator only sees data belonging to its assigned CA.
 | `GET` | `/admin/mtc/cosignature` | Y | Y | | Y |
 | `POST` | `/admin/ca/{id}/mtc/force-checkpoint` | Y | Y | | |
 | `POST` | `/admin/ca/{id}/mtc/force-landmark` | Y | Y | | |
+| `GET` | `/admin/ca/{id}/mtc/log-list-entry` | Y | Y | | Y |
 | `GET` | `/admin/policy/scopes` | Y | Y | | Y |
 | `GET` | `/admin/policy/rules` | Y | Y | | Y |
 | `GET` | `/admin/policy/rules/{id}` | Y | Y | | Y |

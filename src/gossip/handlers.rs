@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
@@ -17,7 +18,6 @@ use akamu_crdt::{AkaNodeEntry, CRDT_GENERATION};
 use crate::admin::auth::OperatorContext;
 use crate::gossip::crypto::{random_nonce, sign_and_seal, verify_and_open, SealRecipient};
 use crate::gossip::envelope::GossipEnvelope;
-use crate::require_role;
 use crate::state::AppState;
 use crate::util::unix_now;
 
@@ -138,10 +138,10 @@ pub async fn gossip_sync(
             );
             return StatusCode::BAD_REQUEST.into_response();
         }
-        let mut nonce_cache = state
-            .gossip_nonce_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut nonce_cache = state.gossip_nonce_cache.lock().unwrap_or_else(|e| {
+            tracing::error!("gossip nonce cache mutex was poisoned, recovering");
+            e.into_inner()
+        });
         // Evict expired entries lazily.
         nonce_cache.retain(|_, &mut ts| ts >= now_ts - max_age);
         // Bound cache size to prevent memory exhaustion from a compromised peer.
@@ -283,9 +283,20 @@ pub async fn gossip_sync(
 pub async fn gossip_register(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
-    Json(body): Json<GossipRegisterRequest>,
+    body: Bytes,
 ) -> impl IntoResponse {
-    require_role!(operator, state, Administrator);
+    // `Bytes` + manual parsing, matching the admin POST handlers in
+    // src/routes/admin/*.rs, rather than a `Json<T>` extractor parameter.
+    let body: GossipRegisterRequest = match serde_json::from_slice(&body) {
+        Ok(b) => b,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"detail": format!("invalid JSON body: {e}")})),
+            )
+                .into_response()
+        }
+    };
 
     if body.node_id.is_empty() {
         return (
@@ -406,11 +417,6 @@ pub async fn gossip_status(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    require_role!(
-        operator,
-        state,
-        Administrator | CaOperations | CaRa | Auditor
-    );
     let ca_scope = operator.ca_scope();
     let crdt = state.crdt.read().await;
     let counts = crdt.entry_counts_scoped(ca_scope);

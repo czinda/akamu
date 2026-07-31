@@ -11,21 +11,34 @@ use serde_json::json;
 
 use crate::admin::auth::OperatorContext;
 use crate::audit::{query_journal, AuditQuery};
-use crate::require_role;
 use crate::state::AppState;
+
+use super::error::AdminApiError;
 
 /// `GET /admin/audit`
 ///
 /// Query the audit event log with optional filters.
 ///
 /// Query params: `type`, `subject`, `from`, `until`, `outcome`, `limit` (≤1000), `offset`.
-/// Requires: `administrator` or `auditor`.
+/// Requires: `administrator` or `auditor`, unscoped (server-wide) only.
+///
+/// Audit events are not tagged with a `ca_id` (the journal/JSONL storage
+/// backends have no per-CA concept), so results cannot be filtered to a
+/// single CA the way `/admin/stats` or `/admin/certs` are. Rather than give a
+/// CA-scoped operator the server-wide audit trail (accounts, certs,
+/// operators, and delegations across every tenant CA), this endpoint is
+/// restricted to unscoped operators until the audit pipeline carries a
+/// `ca_id` end to end.
 pub async fn get_audit(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Response {
-    require_role!(operator, state, Administrator | Auditor);
+) -> Result<Response, AdminApiError> {
+    if operator.ca_scope().is_some() {
+        return Err(AdminApiError::Forbidden(
+            "audit log access requires an unscoped (server-wide) operator".into(),
+        ));
+    }
 
     let limit: u32 = params
         .get("limit")
@@ -63,7 +76,7 @@ pub async fn get_audit(
                 })
                 .collect();
             let total = state.audit.event_count.load(Ordering::Acquire);
-            (
+            Ok((
                 StatusCode::OK,
                 Json(json!({
                     "events": events,
@@ -72,24 +85,15 @@ pub async fn get_audit(
                     "offset": offset,
                 })),
             )
-                .into_response()
+                .into_response())
         }
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("invalid") && msg.contains("timestamp") {
                 tracing::warn!(error = %e, "get_audit: invalid timestamp parameter");
-                (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"status": 400, "detail": msg})),
-                )
-                    .into_response()
+                Err(AdminApiError::BadRequest(msg))
             } else {
-                tracing::error!(error = %e, "get_audit: journal query error");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"status": 500, "detail": "journal query error"})),
-                )
-                    .into_response()
+                Err(AdminApiError::Internal(format!("journal query error: {e}")))
             }
         }
     }

@@ -11,34 +11,22 @@ use serde_json::json;
 use crate::admin::auth::OperatorContext;
 use crate::db;
 use crate::mtc::log;
-use crate::require_role;
 use crate::state::AppState;
+
+use super::error::AdminApiError;
 
 /// `GET /admin/stats`
 ///
 /// Returns live server statistics.  Requires: any role.
-pub async fn get_stats(operator: OperatorContext, State(state): State<Arc<AppState>>) -> Response {
-    require_role!(
-        operator,
-        state,
-        Administrator | CaOperations | CaRa | Auditor
-    );
-
+pub async fn get_stats(
+    operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+) -> Result<Response, AdminApiError> {
     let uptime_secs = state.startup_time.elapsed().as_secs();
 
     let ca_scope = operator.ca_scope();
 
-    let counts = match db::stats::summary(&state.db, ca_scope).await {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!(error = %e, "stats DB query failed");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "stats query failed"})),
-            )
-                .into_response();
-        }
-    };
+    let counts = db::stats::summary(&state.db, ca_scope).await?;
 
     let server_version = env!("CARGO_PKG_VERSION");
 
@@ -77,7 +65,7 @@ pub async fn get_stats(operator: OperatorContext, State(state): State<Arc<AppSta
         }));
     }
 
-    (
+    Ok((
         StatusCode::OK,
         Json(json!({
             "server_version": server_version,
@@ -105,16 +93,17 @@ pub async fn get_stats(operator: OperatorContext, State(state): State<Arc<AppSta
             "mtc": mtc_cas,
         })),
     )
-        .into_response()
+        .into_response())
 }
 
 /// `GET /admin/config`
 ///
 /// Show redacted server configuration.
 /// Requires: `administrator`.
-pub async fn get_config(operator: OperatorContext, State(state): State<Arc<AppState>>) -> Response {
-    require_role!(operator, state, Administrator);
-
+pub async fn get_config(
+    _operator: OperatorContext,
+    State(state): State<Arc<AppState>>,
+) -> Response {
     let cfg = &state.config;
     let cas: Vec<_> = state
         .cas

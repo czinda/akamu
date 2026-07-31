@@ -402,243 +402,260 @@ where
 {
     type Rejection = Response;
 
+    /// If `admin_rbac_gate` (src/routes/admin/rbac.rs) already resolved this
+    /// request's operator and inserted it into the request extensions, reuse
+    /// that instead of re-running credential resolution: several of the auth
+    /// paths below have side effects (session creation, rate-limit
+    /// bookkeeping, audit events) that must not fire twice for one request.
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Response> {
-        let app = Arc::<AppState>::from_ref(state);
-
-        // Admin must be configured.
-        if app.config.admin.is_none() {
-            return Err((StatusCode::NOT_FOUND, "admin API is not configured").into_response());
+        if let Some(ctx) = parts.extensions.get::<OperatorContext>() {
+            return Ok(ctx.clone());
         }
+        let app = Arc::<AppState>::from_ref(state);
+        resolve_operator_context(parts, &app).await
+    }
+}
 
-        // Halt-flag check (FAU_STG.4 overflow or FAU_ARP.1 alarm).
-        if app
-            .audit
-            .should_halt
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
+/// Resolve the authenticated operator for this request via Bearer session
+/// token, mTLS/proxy client certificate, or GSSAPI/SPNEGO — in that order.
+///
+/// Factored out of the `OperatorContext` extractor so `admin_rbac_gate` can
+/// call it directly, exactly once per request.
+pub(crate) async fn resolve_operator_context(
+    parts: &mut Parts,
+    app: &Arc<AppState>,
+) -> Result<OperatorContext, Response> {
+    // Admin must be configured.
+    if app.config.admin.is_none() {
+        return Err((StatusCode::NOT_FOUND, "admin API is not configured").into_response());
+    }
+
+    // Halt-flag check (FAU_STG.4 overflow or FAU_ARP.1 alarm).
+    if app
+        .audit
+        .should_halt
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "server halted: audit overflow or security alarm",
+        )
+            .into_response());
+    }
+
+    let auth_header = parts
+        .headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    // ── Auth rate limit (FAU_STG.4 / FAU_ARP.1 self-DoS guard) ───────────
+    // Count new credential presentations (mTLS cert or GSSAPI Negotiate
+    // token) from each source IP in a rolling 5-minute window.  Bearer
+    // token reuse is not counted: it is a cheap in-memory lookup that does
+    // not emit an audit event on failure.  When the per-IP limit is
+    // exceeded we return 429 without recording an audit event, preventing
+    // a flood of AdminLogin failures from filling the audit log and
+    // triggering the FAU_STG.4 Halt policy or the FAU_ARP.1 alarm.
+    let is_credential_presentation = parts.extensions.get::<PeerClientCert>().is_some()
+        || has_proxy_cert_header(parts, &app.config)
+        || auth_header.starts_with("Negotiate ");
+    if let (true, Some(peer_addr), Some(limiter)) = (
+        is_credential_presentation,
+        parts
+            .extensions
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>(),
+        app.admin_auth_limiter.as_ref(),
+    ) {
+        let ip = peer_addr.0.ip();
+        let rate_limit = app
+            .config
+            .admin
+            .as_ref()
+            .map(|a| a.auth_rate_limit)
+            .unwrap_or(20);
+        let now = Instant::now();
+        let cutoff = now - Duration::from_secs(300);
+        let mut map = limiter.lock().await;
+        let times = map.entry(ip).or_default();
+        times.retain(|&t| t >= cutoff);
+        if times.len() as u32 >= rate_limit {
+            tracing::warn!(
+                ip = %ip,
+                attempts = times.len(),
+                limit = rate_limit,
+                "admin auth rate limit exceeded"
+            );
             return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                "server halted: audit overflow or security alarm",
+                StatusCode::TOO_MANY_REQUESTS,
+                "authentication rate limit exceeded; try again later",
             )
                 .into_response());
         }
+        times.push_back(now);
+        // Periodic sweep to prevent unbounded map growth under many source IPs.
+        if map.len() > 500 {
+            map.retain(|_, v| !v.is_empty());
+        }
+    } else if is_credential_presentation {
+        static WARN_ONCE: std::sync::Once = std::sync::Once::new();
+        WARN_ONCE.call_once(|| {
+            tracing::warn!(
+                "admin auth rate limiter inactive: ConnectInfo not available \
+                     (reverse proxy?) or limiter not configured"
+            );
+        });
+    }
 
-        let auth_header = parts
-            .headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-
-        // ── Auth rate limit (FAU_STG.4 / FAU_ARP.1 self-DoS guard) ───────────
-        // Count new credential presentations (mTLS cert or GSSAPI Negotiate
-        // token) from each source IP in a rolling 5-minute window.  Bearer
-        // token reuse is not counted: it is a cheap in-memory lookup that does
-        // not emit an audit event on failure.  When the per-IP limit is
-        // exceeded we return 429 without recording an audit event, preventing
-        // a flood of AdminLogin failures from filling the audit log and
-        // triggering the FAU_STG.4 Halt policy or the FAU_ARP.1 alarm.
-        let is_credential_presentation = parts.extensions.get::<PeerClientCert>().is_some()
-            || has_proxy_cert_header(parts, &app.config)
-            || auth_header.starts_with("Negotiate ");
-        if let (true, Some(peer_addr), Some(limiter)) = (
-            is_credential_presentation,
-            parts
-                .extensions
-                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>(),
-            app.admin_auth_limiter.as_ref(),
-        ) {
-            let ip = peer_addr.0.ip();
-            let rate_limit = app
-                .config
-                .admin
-                .as_ref()
-                .map(|a| a.auth_rate_limit)
-                .unwrap_or(20);
-            let now = Instant::now();
-            let cutoff = now - Duration::from_secs(300);
-            let mut map = limiter.lock().await;
-            let times = map.entry(ip).or_default();
-            times.retain(|&t| t >= cutoff);
-            if times.len() as u32 >= rate_limit {
-                tracing::warn!(
-                    ip = %ip,
-                    attempts = times.len(),
-                    limit = rate_limit,
-                    "admin auth rate limit exceeded"
-                );
+    // ── Path 1: Bearer session token ──────────────────────────────────────
+    if let Some(token) = auth_header.strip_prefix("Bearer ") {
+        match lookup_session(app, token).await {
+            SessionLookup::Active(id, name, role, ca_id, method) => {
+                return Ok(OperatorContext {
+                    operator_id: id,
+                    name,
+                    role,
+                    ca_id,
+                    auth_method: method,
+                    session_token: Some(token.to_string()),
+                });
+            }
+            SessionLookup::Locked => {
                 return Err((
-                    StatusCode::TOO_MANY_REQUESTS,
-                    "authentication rate limit exceeded; try again later",
+                    StatusCode::LOCKED,
+                    axum::Json(serde_json::json!({
+                        "error": "session_locked",
+                        "message": "session locked due to inactivity; re-authenticate"
+                    })),
                 )
                     .into_response());
             }
-            times.push_back(now);
-            // Periodic sweep to prevent unbounded map growth under many source IPs.
-            if map.len() > 500 {
-                map.retain(|_, v| !v.is_empty());
-            }
-        } else if is_credential_presentation {
-            static WARN_ONCE: std::sync::Once = std::sync::Once::new();
-            WARN_ONCE.call_once(|| {
-                tracing::warn!(
-                    "admin auth rate limiter inactive: ConnectInfo not available \
-                     (reverse proxy?) or limiter not configured"
-                );
-            });
-        }
-
-        // ── Path 1: Bearer session token ──────────────────────────────────────
-        if let Some(token) = auth_header.strip_prefix("Bearer ") {
-            match lookup_session(&app, token).await {
-                SessionLookup::Active(id, name, role, ca_id, method) => {
-                    return Ok(OperatorContext {
-                        operator_id: id,
-                        name,
-                        role,
-                        ca_id,
-                        auth_method: method,
-                        session_token: Some(token.to_string()),
-                    });
-                }
-                SessionLookup::Locked => {
-                    return Err((
-                        StatusCode::LOCKED,
-                        axum::Json(serde_json::json!({
-                            "error": "session_locked",
-                            "message": "session locked due to inactivity; re-authenticate"
-                        })),
-                    )
-                        .into_response());
-                }
-                SessionLookup::NotFound => {
-                    return Err((
-                        StatusCode::UNAUTHORIZED,
-                        "session token expired or invalid; please re-authenticate",
-                    )
-                        .into_response());
-                }
+            SessionLookup::NotFound => {
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    "session token expired or invalid; please re-authenticate",
+                )
+                    .into_response());
             }
         }
+    }
 
-        // ── Path 2: Client certificate (direct mTLS or proxy-forwarded) ────
-        let (cert_der, cert_method) =
-            if let Some(PeerClientCert(der)) = parts.extensions.get::<PeerClientCert>() {
-                (Some(der.clone()), AdminAuthMethod::Cert)
-            } else if let Some(proxy_cfg) = app
-                .config
-                .admin
-                .as_ref()
-                .and_then(|a| a.proxy_auth.as_ref())
-            {
-                match extract_proxy_cert(parts, proxy_cfg)? {
-                    Some(der) => (Some(der), AdminAuthMethod::CertProxy),
-                    None => (None, AdminAuthMethod::Cert),
+    // ── Path 2: Client certificate (direct mTLS or proxy-forwarded) ────
+    let (cert_der, cert_method) =
+        if let Some(PeerClientCert(der)) = parts.extensions.get::<PeerClientCert>() {
+            (Some(der.clone()), AdminAuthMethod::Cert)
+        } else if let Some(proxy_cfg) = app
+            .config
+            .admin
+            .as_ref()
+            .and_then(|a| a.proxy_auth.as_ref())
+        {
+            match extract_proxy_cert(parts, proxy_cfg)? {
+                Some(der) => (Some(der), AdminAuthMethod::CertProxy),
+                None => (None, AdminAuthMethod::Cert),
+            }
+        } else {
+            (None, AdminAuthMethod::Cert)
+        };
+
+    if let Some(der) = cert_der {
+        let method_str = cert_method.as_str();
+        let fingerprint = crate::util::sha256_hex(&der).map_err(|e| {
+            tracing::error!(error = %e, "cert fingerprint computation failed");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        })?;
+        match db::operators::get_by_fingerprint(&app.db, &fingerprint).await {
+            Ok(Some(op)) => {
+                check_lockout(&op)?;
+                let role = op.role.parse::<OperatorRole>().map_err(|_| {
+                    tracing::error!(role = %op.role, "operator has unknown role");
+                    StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                })?;
+                if let Err(e) = db::operators::reset_failed(&app.db, op.id).await {
+                    tracing::warn!(error = %e, operator_id = op.id, "failed to reset auth failure counter");
                 }
-            } else {
-                (None, AdminAuthMethod::Cert)
-            };
-
-        if let Some(der) = cert_der {
-            let method_str = cert_method.as_str();
-            let fingerprint = crate::util::sha256_hex(&der).map_err(|e| {
-                tracing::error!(error = %e, "cert fingerprint computation failed");
-                StatusCode::INTERNAL_SERVER_ERROR.into_response()
-            })?;
-            match db::operators::get_by_fingerprint(&app.db, &fingerprint).await {
-                Ok(Some(op)) => {
-                    check_lockout(&op)?;
-                    let role = op.role.parse::<OperatorRole>().map_err(|_| {
-                        tracing::error!(role = %op.role, "operator has unknown role");
-                        StatusCode::INTERNAL_SERVER_ERROR.into_response()
-                    })?;
-                    if let Err(e) = db::operators::reset_failed(&app.db, op.id).await {
-                        tracing::warn!(error = %e, operator_id = op.id, "failed to reset auth failure counter");
-                    }
-                    let token = create_session(
-                        &app,
-                        op.id,
-                        op.name.clone(),
-                        role,
-                        op.ca_id.clone(),
-                        cert_method,
-                    )
-                    .await
-                    .map_err(|e| {
-                        tracing::error!(error = %e, "session creation failed");
-                        StatusCode::INTERNAL_SERVER_ERROR.into_response()
-                    })?;
-                    let ts_str = crate::util::rfc3339_now();
-                    if let Err(e) = db::operators::update_last_seen(&app.db, op.id, &ts_str).await {
-                        tracing::warn!(error = %e, operator_id = op.id, "failed to update last_seen_at");
-                    }
-                    let session_prefix = token.get(..8).unwrap_or(&token);
-                    app.record_audit(
+                let token = create_session(
+                    app,
+                    op.id,
+                    op.name.clone(),
+                    role,
+                    op.ca_id.clone(),
+                    cert_method,
+                )
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = %e, "session creation failed");
+                    StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                })?;
+                let ts_str = crate::util::rfc3339_now();
+                if let Err(e) = db::operators::update_last_seen(&app.db, op.id, &ts_str).await {
+                    tracing::warn!(error = %e, operator_id = op.id, "failed to update last_seen_at");
+                }
+                let session_prefix = token.get(..8).unwrap_or(&token);
+                app.record_audit(
                         AuditEvent::success(AuditEventType::AdminLogin)
                             .with_principal(&op.name)
                             .with_detail(serde_json::json!({"method":method_str,"session_prefix":session_prefix}).to_string()),
                     )
                     .await;
-                    return Ok(OperatorContext {
-                        operator_id: op.id,
-                        name: op.name,
-                        role,
-                        ca_id: op.ca_id,
-                        auth_method: cert_method,
-                        session_token: Some(token),
-                    });
-                }
-                Ok(None) => {
-                    app.record_audit(
-                        AuditEvent::failure(AuditEventType::AdminLogin).with_detail(
-                            json!({"method": method_str, "reason": "fingerprint not found"})
-                                .to_string(),
-                        ),
-                    )
-                    .await;
-                    return Err((StatusCode::FORBIDDEN, "client certificate not recognized")
-                        .into_response());
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "operator DB lookup failed");
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response());
-                }
+                return Ok(OperatorContext {
+                    operator_id: op.id,
+                    name: op.name,
+                    role,
+                    ca_id: op.ca_id,
+                    auth_method: cert_method,
+                    session_token: Some(token),
+                });
+            }
+            Ok(None) => {
+                app.record_audit(AuditEvent::failure(AuditEventType::AdminLogin).with_detail(
+                    json!({"method": method_str, "reason": "fingerprint not found"}).to_string(),
+                ))
+                .await;
+                return Err(
+                    (StatusCode::FORBIDDEN, "client certificate not recognized").into_response()
+                );
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "operator DB lookup failed");
+                return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response());
             }
         }
-
-        // ── Path 3: GSSAPI/SPNEGO ─────────────────────────────────────────────
-        if let Some(neg_token) = auth_header.strip_prefix("Negotiate ") {
-            return authenticate_gssapi(&app, neg_token, parts).await;
-        }
-
-        // No usable credentials.
-        if app.gss_cred.is_some()
-            || app
-                .config
-                .admin
-                .as_ref()
-                .map(|a| a.gssapi.is_some())
-                .unwrap_or(false)
-        {
-            // Prompt for Negotiate.
-            let mut resp = (
-                StatusCode::UNAUTHORIZED,
-                "Authentication required: Bearer token, mTLS certificate, or Negotiate",
-            )
-                .into_response();
-            resp.headers_mut().insert(
-                axum::http::header::WWW_AUTHENTICATE,
-                axum::http::HeaderValue::from_static("Negotiate"),
-            );
-            return Err(resp);
-        }
-
-        Err((
-            StatusCode::UNAUTHORIZED,
-            "Authentication required: Bearer token or mTLS client certificate",
-        )
-            .into_response())
     }
+
+    // ── Path 3: GSSAPI/SPNEGO ─────────────────────────────────────────────
+    if let Some(neg_token) = auth_header.strip_prefix("Negotiate ") {
+        return authenticate_gssapi(app, neg_token, parts).await;
+    }
+
+    // No usable credentials.
+    if app.gss_cred.is_some()
+        || app
+            .config
+            .admin
+            .as_ref()
+            .map(|a| a.gssapi.is_some())
+            .unwrap_or(false)
+    {
+        // Prompt for Negotiate.
+        let mut resp = (
+            StatusCode::UNAUTHORIZED,
+            "Authentication required: Bearer token, mTLS certificate, or Negotiate",
+        )
+            .into_response();
+        resp.headers_mut().insert(
+            axum::http::header::WWW_AUTHENTICATE,
+            axum::http::HeaderValue::from_static("Negotiate"),
+        );
+        return Err(resp);
+    }
+
+    Err((
+        StatusCode::UNAUTHORIZED,
+        "Authentication required: Bearer token or mTLS client certificate",
+    )
+        .into_response())
 }
 
 /// Optional GSSAPI out-token (base64-encoded) to be returned in a
@@ -1293,41 +1310,6 @@ pub async fn delete_session(
     );
     resp
 }
-
-/// Return a 403 response if `$ctx.role` is not one of the listed `OperatorRole`
-/// variants.  Emits an `AdminAction` failure audit event before returning.
-///
-/// Usage: `require_role!(ctx, state, Administrator | CaOperations);`
-#[macro_export]
-macro_rules! require_role {
-    ($ctx:expr, $state:expr, $($role:ident)|+) => {{
-        let allowed = false $(|| $ctx.role == $crate::state::OperatorRole::$role)+;
-        if !allowed {
-            let required = concat!($(stringify!($role), " | "),+);
-            let required = required.trim_end_matches(" | ");
-            $state
-                .record_audit(
-                    $crate::audit::AuditEvent::failure($crate::audit::AuditEventType::AdminAction)
-                        .with_principal($ctx.name.clone())
-                        .with_detail(serde_json::json!({
-                            "error": "insufficient role",
-                            "required": required,
-                            "actual": $ctx.role.as_str(),
-                        }).to_string()),
-                )
-                .await;
-            return (
-                axum::http::StatusCode::FORBIDDEN,
-                axum::Json(serde_json::json!({
-                    "status": 403,
-                    "detail": "insufficient role for this operation",
-                })),
-            ).into_response();
-        }
-    }};
-}
-
-// ── Role enforcement macro ────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

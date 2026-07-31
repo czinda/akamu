@@ -14,10 +14,10 @@ use crate::admin::auth::OperatorContext;
 use crate::audit::{AuditEvent, AuditEventType};
 use crate::crdt_hooks;
 use crate::db;
-use crate::require_role;
 use crate::state::AppState;
 
 use super::super::unix_now;
+use super::error::AdminApiError;
 use super::grants_to_json;
 
 #[derive(Deserialize)]
@@ -33,23 +33,29 @@ pub async fn get_account_profile_grants(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Response {
-    require_role!(
-        operator,
-        state,
-        Administrator | CaOperations | CaRa | Auditor
-    );
+) -> Result<Response, AdminApiError> {
+    if let Some(scope) = operator.ca_scope() {
+        match db::accounts::get_by_id(&state.db, &id).await {
+            Ok(Some(acct)) if !acct.ca_id.is_empty() && acct.ca_id != scope => {
+                return Err(AdminApiError::NotFound("account not found".into()));
+            }
+            Ok(None) => {
+                return Err(AdminApiError::NotFound("account not found".into()));
+            }
+            Err(e) => {
+                return Err(AdminApiError::Internal(format!(
+                    "get_account_profile_grants: scope check db error: {e}"
+                )));
+            }
+            Ok(Some(_)) => {}
+        }
+    }
 
     match db::accounts::get_profile_grants(&state.db, &id).await {
-        Err(e) => {
-            tracing::error!(error = %e, "get_account_profile_grants: db error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "database error"})),
-            )
-                .into_response()
-        }
-        Ok(None) => (StatusCode::NOT_FOUND, "account not found").into_response(),
+        Err(e) => Err(AdminApiError::Internal(format!(
+            "get_account_profile_grants: db error: {e}"
+        ))),
+        Ok(None) => Err(AdminApiError::NotFound("account not found".into())),
         Ok(Some(grants_json)) => {
             let grants: Option<Vec<String>> = grants_json.as_deref().and_then(|j| {
                 serde_json::from_str(j)
@@ -62,7 +68,7 @@ pub async fn get_account_profile_grants(
                     })
                     .ok()
             });
-            (StatusCode::OK, Json(json!({"profile_grants": grants}))).into_response()
+            Ok((StatusCode::OK, Json(json!({"profile_grants": grants}))).into_response())
         }
     }
 }
@@ -76,64 +82,38 @@ pub async fn put_account_profile_grants(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     body: Bytes,
-) -> Response {
-    require_role!(operator, state, Administrator | CaOperations);
-
-    let payload: ProfileGrantsPayload = match serde_json::from_slice(&body) {
-        Ok(p) => p,
-        Err(e) => return (StatusCode::BAD_REQUEST, format!("JSON: {e}")).into_response(),
-    };
+) -> Result<Response, AdminApiError> {
+    let payload: ProfileGrantsPayload = serde_json::from_slice(&body)
+        .map_err(|e| AdminApiError::BadRequest(format!("JSON: {e}")))?;
 
     if let Some(scope) = operator.ca_scope() {
         match db::accounts::get_by_id(&state.db, &id).await {
             Ok(Some(acct)) if !acct.ca_id.is_empty() && acct.ca_id != scope => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(json!({"status": 404, "detail": "account not found"})),
-                )
-                    .into_response();
+                return Err(AdminApiError::NotFound("account not found".into()));
             }
             Ok(None) => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(json!({"status": 404, "detail": "account not found"})),
-                )
-                    .into_response();
+                return Err(AdminApiError::NotFound("account not found".into()));
             }
             Err(e) => {
-                tracing::error!(error = %e, "put_account_profile_grants: scope check db error");
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"status": 500, "detail": "database error"})),
-                )
-                    .into_response();
+                return Err(AdminApiError::Internal(format!(
+                    "put_account_profile_grants: scope check db error: {e}"
+                )));
             }
             Ok(Some(_)) => {}
         }
     }
 
     let now = unix_now();
-    let grants_str = match grants_to_json(payload.profile_grants) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!(error = %e, "put_account_profile_grants: serialize grants");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "internal error"})),
-            )
-                .into_response();
-        }
-    };
+    let grants_str = grants_to_json(payload.profile_grants).map_err(|e| {
+        AdminApiError::Internal(format!("put_account_profile_grants: serialize grants: {e}"))
+    })?;
     match db::accounts::set_profile_grants(&state.db, &id, grants_str.as_deref(), now).await {
-        Err(e) => {
-            tracing::error!(error = %e, "put_account_profile_grants: db error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "database error"})),
-            )
-                .into_response()
-        }
-        Ok(false) => (StatusCode::NOT_FOUND, "account not found or deactivated").into_response(),
+        Err(e) => Err(AdminApiError::Internal(format!(
+            "put_account_profile_grants: db error: {e}"
+        ))),
+        Ok(false) => Err(AdminApiError::NotFound(
+            "account not found or deactivated".into(),
+        )),
         Ok(true) => {
             state
                 .record_audit(
@@ -143,7 +123,7 @@ pub async fn put_account_profile_grants(
                         .with_detail("{\"action\":\"account.grants.set\"}"),
                 )
                 .await;
-            StatusCode::NO_CONTENT.into_response()
+            Ok(StatusCode::NO_CONTENT.into_response())
         }
     }
 }
@@ -156,20 +136,15 @@ pub async fn delete_account_profile_grants(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Response {
-    require_role!(operator, state, Administrator);
-
+) -> Result<Response, AdminApiError> {
     let now = unix_now();
     match db::accounts::set_profile_grants(&state.db, &id, None, now).await {
-        Err(e) => {
-            tracing::error!(error = %e, "delete_account_profile_grants: db error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "database error"})),
-            )
-                .into_response()
-        }
-        Ok(false) => (StatusCode::NOT_FOUND, "account not found or deactivated").into_response(),
+        Err(e) => Err(AdminApiError::Internal(format!(
+            "delete_account_profile_grants: db error: {e}"
+        ))),
+        Ok(false) => Err(AdminApiError::NotFound(
+            "account not found or deactivated".into(),
+        )),
         Ok(true) => {
             state
                 .record_audit(
@@ -179,7 +154,7 @@ pub async fn delete_account_profile_grants(
                         .with_detail("{\"action\":\"account.grants.clear\"}"),
                 )
                 .await;
-            StatusCode::NO_CONTENT.into_response()
+            Ok(StatusCode::NO_CONTENT.into_response())
         }
     }
 }
@@ -192,13 +167,7 @@ pub async fn get_accounts(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Response {
-    require_role!(
-        operator,
-        state,
-        Administrator | CaOperations | CaRa | Auditor
-    );
-
+) -> Result<Response, AdminApiError> {
     let limit: i64 = params
         .get("limit")
         .and_then(|v| v.parse().ok())
@@ -234,22 +203,17 @@ pub async fn get_accounts(
                     })
                 })
                 .collect();
-            (
+            Ok((
                 StatusCode::OK,
                 Json(
                     json!({"accounts": accounts, "total": total, "limit": limit, "offset": offset}),
                 ),
             )
-                .into_response()
+                .into_response())
         }
-        Err(e) => {
-            tracing::error!(error = %e, "get_accounts: db error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "database error"})),
-            )
-                .into_response()
-        }
+        Err(e) => Err(AdminApiError::Internal(format!(
+            "get_accounts: db error: {e}"
+        ))),
     }
 }
 
@@ -261,26 +225,16 @@ pub async fn get_account(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Response {
-    require_role!(
-        operator,
-        state,
-        Administrator | CaOperations | CaRa | Auditor
-    );
-
+) -> Result<Response, AdminApiError> {
     match db::accounts::get_by_id(&state.db, &id).await {
         Ok(Some(r)) => {
             if operator
                 .ca_scope()
                 .is_some_and(|scope| !r.ca_id.is_empty() && r.ca_id != scope)
             {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(json!({"status": 404, "detail": "account not found"})),
-                )
-                    .into_response();
+                return Err(AdminApiError::NotFound("account not found".into()));
             }
-            (
+            Ok((
                 StatusCode::OK,
                 Json(json!({
                     "id": r.id,
@@ -292,21 +246,12 @@ pub async fn get_account(
                     "profile_grants": r.profile_grants,
                 })),
             )
-                .into_response()
+                .into_response())
         }
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({"status": 404, "detail": "account not found"})),
-        )
-            .into_response(),
-        Err(e) => {
-            tracing::error!(error = %e, "get_account: db error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "database error"})),
-            )
-                .into_response()
-        }
+        Ok(None) => Err(AdminApiError::NotFound("account not found".into())),
+        Err(e) => Err(AdminApiError::Internal(format!(
+            "get_account: db error: {e}"
+        ))),
     }
 }
 
@@ -318,12 +263,26 @@ pub async fn post_account_deactivate(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Response {
-    require_role!(operator, state, Administrator);
-
+) -> Result<Response, AdminApiError> {
     let now = unix_now();
     match db::accounts::update_status(&state.db, &id, "deactivated", now).await {
         Ok(true) => {
+            // Evict the cached SPKI/status entry so a subsequent JWS from
+            // this account is re-checked against the DB instead of
+            // authenticating against a stale "valid" cache entry (the same
+            // eviction the self-service deactivate and key-change paths
+            // already perform).
+            match state.spki_cache.write() {
+                Ok(mut cache) => {
+                    cache.remove(&id);
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "spki_cache RwLock poisoned; evicting deactivated account under poison guard"
+                    );
+                    e.into_inner().remove(&id);
+                }
+            }
             state
                 .record_audit(
                     AuditEvent::success(AuditEventType::AdminAction)
@@ -333,17 +292,12 @@ pub async fn post_account_deactivate(
                 )
                 .await;
             crdt_hooks::on_account_tombstone(&state, &id, now).await;
-            StatusCode::NO_CONTENT.into_response()
+            Ok(StatusCode::NO_CONTENT.into_response())
         }
-        Ok(false) => (StatusCode::NOT_FOUND, "account not found").into_response(),
-        Err(e) => {
-            tracing::error!(error = %e, "post_account_deactivate: db error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "database error"})),
-            )
-                .into_response()
-        }
+        Ok(false) => Err(AdminApiError::NotFound("account not found".into())),
+        Err(e) => Err(AdminApiError::Internal(format!(
+            "post_account_deactivate: db error: {e}"
+        ))),
     }
 }
 
@@ -355,13 +309,7 @@ pub async fn get_orders(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Response {
-    require_role!(
-        operator,
-        state,
-        Administrator | CaOperations | CaRa | Auditor
-    );
-
+) -> Result<Response, AdminApiError> {
     let limit: i64 = params
         .get("limit")
         .and_then(|v| v.parse().ok())
@@ -400,20 +348,15 @@ pub async fn get_orders(
                     })
                 })
                 .collect();
-            (
+            Ok((
                 StatusCode::OK,
                 Json(json!({"orders": orders, "total": total, "limit": limit, "offset": offset})),
             )
-                .into_response()
+                .into_response())
         }
-        Err(e) => {
-            tracing::error!(error = %e, "get_orders: db error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "database error"})),
-            )
-                .into_response()
-        }
+        Err(e) => Err(AdminApiError::Internal(format!(
+            "get_orders: db error: {e}"
+        ))),
     }
 }
 
@@ -425,23 +368,13 @@ pub async fn get_order(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Response {
-    require_role!(
-        operator,
-        state,
-        Administrator | CaOperations | CaRa | Auditor
-    );
-
+) -> Result<Response, AdminApiError> {
     match db::orders::get_with_authz_ids(&state.db, &id).await {
         Ok(Some((r, authz_ids))) => {
             if operator.ca_scope().is_some_and(|scope| r.ca_id != scope) {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(json!({"status": 404, "detail": "order not found"})),
-                )
-                    .into_response();
+                return Err(AdminApiError::NotFound("order not found".into()));
             }
-            (
+            Ok((
                 StatusCode::OK,
                 Json(json!({
                     "id": r.id,
@@ -459,20 +392,9 @@ pub async fn get_order(
                     "authorization_ids": authz_ids,
                 })),
             )
-                .into_response()
+                .into_response())
         }
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({"status": 404, "detail": "order not found"})),
-        )
-            .into_response(),
-        Err(e) => {
-            tracing::error!(error = %e, "get_order: db error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "database error"})),
-            )
-                .into_response()
-        }
+        Ok(None) => Err(AdminApiError::NotFound("order not found".into())),
+        Err(e) => Err(AdminApiError::Internal(format!("get_order: db error: {e}"))),
     }
 }

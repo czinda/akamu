@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -13,11 +14,11 @@ use synta_certificate::der_to_pem;
 use crate::admin::auth::OperatorContext;
 use crate::audit::{AuditEvent, AuditEventType};
 use crate::db;
-use crate::require_role;
 use crate::state::AppState;
 
 use super::super::unix_now;
 use super::describe_cert_der;
+use super::error::AdminApiError;
 
 /// The subject for a cross-sign request: either a same-server CA by ID, or an
 /// external CA supplied as a PEM certificate block.  Exactly one variant must
@@ -50,8 +51,6 @@ fn default_cross_sign_validity() -> u32 {
 /// List all configured CAs.
 /// Requires: `administrator`.
 pub async fn get_cas(operator: OperatorContext, State(state): State<Arc<AppState>>) -> Response {
-    require_role!(operator, state, Administrator | CaOperations);
-
     let scope = operator.ca_scope();
     let cas: Vec<_> = state
         .cas
@@ -80,37 +79,22 @@ pub async fn get_ca(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Response {
-    require_role!(operator, state, Administrator | CaOperations);
-
+) -> Result<Response, AdminApiError> {
     if operator.ca_scope().is_some_and(|scope| id != scope) {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"status": 404, "detail": "CA not found"})),
-        )
-            .into_response();
+        return Err(AdminApiError::NotFound("CA not found".into()));
     }
 
     let Some(ca) = state.get_ca(&id) else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"status": 404, "detail": "CA not found"})),
-        )
-            .into_response();
+        return Err(AdminApiError::NotFound("CA not found".into()));
     };
 
-    let cert_pem = match String::from_utf8(der_to_pem("CERTIFICATE", &ca.cert_der)) {
-        Ok(p) => p,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "failed to encode CA certificate"})),
-            )
-                .into_response();
-        }
-    };
+    let cert_pem = String::from_utf8(der_to_pem("CERTIFICATE", &ca.cert_der)).map_err(|e| {
+        AdminApiError::Internal(format!(
+            "get_ca: CA cert DER→PEM produced non-UTF-8 bytes: {e}"
+        ))
+    })?;
 
-    (
+    Ok((
         StatusCode::OK,
         Json(json!({
             "id": ca.id,
@@ -125,7 +109,7 @@ pub async fn get_ca(
             "cert_text": describe_cert_der(&ca.cert_der),
         })),
     )
-        .into_response()
+        .into_response())
 }
 
 /// `GET /admin/cas/{id}/cert`
@@ -136,35 +120,27 @@ pub async fn get_ca_cert(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Response {
-    require_role!(operator, state, Administrator | CaOperations);
-
+) -> Result<Response, AdminApiError> {
     if operator.ca_scope().is_some_and(|scope| id != scope) {
-        return (StatusCode::NOT_FOUND, "CA not found").into_response();
+        return Err(AdminApiError::NotFound("CA not found".into()));
     }
 
     let Some(ca) = state.get_ca(&id) else {
-        return (StatusCode::NOT_FOUND, "CA not found").into_response();
+        return Err(AdminApiError::NotFound("CA not found".into()));
     };
 
-    let cert_pem = match String::from_utf8(der_to_pem("CERTIFICATE", &ca.cert_der)) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::error!(ca_id = %id, error = %e, "CA cert DER→PEM produced non-UTF-8 bytes");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "failed to encode CA certificate as PEM"})),
-            )
-                .into_response();
-        }
-    };
+    let cert_pem = String::from_utf8(der_to_pem("CERTIFICATE", &ca.cert_der)).map_err(|e| {
+        AdminApiError::Internal(format!(
+            "get_ca_cert: CA cert DER→PEM produced non-UTF-8 bytes for ca_id {id}: {e}"
+        ))
+    })?;
 
-    (
+    Ok((
         StatusCode::OK,
         [("content-type", "application/x-pem-file")],
         cert_pem,
     )
-        .into_response()
+        .into_response())
 }
 
 /// `POST /admin/ca/{id}/crl/force`
@@ -176,23 +152,13 @@ pub async fn post_ca_crl_force(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Response {
-    require_role!(operator, state, Administrator | CaOperations);
-
+) -> Result<Response, AdminApiError> {
     if operator.ca_scope().is_some_and(|scope| id != scope) {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"status": 404, "detail": "CA not found"})),
-        )
-            .into_response();
+        return Err(AdminApiError::NotFound("CA not found".into()));
     }
 
     if state.get_ca(&id).is_none() {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"status": 404, "detail": "CA not found"})),
-        )
-            .into_response();
+        return Err(AdminApiError::NotFound("CA not found".into()));
     }
 
     state.invalidate_crl_cache(&id);
@@ -205,7 +171,7 @@ pub async fn post_ca_crl_force(
         )
         .await;
 
-    StatusCode::NO_CONTENT.into_response()
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 /// `POST /admin/ca/{id}/cross-sign`
@@ -217,36 +183,29 @@ pub async fn post_ca_cross_sign(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     Path(issuer_id): Path<String>,
-    Json(payload): Json<CrossSignPayload>,
-) -> Response {
-    require_role!(operator, state, Administrator | CaOperations);
+    body: Bytes,
+) -> Result<Response, AdminApiError> {
+    // `Bytes` + manual parsing, matching every other admin POST handler in
+    // this module, rather than a `Json<T>` extractor parameter.
+    let payload: CrossSignPayload = serde_json::from_slice(&body)
+        .map_err(|e| AdminApiError::BadRequest(format!("invalid JSON body: {e}")))?;
 
     // Validate validity_years before doing any CA lookups.
     if payload.validity_years == 0 || payload.validity_years > 50 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"status": 400, "detail": "validity_years must be between 1 and 50"})),
-        )
-            .into_response();
+        return Err(AdminApiError::BadRequest(
+            "validity_years must be between 1 and 50".into(),
+        ));
     }
 
     if operator.ca_scope().is_some_and(|scope| issuer_id != scope) {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"status": 404, "detail": "issuer CA not found"})),
-        )
-            .into_response();
+        return Err(AdminApiError::NotFound("issuer CA not found".into()));
     }
 
     // Resolve the issuer CA.
     let issuer_ca = match state.get_ca(&issuer_id) {
         Some(ca) => ca.clone(),
         None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"status": 404, "detail": "issuer CA not found"})),
-            )
-                .into_response();
+            return Err(AdminApiError::NotFound("issuer CA not found".into()));
         }
     };
 
@@ -254,22 +213,14 @@ pub async fn post_ca_cross_sign(
     let (subject_cert_der, subject_ca_id) = match &payload.subject {
         CrossSignSubject::SameServer { subject_ca_id } => {
             if subject_ca_id == &issuer_id {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(
-                        json!({"status": 400, "detail": "issuer and subject CA must be different"}),
-                    ),
-                )
-                    .into_response();
+                return Err(AdminApiError::BadRequest(
+                    "issuer and subject CA must be different".into(),
+                ));
             }
             match state.get_ca(subject_ca_id) {
                 Some(ca) => (ca.cert_der.clone(), Some(subject_ca_id.clone())),
                 None => {
-                    return (
-                        StatusCode::NOT_FOUND,
-                        Json(json!({"status": 404, "detail": "subject CA not found"})),
-                    )
-                        .into_response();
+                    return Err(AdminApiError::NotFound("subject CA not found".into()));
                 }
             }
         }
@@ -279,57 +230,35 @@ pub async fn post_ca_cross_sign(
             let der = match blocks.into_iter().find(|(label, _)| label == "CERTIFICATE") {
                 Some((_, d)) => d,
                 None => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({"status": 400, "detail": "subject_cert_pem must contain a CERTIFICATE PEM block"})),
-                    )
-                        .into_response();
+                    return Err(AdminApiError::BadRequest(
+                        "subject_cert_pem must contain a CERTIFICATE PEM block".into(),
+                    ));
                 }
             };
             // Verify the external cert is a valid CA certificate (BasicConstraints.cA=TRUE).
             let now = crate::util::unix_now();
             if let Err(e) = crate::ca::issue::check_is_ca_cert(&der, now) {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"status": 400, "detail": e.to_string()})),
-                )
-                    .into_response();
+                return Err(AdminApiError::BadRequest(e.to_string()));
             }
             (der, None)
         }
     };
 
     if !issuer_ca.has_local_key() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(
-                json!({"status": 400, "detail": "issuer CA uses an external signer and cannot cross-sign locally"}),
-            ),
-        )
-            .into_response();
+        return Err(AdminApiError::BadRequest(
+            "issuer CA uses an external signer and cannot cross-sign locally".into(),
+        ));
     }
 
     let linter_name = issuer_ca.default_linter.as_deref().unwrap_or("webpki");
-    let linter = match state.linter_registry.resolve(linter_name) {
-        Ok(p) => *p,
-        Err(e) => return e.into_response(),
-    };
-    let issued = match crate::ca::issue::issue_ca_cert(
+    let linter = *state.linter_registry.resolve(linter_name)?;
+    let issued = crate::ca::issue::issue_ca_cert(
         &issuer_ca,
         &subject_cert_der,
         payload.validity_years,
         &linter,
-    ) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!(error = %e, "cross-sign issuance failed");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "cross-certificate issuance failed"})),
-            )
-                .into_response();
-        }
-    };
+    )
+    .map_err(|e| AdminApiError::Internal(format!("cross-sign issuance failed: {e}")))?;
 
     let id = uuid::Uuid::new_v4().to_string();
     let now = unix_now();
@@ -348,7 +277,6 @@ pub async fn post_ca_cross_sign(
     };
 
     if let Err(e) = db::cross_certs::insert(&state.db, &row).await {
-        tracing::error!(error = %e, "failed to store cross-cert");
         state
             .record_audit(
                 AuditEvent::failure(AuditEventType::CrossSignIssue)
@@ -356,11 +284,9 @@ pub async fn post_ca_cross_sign(
                     .with_detail(format!("DB insert failed: {e}; issuer={issuer_id}")),
             )
             .await;
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"status": 500, "detail": "failed to persist cross-certificate"})),
-        )
-            .into_response();
+        return Err(AdminApiError::Internal(format!(
+            "failed to persist cross-certificate: {e}"
+        )));
     }
 
     state
@@ -381,7 +307,7 @@ pub async fn post_ca_cross_sign(
         )
         .await;
 
-    (
+    Ok((
         StatusCode::CREATED,
         Json(json!({
             "id": id,
@@ -395,7 +321,7 @@ pub async fn post_ca_cross_sign(
             "created": now,
         })),
     )
-        .into_response()
+        .into_response())
 }
 
 /// `GET /admin/cross-certs`
@@ -429,9 +355,7 @@ pub async fn get_cross_certs(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<CrossCertsQuery>,
-) -> Response {
-    require_role!(operator, state, Administrator | CaOperations | Auditor);
-
+) -> Result<Response, AdminApiError> {
     // Scoped operators may only see cross-certs they issued.
     let issuer_ca_id = operator.ca_scope().or(params.issuer_ca_id.as_deref());
     let subject_ca_id = params.subject_ca_id.as_deref();
@@ -458,16 +382,11 @@ pub async fn get_cross_certs(
                     })
                 })
                 .collect();
-            (StatusCode::OK, Json(json!({ "cross_certs": items, "total": total, "limit": limit, "offset": offset }))).into_response()
+            Ok((StatusCode::OK, Json(json!({ "cross_certs": items, "total": total, "limit": limit, "offset": offset }))).into_response())
         }
-        Err(e) => {
-            tracing::error!(error = %e, "get_cross_certs DB query failed");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "failed to query cross-certificates"})),
-            )
-                .into_response()
-        }
+        Err(e) => Err(AdminApiError::Internal(format!(
+            "get_cross_certs DB query failed: {e}"
+        ))),
     }
 }
 
@@ -479,25 +398,16 @@ pub async fn get_cross_cert(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Response {
-    require_role!(operator, state, Administrator | CaOperations | Auditor);
-
+) -> Result<Response, AdminApiError> {
     let row = match db::cross_certs::get_by_id(&state.db, &id).await {
         Ok(Some(r)) => r,
         Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"status": 404, "detail": "cross-cert not found"})),
-            )
-                .into_response();
+            return Err(AdminApiError::NotFound("cross-cert not found".into()));
         }
         Err(e) => {
-            tracing::error!(error = %e, "get_cross_cert DB query failed");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "failed to query cross-certificate"})),
-            )
-                .into_response();
+            return Err(AdminApiError::Internal(format!(
+                "get_cross_cert DB query failed: {e}"
+            )));
         }
     };
 
@@ -506,14 +416,10 @@ pub async fn get_cross_cert(
         .ca_scope()
         .is_some_and(|scope| row.issuer_ca_id != scope)
     {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"status": 404, "detail": "cross-cert not found"})),
-        )
-            .into_response();
+        return Err(AdminApiError::NotFound("cross-cert not found".into()));
     }
 
-    (
+    Ok((
         StatusCode::OK,
         Json(json!({
             "id": row.id,
@@ -528,5 +434,5 @@ pub async fn get_cross_cert(
             "created": row.created,
         })),
     )
-        .into_response()
+        .into_response())
 }

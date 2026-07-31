@@ -6,79 +6,20 @@
 //!
 //! # Route → role matrix
 //!
-//! | Route | administrator | ca_operations | ca_ra | auditor |
-//! |-------|:---:|:---:|:---:|:---:|
-//! | `POST /admin/session` | ✓ | ✓ | ✓ | ✓ |
-//! | `DELETE /admin/session` | ✓ | ✓ | ✓ | ✓ |
-//! | `POST /admin/session/eab` | ✓ | ✓ | ✓ | ✓ |
-//! | `GET /admin/operators` | ✓ | | | |
-//! | `POST /admin/operators` | ✓ | | | |
-//! | `GET /admin/operators/{id}` | ✓ | | | |
-//! | `PUT /admin/operators/{id}` | ✓ | | | |
-//! | `PATCH /admin/operators/{id}` | ✓ | | | |
-//! | `POST /admin/operators/{id}/unlock` | ✓ | | | |
-//! | `GET /admin/audit` | ✓ | | | ✓ |
-//! | `GET /admin/certs` | ✓ | ✓ | | ✓ |
-//! | `GET /admin/certs/{id}` | ✓ | ✓ | | ✓ |
-//! | `GET /admin/certs/{id}/download` | ✓ | ✓ | | |
-//! | `GET /admin/profiles` | ✓ | ✓ | ✓ | ✓ |
-//! | `POST /admin/profiles` | ✓ | | | |
-//! | `PUT /admin/profiles/{id}` | ✓ | | | |
-//! | `GET /admin/profiles/{id}` | ✓ | ✓ | ✓ | ✓ |
-//! | `DELETE /admin/profiles/{id}` | ✓ | | | |
-//! | `GET /admin/accounts` | ✓ | ✓ | ✓ | ✓ |
-//! | `GET /admin/account/{id}` | ✓ | ✓ | ✓ | ✓ |
-//! | `POST /admin/account/{id}/deactivate` | ✓ | | | |
-//! | `GET /admin/account/{id}/profile-grants` | ✓ | ✓ | ✓ | ✓ |
-//! | `PUT /admin/account/{id}/profile-grants` | ✓ | ✓ | | |
-//! | `DELETE /admin/account/{id}/profile-grants` | ✓ | | | |
-//! | `POST /admin/eab` | ✓ | ✓ | | |
-//! | `GET /admin/eab/{kid}` | ✓ | ✓ | ✓ | ✓ |
-//! | `DELETE /admin/eab/{kid}` | ✓ | ✓ | | |
-//! | `GET /admin/eab` | ✓ | ✓ | ✓ | ✓ |
-//! | `GET /admin/orders` | ✓ | ✓ | ✓ | ✓ |
-//! | `GET /admin/orders/{id}` | ✓ | ✓ | ✓ | ✓ |
-//! | `GET /admin/config` | ✓ | | | |
-//! | `POST /admin/crl/force` | ✓ | ✓ | | |
-//! | `POST /admin/revoke` | ✓ | ✓ | ✓ | |
-//! | `GET /admin/stats` | ✓ | ✓ | ✓ | ✓ |
-//! | `GET /admin/cas` | ✓ | ✓ | | |
-//! | `GET /admin/cas/{id}` | ✓ | ✓ | | |
-//! | `GET /admin/cas/{id}/cert` | ✓ | ✓ | | |
-//! | `POST /admin/ca/{id}/crl/force` | ✓ | ✓ | | |
-//! | `POST /admin/ca/{id}/cross-sign` | ✓ | ✓ | | |
-//! | `GET /admin/cross-certs` | ✓ | ✓ | | ✓ |
-//! | `GET /admin/cross-certs/{id}` | ✓ | ✓ | | ✓ |
-//! | `GET /admin/delegations` | ✓ | ✓ | ✓ | ✓ |
-//! | `POST /admin/delegations` | ✓ | ✓ | | |
-//! | `GET /admin/delegations/{id}` | ✓ | ✓ | ✓ | ✓ |
-//! | `PUT /admin/delegations/{id}` | ✓ | ✓ | | |
-//! | `DELETE /admin/delegations/{id}` | ✓ | ✓ | | |
-//! | `POST /admin/tkauth/prune-jti` | ✓ | ✓ | | |
-//! | `GET /admin/mtc/tree-size` | ✓ | ✓ | | ✓ |
-//! | `GET /admin/mtc/root` | ✓ | ✓ | | ✓ |
-//! | `GET /admin/mtc/landmarks` | ✓ | ✓ | | ✓ |
-//! | `GET /admin/mtc/landmark-list` | ✓ | ✓ | | ✓ |
-//! | `GET /admin/mtc/inclusion-proof/{cert_id}` | ✓ | ✓ | | ✓ |
-//! | `GET /admin/mtc/standalone/{cert_id}` | ✓ | ✓ | | |
-//! | `GET /admin/mtc/landmarks/{seq}/cert` | ✓ | ✓ | | |
-//! | `GET /admin/mtc/landmarks/{seq}/cert-details` | ✓ | ✓ | | ✓ |
-//! | `GET /admin/mtc/consistency-proof` | ✓ | ✓ | | ✓ |
-//! | `GET /admin/mtc/subtree-root` | ✓ | ✓ | | ✓ |
-//! | `GET /admin/mtc/revoked-ranges` | ✓ | ✓ | | ✓ |
-//! | `GET /admin/mtc/checkpoint` | ✓ | ✓ | | ✓ |
-//! | `GET /admin/mtc/cosignature` | ✓ | ✓ | | ✓ |
-//! | `POST /admin/ca/{id}/mtc/force-checkpoint` | ✓ | ✓ | | |
-//! | `POST /admin/ca/{id}/mtc/force-landmark` | ✓ | ✓ | | |
-//! | `GET /admin/ca/{id}/mtc/log-list-entry` | ✓ | ✓ | | ✓ |
-//! | `GET /admin/gossip/status` | ✓ | ✓ | ✓ | ✓ |
-//! | `POST /admin/gossip/register` | ✓ | | | |
-//! | `GET /admin/policy/scopes` | ✓ | ✓ | | ✓ |
-//! | `GET /admin/policy/rules` | ✓ | ✓ | | ✓ |
-//! | `GET /admin/policy/rules/{id}` | ✓ | ✓ | | ✓ |
-//! | `POST /admin/policy/rules` | ✓ | ✓ | | |
-//! | `PUT /admin/policy/rules/{id}` | ✓ | ✓ | | |
-//! | `DELETE /admin/policy/rules/{id}` | ✓ | ✓ | | |
+//! Role enforcement is centralized in [`rbac::admin_rbac_gate`], a middleware
+//! applied over the whole admin router in `build_admin_router()`
+//! (`src/routes/mod.rs`), driven by [`rbac::ADMIN_RBAC_TABLE`]. A route with
+//! no matching table row is denied — there's no way for a new route to ship
+//! without a role requirement, since forgetting the row makes the route
+//! completely inaccessible rather than silently ungated. Individual handlers
+//! no longer call a `require_role!` macro; the gate runs before any
+//! handler-specific extractor, so a malformed request body/query can no
+//! longer leak a validation-error status ahead of the role check.
+//!
+//! `tests/admin_rbac.rs` imports `ADMIN_RBAC_TABLE` directly rather than
+//! keeping its own copy. The human-readable prose matrix in
+//! `docs/src/user/operator-roles.md` remains hand-maintained against this
+//! table (one manual sync point instead of the three this used to be).
 
 pub mod accounts;
 pub mod audit;
@@ -86,10 +27,12 @@ pub mod cas;
 pub mod certs;
 pub mod delegations;
 pub mod eab;
+pub mod error;
 pub mod mtc;
 pub mod operators;
 pub mod policy;
 pub mod profiles;
+pub mod rbac;
 pub mod stats;
 pub mod tkauth;
 

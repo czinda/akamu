@@ -14,10 +14,10 @@ use crate::admin::auth::OperatorContext;
 use crate::audit::{AuditEvent, AuditEventType};
 use crate::crdt_hooks;
 use crate::db;
-use crate::require_role;
 use crate::state::AppState;
 
 use super::super::unix_now;
+use super::error::AdminApiError;
 
 #[derive(Deserialize)]
 struct NewOperatorPayload {
@@ -45,9 +45,7 @@ pub async fn get_operators(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Response {
-    require_role!(operator, state, Administrator);
-
+) -> Result<Response, AdminApiError> {
     let limit: i64 = params
         .get("limit")
         .and_then(|v| v.parse().ok())
@@ -85,16 +83,11 @@ pub async fn get_operators(
                     })
                 })
                 .collect();
-            (StatusCode::OK, Json(json!({"operators": list}))).into_response()
+            Ok((StatusCode::OK, Json(json!({"operators": list}))).into_response())
         }
-        Err(e) => {
-            tracing::error!(error = %e, "get_operators: db error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "database error"})),
-            )
-                .into_response()
-        }
+        Err(e) => Err(AdminApiError::Internal(format!(
+            "get_operators: db error: {e}"
+        ))),
     }
 }
 
@@ -107,65 +100,42 @@ pub async fn post_operators(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     body: Bytes,
-) -> Response {
-    require_role!(operator, state, Administrator);
-
-    let payload: NewOperatorPayload = match serde_json::from_slice(&body) {
-        Ok(p) => p,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"status": 400, "detail": format!("invalid JSON: {e}")})),
-            )
-                .into_response()
-        }
-    };
+) -> Result<Response, AdminApiError> {
+    let payload: NewOperatorPayload = serde_json::from_slice(&body)
+        .map_err(|e| AdminApiError::BadRequest(format!("invalid JSON: {e}")))?;
 
     if payload.name.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"status": 400, "detail": "name is required"})),
-        )
-            .into_response();
+        return Err(AdminApiError::BadRequest("name is required".into()));
     }
     match payload.role.as_str() {
         "administrator" | "ca_operations" | "ca_ra" | "auditor" => {}
         _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"status": 400, "detail": "role must be administrator, ca_operations, ca_ra, or auditor"})),
-            )
-                .into_response()
+            return Err(AdminApiError::BadRequest(
+                "role must be administrator, ca_operations, ca_ra, or auditor".into(),
+            ))
         }
     }
     if payload.cert_fingerprint.is_none() && payload.gssapi_principal.is_none() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"status": 400, "detail": "at least one of cert_fingerprint or gssapi_principal is required"})),
-        )
-            .into_response();
+        return Err(AdminApiError::BadRequest(
+            "at least one of cert_fingerprint or gssapi_principal is required".into(),
+        ));
     }
     if !payload.ca_id.is_empty() && !state.cas.contains_key(payload.ca_id.as_str()) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"status": 400, "detail": format!("unknown ca_id '{}'", payload.ca_id)})),
-        )
-            .into_response();
+        return Err(AdminApiError::BadRequest(format!(
+            "unknown ca_id '{}'",
+            payload.ca_id
+        )));
     }
     if payload.ca_id.is_empty() && payload.role == "ca_ra" {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"status": 400, "detail": "ca_ra operators must have a non-empty ca_id"})),
-        )
-            .into_response();
+        return Err(AdminApiError::BadRequest(
+            "ca_ra operators must have a non-empty ca_id".into(),
+        ));
     }
     if let Some(scope_ca) = operator.ca_scope() {
         if payload.ca_id != scope_ca {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(json!({"status": 403, "detail": "CA-scoped operator can only create operators for their own CA"})),
-            )
-                .into_response();
+            return Err(AdminApiError::Forbidden(
+                "CA-scoped operator can only create operators for their own CA".into(),
+            ));
         }
     }
 
@@ -194,20 +164,14 @@ pub async fn post_operators(
             let op_id = match op_row {
                 Ok(Some(row)) => row.id,
                 Ok(None) => {
-                    tracing::error!("post_operators: operator not found after insert");
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({"status": 500, "detail": "operator created but id lookup failed"})),
-                    )
-                        .into_response();
+                    return Err(AdminApiError::Internal(
+                        "post_operators: operator not found after insert".into(),
+                    ));
                 }
                 Err(e) => {
-                    tracing::error!(error = %e, "post_operators: id lookup db error");
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({"status": 500, "detail": "database error"})),
-                    )
-                        .into_response();
+                    return Err(AdminApiError::Internal(format!(
+                        "post_operators: id lookup db error: {e}"
+                    )));
                 }
             };
             state
@@ -229,29 +193,22 @@ pub async fn post_operators(
                 unix_now(),
             )
             .await;
-            (
+            Ok((
                 StatusCode::CREATED,
                 Json(json!({"id": op_id, "name": payload.name, "created_at": now})),
             )
-                .into_response()
+                .into_response())
         }
         Err(crate::error::AcmeError::Database(ref msg))
             if crate::db::is_unique_constraint_violation(msg) =>
         {
-            (
-                StatusCode::CONFLICT,
-                Json(json!({"status": 409, "detail": "operator with this fingerprint or principal already exists"})),
-            )
-                .into_response()
+            Err(AdminApiError::Conflict(
+                "operator with this fingerprint or principal already exists".into(),
+            ))
         }
-        Err(e) => {
-            tracing::error!(error = %e, "post_operators: db error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "database error"})),
-            )
-                .into_response()
-        }
+        Err(e) => Err(AdminApiError::Internal(format!(
+            "post_operators: db error: {e}"
+        ))),
     }
 }
 
@@ -264,43 +221,22 @@ pub async fn patch_operator(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
     body: Bytes,
-) -> Response {
-    require_role!(operator, state, Administrator);
-
-    let payload: PatchOperatorPayload = match serde_json::from_slice(&body) {
-        Ok(p) => p,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"status": 400, "detail": format!("invalid JSON: {e}")})),
-            )
-                .into_response()
-        }
-    };
+) -> Result<Response, AdminApiError> {
+    let payload: PatchOperatorPayload = serde_json::from_slice(&body)
+        .map_err(|e| AdminApiError::BadRequest(format!("invalid JSON: {e}")))?;
 
     if let Some(scope_ca) = operator.ca_scope() {
         match db::operators::get_by_id(&state.db, id).await {
             Ok(Some(ref op)) if op.ca_id != scope_ca => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(json!({"status": 404, "detail": "operator not found"})),
-                )
-                    .into_response();
+                return Err(AdminApiError::NotFound("operator not found".into()));
             }
             Ok(None) => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(json!({"status": 404, "detail": "operator not found"})),
-                )
-                    .into_response();
+                return Err(AdminApiError::NotFound("operator not found".into()));
             }
             Err(e) => {
-                tracing::error!(error = %e, "patch_operator: db lookup for ca_scope check");
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"status": 500, "detail": "database error"})),
-                )
-                    .into_response();
+                return Err(AdminApiError::Internal(format!(
+                    "patch_operator: db lookup for ca_scope check: {e}"
+                )));
             }
             _ => {}
         }
@@ -308,11 +244,7 @@ pub async fn patch_operator(
 
     let now = crate::util::rfc3339_now();
     match db::operators::set_active(&state.db, id, payload.active, &now).await {
-        Ok(0) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({"status": 404, "detail": "operator not found"})),
-        )
-            .into_response(),
+        Ok(0) => Err(AdminApiError::NotFound("operator not found".into())),
         Ok(_) => {
             let action = if payload.active {
                 "operator.activate"
@@ -335,16 +267,11 @@ pub async fn patch_operator(
             if !payload.active {
                 crdt_hooks::on_operator_tombstone(&state, id, unix_now()).await;
             }
-            StatusCode::NO_CONTENT.into_response()
+            Ok(StatusCode::NO_CONTENT.into_response())
         }
-        Err(e) => {
-            tracing::error!(error = %e, "patch_operator: db error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "database error"})),
-            )
-                .into_response()
-        }
+        Err(e) => Err(AdminApiError::Internal(format!(
+            "patch_operator: db error: {e}"
+        ))),
     }
 }
 
@@ -356,43 +283,26 @@ pub async fn unlock_operator(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
-) -> Response {
-    require_role!(operator, state, Administrator);
-
+) -> Result<Response, AdminApiError> {
     if let Some(scope_ca) = operator.ca_scope() {
         match db::operators::get_by_id(&state.db, id).await {
             Ok(Some(ref op)) if op.ca_id != scope_ca => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(json!({"status": 404, "detail": "operator not found"})),
-                )
-                    .into_response();
+                return Err(AdminApiError::NotFound("operator not found".into()));
             }
             Ok(None) => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(json!({"status": 404, "detail": "operator not found"})),
-                )
-                    .into_response();
+                return Err(AdminApiError::NotFound("operator not found".into()));
             }
             Err(e) => {
-                tracing::error!(error = %e, "unlock_operator: db lookup for ca_scope check");
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"status": 500, "detail": "database error"})),
-                )
-                    .into_response();
+                return Err(AdminApiError::Internal(format!(
+                    "unlock_operator: db lookup for ca_scope check: {e}"
+                )));
             }
             _ => {}
         }
     }
 
     match db::operators::unlock(&state.db, id).await {
-        Ok(false) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({"status": 404, "detail": "operator not found"})),
-        )
-            .into_response(),
+        Ok(false) => Err(AdminApiError::NotFound("operator not found".into())),
         Ok(true) => {
             state
                 .record_audit(
@@ -403,16 +313,11 @@ pub async fn unlock_operator(
                         ),
                 )
                 .await;
-            StatusCode::NO_CONTENT.into_response()
+            Ok(StatusCode::NO_CONTENT.into_response())
         }
-        Err(e) => {
-            tracing::error!(error = %e, "unlock_operator: db error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "database error"})),
-            )
-                .into_response()
-        }
+        Err(e) => Err(AdminApiError::Internal(format!(
+            "unlock_operator: db error: {e}"
+        ))),
     }
 }
 
@@ -424,21 +329,15 @@ pub async fn get_operator(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
-) -> Response {
-    require_role!(operator, state, Administrator);
-
+) -> Result<Response, AdminApiError> {
     match db::operators::get_by_id(&state.db, id).await {
         Ok(Some(r)) => {
             if let Some(scope_ca) = operator.ca_scope() {
                 if r.ca_id != scope_ca {
-                    return (
-                        StatusCode::NOT_FOUND,
-                        Json(json!({"status": 404, "detail": "operator not found"})),
-                    )
-                        .into_response();
+                    return Err(AdminApiError::NotFound("operator not found".into()));
                 }
             }
-            (
+            Ok((
                 StatusCode::OK,
                 Json(json!({
                     "id": r.id,
@@ -454,21 +353,12 @@ pub async fn get_operator(
                     "locked_until": r.locked_until,
                 })),
             )
-                .into_response()
+                .into_response())
         }
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({"status": 404, "detail": "operator not found"})),
-        )
-            .into_response(),
-        Err(e) => {
-            tracing::error!(error = %e, "get_operator: db error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "database error"})),
-            )
-                .into_response()
-        }
+        Ok(None) => Err(AdminApiError::NotFound("operator not found".into())),
+        Err(e) => Err(AdminApiError::Internal(format!(
+            "get_operator: db error: {e}"
+        ))),
     }
 }
 
@@ -482,9 +372,7 @@ pub async fn put_operator(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
     body: Bytes,
-) -> Response {
-    require_role!(operator, state, Administrator);
-
+) -> Result<Response, AdminApiError> {
     #[derive(Deserialize)]
     struct PutOperatorPayload {
         name: Option<String>,
@@ -497,26 +385,16 @@ pub async fn put_operator(
         ca_id: Option<String>,
     }
 
-    let payload: PutOperatorPayload = match serde_json::from_slice(&body) {
-        Ok(p) => p,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"status": 400, "detail": format!("invalid JSON: {e}")})),
-            )
-                .into_response()
-        }
-    };
+    let payload: PutOperatorPayload = serde_json::from_slice(&body)
+        .map_err(|e| AdminApiError::BadRequest(format!("invalid JSON: {e}")))?;
 
     if let Some(ref r) = payload.role {
         match r.as_str() {
             "administrator" | "ca_operations" | "ca_ra" | "auditor" => {}
             _ => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"status": 400, "detail": "role must be administrator, ca_operations, ca_ra, or auditor"})),
-                )
-                    .into_response()
+                return Err(AdminApiError::BadRequest(
+                    "role must be administrator, ca_operations, ca_ra, or auditor".into(),
+                ))
             }
         }
     }
@@ -526,30 +404,19 @@ pub async fn put_operator(
     let target_op = match db::operators::get_by_id(&state.db, id).await {
         Ok(Some(op)) => op,
         Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"status": 404, "detail": "operator not found"})),
-            )
-                .into_response();
+            return Err(AdminApiError::NotFound("operator not found".into()));
         }
         Err(e) => {
-            tracing::error!(error = %e, "put_operator: db lookup");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "database error"})),
-            )
-                .into_response();
+            return Err(AdminApiError::Internal(format!(
+                "put_operator: db lookup: {e}"
+            )));
         }
     };
 
     // CA-scoped operators can only modify operators scoped to the same CA.
     if let Some(scope_ca) = operator.ca_scope() {
         if target_op.ca_id != scope_ca {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"status": 404, "detail": "operator not found"})),
-            )
-                .into_response();
+            return Err(AdminApiError::NotFound("operator not found".into()));
         }
     }
 
@@ -558,46 +425,32 @@ pub async fn put_operator(
         // CA-scoped operators cannot widen scope.
         if let Some(scope_ca) = operator.ca_scope() {
             if cid.is_empty() || cid != scope_ca {
-                return (
-                    StatusCode::FORBIDDEN,
-                    Json(json!({"status": 403, "detail": "CA-scoped operator cannot change ca_id outside their own CA"})),
-                )
-                    .into_response();
+                return Err(AdminApiError::Forbidden(
+                    "CA-scoped operator cannot change ca_id outside their own CA".into(),
+                ));
             }
         }
 
         let target_role = payload.role.as_deref().unwrap_or(&target_op.role);
 
         if cid.is_empty() && target_role == "ca_ra" {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(
-                    json!({"status": 400, "detail": "ca_ra operators must have a non-empty ca_id"}),
-                ),
-            )
-                .into_response();
+            return Err(AdminApiError::BadRequest(
+                "ca_ra operators must have a non-empty ca_id".into(),
+            ));
         }
         if !cid.is_empty() && !state.cas.contains_key(cid.as_str()) {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"status": 400, "detail": format!("unknown ca_id '{cid}'")})),
-            )
-                .into_response();
+            return Err(AdminApiError::BadRequest(format!("unknown ca_id '{cid}'")));
         }
         Some(cid.as_str())
     } else if payload.role.as_deref() == Some("ca_ra") {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"status": 400, "detail": "ca_id is required when setting role to ca_ra"})),
-        )
-            .into_response();
+        return Err(AdminApiError::BadRequest(
+            "ca_id is required when setting role to ca_ra".into(),
+        ));
     } else if matches!(payload.role.as_deref(), Some("administrator" | "auditor")) {
         if operator.ca_scope().is_some() {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(json!({"status": 403, "detail": "CA-scoped operator cannot clear ca_id"})),
-            )
-                .into_response();
+            return Err(AdminApiError::Forbidden(
+                "CA-scoped operator cannot clear ca_id".into(),
+            ));
         }
         Some("")
     } else {
@@ -635,20 +488,11 @@ pub async fn put_operator(
                         ),
                 )
                 .await;
-            StatusCode::NO_CONTENT.into_response()
+            Ok(StatusCode::NO_CONTENT.into_response())
         }
-        Ok(false) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({"status": 404, "detail": "operator not found"})),
-        )
-            .into_response(),
-        Err(e) => {
-            tracing::error!(error = %e, "put_operator: db error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "database error"})),
-            )
-                .into_response()
-        }
+        Ok(false) => Err(AdminApiError::NotFound("operator not found".into())),
+        Err(e) => Err(AdminApiError::Internal(format!(
+            "put_operator: db error: {e}"
+        ))),
     }
 }

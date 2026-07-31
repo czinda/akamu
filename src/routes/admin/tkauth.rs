@@ -3,17 +3,16 @@
 use std::sync::Arc;
 
 use axum::extract::State;
-use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
 
 use crate::admin::auth::OperatorContext;
 use crate::db;
-use crate::require_role;
 use crate::state::AppState;
 
 use super::super::unix_now;
+use super::error::AdminApiError;
 
 /// `POST /admin/tkauth/prune-jti?dry_run=true`
 ///
@@ -21,18 +20,12 @@ use super::super::unix_now;
 /// With `?dry_run=true`, returns the count without deleting.
 /// Requires: `administrator` or `ca_operations`.
 pub async fn post_tkauth_prune_jti(
-    operator: OperatorContext,
+    _operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Response {
-    require_role!(operator, state, Administrator | CaOperations);
-
+) -> Result<Response, AdminApiError> {
     if !state.config.tkauth.as_ref().is_some_and(|t| t.enabled) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"status": 400, "detail": "tkauth is not enabled"})),
-        )
-            .into_response();
+        return Err(AdminApiError::BadRequest("tkauth is not enabled".into()));
     }
 
     let dry_run = params
@@ -41,31 +34,11 @@ pub async fn post_tkauth_prune_jti(
     let now = unix_now();
 
     if dry_run {
-        match db::tkauth::count_expired(&state.db_ro, now).await {
-            Ok(n) => Json(json!({"would_delete": n, "dry_run": true})).into_response(),
-            Err(e) => {
-                tracing::error!(error = %e, "tkauth prune-jti dry-run: db error");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"status": 500, "detail": "database error"})),
-                )
-                    .into_response()
-            }
-        }
+        let n = db::tkauth::count_expired(&state.db_ro, now).await?;
+        Ok(Json(json!({"would_delete": n, "dry_run": true})).into_response())
     } else {
-        match db::tkauth::purge_expired(&state.db, now).await {
-            Ok(n) => {
-                tracing::info!(deleted = n, "tkauth JTI cache pruned via admin API");
-                Json(json!({"deleted": n})).into_response()
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "tkauth prune-jti: db error");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"status": 500, "detail": "database error"})),
-                )
-                    .into_response()
-            }
-        }
+        let n = db::tkauth::purge_expired(&state.db, now).await?;
+        tracing::info!(deleted = n, "tkauth JTI cache pruned via admin API");
+        Ok(Json(json!({"deleted": n})).into_response())
     }
 }

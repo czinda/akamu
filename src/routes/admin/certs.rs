@@ -14,11 +14,11 @@ use crate::admin::auth::OperatorContext;
 use crate::audit::{AuditEvent, AuditEventType};
 use crate::crdt_hooks;
 use crate::db;
-use crate::require_role;
 use crate::state::{AppState, OperatorRole};
 
 use super::super::unix_now;
 use super::describe_cert_der;
+use super::error::AdminApiError;
 
 #[derive(Deserialize)]
 struct RevokePayload {
@@ -39,13 +39,7 @@ pub async fn get_certs(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Response {
-    require_role!(
-        operator,
-        state,
-        Administrator | CaOperations | CaRa | Auditor
-    );
-
+) -> Result<Response, AdminApiError> {
     let limit: i64 = params
         .get("limit")
         .and_then(|v| v.parse().ok())
@@ -108,20 +102,13 @@ pub async fn get_certs(
                     })
                 })
                 .collect();
-            (
+            Ok((
                 StatusCode::OK,
                 Json(json!({"certs": certs, "total": total, "limit": limit, "offset": offset})),
             )
-                .into_response()
+                .into_response())
         }
-        Err(e) => {
-            tracing::error!(error = %e, "get_certs: db error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "database error"})),
-            )
-                .into_response()
-        }
+        Err(e) => Err(AdminApiError::Internal(format!("get_certs: db error: {e}"))),
     }
 }
 
@@ -133,24 +120,14 @@ pub async fn get_cert(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Response {
-    require_role!(
-        operator,
-        state,
-        Administrator | CaOperations | CaRa | Auditor
-    );
-
+) -> Result<Response, AdminApiError> {
     match db::certs::get_by_id(&state.db, &id).await {
         Ok(Some(r)) => {
             // Scoped operators may only view certificates from their own CA.
             if operator.ca_scope().is_some_and(|scope| r.ca_id != scope) {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(json!({"status": 404, "detail": "certificate not found"})),
-                )
-                    .into_response();
+                return Err(AdminApiError::NotFound("certificate not found".into()));
             }
-            (
+            Ok((
                 StatusCode::OK,
                 Json(json!({
                     "id": r.id,
@@ -172,21 +149,10 @@ pub async fn get_cert(
                     "cert_text": describe_cert_der(&r.der),
                 })),
             )
-                .into_response()
+                .into_response())
         }
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({"status": 404, "detail": "certificate not found"})),
-        )
-            .into_response(),
-        Err(e) => {
-            tracing::error!(error = %e, "get_cert: db error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "database error"})),
-            )
-                .into_response()
-        }
+        Ok(None) => Err(AdminApiError::NotFound("certificate not found".into())),
+        Err(e) => Err(AdminApiError::Internal(format!("get_cert: db error: {e}"))),
     }
 }
 
@@ -200,22 +166,16 @@ pub async fn get_cert_download(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Response {
-    require_role!(operator, state, Administrator | CaOperations | CaRa);
-
+) -> Result<Response, AdminApiError> {
     let format = params.get("format").map(String::as_str).unwrap_or("pem");
 
     match db::certs::get_by_id(&state.db, &id).await {
         Ok(Some(r)) => {
             // Scoped operators may only download certificates from their own CA.
             if operator.ca_scope().is_some_and(|scope| r.ca_id != scope) {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(json!({"status": 404, "detail": "certificate not found"})),
-                )
-                    .into_response();
+                return Err(AdminApiError::NotFound("certificate not found".into()));
             }
-            match format {
+            Ok(match format {
                 "der" => (
                     StatusCode::OK,
                     [("content-type", "application/pkix-cert")],
@@ -228,21 +188,12 @@ pub async fn get_cert_download(
                     r.pem,
                 )
                     .into_response(),
-            }
+            })
         }
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({"status": 404, "detail": "certificate not found"})),
-        )
-            .into_response(),
-        Err(e) => {
-            tracing::error!(error = %e, "get_cert_download: db error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "database error"})),
-            )
-                .into_response()
-        }
+        Ok(None) => Err(AdminApiError::NotFound("certificate not found".into())),
+        Err(e) => Err(AdminApiError::Internal(format!(
+            "get_cert_download: db error: {e}"
+        ))),
     }
 }
 
@@ -254,8 +205,6 @@ pub async fn post_crl_force(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    require_role!(operator, state, Administrator | CaOperations);
-
     // Drop CRL caches for the operator's scope (or all CAs for server-wide operators).
     // The next GET /ca/{id}/crl will regenerate each invalidated cache.
     if let Some(scope) = operator.ca_scope() {
@@ -287,24 +236,15 @@ pub async fn post_revoke(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     body: Bytes,
-) -> Response {
-    require_role!(operator, state, Administrator | CaOperations | CaRa);
-
-    let payload: RevokePayload = match serde_json::from_slice(&body) {
-        Ok(p) => p,
-        Err(e) => return (StatusCode::BAD_REQUEST, format!("JSON: {e}")).into_response(),
-    };
+) -> Result<Response, AdminApiError> {
+    let payload: RevokePayload = serde_json::from_slice(&body)
+        .map_err(|e| AdminApiError::BadRequest(format!("JSON: {e}")))?;
 
     // RFC 5280 §5.3.1: valid reason codes are 0–10, excluding 7 (unused).
     if payload.reason == 7 || payload.reason > 10 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "status": 400,
-                "detail": "revocation reason must be 0–10 excluding 7 (RFC 5280 §5.3.1)",
-            })),
-        )
-            .into_response();
+        return Err(AdminApiError::BadRequest(
+            "revocation reason must be 0–10 excluding 7 (RFC 5280 §5.3.1)".into(),
+        ));
     }
 
     // ca_ra operators must always have a CA scope — an empty ca_id is a
@@ -312,11 +252,9 @@ pub async fn post_revoke(
     // We check the role explicitly: ca_scope().is_none() would also match
     // administrator/auditor, who are legitimately server-wide.
     if operator.role == OperatorRole::CaRa && operator.ca_id.is_empty() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({"status": 403, "detail": "ca_ra operator has no CA scope configured"})),
-        )
-            .into_response();
+        return Err(AdminApiError::Forbidden(
+            "ca_ra operator has no CA scope configured".into(),
+        ));
     }
 
     let now = unix_now();
@@ -373,20 +311,13 @@ pub async fn post_revoke(
                 )
                 .await;
             crdt_hooks::on_cert_tombstone(&state, &payload.cert_id, now).await;
-            StatusCode::NO_CONTENT.into_response()
+            Ok(StatusCode::NO_CONTENT.into_response())
         }
-        Ok(false) => (
-            StatusCode::NOT_FOUND,
-            "certificate not found or already revoked",
-        )
-            .into_response(),
-        Err(e) => {
-            tracing::error!(error = %e, "post_revoke: db error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"status": 500, "detail": "database error"})),
-            )
-                .into_response()
-        }
+        Ok(false) => Err(AdminApiError::NotFound(
+            "certificate not found or already revoked".into(),
+        )),
+        Err(e) => Err(AdminApiError::Internal(format!(
+            "post_revoke: db error: {e}"
+        ))),
     }
 }

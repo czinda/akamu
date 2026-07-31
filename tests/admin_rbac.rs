@@ -217,256 +217,13 @@ async fn send_admin(
     resp.status()
 }
 
-// ── RBAC table ────────────────────────────────────────────────────────────────
+use akamu::routes::admin::rbac::ADMIN_RBAC_TABLE;
 
-// Each entry: (method, path, [roles that are ALLOWED (not 403)])
-// Roles NOT listed will be expected to get 403.
 const ALL_ROLES: [OperatorRole; 4] = [
     OperatorRole::Administrator,
     OperatorRole::CaOperations,
     OperatorRole::CaRa,
     OperatorRole::Auditor,
-];
-
-type RbacRow = (&'static str, Method, &'static str, &'static [OperatorRole]);
-
-static RBAC_TABLE: &[RbacRow] = &[
-    (
-        "POST /admin/session",
-        Method::POST,
-        "/admin/session",
-        &ALL_ROLES,
-    ),
-    (
-        "DELETE /admin/session",
-        Method::DELETE,
-        "/admin/session",
-        &ALL_ROLES,
-    ),
-    ("GET /admin/stats", Method::GET, "/admin/stats", &ALL_ROLES),
-    ("GET /admin/eab", Method::GET, "/admin/eab", &ALL_ROLES),
-    (
-        "GET /admin/account/1/profile-grants",
-        Method::GET,
-        "/admin/account/1/profile-grants",
-        &ALL_ROLES,
-    ),
-    (
-        "GET /admin/certs",
-        Method::GET,
-        "/admin/certs",
-        &[
-            OperatorRole::Administrator,
-            OperatorRole::CaOperations,
-            OperatorRole::CaRa,
-            OperatorRole::Auditor,
-        ],
-    ),
-    (
-        "POST /admin/eab",
-        Method::POST,
-        "/admin/eab",
-        &[
-            OperatorRole::Administrator,
-            OperatorRole::CaOperations,
-            // CaRa intentionally excluded: EAB keys are server-global and
-            // must not be provisioned by a CA-scoped operator.
-        ],
-    ),
-    (
-        "POST /admin/revoke",
-        Method::POST,
-        "/admin/revoke",
-        &[
-            OperatorRole::Administrator,
-            OperatorRole::CaOperations,
-            OperatorRole::CaRa,
-        ],
-    ),
-    (
-        "DELETE /admin/eab/x",
-        Method::DELETE,
-        "/admin/eab/no-such-kid",
-        &[OperatorRole::Administrator, OperatorRole::CaOperations],
-    ),
-    (
-        "GET /admin/operators",
-        Method::GET,
-        "/admin/operators",
-        &[OperatorRole::Administrator],
-    ),
-    (
-        "POST /admin/operators",
-        Method::POST,
-        "/admin/operators",
-        &[OperatorRole::Administrator],
-    ),
-    (
-        "PATCH /admin/operators/1",
-        Method::PATCH,
-        "/admin/operators/1",
-        &[OperatorRole::Administrator],
-    ),
-    (
-        "GET /admin/audit",
-        Method::GET,
-        "/admin/audit",
-        &[OperatorRole::Administrator, OperatorRole::Auditor],
-    ),
-    (
-        "PUT /admin/account/1/profile-grants",
-        Method::PUT,
-        "/admin/account/1/profile-grants",
-        &[OperatorRole::Administrator, OperatorRole::CaOperations],
-    ),
-    (
-        "DELETE /admin/account/1/profile-grants",
-        Method::DELETE,
-        "/admin/account/1/profile-grants",
-        &[OperatorRole::Administrator],
-    ),
-    (
-        "POST /admin/crl/force",
-        Method::POST,
-        "/admin/crl/force",
-        &[OperatorRole::Administrator, OperatorRole::CaOperations],
-    ),
-    (
-        "GET /admin/delegations",
-        Method::GET,
-        "/admin/delegations",
-        &ALL_ROLES,
-    ),
-    (
-        "POST /admin/delegations",
-        Method::POST,
-        "/admin/delegations",
-        &[OperatorRole::Administrator, OperatorRole::CaOperations],
-    ),
-    (
-        "GET /admin/delegations/{id}",
-        Method::GET,
-        "/admin/delegations/nonexistent-id",
-        &ALL_ROLES,
-    ),
-    (
-        "PUT /admin/delegations/{id}",
-        Method::PUT,
-        "/admin/delegations/nonexistent-id",
-        &[OperatorRole::Administrator, OperatorRole::CaOperations],
-    ),
-    (
-        "DELETE /admin/delegations/{id}",
-        Method::DELETE,
-        "/admin/delegations/nonexistent-id",
-        &[OperatorRole::Administrator, OperatorRole::CaOperations],
-    ),
-    (
-        "PUT /admin/operators/{id}",
-        Method::PUT,
-        "/admin/operators/1",
-        &[OperatorRole::Administrator],
-    ),
-    (
-        "GET /admin/accounts",
-        Method::GET,
-        "/admin/accounts",
-        &ALL_ROLES,
-    ),
-    (
-        "GET /admin/orders",
-        Method::GET,
-        "/admin/orders",
-        &ALL_ROLES,
-    ),
-    (
-        "GET /admin/cas",
-        Method::GET,
-        "/admin/cas",
-        &[OperatorRole::Administrator, OperatorRole::CaOperations],
-    ),
-    (
-        "GET /admin/cas/{id}",
-        Method::GET,
-        "/admin/cas/default",
-        &[OperatorRole::Administrator, OperatorRole::CaOperations],
-    ),
-    (
-        "GET /admin/config",
-        Method::GET,
-        "/admin/config",
-        &[OperatorRole::Administrator],
-    ),
-    (
-        "GET /admin/certs/{id}",
-        Method::GET,
-        "/admin/certs/nonexistent-cert-id",
-        &ALL_ROLES,
-    ),
-    (
-        "GET /admin/certs/{id}/download",
-        Method::GET,
-        "/admin/certs/nonexistent-cert-id/download",
-        &[
-            OperatorRole::Administrator,
-            OperatorRole::CaOperations,
-            OperatorRole::CaRa,
-        ],
-    ),
-    (
-        "POST /admin/ca/{id}/crl/force",
-        Method::POST,
-        "/admin/ca/default/crl/force",
-        &[OperatorRole::Administrator, OperatorRole::CaOperations],
-    ),
-    (
-        "GET /admin/policy/scopes",
-        Method::GET,
-        "/admin/policy/scopes",
-        &[
-            OperatorRole::Administrator,
-            OperatorRole::CaOperations,
-            OperatorRole::Auditor,
-        ],
-    ),
-    (
-        "GET /admin/policy/rules",
-        Method::GET,
-        "/admin/policy/rules",
-        &[
-            OperatorRole::Administrator,
-            OperatorRole::CaOperations,
-            OperatorRole::Auditor,
-        ],
-    ),
-    (
-        "GET /admin/policy/rules/{id}",
-        Method::GET,
-        "/admin/policy/rules/nonexistent-id",
-        &[
-            OperatorRole::Administrator,
-            OperatorRole::CaOperations,
-            OperatorRole::Auditor,
-        ],
-    ),
-    (
-        "POST /admin/policy/rules",
-        Method::POST,
-        "/admin/policy/rules",
-        &[OperatorRole::Administrator, OperatorRole::CaOperations],
-    ),
-    (
-        "PUT /admin/policy/rules/{id}",
-        Method::PUT,
-        "/admin/policy/rules/nonexistent-id",
-        &[OperatorRole::Administrator, OperatorRole::CaOperations],
-    ),
-    (
-        "DELETE /admin/policy/rules/{id}",
-        Method::DELETE,
-        "/admin/policy/rules/nonexistent-id",
-        &[OperatorRole::Administrator, OperatorRole::CaOperations],
-    ),
 ];
 
 // ── Test ──────────────────────────────────────────────────────────────────────
@@ -507,11 +264,14 @@ async fn admin_rbac_table() {
         }
     };
 
-    for (label, method, path, allowed) in RBAC_TABLE {
+    for row in ADMIN_RBAC_TABLE {
+        let label = format!("{} {}", row.method, row.route_template);
         reseed(&state).await;
         for role in &ALL_ROLES {
-            let status = send_admin(&router, method.clone(), path, *role).await;
-            let is_allowed = allowed.contains(role);
+            let status = send_admin(&router, row.method.clone(), row.example_path, *role).await;
+            // `allowed_roles: None` means the route (e.g. POST /admin/session/eab)
+            // isn't role-gated at all — every role should reach the handler.
+            let is_allowed = row.allowed_roles.is_none_or(|roles| roles.contains(role));
             if is_allowed {
                 assert_ne!(
                     status,
@@ -557,6 +317,97 @@ async fn scoped_ca_operations_sees_own_ca_resource() {
         resp.status(),
         StatusCode::OK,
         "scoped ca_operations must see its own CA"
+    );
+}
+
+/// Regression test: audit events carry no `ca_id`, so a CA-scoped operator
+/// must not be given the server-wide audit trail. `GET /admin/audit` must
+/// deny scoped administrator/auditor operators with 403, even though the
+/// role itself is permitted for unscoped operators.
+#[tokio::test]
+async fn scoped_administrator_denied_audit_access() {
+    let (state, _dir) = build_admin_state().await;
+    let router = routes::build_router(Arc::clone(&state), None, false);
+
+    {
+        let sessions = state.admin_sessions.as_ref().unwrap();
+        let mut map = sessions.lock().await;
+        map.insert(
+            "tok-admin-scoped".to_string(),
+            AdminSession {
+                operator_id: 3,
+                name: akamu_util::SecretBuffer::from_string("test-admin-scoped".to_string()),
+                role: OperatorRole::Administrator,
+                created_at: Instant::now(),
+                last_active_at: Instant::now(),
+                auth_method: AdminAuthMethod::Cert,
+                ca_id: "default".to_string(),
+            },
+        );
+    }
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/admin/audit")
+        .header(header::AUTHORIZATION, "Bearer tok-admin-scoped")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "a CA-scoped administrator must not get the unscoped audit trail"
+    );
+
+    // An unscoped administrator is unaffected.
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/admin/audit")
+        .header(header::AUTHORIZATION, "Bearer tok-admin")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+/// Regression test: `GET /admin/account/{id}/profile-grants` must apply the
+/// same CA-scope check as its sibling `PUT` handler and as `GET
+/// /admin/account/{id}` — a `ca_operations` operator scoped to one CA must
+/// not be able to read another CA's account grants.
+#[tokio::test]
+async fn scoped_ca_operations_blocked_from_other_ca_profile_grants() {
+    let (state, _dir) = build_admin_state().await;
+    let router = routes::build_router(Arc::clone(&state), None, false);
+
+    akamu::db::accounts::insert(
+        &state.db,
+        akamu::db::schema::AccountRow {
+            id: "acct-other-ca".into(),
+            status: "valid".into(),
+            contact: None,
+            public_key: vec![],
+            jwk_thumbprint: "thumb".into(),
+            created: 0,
+            updated: 0,
+            profile_grants: None,
+            ca_id: "other-ca".into(),
+            kerberos_principal: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/admin/account/acct-other-ca/profile-grants")
+        .header(header::AUTHORIZATION, "Bearer tok-caops-scoped")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "scoped ca_operations must not read another CA's account profile-grants"
     );
 }
 
@@ -685,4 +536,39 @@ async fn scoped_ca_operations_blocked_from_other_ca_resource() {
         StatusCode::NOT_FOUND,
         "scoped ca_operations must not see CAs outside its scope"
     );
+}
+
+/// Confirms every gated row in `ADMIN_RBAC_TABLE` actually sits behind
+/// authentication, not merely behind an application check that happens to
+/// return non-403/404 for every role tested above.
+///
+/// `ADMIN_RBAC_TABLE` (src/routes/admin/rbac.rs) is the same table that
+/// drives real enforcement via `admin_rbac_gate` — there is no separate
+/// hand-maintained copy here to fall out of sync.
+#[tokio::test]
+async fn every_admin_route_has_a_role_check() {
+    let (state, _dir) = build_admin_state().await;
+    let router = routes::build_router(Arc::clone(&state), None, false);
+
+    for row in ADMIN_RBAC_TABLE {
+        // `allowed_roles: None` (POST /admin/session/eab) authenticates via
+        // an HMAC over the request body, not OperatorContext, so there is no
+        // bearer/cert/negotiate credential for it to reject up front.
+        if row.allowed_roles.is_none() {
+            continue;
+        }
+        let label = format!("{} {}", row.method, row.route_template);
+        let req = Request::builder()
+            .method(row.method.clone())
+            .uri(row.example_path)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        let status = router.clone().oneshot(req).await.unwrap().status();
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "{label}: request with no credentials should get 401, got {status}"
+        );
+    }
 }

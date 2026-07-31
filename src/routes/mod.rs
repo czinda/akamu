@@ -287,9 +287,9 @@ fn build_other_router() -> Router<Arc<AppState>> {
         .route("/gossip/sync", post(crate::gossip::handlers::gossip_sync))
 }
 
-/// Admin API routes (bypass halt_check; auth enforced per-handler via OperatorContext).
-fn build_admin_router() -> Router<Arc<AppState>> {
-    Router::new()
+/// Admin API routes (bypass halt_check; auth enforced by `admin::rbac::admin_rbac_gate`).
+fn build_admin_router(state: &Arc<AppState>) -> Router<Arc<AppState>> {
+    let r = Router::new()
         .route(
             "/admin/session",
             post(crate::admin::auth::post_session).delete(crate::admin::auth::delete_session),
@@ -470,7 +470,12 @@ fn build_admin_router() -> Router<Arc<AppState>> {
         .route(
             "/admin/gossip/register",
             post(crate::gossip::handlers::gossip_register),
-        )
+        );
+
+    r.layer(axum::middleware::from_fn_with_state(
+        Arc::clone(state),
+        admin::rbac::admin_rbac_gate,
+    ))
 }
 
 /// Build the unified axum router: ACME, admin API, and optional web UI.
@@ -488,7 +493,7 @@ pub fn build_router(
     let mut router = Router::new()
         .merge(build_acme_router(&state))
         .merge(build_other_router())
-        .merge(build_admin_router());
+        .merge(build_admin_router(&state));
 
     let mut has_ui = false;
 

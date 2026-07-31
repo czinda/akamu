@@ -12,8 +12,9 @@ use serde_json::json;
 
 use crate::admin::auth::OperatorContext;
 use crate::audit::{AuditEvent, AuditEventType};
-use crate::require_role;
 use crate::state::AppState;
+
+use super::error::AdminApiError;
 
 /// JSON payload for `POST /admin/profiles` and `PUT /admin/profiles/{id}`.
 #[derive(Deserialize)]
@@ -114,15 +115,9 @@ struct ProfileCreatePayload {
 /// List all loaded certificate profiles with their parameters.
 /// Requires: any role.
 pub async fn get_profiles(
-    operator: OperatorContext,
+    _operator: OperatorContext,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    require_role!(
-        operator,
-        state,
-        Administrator | CaOperations | CaRa | Auditor
-    );
-
     let profiles = state.profiles.all_profiles();
     let mut list: Vec<serde_json::Value> = profiles
         .iter()
@@ -153,16 +148,12 @@ pub async fn post_profiles(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     body: Bytes,
-) -> Response {
-    require_role!(operator, state, Administrator);
-
-    let payload: ProfileCreatePayload = match serde_json::from_slice(&body) {
-        Ok(p) => p,
-        Err(e) => return (StatusCode::BAD_REQUEST, format!("JSON: {e}")).into_response(),
-    };
+) -> Result<Response, AdminApiError> {
+    let payload: ProfileCreatePayload = serde_json::from_slice(&body)
+        .map_err(|e| AdminApiError::BadRequest(format!("JSON: {e}")))?;
 
     if payload.id.is_empty() {
-        return (StatusCode::BAD_REQUEST, "id is required").into_response();
+        return Err(AdminApiError::BadRequest("id is required".into()));
     }
 
     let id = payload.id.clone();
@@ -178,17 +169,13 @@ pub async fn post_profiles(
                     .with_detail(json!({"action": "profile.create", "id": id}).to_string()),
             )
             .await;
-        (
+        Ok((
             StatusCode::CREATED,
             Json(json!({"id": id, "description": desc})),
         )
-            .into_response()
+            .into_response())
     } else {
-        (
-            StatusCode::CONFLICT,
-            Json(json!({"status": 409, "detail": "profile already exists"})),
-        )
-            .into_response()
+        Err(AdminApiError::Conflict("profile already exists".into()))
     }
 }
 
@@ -201,13 +188,9 @@ pub async fn put_profile(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     body: Bytes,
-) -> Response {
-    require_role!(operator, state, Administrator);
-
-    let payload: ProfilePayload = match serde_json::from_slice(&body) {
-        Ok(p) => p,
-        Err(e) => return (StatusCode::BAD_REQUEST, format!("JSON: {e}")).into_response(),
-    };
+) -> Result<Response, AdminApiError> {
+    let payload: ProfilePayload = serde_json::from_slice(&body)
+        .map_err(|e| AdminApiError::BadRequest(format!("JSON: {e}")))?;
 
     let desc = payload.description.clone();
     if state
@@ -221,13 +204,9 @@ pub async fn put_profile(
                     .with_detail(json!({"action": "profile.update", "id": id}).to_string()),
             )
             .await;
-        StatusCode::NO_CONTENT.into_response()
+        Ok(StatusCode::NO_CONTENT.into_response())
     } else {
-        (
-            StatusCode::NOT_FOUND,
-            Json(json!({"status": 404, "detail": "profile not found"})),
-        )
-            .into_response()
+        Err(AdminApiError::NotFound("profile not found".into()))
     }
 }
 
@@ -236,19 +215,13 @@ pub async fn put_profile(
 /// Return a single certificate profile by ID.
 /// Requires: any role.
 pub async fn get_profile(
-    operator: OperatorContext,
+    _operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Response {
-    require_role!(
-        operator,
-        state,
-        Administrator | CaOperations | CaRa | Auditor
-    );
-
+) -> Result<Response, AdminApiError> {
     let descriptions = state.profiles.all_profiles();
     match (descriptions.get(&id), state.profiles.resolve(&id)) {
-        (Some(description), Some(params)) => (
+        (Some(description), Some(params)) => Ok((
             StatusCode::OK,
             Json(json!({
                 "id": id,
@@ -270,12 +243,8 @@ pub async fn get_profile(
                 "ca_ids": params.ca_ids,
             })),
         )
-            .into_response(),
-        _ => (
-            StatusCode::NOT_FOUND,
-            Json(json!({"status": 404, "detail": "profile not found"})),
-        )
-            .into_response(),
+            .into_response()),
+        _ => Err(AdminApiError::NotFound("profile not found".into())),
     }
 }
 
@@ -287,9 +256,7 @@ pub async fn delete_profile(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Response {
-    require_role!(operator, state, Administrator);
-
+) -> Result<Response, AdminApiError> {
     if state.profiles.remove_profile(&id) {
         state
             .record_audit(
@@ -298,12 +265,8 @@ pub async fn delete_profile(
                     .with_detail(json!({"action": "profile.delete", "id": id}).to_string()),
             )
             .await;
-        StatusCode::NO_CONTENT.into_response()
+        Ok(StatusCode::NO_CONTENT.into_response())
     } else {
-        (
-            StatusCode::NOT_FOUND,
-            Json(json!({"status": 404, "detail": "profile not found"})),
-        )
-            .into_response()
+        Err(AdminApiError::NotFound("profile not found".into()))
     }
 }

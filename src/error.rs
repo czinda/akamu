@@ -222,7 +222,7 @@ impl AcmeError {
         }
     }
 
-    fn http_status(&self) -> StatusCode {
+    pub(crate) fn http_status(&self) -> StatusCode {
         match self {
             AcmeError::BadNonce(_) => StatusCode::BAD_REQUEST,
             AcmeError::BadPublicKey(_) => StatusCode::BAD_REQUEST,

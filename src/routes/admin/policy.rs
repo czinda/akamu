@@ -14,10 +14,10 @@ use crate::audit::{AuditEvent, AuditEventType};
 use crate::crdt_hooks;
 use crate::db;
 use crate::policy::rebuild_or_defer;
-use crate::require_role;
 use crate::state::AppState;
 
 use super::super::unix_now;
+use super::error::AdminApiError;
 
 #[derive(Deserialize)]
 pub struct CreatePolicyRulePayload {
@@ -107,40 +107,26 @@ fn ca_scope_creatable(rule: &serde_json::Value, scope_ca: &str) -> bool {
 
 fn validate_rule_json(
     rule: &serde_json::Value,
-) -> Result<akamu_policy::config::PolicyRuleConfig, Box<Response>> {
+) -> Result<akamu_policy::config::PolicyRuleConfig, AdminApiError> {
     if !rule.is_object() {
-        return Err(Box::new(
-            axum::Json(json!({"status": 400, "detail": "rule must be a JSON object"}))
-                .into_response(),
+        return Err(AdminApiError::BadRequest(
+            "rule must be a JSON object".into(),
         ));
     }
     let cfg: akamu_policy::config::PolicyRuleConfig = serde_json::from_value(rule.clone())
-        .map_err(|e| {
-            Box::new(
-                axum::Json(json!({"status": 400, "detail": format!("invalid rule: {e}")}))
-                    .into_response(),
-            )
-        })?;
-    cfg.to_abac_rule().map_err(|e| {
-        Box::new(
-            axum::Json(json!({"status": 400, "detail": format!("invalid rule: {e}")}))
-                .into_response(),
-        )
-    })?;
+        .map_err(|e| AdminApiError::BadRequest(format!("invalid rule: {e}")))?;
+    cfg.to_abac_rule()
+        .map_err(|e| AdminApiError::BadRequest(format!("invalid rule: {e}")))?;
     Ok(cfg)
 }
 
 /// `GET /admin/policy/scopes`
 pub async fn get_policy_scopes(
-    operator: OperatorContext,
+    _operator: OperatorContext,
     State(state): State<Arc<AppState>>,
-) -> Response {
-    require_role!(operator, state, Administrator | CaOperations | Auditor);
-
-    match db::policy_rules::list_scopes(&state.db_ro).await {
-        Ok(scopes) => axum::Json(json!(scopes)).into_response(),
-        Err(e) => e.into_response(),
-    }
+) -> Result<Response, AdminApiError> {
+    let scopes = db::policy_rules::list_scopes(&state.db_ro).await?;
+    Ok(axum::Json(json!(scopes)).into_response())
 }
 
 /// `GET /admin/policy/rules?scope=issuance`
@@ -148,17 +134,12 @@ pub async fn get_policy_rules(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Response {
-    require_role!(operator, state, Administrator | CaOperations | Auditor);
-
+) -> Result<Response, AdminApiError> {
     let scope = params
         .get("scope")
         .map(String::as_str)
         .unwrap_or("issuance");
-    let all_rows = match db::policy_rules::list_by_scope(&state.db_ro, scope).await {
-        Ok(r) => r,
-        Err(e) => return e.into_response(),
-    };
+    let all_rows = db::policy_rules::list_by_scope(&state.db_ro, scope).await?;
     let ca_scope = operator.ca_scope().map(|s| s.to_string());
     let rows: Vec<_> = if let Some(ref scope_ca) = ca_scope {
         all_rows
@@ -169,7 +150,7 @@ pub async fn get_policy_rules(
         all_rows
     };
     let items: Vec<serde_json::Value> = rows.iter().map(rule_row_to_json).collect();
-    axum::Json(json!(items)).into_response()
+    Ok(axum::Json(json!(items)).into_response())
 }
 
 /// `POST /admin/policy/rules`
@@ -177,77 +158,46 @@ pub async fn post_policy_rule(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     body: Bytes,
-) -> Response {
-    require_role!(operator, state, Administrator | CaOperations);
-
-    let payload: CreatePolicyRulePayload = match serde_json::from_slice(&body) {
-        Ok(p) => p,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                axum::Json(json!({"status": 400, "detail": format!("invalid JSON: {e}")})),
-            )
-                .into_response()
-        }
-    };
+) -> Result<Response, AdminApiError> {
+    let payload: CreatePolicyRulePayload = serde_json::from_slice(&body)
+        .map_err(|e| AdminApiError::BadRequest(format!("invalid JSON: {e}")))?;
 
     if let Some(scope_ca) = operator.ca_scope() {
         if !ca_scope_creatable(&payload.rule, scope_ca) {
-            return (
-                StatusCode::FORBIDDEN,
-                axum::Json(
-                    json!({"status": 403, "detail": "CA-scoped operator cannot create rules outside assigned CA"}),
-                ),
-            )
-                .into_response();
+            return Err(AdminApiError::Forbidden(
+                "CA-scoped operator cannot create rules outside assigned CA".into(),
+            ));
         }
     }
 
     let scope = payload.scope.as_deref().unwrap_or("issuance");
     if !KNOWN_SCOPES.contains(&scope) {
-        return (
-            StatusCode::BAD_REQUEST,
-            axum::Json(json!({"status": 400, "detail": format!("unknown scope '{scope}'")})),
-        )
-            .into_response();
+        return Err(AdminApiError::BadRequest(format!(
+            "unknown scope '{scope}'"
+        )));
     }
     if payload.name.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            axum::Json(json!({"status": 400, "detail": "name must not be empty"})),
-        )
-            .into_response();
+        return Err(AdminApiError::BadRequest("name must not be empty".into()));
     }
     if payload.name.len() > MAX_NAME_LEN {
-        return (
-            StatusCode::BAD_REQUEST,
-            axum::Json(
-                json!({"status": 400, "detail": format!("name exceeds {MAX_NAME_LEN} characters")}),
-            ),
-        )
-            .into_response();
+        return Err(AdminApiError::BadRequest(format!(
+            "name exceeds {MAX_NAME_LEN} characters"
+        )));
     }
     if body.len() > MAX_RULE_JSON_BYTES {
-        return (
-            StatusCode::BAD_REQUEST,
-            axum::Json(json!({"status": 400, "detail": format!("request body exceeds {MAX_RULE_JSON_BYTES} bytes")})),
-        )
-            .into_response();
+        return Err(AdminApiError::BadRequest(format!(
+            "request body exceeds {MAX_RULE_JSON_BYTES} bytes"
+        )));
     }
 
-    match db::policy_rules::get_by_scope_and_name(&state.db, scope, &payload.name).await {
-        Ok(Some(_)) => {
-            return (
-                StatusCode::CONFLICT,
-                axum::Json(json!({
-                    "status": 409,
-                    "detail": format!("rule '{}' already exists in scope '{scope}'", payload.name)
-                })),
-            )
-                .into_response();
-        }
-        Err(e) => return e.into_response(),
-        Ok(None) => {}
+    if db::policy_rules::get_by_scope_and_name(&state.db, scope, &payload.name)
+        .await?
+        .is_some()
+    {
+        return Err(AdminApiError::Conflict(format!(
+            "rule '{}' already exists in scope '{scope}'",
+            payload.name
+        )));
     }
 
     let mut rule_value = payload.rule.clone();
@@ -258,25 +208,14 @@ pub async fn post_policy_rule(
         );
     }
 
-    let cfg = match validate_rule_json(&rule_value) {
-        Ok(c) => c,
-        Err(resp) => return *resp,
-    };
+    let cfg = validate_rule_json(&rule_value)?;
 
     let enabled = payload.enabled.unwrap_or(true);
     let now = crate::util::rfc3339_now();
     let id = uuid::Uuid::new_v4().to_string();
 
-    let rule_json = match serde_json::to_string(&cfg) {
-        Ok(s) => s,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(json!({"status": 500, "detail": format!("serialize rule: {e}")})),
-            )
-                .into_response()
-        }
-    };
+    let rule_json = serde_json::to_string(&cfg)
+        .map_err(|e| AdminApiError::Internal(format!("serialize rule: {e}")))?;
 
     let row = db::policy_rules::PolicyRuleRow {
         id: id.clone(),
@@ -291,13 +230,12 @@ pub async fn post_policy_rule(
     if let Err(e) = db::policy_rules::insert(&state.db, &row).await {
         let msg = e.to_string();
         if db::is_unique_constraint_violation(&msg) {
-            return (
-                StatusCode::CONFLICT,
-                axum::Json(json!({"status": 409, "detail": format!("rule '{}' already exists in scope '{scope}'", payload.name)})),
-            )
-                .into_response();
+            return Err(AdminApiError::Conflict(format!(
+                "rule '{}' already exists in scope '{scope}'",
+                payload.name
+            )));
         }
-        return e.into_response();
+        return Err(e.into());
     }
 
     let unix = unix_now();
@@ -341,7 +279,7 @@ pub async fn post_policy_rule(
             ),
         );
     }
-    resp
+    Ok(resp)
 }
 
 /// `GET /admin/policy/rules/{id}`
@@ -349,32 +287,18 @@ pub async fn get_policy_rule(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Response {
-    require_role!(operator, state, Administrator | CaOperations | Auditor);
-
-    let row = match db::policy_rules::get_by_id(&state.db_ro, &id).await {
-        Ok(Some(r)) => r,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                axum::Json(json!({"status": 404, "detail": "not found"})),
-            )
-                .into_response()
-        }
-        Err(e) => return e.into_response(),
-    };
+) -> Result<Response, AdminApiError> {
+    let row = db::policy_rules::get_by_id(&state.db_ro, &id)
+        .await?
+        .ok_or_else(|| AdminApiError::NotFound("not found".into()))?;
 
     if let Some(scope_ca) = operator.ca_scope() {
         if !ca_scope_visible(&row.rule_json, &row.id, scope_ca) {
-            return (
-                StatusCode::NOT_FOUND,
-                axum::Json(json!({"status": 404, "detail": "not found"})),
-            )
-                .into_response();
+            return Err(AdminApiError::NotFound("not found".into()));
         }
     }
 
-    axum::Json(rule_row_to_json(&row)).into_response()
+    Ok(axum::Json(rule_row_to_json(&row)).into_response())
 }
 
 /// `PUT /admin/policy/rules/{id}`
@@ -383,91 +307,51 @@ pub async fn put_policy_rule(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     body: Bytes,
-) -> Response {
-    require_role!(operator, state, Administrator | CaOperations);
+) -> Result<Response, AdminApiError> {
+    let payload: UpdatePolicyRulePayload = serde_json::from_slice(&body)
+        .map_err(|e| AdminApiError::BadRequest(format!("invalid JSON: {e}")))?;
 
-    let payload: UpdatePolicyRulePayload = match serde_json::from_slice(&body) {
-        Ok(p) => p,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                axum::Json(json!({"status": 400, "detail": format!("invalid JSON: {e}")})),
-            )
-                .into_response()
-        }
-    };
-
-    let existing = match db::policy_rules::get_by_id(&state.db, &id).await {
-        Ok(Some(r)) => r,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                axum::Json(json!({"status": 404, "detail": "not found"})),
-            )
-                .into_response()
-        }
-        Err(e) => return e.into_response(),
-    };
+    let existing = db::policy_rules::get_by_id(&state.db, &id)
+        .await?
+        .ok_or_else(|| AdminApiError::NotFound("not found".into()))?;
 
     if let Some(scope_ca) = operator.ca_scope() {
         if !ca_scope_mutable(&existing.rule_json, &existing.id, scope_ca) {
-            return (
-                StatusCode::NOT_FOUND,
-                axum::Json(json!({"status": 404, "detail": "not found"})),
-            )
-                .into_response();
+            return Err(AdminApiError::NotFound("not found".into()));
         }
         if !ca_scope_creatable(&payload.rule, scope_ca) {
-            return (
-                StatusCode::FORBIDDEN,
-                axum::Json(
-                    json!({"status": 403, "detail": "CA-scoped operator cannot move rule outside assigned CA"}),
-                ),
-            )
-                .into_response();
+            return Err(AdminApiError::Forbidden(
+                "CA-scoped operator cannot move rule outside assigned CA".into(),
+            ));
         }
     }
 
     if let Some(ref n) = payload.name {
         if n.is_empty() {
-            return (
-                StatusCode::BAD_REQUEST,
-                axum::Json(json!({"status": 400, "detail": "name must not be empty"})),
-            )
-                .into_response();
+            return Err(AdminApiError::BadRequest("name must not be empty".into()));
         }
         if n.len() > MAX_NAME_LEN {
-            return (
-                StatusCode::BAD_REQUEST,
-                axum::Json(json!({"status": 400, "detail": format!("name exceeds {MAX_NAME_LEN} characters")})),
-            )
-                .into_response();
+            return Err(AdminApiError::BadRequest(format!(
+                "name exceeds {MAX_NAME_LEN} characters"
+            )));
         }
     }
     if body.len() > MAX_RULE_JSON_BYTES {
-        return (
-            StatusCode::BAD_REQUEST,
-            axum::Json(json!({"status": 400, "detail": format!("request body exceeds {MAX_RULE_JSON_BYTES} bytes")})),
-        )
-            .into_response();
+        return Err(AdminApiError::BadRequest(format!(
+            "request body exceeds {MAX_RULE_JSON_BYTES} bytes"
+        )));
     }
 
     let name = payload.name.as_deref().unwrap_or(&existing.name);
-    if name != existing.name {
-        match db::policy_rules::get_by_scope_and_name(&state.db, &existing.scope, name).await {
-            Ok(Some(_)) => {
-                return (
-                    StatusCode::CONFLICT,
-                    axum::Json(json!({
-                        "status": 409,
-                        "detail": format!("rule '{name}' already exists in scope '{}'", existing.scope)
-                    })),
-                )
-                    .into_response();
-            }
-            Err(e) => return e.into_response(),
-            Ok(None) => {}
-        }
+    if name != existing.name
+        && db::policy_rules::get_by_scope_and_name(&state.db, &existing.scope, name)
+            .await?
+            .is_some()
+    {
+        return Err(AdminApiError::Conflict(format!(
+            "rule '{name}' already exists in scope '{}'",
+            existing.scope
+        )));
     }
 
     let mut rule_value = payload.rule.clone();
@@ -478,43 +362,27 @@ pub async fn put_policy_rule(
         );
     }
 
-    let cfg = match validate_rule_json(&rule_value) {
-        Ok(c) => c,
-        Err(resp) => return *resp,
-    };
+    let cfg = validate_rule_json(&rule_value)?;
 
     let enabled = payload.enabled.unwrap_or(existing.enabled != 0);
     let now = crate::util::rfc3339_now();
-    let rule_json = match serde_json::to_string(&cfg) {
-        Ok(s) => s,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(json!({"status": 500, "detail": format!("serialize rule: {e}")})),
-            )
-                .into_response()
-        }
-    };
+    let rule_json = serde_json::to_string(&cfg)
+        .map_err(|e| AdminApiError::Internal(format!("serialize rule: {e}")))?;
 
     match db::policy_rules::update(&state.db, &id, name, &rule_json, i64::from(enabled), &now).await
     {
         Ok(false) => {
-            return (
-                StatusCode::NOT_FOUND,
-                axum::Json(json!({"status": 404, "detail": "not found"})),
-            )
-                .into_response()
+            return Err(AdminApiError::NotFound("not found".into()));
         }
         Err(e) => {
             let msg = e.to_string();
             if db::is_unique_constraint_violation(&msg) {
-                return (
-                    StatusCode::CONFLICT,
-                    axum::Json(json!({"status": 409, "detail": format!("rule '{name}' already exists in scope '{}'", existing.scope)})),
-                )
-                    .into_response();
+                return Err(AdminApiError::Conflict(format!(
+                    "rule '{name}' already exists in scope '{}'",
+                    existing.scope
+                )));
             }
-            return e.into_response();
+            return Err(e.into());
         }
         Ok(true) => {}
     }
@@ -549,7 +417,7 @@ pub async fn put_policy_rule(
     let rebuilt =
         rebuild_or_defer(&state, &format!("policy rebuild after updating rule {id}")).await;
 
-    no_content_with_rebuild_warning(rebuilt)
+    Ok(no_content_with_rebuild_warning(rebuilt))
 }
 
 /// `DELETE /admin/policy/rules/{id}`
@@ -557,9 +425,7 @@ pub async fn delete_policy_rule(
     operator: OperatorContext,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Response {
-    require_role!(operator, state, Administrator | CaOperations);
-
+) -> Result<Response, AdminApiError> {
     // Note: there is a narrow TOCTOU window between the CA-scope check and
     // the soft-delete below.  Exploiting it requires concurrent CA-scoped
     // Administrator or CaOperations operations within single-digit milliseconds.
@@ -570,20 +436,12 @@ pub async fn delete_policy_rule(
     if let Some(scope_ca) = operator.ca_scope() {
         match db::policy_rules::get_by_id(&state.db, &id).await {
             Ok(Some(r)) if !ca_scope_mutable(&r.rule_json, &r.id, scope_ca) => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    axum::Json(json!({"status": 404, "detail": "not found"})),
-                )
-                    .into_response();
+                return Err(AdminApiError::NotFound("not found".into()));
             }
             Ok(None) => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    axum::Json(json!({"status": 404, "detail": "not found"})),
-                )
-                    .into_response()
+                return Err(AdminApiError::NotFound("not found".into()));
             }
-            Err(e) => return e.into_response(),
+            Err(e) => return Err(e.into()),
             _ => {}
         }
     }
@@ -591,13 +449,9 @@ pub async fn delete_policy_rule(
     let unix = unix_now();
     match db::policy_rules::delete(&state.db, &id, unix).await {
         Ok(false) => {
-            return (
-                StatusCode::NOT_FOUND,
-                axum::Json(json!({"status": 404, "detail": "not found"})),
-            )
-                .into_response()
+            return Err(AdminApiError::NotFound("not found".into()));
         }
-        Err(e) => return e.into_response(),
+        Err(e) => return Err(e.into()),
         Ok(true) => {}
     }
 
@@ -614,7 +468,7 @@ pub async fn delete_policy_rule(
     let rebuilt =
         rebuild_or_defer(&state, &format!("policy rebuild after deleting rule {id}")).await;
 
-    no_content_with_rebuild_warning(rebuilt)
+    Ok(no_content_with_rebuild_warning(rebuilt))
 }
 
 fn no_content_with_rebuild_warning(rebuilt: bool) -> Response {
