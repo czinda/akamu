@@ -246,10 +246,13 @@ async fn coalesce_loop(mut rx: mpsc::Receiver<WriteOp>, mut conn: AnyConnection)
             batch.push(op);
         }
 
-        let begin_ok = sqlx::query("BEGIN IMMEDIATE")
-            .execute(&mut conn)
-            .await
-            .is_ok();
+        let begin_ok = match sqlx::query("BEGIN IMMEDIATE").execute(&mut conn).await {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::error!(error = %e, "write coalescer: BEGIN IMMEDIATE failed");
+                false
+            }
+        };
 
         if !begin_ok {
             let err = AcmeError::Database("BEGIN IMMEDIATE failed".into());
@@ -263,10 +266,16 @@ async fn coalesce_loop(mut rx: mpsc::Receiver<WriteOp>, mut conn: AnyConnection)
 
         for (i, op) in batch.into_iter().enumerate() {
             let sp = format!("sp{i}");
-            let sp_ok = sqlx::query(&format!("SAVEPOINT {sp}"))
+            let sp_ok = match sqlx::query(&format!("SAVEPOINT {sp}"))
                 .execute(&mut conn)
                 .await
-                .is_ok();
+            {
+                Ok(_) => true,
+                Err(e) => {
+                    tracing::error!(error = %e, savepoint = %sp, "write coalescer: SAVEPOINT failed");
+                    false
+                }
+            };
             if !sp_ok {
                 send_error(op, &AcmeError::Database("savepoint failed".into()));
                 continue;
@@ -275,22 +284,39 @@ async fn coalesce_loop(mut rx: mpsc::Receiver<WriteOp>, mut conn: AnyConnection)
             let op_ok = execute_op(&mut conn, op, &sp, &mut deferred).await;
 
             if op_ok {
-                let _ = sqlx::query(&format!("RELEASE {sp}"))
+                if let Err(e) = sqlx::query(&format!("RELEASE {sp}"))
                     .execute(&mut conn)
-                    .await;
+                    .await
+                {
+                    tracing::error!(error = %e, savepoint = %sp, "write coalescer: RELEASE failed");
+                }
             } else {
-                let _ = sqlx::query(&format!("ROLLBACK TO {sp}"))
+                if let Err(e) = sqlx::query(&format!("ROLLBACK TO {sp}"))
                     .execute(&mut conn)
-                    .await;
-                let _ = sqlx::query(&format!("RELEASE {sp}"))
+                    .await
+                {
+                    tracing::error!(error = %e, savepoint = %sp, "write coalescer: ROLLBACK TO failed");
+                }
+                if let Err(e) = sqlx::query(&format!("RELEASE {sp}"))
                     .execute(&mut conn)
-                    .await;
+                    .await
+                {
+                    tracing::error!(error = %e, savepoint = %sp, "write coalescer: RELEASE after rollback failed");
+                }
             }
         }
 
-        let commit_ok = sqlx::query("COMMIT").execute(&mut conn).await.is_ok();
+        let commit_ok = match sqlx::query("COMMIT").execute(&mut conn).await {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::error!(error = %e, "write coalescer: COMMIT failed");
+                false
+            }
+        };
         if !commit_ok {
-            let _ = sqlx::query("ROLLBACK").execute(&mut conn).await;
+            if let Err(e) = sqlx::query("ROLLBACK").execute(&mut conn).await {
+                tracing::error!(error = %e, "write coalescer: ROLLBACK after failed commit failed");
+            }
         }
 
         for f in deferred {
