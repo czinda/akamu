@@ -636,3 +636,148 @@ async fn run_cleanup_script(path: &str, domain: &str, validation: &str) -> Resul
     }
     Ok(())
 }
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+//
+// `drive_order`/`satisfy_authorizations`/`finalize_upstream`/`complete_order`/
+// `run_once` all take a live `AcmeClient`, which performs real HTTP calls
+// against an upstream ACME directory at construction time — there is no
+// mockable seam. Exercising them meaningfully would need a second in-process
+// ACME server acting as the upstream CA (the same shape as the `#[ignore]`d
+// two-node test in `tests/gossip_bootstrap.rs`), which is out of scope here.
+// This covers what's reachable without that: the pure parsing helpers and
+// the deploy/cleanup script runner's actual security property (env_clear
+// keeping server secrets out of the child process).
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bare_domain_strips_wildcard_prefix() {
+        assert_eq!(bare_domain("*.example.com"), "example.com");
+    }
+
+    #[test]
+    fn bare_domain_leaves_non_wildcard_untouched() {
+        assert_eq!(bare_domain("example.com"), "example.com");
+    }
+
+    #[test]
+    fn time_to_unix_converts_generalized_time() {
+        let gt = synta::GeneralizedTime::new(2024, 1, 15, 12, 0, 0, None).unwrap();
+        let t = synta_certificate::Time::GeneralTime(gt);
+        assert_eq!(time_to_unix(&t).unwrap(), 1_705_320_000);
+    }
+
+    #[test]
+    fn time_to_unix_converts_utc_time() {
+        let ut = synta::UtcTime::new(2024, 1, 15, 12, 0, 0).unwrap();
+        let t = synta_certificate::Time::UtcTime(ut);
+        assert_eq!(time_to_unix(&t).unwrap(), 1_705_320_000);
+    }
+
+    #[cfg(unix)]
+    fn write_script(path: &std::path::Path, body: &str) {
+        std::fs::write(path, body).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_deploy_script_success_receives_certbot_env_vars() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("deploy.sh");
+        let out = dir.path().join("out.txt");
+        write_script(
+            &script,
+            &format!(
+                "#!/bin/sh\necho \"$CERTBOT_DOMAIN|$CERTBOT_VALIDATION\" > {}\n",
+                out.display()
+            ),
+        );
+
+        run_deploy_script(script.to_str().unwrap(), "example.com", "token-abc")
+            .await
+            .unwrap();
+
+        let captured = std::fs::read_to_string(&out).unwrap();
+        assert_eq!(captured.trim(), "example.com|token-abc");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_deploy_script_nonzero_exit_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("deploy.sh");
+        write_script(&script, "#!/bin/sh\nexit 1\n");
+
+        let err = run_deploy_script(script.to_str().unwrap(), "example.com", "token")
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("exited with status"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Security property documented on `run_deploy_script`: `env_clear()` must
+    /// actually strip the parent process's environment (e.g. DATABASE_URL)
+    /// before the script runs, not just the explicitly-listed CERTBOT_* vars
+    /// added on top. A regression here would leak server secrets to any
+    /// operator-supplied deploy script.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_deploy_script_does_not_leak_parent_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("deploy.sh");
+        let out = dir.path().join("out.txt");
+        write_script(
+            &script,
+            &format!(
+                "#!/bin/sh\necho \"${{DELEGATION_UPSTREAM_TEST_SECRET:-CLEAN}}\" > {}\n",
+                out.display()
+            ),
+        );
+
+        // SAFETY: this test binary's other tests don't read this var; scoped
+        // to this single test function's lifetime.
+        unsafe {
+            std::env::set_var("DELEGATION_UPSTREAM_TEST_SECRET", "leaked-secret");
+        }
+        let result = run_deploy_script(script.to_str().unwrap(), "example.com", "token").await;
+        unsafe {
+            std::env::remove_var("DELEGATION_UPSTREAM_TEST_SECRET");
+        }
+        result.unwrap();
+
+        let captured = std::fs::read_to_string(&out).unwrap();
+        assert_eq!(
+            captured.trim(),
+            "CLEAN",
+            "deploy script must not see the parent process's environment"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_cleanup_script_success_receives_certbot_env_vars() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("cleanup.sh");
+        let out = dir.path().join("out.txt");
+        write_script(
+            &script,
+            &format!(
+                "#!/bin/sh\necho \"$CERTBOT_DOMAIN|$CERTBOT_VALIDATION|$CERTBOT_AUTH_OUTPUT\" > {}\n",
+                out.display()
+            ),
+        );
+
+        run_cleanup_script(script.to_str().unwrap(), "example.com", "token-xyz")
+            .await
+            .unwrap();
+
+        let captured = std::fs::read_to_string(&out).unwrap();
+        assert_eq!(captured.trim(), "example.com|token-xyz|");
+    }
+}
