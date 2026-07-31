@@ -19,28 +19,31 @@ use indexmap::IndexMap;
 
 use akamu::gossip;
 
-#[tokio::main]
-async fn main() {
+/// Plain synchronous entry point (no `#[tokio::main]`): the tokio runtime is
+/// built manually, after `dispatch()` has already loaded the config and
+/// applied any environment variables that must be set before other threads
+/// exist. See `load_config_and_prepare_env`'s `set_var` call for why.
+fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
 
-    if let Err(e) = dispatch().await {
+    if let Err(e) = dispatch() {
         tracing::error!("fatal: {e}");
         std::process::exit(1);
     }
 }
 
-async fn dispatch() -> Result<(), String> {
+fn dispatch() -> Result<(), String> {
     use clap::Parser;
 
     let args: Vec<String> = std::env::args().collect();
     let effective_args = rewrite_legacy_args(args);
     let cli = akamu::cli::Cli::try_parse_from(&effective_args).map_err(|e| e.to_string())?;
 
-    match cli.command {
+    let config_path = match cli.command {
         Some(akamu::cli::Commands::Init {
             base_url,
             output,
@@ -48,26 +51,62 @@ async fn dispatch() -> Result<(), String> {
             force,
             system,
             template,
-        }) => akamu::cli::run_init(&akamu::cli::InitOptions {
-            base_url: &base_url,
-            output: output.as_deref(),
-            data_dir: data_dir.as_deref(),
-            force,
-            system,
-            template: template.as_deref(),
-        }),
+        }) => {
+            return akamu::cli::run_init(&akamu::cli::InitOptions {
+                base_url: &base_url,
+                output: output.as_deref(),
+                data_dir: data_dir.as_deref(),
+                force,
+                system,
+                template: template.as_deref(),
+            });
+        }
         Some(akamu::cli::Commands::Version) => {
             println!("akamu {}", env!("CARGO_PKG_VERSION"));
-            Ok(())
+            return Ok(());
         }
-        Some(akamu::cli::Commands::Serve { config }) => {
-            let path = config
-                .to_str()
-                .ok_or_else(|| format!("config path is not valid UTF-8: {}", config.display()))?;
-            run(path).await
-        }
-        None => run("config.toml").await,
+        Some(akamu::cli::Commands::Serve { config }) => config
+            .to_str()
+            .ok_or_else(|| format!("config path is not valid UTF-8: {}", config.display()))?
+            .to_string(),
+        None => "config.toml".to_string(),
+    };
+
+    // Load the config and apply pre-runtime environment setup (see the
+    // function doc) before the tokio runtime — and its worker threads —
+    // exist, then hand off to the async server body.
+    let config = load_config_and_prepare_env(&config_path)?;
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| format!("failed to start tokio runtime: {e}"))?;
+    rt.block_on(run(config))
+}
+
+/// Load the config file and apply environment variables that must be set
+/// before the tokio runtime starts.
+///
+/// `std::env::set_var` is unsound if any other thread might concurrently
+/// call `getenv`; calling it here, from plain synchronous `fn main()` before
+/// the tokio runtime (and its worker threads) is built, means no other
+/// thread in the process exists yet, so there is nothing to race with.
+fn load_config_and_prepare_env(config_path: &str) -> Result<Config, String> {
+    tracing::info!("loading config from '{config_path}'");
+    let config = Config::from_file(config_path)?;
+
+    let needs_gssproxy = config.server.gssapi.as_ref().is_some_and(|g| g.gssproxy)
+        || config
+            .admin
+            .as_ref()
+            .and_then(|a| a.gssapi.as_ref())
+            .is_some_and(|g| g.gssproxy);
+    if needs_gssproxy {
+        // SAFETY: called from plain `fn main()` before the tokio runtime is
+        // built, i.e. before any other thread in this process exists — so
+        // this write cannot race with a concurrent getenv anywhere.
+        unsafe { std::env::set_var("GSS_USE_PROXY", "yes") };
+        tracing::info!("gssproxy mode enabled: GSS_USE_PROXY=yes");
     }
+
+    Ok(config)
 }
 
 /// Backward compatibility: if args[1] is not a known subcommand and looks
@@ -275,10 +314,47 @@ fn derive_crdt_db_url(main_url: &str) -> String {
     main_url.to_string()
 }
 
-async fn run(config_path: &str) -> Result<(), String> {
-    tracing::info!("loading config from '{config_path}'");
-    let config = Config::from_file(config_path)?;
+/// Spawn a supervisor that restarts a background task if it panics, logging
+/// each restart, matching the pattern originally used only for the gossip
+/// loop. Without this, a panic in any one background subsystem (MTC
+/// checkpoint/landmark, STAR renewal, delegation upstream, nonce sweep,
+/// tkauth JTI pruning) silently and permanently disables it for the life of
+/// the process, since the `JoinHandle` returned by a bare `tokio::spawn` is
+/// otherwise dropped unobserved.
+///
+/// `spawn_task` is called once per (re)start and must return a fresh
+/// `JoinHandle` each time (not the same handle re-awaited). Returning `None`
+/// means the task is not enabled for this server instance (e.g. no
+/// delegation upstream configured); the supervisor then exits quietly
+/// without logging or retrying.
+fn spawn_supervised<F>(name: &'static str, mut spawn_task: F)
+where
+    F: FnMut() -> Option<tokio::task::JoinHandle<()>> + Send + 'static,
+{
+    tokio::spawn(async move {
+        loop {
+            let Some(handle) = spawn_task() else {
+                return;
+            };
+            match handle.await {
+                Ok(()) => break, // clean exit = server shutting down
+                Err(e) if e.is_cancelled() => break,
+                Err(e) => {
+                    tracing::error!(
+                        task = name,
+                        err = %e,
+                        "background task panicked; restarting in 5s"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+            }
+        }
+    });
+}
 
+/// Startup warnings and hard validation checks that only need the raw config
+/// (no DB or CA material loaded yet).
+fn validate_startup_config(config: &Config) -> Result<(), String> {
     if config.dns_persist_issuer_domains().is_empty() {
         if config.server.dns_persist_issuer_domains.is_some() {
             tracing::warn!(
@@ -291,22 +367,6 @@ async fn run(config_path: &str) -> Result<(), String> {
                  set [server].dns_persist_issuer_domains to enable it"
             );
         }
-    }
-
-    // Set GSS_USE_PROXY before the first GSSAPI call so MIT Kerberos intercepts
-    // gss_acquire_cred_from() via gssproxy.  No krb5/GSSAPI C library thread exists
-    // yet at this point in startup, so the write is not concurrent with any getenv.
-    let needs_gssproxy = config.server.gssapi.as_ref().is_some_and(|g| g.gssproxy)
-        || config
-            .admin
-            .as_ref()
-            .and_then(|a| a.gssapi.as_ref())
-            .is_some_and(|g| g.gssproxy);
-    if needs_gssproxy {
-        // SAFETY: no krb5/GSSAPI C library thread has been created yet; the only
-        // concurrent threads are tokio worker threads, which do not call getenv.
-        unsafe { std::env::set_var("GSS_USE_PROXY", "yes") };
-        tracing::info!("gssproxy mode enabled: GSS_USE_PROXY=yes");
     }
 
     // CA/B Forum BR §7.1.3.2.1: SHA-1 prohibited in certificate/CRL signatures since 2026-09-15.
@@ -344,9 +404,17 @@ async fn run(config_path: &str) -> Result<(), String> {
             .to_string());
     }
 
-    let config = Arc::new(config);
+    Ok(())
+}
 
-    // ── Database ──────────────────────────────────────────────────────────────
+struct DbBundle {
+    db: db::Db,
+    db_ro: db::Db,
+    db_kind: db::DbKind,
+    write_coalescer: Option<Arc<db::coalescer::WriteCoalescer>>,
+}
+
+async fn open_databases(config: &Config) -> Result<DbBundle, String> {
     db::install_drivers();
     let db_kind = db::DbKind::from_url(&config.database.url);
     let max_connections = config.database.max_connections.unwrap_or(match db_kind {
@@ -395,256 +463,198 @@ async fn run(config_path: &str) -> Result<(), String> {
         tracing::warn!("nonce sweep at startup failed (non-fatal): {e}");
     }
 
-    // ── CRDT database (separate pool for cluster tables) ─────────────────────
-    // Derive the CRDT DB URL from config or from the main DB URL by appending
-    // `_crdt` before the `.db` extension (SQLite only).  For `:memory:` the
-    // CRDT DB is also in-memory; for non-SQLite backends the same URL is used
-    // with a separate pool (contention benefit still applies via independent
-    // connection management).
-    let crdt_db_url = config
-        .crdt_db_url
-        .clone()
-        .unwrap_or_else(|| derive_crdt_db_url(&config.database.url));
-    let crdt_db = akamu_crdt::db::open_crdt_db(&crdt_db_url)
-        .await
-        .map_err(|e| format!("CRDT database init: {e}"))?;
-    tracing::info!(url = %crdt_db_url, "CRDT database opened");
+    Ok(DbBundle {
+        db,
+        db_ro,
+        db_kind,
+        write_coalescer,
+    })
+}
 
-    // ── CRDT node identity bootstrap ──────────────────────────────────────────
-    // Tell the CRDT DB layer which SQL placeholder style to use.
-    akamu_crdt::db::init_db_kind(
-        matches!(db_kind, db::DbKind::Postgres),
-        matches!(db_kind, db::DbKind::MariaDb),
-    );
+/// The node's gossip key material.
+///
+/// The signing private key is stored as PEM bytes (BackendPrivateKey serialisation).
+/// The KEM private key is stored as PKCS8 DER (native_ossl format).
+/// The signing certificate is a minimal self-signed X.509 v3 DER for CMS embedding.
+///
+/// A stable `node_id` is derived from the signing public key SPKI DER so the
+/// identity survives restarts without storing a separate UUID.
+struct NodeGossipKeys {
+    node_id: String,
+    kem_priv_pkcs8: Vec<u8>,
+    sign_priv_pem: Vec<u8>,
+    sign_cert_der: Vec<u8>,
+}
 
-    // Load or generate the node's gossip key material.
-    //
-    // The signing private key is stored as PEM bytes (BackendPrivateKey serialisation).
-    // The KEM private key is stored as PKCS8 DER (native_ossl format).
-    // The signing certificate is a minimal self-signed X.509 v3 DER for CMS embedding.
-    //
-    // A stable `node_id` is derived from the signing public key SPKI DER so the
-    // identity survives restarts without storing a separate UUID.
+/// Load this node's gossip key material from the CRDT DB, generating and
+/// persisting it on first run.
+async fn load_or_generate_node_keys(crdt_db: &sqlx::AnyPool) -> Result<NodeGossipKeys, String> {
     const LOCAL_KEY: &str = "local";
 
-    struct NodeGossipKeys {
-        node_id: String,
-        kem_priv_pkcs8: Vec<u8>,
-        sign_priv_pem: Vec<u8>,
-        sign_cert_der: Vec<u8>,
-    }
+    let maybe_row = akamu_crdt::db::load_node_keys(crdt_db, LOCAL_KEY)
+        .await
+        .map_err(|e| format!("load node keys: {e}"))?;
 
-    let node_keys: NodeGossipKeys = {
-        let maybe_row = akamu_crdt::db::load_node_keys(&crdt_db, LOCAL_KEY)
-            .await
-            .map_err(|e| format!("load node keys: {e}"))?;
-
-        // Helper: build a minimal self-signed cert for a PEM-encoded signing key.
-        let build_sign_cert = |sign_priv_pem: &[u8], nid: &str| -> Result<Vec<u8>, String> {
-            let sign_key =
-                native_ossl::pkey::Pkey::<native_ossl::pkey::Private>::from_pem(sign_priv_pem)
-                    .map_err(|e| format!("load signing key from PEM: {e}"))?;
-            let mut name =
-                native_ossl::x509::X509NameOwned::new().map_err(|e| format!("X509Name: {e}"))?;
-            name.add_entry_by_txt(c"CN", nid.as_bytes())
-                .map_err(|e| format!("X509Name add CN: {e}"))?;
-            let serial: i64 = {
-                let mut buf = [0u8; 7]; // 7 bytes → 56-bit positive i64
-                native_ossl::rand::Rand::fill(&mut buf)
-                    .map_err(|e| format!("getrandom for cert serial: {e}"))?;
-                buf.iter().fold(0i64, |acc, &b| (acc << 8) | i64::from(b))
-            };
-            let cert = native_ossl::x509::X509Builder::new()
-                .map_err(|e| format!("X509Builder: {e}"))?
-                .set_version(2)
-                .map_err(|e| format!("X509Builder version: {e}"))?
-                .set_serial_number(serial)
-                .map_err(|e| format!("X509Builder serial: {e}"))?
-                .set_not_before_offset(0)
-                .map_err(|e| format!("X509Builder not_before: {e}"))?
-                .set_not_after_offset(2 * 365 * 86400)
-                .map_err(|e| format!("X509Builder not_after: {e}"))?
-                .set_subject_name(&name)
-                .map_err(|e| format!("X509Builder subject: {e}"))?
-                .set_issuer_name(&name)
-                .map_err(|e| format!("X509Builder issuer: {e}"))?
-                .set_public_key(&sign_key)
-                .map_err(|e| format!("X509Builder pubkey: {e}"))?
-                .sign(&sign_key, None)
-                .map_err(|e| format!("X509Builder sign: {e}"))?
-                .build()
-                .to_der()
-                .map_err(|e| format!("X509 to_der: {e}"))?;
-            Ok(cert)
+    // Helper: build a minimal self-signed cert for a PEM-encoded signing key.
+    let build_sign_cert = |sign_priv_pem: &[u8], nid: &str| -> Result<Vec<u8>, String> {
+        let sign_key =
+            native_ossl::pkey::Pkey::<native_ossl::pkey::Private>::from_pem(sign_priv_pem)
+                .map_err(|e| format!("load signing key from PEM: {e}"))?;
+        let mut name =
+            native_ossl::x509::X509NameOwned::new().map_err(|e| format!("X509Name: {e}"))?;
+        name.add_entry_by_txt(c"CN", nid.as_bytes())
+            .map_err(|e| format!("X509Name add CN: {e}"))?;
+        let serial: i64 = {
+            let mut buf = [0u8; 7]; // 7 bytes → 56-bit positive i64
+            native_ossl::rand::Rand::fill(&mut buf)
+                .map_err(|e| format!("getrandom for cert serial: {e}"))?;
+            buf.iter().fold(0i64, |acc, &b| (acc << 8) | i64::from(b))
         };
+        let cert = native_ossl::x509::X509Builder::new()
+            .map_err(|e| format!("X509Builder: {e}"))?
+            .set_version(2)
+            .map_err(|e| format!("X509Builder version: {e}"))?
+            .set_serial_number(serial)
+            .map_err(|e| format!("X509Builder serial: {e}"))?
+            .set_not_before_offset(0)
+            .map_err(|e| format!("X509Builder not_before: {e}"))?
+            .set_not_after_offset(2 * 365 * 86400)
+            .map_err(|e| format!("X509Builder not_after: {e}"))?
+            .set_subject_name(&name)
+            .map_err(|e| format!("X509Builder subject: {e}"))?
+            .set_issuer_name(&name)
+            .map_err(|e| format!("X509Builder issuer: {e}"))?
+            .set_public_key(&sign_key)
+            .map_err(|e| format!("X509Builder pubkey: {e}"))?
+            .sign(&sign_key, None)
+            .map_err(|e| format!("X509Builder sign: {e}"))?
+            .build()
+            .to_der()
+            .map_err(|e| format!("X509 to_der: {e}"))?;
+        Ok(cert)
+    };
 
-        if let Some(row) = maybe_row {
-            let nid = derive_node_id(&row.signing_public_key_der)
-                .ok_or_else(|| "could not derive node_id from stored signing key".to_string())?;
+    if let Some(row) = maybe_row {
+        let nid = derive_node_id(&row.signing_public_key_der)
+            .ok_or_else(|| "could not derive node_id from stored signing key".to_string())?;
 
-            // Upgrade nodes that were bootstrapped before Phase 4: a real KEM key
-            // is >100 bytes; the old placeholder was 32 random bytes.
-            let (kem_priv, kem_pub) = if row.kem_private_key_der.len() > 100 {
-                (
-                    row.kem_private_key_der.clone(),
-                    row.kem_public_key_der.clone(),
-                )
-            } else {
-                tracing::info!("upgrading node KEM key to ML-KEM-768");
-                let kem_key = native_ossl::pkey::KeygenCtx::new(c"ML-KEM-768")
-                    .map_err(|e| format!("ML-KEM-768 keygen ctx: {e}"))?
-                    .generate()
-                    .map_err(|e| format!("ML-KEM-768 keygen: {e}"))?;
-                let priv_der = kem_key
-                    .to_pkcs8_der()
-                    .map_err(|e| format!("ML-KEM-768 pkcs8: {e}"))?;
-                let pub_spki = kem_key
-                    .public_key_to_der()
-                    .map_err(|e| format!("ML-KEM-768 spki: {e}"))?;
-                (priv_der, pub_spki)
-            };
-
-            let sign_cert = if row.signing_certificate_der.is_empty() {
-                tracing::info!("generating self-signed gossip signing certificate");
-                build_sign_cert(&row.signing_private_key_der, &nid)?
-            } else {
-                row.signing_certificate_der.clone()
-            };
-
-            // Persist upgrade if anything changed.
-            if kem_priv != row.kem_private_key_der || sign_cert != row.signing_certificate_der {
-                akamu_crdt::db::save_node_keys(
-                    &crdt_db,
-                    &akamu_crdt::db::NodeKeysRow {
-                        node_id: LOCAL_KEY.to_string(),
-                        kem_private_key_der: kem_priv.clone(),
-                        kem_public_key_der: kem_pub.clone(),
-                        signing_private_key_der: row.signing_private_key_der.clone(),
-                        signing_public_key_der: row.signing_public_key_der.clone(),
-                        signing_certificate_der: sign_cert.clone(),
-                        created_at: row.created_at,
-                    },
-                )
-                .await
-                .map_err(|e| format!("upgrade node keys: {e}"))?;
-            }
-
-            NodeGossipKeys {
-                node_id: nid,
-                kem_priv_pkcs8: kem_priv,
-                sign_priv_pem: row.signing_private_key_der,
-                sign_cert_der: sign_cert,
-            }
+        // Upgrade nodes that were bootstrapped before Phase 4: a real KEM key
+        // is >100 bytes; the old placeholder was 32 random bytes.
+        let (kem_priv, kem_pub) = if row.kem_private_key_der.len() > 100 {
+            (
+                row.kem_private_key_der.clone(),
+                row.kem_public_key_der.clone(),
+            )
         } else {
-            tracing::info!("generating new node gossip keys (ec:P-256 + ML-KEM-768)");
-
-            let sign_key = ca::init::generate_backend_key("ec:P-256")
-                .map_err(|e| format!("node signing key gen: {e}"))?;
-            let sign_pub = sign_key
-                .public_key()
-                .map_err(|e| format!("node signing pub key: {e}"))?;
-            let sign_pub_der = sign_pub.spki_der().to_vec();
-            let sign_priv_pem = sign_key
-                .to_pem(None)
-                .map_err(|e| format!("node signing key to PEM: {e}"))?;
-
-            let nid = derive_node_id(&sign_pub_der)
-                .ok_or_else(|| "could not derive node_id from new signing key".to_string())?;
-            tracing::info!(node_id = %nid, "new node identity assigned");
-
+            tracing::info!("upgrading node KEM key to ML-KEM-768");
             let kem_key = native_ossl::pkey::KeygenCtx::new(c"ML-KEM-768")
                 .map_err(|e| format!("ML-KEM-768 keygen ctx: {e}"))?
                 .generate()
                 .map_err(|e| format!("ML-KEM-768 keygen: {e}"))?;
-            let kem_priv_pkcs8 = kem_key
+            let priv_der = kem_key
                 .to_pkcs8_der()
                 .map_err(|e| format!("ML-KEM-768 pkcs8: {e}"))?;
-            let kem_pub_spki = kem_key
+            let pub_spki = kem_key
                 .public_key_to_der()
                 .map_err(|e| format!("ML-KEM-768 spki: {e}"))?;
+            (priv_der, pub_spki)
+        };
 
-            let sign_cert_der = build_sign_cert(&sign_priv_pem, &nid)?;
+        let sign_cert = if row.signing_certificate_der.is_empty() {
+            tracing::info!("generating self-signed gossip signing certificate");
+            build_sign_cert(&row.signing_private_key_der, &nid)?
+        } else {
+            row.signing_certificate_der.clone()
+        };
 
-            let created_at = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64;
-
+        // Persist upgrade if anything changed.
+        if kem_priv != row.kem_private_key_der || sign_cert != row.signing_certificate_der {
             akamu_crdt::db::save_node_keys(
-                &crdt_db,
+                crdt_db,
                 &akamu_crdt::db::NodeKeysRow {
                     node_id: LOCAL_KEY.to_string(),
-                    kem_private_key_der: kem_priv_pkcs8.clone(),
-                    kem_public_key_der: kem_pub_spki.clone(),
-                    signing_private_key_der: sign_priv_pem.clone(),
-                    signing_public_key_der: sign_pub_der.clone(),
-                    signing_certificate_der: sign_cert_der.clone(),
-                    created_at,
+                    kem_private_key_der: kem_priv.clone(),
+                    kem_public_key_der: kem_pub.clone(),
+                    signing_private_key_der: row.signing_private_key_der.clone(),
+                    signing_public_key_der: row.signing_public_key_der.clone(),
+                    signing_certificate_der: sign_cert.clone(),
+                    created_at: row.created_at,
                 },
             )
             .await
-            .map_err(|e| format!("save node keys: {e}"))?;
-
-            NodeGossipKeys {
-                node_id: nid,
-                kem_priv_pkcs8,
-                sign_priv_pem,
-                sign_cert_der,
-            }
+            .map_err(|e| format!("upgrade node keys: {e}"))?;
         }
-    };
 
-    if config.gossip.is_some() {
-        tracing::warn!(
-            "gossip node private keys are stored as plaintext PKCS#8 in the local DB — \
-             ensure the database file resides on an encrypted volume"
-        );
+        Ok(NodeGossipKeys {
+            node_id: nid,
+            kem_priv_pkcs8: kem_priv,
+            sign_priv_pem: row.signing_private_key_der,
+            sign_cert_der: sign_cert,
+        })
     } else {
-        tracing::info!(
-            "node private keys are stored as plaintext PKCS#8 in the local DB — \
-             ensure the database file resides on an encrypted volume"
-        );
-    }
+        tracing::info!("generating new node gossip keys (ec:P-256 + ML-KEM-768)");
 
-    // Load CRDT state from the local DB, then insert/refresh this node's own
-    // entry so delta gossip can identify which entries originated here.
-    let crdt_initial = akamu_crdt::db::load_from_db(&db, &crdt_db, &node_keys.node_id)
+        let sign_key = ca::init::generate_backend_key("ec:P-256")
+            .map_err(|e| format!("node signing key gen: {e}"))?;
+        let sign_pub = sign_key
+            .public_key()
+            .map_err(|e| format!("node signing pub key: {e}"))?;
+        let sign_pub_der = sign_pub.spki_der().to_vec();
+        let sign_priv_pem = sign_key
+            .to_pem(None)
+            .map_err(|e| format!("node signing key to PEM: {e}"))?;
+
+        let nid = derive_node_id(&sign_pub_der)
+            .ok_or_else(|| "could not derive node_id from new signing key".to_string())?;
+        tracing::info!(node_id = %nid, "new node identity assigned");
+
+        let kem_key = native_ossl::pkey::KeygenCtx::new(c"ML-KEM-768")
+            .map_err(|e| format!("ML-KEM-768 keygen ctx: {e}"))?
+            .generate()
+            .map_err(|e| format!("ML-KEM-768 keygen: {e}"))?;
+        let kem_priv_pkcs8 = kem_key
+            .to_pkcs8_der()
+            .map_err(|e| format!("ML-KEM-768 pkcs8: {e}"))?;
+        let kem_pub_spki = kem_key
+            .public_key_to_der()
+            .map_err(|e| format!("ML-KEM-768 spki: {e}"))?;
+
+        let sign_cert_der = build_sign_cert(&sign_priv_pem, &nid)?;
+
+        let created_at = akamu::util::unix_now();
+
+        akamu_crdt::db::save_node_keys(
+            crdt_db,
+            &akamu_crdt::db::NodeKeysRow {
+                node_id: LOCAL_KEY.to_string(),
+                kem_private_key_der: kem_priv_pkcs8.clone(),
+                kem_public_key_der: kem_pub_spki.clone(),
+                signing_private_key_der: sign_priv_pem.clone(),
+                signing_public_key_der: sign_pub_der.clone(),
+                signing_certificate_der: sign_cert_der.clone(),
+                created_at,
+            },
+        )
         .await
-        .map_err(|e| format!("CRDT load from DB: {e}"))?;
-    // Seed the process-global generation counter from the highest local_gen
-    // persisted in the DB.  Without this, CRDT_GENERATION starts at 0 after
-    // every restart, so the first gossip round after restart includes every
-    // entry (local_gen > 0 = CRDT_GENERATION), forcing a full-state push
-    // instead of a minimal delta.
-    let max_gen = crdt_initial.max_local_gen();
-    if max_gen > 0 {
-        akamu_crdt::CRDT_GENERATION.fetch_max(max_gen, std::sync::atomic::Ordering::Release);
-    }
-    let crdt = std::sync::Arc::new(tokio::sync::RwLock::new(crdt_initial));
-    let node_id = std::sync::Arc::new(node_keys.node_id.clone());
-    tracing::info!(node_id = %node_id, crdt_gen = max_gen, "CRDT state loaded from DB");
+        .map_err(|e| format!("save node keys: {e}"))?;
 
-    // Seed EAB keys from config into the DB (INSERT OR IGNORE — never overwrites
-    // keys that were provisioned or consumed by the runtime admin endpoint).
-    let now_ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
-    for (kid, hmac_key_b64u) in &config.server.eab_keys {
-        if let Err(e) =
-            db::eab::insert_if_absent(&db, kid, hmac_key_b64u, now_ts, None, "sha256").await
-        {
-            tracing::warn!("failed to seed EAB key '{kid}': {e}");
-        }
+        Ok(NodeGossipKeys {
+            node_id: nid,
+            kem_priv_pkcs8,
+            sign_priv_pem,
+            sign_cert_der,
+        })
     }
-    if !config.server.eab_keys.is_empty() {
-        tracing::info!(
-            "seeded {} EAB key(s) from config",
-            config.server.eab_keys.len()
-        );
-    }
+}
 
-    // ── CA keys and certificates (one per [[ca]] entry) ───────────────────────
+struct CaLoadResult {
+    cas_map: IndexMap<String, Arc<CaState>>,
+    crl_caches_map: std::collections::HashMap<String, CrlCache>,
+    default_ca_id: String,
+}
+
+/// Load (or generate) the signing key/cert for every `[[ca]]` entry.
+async fn load_cas(config: &Config) -> Result<CaLoadResult, String> {
     let mut cas_map: IndexMap<String, Arc<CaState>> = IndexMap::new();
     let mut crl_caches_map: std::collections::HashMap<String, CrlCache> =
         std::collections::HashMap::new();
@@ -781,6 +791,381 @@ async fn run(config_path: &str) -> Result<(), String> {
         .find(|c| c.is_default)
         .map(|c| c.id.clone())
         .unwrap_or_else(|| config.cas[0].id.clone());
+
+    Ok(CaLoadResult {
+        cas_map,
+        crl_caches_map,
+        default_ca_id,
+    })
+}
+
+/// Build the in-memory issuance policy engine from TOML config, the compat
+/// rules derived from certificate profiles, and any DB-stored rules.
+async fn build_policy_engine(
+    config: &Config,
+    profile_registry: &akamu::profiles::ProfileRegistry,
+    db: &db::Db,
+) -> Result<Arc<akamu_policy::engine::IssuancePolicyEngine>, String> {
+    let (mode, toml_rules) = if let Some(ref policy_cfg) = config.policy {
+        let mut rules = policy_cfg.rules.clone();
+        if let Some(ref rules_file) = policy_cfg.rules_file {
+            let ext = std::fs::read_to_string(rules_file)
+                .map_err(|e| format!("policy rules_file '{rules_file}': {e}"))?;
+            let ext_cfg: akamu_policy::config::PolicyConfig = toml::from_str(&ext)
+                .map_err(|e| format!("policy rules_file '{rules_file}': {e}"))?;
+            rules.extend(ext_cfg.rules);
+        }
+        (policy_cfg.mode, rules)
+    } else {
+        (akamu_policy::config::PolicyMode::Shadow, vec![])
+    };
+
+    let mut compat_rules = Vec::new();
+    for (profile_name, _desc) in profile_registry.all_profiles() {
+        if let Some(params) = profile_registry.resolve(&profile_name) {
+            compat_rules.push(akamu_policy::compat::translate_profile_to_rule(
+                &profile_name,
+                &params.ca_ids,
+                &params.allowed_identifier_patterns,
+                params.require_account_grant,
+            ));
+        }
+    }
+    let all_toml: Vec<_> = compat_rules.into_iter().chain(toml_rules).collect();
+
+    let db_rule_rows = akamu::db::policy_rules::list_by_scope(db, "issuance")
+        .await
+        .map_err(|e| format!("load policy rules: {e}"))?;
+    let parsed = akamu::policy::parse_db_rules(&db_rule_rows);
+    if parsed.skipped > 0 {
+        if mode == akamu_policy::config::PolicyMode::Enforce {
+            tracing::error!(
+                skipped = parsed.skipped,
+                ids = ?parsed.skipped_ids,
+                "startup: corrupt policy rules skipped in ENFORCE mode — policy set is incomplete"
+            );
+        } else {
+            tracing::warn!(
+                skipped = parsed.skipped,
+                ids = ?parsed.skipped_ids,
+                "startup: some policy rules have corrupt JSON and were skipped"
+            );
+        }
+    }
+
+    Ok(Arc::new(
+        akamu_policy::engine::IssuancePolicyEngine::new(mode, all_toml, parsed.rules)
+            .map_err(|e| format!("issuance policy engine: {e}"))?,
+    ))
+}
+
+/// Bind and serve `router` until a shutdown signal arrives.
+///
+/// Picks among three listener strategies: a systemd-activated Unix socket (if
+/// one was passed via `LISTEN_FDS`), a raw TLS accept loop (needed because
+/// axum's `serve` doesn't natively support injecting the peer client cert /
+/// channel binding into request extensions per-connection), or a plain
+/// `axum::serve` over TCP or a directly-bound Unix socket.
+async fn serve_router(config: &Config, router: axum::Router) -> Result<(), String> {
+    // ── Systemd socket activation (try listenfd before config-based bind) ─────
+    let mut listenfd = listenfd::ListenFd::from_env();
+    if listenfd.len() > 1 {
+        tracing::warn!(
+            count = listenfd.len(),
+            "listenfd: more than one socket FD available; only index 0 (Unix) is consumed"
+        );
+    }
+    if let Some(std_listener) = listenfd.take_unix_listener(0).map_err(|e| {
+        format!(
+            "systemd passed an fd that is not a Unix stream socket ({}); \
+             only Unix socket activation is supported — verify ListenStream= \
+             in your .socket unit points to a filesystem path, not a TCP address",
+            e
+        )
+    })? {
+        if config.tls.enabled {
+            return Err("TLS cannot be used with a Unix domain socket listener".to_owned());
+        }
+        std_listener
+            .set_nonblocking(true)
+            .map_err(|e| format!("set_nonblocking: {e}"))?;
+        let listener = tokio::net::UnixListener::from_std(std_listener)
+            .map_err(|e| format!("tokio UnixListener: {e}"))?;
+        tracing::info!(
+            base_url = %config.base_url,
+            "ACME server on systemd-activated Unix socket"
+        );
+        let router = router.layer(axum::middleware::from_fn(uds_marker_layer));
+        axum::serve(listener, router.into_make_service())
+            .with_graceful_shutdown(async {
+                let mut sigterm =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                        .expect("failed to install SIGTERM handler");
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {},
+                    _ = sigterm.recv() => {},
+                }
+                tracing::info!("received shutdown signal; stopping server");
+            })
+            .await
+            .map_err(|e| format!("server error: {e}"))?;
+    } else if config.tls.enabled {
+        let ca_cert_files: Vec<String> = config.cas.iter().map(|c| c.cert_file.clone()).collect();
+        let mut server_cfg = akamu::tls::build_rustls_server_config(&config.tls, &ca_cert_files)
+            .map_err(|e| format!("TLS config: {e}"))?;
+        server_cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_cfg));
+
+        // Pre-compute tls-server-end-point channel binding (RFC 5929 §4) once at
+        // startup so each connection can inject it without re-reading the cert.
+        // Returns None for ML-DSA server certs (no defined hash algorithm).
+        let tls_channel_binding: Option<Arc<Vec<u8>>> = {
+            match akamu::tls::leaf_cert_der(&config.tls) {
+                Err(e) => {
+                    tracing::warn!("could not load leaf cert for channel binding: {e}");
+                    None
+                }
+                Ok(der) => {
+                    let b = akamu::tls::channel_binding::tls_server_endpoint_binding(&der);
+                    if b.is_none() {
+                        tracing::info!(
+                            "TLS server cert uses ML-DSA or unknown algorithm; \
+                             GSSAPI channel bindings disabled"
+                        );
+                    }
+                    b.map(Arc::new)
+                }
+            }
+        };
+
+        let addr = match parse_listen_target(&config.listen_addr, "AKAMU_LISTEN")? {
+            ListenTarget::Tcp(a) => a,
+            ListenTarget::Unix(_) => {
+                return Err("TLS cannot be used with a Unix domain socket listener".to_owned());
+            }
+        };
+        let listener = tokio::net::TcpListener::bind(addr)
+            .await
+            .map_err(|e| format!("bind '{}': {e}", addr))?;
+        tracing::info!(
+            listen_addr = %addr,
+            base_url = %config.base_url,
+            "ACME server listening with TLS"
+        );
+        let shutdown = tokio::signal::ctrl_c();
+        tokio::pin!(shutdown);
+        loop {
+            tokio::select! {
+                _ = &mut shutdown => {
+                    tracing::info!("received shutdown signal; stopping TLS server");
+                    break;
+                }
+                result = listener.accept() => {
+                    let (stream, peer_addr) = result.map_err(|e| format!("accept: {e}"))?;
+                    let acceptor = acceptor.clone();
+                    let router = router.clone();
+                    let tls_channel_binding = tls_channel_binding.clone();
+                    tokio::spawn(async move {
+                        let tls = match acceptor.accept(stream).await {
+                            Ok(s) => s,
+                            Err(e) => {
+                                let msg = e.to_string();
+                                if msg.contains("received fatal alert") {
+                                    tracing::debug!("TLS handshake rejected by client: {e}");
+                                } else {
+                                    tracing::warn!("TLS handshake failed: {e}");
+                                }
+                                return;
+                            }
+                        };
+                        // Extract peer cert before moving tls into TokioIo.
+                        let peer_cert: Option<Vec<u8>> = tls
+                            .get_ref()
+                            .1
+                            .peer_certificates()
+                            .and_then(|c| c.first())
+                            .map(|c| c.as_ref().to_vec());
+                        let io = hyper_util::rt::TokioIo::new(tls);
+                        use tower::ServiceExt as _;
+                        let svc = hyper::service::service_fn(
+                            move |mut req: hyper::Request<hyper::body::Incoming>| {
+                                req.extensions_mut()
+                                    .insert(axum::extract::ConnectInfo(peer_addr));
+                                if let Some(ref der) = peer_cert {
+                                    req.extensions_mut().insert(
+                                        akamu::admin::auth::PeerClientCert(der.clone()),
+                                    );
+                                }
+                                if let Some(ref binding) = tls_channel_binding {
+                                    req.extensions_mut().insert(
+                                        akamu::tls::channel_binding::TlsServerEndpointBinding(
+                                            binding.as_ref().clone(),
+                                        ),
+                                    );
+                                }
+                                let router = router.clone();
+                                async move {
+                                    let req = req.map(axum::body::Body::new);
+                                    Ok::<_, std::convert::Infallible>(
+                                        router.oneshot(req).await.expect("axum Router is infallible"),
+                                    )
+                                }
+                            },
+                        );
+                        if let Err(e) = hyper_util::server::conn::auto::Builder::new(
+                            hyper_util::rt::TokioExecutor::new(),
+                        )
+                        .serve_connection(io, svc)
+                        .await
+                        {
+                            tracing::warn!("TLS connection error: {e}");
+                        }
+                    });
+                }
+            }
+        }
+    } else {
+        match parse_listen_target(&config.listen_addr, "AKAMU_LISTEN")? {
+            ListenTarget::Tcp(addr) => {
+                let listener = tokio::net::TcpListener::bind(addr)
+                    .await
+                    .map_err(|e| format!("bind '{}': {e}", addr))?;
+                tracing::info!(
+                    "ACME server listening on {} (base_url={})",
+                    addr,
+                    config.base_url
+                );
+                axum::serve(
+                    listener,
+                    router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                )
+                .with_graceful_shutdown(async {
+                    tokio::signal::ctrl_c().await.ok();
+                    tracing::info!("received shutdown signal; stopping server");
+                })
+                .await
+                .map_err(|e| format!("server error: {e}"))?;
+            }
+            ListenTarget::Unix(path) => {
+                remove_stale_socket(&path).await?;
+                let listener = tokio::net::UnixListener::bind(&path)
+                    .map_err(|e| format!("bind unix '{}': {e}", path))?;
+                tracing::info!(
+                    path = %path,
+                    base_url = %config.base_url,
+                    "ACME server listening on Unix socket"
+                );
+                let router = router.layer(axum::middleware::from_fn(uds_marker_layer));
+                axum::serve(listener, router.into_make_service())
+                    .with_graceful_shutdown(async {
+                        let mut sigterm = tokio::signal::unix::signal(
+                            tokio::signal::unix::SignalKind::terminate(),
+                        )
+                        .expect("failed to install SIGTERM handler");
+                        tokio::select! {
+                            _ = tokio::signal::ctrl_c() => {},
+                            _ = sigterm.recv() => {},
+                        }
+                        tracing::info!("received shutdown signal; stopping server");
+                    })
+                    .await
+                    .map_err(|e| format!("server error: {e}"))?;
+                // Best-effort cleanup of the socket file after graceful shutdown.
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn run(config: Config) -> Result<(), String> {
+    validate_startup_config(&config)?;
+    let config = Arc::new(config);
+
+    let DbBundle {
+        db,
+        db_ro,
+        db_kind,
+        write_coalescer,
+    } = open_databases(&config).await?;
+
+    // ── CRDT database (separate pool for cluster tables) ─────────────────────
+    // Derive the CRDT DB URL from config or from the main DB URL by appending
+    // `_crdt` before the `.db` extension (SQLite only).  For `:memory:` the
+    // CRDT DB is also in-memory; for non-SQLite backends the same URL is used
+    // with a separate pool (contention benefit still applies via independent
+    // connection management).
+    let crdt_db_url = config
+        .crdt_db_url
+        .clone()
+        .unwrap_or_else(|| derive_crdt_db_url(&config.database.url));
+    let crdt_db = akamu_crdt::db::open_crdt_db(&crdt_db_url)
+        .await
+        .map_err(|e| format!("CRDT database init: {e}"))?;
+    tracing::info!(url = %crdt_db_url, "CRDT database opened");
+
+    // ── CRDT node identity bootstrap ──────────────────────────────────────────
+    // Tell the CRDT DB layer which SQL placeholder style to use.
+    akamu_crdt::db::init_db_kind(
+        matches!(db_kind, db::DbKind::Postgres),
+        matches!(db_kind, db::DbKind::MariaDb),
+    );
+
+    let node_keys = load_or_generate_node_keys(&crdt_db).await?;
+
+    if config.gossip.is_some() {
+        tracing::warn!(
+            "gossip node private keys are stored as plaintext PKCS#8 in the local DB — \
+             ensure the database file resides on an encrypted volume"
+        );
+    } else {
+        tracing::info!(
+            "node private keys are stored as plaintext PKCS#8 in the local DB — \
+             ensure the database file resides on an encrypted volume"
+        );
+    }
+
+    // Load CRDT state from the local DB, then insert/refresh this node's own
+    // entry so delta gossip can identify which entries originated here.
+    let crdt_initial = akamu_crdt::db::load_from_db(&db, &crdt_db, &node_keys.node_id)
+        .await
+        .map_err(|e| format!("CRDT load from DB: {e}"))?;
+    // Seed the process-global generation counter from the highest local_gen
+    // persisted in the DB.  Without this, CRDT_GENERATION starts at 0 after
+    // every restart, so the first gossip round after restart includes every
+    // entry (local_gen > 0 = CRDT_GENERATION), forcing a full-state push
+    // instead of a minimal delta.
+    let max_gen = crdt_initial.max_local_gen();
+    if max_gen > 0 {
+        akamu_crdt::CRDT_GENERATION.fetch_max(max_gen, std::sync::atomic::Ordering::Release);
+    }
+    let crdt = std::sync::Arc::new(tokio::sync::RwLock::new(crdt_initial));
+    let node_id = std::sync::Arc::new(node_keys.node_id.clone());
+    tracing::info!(node_id = %node_id, crdt_gen = max_gen, "CRDT state loaded from DB");
+
+    // Seed EAB keys from config into the DB (INSERT OR IGNORE — never overwrites
+    // keys that were provisioned or consumed by the runtime admin endpoint).
+    let now_ts = akamu::util::unix_now();
+    for (kid, hmac_key_b64u) in &config.server.eab_keys {
+        if let Err(e) =
+            db::eab::insert_if_absent(&db, kid, hmac_key_b64u, now_ts, None, "sha256").await
+        {
+            tracing::warn!("failed to seed EAB key '{kid}': {e}");
+        }
+    }
+    if !config.server.eab_keys.is_empty() {
+        tracing::info!(
+            "seeded {} EAB key(s) from config",
+            config.server.eab_keys.len()
+        );
+    }
+
+    let CaLoadResult {
+        cas_map,
+        crl_caches_map,
+        default_ca_id,
+    } = load_cas(&config).await?;
 
     // Convenience alias for the default CA (used by code not yet updated to
     // look up the CA from the request context).
@@ -1021,60 +1406,7 @@ async fn run(config_path: &str) -> Result<(), String> {
     } else {
         JournalWriter::new("akamu")
     });
-    // ── Issuance policy engine ─────────────────────────────────────────────
-    let policy_engine = {
-        let (mode, toml_rules) = if let Some(ref policy_cfg) = config.policy {
-            let mut rules = policy_cfg.rules.clone();
-            if let Some(ref rules_file) = policy_cfg.rules_file {
-                let ext = std::fs::read_to_string(rules_file)
-                    .map_err(|e| format!("policy rules_file '{rules_file}': {e}"))?;
-                let ext_cfg: akamu_policy::config::PolicyConfig = toml::from_str(&ext)
-                    .map_err(|e| format!("policy rules_file '{rules_file}': {e}"))?;
-                rules.extend(ext_cfg.rules);
-            }
-            (policy_cfg.mode, rules)
-        } else {
-            (akamu_policy::config::PolicyMode::Shadow, vec![])
-        };
-
-        let mut compat_rules = Vec::new();
-        for (profile_name, _desc) in profile_registry.all_profiles() {
-            if let Some(params) = profile_registry.resolve(&profile_name) {
-                compat_rules.push(akamu_policy::compat::translate_profile_to_rule(
-                    &profile_name,
-                    &params.ca_ids,
-                    &params.allowed_identifier_patterns,
-                    params.require_account_grant,
-                ));
-            }
-        }
-        let all_toml: Vec<_> = compat_rules.into_iter().chain(toml_rules).collect();
-
-        let db_rule_rows = akamu::db::policy_rules::list_by_scope(&db, "issuance")
-            .await
-            .map_err(|e| format!("load policy rules: {e}"))?;
-        let parsed = akamu::policy::parse_db_rules(&db_rule_rows);
-        if parsed.skipped > 0 {
-            if mode == akamu_policy::config::PolicyMode::Enforce {
-                tracing::error!(
-                    skipped = parsed.skipped,
-                    ids = ?parsed.skipped_ids,
-                    "startup: corrupt policy rules skipped in ENFORCE mode — policy set is incomplete"
-                );
-            } else {
-                tracing::warn!(
-                    skipped = parsed.skipped,
-                    ids = ?parsed.skipped_ids,
-                    "startup: some policy rules have corrupt JSON and were skipped"
-                );
-            }
-        }
-
-        Arc::new(
-            akamu_policy::engine::IssuancePolicyEngine::new(mode, all_toml, parsed.rules)
-                .map_err(|e| format!("issuance policy engine: {e}"))?,
-        )
-    };
+    let policy_engine = build_policy_engine(&config, &profile_registry, &db).await?;
 
     let mut builder = AppStateBuilder::new(
         Arc::clone(&config),
@@ -1175,65 +1507,81 @@ async fn run(config_path: &str) -> Result<(), String> {
     profile_registry.spawn_refresh_task();
 
     // Periodically sweep expired in-memory nonces (every 15 minutes, 24 h TTL).
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(900));
-        interval.tick().await; // skip immediate first tick
-        loop {
-            interval.tick().await;
-            nonces.sweep_expired(86400);
+    spawn_supervised("nonce sweep", {
+        let nonces = Arc::clone(&nonces);
+        move || {
+            let nonces = Arc::clone(&nonces);
+            Some(tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(900));
+                interval.tick().await; // skip immediate first tick
+                loop {
+                    interval.tick().await;
+                    nonces.sweep_expired(86400);
+                }
+            }))
         }
     });
 
     // ── MTC checkpoint background task ───────────────────────────────────────
-    let _checkpoint_task = mtc::checkpoint::spawn_checkpoint_task(Arc::clone(&state));
+    spawn_supervised("mtc checkpoint", {
+        let state = Arc::clone(&state);
+        move || Some(mtc::checkpoint::spawn_checkpoint_task(Arc::clone(&state)))
+    });
 
     // ── MTC landmark allocation background task ──────────────────────────────
-    let _landmark_task = mtc::landmark::spawn_landmark_task(Arc::clone(&state));
+    spawn_supervised("mtc landmark", {
+        let state = Arc::clone(&state);
+        move || Some(mtc::landmark::spawn_landmark_task(Arc::clone(&state)))
+    });
 
     // ── STAR background reissuance task ──────────────────────────────────────
-    let _star_task = star::spawn(Arc::clone(&state));
+    spawn_supervised("star reissuance", {
+        let state = Arc::clone(&state);
+        move || Some(star::spawn(Arc::clone(&state)))
+    });
 
     // ── RFC 9115 IdO→CA upstream delegation task ──────────────────────────────
-    let _delegation_task = delegation_upstream::spawn(Arc::clone(&state));
+    // delegation_upstream::spawn returns None when no upstream is configured;
+    // spawn_supervised treats that as "task disabled" and exits the
+    // supervisor quietly without logging or retrying.
+    spawn_supervised("delegation upstream", {
+        let state = Arc::clone(&state);
+        move || delegation_upstream::spawn(Arc::clone(&state))
+    });
 
     // ── Gossip background loop (disabled when [gossip] section is absent) ─────
     // Wrapped in a supervisor that restarts the loop if it panics.
     // Clean exit or cancellation (server shutdown) terminates the supervisor.
     if state.config.gossip.is_some() {
-        let state_for_gossip = Arc::clone(&state);
-        tokio::spawn(async move {
-            loop {
-                let s = Arc::clone(&state_for_gossip);
-                match tokio::spawn(gossip::gossip_loop::run(s)).await {
-                    Ok(()) => break, // clean exit = server shutting down
-                    Err(e) if e.is_cancelled() => break,
-                    Err(e) => {
-                        tracing::error!(err = %e, "gossip loop panicked; restarting in 5s");
-                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    }
-                }
-            }
+        spawn_supervised("gossip loop", {
+            let state = Arc::clone(&state);
+            move || Some(tokio::spawn(gossip::gossip_loop::run(Arc::clone(&state))))
         });
     }
 
     // ── RFC 9447 tkauth JTI pruning background task ──────────────────────────
     if let Some(tkauth_cfg) = config.tkauth.as_ref().filter(|t| t.enabled) {
         let prune_interval = tkauth_cfg.jti_prune_interval_secs;
-        let state_for_jti = Arc::clone(&state);
-        tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_secs(prune_interval));
-            interval.tick().await; // skip immediate first tick
-            loop {
-                interval.tick().await;
-                let now = akamu::util::unix_now();
-                match crate::db::tkauth::purge_expired(&state_for_jti.db, now).await {
-                    Ok(n) if n > 0 => {
-                        tracing::debug!(deleted = n, "tkauth JTI cache pruned");
+        spawn_supervised("tkauth jti prune", {
+            let state = Arc::clone(&state);
+            move || {
+                let state = Arc::clone(&state);
+                Some(tokio::spawn(async move {
+                    let mut interval =
+                        tokio::time::interval(std::time::Duration::from_secs(prune_interval));
+                    interval.tick().await; // skip immediate first tick
+                    loop {
+                        interval.tick().await;
+                        let now = akamu::util::unix_now();
+                        match crate::db::tkauth::purge_expired(&state.db, now).await {
+                            Ok(n) if n > 0 => {
+                                tracing::debug!(deleted = n, "tkauth JTI cache pruned");
+                            }
+                            Ok(_) => {}
+                            Err(e) => tracing::warn!(err = %e, "tkauth JTI cache prune failed"),
+                        }
                     }
-                    Ok(_) => {}
-                    Err(e) => tracing::warn!(err = %e, "tkauth JTI cache prune failed"),
-                }
+                }))
             }
         });
     }
@@ -1257,214 +1605,7 @@ async fn run(config_path: &str) -> Result<(), String> {
     }
     let router = routes::build_router(Arc::clone(&state), static_dir.as_deref(), webui_enabled);
 
-    // ── Systemd socket activation (try listenfd before config-based bind) ─────
-    let mut listenfd = listenfd::ListenFd::from_env();
-    if listenfd.len() > 1 {
-        tracing::warn!(
-            count = listenfd.len(),
-            "listenfd: more than one socket FD available; only index 0 (Unix) is consumed"
-        );
-    }
-    if let Some(std_listener) = listenfd.take_unix_listener(0).map_err(|e| {
-        format!(
-            "systemd passed an fd that is not a Unix stream socket ({}); \
-             only Unix socket activation is supported — verify ListenStream= \
-             in your .socket unit points to a filesystem path, not a TCP address",
-            e
-        )
-    })? {
-        if config.tls.enabled {
-            return Err("TLS cannot be used with a Unix domain socket listener".to_owned());
-        }
-        std_listener
-            .set_nonblocking(true)
-            .map_err(|e| format!("set_nonblocking: {e}"))?;
-        let listener = tokio::net::UnixListener::from_std(std_listener)
-            .map_err(|e| format!("tokio UnixListener: {e}"))?;
-        tracing::info!(
-            base_url = %config.base_url,
-            "ACME server on systemd-activated Unix socket"
-        );
-        let router = router.layer(axum::middleware::from_fn(uds_marker_layer));
-        axum::serve(listener, router.into_make_service())
-            .with_graceful_shutdown(async {
-                let mut sigterm =
-                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                        .expect("failed to install SIGTERM handler");
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {},
-                    _ = sigterm.recv() => {},
-                }
-                tracing::info!("received shutdown signal; stopping server");
-            })
-            .await
-            .map_err(|e| format!("server error: {e}"))?;
-    } else if config.tls.enabled {
-        let ca_cert_files: Vec<String> = config.cas.iter().map(|c| c.cert_file.clone()).collect();
-        let mut server_cfg = akamu::tls::build_rustls_server_config(&config.tls, &ca_cert_files)
-            .map_err(|e| format!("TLS config: {e}"))?;
-        server_cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_cfg));
-
-        // Pre-compute tls-server-end-point channel binding (RFC 5929 §4) once at
-        // startup so each connection can inject it without re-reading the cert.
-        // Returns None for ML-DSA server certs (no defined hash algorithm).
-        let tls_channel_binding: Option<Arc<Vec<u8>>> = {
-            match akamu::tls::leaf_cert_der(&config.tls) {
-                Err(e) => {
-                    tracing::warn!("could not load leaf cert for channel binding: {e}");
-                    None
-                }
-                Ok(der) => {
-                    let b = akamu::tls::channel_binding::tls_server_endpoint_binding(&der);
-                    if b.is_none() {
-                        tracing::info!(
-                            "TLS server cert uses ML-DSA or unknown algorithm; \
-                             GSSAPI channel bindings disabled"
-                        );
-                    }
-                    b.map(Arc::new)
-                }
-            }
-        };
-
-        let addr = match parse_listen_target(&config.listen_addr, "AKAMU_LISTEN")? {
-            ListenTarget::Tcp(a) => a,
-            ListenTarget::Unix(_) => {
-                return Err("TLS cannot be used with a Unix domain socket listener".to_owned());
-            }
-        };
-        let listener = tokio::net::TcpListener::bind(addr)
-            .await
-            .map_err(|e| format!("bind '{}': {e}", addr))?;
-        tracing::info!(
-            listen_addr = %addr,
-            base_url = %config.base_url,
-            "ACME server listening with TLS"
-        );
-        let shutdown = tokio::signal::ctrl_c();
-        tokio::pin!(shutdown);
-        loop {
-            tokio::select! {
-                _ = &mut shutdown => {
-                    tracing::info!("received shutdown signal; stopping TLS server");
-                    break;
-                }
-                result = listener.accept() => {
-                    let (stream, peer_addr) = result.map_err(|e| format!("accept: {e}"))?;
-                    let acceptor = acceptor.clone();
-                    let router = router.clone();
-                    let tls_channel_binding = tls_channel_binding.clone();
-                    tokio::spawn(async move {
-                        let tls = match acceptor.accept(stream).await {
-                            Ok(s) => s,
-                            Err(e) => {
-                                let msg = e.to_string();
-                                if msg.contains("received fatal alert") {
-                                    tracing::debug!("TLS handshake rejected by client: {e}");
-                                } else {
-                                    tracing::warn!("TLS handshake failed: {e}");
-                                }
-                                return;
-                            }
-                        };
-                        // Extract peer cert before moving tls into TokioIo.
-                        let peer_cert: Option<Vec<u8>> = tls
-                            .get_ref()
-                            .1
-                            .peer_certificates()
-                            .and_then(|c| c.first())
-                            .map(|c| c.as_ref().to_vec());
-                        let io = hyper_util::rt::TokioIo::new(tls);
-                        use tower::ServiceExt as _;
-                        let svc = hyper::service::service_fn(
-                            move |mut req: hyper::Request<hyper::body::Incoming>| {
-                                req.extensions_mut()
-                                    .insert(axum::extract::ConnectInfo(peer_addr));
-                                if let Some(ref der) = peer_cert {
-                                    req.extensions_mut().insert(
-                                        akamu::admin::auth::PeerClientCert(der.clone()),
-                                    );
-                                }
-                                if let Some(ref binding) = tls_channel_binding {
-                                    req.extensions_mut().insert(
-                                        akamu::tls::channel_binding::TlsServerEndpointBinding(
-                                            binding.as_ref().clone(),
-                                        ),
-                                    );
-                                }
-                                let router = router.clone();
-                                async move {
-                                    let req = req.map(axum::body::Body::new);
-                                    Ok::<_, std::convert::Infallible>(
-                                        router.oneshot(req).await.expect("axum Router is infallible"),
-                                    )
-                                }
-                            },
-                        );
-                        if let Err(e) = hyper_util::server::conn::auto::Builder::new(
-                            hyper_util::rt::TokioExecutor::new(),
-                        )
-                        .serve_connection(io, svc)
-                        .await
-                        {
-                            tracing::warn!("TLS connection error: {e}");
-                        }
-                    });
-                }
-            }
-        }
-    } else {
-        match parse_listen_target(&config.listen_addr, "AKAMU_LISTEN")? {
-            ListenTarget::Tcp(addr) => {
-                let listener = tokio::net::TcpListener::bind(addr)
-                    .await
-                    .map_err(|e| format!("bind '{}': {e}", addr))?;
-                tracing::info!(
-                    "ACME server listening on {} (base_url={})",
-                    addr,
-                    config.base_url
-                );
-                axum::serve(
-                    listener,
-                    router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-                )
-                .with_graceful_shutdown(async {
-                    tokio::signal::ctrl_c().await.ok();
-                    tracing::info!("received shutdown signal; stopping server");
-                })
-                .await
-                .map_err(|e| format!("server error: {e}"))?;
-            }
-            ListenTarget::Unix(path) => {
-                remove_stale_socket(&path).await?;
-                let listener = tokio::net::UnixListener::bind(&path)
-                    .map_err(|e| format!("bind unix '{}': {e}", path))?;
-                tracing::info!(
-                    path = %path,
-                    base_url = %config.base_url,
-                    "ACME server listening on Unix socket"
-                );
-                let router = router.layer(axum::middleware::from_fn(uds_marker_layer));
-                axum::serve(listener, router.into_make_service())
-                    .with_graceful_shutdown(async {
-                        let mut sigterm = tokio::signal::unix::signal(
-                            tokio::signal::unix::SignalKind::terminate(),
-                        )
-                        .expect("failed to install SIGTERM handler");
-                        tokio::select! {
-                            _ = tokio::signal::ctrl_c() => {},
-                            _ = sigterm.recv() => {},
-                        }
-                        tracing::info!("received shutdown signal; stopping server");
-                    })
-                    .await
-                    .map_err(|e| format!("server error: {e}"))?;
-                // Best-effort cleanup of the socket file after graceful shutdown.
-                let _ = std::fs::remove_file(&path);
-            }
-        }
-    }
+    serve_router(&config, router).await?;
 
     state
         .record_audit(akamu::audit::AuditEvent::success(
