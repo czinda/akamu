@@ -43,10 +43,11 @@ migration 0007 onward:
 | 0033   | 0035/0034          | policy_rules (ABAC issuance policy)       |
 | 0034   | 0036/0035          | policy_rules_tombstone (CRDT soft-delete)  |
 | 0035   | 0037/0036          | policy_rules_unique_fix (partial unique index) |
+| 0036   | 0038/0037          | authz_order_id_nullable (RFC 8555 §7.4.1 pre-authorization fix) |
 
 **Rule for future migrations:**
-- SQLite: use the next number in `migrations/sqlite/` (currently `0036_…`)
-- Postgres: use the next number in `migrations/postgres/` (currently `0038_…`)
-- MariaDB: use the next number in `migrations/mariadb/` (currently `0037_…`)
+- SQLite: use the next number in `migrations/sqlite/` (currently `0037_…`)
+- Postgres: use the next number in `migrations/postgres/` (currently `0039_…`)
+- MariaDB: use the next number in `migrations/mariadb/` (currently `0038_…`)
 
 The divergence is intentional and permanent.  Do not attempt to renumber.
