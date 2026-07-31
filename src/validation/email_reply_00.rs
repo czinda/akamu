@@ -26,6 +26,16 @@ use crate::util::unix_now;
 
 use super::{on_invalid, on_valid};
 
+/// Redact the local part of an email address for logging, keeping only the
+/// domain (still useful for triaging DKIM/domain-mismatch failures) —
+/// e.g. `"alice@example.com"` -> `"***@example.com"`.
+fn redact_email(email: &str) -> String {
+    match email.split_once('@') {
+        Some((_, domain)) => format!("***@{domain}"),
+        None => "***".to_string(),
+    }
+}
+
 // ── Phase 1: send challenge email ────────────────────────────────────────────
 
 /// Called when the client POSTs to the challenge URL.
@@ -379,8 +389,8 @@ pub(crate) async fn verify_response(
         tracing::warn!(
             challenge_id = %chall.id,
             in_reply_to = %payload.in_reply_to,
-            from = %payload.from,
-            expected = %expected_email,
+            from = %redact_email(&payload.from),
+            expected = %redact_email(&expected_email),
             "email-reply-00: From address does not match challenge identifier"
         );
         let _ = on_invalid(
@@ -393,7 +403,8 @@ pub(crate) async fn verify_response(
         .await;
         return VerifyOutcome::Invalid(format!(
             "From '{}' does not match identifier '{}'",
-            payload.from, expected_email
+            redact_email(&payload.from),
+            redact_email(&expected_email)
         ));
     }
 
@@ -1109,6 +1120,12 @@ mod tests {
     fn extract_acme_response_whitespace_only_returns_none() {
         let body = "-----BEGIN ACME RESPONSE-----\n   \n-----END ACME RESPONSE-----";
         assert_eq!(extract_acme_response(body), None);
+    }
+
+    #[test]
+    fn redact_email_hides_local_part_keeps_domain() {
+        assert_eq!(redact_email("alice@example.com"), "***@example.com");
+        assert_eq!(redact_email("not-an-email"), "***");
     }
 
     #[test]
