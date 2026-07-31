@@ -15,7 +15,10 @@ use crate::db::schema::{AuthorizationRow, OrderRow};
 use crate::error::AcmeError;
 use crate::state::AppState;
 
-use super::{acme_prefix, fmt_time, json_response, parse_jws, require_payload, unix_now, CaId};
+use super::{
+    acme_prefix, eligible_challenge_types, fmt_time, is_onion_domain, json_response, parse_jws,
+    require_payload, unix_now, CaId,
+};
 
 #[derive(Deserialize)]
 struct NewOrderIdentifier {
@@ -505,47 +508,7 @@ pub async fn new_order(
             serde_json::to_string(&json!({"type": authz_type, "value": authz_value}))
                 .map_err(|e| AcmeError::Internal(format!("serialize identifier: {e}")))?;
         let token = gen_token()?;
-        let dns_persist_enabled = !state.config.dns_persist_issuer_domains().is_empty();
-        let dns_types: &[&str] = if dns_persist_enabled {
-            &["http-01", "dns-01", "tls-alpn-01", "dns-persist-01"]
-        } else {
-            &["http-01", "dns-01", "tls-alpn-01"]
-        };
-        // RFC 8555 §7.1.3 + RFC 8737 §3: wildcard identifiers MUST NOT use
-        // http-01 or tls-alpn-01; only dns-01 (and dns-persist-01) are valid.
-        let wildcard_dns_types: &[&str] = if dns_persist_enabled {
-            &["dns-01", "dns-persist-01"]
-        } else {
-            &["dns-01"]
-        };
-        // RFC 9799 §4: for .onion domains MUST offer onion-csr-01 and MUST NOT
-        // offer dns-01.  http-01 and tls-alpn-01 MUST NOT be offered unless the
-        // CA has Tor network connectivity (controlled by tor_connectivity_enabled).
-        let onion_types_with_tor: &[&str] = &["onion-csr-01", "http-01", "tls-alpn-01"];
-        let onion_types_no_tor: &[&str] = &["onion-csr-01"];
-        let onion_types: &[&str] = if state.config.server.tor_connectivity_enabled {
-            onion_types_with_tor
-        } else {
-            onion_types_no_tor
-        };
-        // Offer tkauth-01 INSTEAD OF the normal http-01/dns-01 challenges for
-        // regular dns identifiers when tkauth is enabled and a dns-san encoder is
-        // configured.  Wildcards and .onion domains are unaffected.
-        let tkauth_dns_san_enabled = state.config.tkauth.as_ref().is_some_and(|t| t.enabled)
-            && state.claim_encoder_registry.as_ref().is_some_and(|r| {
-                r.values()
-                    .any(|e| e.authorized_identifier_type() == Some("dns"))
-            });
-        let challenge_types: &[&str] = match authz_type {
-            "dns" if is_onion_domain(authz_value) => onion_types,
-            "dns" if authz_value.starts_with("*.") => wildcard_dns_types,
-            "dns" if tkauth_dns_san_enabled => &["tkauth-01"],
-            "dns" => dns_types,
-            "ip" => &["http-01", "tls-alpn-01"],
-            "email" => &["email-reply-00"],
-            "TNAuthList" | "JWTClaimConstraints" | "EnhancedJWTClaimConstraints" => &["tkauth-01"],
-            _ => &[],
-        };
+        let challenge_types = eligible_challenge_types(authz_type, authz_value, &state);
         let challenges = challenge_types
             .iter()
             .map(|&t| (uuid::Uuid::new_v4().to_string(), t.to_string()))
@@ -1009,14 +972,6 @@ pub(crate) fn order_json<'a>(
             None
         },
     }
-}
-
-/// Return `true` if `value` ends with `.onion` (any case).
-///
-/// This is a quick syntactic check; the caller is responsible for validating
-/// that it is a properly formed v3 address.
-fn is_onion_domain(value: &str) -> bool {
-    value.to_ascii_lowercase().ends_with(".onion")
 }
 
 /// Validate a basic email address format per RFC 8823 §3 and RFC 5321 §4.5.3.1:

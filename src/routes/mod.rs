@@ -823,17 +823,69 @@ pub(crate) fn require_payload<T: serde::de::DeserializeOwned>(
 }
 
 pub(crate) use crate::util::unix_now;
+pub(crate) use crate::util::unix_to_rfc3339 as fmt_time;
 
-/// Format a Unix timestamp as an RFC 3339 string (`YYYY-MM-DDTHH:MM:SSZ`).
+/// Return `true` if `value` ends with `.onion` (any case).
 ///
-/// Uses `synta::GeneralizedTime::from_unix` for the Gregorian decomposition.
-pub(crate) fn fmt_time(unix: i64) -> String {
-    let gt = synta::GeneralizedTime::from_unix(unix)
-        .unwrap_or_else(|| synta::GeneralizedTime::from_unix(0).unwrap());
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        gt.year, gt.month, gt.day, gt.hour, gt.minute, gt.second
-    )
+/// This is a quick syntactic check; the caller is responsible for validating
+/// that it is a properly formed v3 address.
+pub(crate) fn is_onion_domain(value: &str) -> bool {
+    value.to_ascii_lowercase().ends_with(".onion")
+}
+
+/// Compute the challenge types offered for an identifier, applying every
+/// eligibility rule the server enforces:
+/// - RFC 8555 §7.1.3 + RFC 8737 §3: wildcard DNS identifiers MUST NOT use
+///   http-01 or tls-alpn-01 — only dns-01 (and dns-persist-01) are valid.
+/// - RFC 9799 §3-4: `.onion` identifiers MUST offer onion-csr-01 and MUST
+///   NOT offer dns-01; http-01/tls-alpn-01 are only added when the CA has
+///   Tor network connectivity.
+/// - RFC 9447: tkauth-01 substitutes for the normal dns-01/http-01 set when
+///   tkauth is enabled and a dns-SAN claim encoder is configured, and is the
+///   only challenge type for token-authority identifier types.
+///
+/// Shared by both `new-order` (`order.rs`) and pre-authorization
+/// (`authz.rs`) so the two entry points cannot offer a different — and
+/// potentially non-compliant — challenge set for the same identifier
+/// depending on which flow a client uses.
+pub(crate) fn eligible_challenge_types(
+    id_type: &str,
+    id_value: &str,
+    state: &AppState,
+) -> &'static [&'static str] {
+    let dns_persist_enabled = !state.config.dns_persist_issuer_domains().is_empty();
+    let dns_types: &[&str] = if dns_persist_enabled {
+        &["http-01", "dns-01", "tls-alpn-01", "dns-persist-01"]
+    } else {
+        &["http-01", "dns-01", "tls-alpn-01"]
+    };
+    let wildcard_dns_types: &[&str] = if dns_persist_enabled {
+        &["dns-01", "dns-persist-01"]
+    } else {
+        &["dns-01"]
+    };
+    let onion_types_with_tor: &[&str] = &["onion-csr-01", "http-01", "tls-alpn-01"];
+    let onion_types_no_tor: &[&str] = &["onion-csr-01"];
+    let onion_types: &[&str] = if state.config.server.tor_connectivity_enabled {
+        onion_types_with_tor
+    } else {
+        onion_types_no_tor
+    };
+    let tkauth_dns_san_enabled = state.config.tkauth.as_ref().is_some_and(|t| t.enabled)
+        && state.claim_encoder_registry.as_ref().is_some_and(|r| {
+            r.values()
+                .any(|e| e.authorized_identifier_type() == Some("dns"))
+        });
+    match id_type {
+        "dns" if is_onion_domain(id_value) => onion_types,
+        "dns" if id_value.starts_with("*.") => wildcard_dns_types,
+        "dns" if tkauth_dns_san_enabled => &["tkauth-01"],
+        "dns" => dns_types,
+        "ip" => &["http-01", "tls-alpn-01"],
+        "email" => &["email-reply-00"],
+        "TNAuthList" | "JWTClaimConstraints" | "EnhancedJWTClaimConstraints" => &["tkauth-01"],
+        _ => &[],
+    }
 }
 
 #[cfg(test)]

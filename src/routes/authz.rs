@@ -16,7 +16,8 @@ use crate::error::AcmeError;
 use crate::state::AppState;
 
 use super::{
-    account_uri, acme_prefix, fmt_time, json_response, parse_jws, require_payload, unix_now, CaId,
+    account_uri, acme_prefix, eligible_challenge_types, fmt_time, is_onion_domain, json_response,
+    parse_jws, require_payload, unix_now, CaId,
 };
 
 fn is_false(b: &bool) -> bool {
@@ -153,12 +154,7 @@ pub async fn new_authz(
     let authz_expiry = now + state.config.server.authz_expiry_secs as i64;
 
     // RFC 9799 §2: validate v3 .onion addresses in pre-authorization.
-    let is_onion = payload.identifier.r#type == "dns"
-        && payload
-            .identifier
-            .value
-            .to_ascii_lowercase()
-            .ends_with(".onion");
+    let is_onion = payload.identifier.r#type == "dns" && is_onion_domain(&payload.identifier.value);
     if is_onion && !crate::validation::onion_csr_01::validate_onion_v3(&payload.identifier.value) {
         return Err(AcmeError::RejectedIdentifier(format!(
             "only v3 .onion addresses are supported (56-char base32 label); got: {}",
@@ -167,21 +163,11 @@ pub async fn new_authz(
     }
 
     let token = gen_token()?;
-    let dns_persist_enabled = !state.config.dns_persist_issuer_domains().is_empty();
-    let dns_types: &[&str] = if dns_persist_enabled {
-        &["http-01", "dns-01", "tls-alpn-01", "dns-persist-01"]
-    } else {
-        &["http-01", "dns-01", "tls-alpn-01"]
-    };
-    let challenge_types: &[&str] = match payload.identifier.r#type.as_str() {
-        // RFC 9799 §3.1.1: .onion domains MUST offer onion-csr-01 and MUST NOT
-        // offer dns-01.  http-01 and tls-alpn-01 are allowed (require Tor).
-        "dns" if is_onion => &["onion-csr-01", "http-01", "tls-alpn-01"],
-        "dns" => dns_types,
-        "ip" => &["http-01", "tls-alpn-01"],
-        "email" => &["email-reply-00"],
-        _ => &[],
-    };
+    let challenge_types = eligible_challenge_types(
+        &payload.identifier.r#type,
+        &payload.identifier.value,
+        &state,
+    );
 
     // Build challenge rows before crossing the await boundary.
     let challenges: Vec<(String, String)> = challenge_types
