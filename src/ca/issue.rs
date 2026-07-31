@@ -1419,9 +1419,9 @@ mod tests {
     use native_ossl::util::hex_encode;
 
     use super::{
-        ip_string_to_bytes, issue_certificate, issue_with_params, parse_operator_san,
-        permitted_sig_algs_with_composite, permitted_spki_algs_with_composite, sign_admin_cert,
-        sign_server_cert, IssueCertParams, IssueWithParamsArgs, OperatorSanKind,
+        check_is_ca_cert, ip_string_to_bytes, issue_ca_cert, issue_certificate, issue_with_params,
+        parse_operator_san, permitted_sig_algs_with_composite, permitted_spki_algs_with_composite,
+        sign_admin_cert, sign_server_cert, IssueCertParams, IssueWithParamsArgs, OperatorSanKind,
     };
     use crate::ca::csr::{validate_csr, SanEntry, ValidatedCsr};
     use crate::linter::WEBPKI_PROFILE;
@@ -2523,5 +2523,84 @@ mod tests {
             RevocationChecks::default(),
         )
         .expect("admin cert with dNSName SAN must pass client verification");
+    }
+
+    #[test]
+    fn check_is_ca_cert_accepts_a_real_ca_cert() {
+        let (_ca_key, ca_cert_der) = make_test_ca();
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        check_is_ca_cert(&ca_cert_der, now_unix)
+            .expect("a real self-signed CA cert (cA=TRUE) must be accepted");
+    }
+
+    #[test]
+    fn check_is_ca_cert_rejects_a_non_ca_cert() {
+        let (ca_key, ca_cert_der) = make_test_ca();
+        let domain = "not-a-ca.example.com";
+        let (_ee_key, validated_csr) = make_test_csr(domain);
+        let issued = issue_certificate(IssueCertParams {
+            ca_key: &ca_key,
+            ca_cert_der: &ca_cert_der,
+            hash_alg: "sha256",
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            csr: &validated_csr,
+            not_before_override: None,
+            not_after_override: None,
+        })
+        .unwrap();
+
+        let err = check_is_ca_cert(&issued.cert_der, issued.not_before).unwrap_err();
+        assert!(
+            matches!(err, crate::error::AcmeError::BadRequest(_)),
+            "expected BadRequest, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn issue_ca_cert_end_to_end() {
+        let issuer_ca = make_test_ca_state();
+        // A second, independent CA cert stands in as the "subject" whose SPKI
+        // and Subject DN get cross-certified — issue_ca_cert only reads those
+        // two fields out of it, it doesn't require the subject cert to chain
+        // to the issuer.
+        let (_subject_key, subject_cert_der) = make_test_ca();
+
+        let issued = issue_ca_cert(&issuer_ca, &subject_cert_der, 5, &WEBPKI_PROFILE).unwrap();
+
+        assert!(!issued.serial_hex.is_empty());
+        assert!(issued.cert_pem.contains("-----BEGIN CERTIFICATE-----"));
+        assert!(issued.not_after > issued.not_before);
+
+        // The cross-cert must verify as a CA cert issued by issuer_ca.
+        let ca_parsed: Certificate = Decoder::new(&issuer_ca.cert_der, Encoding::Der)
+            .decode()
+            .unwrap();
+        let ca_vcert = VerificationCertificate::new(ca_parsed, &issuer_ca.cert_der);
+        let store = Store::new(vec![ca_vcert]);
+
+        let leaf_parsed: Certificate = Decoder::new(&issued.cert_der, Encoding::Der)
+            .decode()
+            .unwrap();
+        let leaf_vcert = VerificationCertificate::new(leaf_parsed, &issued.cert_der);
+
+        let mut policy =
+            PolicyDefinition::new_server_pq(OpensslSignatureVerifier, vec![], issued.not_before);
+        policy.profile = synta_x509_verification::policy::ValidationProfile::Rfc5280;
+        policy.extended_key_usage = None;
+        policy.ee_extension_policy =
+            synta_x509_verification::policy::ExtensionPolicy::new_default_webpki_ca();
+        verify(
+            &leaf_vcert,
+            &[],
+            &policy,
+            &store,
+            RevocationChecks::default(),
+        )
+        .expect("cross-cert must verify as a CA cert issued by issuer_ca");
     }
 }
