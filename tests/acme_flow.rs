@@ -15,8 +15,8 @@ use axum::http::{header, Method, Request, StatusCode};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Value};
 use synta_certificate::{
-    BackendPrivateKey, CertificateBuilder, CertificateSigner as _, CsrBuilder, NameBuilder,
-    PrivateKey as _, SubjectAlternativeNameBuilder,
+    BackendPrivateKey, CertificateBuilder, CertificateSigner as _, CsrBuilder, HmacProvider as _,
+    NameBuilder, PrivateKey as _, SubjectAlternativeNameBuilder,
 };
 use tower::ServiceExt;
 
@@ -4109,5 +4109,209 @@ async fn test_smime_email_reply_00_full_flow() {
             .windows(email_prot_oid.len())
             .any(|w| w == email_prot_oid),
         "issued cert must have emailProtection EKU"
+    );
+}
+
+// ── EAB single-use enforcement (RFC 8555 §7.3.4) ────────────────────────────
+//
+// The DB-layer atomic-CAS guard (`mark_used`'s `WHERE used_at IS NULL`,
+// which is what makes a *concurrent* race return 409 Conflict) is covered
+// directly in `src/db/eab.rs`'s own test module, where it can be exercised
+// deterministically. The test below covers the common, non-racing path that
+// only a full request round-trip can exercise: a client reusing an
+// already-consumed kid gets rejected before any account is created.
+
+/// Same as `build_test_state` but with `external_account_required = true`.
+async fn build_test_state_eab_required(base_url: &str) -> (Arc<AppState>, tempfile::TempDir) {
+    let dir = tempfile::TempDir::new().unwrap();
+
+    let config = Arc::new(Config {
+        listen_addr: "127.0.0.1:0".into(),
+        base_url: base_url.into(),
+        database: DatabaseConfig {
+            url: "sqlite::memory:".into(),
+            max_connections: None,
+            require_tls: false,
+        },
+        cas: vec![CaConfig {
+            id: "default".to_owned(),
+            is_default: true,
+            caa_identities: vec![],
+            key_file: Some(dir.path().join("ca.key").to_string_lossy().into_owned()),
+            cert_file: dir.path().join("ca.crt").to_string_lossy().into_owned(),
+            key_type: "ec:P-256".into(),
+            hash_alg: "sha256".into(),
+            validity_days: 90,
+            crl_url: None,
+            ocsp_url: None,
+            common_name: "EAB Test CA".into(),
+            organization: "Test Org".into(),
+            ca_validity_years: 10,
+            crl_next_update_secs: 86400,
+            enforce_validity_cap: false,
+            require_encrypted_key: false,
+            key_password_file: None,
+            mtc: None,
+            default_linter: None,
+            signer: None,
+        }],
+        mtc: Some(MtcConfig {
+            log_path: "/dev/null".into(),
+            enabled: false,
+            signing_key: None,
+            checkpoint_interval_secs: 3600,
+            cosigners: vec![],
+            landmark_interval_secs: 86400,
+            max_active_landmarks: 100,
+            checkpoint_retention_count: 1000,
+            hash_alg: "sha256".into(),
+            log_number: 1,
+            tree_minimum_index: None,
+            trust_anchor_id: None,
+            contact: None,
+            friendly_name: None,
+        }),
+        server: ServerConfig {
+            external_account_required: true,
+            ..ServerConfig::default()
+        },
+        tls: Default::default(),
+        profiles: Default::default(),
+        linter: Default::default(),
+        admin: None,
+        email_challenge: None,
+        delegation_upstream: None,
+        gossip: None,
+        crdt_db_url: None,
+        tkauth: None,
+        policy: None,
+    });
+
+    let (ca_key, ca_cert_der) = ca::init::load_or_generate(config.default_ca()).unwrap();
+    let ca_spki_der = ca_key.public_key().unwrap().spki_der().to_vec();
+    let ca_aki_bytes = ca::init::compute_aki_from_spki(&ca_spki_der).unwrap_or_default();
+    db::install_drivers();
+    let db_conn = db::open("sqlite::memory:", 1, false).await.unwrap();
+
+    let ca = Arc::new(CaState {
+        id: "default".into(),
+        key_type: "ec:P-256".into(),
+        crl_next_update_secs: 86400,
+        signing: akamu::state::SigningBackend::Local {
+            key: Box::new(ca_key),
+        },
+        cert_der: ca_cert_der,
+        hash_alg: "sha256".into(),
+        validity_days: 90,
+        crl_url: None,
+        ocsp_url: None,
+        aki_bytes: ca_aki_bytes,
+        enforce_validity_cap: false,
+        caa_identities: vec![],
+        mtc: Arc::new(MtcState::disabled()),
+        default_linter: None,
+        cached_der: std::sync::OnceLock::new(),
+        lint_store: std::sync::OnceLock::new(),
+    });
+    let cas = {
+        let mut m = indexmap::IndexMap::new();
+        m.insert("default".to_string(), ca.clone());
+        Arc::new(m)
+    };
+    let state = AppStateBuilder::new(
+        Arc::clone(&config),
+        db_conn.clone(),
+        db::DbKind::Sqlite,
+        cas,
+        Arc::new("default".to_string()),
+    )
+    .node_id(Arc::new("test".to_string()))
+    .build();
+
+    (state, dir)
+}
+
+/// Build a valid EAB JWS (RFC 8555 §7.3.4). Mirrors `src/jose/eab.rs`'s
+/// private `make_eab_jws` test helper, which cannot be imported cross-binary.
+fn make_eab_jws(kid: &str, url: &str, hmac_key: &[u8], account_jwk: &Value) -> Value {
+    let header = json!({"alg": "HS256", "kid": kid, "url": url});
+    let protected = URL_SAFE_NO_PAD.encode(header.to_string().as_bytes());
+    let payload_b64 = URL_SAFE_NO_PAD.encode(account_jwk.to_string().as_bytes());
+    let signing_input = format!("{protected}.{payload_b64}");
+    let mac = synta_certificate::default_hmac_provider()
+        .hmac_compute("sha256", hmac_key, signing_input.as_bytes())
+        .unwrap();
+    let signature = URL_SAFE_NO_PAD.encode(&mac);
+    json!({
+        "protected": protected,
+        "payload": payload_b64,
+        "signature": signature,
+    })
+}
+
+/// Fail-closed guarantee: once an EAB kid has been consumed by a successful
+/// new-account request, a second new-account request reusing that kid (with
+/// a different account key, as a client retrying against a stale kid would
+/// do) must be rejected rather than silently binding a second account to the
+/// same pre-shared key.
+#[tokio::test]
+async fn test_eab_sequential_reuse_is_unauthorized() {
+    let base_url = "https://acme.test";
+    let (state, _dir) = build_test_state_eab_required(base_url).await;
+    let router = routes::build_router(Arc::clone(&state), None, false);
+
+    let hmac_key = b"eab-test-hmac-key-32-bytes-long!";
+    let hmac_key_b64u = URL_SAFE_NO_PAD.encode(hmac_key);
+    db::eab::insert_if_absent(
+        &state.db,
+        "kid-1",
+        &hmac_key_b64u,
+        1_700_000_000,
+        None,
+        "sha256",
+    )
+    .await
+    .unwrap();
+
+    let new_account_url = format!("{base_url}/acme/new-account");
+
+    // First use of an unused kid must succeed and consume it.
+    let key1 = TestKey::generate();
+    let nonce1 = head_nonce(&router).await;
+    let eab1 = make_eab_jws("kid-1", &new_account_url, hmac_key, &key1.jwk());
+    let payload1 = json!({ "externalAccountBinding": eab1 });
+    let jws1 = key1.jws_with_jwk(&nonce1, &new_account_url, Some(payload1));
+    let (status1, body1, _) = post_acme(&router, "/acme/new-account", jws1).await;
+    assert_eq!(
+        status1,
+        StatusCode::CREATED,
+        "first use of an unused EAB kid must succeed: {body1:?}"
+    );
+
+    // A different account key reusing the now-consumed kid must be rejected.
+    let key2 = TestKey::generate();
+    let nonce2 = head_nonce(&router).await;
+    let eab2 = make_eab_jws("kid-1", &new_account_url, hmac_key, &key2.jwk());
+    let payload2 = json!({ "externalAccountBinding": eab2 });
+    let jws2 = key2.jws_with_jwk(&nonce2, &new_account_url, Some(payload2));
+    let (status2, body2, _) = post_acme(&router, "/acme/new-account", jws2).await;
+    assert_eq!(
+        status2,
+        StatusCode::UNAUTHORIZED,
+        "reusing an already-consumed EAB kid must be rejected: {body2:?}"
+    );
+    assert_eq!(
+        body2["type"].as_str(),
+        Some("urn:ietf:params:acme:error:unauthorized")
+    );
+
+    // Exactly one account must have been created.
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM accounts")
+            .fetch_one(&state.db)
+            .await
+            .unwrap(),
+        1,
+        "the rejected second request must not have created an account"
     );
 }

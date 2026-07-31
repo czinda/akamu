@@ -296,6 +296,29 @@ mod tests {
         assert_eq!(row.used_at, Some(2_000));
     }
 
+    /// Fail-closed guarantee: `mark_used`'s `WHERE used_at IS NULL` guard is
+    /// what makes single-use enforcement race-safe — two callers that both
+    /// observed `used_at = NULL` via `get_by_kid` before either committed
+    /// must not both be able to mark the same key used. A second call after
+    /// the first has already consumed the key is exactly that scenario
+    /// collapsed into two sequential calls, and must return `Conflict`
+    /// rather than silently succeeding a second time.
+    #[tokio::test]
+    async fn mark_used_second_call_returns_conflict() {
+        let db = open_db().await;
+        insert(&db, "kid-race", "key", 1_000).await.unwrap();
+        mark_used(&db, "kid-race", 2_000).await.unwrap();
+
+        let err = mark_used(&db, "kid-race", 3_000).await.unwrap_err();
+        assert!(
+            matches!(err, AcmeError::Conflict(_)),
+            "expected Conflict, got {err:?}"
+        );
+        // The first call's timestamp must be preserved, not overwritten.
+        let row = get_by_kid(&db, "kid-race").await.unwrap().unwrap();
+        assert_eq!(row.used_at, Some(2_000));
+    }
+
     #[tokio::test]
     async fn delete_removes_key() {
         let db = open_db().await;
