@@ -18,6 +18,7 @@ pub mod extract;
 pub mod gossip;
 pub mod jose;
 pub mod journal;
+pub mod krb5_san;
 pub mod linter;
 pub mod listen;
 pub mod mtc;

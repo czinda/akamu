@@ -220,7 +220,7 @@ fn parse_hook_extra_sans(hook_path: &str, stdout: &[u8]) -> Result<Vec<Vec<u8>>,
                     .and_then(|v| v.as_array())
                     .map(|arr| arr.iter().filter_map(|c| c.as_str()).collect())
                     .unwrap_or_default();
-                crate::ca::krb5_san::encode_krb5_principal_other_name(realm, name_type, &components)
+                crate::krb5_san::encode_krb5_principal_other_name(realm, name_type, &components)
                     .map_err(|e| {
                         AcmeError::Internal(format!(
                             "auth hook '{hook_path}': extra_sans[{i}] krb5_principal: {e}"
@@ -229,7 +229,7 @@ fn parse_hook_extra_sans(hook_path: &str, stdout: &[u8]) -> Result<Vec<Vec<u8>>,
             }
             "ms_upn" => {
                 let upn = entry.get("upn").and_then(|v| v.as_str()).unwrap_or("");
-                crate::ca::krb5_san::encode_ms_upn_other_name(upn).map_err(|e| {
+                crate::krb5_san::encode_ms_upn_other_name(upn).map_err(|e| {
                     AcmeError::Internal(format!(
                         "auth hook '{hook_path}': extra_sans[{i}] ms_upn: {e}"
                     ))

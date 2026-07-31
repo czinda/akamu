@@ -76,11 +76,11 @@ impl ClaimEncoder {
                         "krb5-kpn: '{value}' contains no '@' and no default_realm is configured"
                     ));
                 };
-                crate::ca::krb5_san::encode_principal_str_other_name(&principal)
+                crate::krb5_san::encode_principal_str_other_name(&principal)
                     .map(EncodedSan::OtherName)
             }
             ClaimEncoder::MsUpn => {
-                crate::ca::krb5_san::encode_ms_upn_other_name(value).map(EncodedSan::OtherName)
+                crate::krb5_san::encode_ms_upn_other_name(value).map(EncodedSan::OtherName)
             }
             ClaimEncoder::DnsSan => {
                 if value.is_empty() {

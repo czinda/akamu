@@ -325,13 +325,12 @@ pub async fn finalize_order(
         .collect();
     for tmpl in &cert_params.kpn_san_templates {
         extra_other_names.extend(
-            crate::ca::krb5_san::expand_kpn_template(tmpl, &dns_sans)
-                .map_err(AcmeError::Builder)?,
+            crate::krb5_san::expand_kpn_template(tmpl, &dns_sans).map_err(AcmeError::Builder)?,
         );
     }
     if let Some(ref tmpl) = cert_params.ms_upn_san_template {
-        if let Some(der) = crate::ca::krb5_san::expand_ms_upn_template(tmpl, &dns_sans)
-            .map_err(AcmeError::Builder)?
+        if let Some(der) =
+            crate::krb5_san::expand_ms_upn_template(tmpl, &dns_sans).map_err(AcmeError::Builder)?
         {
             extra_other_names.push(der);
         }
@@ -343,7 +342,7 @@ pub async fn finalize_order(
             db::accounts::get_kerberos_principal(&state.db_ro, &account_id).await?
         {
             extra_other_names.push(
-                crate::ca::krb5_san::encode_principal_str_other_name(&principal)
+                crate::krb5_san::encode_principal_str_other_name(&principal)
                     .map_err(AcmeError::Builder)?,
             );
         }
