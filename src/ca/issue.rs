@@ -29,7 +29,7 @@ use crate::profiles::CertificateParameters;
 use crate::state::CaState;
 use crate::util::{extract_ca_subject_der, unix_now};
 
-use super::csr::ValidatedCsr;
+use super::csr::{SanEntry, ValidatedCsr};
 use super::init::unix_to_generalized_time;
 
 // ── Composite ML-DSA policy extension ────────────────────────────────────────
@@ -150,6 +150,111 @@ fn composite_mldsa_algorithm_ids() -> [AlgorithmId; 18] {
     ]
 }
 
+// ── Shared issuance helpers ──────────────────────────────────────────────────
+//
+// Small building blocks reused across the issuance/signing entry points below
+// (issue_certificate, issue_with_params, sign_server_cert, sign_admin_cert)
+// to avoid re-deriving the same serial/validity/PEM logic per function.
+
+/// Generate a random 16-byte positive certificate serial number.
+///
+/// Returns the raw bytes (for `certificates.serial_number` byte storage),
+/// the `synta::Integer` for the builder, and the hex-encoded string.
+fn generate_random_serial() -> Result<([u8; 16], synta::Integer, String), AcmeError> {
+    let mut serial_bytes = [0u8; 16];
+    native_ossl::rand::Rand::fill(&mut serial_bytes)
+        .map_err(|e| AcmeError::Internal(format!("random serial: {e}")))?;
+    // Clear the sign bit (positive) and set the low bit so the first byte is
+    // always in 0x01..0x7f — DER INTEGER must be minimal (no unnecessary leading
+    // 0x00), and a zero first byte would be unnecessary when the next byte's MSB
+    // is clear.  Forcing bit 0 avoids that case without reducing serial length.
+    serial_bytes[0] = (serial_bytes[0] & 0x7f) | 0x01;
+    let serial = synta::Integer::from_bytes(&serial_bytes);
+    let serial_hex = hex_encode(serial_bytes);
+    Ok((serial_bytes, serial, serial_hex))
+}
+
+/// Parse a notBefore/notAfter Unix timestamp pair into `synta_certificate::Time`.
+fn parse_validity_window(
+    not_before_unix: i64,
+    not_after_unix: i64,
+) -> Result<(synta_certificate::Time, synta_certificate::Time), AcmeError> {
+    let not_before = synta_certificate::parse_time(&unix_to_generalized_time(not_before_unix))
+        .map_err(|e| AcmeError::Builder(format!("notBefore: {e}")))?;
+    let not_after = synta_certificate::parse_time(&unix_to_generalized_time(not_after_unix))
+        .map_err(|e| AcmeError::Builder(format!("notAfter: {e}")))?;
+    Ok((not_before, not_after))
+}
+
+/// Build a PEM bundle of `leaf_der` followed by `ca_der` (leaf + CA chain).
+fn bundle_leaf_and_ca_pem(leaf_der: &[u8], ca_der: &[u8]) -> Result<String, AcmeError> {
+    let mut pem_bytes = der_to_pem("CERTIFICATE", leaf_der);
+    pem_bytes.extend_from_slice(&der_to_pem("CERTIFICATE", ca_der));
+    String::from_utf8(pem_bytes)
+        .map_err(|_| AcmeError::Internal("PEM contains invalid UTF-8".into()))
+}
+
+/// Build a SubjectAlternativeName extension DER value from a CSR's parsed
+/// SANs plus any additional other-name/dns-name entries.
+///
+/// Returns `None` when there are no recognised SAN entries at all (caller
+/// should omit the extension); otherwise `Some((der, is_critical))`, where
+/// `is_critical` follows RFC 5280 §4.1.2.6 (SAN MUST be critical when the
+/// subject DN is empty).
+fn build_san_from_csr(
+    subject_der: &[u8],
+    sans: &[SanEntry],
+    extra_other_names: &[Vec<u8>],
+    extra_dns_names: &[String],
+    log_prefix: &str,
+) -> Result<Option<(Vec<u8>, bool)>, AcmeError> {
+    let mut san_has_entries = false;
+    let mut san_builder = SubjectAlternativeNameBuilder::new();
+    for san in sans {
+        match san.san_type.as_str() {
+            "dns" => {
+                san_builder = san_builder.dns_name(&san.value);
+                san_has_entries = true;
+            }
+            "ip" => {
+                let ip_bytes = ip_string_to_bytes(&san.value)
+                    .ok_or_else(|| AcmeError::Builder(format!("invalid IP SAN: {}", san.value)))?;
+                san_builder = san_builder.ip_address(&ip_bytes);
+                san_has_entries = true;
+            }
+            "email" => {
+                san_builder = san_builder.rfc822_name(&san.value);
+                san_has_entries = true;
+            }
+            other => {
+                tracing::warn!("{log_prefix}: unrecognised SAN type '{}' — skipped", other);
+            }
+        }
+    }
+    for on_der in extra_other_names {
+        san_builder = san_builder.other_name(on_der);
+        san_has_entries = true;
+    }
+    for dns in extra_dns_names {
+        san_builder = san_builder.dns_name(dns);
+        san_has_entries = true;
+    }
+    if !san_has_entries {
+        if !sans.is_empty() {
+            return Err(AcmeError::BadRequest(
+                "all requested SAN types are unrecognised; cannot issue certificate without SANs"
+                    .into(),
+            ));
+        }
+        return Ok(None);
+    }
+    let san_der = san_builder
+        .build()
+        .map_err(|e| AcmeError::Builder(format!("SAN: {e}")))?;
+    let san_critical = subject_der == [0x30, 0x00];
+    Ok(Some((san_der, san_critical)))
+}
+
 /// Output of a successful certificate issuance.
 #[derive(Debug)]
 pub struct IssuedCert {
@@ -217,16 +322,7 @@ pub fn issue_certificate(params: IssueCertParams<'_>) -> Result<IssuedCert, Acme
         .to_vec();
 
     // ── Generate a random 16-byte positive serial number ─────────────────────
-    let mut serial_bytes = [0u8; 16];
-    native_ossl::rand::Rand::fill(&mut serial_bytes)
-        .map_err(|e| AcmeError::Internal(format!("random serial: {e}")))?;
-    // Clear the sign bit (positive) and set the low bit so the first byte is
-    // always in 0x01..0x7f — DER INTEGER must be minimal (no unnecessary leading
-    // 0x00), and a zero first byte would be unnecessary when the next byte's MSB
-    // is clear.  Forcing bit 0 avoids that case without reducing serial length.
-    serial_bytes[0] = (serial_bytes[0] & 0x7f) | 0x01;
-    let serial = synta::Integer::from_bytes(&serial_bytes);
-    let serial_hex = hex_encode(serial_bytes);
+    let (serial_bytes, serial, serial_hex) = generate_random_serial()?;
 
     // ── Compute validity window ───────────────────────────────────────────────
     let now = unix_now();
@@ -267,12 +363,7 @@ pub fn issue_certificate(params: IssueCertParams<'_>) -> Result<IssuedCert, Acme
     } else {
         raw_not_after
     };
-    let not_before_str = unix_to_generalized_time(not_before_unix);
-    let not_after_str = unix_to_generalized_time(not_after_unix);
-    let not_before = synta_certificate::parse_time(&not_before_str)
-        .map_err(|e| AcmeError::Builder(format!("notBefore: {e}")))?;
-    let not_after = synta_certificate::parse_time(&not_after_str)
-        .map_err(|e| AcmeError::Builder(format!("notAfter: {e}")))?;
+    let (not_before, not_after) = parse_validity_window(not_before_unix, not_after_unix)?;
 
     // ── Build extensions ──────────────────────────────────────────────────────
     let hasher = default_key_id_hasher();
@@ -310,38 +401,7 @@ pub fn issue_certificate(params: IssueCertParams<'_>) -> Result<IssuedCert, Acme
             .ok_or_else(|| AcmeError::Builder("AKI encode".into()))?;
 
     // SubjectAlternativeName: rebuild from the validated SANs.
-    let mut san_has_entries = false;
-    let mut san_builder = SubjectAlternativeNameBuilder::new();
-    for san in &csr.sans {
-        match san.san_type.as_str() {
-            "dns" => {
-                san_builder = san_builder.dns_name(&san.value);
-                san_has_entries = true;
-            }
-            "ip" => {
-                let ip_bytes = ip_string_to_bytes(&san.value)
-                    .ok_or_else(|| AcmeError::Builder(format!("invalid IP SAN: {}", san.value)))?;
-                san_builder = san_builder.ip_address(&ip_bytes);
-                san_has_entries = true;
-            }
-            "email" => {
-                san_builder = san_builder.rfc822_name(&san.value);
-                san_has_entries = true;
-            }
-            other => {
-                tracing::warn!(
-                    "issue_certificate: unrecognised SAN type '{}' — skipped",
-                    other
-                );
-            }
-        }
-    }
-    if !san_has_entries && !csr.sans.is_empty() {
-        return Err(AcmeError::BadRequest(
-            "all requested SAN types are unrecognised; cannot issue certificate without SANs"
-                .into(),
-        ));
-    }
+    let san_ext = build_san_from_csr(&csr.subject_der, &csr.sans, &[], &[], "issue_certificate")?;
 
     // ── Assemble the certificate ──────────────────────────────────────────────
     let signer = ca_key.as_signer(hash_alg);
@@ -359,13 +419,8 @@ pub fn issue_certificate(params: IssueCertParams<'_>) -> Result<IssuedCert, Acme
         .add_extension_oid(oids::SUBJECT_KEY_IDENTIFIER, false, &ski_der)
         .add_extension_oid(oids::AUTHORITY_KEY_IDENTIFIER, false, &aki_der);
 
-    if san_has_entries {
-        let san_der = san_builder
-            .build()
-            .map_err(|e| AcmeError::Builder(format!("SAN: {e}")))?;
-        // RFC 5280 §4.1.2.6: SAN MUST be critical when subject DN is empty.
-        let san_critical = csr.subject_der.as_slice() == [0x30, 0x00];
-        builder = builder.add_extension_oid(oids::SUBJECT_ALT_NAME, san_critical, &san_der);
+    if let Some((san_der, san_critical)) = &san_ext {
+        builder = builder.add_extension_oid(oids::SUBJECT_ALT_NAME, *san_critical, san_der);
     }
 
     if let Some(ocsp) = ocsp_url {
@@ -392,11 +447,7 @@ pub fn issue_certificate(params: IssueCertParams<'_>) -> Result<IssuedCert, Acme
     lint_issued_cert(&cert_der, ca_cert_der, now, &WEBPKI_PROFILE, None)?;
 
     // ── Build PEM bundle: leaf + CA ────────────────────────────────────────────
-    // der_to_pem returns Vec<u8> (ASCII PEM bytes); concatenate and convert.
-    let mut pem_bytes = der_to_pem("CERTIFICATE", &cert_der);
-    pem_bytes.extend_from_slice(&der_to_pem("CERTIFICATE", ca_cert_der));
-    let cert_pem = String::from_utf8(pem_bytes)
-        .map_err(|_| AcmeError::Internal("PEM contains invalid UTF-8".into()))?;
+    let cert_pem = bundle_leaf_and_ca_pem(&cert_der, ca_cert_der)?;
 
     Ok(IssuedCert {
         id: uuid::Uuid::new_v4().to_string(),
@@ -566,12 +617,7 @@ pub fn issue_with_params(args: IssueWithParamsArgs<'_>) -> Result<IssuedCert, Ac
         (&cached.name_der, &cached.spki_der, &cached.aki_der);
 
     // ── Random serial ────────────────────────────────────────────────────────
-    let mut serial_bytes = [0u8; 16];
-    native_ossl::rand::Rand::fill(&mut serial_bytes)
-        .map_err(|e| AcmeError::Internal(format!("random serial: {e}")))?;
-    serial_bytes[0] = (serial_bytes[0] & 0x7f) | 0x01;
-    let serial = synta::Integer::from_bytes(&serial_bytes);
-    let serial_hex = hex_encode(serial_bytes);
+    let (serial_bytes, serial, serial_hex) = generate_random_serial()?;
 
     // ── Validity window ──────────────────────────────────────────────────────
     let now = unix_now();
@@ -614,12 +660,7 @@ pub fn issue_with_params(args: IssueWithParamsArgs<'_>) -> Result<IssuedCert, Ac
         }
     }
 
-    let not_before =
-        synta_certificate::parse_time(&super::init::unix_to_generalized_time(not_before_unix))
-            .map_err(|e| AcmeError::Builder(format!("notBefore: {e}")))?;
-    let not_after =
-        synta_certificate::parse_time(&super::init::unix_to_generalized_time(not_after_unix))
-            .map_err(|e| AcmeError::Builder(format!("notAfter: {e}")))?;
+    let (not_before, not_after) = parse_validity_window(not_before_unix, not_after_unix)?;
 
     // ── Extensions ───────────────────────────────────────────────────────────
     let hasher = default_key_id_hasher();
@@ -651,46 +692,13 @@ pub fn issue_with_params(args: IssueWithParamsArgs<'_>) -> Result<IssuedCert, Ac
             .ok_or_else(|| AcmeError::Builder("SKI encode".into()))?;
     let aki_der = ca_aki_der;
 
-    let mut san_has_entries = false;
-    let mut san_builder = SubjectAlternativeNameBuilder::new();
-    for san in &csr.sans {
-        match san.san_type.as_str() {
-            "dns" => {
-                san_builder = san_builder.dns_name(&san.value);
-                san_has_entries = true;
-            }
-            "ip" => {
-                let ip_bytes = ip_string_to_bytes(&san.value)
-                    .ok_or_else(|| AcmeError::Builder(format!("invalid IP SAN: {}", san.value)))?;
-                san_builder = san_builder.ip_address(&ip_bytes);
-                san_has_entries = true;
-            }
-            "email" => {
-                san_builder = san_builder.rfc822_name(&san.value);
-                san_has_entries = true;
-            }
-            other => {
-                tracing::warn!(
-                    "issue_with_params: unrecognised SAN type '{}' — skipped",
-                    other
-                );
-            }
-        }
-    }
-    for on_der in extra_other_names {
-        san_builder = san_builder.other_name(on_der);
-        san_has_entries = true;
-    }
-    for dns in extra_dns_names {
-        san_builder = san_builder.dns_name(dns);
-        san_has_entries = true;
-    }
-    if !san_has_entries && !csr.sans.is_empty() {
-        return Err(AcmeError::BadRequest(
-            "all requested SAN types are unrecognised; cannot issue certificate without SANs"
-                .into(),
-        ));
-    }
+    let san_ext = build_san_from_csr(
+        &csr.subject_der,
+        &csr.sans,
+        extra_other_names,
+        extra_dns_names,
+        "issue_with_params",
+    )?;
 
     // ── Assemble certificate ─────────────────────────────────────────────────
     let ca_key = ca
@@ -718,13 +726,8 @@ pub fn issue_with_params(args: IssueWithParamsArgs<'_>) -> Result<IssuedCert, Ac
         .add_extension_oid(oids::SUBJECT_KEY_IDENTIFIER, false, &ski_der)
         .add_extension_oid(oids::AUTHORITY_KEY_IDENTIFIER, false, aki_der);
 
-    if san_has_entries {
-        let san_der = san_builder
-            .build()
-            .map_err(|e| AcmeError::Builder(format!("SAN: {e}")))?;
-        // RFC 5280 §4.1.2.6: SAN MUST be critical when subject DN is empty.
-        let san_critical = csr.subject_der.as_slice() == [0x30, 0x00];
-        builder = builder.add_extension_oid(oids::SUBJECT_ALT_NAME, san_critical, &san_der);
+    if let Some((san_der, san_critical)) = &san_ext {
+        builder = builder.add_extension_oid(oids::SUBJECT_ALT_NAME, *san_critical, san_der);
     }
 
     if let Some(ocsp) = &params.ocsp_url {
@@ -755,10 +758,7 @@ pub fn issue_with_params(args: IssueWithParamsArgs<'_>) -> Result<IssuedCert, Ac
     // Pre-issuance policy lint using the resolved linter profile.
     lint_issued_cert(&cert_der, &ca.cert_der, now, linter, Some(&ca.lint_store))?;
 
-    let mut pem_bytes = der_to_pem("CERTIFICATE", &cert_der);
-    pem_bytes.extend_from_slice(&der_to_pem("CERTIFICATE", &ca.cert_der));
-    let cert_pem = String::from_utf8(pem_bytes)
-        .map_err(|_| AcmeError::Internal("PEM contains invalid UTF-8".into()))?;
+    let cert_pem = bundle_leaf_and_ca_pem(&cert_der, &ca.cert_der)?;
 
     Ok(IssuedCert {
         id: uuid::Uuid::new_v4().to_string(),
@@ -805,20 +805,12 @@ pub fn sign_server_cert(
         .to_vec();
 
     // Random 16-byte positive serial.
-    let mut serial_bytes = [0u8; 16];
-    native_ossl::rand::Rand::fill(&mut serial_bytes)
-        .map_err(|e| AcmeError::Internal(format!("random serial: {e}")))?;
-    serial_bytes[0] = (serial_bytes[0] & 0x7f) | 0x01; // positive, non-zero first byte
-    let serial = synta::Integer::from_bytes(&serial_bytes);
+    let (_serial_bytes, serial, _serial_hex) = generate_random_serial()?;
 
     // Validity window.
     let now = unix_now();
-    let not_before_str = unix_to_generalized_time(now);
-    let not_after_str = unix_to_generalized_time(now + ca.validity_days as i64 * 86400);
-    let not_before = synta_certificate::parse_time(&not_before_str)
-        .map_err(|e| AcmeError::Builder(format!("notBefore: {e}")))?;
-    let not_after = synta_certificate::parse_time(&not_after_str)
-        .map_err(|e| AcmeError::Builder(format!("notAfter: {e}")))?;
+    let (not_before, not_after) =
+        parse_validity_window(now, now + ca.validity_days as i64 * 86400)?;
 
     // Subject: CN=server_name.
     let subject_der = NameBuilder::new()
@@ -963,19 +955,11 @@ pub fn sign_admin_cert(
         .spki_der()
         .to_vec();
 
-    let mut serial_bytes = [0u8; 16];
-    native_ossl::rand::Rand::fill(&mut serial_bytes)
-        .map_err(|e| AcmeError::Internal(format!("random serial: {e}")))?;
-    serial_bytes[0] = (serial_bytes[0] & 0x7f) | 0x01;
-    let serial = synta::Integer::from_bytes(&serial_bytes);
+    let (_serial_bytes, serial, _serial_hex) = generate_random_serial()?;
 
     let now = unix_now();
-    let not_before_str = unix_to_generalized_time(now);
-    let not_after_str = unix_to_generalized_time(now + ca.validity_days as i64 * 86400);
-    let not_before = synta_certificate::parse_time(&not_before_str)
-        .map_err(|e| AcmeError::Builder(format!("notBefore: {e}")))?;
-    let not_after = synta_certificate::parse_time(&not_after_str)
-        .map_err(|e| AcmeError::Builder(format!("notAfter: {e}")))?;
+    let (not_before, not_after) =
+        parse_validity_window(now, now + ca.validity_days as i64 * 86400)?;
 
     let subject_der = NameBuilder::new()
         .common_name(cn)
@@ -1345,12 +1329,7 @@ pub fn issue_ca_cert(
     let issuer_name_der = extract_ca_subject_der(&issuer_ca.cert_der)?;
 
     // Generate a random 16-byte positive serial.
-    let mut serial_bytes = [0u8; 16];
-    native_ossl::rand::Rand::fill(&mut serial_bytes)
-        .map_err(|e| AcmeError::Internal(format!("random serial: {e}")))?;
-    serial_bytes[0] = (serial_bytes[0] & 0x7f) | 0x01;
-    let serial = synta::Integer::from_bytes(&serial_bytes);
-    let serial_hex = hex_encode(serial_bytes);
+    let (_serial_bytes, serial, serial_hex) = generate_random_serial()?;
 
     // Validity window: now to now + validity_years * 365.25 days.
     let now = unix_now();
@@ -1358,12 +1337,7 @@ pub fn issue_ca_cert(
     let not_after_unix =
         now + (validity_years as i64) * 365 * 86400 + (validity_years as i64) * 21600;
 
-    let not_before_str = unix_to_generalized_time(not_before_unix);
-    let not_after_str = unix_to_generalized_time(not_after_unix);
-    let not_before_t = synta_certificate::parse_time(&not_before_str)
-        .map_err(|e| AcmeError::Builder(format!("cross-cert notBefore: {e}")))?;
-    let not_after_t = synta_certificate::parse_time(&not_after_str)
-        .map_err(|e| AcmeError::Builder(format!("cross-cert notAfter: {e}")))?;
+    let (not_before_t, not_after_t) = parse_validity_window(not_before_unix, not_after_unix)?;
 
     // Build extensions.
     let hasher = default_key_id_hasher();
