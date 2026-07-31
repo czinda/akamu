@@ -103,7 +103,7 @@ impl NonceBucket {
 
     /// Store a new nonce with its creation timestamp.
     pub fn insert(&self, nonce: String) {
-        let now = nonce_now_secs();
+        let now = crate::util::unix_now();
         self.inner
             .lock()
             .unwrap_or_else(|e| {
@@ -125,7 +125,7 @@ impl NonceBucket {
         if map.remove(old_nonce).is_none() {
             return false;
         }
-        let now = nonce_now_secs();
+        let now = crate::util::unix_now();
         map.insert(new_nonce.to_string(), now);
         true
     }
@@ -133,7 +133,7 @@ impl NonceBucket {
     /// Delete nonces older than `max_age_secs` seconds.  Returns the count of
     /// removed entries.
     pub fn sweep_expired(&self, max_age_secs: i64) -> usize {
-        let cutoff = nonce_now_secs().saturating_sub(max_age_secs);
+        let cutoff = crate::util::unix_now().saturating_sub(max_age_secs);
         let mut map = self.inner.lock().unwrap_or_else(|e| {
             tracing::error!("nonce store mutex was poisoned, recovering");
             e.into_inner()
@@ -144,20 +144,14 @@ impl NonceBucket {
     }
 }
 
-fn nonce_now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
-}
-
 /// Shared HTTP/HTTPS client for outbound challenge validation requests.
 ///
 /// Using a single shared client allows hyper to pool and reuse TCP connections
 /// to challenge responders instead of opening a new connection per validation.
 /// The HTTPS connector is needed to follow HTTP 3xx redirects that point to
 /// HTTPS targets, as permitted by RFC 8555 §8.3.
-pub type ValidationClient = Client<HttpsConnector<HttpConnector>, Empty<hyper::body::Bytes>>;
+pub type ValidationClient =
+    Client<HttpsConnector<HttpConnector<SsrfGuardedResolver>>, Empty<hyper::body::Bytes>>;
 
 /// In-memory CRL cache: DER bytes + expiry instant.
 pub type CrlCache = Arc<Mutex<Option<(Vec<u8>, std::time::Instant)>>>;
@@ -332,6 +326,17 @@ pub struct AppState {
     /// Set to `true` when a policy rebuild fails (gossip or admin CRUD).
     /// The gossip loop checks this flag at the start of each round and retries.
     pub policy_rebuild_needed: Arc<std::sync::atomic::AtomicBool>,
+    /// Serializes `rebuild_issuance_policy`'s read-then-install sequence.
+    ///
+    /// Without this, two concurrent rebuilds (e.g. an admin CRUD call racing
+    /// a gossip-triggered rebuild) can interleave so that the rebuild which
+    /// read a stale DB snapshot installs its engine *after* a rebuild that
+    /// read a newer snapshot, silently dropping the most recently committed
+    /// rule. Holding this lock for the full read+build+install sequence
+    /// ensures rebuilds apply in the order they actually observed the
+    /// database, not the order their (much cheaper) final swap happened to
+    /// win.
+    pub policy_rebuild_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AppState {
@@ -398,13 +403,86 @@ impl AppState {
 
 // ── AppState builder ─────────────────────────────────────────────────────────
 
-pub fn default_validation_client() -> ValidationClient {
+/// DNS resolver used by [`default_validation_client`] that rejects
+/// private/loopback/link-local addresses at the point of resolution.
+///
+/// A prior design validated the target host with a separate lookup
+/// (`http01::check_redirect_host`) before connecting, but the connector then
+/// re-resolved the same hostname independently to actually connect. Since
+/// http-01/tkauth-01 targets are attacker-influenced domains by construction,
+/// a malicious authoritative DNS server can answer those two lookups
+/// differently (DNS rebinding), returning a public address for the check and
+/// a private one moments later for the real connection — defeating the
+/// guard. Resolving exactly once, inside the connector itself, closes that
+/// window: there is no second resolution left to rebind.
+#[derive(Clone)]
+pub struct SsrfGuardedResolver {
+    allow_private_ips: bool,
+}
+
+impl SsrfGuardedResolver {
+    pub fn new(allow_private_ips: bool) -> Self {
+        Self { allow_private_ips }
+    }
+}
+
+impl tower::Service<hyper_util::client::legacy::connect::dns::Name> for SsrfGuardedResolver {
+    type Response = std::vec::IntoIter<std::net::SocketAddr>;
+    type Error = std::io::Error;
+    type Future = std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::io::Result<Self::Response>> + Send>,
+    >;
+
+    fn poll_ready(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, name: hyper_util::client::legacy::connect::dns::Name) -> Self::Future {
+        let allow_private_ips = self.allow_private_ips;
+        Box::pin(async move {
+            let host = name.as_str();
+            if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+                if !allow_private_ips && crate::validation::http01::is_blocked_ip(ip) {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!("SSRF guard: '{host}' is a blocked IP address"),
+                    ));
+                }
+                return Ok(vec![std::net::SocketAddr::new(ip, 0)].into_iter());
+            }
+            let addrs: Vec<std::net::SocketAddr> =
+                tokio::net::lookup_host((host, 0)).await?.collect();
+            if !allow_private_ips {
+                for addr in &addrs {
+                    if crate::validation::http01::is_blocked_ip(addr.ip()) {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::PermissionDenied,
+                            format!(
+                                "SSRF guard: '{host}' resolves to blocked address {}",
+                                addr.ip()
+                            ),
+                        ));
+                    }
+                }
+            }
+            Ok(addrs.into_iter())
+        })
+    }
+}
+
+/// `allow_private_ips` should be `config.server.http_validation_allow_private_ips`
+/// — set to `true` only in isolated test environments.
+pub fn default_validation_client(allow_private_ips: bool) -> ValidationClient {
+    let http = HttpConnector::new_with_resolver(SsrfGuardedResolver::new(allow_private_ips));
     let https = hyper_rustls::HttpsConnectorBuilder::new()
         .with_native_roots()
         .expect("failed to load native root CAs for validation client")
         .https_or_http()
         .enable_http1()
-        .build();
+        .wrap_connector(http);
     hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new()).build(https)
 }
 
@@ -596,9 +674,11 @@ impl AppStateBuilder {
             )
         });
 
+        let http_validation_allow_private_ips =
+            self.config.server.http_validation_allow_private_ips;
         let validation_client = self
             .validation_client
-            .unwrap_or_else(default_validation_client);
+            .unwrap_or_else(|| default_validation_client(http_validation_allow_private_ips));
 
         Arc::new(AppState {
             config: self.config,
@@ -674,6 +754,7 @@ impl AppStateBuilder {
                 )
             }),
             policy_rebuild_needed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            policy_rebuild_lock: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 }
@@ -1012,4 +1093,52 @@ pub struct AdminSession {
     /// Updated on every authenticated request; TTL is measured from this.
     pub last_active_at: Instant,
     pub auth_method: AdminAuthMethod,
+}
+
+#[cfg(test)]
+mod ssrf_resolver_tests {
+    use super::SsrfGuardedResolver;
+    use hyper_util::client::legacy::connect::dns::Name;
+    use std::str::FromStr;
+    use tower::Service;
+
+    /// Regression test for a DNS-rebinding TOCTOU: the resolver used to build
+    /// the real connection must itself reject private/loopback addresses, not
+    /// just a separate pre-flight check that a rebinding attacker could
+    /// answer differently a moment later.
+    #[tokio::test]
+    async fn rejects_loopback_ip_literal_when_private_ips_disallowed() {
+        let mut resolver = SsrfGuardedResolver::new(false);
+        let name = Name::from_str("127.0.0.1").unwrap();
+        let result = resolver.call(name).await;
+        assert!(result.is_err(), "loopback IP literal must be rejected");
+    }
+
+    #[tokio::test]
+    async fn allows_loopback_ip_literal_when_private_ips_allowed() {
+        let mut resolver = SsrfGuardedResolver::new(true);
+        let name = Name::from_str("127.0.0.1").unwrap();
+        let mut addrs = resolver.call(name).await.unwrap();
+        assert_eq!(addrs.next().unwrap().ip().to_string(), "127.0.0.1");
+    }
+
+    #[tokio::test]
+    async fn rejects_hostname_resolving_to_loopback_when_private_ips_disallowed() {
+        let mut resolver = SsrfGuardedResolver::new(false);
+        // "localhost" resolves to 127.0.0.1/::1 on every standard system.
+        let name = Name::from_str("localhost").unwrap();
+        let result = resolver.call(name).await;
+        assert!(
+            result.is_err(),
+            "a hostname resolving to loopback must be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn allows_public_ip_literal_when_private_ips_disallowed() {
+        let mut resolver = SsrfGuardedResolver::new(false);
+        let name = Name::from_str("93.184.216.34").unwrap();
+        let mut addrs = resolver.call(name).await.unwrap();
+        assert_eq!(addrs.next().unwrap().ip().to_string(), "93.184.216.34");
+    }
 }

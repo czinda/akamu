@@ -800,16 +800,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_unsupported_type_returns_error() {
-        let client = {
-            let https = hyper_rustls::HttpsConnectorBuilder::new()
-                .with_native_roots()
-                .expect("native roots")
-                .https_or_http()
-                .enable_http1()
-                .build();
-            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
-                .build(https)
-        };
+        let client = crate::state::default_validation_client(false);
         let result = dispatch(DispatchParams {
             chall_type: "bogus-type",
             id_type: "dns",

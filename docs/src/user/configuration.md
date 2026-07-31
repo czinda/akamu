@@ -1097,9 +1097,11 @@ http_validation_port = 80
 
 **Optional. Default: `false`.**
 
-When `false` (the default), the **initial connection target** and any **redirect targets** that resolve to private, link-local, or loopback IP addresses (RFC 1918, 169.254.0.0/16, 127.0.0.0/8, fc00::/7, fe80::/10, etc.) are blocked to prevent SSRF attacks against cloud metadata endpoints such as `169.254.169.254`. Both IP literals and hostnames are checked: for hostnames, every resolved address must be globally routable.
+When `false` (the default), targets that resolve to private, link-local, or loopback IP addresses (RFC 1918, 169.254.0.0/16, 127.0.0.0/8, fc00::/7, fe80::/10, etc.) are blocked to prevent SSRF attacks against cloud metadata endpoints such as `169.254.169.254`. Both IP literals and hostnames are checked: for hostnames, every resolved address must be globally routable. The check is enforced by the DNS resolver used to establish the actual connection (not a separate pre-flight lookup), so a malicious authoritative DNS server cannot bypass it by answering a check-time lookup and a connect-time lookup differently (DNS rebinding).
 
-Set to `true` only in isolated test environments where the http-01 challenge responder intentionally runs on a private address.
+This setting is shared by the http-01 (including redirects), tls-alpn-01, and tkauth-01 (JWKS URL) validators.
+
+Set to `true` only in isolated test environments where the challenge responder intentionally runs on a private address.
 
 ```toml
 http_validation_allow_private_ips = false   # default — recommended for all production deployments

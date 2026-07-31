@@ -243,12 +243,14 @@ mod tests {
     use tokio::net::TcpListener;
 
     fn test_client() -> crate::state::ValidationClient {
+        // allow_private_ips=true: tests connect to a local 127.0.0.1 server.
+        let http = HttpConnector::new_with_resolver(crate::state::SsrfGuardedResolver::new(true));
         let https = HttpsConnectorBuilder::new()
             .with_native_roots()
             .expect("native roots")
             .https_or_http()
             .enable_http1()
-            .build();
+            .wrap_connector(http);
         Client::builder(TokioExecutor::new()).build(https)
     }
 

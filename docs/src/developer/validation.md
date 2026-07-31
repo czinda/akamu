@@ -295,10 +295,10 @@ Uses `hyper` (already a transitive dependency via axum) as the HTTP client.
 
 Validation steps:
 1. Construct the URL `http://<domain>/.well-known/acme-challenge/<token>`.
-2. **SSRF guard — initial target**: before making any connection, resolve the target host and reject it if any returned address is in a private, loopback, link-local, or otherwise non-globally-routable range (RFC 1918, `169.254.0.0/16`, `::1`, `fe80::/10`, `fc00::/7`, etc.). This guard applies to both IP literals and hostnames. Bypassed only when `http_validation_allow_private_ips = true`.
-3. Send a GET request via `hyper_util::client::legacy::Client`.
+2. **SSRF guard — initial target**: before making any connection, `check_redirect_host` resolves the target host and rejects it if any returned address is in a private, loopback, link-local, or otherwise non-globally-routable range (RFC 1918, `169.254.0.0/16`, `::1`, `fe80::/10`, `fc00::/7`, etc.). This guard applies to both IP literals and hostnames. Bypassed only when `http_validation_allow_private_ips = true`.
+3. Send a GET request via `hyper_util::client::legacy::Client`, using a shared `ValidationClient` whose `HttpConnector` is built with a custom resolver (`state::SsrfGuardedResolver`) that re-applies the same IP check at the point of actual connection. This closes a DNS-rebinding TOCTOU: `check_redirect_host`'s lookup and the connector's own lookup used to be two independent resolutions, which a malicious authoritative DNS server could answer differently. The resolver is now the single point of resolution, so there is nothing left to rebind.
 4. Check the response status. 3xx redirects are followed (up to 10 hops, including redirects to HTTPS targets).
-5. **SSRF guard — redirect targets**: each redirect target is also subjected to the same IP check before following it.
+5. **SSRF guard — redirect targets**: each redirect target is also subjected to the same pre-flight IP check before following it, backstopped by the same resolver-level enforcement.
 6. Check that the final response status is 2xx.
 7. Read up to 1 MiB of the response body.
 8. Decode as UTF-8 and trim whitespace.
