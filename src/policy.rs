@@ -63,7 +63,15 @@ pub fn parse_db_rules(rows: &[db::policy_rules::PolicyRuleRow]) -> ParsedDbRules
 ///
 /// In enforce mode, refuses to rebuild when any rules are corrupt to prevent
 /// silent policy bypass.
+///
+/// Holds `state.policy_rebuild_lock` for the entire read+build+install
+/// sequence so concurrent rebuilds (e.g. an admin CRUD call racing a
+/// gossip-triggered rebuild) apply in the order they observed the database,
+/// instead of racing to install whichever finishes its build first — which
+/// could silently overwrite a newer rule set with a stale one. See the lock's
+/// doc comment on `AppState` for the full scenario.
 pub async fn rebuild_issuance_policy(state: &AppState) -> Result<(), PolicyRebuildError> {
+    let _guard = state.policy_rebuild_lock.lock().await;
     let rows = db::policy_rules::list_by_scope(&state.db, "issuance")
         .await
         .map_err(|e| {
