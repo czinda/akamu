@@ -255,10 +255,7 @@ pub fn validate(
     challenge_created: i64,
 ) -> Result<(), AcmeError> {
     // RFC 9799 §3.2: MUST NOT accept nonces older than 30 days.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
+    let now = crate::util::unix_now();
     if now - challenge_created > MAX_NONCE_AGE_SECS {
         return Err(AcmeError::IncorrectResponse(format!(
             "onion-csr-01 nonce expired: challenge created {} seconds ago (max {})",

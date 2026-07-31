@@ -496,25 +496,15 @@ fn composite_mldsa_sub_arc(key_type: &str) -> Option<u32> {
 
 /// Return the current UTC time as a GeneralizedTime string `YYYYMMDDHHmmssZ`.
 fn format_now() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    unix_to_generalized_time(secs as i64)
+    unix_to_generalized_time(crate::util::unix_now())
 }
 
 /// Return a UTC time `years` years in the future as a GeneralizedTime string `YYYYMMDDHHmmssZ`.
 ///
 /// Uses the approximation of 365.25 days/year (31 557 600 seconds/year).
 fn format_future_years(years: i64) -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
     // Approximate: 365.25 days/year × 86400 s/day
-    unix_to_generalized_time(secs + years * 31_557_600)
+    unix_to_generalized_time(crate::util::unix_now() + years * 31_557_600)
 }
 
 pub(crate) fn unix_to_generalized_time(secs: i64) -> String {

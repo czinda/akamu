@@ -6,7 +6,7 @@ pub async fn insert(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     nonce: &str,
 ) -> Result<(), AcmeError> {
-    let now = now_secs();
+    let now = crate::util::unix_now();
     super::query("INSERT INTO nonces (nonce, created) VALUES (?, ?)")
         .bind(nonce)
         .bind(now)
@@ -42,7 +42,7 @@ pub async fn consume_and_insert(
     old_nonce: &str,
     new_nonce: &str,
 ) -> Result<bool, AcmeError> {
-    let now = now_secs();
+    let now = crate::util::unix_now();
     let mut tx = crate::db::begin_write(db, kind).await?;
 
     let n = super::query("DELETE FROM nonces WHERE nonce = ?")
@@ -71,20 +71,13 @@ pub async fn sweep_expired(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     max_age_secs: i64,
 ) -> Result<u64, AcmeError> {
-    let cutoff = now_secs().saturating_sub(max_age_secs);
+    let cutoff = crate::util::unix_now().saturating_sub(max_age_secs);
     let n = super::query("DELETE FROM nonces WHERE created < ?")
         .bind(cutoff)
         .execute(executor)
         .await?
         .rows_affected();
     Ok(n)
-}
-
-fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
 }
 
 #[cfg(test)]
