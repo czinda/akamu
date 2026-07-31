@@ -177,21 +177,36 @@ async fn run_once(state: &Arc<AppState>) {
             );
             continue;
         }
-        let ca_key = ca.local_key().expect("guarded by has_local_key() above");
-        let issued = match ca::issue::issue_certificate(ca::issue::IssueCertParams {
-            ca_key,
-            ca_cert_der: &ca.cert_der,
-            hash_alg: &ca.hash_alg,
-            validity_days: ca.validity_days,
-            crl_url: ca.crl_url.as_deref(),
-            ocsp_url: ca.ocsp_url.as_deref(),
-            csr: &validated_csr,
-            not_before_override: not_before,
-            not_after_override: not_after,
-        }) {
-            Ok(i) => i,
-            Err(e) => {
+        // Signing is CPU-bound; run it on the blocking pool so it doesn't
+        // stall other async tasks on this worker thread while this loop
+        // iterates over every active STAR order.
+        let ca_arc = Arc::clone(ca);
+        let csr_owned = validated_csr.clone();
+        let issue_result = tokio::task::spawn_blocking(move || {
+            let ca_key = ca_arc
+                .local_key()
+                .expect("guarded by has_local_key() above");
+            ca::issue::issue_certificate(ca::issue::IssueCertParams {
+                ca_key,
+                ca_cert_der: &ca_arc.cert_der,
+                hash_alg: &ca_arc.hash_alg,
+                validity_days: ca_arc.validity_days,
+                crl_url: ca_arc.crl_url.as_deref(),
+                ocsp_url: ca_arc.ocsp_url.as_deref(),
+                csr: &csr_owned,
+                not_before_override: not_before,
+                not_after_override: not_after,
+            })
+        })
+        .await;
+        let issued = match issue_result {
+            Ok(Ok(i)) => i,
+            Ok(Err(e)) => {
                 tracing::error!("STAR order {}: certificate issuance failed: {e}", order.id);
+                continue;
+            }
+            Err(e) => {
+                tracing::error!("STAR order {}: issuance task panicked: {e}", order.id);
                 continue;
             }
         };

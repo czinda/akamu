@@ -46,13 +46,18 @@ pub async fn load_ipa(
     }
     if let Some(dir) = &icfg.profile_dir {
         // The IPA provider uses the same `.cfg` format as Dogtag; reuse the
-        // filesystem loader from the `dogtag` module.
-        return crate::profiles::dogtag::load_from_filesystem(
-            provider_name,
-            dir,
-            &icfg.profiles,
-            ca,
-        );
+        // filesystem loader from the `dogtag` module. Directory scan + per-file
+        // reads are blocking I/O; run them on the blocking pool instead of the
+        // async profile-load task.
+        let provider_name = provider_name.to_string();
+        let dir = dir.clone();
+        let filter = icfg.profiles.clone();
+        let ca = ca.clone();
+        return tokio::task::spawn_blocking(move || {
+            crate::profiles::dogtag::load_from_filesystem(&provider_name, &dir, &filter, &ca)
+        })
+        .await
+        .map_err(|e| format!("profile_dir load task panicked: {e}"))?;
     }
     Err(format!(
         "profiles provider '{provider_name}' (ipa): \

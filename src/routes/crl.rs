@@ -113,10 +113,26 @@ pub async fn get_crl(
         })
         .collect();
 
-    let ca_key = ca
-        .local_key()
-        .ok_or_else(|| AcmeError::Internal("CRL: CA has no local key".into()))?;
-    let (crl_der, _) = build_crl(ca_key, &ca.cert_der, &ca.hash_alg, &entries, validity_secs)?;
+    if ca.local_key().is_none() {
+        return Err(AcmeError::Internal("CRL: CA has no local key".into()));
+    }
+    // Signing is CPU-bound; run it on the blocking pool instead of the async
+    // request-handling thread.
+    let ca_arc = Arc::clone(ca);
+    let (crl_der, _) = tokio::task::spawn_blocking(move || {
+        let ca_key = ca_arc
+            .local_key()
+            .expect("guarded by the local_key() check above");
+        build_crl(
+            ca_key,
+            &ca_arc.cert_der,
+            &ca_arc.hash_alg,
+            &entries,
+            validity_secs,
+        )
+    })
+    .await
+    .map_err(|e| AcmeError::Internal(format!("CRL build task panicked: {e}")))??;
 
     // Store in cache.
     {

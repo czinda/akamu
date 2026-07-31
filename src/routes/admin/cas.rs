@@ -252,12 +252,14 @@ pub async fn post_ca_cross_sign(
 
     let linter_name = issuer_ca.default_linter.as_deref().unwrap_or("webpki");
     let linter = *state.linter_registry.resolve(linter_name)?;
-    let issued = crate::ca::issue::issue_ca_cert(
-        &issuer_ca,
-        &subject_cert_der,
-        payload.validity_years,
-        &linter,
-    )
+    // Signing is CPU-bound; run it on the blocking pool instead of the async
+    // request-handling thread.
+    let validity_years = payload.validity_years;
+    let issued = tokio::task::spawn_blocking(move || {
+        crate::ca::issue::issue_ca_cert(&issuer_ca, &subject_cert_der, validity_years, &linter)
+    })
+    .await
+    .map_err(|e| AdminApiError::Internal(format!("cross-sign task panicked: {e}")))?
     .map_err(|e| AdminApiError::Internal(format!("cross-sign issuance failed: {e}")))?;
 
     let id = uuid::Uuid::new_v4().to_string();

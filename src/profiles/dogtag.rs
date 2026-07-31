@@ -42,7 +42,17 @@ pub async fn load_dogtag(
         return load_from_ldap(provider_name, ldap_cfg, &dcfg.profiles, ca, resolver).await;
     }
     if let Some(dir) = &dcfg.profile_dir {
-        return load_from_filesystem(provider_name, dir, &dcfg.profiles, ca);
+        // Directory scan + per-file reads are blocking I/O; run them on the
+        // blocking pool instead of the async profile-load task.
+        let provider_name = provider_name.to_string();
+        let dir = dir.clone();
+        let filter = dcfg.profiles.clone();
+        let ca = ca.clone();
+        return tokio::task::spawn_blocking(move || {
+            load_from_filesystem(&provider_name, &dir, &filter, &ca)
+        })
+        .await
+        .map_err(|e| format!("profile_dir load task panicked: {e}"))?;
     }
     Err(format!(
         "profiles provider '{provider_name}' (dogtag): \
@@ -157,4 +167,64 @@ async fn load_from_ldap(
         resolver,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::DogtagProviderConfig;
+
+    fn default_ca() -> CaDefaults {
+        CaDefaults {
+            validity_days: 90,
+            hash_alg: "sha256".to_string(),
+            crl_url: None,
+            ocsp_url: None,
+        }
+    }
+
+    const SAMPLE_CFG: &str = r#"
+name=Server Cert
+policyset.list=serverCertSet
+policyset.serverCertSet.list=1
+policyset.serverCertSet.1.default.class_id=validityDefaultImpl
+policyset.serverCertSet.1.default.params.range=180
+policyset.serverCertSet.1.default.params.rangeUnit=day
+"#;
+
+    /// Regression test for the directory scan + file reads running on
+    /// tokio's blocking pool (`spawn_blocking`) instead of directly on the
+    /// async task: the loaded profile must still come back correctly through
+    /// the `JoinHandle`.
+    #[tokio::test]
+    async fn load_dogtag_filesystem_reads_cfg_files_via_blocking_pool() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("caServerCert.cfg"), SAMPLE_CFG).unwrap();
+        // Non-.cfg files must be ignored.
+        std::fs::write(dir.path().join("README"), "not a profile").unwrap();
+
+        let dcfg = DogtagProviderConfig {
+            profile_dir: Some(dir.path().to_string_lossy().to_string()),
+            ldap: None,
+            profiles: vec![],
+        };
+
+        let result = load_dogtag("dogtag-test", &dcfg, &default_ca(), None)
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        let (desc, _params) = result.get("caServerCert").unwrap();
+        assert_eq!(desc, "Server Cert");
+    }
+
+    #[tokio::test]
+    async fn load_dogtag_filesystem_missing_dir_returns_err() {
+        let dcfg = DogtagProviderConfig {
+            profile_dir: Some("/nonexistent/path/for/akamu/tests".to_string()),
+            ldap: None,
+            profiles: vec![],
+        };
+        let result = load_dogtag("dogtag-test", &dcfg, &default_ca(), None).await;
+        assert!(result.is_err());
+    }
 }
