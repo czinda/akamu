@@ -13,6 +13,7 @@ use axum::response::{IntoResponse, Response};
 use crate::db;
 use crate::error::AcmeError;
 use crate::state::AppState;
+use crate::status::OrderStatus;
 
 use super::{acme_headers, acme_prefix, parse_jws, unix_now, CaId};
 
@@ -99,7 +100,7 @@ async fn serve_star_cert(
     }
 
     // Order must be valid (has been finalized).
-    if order.status != "valid" {
+    if order.status.parse() != Ok(OrderStatus::Valid) {
         return Err(AcmeError::BadRequest(format!(
             "STAR order is not yet valid (status: {})",
             order.status

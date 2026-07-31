@@ -7,6 +7,7 @@ use crate::crdt_hooks;
 use crate::db;
 use crate::error::AcmeError;
 use crate::state::AppState;
+use crate::status::{AuthzStatus, ChallengeStatus};
 use crate::validation;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
@@ -68,7 +69,7 @@ pub async fn respond_challenge(
         // RFC 8555 §7.5.1: if the authorization is no longer pending the server
         // MUST ignore the request body and return the current challenge object.
         // Clients legitimately poll challenge URLs after validation completes.
-        if authz.status != "pending" {
+        if authz.status.parse() != Ok(AuthzStatus::Pending) {
             return challenge_response(
                 &state,
                 &challenge,
@@ -80,7 +81,7 @@ pub async fn respond_challenge(
             );
         }
 
-        let already_processing = if challenge.status == "pending" {
+        let already_processing = if challenge.status.parse() == Ok(ChallengeStatus::Pending) {
             let affected = if let Some(ref coal) = state.write_coalescer {
                 coal.submit_set_processing(challenge.id.clone(), now)
                     .await?
@@ -112,7 +113,7 @@ pub async fn respond_challenge(
             id: &challenge.id,
             authz_id: &authz_id,
             challenge_type: &chall_type,
-            status: "processing",
+            status: ChallengeStatus::Processing,
             token: &challenge.token,
             validated: challenge.validated,
             error: challenge.error.clone(),
@@ -293,7 +294,13 @@ fn challenge_response(
         {
             Some(ec) => Some(ec.from_address.clone()),
             // Resolved challenges no longer need the from field.
-            None if matches!(challenge.status.as_str(), "valid" | "invalid") => None,
+            None if matches!(
+                challenge.status.parse(),
+                Ok(ChallengeStatus::Valid | ChallengeStatus::Invalid)
+            ) =>
+            {
+                None
+            }
             None => {
                 tracing::warn!(
                     challenge_id = %challenge.id,

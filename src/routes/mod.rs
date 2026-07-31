@@ -22,6 +22,7 @@ use crate::db;
 use crate::error::AcmeError;
 use crate::jose::jws::{JwsFlattened, JwsKeyRef, JwsProtectedHeader};
 use crate::state::{AppState, CachedAccount};
+use crate::status::AccountStatus;
 
 /// Maximum age of a `spki_cache` entry before it is treated as a cache miss
 /// and refreshed from the database. See the cache read site in `parse_jws`.
@@ -664,7 +665,7 @@ pub(crate) async fn parse_jws(
                 .filter(|acc| acc.cached_at.elapsed() <= SPKI_CACHE_TTL)
                 .cloned();
             let cached_account = if let Some(acc) = cached {
-                if acc.status != "valid" {
+                if acc.status.parse() != Ok(AccountStatus::Valid) {
                     return Err(AcmeError::Unauthorized(format!(
                         "account status is '{}'",
                         acc.status
@@ -675,7 +676,7 @@ pub(crate) async fn parse_jws(
                 let account = db::accounts::get_by_id(&state.db_ro, &id)
                     .await?
                     .ok_or_else(|| AcmeError::Unauthorized("account not found".into()))?;
-                if account.status != "valid" {
+                if account.status.parse() != Ok(AccountStatus::Valid) {
                     return Err(AcmeError::Unauthorized(format!(
                         "account status is '{}'",
                         account.status

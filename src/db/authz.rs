@@ -1,5 +1,6 @@
 use crate::db::schema::{AuthorizationRow, ChallengeRow};
 use crate::error::AcmeError;
+use crate::status::AuthzStatus;
 
 pub async fn insert(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
@@ -249,11 +250,11 @@ pub async fn find_valid_subdomain_ancestor(
 pub async fn update_status(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
-    status: &str,
+    status: AuthzStatus,
     now: i64,
 ) -> Result<(), AcmeError> {
     super::query("UPDATE authorizations SET status = ?, updated = ? WHERE id = ?")
-        .bind(status)
+        .bind(status.as_str())
         .bind(now)
         .bind(id)
         .execute(executor)
@@ -413,7 +414,7 @@ mod tests {
             .await
             .unwrap();
 
-        update_status(&db, "authz-4", "valid", 1_700_000_001)
+        update_status(&db, "authz-4", AuthzStatus::Valid, 1_700_000_001)
             .await
             .unwrap();
 
@@ -434,6 +435,8 @@ mod tests {
         assert!(insert(&raw, row).await.is_err());
         assert!(get_by_id(&raw, "any").await.is_err());
         assert!(list_by_order(&raw, "any").await.is_err());
-        assert!(update_status(&raw, "any", "valid", 0).await.is_err());
+        assert!(update_status(&raw, "any", AuthzStatus::Valid, 0)
+            .await
+            .is_err());
     }
 }

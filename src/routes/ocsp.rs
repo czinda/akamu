@@ -31,6 +31,7 @@ use crate::db;
 use crate::error::AcmeError;
 use crate::routes::{unix_now, CaId};
 use crate::state::{AppState, CaState};
+use crate::status::CertStatus;
 use crate::util::extract_ca_subject_der;
 
 /// GET /ca/ocsp/{request}
@@ -193,7 +194,7 @@ async fn handle_ocsp_request(
         let row = db::certs::get_by_serial(&state.db_ro, &entry.serial_hex).await?;
         let status: u8 = match &row {
             None => OCSP_UNKNOWN,
-            Some(r) if r.status == "revoked" => OCSP_REVOKED,
+            Some(r) if r.status.parse() == Ok(CertStatus::Revoked) => OCSP_REVOKED,
             _ => OCSP_GOOD,
         };
         statuses.push(status);

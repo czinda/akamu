@@ -1,5 +1,6 @@
 use crate::db::schema::ChallengeRow;
 use crate::error::AcmeError;
+use crate::status::ChallengeStatus;
 
 pub async fn insert(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
@@ -240,7 +241,7 @@ pub async fn insert_batch(
         b.push_bind(chall_id.as_str())
             .push_bind(authz_id)
             .push_bind(chall_type.as_str())
-            .push_bind("pending")
+            .push_bind(ChallengeStatus::Pending.as_str())
             .push_bind(token)
             .push_bind(None::<i64>)
             .push_bind(None::<String>)

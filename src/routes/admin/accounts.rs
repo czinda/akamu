@@ -15,6 +15,7 @@ use crate::audit::{AuditEvent, AuditEventType};
 use crate::crdt_hooks;
 use crate::db;
 use crate::state::AppState;
+use crate::status::AccountStatus;
 
 use super::super::unix_now;
 use super::error::AdminApiError;
@@ -265,7 +266,7 @@ pub async fn post_account_deactivate(
     Path(id): Path<String>,
 ) -> Result<Response, AdminApiError> {
     let now = unix_now();
-    match db::accounts::update_status(&state.db, &id, "deactivated", now).await {
+    match db::accounts::update_status(&state.db, &id, AccountStatus::Deactivated, now).await {
         Ok(true) => {
             // Evict the cached SPKI/status entry so a subsequent JWS from
             // this account is re-checked against the DB instead of

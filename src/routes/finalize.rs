@@ -19,6 +19,7 @@ use crate::db;
 use crate::db::schema::CertificateRow;
 use crate::error::AcmeError;
 use crate::state::AppState;
+use crate::status::{AuthzStatus, CertStatus, OrderStatus};
 use crate::validation::claim_encoder::EncodedSan;
 
 use super::order::order_json;
@@ -56,7 +57,7 @@ pub async fn finalize_order(
             "order belongs to different account".into(),
         ));
     }
-    if order.status != "ready" {
+    if order.status.parse() != Ok(OrderStatus::Ready) {
         return Err(AcmeError::OrderNotReady);
     }
 
@@ -383,7 +384,7 @@ pub async fn finalize_order(
 
         if let Some(registry) = &state.claim_encoder_registry {
             for authz in &authz_rows {
-                if authz.status != "valid" {
+                if authz.status.parse() != Ok(AuthzStatus::Valid) {
                     continue;
                 }
                 let Ok(id_obj) = serde_json::from_str::<serde_json::Value>(&authz.identifier)
@@ -493,7 +494,9 @@ pub async fn finalize_order(
         // path, so the not_after cap covers all tkauth-validated authzs regardless
         // of whether claim_encoders is configured.
         for authz in &authz_rows {
-            if authz.status != "valid" || tkauth_authz_ids.contains(&authz.id) {
+            if authz.status.parse() != Ok(AuthzStatus::Valid)
+                || tkauth_authz_ids.contains(&authz.id)
+            {
                 continue;
             }
             if let Ok(id_obj) = serde_json::from_str::<serde_json::Value>(&authz.identifier) {
@@ -695,7 +698,7 @@ pub async fn finalize_order(
         order_id: id.clone(),
         account_id: account_id.clone(),
         serial_number: issued.serial_hex.clone(),
-        status: "valid".to_string(),
+        status: CertStatus::Valid.as_str().to_string(),
         der: final_cert_der,
         pem: final_cert_pem,
         not_before: issued.not_before,
@@ -776,7 +779,7 @@ pub async fn finalize_order(
 
     // Build the response from the known post-finalize state without a DB re-fetch.
     let mut updated_order = order;
-    updated_order.status = "valid".to_string();
+    updated_order.status = OrderStatus::Valid.as_str().to_string();
     updated_order.certificate_id = Some(issued.id.clone());
     updated_order.updated = now;
 
@@ -787,7 +790,7 @@ pub async fn finalize_order(
             order_id: &id,
             account_id: &account_id,
             serial_number: &issued.serial_hex,
-            status: "valid",
+            status: CertStatus::Valid,
             not_before: issued.not_before,
             not_after: issued.not_after,
             revoked_at: None,
@@ -802,7 +805,7 @@ pub async fn finalize_order(
         crdt_hooks::OrderUpsertParams {
             id: &id,
             account_id: &updated_order.account_id,
-            status: "valid",
+            status: OrderStatus::Valid,
             expires: updated_order.expires,
             identifiers: &updated_order.identifiers,
             not_before: updated_order.not_before,

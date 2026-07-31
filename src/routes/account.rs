@@ -16,6 +16,7 @@ use crate::db::schema::AccountRow;
 use crate::error::AcmeError;
 use crate::jose::jws::JwsKeyRef;
 use crate::state::AppState;
+use crate::status::AccountStatus;
 
 use super::{acme_headers, acme_prefix, json_response, parse_jws, require_payload, unix_now, CaId};
 
@@ -205,7 +206,7 @@ pub async fn new_account(
         let eab_kid_for_coal = verified_eab.as_ref().map(|(kid, _, _)| kid.clone());
         let account_row = AccountRow {
             id: id.clone(),
-            status: "valid".into(),
+            status: AccountStatus::Valid.as_str().into(),
             contact: contact_json.clone(),
             public_key: ctx.spki_der,
             jwk_thumbprint: thumbprint,
@@ -230,7 +231,7 @@ pub async fn new_account(
             &state,
             crdt_hooks::AccountUpsertParams {
                 id: &id,
-                status: "valid",
+                status: AccountStatus::Valid,
                 contact: contact_json.clone(),
                 public_key_der: spki_for_crdt,
                 jwk_thumbprint: tp_for_crdt,
@@ -251,7 +252,7 @@ pub async fn new_account(
 
     let row = AccountRow {
         id: id.clone(),
-        status: "valid".into(),
+        status: AccountStatus::Valid.as_str().into(),
         contact: contact_json,
         public_key: vec![],
         jwk_thumbprint: String::new(),
@@ -333,7 +334,7 @@ pub async fn update_account(
 
     // Handle deactivation.
     if payload.status.as_deref() == Some("deactivated") {
-        db::accounts::update_status(&state.db, &id, "deactivated", unix_now()).await?;
+        db::accounts::update_status(&state.db, &id, AccountStatus::Deactivated, unix_now()).await?;
         match state.spki_cache.write() {
             Ok(mut cache) => {
                 cache.remove(&id);
@@ -380,11 +381,17 @@ pub async fn update_account(
     let updated = db::accounts::get_by_id(&state.db, &id)
         .await?
         .ok_or(AcmeError::AccountDoesNotExist)?;
+    let updated_status: AccountStatus = updated.status.parse().map_err(|_| {
+        AcmeError::Internal(format!(
+            "corrupt account status '{}' in account {}",
+            updated.status, updated.id
+        ))
+    })?;
     crdt_hooks::on_account_upsert(
         &state,
         crdt_hooks::AccountUpsertParams {
             id: &updated.id,
-            status: &updated.status,
+            status: updated_status,
             contact: updated.contact.clone(),
             public_key_der: updated.public_key.clone(),
             jwk_thumbprint: updated.jwk_thumbprint.clone(),

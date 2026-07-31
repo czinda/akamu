@@ -1,5 +1,6 @@
 use crate::db::schema::AccountRow;
 use crate::error::AcmeError;
+use crate::status::AccountStatus;
 
 pub async fn insert(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
@@ -74,11 +75,11 @@ pub async fn update_contact(
 pub async fn update_status(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
-    status: &str,
+    status: AccountStatus,
     now: i64,
 ) -> Result<bool, AcmeError> {
     let n = super::query("UPDATE accounts SET status = ?, updated = ? WHERE id = ?")
-        .bind(status)
+        .bind(status.as_str())
         .bind(now)
         .bind(id)
         .execute(executor)
@@ -315,7 +316,7 @@ mod tests {
     async fn update_contact_deactivated_returns_false() {
         let db = open_db().await;
         insert(&db, sample_account("acct-4")).await.unwrap();
-        update_status(&db, "acct-4", "deactivated", 1_700_000_001)
+        update_status(&db, "acct-4", AccountStatus::Deactivated, 1_700_000_001)
             .await
             .unwrap();
 
@@ -330,7 +331,7 @@ mod tests {
         let db = open_db().await;
         insert(&db, sample_account("acct-5")).await.unwrap();
 
-        let changed = update_status(&db, "acct-5", "deactivated", 1_700_000_001)
+        let changed = update_status(&db, "acct-5", AccountStatus::Deactivated, 1_700_000_001)
             .await
             .unwrap();
         assert!(changed);
@@ -342,7 +343,7 @@ mod tests {
     #[tokio::test]
     async fn update_status_nonexistent_returns_false() {
         let db = open_db().await;
-        let changed = update_status(&db, "nonexistent", "revoked", 1_700_000_001)
+        let changed = update_status(&db, "nonexistent", AccountStatus::Revoked, 1_700_000_001)
             .await
             .unwrap();
         assert!(!changed);
@@ -382,7 +383,7 @@ mod tests {
     async fn update_key_deactivated_returns_false() {
         let db = open_db().await;
         insert(&db, sample_account("acct-7")).await.unwrap();
-        update_status(&db, "acct-7", "deactivated", 1_700_000_001)
+        update_status(&db, "acct-7", AccountStatus::Deactivated, 1_700_000_001)
             .await
             .unwrap();
 
@@ -414,7 +415,9 @@ mod tests {
         assert!(get_by_id(&raw, "any").await.is_err());
         assert!(get_by_thumbprint(&raw, "any").await.is_err());
         assert!(update_contact(&raw, "any", None, 0).await.is_err());
-        assert!(update_status(&raw, "any", "deactivated", 0).await.is_err());
+        assert!(update_status(&raw, "any", AccountStatus::Deactivated, 0)
+            .await
+            .is_err());
         assert!(update_key(&raw, "any", vec![], "thumb".into(), 0)
             .await
             .is_err());

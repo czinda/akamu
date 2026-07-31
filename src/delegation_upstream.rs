@@ -27,6 +27,7 @@ use crate::config::DelegationUpstreamConfig;
 use crate::db;
 use crate::db::schema::OrderRow;
 use crate::state::AppState;
+use crate::status::{CertStatus, OrderStatus};
 use crate::util::unix_now;
 
 /// Spawn the upstream delegation background task.
@@ -156,9 +157,14 @@ async fn run_once(
                     "detail": "delegation order expired while processing"
                 })
                 .to_string();
-                if let Err(e) =
-                    db::orders::update_status(&state.db, &order_id, "invalid", Some(err_json), now)
-                        .await
+                if let Err(e) = db::orders::update_status(
+                    &state.db,
+                    &order_id,
+                    OrderStatus::Invalid,
+                    Some(err_json),
+                    now,
+                )
+                .await
                 {
                     tracing::error!(order_id = %order_id, "update_status to invalid: {e}");
                 }
@@ -272,9 +278,15 @@ async fn drive_order(
                 "detail": "upstream CA rejected the order"
             })
             .to_string();
-            db::orders::update_status(&state.db, &order.id, "invalid", Some(err_json), now)
-                .await
-                .map_err(|e| format!("update_status to invalid: {e}"))?;
+            db::orders::update_status(
+                &state.db,
+                &order.id,
+                OrderStatus::Invalid,
+                Some(err_json),
+                now,
+            )
+            .await
+            .map_err(|e| format!("update_status to invalid: {e}"))?;
         }
         other => {
             tracing::warn!(
@@ -514,7 +526,7 @@ async fn complete_order(
         order_id: order1.id.clone(),
         account_id: order1.account_id.clone(),
         serial_number: serial_hex,
-        status: "valid".to_string(),
+        status: CertStatus::Valid.as_str().to_string(),
         der: leaf_der,
         pem: pem_str,
         not_before,

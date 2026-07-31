@@ -14,6 +14,7 @@ use crate::db;
 use crate::db::schema::{AuthorizationRow, ChallengeRow};
 use crate::error::AcmeError;
 use crate::state::AppState;
+use crate::status::ChallengeStatus;
 
 use super::{
     account_uri, acme_prefix, eligible_challenge_types, fmt_time, is_onion_domain, json_response,
@@ -270,7 +271,13 @@ fn build_authz_json<'a>(
                     // For already-resolved challenges, omit the field — it is no
                     // longer needed and the config may have been legitimately
                     // removed after the challenge completed.
-                    None if matches!(c.status.as_str(), "valid" | "invalid") => None,
+                    None if matches!(
+                        c.status.parse(),
+                        Ok(ChallengeStatus::Valid | ChallengeStatus::Invalid)
+                    ) =>
+                    {
+                        None
+                    }
                     None => {
                         tracing::warn!(
                             challenge_id = %c.id,

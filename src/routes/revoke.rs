@@ -14,6 +14,7 @@ use crate::crdt_hooks;
 use crate::db;
 use crate::error::AcmeError;
 use crate::state::AppState;
+use crate::status::CertStatus;
 
 use super::{acme_headers, acme_prefix, parse_jws, require_payload, unix_now, CaId};
 
@@ -55,7 +56,13 @@ pub async fn revoke_cert(
     if cert.ca_id != ca_id.0 {
         return Err(AcmeError::NotFound);
     }
-    if cert.status == "revoked" {
+    let cert_status: CertStatus = cert.status.parse().map_err(|_| {
+        AcmeError::Internal(format!(
+            "corrupt certificate status '{}' in certificate {}",
+            cert.status, cert.id
+        ))
+    })?;
+    if cert_status == CertStatus::Revoked {
         return Err(AcmeError::AlreadyRevoked);
     }
 

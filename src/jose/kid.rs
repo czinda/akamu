@@ -3,6 +3,7 @@
 use crate::db;
 use crate::db::Db;
 use crate::error::AcmeError;
+use crate::status::AccountStatus;
 
 /// Extract the account ID from a `kid` URL of the form `<base_url>/acme/account/<id>`.
 pub fn account_id_from_kid(base_url: &str, kid: &str) -> Result<String, AcmeError> {
@@ -30,7 +31,7 @@ pub async fn spki_for_kid(db: &Db, base_url: &str, kid: &str) -> Result<Vec<u8>,
         .await?
         .ok_or_else(|| AcmeError::Unauthorized("account not found".into()))?;
 
-    if account.status != "valid" {
+    if account.status.parse() != Ok(AccountStatus::Valid) {
         return Err(AcmeError::Unauthorized(format!(
             "account status is '{}'",
             account.status

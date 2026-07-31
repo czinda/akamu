@@ -1,5 +1,6 @@
 use crate::db::schema::OrderRow;
 use crate::error::AcmeError;
+use crate::status::OrderStatus;
 
 pub async fn insert(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
@@ -120,12 +121,12 @@ pub async fn get_by_id(
 pub async fn update_status(
     executor: impl sqlx::Executor<'_, Database = sqlx::Any>,
     id: &str,
-    status: &str,
+    status: OrderStatus,
     error: Option<String>,
     now: i64,
 ) -> Result<(), AcmeError> {
     let result = super::query("UPDATE orders SET status = ?, error = ?, updated = ? WHERE id = ?")
-        .bind(status)
+        .bind(status.as_str())
         .bind(error)
         .bind(now)
         .bind(id)
@@ -612,7 +613,7 @@ mod tests {
             .await
             .unwrap();
 
-        update_status(&db, "order-2", "ready", None, 1_700_000_001)
+        update_status(&db, "order-2", OrderStatus::Ready, None, 1_700_000_001)
             .await
             .unwrap();
 
@@ -632,7 +633,7 @@ mod tests {
         update_status(
             &db,
             "order-3",
-            "invalid",
+            OrderStatus::Invalid,
             Some("{\"type\":\"error\"}".to_string()),
             1_700_000_001,
         )
@@ -652,7 +653,7 @@ mod tests {
             .await
             .unwrap();
         // set_certificate requires status = 'ready'
-        update_status(&db, "order-4", "ready", None, 1_700_000_000)
+        update_status(&db, "order-4", OrderStatus::Ready, None, 1_700_000_000)
             .await
             .unwrap();
 
@@ -722,7 +723,7 @@ mod tests {
             .await
             .is_err());
         assert!(get_by_id(&raw, "any").await.is_err());
-        assert!(update_status(&raw, "any", "invalid", None, 0)
+        assert!(update_status(&raw, "any", OrderStatus::Invalid, None, 0)
             .await
             .is_err());
         assert!(set_certificate(&raw, "any", "cert-id", 0).await.is_err());
@@ -744,7 +745,7 @@ mod tests {
     #[tokio::test]
     async fn update_status_nonexistent_returns_not_found() {
         let db = open_db().await;
-        let err = update_status(&db, "no-such-order", "invalid", None, 0)
+        let err = update_status(&db, "no-such-order", OrderStatus::Invalid, None, 0)
             .await
             .unwrap_err();
         assert!(matches!(err, crate::error::AcmeError::NotFound));
@@ -757,7 +758,7 @@ mod tests {
         insert(&db, sample_order("order-cf", "acct-cf"))
             .await
             .unwrap();
-        update_status(&db, "order-cf", "ready", None, 1_700_000_000)
+        update_status(&db, "order-cf", OrderStatus::Ready, None, 1_700_000_000)
             .await
             .unwrap();
         set_certificate(&db, "order-cf", "cert-1", 1_700_000_001)

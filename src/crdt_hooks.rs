@@ -5,6 +5,7 @@
 //! — a missed CRDT update is recoverable via gossip or server restart.
 
 use crate::state::AppState;
+use crate::status::{AccountStatus, AuthzStatus, CertStatus, ChallengeStatus, OrderStatus};
 use akamu_crdt::{
     AccountEntry, AuthzEntry, CertEntry, ChallengeEntry, DelegationEntry, EabKeyEntry,
     OperatorEntry, OrderEntry, PolicyRuleEntry,
@@ -17,7 +18,7 @@ const WRITE_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct AccountUpsertParams<'a> {
     pub id: &'a str,
-    pub status: &'a str,
+    pub status: AccountStatus,
     pub contact: Option<String>,
     pub public_key_der: Vec<u8>,
     pub jwk_thumbprint: String,
@@ -30,7 +31,7 @@ pub struct AccountUpsertParams<'a> {
 pub struct OrderUpsertParams<'a> {
     pub id: &'a str,
     pub account_id: &'a str,
-    pub status: &'a str,
+    pub status: OrderStatus,
     pub expires: Option<i64>,
     pub identifiers: &'a str,
     pub not_before: Option<i64>,
@@ -46,7 +47,7 @@ pub struct AuthzUpsertParams<'a> {
     pub id: &'a str,
     pub order_id: &'a str,
     pub account_id: &'a str,
-    pub status: &'a str,
+    pub status: AuthzStatus,
     pub identifier: &'a str,
     pub expires: Option<i64>,
     pub wildcard: bool,
@@ -59,7 +60,7 @@ pub struct ChallengeSetParams<'a> {
     pub id: &'a str,
     pub authz_id: &'a str,
     pub challenge_type: &'a str,
-    pub status: &'a str,
+    pub status: ChallengeStatus,
     pub token: &'a str,
     pub validated: Option<i64>,
     pub error: Option<String>,
@@ -72,7 +73,7 @@ pub struct CertUpsertParams<'a> {
     pub order_id: &'a str,
     pub account_id: &'a str,
     pub serial_number: &'a str,
-    pub status: &'a str,
+    pub status: CertStatus,
     pub not_before: i64,
     pub not_after: i64,
     pub revoked_at: Option<i64>,
@@ -122,7 +123,7 @@ pub async fn on_account_upsert(state: &AppState, p: AccountUpsertParams<'_>) {
     }
     let entry = AccountEntry {
         account_id: p.id.to_string(),
-        status: p.status.to_string(),
+        status: p.status.as_str().to_string(),
         contact: p.contact,
         public_key_der: p.public_key_der,
         jwk_thumbprint: p.jwk_thumbprint,
@@ -158,7 +159,7 @@ pub async fn on_order_upsert(state: &AppState, p: OrderUpsertParams<'_>) {
     let entry = OrderEntry {
         order_id: p.id.to_string(),
         account_id: p.account_id.to_string(),
-        status: p.status.to_string(),
+        status: p.status.as_str().to_string(),
         expires: p.expires,
         identifiers: p.identifiers.to_string(),
         not_before: p.not_before,
@@ -199,7 +200,7 @@ pub async fn on_authz_upsert(state: &AppState, p: AuthzUpsertParams<'_>) {
         authz_id: p.id.to_string(),
         order_id: p.order_id.to_string(),
         account_id: p.account_id.to_string(),
-        status: p.status.to_string(),
+        status: p.status.as_str().to_string(),
         identifier: p.identifier.to_string(),
         expires: p.expires,
         wildcard: p.wildcard,
@@ -236,7 +237,7 @@ pub async fn on_challenge_set(state: &AppState, p: ChallengeSetParams<'_>) {
         challenge_id: p.id.to_string(),
         authz_id: p.authz_id.to_string(),
         challenge_type: p.challenge_type.to_string(),
-        status: p.status.to_string(),
+        status: p.status.as_str().to_string(),
         token: p.token.to_string(),
         validated: p.validated,
         error: p.error,
@@ -262,7 +263,7 @@ pub async fn on_cert_upsert(state: &AppState, p: CertUpsertParams<'_>) {
         order_id: p.order_id.to_string(),
         account_id: p.account_id.to_string(),
         serial_number: p.serial_number.to_string(),
-        status: p.status.to_string(),
+        status: p.status.as_str().to_string(),
         not_before: p.not_before,
         not_after: p.not_after,
         revoked_at: p.revoked_at,

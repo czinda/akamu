@@ -14,6 +14,7 @@ use crate::db;
 use crate::db::schema::{AuthorizationRow, OrderRow};
 use crate::error::AcmeError;
 use crate::state::AppState;
+use crate::status::{AuthzStatus, ChallengeStatus, OrderStatus};
 
 use super::{
     acme_prefix, eligible_challenge_types, fmt_time, is_onion_domain, json_response, parse_jws,
@@ -422,9 +423,9 @@ pub async fn new_order(
     // covered by existing pre-authorizations (or this is a delegation order),
     // the order starts in "ready" and skips the challenge phase.
     let mut initial_status = if delegation_id.is_some() {
-        "ready"
+        OrderStatus::Ready
     } else {
-        "pending"
+        OrderStatus::Pending
     };
 
     let order_id = uuid::Uuid::new_v4().to_string();
@@ -526,8 +527,8 @@ pub async fn new_order(
 
     // RFC 9444 §4.3: if all identifiers were satisfied by existing pre-auth
     // (no new authz plans needed), the order starts in "ready".
-    if authz_plans.is_empty() && !authz_urls.is_empty() && initial_status == "pending" {
-        initial_status = "ready";
+    if authz_plans.is_empty() && !authz_urls.is_empty() && initial_status == OrderStatus::Pending {
+        initial_status = OrderStatus::Ready;
     }
 
     // RFC 8555 §7.1.3: persist notBefore/notAfter from the request so the CA
@@ -587,7 +588,7 @@ pub async fn new_order(
                         id: p.authz_id.clone(),
                         order_id: order_id.clone(),
                         account_id: account_id.clone(),
-                        status: "pending".to_string(),
+                        status: AuthzStatus::Pending.as_str().to_string(),
                         identifier: p.identifier_json.clone(),
                         expires: Some(authz_expiry),
                         wildcard: i64::from(p.wildcard),
@@ -613,7 +614,7 @@ pub async fn new_order(
                         id: plan.authz_id.clone(),
                         order_id: order_id.clone(),
                         account_id: account_id.clone(),
-                        status: "pending".to_string(),
+                        status: AuthzStatus::Pending.as_str().to_string(),
                         identifier: plan.identifier_json.clone(),
                         expires: Some(authz_expiry),
                         wildcard: i64::from(plan.wildcard),
@@ -702,7 +703,7 @@ pub async fn new_order(
                 id: &plan.authz_id,
                 order_id: &order_id,
                 account_id: &account_id,
-                status: "pending",
+                status: AuthzStatus::Pending,
                 identifier: &plan.identifier_json,
                 expires: Some(authz_expiry),
                 wildcard: plan.wildcard,
@@ -719,7 +720,7 @@ pub async fn new_order(
                     id: challenge_id,
                     authz_id: &plan.authz_id,
                     challenge_type,
-                    status: "pending",
+                    status: ChallengeStatus::Pending,
                     token: &plan.token,
                     validated: None,
                     error: None,
@@ -795,13 +796,13 @@ pub async fn get_order(
                 ));
             }
             // RFC 8739 §3.1.2: the order must be in "valid" state to cancel.
-            if order.status != "valid" {
+            if order.status.parse() != Ok(OrderStatus::Valid) {
                 return Err(AcmeError::AutoRenewalCancellationInvalid);
             }
             let now = unix_now();
             db::orders::cancel_star(&state.db, &id, now).await?;
             order.star_canceled_at = Some(now);
-            order.status = "canceled".to_string();
+            order.status = OrderStatus::Canceled.as_str().to_string();
             order.updated = now;
         }
     }
@@ -927,26 +928,28 @@ pub(crate) fn order_json<'a>(
     });
 
     // star-certificate URL: prefer upstream_cert_url (pass-through), else local.
-    let star_certificate = if order.star_end_date.is_some() && order.status == "valid" {
-        order
-            .upstream_cert_url
-            .clone()
-            .or_else(|| Some(format!("{acme_pfx}/cert/star/{}", order.id)))
-    } else {
-        None
-    };
+    let star_certificate =
+        if order.star_end_date.is_some() && order.status.parse() == Ok(OrderStatus::Valid) {
+            order
+                .upstream_cert_url
+                .clone()
+                .or_else(|| Some(format!("{acme_pfx}/cert/star/{}", order.id)))
+        } else {
+            None
+        };
 
     // Non-STAR certificate URL: prefer local cert (stored by delegation_upstream),
     // fall back to upstream_cert_url only when no local copy exists.
-    let certificate = if order.status == "valid" && order.star_end_date.is_none() {
-        order
-            .certificate_id
-            .as_ref()
-            .map(|c| format!("{acme_pfx}/cert/{c}"))
-            .or_else(|| order.upstream_cert_url.clone())
-    } else {
-        None
-    };
+    let certificate =
+        if order.status.parse() == Ok(OrderStatus::Valid) && order.star_end_date.is_none() {
+            order
+                .certificate_id
+                .as_ref()
+                .map(|c| format!("{acme_pfx}/cert/{c}"))
+                .or_else(|| order.upstream_cert_url.clone())
+        } else {
+            None
+        };
 
     OrderJson {
         status: &order.status,

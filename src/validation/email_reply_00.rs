@@ -22,6 +22,7 @@ use synta_certificate::{crypto::DataHasher, default_data_hasher};
 use crate::db;
 use crate::error::AcmeError;
 use crate::state::AppState;
+use crate::status::ChallengeStatus;
 use crate::util::unix_now;
 
 use super::{on_invalid, on_valid};
@@ -255,7 +256,7 @@ pub(crate) async fn verify_response(
     };
 
     // Only accept challenges in "processing" state (already triggered).
-    if chall.status != "processing" {
+    if chall.status.parse() != Ok(ChallengeStatus::Processing) {
         return VerifyOutcome::Invalid(format!(
             "challenge {} is in status '{}', expected 'processing'",
             chall.id, chall.status

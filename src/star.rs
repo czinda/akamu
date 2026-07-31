@@ -19,6 +19,7 @@ use crate::ca::csr::validate_csr;
 use crate::db;
 use crate::db::schema::CertificateRow;
 use crate::state::AppState;
+use crate::status::CertStatus;
 use crate::util::unix_now;
 
 /// Interval between STAR renewal checks.
@@ -233,7 +234,7 @@ async fn run_once(state: &Arc<AppState>) {
                     order_id: order.id.clone(),
                     account_id: order.account_id.clone(),
                     serial_number: serial.clone(),
-                    status: "valid".to_string(),
+                    status: CertStatus::Valid.as_str().to_string(),
                     der: issued.cert_der.clone(),
                     pem: issued.cert_pem.clone(),
                     not_before: new_not_before,
