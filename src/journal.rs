@@ -3,6 +3,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufWriter, Write};
 use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -42,6 +43,14 @@ struct JournalEntry {
 
 const DAEMON_STORE_CAP: usize = 100_000;
 
+/// Maximum number of `FileCmd::Write` entries allowed to sit in the file
+/// writer's queue at once. `std::sync::mpsc::channel` is unbounded, so a
+/// stalled writer thread (disk full, slow filesystem) would otherwise let
+/// this queue grow without limit, unlike the capped-and-evicting daemon
+/// store above. New events are dropped (not blocked) once the queue is
+/// full, preserving `send()`'s non-blocking contract.
+const FILE_QUEUE_CAP: usize = 100_000;
+
 /// Maximum number of JSONL lines scanned per file query to prevent unbounded
 /// reads on a file that has not been rotated.
 const MAX_QUERY_LINES: usize = 500_000;
@@ -69,6 +78,7 @@ pub struct JournalWriter {
     namespace: String,
     store: Option<Arc<Mutex<VecDeque<JournalEntry>>>>,
     file_tx: Option<mpsc::Sender<FileCmd>>,
+    file_queue_len: Option<Arc<AtomicUsize>>,
     log_file_path: Option<PathBuf>,
     /// Held to keep the temporary directory alive for the daemon socket.
     /// Requires `tempfile` as a non-dev dependency because `TempDir` is a
@@ -103,6 +113,7 @@ impl JournalWriter {
             namespace: namespace.to_owned(),
             store: None,
             file_tx: None,
+            file_queue_len: None,
             log_file_path: None,
             _tmpdir: None,
         }
@@ -110,7 +121,8 @@ impl JournalWriter {
 
     /// Create a writer that appends audit events as JSON Lines to a file.
     ///
-    /// A background thread receives events via an unbounded channel and writes
+    /// A background thread receives events via a queue (capped at
+    /// `FILE_QUEUE_CAP`, dropping new events past that point) and writes
     /// them sequentially, flushing after each event (FAU_STG.1 — durable on
     /// each event).  `send()` returns as soon as the event is enqueued, so
     /// audit I/O does not block the request path.
@@ -124,8 +136,10 @@ impl JournalWriter {
         tracing::info!(path, "opened audit log file (JSONL append mode)");
 
         let (tx, rx) = mpsc::channel::<FileCmd>();
+        let queue_len = Arc::new(AtomicUsize::new(0));
+        let queue_len_clone = Arc::clone(&queue_len);
         std::thread::spawn(move || {
-            file_writer_loop(rx, file);
+            file_writer_loop(rx, file, queue_len_clone);
         });
 
         Ok(Self {
@@ -133,6 +147,7 @@ impl JournalWriter {
             namespace: String::new(),
             store: None,
             file_tx: Some(tx),
+            file_queue_len: Some(queue_len),
             log_file_path: Some(PathBuf::from(path)),
             _tmpdir: None,
         })
@@ -189,6 +204,7 @@ impl JournalWriter {
             namespace: String::new(),
             store: Some(store),
             file_tx: None,
+            file_queue_len: None,
             log_file_path: None,
             _tmpdir: Some(tmpdir),
         }
@@ -202,6 +218,7 @@ impl JournalWriter {
             namespace: String::new(),
             store: None,
             file_tx: None,
+            file_queue_len: None,
             log_file_path: None,
             _tmpdir: None,
         }
@@ -224,6 +241,7 @@ impl JournalWriter {
             namespace: String::new(),
             store: None,
             file_tx: None,
+            file_queue_len: None,
             log_file_path: None,
             _tmpdir: Some(tmpdir),
         }
@@ -273,16 +291,37 @@ impl JournalWriter {
         }
 
         if let Some(ref tx) = self.file_tx {
+            if let Some(ref queue_len) = self.file_queue_len {
+                if queue_len.fetch_add(1, Ordering::AcqRel) >= FILE_QUEUE_CAP {
+                    queue_len.fetch_sub(1, Ordering::AcqRel);
+                    tracing::warn!(
+                        cap = FILE_QUEUE_CAP,
+                        "audit file writer queue full — dropping event"
+                    );
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "audit file writer queue full",
+                    ));
+                }
+            }
             let occurred_at = crate::util::rfc3339_now();
             let owned: Vec<(String, String)> = fields
                 .iter()
                 .map(|&(k, v)| (k.to_owned(), v.to_owned()))
                 .collect();
-            tx.send(FileCmd::Write {
+            if let Err(e) = tx.send(FileCmd::Write {
                 occurred_at,
                 fields: owned,
-            })
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "audit writer thread gone"))?;
+            }) {
+                if let Some(ref queue_len) = self.file_queue_len {
+                    queue_len.fetch_sub(1, Ordering::AcqRel);
+                }
+                let _ = e;
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "audit writer thread gone",
+                ));
+            }
             return Ok(());
         }
 
@@ -420,7 +459,7 @@ impl JournalWriter {
     }
 }
 
-fn file_writer_loop(rx: mpsc::Receiver<FileCmd>, file: File) {
+fn file_writer_loop(rx: mpsc::Receiver<FileCmd>, file: File, queue_len: Arc<AtomicUsize>) {
     let mut writer = BufWriter::new(file);
     while let Ok(cmd) = rx.recv() {
         match cmd {
@@ -428,6 +467,7 @@ fn file_writer_loop(rx: mpsc::Receiver<FileCmd>, file: File) {
                 occurred_at,
                 fields,
             } => {
+                queue_len.fetch_sub(1, Ordering::AcqRel);
                 let mut obj = serde_json::Map::new();
                 obj.insert(
                     "occurred_at".to_owned(),
@@ -542,7 +582,9 @@ fn parse_journal_datagram(data: &[u8]) -> HashMap<String, String> {
                 break;
             };
             let val_start = len_start + 8;
-            let val_end = val_start + value_len;
+            let Some(val_end) = val_start.checked_add(value_len) else {
+                break;
+            };
             if val_end > data.len() {
                 break;
             }
@@ -1075,5 +1117,20 @@ mod tests {
         let fields = parse_journal_datagram(&data);
         assert_eq!(fields.get("DETAIL").unwrap(), "line1\nline2");
         assert_eq!(fields.get("OTHER").unwrap(), "ok");
+    }
+
+    /// Regression test: a length-prefixed field with an attacker/peer-supplied
+    /// length near `usize::MAX` must not panic via `val_start + value_len`
+    /// overflow — it should be treated as malformed and skipped.
+    #[test]
+    fn parse_binary_datagram_rejects_overflowing_length_without_panicking() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"DETAIL");
+        data.push(b'\n');
+        data.extend_from_slice(&u64::MAX.to_le_bytes());
+        data.extend_from_slice(b"OTHER=ok\n");
+
+        let fields = parse_journal_datagram(&data);
+        assert!(!fields.contains_key("DETAIL"));
     }
 }
