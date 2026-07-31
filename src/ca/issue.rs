@@ -174,6 +174,58 @@ fn generate_random_serial() -> Result<([u8; 16], synta::Integer, String), AcmeEr
     Ok((serial_bytes, serial, serial_hex))
 }
 
+/// Resolve a requested notBefore/notAfter override pair into a clamped Unix
+/// timestamp window.
+///
+/// - Both `None`: `now` → `now + validity_days * 86400`.
+/// - Only `not_before_override` set: override → `override + validity_days * 86400`.
+/// - Only `not_after_override` set: `now` → override.
+/// - Both set: override → override.
+///
+/// notBefore is clamped to `now - 300` (5-minute grace for clock skew); a
+/// requested notAfter that doesn't fall strictly after the (possibly
+/// clamped) notBefore falls back to `notBefore + validity_days * 86400`. A
+/// warning naming `log_prefix` is logged whenever either bound is adjusted.
+fn resolve_clamped_validity(
+    now: i64,
+    not_before_override: Option<i64>,
+    not_after_override: Option<i64>,
+    validity_days: u32,
+    log_prefix: &str,
+) -> (i64, i64) {
+    let raw_not_before = not_before_override.unwrap_or(now);
+
+    let earliest_allowed = now - 300;
+    let not_before_unix = if raw_not_before < earliest_allowed {
+        tracing::warn!(
+            "{log_prefix}: requested notBefore {} is before now-300 ({}); clamping to {}",
+            raw_not_before,
+            earliest_allowed,
+            earliest_allowed,
+        );
+        earliest_allowed
+    } else {
+        raw_not_before
+    };
+
+    let raw_not_after =
+        not_after_override.unwrap_or(not_before_unix + validity_days as i64 * 86400);
+    let not_after_unix = if raw_not_after <= not_before_unix {
+        let fallback = not_before_unix + validity_days as i64 * 86400;
+        tracing::warn!(
+            "{log_prefix}: requested notAfter {} is not after notBefore {}; using fallback {}",
+            raw_not_after,
+            not_before_unix,
+            fallback,
+        );
+        fallback
+    } else {
+        raw_not_after
+    };
+
+    (not_before_unix, not_after_unix)
+}
+
 /// Parse a notBefore/notAfter Unix timestamp pair into `synta_certificate::Time`.
 fn parse_validity_window(
     not_before_unix: i64,
@@ -326,43 +378,13 @@ pub fn issue_certificate(params: IssueCertParams<'_>) -> Result<IssuedCert, Acme
 
     // ── Compute validity window ───────────────────────────────────────────────
     let now = unix_now();
-
-    // Resolve the raw requested notBefore.
-    let raw_not_before = not_before_override.unwrap_or(now);
-
-    // Clamp notBefore: must not be more than 5 minutes in the past.
-    let earliest_allowed = now - 300;
-    let not_before_unix = if raw_not_before < earliest_allowed {
-        tracing::warn!(
-            "issue_certificate: requested notBefore {} is before now-300 ({}); \
-             clamping to {}",
-            raw_not_before,
-            earliest_allowed,
-            earliest_allowed,
-        );
-        earliest_allowed
-    } else {
-        raw_not_before
-    };
-
-    // Resolve notAfter: explicit override, or computed from the (clamped) notBefore.
-    let raw_not_after =
-        not_after_override.unwrap_or(not_before_unix + validity_days as i64 * 86400);
-
-    // notAfter must be strictly after notBefore.
-    let not_after_unix = if raw_not_after <= not_before_unix {
-        let fallback = not_before_unix + validity_days as i64 * 86400;
-        tracing::warn!(
-            "issue_certificate: requested notAfter {} is not after notBefore {}; \
-             using fallback {}",
-            raw_not_after,
-            not_before_unix,
-            fallback,
-        );
-        fallback
-    } else {
-        raw_not_after
-    };
+    let (not_before_unix, not_after_unix) = resolve_clamped_validity(
+        now,
+        not_before_override,
+        not_after_override,
+        validity_days,
+        "issue_certificate",
+    );
     let (not_before, not_after) = parse_validity_window(not_before_unix, not_after_unix)?;
 
     // ── Build extensions ──────────────────────────────────────────────────────
@@ -621,32 +643,13 @@ pub fn issue_with_params(args: IssueWithParamsArgs<'_>) -> Result<IssuedCert, Ac
 
     // ── Validity window ──────────────────────────────────────────────────────
     let now = unix_now();
-    let raw_not_before = not_before_override.unwrap_or(now);
-    let earliest_allowed = now - 300;
-    let not_before_unix = if raw_not_before < earliest_allowed {
-        tracing::warn!(
-            "issue_with_params: notBefore {} before now-300 ({}); clamping",
-            raw_not_before,
-            earliest_allowed
-        );
-        earliest_allowed
-    } else {
-        raw_not_before
-    };
-    let raw_not_after =
-        not_after_override.unwrap_or(not_before_unix + params.validity_days as i64 * 86400);
-    let not_after_unix = if raw_not_after <= not_before_unix {
-        let fallback = not_before_unix + params.validity_days as i64 * 86400;
-        tracing::warn!(
-            "issue_with_params: notAfter {} not after notBefore {}; using fallback {}",
-            raw_not_after,
-            not_before_unix,
-            fallback,
-        );
-        fallback
-    } else {
-        raw_not_after
-    };
+    let (not_before_unix, not_after_unix) = resolve_clamped_validity(
+        now,
+        not_before_override,
+        not_after_override,
+        params.validity_days,
+        "issue_with_params",
+    );
     // CA/B Forum BR §6.3.2 hard cap at issuance when configured.
     if ca.enforce_validity_cap {
         let validity_secs = not_after_unix - not_before_unix;
