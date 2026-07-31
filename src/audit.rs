@@ -327,12 +327,17 @@ fn handle_alarm(state: &AuditState, policy: &AuditPolicy) {
 
 fn check_violation(state: &AuditState, policy: &AuditPolicy) {
     let threshold_exceeded = {
-        let mut times = state.violation_times.lock().unwrap_or_else(|e| {
-            tracing::error!(
-                "violation_times mutex poisoned — FAU_ARP.1 alarm state may be inconsistent"
-            );
-            e.into_inner()
-        });
+        // Panic rather than recover: a poisoned mutex means the VecDeque may
+        // have been left mid-update by the panicking thread, and continuing
+        // to evaluate the FAU_ARP.1 alarm against that state risks a silent
+        // mis-evaluation. Let the task unwind — Tokio catches the panic, the
+        // current request fails, and the alarm state is not misused. See
+        // commit 1dd9b68b3, which this reinstates after a later refactor
+        // silently reintroduced the recover-and-continue behavior.
+        let mut times = state
+            .violation_times
+            .lock()
+            .expect("violation_times mutex poisoned — FAU_ARP.1 alarm state is corrupt");
         let cutoff = Instant::now() - Duration::from_secs(300);
         times.retain(|&t| t >= cutoff);
         times.push_back(Instant::now());
@@ -709,6 +714,33 @@ mod tests {
             .unwrap();
         }
         assert!(state.should_halt.load(Ordering::SeqCst));
+    }
+
+    /// Regression test for a silently reverted fix (commit `1dd9b68b3`):
+    /// `check_violation` must panic on a poisoned `violation_times` mutex
+    /// rather than recovering and continuing to evaluate the FAU_ARP.1 alarm
+    /// against potentially corrupt state.
+    #[test]
+    fn check_violation_panics_on_poisoned_mutex() {
+        let state = AuditState::new();
+        let policy = AuditPolicy::default();
+
+        // Poison the mutex by panicking while holding the lock.
+        let state_ref = &state;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = state_ref.violation_times.lock().unwrap();
+            panic!("deliberately poisoning the mutex for this test");
+        }));
+        assert!(result.is_err());
+        assert!(state.violation_times.is_poisoned());
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            check_violation(&state, &policy);
+        }));
+        assert!(
+            result.is_err(),
+            "check_violation must panic on a poisoned mutex, not silently recover"
+        );
     }
 
     #[test]
