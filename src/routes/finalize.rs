@@ -189,47 +189,16 @@ pub async fn finalize_order(
         ca::csr_template::validate_csr_against_template(&csr_der, &template)?;
     }
 
-    // RFC 9115 upstream delegation: when an upstream CA is configured, hand the
-    // order to the delegation_upstream background task instead of issuing locally.
-    if state.config.delegation_upstream.is_some() && order.delegation_id.is_some() {
-        let now = unix_now();
-        db::orders::set_processing_with_csr_der(&state.db, &id, &csr_der, now).await?;
-
-        let principal = format!("acme:{}", ctx.jwk_thumbprint.as_deref().unwrap_or(""));
-        state
-            .record_audit(
-                crate::audit::AuditEvent::success(crate::audit::AuditEventType::OrderFinalize)
-                    .with_subject(&id)
-                    .with_principal(&principal),
-            )
-            .await;
-
-        let mut processing_order = order;
-        processing_order.status = "processing".to_string();
-        processing_order.updated = now;
-
-        let order_pfx = acme_prefix(
-            &state.config.base_url,
-            &processing_order.ca_id,
-            &state.default_ca_id,
-        );
-        let authz_ids = db::orders::list_authz_ids(&state.db_ro, &id).await?;
-        let authz_urls: Vec<_> = authz_ids
-            .iter()
-            .map(|aid| format!("{order_pfx}/authz/{aid}"))
-            .collect();
-
-        let mut resp = json_response(
-            &state,
-            &processing_order.ca_id,
-            StatusCode::OK,
-            order_json(&processing_order, &authz_urls, &order_pfx),
-            &ctx.next_nonce,
-        )?;
-        resp.headers_mut().insert(
-            axum::http::header::RETRY_AFTER,
-            axum::http::HeaderValue::from_static("5"),
-        );
+    if let Some(resp) = maybe_handle_upstream_delegation(
+        &state,
+        ctx.jwk_thumbprint.as_deref(),
+        &ctx.next_nonce,
+        &order,
+        &id,
+        &csr_der,
+    )
+    .await?
+    {
         return Ok(resp);
     }
 
@@ -903,4 +872,62 @@ async fn check_caa_for_order(
         });
     futures_util::future::try_join_all(checks).await?;
     Ok(())
+}
+
+/// RFC 9115 upstream delegation: when an upstream CA is configured, hand the
+/// order to the delegation_upstream background task instead of issuing
+/// locally. Returns `Some(response)` when the order was handed off (the
+/// caller must return this response immediately), or `None` to continue
+/// with local issuance.
+async fn maybe_handle_upstream_delegation(
+    state: &AppState,
+    jwk_thumbprint: Option<&str>,
+    next_nonce: &str,
+    order: &db::schema::OrderRow,
+    order_id: &str,
+    csr_der: &[u8],
+) -> Result<Option<Response>, AcmeError> {
+    if !(state.config.delegation_upstream.is_some() && order.delegation_id.is_some()) {
+        return Ok(None);
+    }
+
+    let now = unix_now();
+    db::orders::set_processing_with_csr_der(&state.db, order_id, csr_der, now).await?;
+
+    let principal = format!("acme:{}", jwk_thumbprint.unwrap_or(""));
+    state
+        .record_audit(
+            crate::audit::AuditEvent::success(crate::audit::AuditEventType::OrderFinalize)
+                .with_subject(order_id)
+                .with_principal(&principal),
+        )
+        .await;
+
+    let mut processing_order = order.clone();
+    processing_order.status = "processing".to_string();
+    processing_order.updated = now;
+
+    let order_pfx = acme_prefix(
+        &state.config.base_url,
+        &processing_order.ca_id,
+        &state.default_ca_id,
+    );
+    let authz_ids = db::orders::list_authz_ids(&state.db_ro, order_id).await?;
+    let authz_urls: Vec<_> = authz_ids
+        .iter()
+        .map(|aid| format!("{order_pfx}/authz/{aid}"))
+        .collect();
+
+    let mut resp = json_response(
+        state,
+        &processing_order.ca_id,
+        StatusCode::OK,
+        order_json(&processing_order, &authz_urls, &order_pfx),
+        next_nonce,
+    )?;
+    resp.headers_mut().insert(
+        axum::http::header::RETRY_AFTER,
+        axum::http::HeaderValue::from_static("5"),
+    );
+    Ok(Some(resp))
 }
