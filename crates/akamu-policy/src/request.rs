@@ -97,15 +97,31 @@ impl IssuanceRequest {
     /// multi-SAN order must call this once per identifier and combine the
     /// resulting decisions (see `IssuancePolicyEngine::evaluate_explained_identifiers`).
     pub fn with_identifier(&self, id_type: &str, id_value: &str) -> Result<Self, PolicyError> {
-        let mut req = self.0.clone();
+        let mut req = Self(self.0.clone());
+        req.set_identifier(id_type, id_value)?;
+        Ok(req)
+    }
+
+    /// Sets the identifier dimension on `self` in place to `id_type:id_value`,
+    /// overwriting any identifier previously set on this request.
+    ///
+    /// Unlike `with_identifier`, this mutates `self` rather than cloning —
+    /// used by `IssuancePolicyEngine::evaluate_explained_identifiers` to
+    /// evaluate every identifier of a multi-SAN order against one working
+    /// copy instead of cloning the whole request once per identifier.
+    pub(crate) fn set_identifier(
+        &mut self,
+        id_type: &str,
+        id_value: &str,
+    ) -> Result<(), PolicyError> {
         let formatted = format!("{id_type}:{id_value}");
-        req.add_attribute(
-            dimension::IDENTIFIER,
-            AttributeType::String(formatted),
-            vec![],
-        )
-        .map_err(PolicyError::Request)?;
-        Ok(Self(req))
+        self.0
+            .add_attribute(
+                dimension::IDENTIFIER,
+                AttributeType::String(formatted),
+                vec![],
+            )
+            .map_err(PolicyError::Request)
     }
 }
 
@@ -158,6 +174,28 @@ mod tests {
         assert_eq!(
             b.0.get_value(dimension::IDENTIFIER),
             Some(&AttributeType::String("dns:b.example.com".into()))
+        );
+    }
+
+    #[test]
+    fn set_identifier_mutates_in_place_and_overwrites() {
+        let mut req = IssuanceRequest::builder()
+            .account("acct-1")
+            .ca("prod")
+            .build()
+            .unwrap();
+
+        req.set_identifier("dns", "a.example.com").unwrap();
+        assert_eq!(
+            req.0.get_value(dimension::IDENTIFIER),
+            Some(&AttributeType::String("dns:a.example.com".into()))
+        );
+
+        req.set_identifier("dns", "b.example.com").unwrap();
+        assert_eq!(
+            req.0.get_value(dimension::IDENTIFIER),
+            Some(&AttributeType::String("dns:b.example.com".into())),
+            "a second set_identifier call must overwrite, not accumulate"
         );
     }
 }

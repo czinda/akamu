@@ -94,19 +94,47 @@ impl IssuancePolicyEngine {
     /// request as allowed only if every result is `Decision::Allow` — a
     /// single denied identifier must not be maskable by a benign one riding
     /// along in the same order.
+    ///
+    /// Holds the engine's mutex for the whole multi-identifier evaluation
+    /// (rather than once per identifier) so a concurrent `rebuild()` cannot
+    /// install a new rule set partway through: without this, a deny rule
+    /// added mid-evaluation could apply to some identifiers of the order but
+    /// not others, letting the overall request through even though the
+    /// just-installed policy would have denied it if applied consistently.
+    /// Reuses one cloned working copy of `base` across identifiers (mutating
+    /// its identifier dimension per iteration) instead of cloning the whole
+    /// request once per identifier.
+    ///
+    /// This still calls the uncached `evaluate_explained` per identifier —
+    /// abac-rs's cheaper `evaluate()` bypasses the LRU cache/deny-index/
+    /// compiled-evaluator fast paths' opposite (`evaluate_explained` is the
+    /// one that bypasses them), and there is currently no way to construct
+    /// an `ExplainedDecision` from a plain `Decision` to use `evaluate()` as
+    /// a fast path and only fall back to `evaluate_explained` when the
+    /// aggregate result is `Deny`. `abac_rs::ExplainedDecision::new` closes
+    /// this gap upstream; switch to the two-pass (cheap-then-explained)
+    /// strategy once this crate's `abac-rs` dependency is bumped to a
+    /// version that includes it.
     pub fn evaluate_explained_identifiers(
         &self,
         base: &IssuanceRequest,
         identifiers: &[(&str, &str)],
     ) -> Result<Vec<ExplainedDecision>, PolicyError> {
+        let mut policy = self.policy.lock().unwrap_or_else(|e| {
+            tracing::error!("policy engine mutex was poisoned, recovering");
+            e.into_inner()
+        });
+
         if identifiers.is_empty() {
-            return Ok(vec![self.evaluate_explained(base)]);
+            return Ok(vec![policy.evaluate_explained(&base.0)]);
         }
+
+        let mut working = IssuanceRequest(base.0.clone());
         identifiers
             .iter()
             .map(|(id_type, id_value)| {
-                base.with_identifier(id_type, id_value)
-                    .map(|req| self.evaluate_explained(&req))
+                working.set_identifier(id_type, id_value)?;
+                Ok(policy.evaluate_explained(&working.0))
             })
             .collect()
     }
