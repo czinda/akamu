@@ -64,62 +64,16 @@ pub async fn finalize_order(
     // structurally valid (no timing oracle for identifier-namespace probing).
     let (cert_params, default_profile_applied) = resolve_cert_params(&state, &order, order_ca)?;
 
-    // Per-profile authorization checks (identifier patterns, external hook,
-    // account grants).  Runs when the client named a profile OR when a "default"
-    // profile was silently auto-applied above.
-    let effective_profile: Option<&str> = order.profile.as_deref().or(if default_profile_applied {
-        Some("default")
-    } else {
-        None
-    });
-    // Option C: the hook may return extra OtherName DERs via stdout JSON.
-    let mut extra_other_names: Vec<Vec<u8>> = if let Some(profile_name) = effective_profile {
-        crate::profiles::auth::check_profile_auth(
-            &state.db_ro,
-            &account_id,
-            profile_name,
-            &cert_params,
-            &allowed,
-        )
-        .await?
-    } else {
-        vec![]
-    };
-
-    // Validate CSR (after auth to avoid timing oracle on CSR structure).
-    let validated_csr = ca::csr::validate_csr(&csr_der, &allowed)?;
-
-    // Policy engine evaluation — runs after CSR validation so key_type is available.
-    crate::policy::evaluate_issuance_policy(
+    let (validated_csr, mut extra_other_names) = run_profile_and_csr_checks(
         &state,
-        &crate::policy::PolicyCheckParams {
-            account_id: &account_id,
-            ca_id: &order.ca_id,
-            effective_profile,
-            allowed: &allowed,
-            key_type: validated_csr.key_type.as_deref(),
-        },
+        &account_id,
+        &order,
+        &cert_params,
+        default_profile_applied,
+        &allowed,
+        &csr_der,
     )
     .await?;
-
-    // RFC 9115 §4: for delegation orders, validate the CSR against the
-    // delegation's CSR template.
-    if let Some(ref delegation_id) = order.delegation_id {
-        let delegation = db::delegations::get_by_id(&state.db_ro, delegation_id)
-            .await?
-            .ok_or_else(|| {
-                AcmeError::Internal(format!(
-                    "order references unknown delegation '{delegation_id}'"
-                ))
-            })?;
-        let template: ca::csr_template::CsrTemplate =
-            serde_json::from_str(&delegation.csr_template).map_err(|e| {
-                AcmeError::Internal(format!(
-                    "corrupt csr_template in delegation {delegation_id}: {e}"
-                ))
-            })?;
-        ca::csr_template::validate_csr_against_template(&csr_der, &template)?;
-    }
 
     if let Some(resp) = maybe_handle_upstream_delegation(
         &state,
@@ -961,4 +915,83 @@ fn resolve_cert_params(
     }
 
     Ok((cert_params, default_profile_applied))
+}
+
+/// Run per-profile authorization checks, CSR structural validation, policy
+/// engine evaluation, and (for delegation orders) CSR-template validation.
+///
+/// Order matters: profile auth runs before CSR validation so that auth
+/// failures are returned without revealing whether the CSR was
+/// structurally valid (no timing oracle for identifier-namespace probing);
+/// policy evaluation runs after CSR validation so `key_type` is available.
+///
+/// Returns the validated CSR plus any extra OtherName DERs the profile-auth
+/// hook (Option C) requested be added as SANs.
+async fn run_profile_and_csr_checks(
+    state: &AppState,
+    account_id: &str,
+    order: &db::schema::OrderRow,
+    cert_params: &crate::profiles::CertificateParameters,
+    default_profile_applied: bool,
+    allowed: &[(&str, &str)],
+    csr_der: &[u8],
+) -> Result<(ca::csr::ValidatedCsr, Vec<Vec<u8>>), AcmeError> {
+    // Per-profile authorization checks (identifier patterns, external hook,
+    // account grants). Runs when the client named a profile OR when a
+    // "default" profile was silently auto-applied.
+    let effective_profile: Option<&str> = order.profile.as_deref().or(if default_profile_applied {
+        Some("default")
+    } else {
+        None
+    });
+    // Option C: the hook may return extra OtherName DERs via stdout JSON.
+    let extra_other_names: Vec<Vec<u8>> = if let Some(profile_name) = effective_profile {
+        crate::profiles::auth::check_profile_auth(
+            &state.db_ro,
+            account_id,
+            profile_name,
+            cert_params,
+            allowed,
+        )
+        .await?
+    } else {
+        vec![]
+    };
+
+    // Validate CSR (after auth to avoid timing oracle on CSR structure).
+    let validated_csr = ca::csr::validate_csr(csr_der, allowed)?;
+
+    // Policy engine evaluation — runs after CSR validation so key_type is available.
+    crate::policy::evaluate_issuance_policy(
+        state,
+        &crate::policy::PolicyCheckParams {
+            account_id,
+            ca_id: &order.ca_id,
+            effective_profile,
+            allowed,
+            key_type: validated_csr.key_type.as_deref(),
+        },
+    )
+    .await?;
+
+    // RFC 9115 §4: for delegation orders, validate the CSR against the
+    // delegation's CSR template.
+    if let Some(ref delegation_id) = order.delegation_id {
+        let delegation = db::delegations::get_by_id(&state.db_ro, delegation_id)
+            .await?
+            .ok_or_else(|| {
+                AcmeError::Internal(format!(
+                    "order references unknown delegation '{delegation_id}'"
+                ))
+            })?;
+        let template: ca::csr_template::CsrTemplate =
+            serde_json::from_str(&delegation.csr_template).map_err(|e| {
+                AcmeError::Internal(format!(
+                    "corrupt csr_template in delegation {delegation_id}: {e}"
+                ))
+            })?;
+        ca::csr_template::validate_csr_against_template(csr_der, &template)?;
+    }
+
+    Ok((validated_csr, extra_other_names))
 }
