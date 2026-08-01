@@ -1,5 +1,19 @@
+//! Translates the older, profile-centric authorization model
+//! (`ProfileConfig`'s `ca_ids`/`allowed_identifier_patterns`/
+//! `require_account_grant` fields) into an equivalent [`PolicyRuleConfig`]
+//! allow rule, so both models can be evaluated through one policy engine
+//! instead of maintaining two separate authorization code paths.
+
 use crate::config::{PolicyRuleConfig, RuleTypeConfig};
 
+/// Builds an allow rule equivalent to profile `profile_name`'s legacy
+/// authorization settings.
+///
+/// The rule's name is prefixed `_compat_` to mark it as a generated
+/// (not operator-authored) rule and avoid colliding with a real rule of the
+/// same name; `require_account_grant` maps to an `account_group` dimension
+/// requiring `profile_name` itself as the granted group, matching
+/// `ProfileConfig`'s "grant this profile's name via `profile_grants`" contract.
 pub fn translate_profile_to_rule(
     profile_name: &str,
     ca_ids: &[String],

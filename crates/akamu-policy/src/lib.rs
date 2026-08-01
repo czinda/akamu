@@ -1,3 +1,13 @@
+//! `akamu-policy` — ABAC issuance policy engine for the akamu ACME server.
+//!
+//! Wraps [`abac_rs`] to evaluate certificate-issuance requests against a set
+//! of allow/deny rules keyed on account, profile, CA, key type, account
+//! group, and per-SAN identifier. Rules come from two sources merged at
+//! build time: static rules in the server's TOML config and dynamic rules
+//! stored in the database (editable via the admin API), the latter with a
+//! shadow/enforce mode so a rule set can be validated against real traffic
+//! before it starts blocking issuance.
+
 pub mod compat;
 pub mod config;
 pub(crate) mod dimension;

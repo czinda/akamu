@@ -39,6 +39,11 @@ struct BuiltPolicy {
 }
 
 impl IssuancePolicyEngine {
+    /// Builds an engine from static TOML rules and dynamic DB rules,
+    /// converting both into one compiled [`abac_rs::AbacPolicy`].
+    ///
+    /// In Enforce mode, fails if any rule failed semantic validation (see
+    /// `build_policy`) rather than silently installing an incomplete rule set.
     pub fn new(
         mode: PolicyMode,
         toml_rules: Vec<PolicyRuleConfig>,
@@ -215,10 +220,19 @@ impl IssuancePolicyEngine {
             .collect()
     }
 
+    /// Whether this engine is enforcing decisions (`Enforce`) or only
+    /// logging them for comparison against legacy behavior (`Shadow`).
     pub fn mode(&self) -> PolicyMode {
         self.mode
     }
 
+    /// Rebuilds the compiled policy from the engine's original TOML rules
+    /// plus a fresh set of DB rules (e.g. after an admin CRUD change or a
+    /// gossip merge), atomically swapping it in on success.
+    ///
+    /// In Enforce mode, refuses to install an incomplete rule set (see
+    /// `build_policy`) and leaves the previously-installed policy in
+    /// effect, rather than silently weakening it.
     pub fn rebuild(&self, db_rules: Vec<PolicyRuleConfig>) -> Result<(), PolicyError> {
         let built = Self::build_policy(&self.toml_rules, &db_rules)?;
         Self::guard_skipped(self.mode, "rebuild", &built.skipped)?;
@@ -226,6 +240,9 @@ impl IssuancePolicyEngine {
         Ok(())
     }
 
+    /// Number of rules currently compiled into the engine (for observability
+    /// — e.g. the admin API and shadow-mode logging use this to distinguish
+    /// "no rules configured" from an actual policy deny).
     pub fn rule_count(&self) -> usize {
         self.lock_policy().rule_count()
     }
