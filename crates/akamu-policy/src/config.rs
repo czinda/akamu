@@ -133,6 +133,20 @@ impl PolicyRuleConfig {
     }
 }
 
+/// Sets `dim` to the given values, or leaves it unset ("unrestricted") when
+/// `values` is `None`.
+///
+/// Deliberately does *not* call `dimension_all(dim)` for the `None` case:
+/// `AbacPolicyCore::rule_matches` requires the *request* to carry a value for
+/// any dimension the rule explicitly declares — including one declared as
+/// `AttributeValue::All` — so a rule using `dimension_all` still fails to
+/// match a request that never set that attribute at all. Requests built by
+/// `IssuanceRequestBuilder` set `profile`/`key_type` conditionally, so an
+/// omitted dimension must remain truly absent from the rule to stay
+/// unconstrained regardless of what the request does or doesn't set. The
+/// upstream fix for the composite index silently pruning a rule that omits a
+/// dimension another rule declares belongs in `abac-rs` itself (which can fix
+/// index construction without touching rule-matching semantics), not here.
 fn set_dimension(
     builder: abac_rs::AbacRuleBuilder,
     dim: &str,
