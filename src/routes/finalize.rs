@@ -37,34 +37,8 @@ pub async fn finalize_order(
     body: Bytes,
 ) -> Result<Response, AcmeError> {
     let id = params.get("id").ok_or(AcmeError::NotFound)?.clone();
-    let pfx = acme_prefix(&state.config.base_url, &ca_id.0, &state.default_ca_id);
-    let url = format!("{pfx}/order/{id}/finalize");
-    let ctx = parse_jws(&state, body, &url).await?;
-
-    let account_id = ctx
-        .account_id
-        .ok_or(AcmeError::Unauthorized("kid required".into()))?;
-
-    let order = db::orders::get_by_id(&state.db_ro, &id)
-        .await?
-        .ok_or(AcmeError::NotFound)?;
-
-    if order.ca_id != ca_id.0 {
-        return Err(AcmeError::NotFound);
-    }
-    if order.account_id != account_id {
-        return Err(AcmeError::Unauthorized(
-            "order belongs to different account".into(),
-        ));
-    }
-    if order.status.parse() != Ok(OrderStatus::Ready) {
-        return Err(AcmeError::OrderNotReady);
-    }
-
-    let payload: FinalizePayload = require_payload(&ctx.payload, "finalize")?;
-    let csr_der = URL_SAFE_NO_PAD
-        .decode(&payload.csr)
-        .map_err(|e| AcmeError::BadCsr(format!("base64url decode: {e}")))?;
+    let (ctx, account_id, order, csr_der) =
+        resolve_order_and_authorize(&state, &ca_id.0, &id, body).await?;
 
     // Parse order identifiers.
     let identifiers: Vec<serde_json::Value> = serde_json::from_str(&order.identifiers)
@@ -930,4 +904,47 @@ async fn maybe_handle_upstream_delegation(
         axum::http::HeaderValue::from_static("5"),
     );
     Ok(Some(resp))
+}
+
+/// Parse and verify the finalize JWS, resolve and authorize the target
+/// order, and decode the CSR DER from the finalize payload. Bundles the
+/// initial guard phase of `finalize_order`: any failure here means the
+/// request never reaches CSR/CAA/policy validation or issuance.
+async fn resolve_order_and_authorize(
+    state: &AppState,
+    ca_id: &str,
+    order_id: &str,
+    body: Bytes,
+) -> Result<(super::JwsContext, String, db::schema::OrderRow, Vec<u8>), AcmeError> {
+    let pfx = acme_prefix(&state.config.base_url, ca_id, &state.default_ca_id);
+    let url = format!("{pfx}/order/{order_id}/finalize");
+    let ctx = parse_jws(state, body, &url).await?;
+
+    let account_id = ctx
+        .account_id
+        .clone()
+        .ok_or(AcmeError::Unauthorized("kid required".into()))?;
+
+    let order = db::orders::get_by_id(&state.db_ro, order_id)
+        .await?
+        .ok_or(AcmeError::NotFound)?;
+
+    if order.ca_id != ca_id {
+        return Err(AcmeError::NotFound);
+    }
+    if order.account_id != account_id {
+        return Err(AcmeError::Unauthorized(
+            "order belongs to different account".into(),
+        ));
+    }
+    if order.status.parse() != Ok(OrderStatus::Ready) {
+        return Err(AcmeError::OrderNotReady);
+    }
+
+    let payload: FinalizePayload = require_payload(&ctx.payload, "finalize")?;
+    let csr_der = URL_SAFE_NO_PAD
+        .decode(&payload.csr)
+        .map_err(|e| AcmeError::BadCsr(format!("base64url decode: {e}")))?;
+
+    Ok((ctx, account_id, order, csr_der))
 }
