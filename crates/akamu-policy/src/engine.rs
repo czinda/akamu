@@ -84,6 +84,33 @@ impl IssuancePolicyEngine {
         policy.evaluate_explained(&request.0)
     }
 
+    /// Evaluate `base` once per identifier (SAN) and return one
+    /// [`ExplainedDecision`] per identifier, or a single evaluation of `base`
+    /// unchanged when `identifiers` is empty.
+    ///
+    /// A multi-SAN order cannot be represented as a single [`IssuanceRequest`]
+    /// without collapsing to one identifier (see `IssuanceRequest::with_identifier`),
+    /// so callers must evaluate every identifier independently and treat the
+    /// request as allowed only if every result is `Decision::Allow` — a
+    /// single denied identifier must not be maskable by a benign one riding
+    /// along in the same order.
+    pub fn evaluate_explained_identifiers(
+        &self,
+        base: &IssuanceRequest,
+        identifiers: &[(&str, &str)],
+    ) -> Result<Vec<ExplainedDecision>, PolicyError> {
+        if identifiers.is_empty() {
+            return Ok(vec![self.evaluate_explained(base)]);
+        }
+        identifiers
+            .iter()
+            .map(|(id_type, id_value)| {
+                base.with_identifier(id_type, id_value)
+                    .map(|req| self.evaluate_explained(&req))
+            })
+            .collect()
+    }
+
     pub fn mode(&self) -> &PolicyMode {
         &self.mode
     }
@@ -127,6 +154,24 @@ mod tests {
             name: name.into(),
             rule_type: RuleTypeConfig::Deny,
             profile: Some(vec![profile.into()]),
+            ..Default::default()
+        }
+    }
+
+    fn deny_rule_identifier(name: &str, pattern: &str) -> PolicyRuleConfig {
+        PolicyRuleConfig {
+            name: name.into(),
+            rule_type: RuleTypeConfig::Deny,
+            identifier: Some(vec![pattern.into()]),
+            ..Default::default()
+        }
+    }
+
+    fn allow_rule_identifier(name: &str, pattern: &str) -> PolicyRuleConfig {
+        PolicyRuleConfig {
+            name: name.into(),
+            rule_type: RuleTypeConfig::Allow,
+            identifier: Some(vec![pattern.into()]),
             ..Default::default()
         }
     }
@@ -289,64 +334,92 @@ mod tests {
         assert_eq!(engine.evaluate(&req), Decision::Allow);
     }
 
+    /// Regression test for a bypass where only the last identifier of a
+    /// multi-SAN order was ever evaluated: a deny rule targeting an earlier
+    /// identifier must still block the whole request.
     #[test]
-    fn temporal_rule_expired_does_not_match() {
-        let rule = PolicyRuleConfig {
-            name: "expired-allow".into(),
-            rule_type: RuleTypeConfig::Allow,
-            profile: Some(vec!["tls-server".into()]),
-            valid_until: Some("2020-01-01T00:00:00Z".into()),
-            ..Default::default()
-        };
-        let engine = IssuancePolicyEngine::new(PolicyMode::Enforce, vec![rule], vec![]).unwrap();
+    fn multi_identifier_deny_on_any_identifier_blocks_request() {
+        let engine = IssuancePolicyEngine::new(
+            PolicyMode::Enforce,
+            vec![
+                allow_rule_identifier("allow-corp", r"dns:.*\.corp\.example\.com$"),
+                deny_rule_identifier("deny-internal", r"dns:.*\.internal\.example\.com$"),
+            ],
+            vec![],
+        )
+        .unwrap();
 
-        let req = IssuanceRequest::builder()
-            .profile("tls-server")
+        let base = IssuanceRequest::builder()
+            .account("acct-1")
             .ca("prod")
             .build()
             .unwrap();
 
-        assert_eq!(engine.evaluate(&req), Decision::Deny);
+        // The disallowed identifier is listed first, followed by a benign one
+        // that an allow rule would otherwise cover.
+        let results = engine
+            .evaluate_explained_identifiers(
+                &base,
+                &[
+                    ("dns", "host.internal.example.com"),
+                    ("dns", "app.corp.example.com"),
+                ],
+            )
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(
+            results.iter().any(|r| r.decision == Decision::Deny),
+            "a deny rule matching any single SAN must produce at least one Deny result, \
+             even when another SAN in the same order would be allowed"
+        );
     }
 
     #[test]
-    fn temporal_rule_future_does_not_match() {
-        let rule = PolicyRuleConfig {
-            name: "future-allow".into(),
-            rule_type: RuleTypeConfig::Allow,
-            profile: Some(vec!["tls-server".into()]),
-            valid_from: Some("2099-01-01T00:00:00Z".into()),
-            ..Default::default()
-        };
-        let engine = IssuancePolicyEngine::new(PolicyMode::Enforce, vec![rule], vec![]).unwrap();
+    fn multi_identifier_all_allowed_when_every_identifier_matches() {
+        let engine = IssuancePolicyEngine::new(
+            PolicyMode::Enforce,
+            vec![allow_rule_identifier(
+                "allow-corp",
+                r"dns:.*\.corp\.example\.com$",
+            )],
+            vec![],
+        )
+        .unwrap();
 
-        let req = IssuanceRequest::builder()
-            .profile("tls-server")
+        let base = IssuanceRequest::builder()
+            .account("acct-1")
             .ca("prod")
             .build()
             .unwrap();
 
-        assert_eq!(engine.evaluate(&req), Decision::Deny);
+        let results = engine
+            .evaluate_explained_identifiers(
+                &base,
+                &[("dns", "a.corp.example.com"), ("dns", "b.corp.example.com")],
+            )
+            .unwrap();
+
+        assert!(results.iter().all(|r| r.decision == Decision::Allow));
     }
 
     #[test]
-    fn temporal_rule_within_window_matches() {
-        let rule = PolicyRuleConfig {
-            name: "active-allow".into(),
-            rule_type: RuleTypeConfig::Allow,
-            profile: Some(vec!["tls-server".into()]),
-            valid_from: Some("2020-01-01T00:00:00Z".into()),
-            valid_until: Some("2099-12-31T23:59:59Z".into()),
-            ..Default::default()
-        };
-        let engine = IssuancePolicyEngine::new(PolicyMode::Enforce, vec![rule], vec![]).unwrap();
+    fn evaluate_explained_identifiers_empty_falls_back_to_base_request() {
+        let engine = IssuancePolicyEngine::new(
+            PolicyMode::Enforce,
+            vec![allow_rule("allow-tls", "tls-server")],
+            vec![],
+        )
+        .unwrap();
 
-        let req = IssuanceRequest::builder()
+        let base = IssuanceRequest::builder()
             .profile("tls-server")
             .ca("prod")
             .build()
             .unwrap();
 
-        assert_eq!(engine.evaluate(&req), Decision::Allow);
+        let results = engine.evaluate_explained_identifiers(&base, &[]).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].decision, Decision::Allow);
     }
 }

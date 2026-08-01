@@ -60,18 +60,6 @@ impl IssuanceRequestBuilder {
         self
     }
 
-    pub fn identifiers(mut self, ids: &[(&str, &str)]) -> Self {
-        for (id_type, id_value) in ids {
-            let formatted = format!("{id_type}:{id_value}");
-            self.try_add(
-                dimension::IDENTIFIER,
-                AttributeType::String(formatted),
-                vec![],
-            );
-        }
-        self
-    }
-
     pub fn key_type(mut self, kt: &str) -> Self {
         self.try_add(
             dimension::KEY_TYPE,
@@ -99,6 +87,26 @@ impl IssuanceRequest {
     pub fn builder() -> IssuanceRequestBuilder {
         IssuanceRequestBuilder::new()
     }
+
+    /// Returns a clone of this request with the identifier dimension set to
+    /// `id_type:id_value`.
+    ///
+    /// `AbacRequest` stores exactly one value (plus OR-matched groups) per
+    /// dimension, so a multi-SAN order cannot be represented as a single
+    /// request without collapsing to one identifier. Callers evaluating a
+    /// multi-SAN order must call this once per identifier and combine the
+    /// resulting decisions (see `IssuancePolicyEngine::evaluate_explained_identifiers`).
+    pub fn with_identifier(&self, id_type: &str, id_value: &str) -> Result<Self, PolicyError> {
+        let mut req = self.0.clone();
+        let formatted = format!("{id_type}:{id_value}");
+        req.add_attribute(
+            dimension::IDENTIFIER,
+            AttributeType::String(formatted),
+            vec![],
+        )
+        .map_err(PolicyError::Request)?;
+        Ok(Self(req))
+    }
 }
 
 #[cfg(test)]
@@ -112,9 +120,10 @@ mod tests {
             .account_groups(&["prod-infra".into()])
             .profile("tls-server")
             .ca("prod")
-            .identifiers(&[("dns", "example.com")])
             .key_type("ec:P-256")
             .build()
+            .unwrap()
+            .with_identifier("dns", "example.com")
             .unwrap();
         assert!(!req.0.attributes().is_empty());
     }
@@ -128,5 +137,27 @@ mod tests {
             .build()
             .unwrap();
         assert!(!req.0.attributes().is_empty());
+    }
+
+    #[test]
+    fn with_identifier_does_not_mutate_base_request() {
+        let base = IssuanceRequest::builder()
+            .account("acct-1")
+            .ca("prod")
+            .build()
+            .unwrap();
+
+        let a = base.with_identifier("dns", "a.example.com").unwrap();
+        let b = base.with_identifier("dns", "b.example.com").unwrap();
+
+        assert_eq!(base.0.get_value(dimension::IDENTIFIER), None);
+        assert_eq!(
+            a.0.get_value(dimension::IDENTIFIER),
+            Some(&AttributeType::String("dns:a.example.com".into()))
+        );
+        assert_eq!(
+            b.0.get_value(dimension::IDENTIFIER),
+            Some(&AttributeType::String("dns:b.example.com".into()))
+        );
     }
 }

@@ -203,8 +203,7 @@ pub async fn evaluate_issuance_policy(
     let mut policy_builder = akamu_policy::request::IssuanceRequest::builder()
         .account(params.account_id)
         .account_groups(&account_groups)
-        .ca(params.ca_id)
-        .identifiers(params.allowed);
+        .ca(params.ca_id);
     if let Some(profile_name) = params.effective_profile {
         policy_builder = policy_builder.profile(profile_name);
     }
@@ -212,13 +211,25 @@ pub async fn evaluate_issuance_policy(
         policy_builder = policy_builder.key_type(kt);
     }
 
-    match policy_builder.build() {
-        Ok(policy_req) => {
-            let explained = state.issuance_policy.evaluate_explained(&policy_req);
-            let policy_allowed = explained.decision == Decision::Allow;
+    // Evaluate once per identifier (SAN) and require every one to
+    // independently resolve to Allow: an `IssuanceRequest` stores a single
+    // value per dimension, so folding every SAN of a multi-SAN order into one
+    // request would let a benign SAN mask a SAN that should be denied.
+    let eval_result = policy_builder.build().and_then(|base_req| {
+        state
+            .issuance_policy
+            .evaluate_explained_identifiers(&base_req, params.allowed)
+    });
+
+    match eval_result {
+        Ok(explained_list) => {
+            let policy_allowed = explained_list.iter().all(|e| e.decision == Decision::Allow);
 
             if !policy_allowed {
-                let rule_names: Vec<_> = explained.matched_rules.iter().map(|r| &r.name).collect();
+                let rule_names: Vec<_> = explained_list
+                    .iter()
+                    .flat_map(|e| e.matched_rules.iter().map(|r| &r.name))
+                    .collect();
                 if enforce {
                     tracing::warn!(
                         account = %params.account_id,
