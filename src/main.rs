@@ -815,6 +815,10 @@ async fn build_policy_engine(
                 .map_err(|e| format!("policy rules_file '{rules_file}': {e}"))?;
             rules.extend(ext_cfg.rules);
         }
+        // Convert from the TOML config-file schema into the canonical rule
+        // type the policy engine and compat_rules below both operate on.
+        let rules: Vec<akamu_policy::config::PolicyRuleConfig> =
+            rules.into_iter().map(Into::into).collect();
         (policy_cfg.mode, rules)
     } else {
         (akamu_policy::config::PolicyMode::Shadow, vec![])

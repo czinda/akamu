@@ -259,6 +259,7 @@ dependencies = [
  "lru",
  "regex",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "time",
  "toml 0.8.23",

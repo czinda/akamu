@@ -113,8 +113,12 @@ fn validate_rule_json(
             "rule must be a JSON object".into(),
         ));
     }
-    let cfg: akamu_policy::config::PolicyRuleConfig = serde_json::from_value(rule.clone())
+    // Deserialize into the admin-API request shape, then convert into the
+    // canonical type the rest of this module (and the engine) operates on —
+    // see PolicyRuleConfig's doc comment for why these are separate types.
+    let request: akamu_policy::config::PolicyRuleRequest = serde_json::from_value(rule.clone())
         .map_err(|e| AdminApiError::BadRequest(format!("invalid rule: {e}")))?;
+    let cfg: akamu_policy::config::PolicyRuleConfig = request.into();
     cfg.to_abac_rule()
         .map_err(|e| AdminApiError::BadRequest(format!("invalid rule: {e}")))?;
     Ok(cfg)

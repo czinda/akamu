@@ -21,9 +21,18 @@ pub enum RuleTypeConfig {
     Deny,
 }
 
-/// Shared config type for TOML config files and JSON DB storage.
-/// A future schema evolution may require a separate DB record type;
-/// tracked as tech debt.
+/// The canonical, internal representation of a policy rule.
+///
+/// This is what [`Self::to_abac_rule_scoped`] compiles, what
+/// [`crate::engine::IssuancePolicyEngine`] operates on for both TOML- and
+/// DB-sourced rules, what gets serialized into the DB's `rule_json` column,
+/// and what `parse_db_rules` deserializes that column back into. It is
+/// deliberately a separate type from [`TomlPolicyRuleConfig`] (the TOML
+/// config-file schema) and [`PolicyRuleRequest`] (the admin API's request
+/// shape) — even though all three currently share the same 11 fields — so
+/// each surface's schema can evolve independently (e.g. a future DB-only
+/// metadata field, or a future TOML-only shorthand) without forcing a
+/// matching change onto the other two.
 ///
 /// `deny_unknown_fields`: a misspelled field name (e.g. `identifer` for
 /// `identifier`) would otherwise silently deserialize as if the field were
@@ -55,6 +64,91 @@ pub struct PolicyRuleConfig {
     pub enabled: Option<bool>,
 }
 
+/// The TOML config-file schema for a policy rule (embedded in the server's
+/// main config under `[policy]` and in an optional external `rules_file`).
+///
+/// Converted into the canonical [`PolicyRuleConfig`] via [`From`] before
+/// being compiled — see [`PolicyRuleConfig`]'s doc comment for why this is a
+/// separate type rather than reusing the canonical one directly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct TomlPolicyRuleConfig {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub rule_type: RuleTypeConfig,
+    pub profile: Option<Vec<String>>,
+    pub ca: Option<Vec<String>>,
+    pub account: Option<Vec<String>>,
+    pub account_group: Option<Vec<String>>,
+    pub identifier: Option<Vec<String>>,
+    pub key_type: Option<Vec<String>>,
+    pub valid_from: Option<String>,
+    pub valid_until: Option<String>,
+    pub enabled: Option<bool>,
+}
+
+impl From<TomlPolicyRuleConfig> for PolicyRuleConfig {
+    fn from(cfg: TomlPolicyRuleConfig) -> Self {
+        Self {
+            name: cfg.name,
+            rule_type: cfg.rule_type,
+            profile: cfg.profile,
+            ca: cfg.ca,
+            account: cfg.account,
+            account_group: cfg.account_group,
+            identifier: cfg.identifier,
+            key_type: cfg.key_type,
+            valid_from: cfg.valid_from,
+            valid_until: cfg.valid_until,
+            enabled: cfg.enabled,
+        }
+    }
+}
+
+/// The admin HTTP API's request-body shape for a policy rule (the `rule`
+/// field of `POST`/`PUT /admin/policy/rules`).
+///
+/// Converted into the canonical [`PolicyRuleConfig`] via [`From`] before
+/// validation (`to_abac_rule`) and storage — see [`PolicyRuleConfig`]'s doc
+/// comment for why this is a separate type rather than reusing the
+/// canonical one directly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct PolicyRuleRequest {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub rule_type: RuleTypeConfig,
+    pub profile: Option<Vec<String>>,
+    pub ca: Option<Vec<String>>,
+    pub account: Option<Vec<String>>,
+    pub account_group: Option<Vec<String>>,
+    pub identifier: Option<Vec<String>>,
+    pub key_type: Option<Vec<String>>,
+    pub valid_from: Option<String>,
+    pub valid_until: Option<String>,
+    pub enabled: Option<bool>,
+}
+
+impl From<PolicyRuleRequest> for PolicyRuleConfig {
+    fn from(cfg: PolicyRuleRequest) -> Self {
+        Self {
+            name: cfg.name,
+            rule_type: cfg.rule_type,
+            profile: cfg.profile,
+            ca: cfg.ca,
+            account: cfg.account,
+            account_group: cfg.account_group,
+            identifier: cfg.identifier,
+            key_type: cfg.key_type,
+            valid_from: cfg.valid_from,
+            valid_until: cfg.valid_until,
+            enabled: cfg.enabled,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyConfig {
@@ -62,7 +156,7 @@ pub struct PolicyConfig {
     pub mode: PolicyMode,
     pub rules_file: Option<String>,
     #[serde(default)]
-    pub rules: Vec<PolicyRuleConfig>,
+    pub rules: Vec<TomlPolicyRuleConfig>,
 }
 
 #[derive(Debug)]
@@ -213,7 +307,7 @@ mod tests {
             name = "deny-all"
             type = "deny"
         "#;
-        let rule: PolicyRuleConfig = toml::from_str(toml_str).unwrap();
+        let rule: TomlPolicyRuleConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(rule.name, "deny-all");
         assert!(matches!(rule.rule_type, RuleTypeConfig::Deny));
     }
@@ -228,7 +322,7 @@ mod tests {
             type = "deny"
             identifer = ["dns:.*\\.internal\\.example\\.com$"]
         "#;
-        let err = toml::from_str::<PolicyRuleConfig>(toml_str).unwrap_err();
+        let err = toml::from_str::<TomlPolicyRuleConfig>(toml_str).unwrap_err();
         assert!(
             err.to_string().contains("identifer") || err.to_string().contains("unknown field"),
             "expected an unknown-field error, got: {err}"
@@ -257,7 +351,7 @@ mod tests {
             valid_until = "2026-12-31T23:59:59Z"
             enabled = true
         "#;
-        let rule: PolicyRuleConfig = toml::from_str(toml_str).unwrap();
+        let rule: TomlPolicyRuleConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(rule.profile.as_ref().unwrap(), &["tls-server"]);
     }
 
@@ -432,5 +526,76 @@ mod tests {
                 "dimension '{dim}' missing from AbacRule — PolicyRuleConfig or set_dimension is out of sync"
             );
         }
+    }
+
+    #[test]
+    fn toml_policy_rule_config_into_policy_rule_config_preserves_fields() {
+        let toml_rule = TomlPolicyRuleConfig {
+            name: "toml-rule".into(),
+            rule_type: RuleTypeConfig::Deny,
+            profile: Some(vec!["tls-server".into()]),
+            ca: Some(vec!["prod".into()]),
+            account: Some(vec!["acct-1".into()]),
+            account_group: Some(vec!["group-1".into()]),
+            identifier: Some(vec!["dns:.*".into()]),
+            key_type: Some(vec!["ec:P-256".into()]),
+            valid_from: Some("2026-01-01T00:00:00Z".into()),
+            valid_until: Some("2026-12-31T23:59:59Z".into()),
+            enabled: Some(false),
+        };
+        let cfg: PolicyRuleConfig = toml_rule.clone().into();
+        assert_eq!(cfg.name, toml_rule.name);
+        assert_eq!(cfg.rule_type, toml_rule.rule_type);
+        assert_eq!(cfg.profile, toml_rule.profile);
+        assert_eq!(cfg.ca, toml_rule.ca);
+        assert_eq!(cfg.account, toml_rule.account);
+        assert_eq!(cfg.account_group, toml_rule.account_group);
+        assert_eq!(cfg.identifier, toml_rule.identifier);
+        assert_eq!(cfg.key_type, toml_rule.key_type);
+        assert_eq!(cfg.valid_from, toml_rule.valid_from);
+        assert_eq!(cfg.valid_until, toml_rule.valid_until);
+        assert_eq!(cfg.enabled, toml_rule.enabled);
+    }
+
+    #[test]
+    fn policy_rule_request_into_policy_rule_config_preserves_fields() {
+        let request = PolicyRuleRequest {
+            name: "api-rule".into(),
+            rule_type: RuleTypeConfig::Allow,
+            profile: Some(vec!["web".into()]),
+            ca: None,
+            account: None,
+            account_group: Some(vec!["prod-infra".into()]),
+            identifier: Some(vec!["dns:.*\\.example\\.com$".into()]),
+            key_type: None,
+            valid_from: None,
+            valid_until: None,
+            enabled: Some(true),
+        };
+        let cfg: PolicyRuleConfig = request.clone().into();
+        assert_eq!(cfg.name, request.name);
+        assert_eq!(cfg.rule_type, request.rule_type);
+        assert_eq!(cfg.profile, request.profile);
+        assert_eq!(cfg.ca, request.ca);
+        assert_eq!(cfg.account, request.account);
+        assert_eq!(cfg.account_group, request.account_group);
+        assert_eq!(cfg.identifier, request.identifier);
+        assert_eq!(cfg.key_type, request.key_type);
+        assert_eq!(cfg.valid_from, request.valid_from);
+        assert_eq!(cfg.valid_until, request.valid_until);
+        assert_eq!(cfg.enabled, request.enabled);
+    }
+
+    /// Mirrors `deserialize_rejects_unknown_field` for the admin-API input
+    /// path (JSON, not TOML) — this is the client-input surface where
+    /// typo-protection matters most.
+    #[test]
+    fn policy_rule_request_rejects_unknown_field() {
+        let json = r#"{"name": "deny-internal", "type": "deny", "identifer": ["x"]}"#;
+        let err = serde_json::from_str::<PolicyRuleRequest>(json).unwrap_err();
+        assert!(
+            err.to_string().contains("identifer") || err.to_string().contains("unknown field"),
+            "expected an unknown-field error, got: {err}"
+        );
     }
 }
