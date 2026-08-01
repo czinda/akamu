@@ -307,4 +307,16 @@ mod tests {
         let rule_val = specific(&["prod-infra"]);
         assert!(m.matches(&rule_val, &str_attr("_account_"), &[str_attr("prod-infra")],));
     }
+
+    /// Mirrors `regex_matcher_no_bloom_filter`. This flag tells abac-rs not
+    /// to bloom-filter-prefilter a pattern-matched dimension; if it were
+    /// ever flipped to `true` without a matching change to how glob
+    /// patterns get indexed, abac-rs could pre-filter out a deny rule whose
+    /// glob pattern would have matched — a silent policy bypass, not a
+    /// crash — so this is worth pinning down explicitly rather than relying
+    /// on the type's default.
+    #[test]
+    fn glob_matcher_no_bloom_filter() {
+        assert!(!GlobMatcher.supports_bloom_filter());
+    }
 }

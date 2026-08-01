@@ -129,6 +129,11 @@ impl IssuanceRequest {
 mod tests {
     use super::*;
 
+    /// Asserts each setter's exact dimension value, not just that *some*
+    /// attribute got set — the previous `!attributes().is_empty()` assertion
+    /// could not fail if e.g. `.key_type(...)` or `.account_groups(...)`
+    /// silently stopped doing anything, as long as any other setter still
+    /// worked.
     #[test]
     fn builder_sets_all_dimensions() {
         let req = IssuanceRequest::builder()
@@ -141,7 +146,31 @@ mod tests {
             .unwrap()
             .with_identifier("dns", "example.com")
             .unwrap();
-        assert!(!req.0.attributes().is_empty());
+
+        assert_eq!(
+            req.0.get_value(dimension::ACCOUNT),
+            Some(&AttributeType::String("acct-1".into()))
+        );
+        assert_eq!(
+            req.0.get_groups(dimension::ACCOUNT_GROUP),
+            Some(&[AttributeType::String("prod-infra".into())][..])
+        );
+        assert_eq!(
+            req.0.get_value(dimension::PROFILE),
+            Some(&AttributeType::String("tls-server".into()))
+        );
+        assert_eq!(
+            req.0.get_value(dimension::CA),
+            Some(&AttributeType::String("prod".into()))
+        );
+        assert_eq!(
+            req.0.get_value(dimension::KEY_TYPE),
+            Some(&AttributeType::String("ec:P-256".into()))
+        );
+        assert_eq!(
+            req.0.get_value(dimension::IDENTIFIER),
+            Some(&AttributeType::String("dns:example.com".into()))
+        );
     }
 
     #[test]
@@ -152,7 +181,23 @@ mod tests {
             .ca("default")
             .build()
             .unwrap();
-        assert!(!req.0.attributes().is_empty());
+        assert_eq!(
+            req.0.get_value(dimension::ACCOUNT),
+            Some(&AttributeType::String("acct-1".into()))
+        );
+        assert_eq!(
+            req.0.get_value(dimension::PROFILE),
+            Some(&AttributeType::String("default".into()))
+        );
+        assert_eq!(
+            req.0.get_value(dimension::CA),
+            Some(&AttributeType::String("default".into()))
+        );
+        assert_eq!(
+            req.0.get_value(dimension::IDENTIFIER),
+            None,
+            "no identifier was set, and none should be assumed"
+        );
     }
 
     #[test]
