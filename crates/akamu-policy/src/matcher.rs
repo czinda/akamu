@@ -10,6 +10,24 @@ pub const MAX_REGEX_PATTERNS_PER_DIM: usize = 64;
 
 const MAX_CACHE_ENTRIES: NonZeroUsize = NonZeroUsize::new(1024).unwrap();
 
+/// Wraps `pattern` in a non-capturing group anchored to the whole string
+/// (`^(?:pattern)$`), unless it is already fully anchored — preventing a
+/// pattern like `dns:.*\.example\.com` from matching as an unintended
+/// substring (e.g. `dns:www.example.com.evil.org`).
+///
+/// Used identically by both `validate_regex_patterns` (rule-creation time)
+/// and `RegexMatcher::get_or_compile` (match time) so that "this pattern
+/// validated" and "this pattern will compile at match time" are provably
+/// the same claim, rather than two independently-maintained transformations
+/// of the same string that could silently diverge.
+fn anchor_pattern(pattern: &str) -> std::borrow::Cow<'_, str> {
+    if pattern.starts_with('^') && pattern.ends_with('$') {
+        std::borrow::Cow::Borrowed(pattern)
+    } else {
+        std::borrow::Cow::Owned(format!("^(?:{pattern})$"))
+    }
+}
+
 pub struct RegexMatcher {
     cache: Mutex<lru::LruCache<String, Arc<regex::Regex>>>,
 }
@@ -37,11 +55,7 @@ impl RegexMatcher {
         if let Some(re) = cache.get(pattern) {
             return Some(Arc::clone(re));
         }
-        let anchored = if pattern.starts_with('^') && pattern.ends_with('$') {
-            pattern.to_string()
-        } else {
-            format!("^(?:{pattern})$")
-        };
+        let anchored = anchor_pattern(pattern);
         match regex::Regex::new(&anchored) {
             Ok(re) => {
                 let re = Arc::new(re);
@@ -49,10 +63,30 @@ impl RegexMatcher {
                 Some(re)
             }
             Err(e) => {
-                tracing::warn!(
+                // Every pattern reaching here already passed
+                // `validate_regex_patterns` at rule-creation time, so
+                // reaching this branch means the anchoring transform below
+                // diverged from validation's (see Finding 13 / the shared
+                // `anchor_pattern` helper) — an invariant violation, not a
+                // routine input-validation failure, hence `error!` not `warn!`.
+                //
+                // Returning `None` (no match) here is deliberate, not an
+                // oversight: this matcher has no way to know whether the
+                // caller is checking an allow rule or a deny rule for this
+                // dimension. Unconditionally returning "matches" to fail
+                // closed for deny rules would simultaneously make allow
+                // rules fail *open* (falsely granting whatever the broken
+                // pattern was meant to gate) — trading a narrow, mitigated
+                // risk for a broader one. "No match" is safe for allow rules
+                // (falls through to default-deny) and only a residual risk
+                // for deny rules sharing this exact pattern, which
+                // unification with validation is meant to make unreachable.
+                tracing::error!(
                     pattern,
                     error = %e,
-                    "regex pattern failed to compile at evaluation time — search DB for rules containing this pattern to identify the source"
+                    "invariant violation: regex pattern passed validation but failed to \
+                     compile at evaluation time — search DB for rules containing this \
+                     pattern to identify the source; treating as no-match"
                 );
                 None
             }
@@ -147,6 +181,11 @@ impl Matcher for GlobMatcher {
 
 /// Validate that all regex patterns in a rule config compile successfully,
 /// enforcing size and count limits to prevent resource exhaustion.
+///
+/// Compiles the same anchored form `RegexMatcher::get_or_compile` will use
+/// at match time (via the shared `anchor_pattern` helper), not the raw
+/// pattern — otherwise a pattern could pass validation here while its
+/// anchored form fails to compile at match time.
 pub fn validate_regex_patterns(patterns: &[String]) -> Result<(), crate::PolicyError> {
     if patterns.len() > MAX_REGEX_PATTERNS_PER_DIM {
         return Err(crate::PolicyError::Validation(format!(
@@ -161,7 +200,7 @@ pub fn validate_regex_patterns(patterns: &[String]) -> Result<(), crate::PolicyE
                 pat.len()
             )));
         }
-        regex::Regex::new(pat)?;
+        regex::Regex::new(&anchor_pattern(pat))?;
     }
     Ok(())
 }
@@ -197,6 +236,29 @@ mod tests {
     #[test]
     fn regex_matcher_no_bloom_filter() {
         assert!(!RegexMatcher::new().supports_bloom_filter());
+    }
+
+    #[test]
+    fn anchor_pattern_wraps_unanchored_patterns() {
+        assert_eq!(anchor_pattern("abc"), "^(?:abc)$");
+    }
+
+    #[test]
+    fn anchor_pattern_leaves_fully_anchored_patterns_unchanged() {
+        assert_eq!(anchor_pattern("^abc$"), "^abc$");
+    }
+
+    /// Regression guard for Finding 13: `validate_regex_patterns` and
+    /// `RegexMatcher::get_or_compile` must compile the exact same anchored
+    /// string via the shared `anchor_pattern` helper, so "validated" and
+    /// "will compile at match time" are provably the same claim rather than
+    /// two independently-maintained transforms that could silently diverge.
+    #[test]
+    fn validate_and_match_time_anchoring_agree() {
+        let pattern = r"dns:.*\.example\.com$"; // ends in `$` but doesn't start with `^`
+        assert!(validate_regex_patterns(&[pattern.to_string()]).is_ok());
+        let m = RegexMatcher::new();
+        assert!(m.get_or_compile(pattern).is_some());
     }
 
     #[test]
