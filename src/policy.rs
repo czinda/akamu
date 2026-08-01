@@ -23,6 +23,41 @@ pub struct ParsedDbRules {
     pub skipped_ids: Vec<String>,
 }
 
+/// Refuse to proceed with a corrupt-rule-filtered (and therefore weaker)
+/// policy in Enforce mode; log and allow proceeding in Shadow mode, which
+/// never blocks issuance on policy completeness.
+///
+/// Shared by `rebuild_issuance_policy` (every subsequent rebuild) and
+/// startup's `build_policy_engine` (`main.rs`) so a restart applies the
+/// exact same fail-closed contract as a runtime rebuild, rather than being
+/// the one path that silently boots a weaker policy.
+pub fn guard_corrupt_rules(
+    mode: akamu_policy::config::PolicyMode,
+    parsed: &ParsedDbRules,
+    context: &str,
+) -> Result<(), PolicyRebuildError> {
+    if parsed.skipped == 0 {
+        return Ok(());
+    }
+    if mode == akamu_policy::config::PolicyMode::Enforce {
+        tracing::error!(
+            skipped = parsed.skipped,
+            ids = ?parsed.skipped_ids,
+            "{context} REJECTED in enforce mode: corrupt rules would be silently dropped"
+        );
+        return Err(PolicyRebuildError::CorruptRules {
+            skipped: parsed.skipped,
+            ids: parsed.skipped_ids.clone(),
+        });
+    }
+    tracing::warn!(
+        skipped = parsed.skipped,
+        ids = ?parsed.skipped_ids,
+        "{context} proceeding with incomplete rule set (shadow mode)"
+    );
+    Ok(())
+}
+
 /// Parse enabled DB policy rules, logging and skipping corrupt entries.
 pub fn parse_db_rules(rows: &[db::policy_rules::PolicyRuleRow]) -> ParsedDbRules {
     let mut rules = Vec::new();
@@ -81,26 +116,7 @@ pub async fn rebuild_issuance_policy(state: &AppState) -> Result<(), PolicyRebui
         })?;
 
     let parsed = parse_db_rules(&rows);
-
-    if parsed.skipped > 0 {
-        use akamu_policy::config::PolicyMode;
-        if *state.issuance_policy.mode() == PolicyMode::Enforce {
-            tracing::error!(
-                skipped = parsed.skipped,
-                ids = ?parsed.skipped_ids,
-                "policy rebuild REJECTED in enforce mode: corrupt rules would be silently dropped"
-            );
-            return Err(PolicyRebuildError::CorruptRules {
-                skipped: parsed.skipped,
-                ids: parsed.skipped_ids,
-            });
-        }
-        tracing::warn!(
-            skipped = parsed.skipped,
-            ids = ?parsed.skipped_ids,
-            "policy rebuild proceeding with incomplete rule set (shadow mode)"
-        );
-    }
+    guard_corrupt_rules(*state.issuance_policy.mode(), &parsed, "policy rebuild")?;
 
     state.issuance_policy.rebuild(parsed.rules).map_err(|e| {
         let msg = format!("{e}");
@@ -306,4 +322,43 @@ pub async fn evaluate_issuance_policy(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use akamu_policy::config::PolicyMode;
+
+    fn parsed_with_skipped(skipped: usize) -> ParsedDbRules {
+        ParsedDbRules {
+            rules: vec![],
+            skipped,
+            skipped_ids: (0..skipped).map(|i| format!("id-{i}")).collect(),
+        }
+    }
+
+    #[test]
+    fn guard_corrupt_rules_ok_when_nothing_skipped() {
+        guard_corrupt_rules(PolicyMode::Enforce, &parsed_with_skipped(0), "test").unwrap();
+        guard_corrupt_rules(PolicyMode::Shadow, &parsed_with_skipped(0), "test").unwrap();
+    }
+
+    /// The exact contract Finding 9 was about: startup (which calls this via
+    /// build_policy_engine) must refuse to proceed with a corrupt-rule-
+    /// filtered policy in Enforce mode, the same as every subsequent
+    /// rebuild already does.
+    #[test]
+    fn guard_corrupt_rules_rejects_in_enforce_mode() {
+        let err =
+            guard_corrupt_rules(PolicyMode::Enforce, &parsed_with_skipped(2), "test").unwrap_err();
+        assert!(
+            matches!(err, PolicyRebuildError::CorruptRules { skipped: 2, .. }),
+            "expected CorruptRules{{skipped: 2}}, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn guard_corrupt_rules_proceeds_in_shadow_mode() {
+        guard_corrupt_rules(PolicyMode::Shadow, &parsed_with_skipped(2), "test").unwrap();
+    }
 }
