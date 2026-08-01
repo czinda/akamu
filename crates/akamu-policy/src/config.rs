@@ -30,6 +30,13 @@ pub enum RuleTypeConfig {
 /// absent — `None` on a dimension field means "no restriction" — turning a
 /// typo'd deny rule into a silent no-op or an allow rule into an
 /// unintentionally broader grant, with no error at any layer.
+///
+/// On each `Option<Vec<String>>` dimension field, `None` means "unrestricted"
+/// (the dimension is omitted from the built rule). An explicit empty list
+/// (`Some(vec![])`, e.g. `identifier = []` in TOML) means the opposite — it
+/// constrains the dimension to a set with no members, so it can never match
+/// — and is rejected by `to_abac_rule_scoped` rather than silently accepted
+/// as a no-op rule.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -92,6 +99,31 @@ impl PolicyRuleConfig {
             return Err(PolicyError::InvalidRule(
                 "rule name must not be empty".into(),
             ));
+        }
+
+        // `None` means "unrestricted" (the dimension is omitted from the
+        // built rule entirely — see set_dimension's doc comment). An
+        // explicit empty list looks like the same thing to a human editing
+        // config but means the opposite: it inserts a dimension constraint
+        // that can never be satisfied, making the whole rule permanently
+        // inert. Reject it outright rather than silently shipping a
+        // no-op — for a deny rule, a no-op is a silent bypass of whatever
+        // the rule was meant to restrict.
+        for (dim_name, values) in [
+            ("profile", &self.profile),
+            ("ca", &self.ca),
+            ("account", &self.account),
+            ("account_group", &self.account_group),
+            ("identifier", &self.identifier),
+            ("key_type", &self.key_type),
+        ] {
+            if values.as_ref().is_some_and(|v| v.is_empty()) {
+                return Err(PolicyError::InvalidRule(format!(
+                    "rule '{}': dimension '{dim_name}' is an explicit empty list, which can \
+                     never match — omit the field entirely for \"no restriction\" instead",
+                    self.name
+                )));
+            }
         }
 
         if let Some(ref patterns) = self.identifier {
@@ -243,6 +275,39 @@ mod tests {
             }
             AbacRuleKind::Temporal(_) => panic!("expected Regular, got Temporal"),
         }
+    }
+
+    /// See the `None`-vs-`Some(vec![])` doc comment on `PolicyRuleConfig`:
+    /// an explicit empty list must be rejected, not silently accepted as an
+    /// unmatchable (and therefore inert) rule.
+    #[test]
+    fn to_abac_rule_rejects_explicit_empty_identifier_list() {
+        let cfg = PolicyRuleConfig {
+            name: "deny-nothing".into(),
+            rule_type: RuleTypeConfig::Deny,
+            identifier: Some(vec![]),
+            ..Default::default()
+        };
+        let err = cfg.to_abac_rule().unwrap_err();
+        assert!(
+            matches!(err, PolicyError::InvalidRule(ref msg) if msg.contains("identifier")),
+            "expected InvalidRule mentioning 'identifier', got {err:?}"
+        );
+    }
+
+    #[test]
+    fn to_abac_rule_rejects_explicit_empty_account_group_list() {
+        let cfg = PolicyRuleConfig {
+            name: "allow-nobody".into(),
+            rule_type: RuleTypeConfig::Allow,
+            account_group: Some(vec![]),
+            ..Default::default()
+        };
+        let err = cfg.to_abac_rule().unwrap_err();
+        assert!(
+            matches!(err, PolicyError::InvalidRule(ref msg) if msg.contains("account_group")),
+            "expected InvalidRule mentioning 'account_group', got {err:?}"
+        );
     }
 
     #[test]
