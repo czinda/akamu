@@ -257,12 +257,28 @@ pub fn spawn_landmark_task(state: Arc<AppState>) -> tokio::task::JoinHandle<()> 
         loop {
             interval.tick().await;
             let now = crate::util::unix_now();
+            let ttl = state
+                .config
+                .gossip
+                .as_ref()
+                .map(|g| g.ownership_ttl_secs as i64)
+                .unwrap_or(150);
             for (ca_id, ca) in state.cas.iter() {
                 let mtc = &ca.mtc;
                 let (Some(log), Some(signing_key)) = (mtc.log.as_ref(), mtc.signing_key.as_ref())
                 else {
                     continue;
                 };
+                // See the identical gate in mtc::checkpoint::spawn_checkpoint_task:
+                // only the elected writer's log has this CA's full leaf set, and
+                // this tick also renews (or, if vacant, acquires) that election.
+                let is_writer = {
+                    let mut crdt = state.crdt.write().await;
+                    crdt.claim_mtc_writer(ca_id, &state.node_id, now, ttl)
+                };
+                if !is_writer {
+                    continue;
+                }
                 if now - mtc.last_landmark_at() < mtc.landmark_interval_secs as i64 {
                     continue;
                 }
