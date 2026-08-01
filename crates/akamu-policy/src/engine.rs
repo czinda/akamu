@@ -214,6 +214,15 @@ mod tests {
         }
     }
 
+    fn allow_rule_account_group(name: &str, pattern: &str) -> PolicyRuleConfig {
+        PolicyRuleConfig {
+            name: name.into(),
+            rule_type: RuleTypeConfig::Allow,
+            account_group: Some(vec![pattern.into()]),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn engine_allows_matching_rule() {
         let engine = IssuancePolicyEngine::new(
@@ -502,6 +511,48 @@ mod tests {
             "a zero-dimension deny-all rule must still apply even after another \
              rule in the same policy causes the 'identifier' dimension to be \
              indexed by abac-rs's composite index"
+        );
+    }
+
+    /// End-to-end proof that `account_group` grants (backed by `GlobMatcher`)
+    /// actually work through a real engine. `GlobMatcher`'s glob-matching and
+    /// `IssuanceRequestBuilder::account_groups`'s sentinel-plus-groups
+    /// plumbing are each unit-tested in isolation elsewhere, but nothing
+    /// previously proved the wiring between them — a regression breaking
+    /// either side would not have failed any existing test.
+    #[test]
+    fn account_group_allow_rule_grants_matching_group_and_denies_others() {
+        let engine = IssuancePolicyEngine::new(
+            PolicyMode::Enforce,
+            vec![allow_rule_account_group("allow-prod-infra", "prod-*")],
+            vec![],
+        )
+        .unwrap();
+
+        let granted = IssuanceRequest::builder()
+            .account("acct-1")
+            .account_groups(&["prod-infra".into()])
+            .ca("prod")
+            .build()
+            .unwrap();
+        assert_eq!(
+            engine.evaluate(&granted),
+            Decision::Allow,
+            "a request whose account_groups includes a group matching the \
+             rule's glob pattern must be allowed"
+        );
+
+        let ungranted = IssuanceRequest::builder()
+            .account("acct-2")
+            .account_groups(&["dev-infra".into()])
+            .ca("prod")
+            .build()
+            .unwrap();
+        assert_eq!(
+            engine.evaluate(&ungranted),
+            Decision::Deny,
+            "a request whose account_groups does not match the rule's glob \
+             pattern must fall through to default-deny"
         );
     }
 }
