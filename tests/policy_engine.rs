@@ -160,6 +160,82 @@ async fn evaluate_shadow_mode_allows_despite_policy_deny() {
     evaluate_issuance_policy(&state, &params).await.unwrap();
 }
 
+/// Regression test for a bypass where only the last identifier of a
+/// multi-SAN order was ever evaluated: a deny rule targeting an earlier
+/// identifier must still block the whole request. `crates/akamu-policy`'s
+/// own unit tests cover `evaluate_explained_identifiers` directly; this
+/// exercises the real production wiring (`evaluate_issuance_policy` ->
+/// `finalize_order`'s combinator) against a real `AppState`, which is the
+/// layer the original bug actually lived in.
+#[tokio::test]
+async fn evaluate_enforce_mode_denies_multi_san_order_when_any_identifier_is_denied() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = state_with_mode(tmp.path(), PolicyMode::Enforce).await;
+    insert_rule(
+        &state.db,
+        "r1",
+        r#"{"name":"allow-corp","type":"allow","identifier":["dns:.*\\.corp\\.example\\.com$"]}"#,
+        true,
+    )
+    .await;
+    insert_rule(
+        &state.db,
+        "r2",
+        r#"{"name":"deny-internal","type":"deny","identifier":["dns:.*\\.internal\\.example\\.com$"]}"#,
+        true,
+    )
+    .await;
+    rebuild_issuance_policy(&state).await.unwrap();
+
+    // The disallowed identifier is listed first, followed by a benign one
+    // that the allow rule would otherwise cover on its own — a regression
+    // where only the last identifier gets evaluated would incorrectly allow
+    // this order.
+    let allowed = [
+        ("dns", "host.internal.example.com"),
+        ("dns", "app.corp.example.com"),
+    ];
+    let params = PolicyCheckParams {
+        account_id: "acct-1",
+        ca_id: "default",
+        effective_profile: None,
+        allowed: &allowed,
+        key_type: None,
+    };
+    let result = evaluate_issuance_policy(&state, &params).await;
+    assert!(
+        matches!(result, Err(akamu::error::AcmeError::Unauthorized(_))),
+        "a multi-SAN order with even one denied identifier must be rejected \
+         as a whole, expected Unauthorized, got {result:?}"
+    );
+}
+
+/// Mirror of the test above for the all-allowed case, confirming the
+/// combinator doesn't over-correct into denying a legitimate multi-SAN order.
+#[tokio::test]
+async fn evaluate_enforce_mode_allows_multi_san_order_when_every_identifier_matches() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = state_with_mode(tmp.path(), PolicyMode::Enforce).await;
+    insert_rule(
+        &state.db,
+        "r1",
+        r#"{"name":"allow-corp","type":"allow","identifier":["dns:.*\\.corp\\.example\\.com$"]}"#,
+        true,
+    )
+    .await;
+    rebuild_issuance_policy(&state).await.unwrap();
+
+    let allowed = [("dns", "a.corp.example.com"), ("dns", "b.corp.example.com")];
+    let params = PolicyCheckParams {
+        account_id: "acct-1",
+        ca_id: "default",
+        effective_profile: None,
+        allowed: &allowed,
+        key_type: None,
+    };
+    evaluate_issuance_policy(&state, &params).await.unwrap();
+}
+
 /// Regression test for the concurrent-rebuild race fixed by
 /// `policy_rebuild_lock` (task #26): `rebuild_issuance_policy` must not
 /// proceed while another holder has the lock, and must resume as soon as it
