@@ -319,87 +319,8 @@ pub async fn finalize_order(
     )
     .await?;
 
-    // For MTC issuance profiles, build a StandaloneCertificate from the issued
-    // TBSCertificate + an MTC Merkle inclusion proof.  This is done synchronously
-    // before the DB transaction so the mtc_log_index is available at insert time.
-    let (final_cert_der, final_cert_pem, mut final_mtc_index) = if cert_params.issue_as_mtc {
-        let ca_mtc = &order_ca.mtc;
-        let Some(log) = &ca_mtc.log else {
-            return Err(AcmeError::InvalidProfile(
-                "profile 'issue_as = \"mtc\"' requires [ca.mtc] to be enabled".into(),
-            ));
-        };
-
-        let logid_dn = ca_mtc.logid_issuer_dn_der.clone().ok_or_else(|| {
-            AcmeError::Mtc("logid_issuer_dn_der not configured; MTC signing key required".into())
-        })?;
-        let idx = crate::mtc::log::append_cert_to_log(
-            log,
-            issued.cert_der.clone(),
-            logid_dn,
-            ca_mtc.algorithm,
-        )
-        .await
-        .map_err(|e| AcmeError::Mtc(format!("MTC log append for MTC-profile cert: {e}")))?;
-
-        let (proof, tree_size) = crate::mtc::log::proof_and_tree_size(log, idx)
-            .await
-            .map_err(|e| {
-                AcmeError::Mtc(format!("MTC inclusion proof for cert {}: {e}", issued.id))
-            })?;
-
-        let mtc_signing_key = ca_mtc.signing_key.as_ref().ok_or_else(|| {
-            AcmeError::InvalidProfile(
-                "profile 'issue_as = \"mtc\"' requires [ca.mtc.signing_key] to be configured"
-                    .into(),
-            )
-        })?;
-        let spki_der = mtc_signing_key
-            .public_key()
-            .map_err(|e| AcmeError::Crypto(format!("MTC signing key SPKI for standalone: {e}")))?
-            .spki_der()
-            .to_vec();
-        let standalone_der = crate::mtc::standalone::build_standalone_der(
-            crate::mtc::standalone::StandaloneParams {
-                cert_der: &issued.cert_der,
-                leaf_index: idx,
-                proof,
-                tree_size,
-                spki_der: &spki_der,
-                log_algorithm: ca_mtc.algorithm,
-                cosignature_ders: &[],
-                log_number: ca_mtc.log_number,
-                subtree_start: 0,
-            },
-        )?;
-
-        let pem = String::from_utf8(der_to_pem("STANDALONE MTC CERTIFICATE", &standalone_der))
-            .map_err(|_| AcmeError::Internal("MTC PEM bytes are not valid UTF-8".into()))?;
-
-        (standalone_der, pem, Some(idx as i64))
-    } else {
-        (issued.cert_der.clone(), issued.cert_pem.clone(), None)
-    };
-
-    // MTC sequencing for regular (non-MTC) profiles: best-effort.
-    // If log append fails, the X.509 cert is still valid — MTC is an enhancement,
-    // not a requirement for this profile. The error is logged for operator awareness.
-    let mtc_standalone_pending = if cert_params.issue_as_mtc {
-        Some(final_cert_der.clone())
-    } else if order_ca.mtc.is_enabled() {
-        match append_and_build_standalone(&order_ca.mtc, &issued).await {
-            Ok((idx, standalone)) => {
-                final_mtc_index = Some(idx);
-                standalone
-            }
-            Err(e) => {
-                tracing::error!(cert_id = %issued.id, "MTC sequencing: {e}");
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let (final_cert_der, final_cert_pem, final_mtc_index, mtc_standalone_pending) =
+        build_mtc_outputs(order_ca, cert_params.issue_as_mtc, &issued).await?;
 
     // Extract subject DN from the leaf cert for searchability (FAU_SCR_EXT.1).
     let subject_dn = extract_subject_dn(&issued.cert_der);
@@ -1095,4 +1016,106 @@ async fn issue_leaf_certificate(
             .map_err(|e| AcmeError::Internal(format!("issue task: {e}")))?
         }
     }
+}
+
+/// Build the MTC-related outputs for this issuance.
+///
+/// For `issue_as_mtc` profiles, builds a full StandaloneCertificate from the
+/// issued TBSCertificate + an MTC Merkle inclusion proof, done synchronously
+/// so `mtc_log_index` is available at DB-insert time. For regular profiles
+/// with MTC enabled on the CA, does best-effort background sequencing
+/// instead — a log-append failure here does not fail issuance, since MTC is
+/// an enhancement, not a requirement, for non-MTC profiles.
+///
+/// Returns `(final_cert_der, final_cert_pem, final_mtc_index, mtc_standalone_pending)`.
+async fn build_mtc_outputs(
+    order_ca: &Arc<crate::state::CaState>,
+    issue_as_mtc: bool,
+    issued: &ca::issue::IssuedCert,
+) -> Result<(Vec<u8>, String, Option<i64>, Option<Vec<u8>>), AcmeError> {
+    let (final_cert_der, final_cert_pem, mut final_mtc_index) = if issue_as_mtc {
+        let ca_mtc = &order_ca.mtc;
+        let Some(log) = &ca_mtc.log else {
+            return Err(AcmeError::InvalidProfile(
+                "profile 'issue_as = \"mtc\"' requires [ca.mtc] to be enabled".into(),
+            ));
+        };
+
+        let logid_dn = ca_mtc.logid_issuer_dn_der.clone().ok_or_else(|| {
+            AcmeError::Mtc("logid_issuer_dn_der not configured; MTC signing key required".into())
+        })?;
+        let idx = crate::mtc::log::append_cert_to_log(
+            log,
+            issued.cert_der.clone(),
+            logid_dn,
+            ca_mtc.algorithm,
+        )
+        .await
+        .map_err(|e| AcmeError::Mtc(format!("MTC log append for MTC-profile cert: {e}")))?;
+
+        let (proof, tree_size) = crate::mtc::log::proof_and_tree_size(log, idx)
+            .await
+            .map_err(|e| {
+                AcmeError::Mtc(format!("MTC inclusion proof for cert {}: {e}", issued.id))
+            })?;
+
+        let mtc_signing_key = ca_mtc.signing_key.as_ref().ok_or_else(|| {
+            AcmeError::InvalidProfile(
+                "profile 'issue_as = \"mtc\"' requires [ca.mtc.signing_key] to be configured"
+                    .into(),
+            )
+        })?;
+        let spki_der = mtc_signing_key
+            .public_key()
+            .map_err(|e| AcmeError::Crypto(format!("MTC signing key SPKI for standalone: {e}")))?
+            .spki_der()
+            .to_vec();
+        let standalone_der = crate::mtc::standalone::build_standalone_der(
+            crate::mtc::standalone::StandaloneParams {
+                cert_der: &issued.cert_der,
+                leaf_index: idx,
+                proof,
+                tree_size,
+                spki_der: &spki_der,
+                log_algorithm: ca_mtc.algorithm,
+                cosignature_ders: &[],
+                log_number: ca_mtc.log_number,
+                subtree_start: 0,
+            },
+        )?;
+
+        let pem = String::from_utf8(der_to_pem("STANDALONE MTC CERTIFICATE", &standalone_der))
+            .map_err(|_| AcmeError::Internal("MTC PEM bytes are not valid UTF-8".into()))?;
+
+        (standalone_der, pem, Some(idx as i64))
+    } else {
+        (issued.cert_der.clone(), issued.cert_pem.clone(), None)
+    };
+
+    // MTC sequencing for regular (non-MTC) profiles: best-effort.
+    // If log append fails, the X.509 cert is still valid — MTC is an enhancement,
+    // not a requirement for this profile. The error is logged for operator awareness.
+    let mtc_standalone_pending = if issue_as_mtc {
+        Some(final_cert_der.clone())
+    } else if order_ca.mtc.is_enabled() {
+        match append_and_build_standalone(&order_ca.mtc, issued).await {
+            Ok((idx, standalone)) => {
+                final_mtc_index = Some(idx);
+                standalone
+            }
+            Err(e) => {
+                tracing::error!(cert_id = %issued.id, "MTC sequencing: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    Ok((
+        final_cert_der,
+        final_cert_pem,
+        final_mtc_index,
+        mtc_standalone_pending,
+    ))
 }
