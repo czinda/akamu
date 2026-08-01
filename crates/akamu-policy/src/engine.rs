@@ -127,20 +127,21 @@ impl IssuancePolicyEngine {
         Ok(BuiltPolicy { policy, skipped })
     }
 
-    pub fn evaluate(&self, request: &IssuanceRequest) -> Decision {
-        let mut policy = self.policy.lock().unwrap_or_else(|e| {
+    /// Locks `self.policy`, recovering from poison rather than propagating
+    /// a panic from one caller into every other caller of this engine.
+    fn lock_policy(&self) -> std::sync::MutexGuard<'_, AbacPolicy> {
+        self.policy.lock().unwrap_or_else(|e| {
             tracing::error!("policy engine mutex was poisoned, recovering");
             e.into_inner()
-        });
-        policy.evaluate(&request.0)
+        })
+    }
+
+    pub fn evaluate(&self, request: &IssuanceRequest) -> Decision {
+        self.lock_policy().evaluate(&request.0)
     }
 
     pub fn evaluate_explained(&self, request: &IssuanceRequest) -> ExplainedDecision {
-        let mut policy = self.policy.lock().unwrap_or_else(|e| {
-            tracing::error!("policy engine mutex was poisoned, recovering");
-            e.into_inner()
-        });
-        policy.evaluate_explained(&request.0)
+        self.lock_policy().evaluate_explained(&request.0)
     }
 
     /// Evaluate `base` once per identifier (SAN) and return one
@@ -179,10 +180,7 @@ impl IssuancePolicyEngine {
         base: &IssuanceRequest,
         identifiers: &[(&str, &str)],
     ) -> Result<Vec<ExplainedDecision>, PolicyError> {
-        let mut policy = self.policy.lock().unwrap_or_else(|e| {
-            tracing::error!("policy engine mutex was poisoned, recovering");
-            e.into_inner()
-        });
+        let mut policy = self.lock_policy();
 
         if identifiers.is_empty() {
             // `base` carries no identifier attribute in this branch, so any
@@ -215,20 +213,12 @@ impl IssuancePolicyEngine {
     pub fn rebuild(&self, db_rules: Vec<PolicyRuleConfig>) -> Result<(), PolicyError> {
         let built = Self::build_policy(&self.toml_rules, &db_rules)?;
         Self::guard_skipped(self.mode, "rebuild", &built.skipped)?;
-        let mut guard = self.policy.lock().unwrap_or_else(|e| {
-            tracing::error!("policy engine mutex was poisoned, recovering");
-            e.into_inner()
-        });
-        *guard = built.policy;
+        *self.lock_policy() = built.policy;
         Ok(())
     }
 
     pub fn rule_count(&self) -> usize {
-        let policy = self.policy.lock().unwrap_or_else(|e| {
-            tracing::error!("policy engine mutex was poisoned, recovering");
-            e.into_inner()
-        });
-        policy.rule_count()
+        self.lock_policy().rule_count()
     }
 }
 
