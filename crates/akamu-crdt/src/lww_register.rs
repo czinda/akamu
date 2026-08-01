@@ -61,6 +61,14 @@ impl<T: Clone> LwwRegister<T> {
         self.value.as_ref()
     }
 
+    /// Mutable access to the stored value, if any. `pub(crate)`: used to
+    /// clamp a domain-specific embedded timestamp that duplicates this
+    /// register's own external `timestamp` (e.g. `OrderOwner`/
+    /// `MtcWriter::claimed_at`) — see `AkaCrdt::clamp_timestamps`.
+    pub(crate) fn get_mut(&mut self) -> Option<&mut T> {
+        self.value.as_mut()
+    }
+
     pub const fn timestamp(&self) -> i64 {
         self.timestamp
     }
@@ -97,6 +105,18 @@ impl<T: Clone> LwwRegister<T> {
     /// don't need a special case for single-value registers.
     pub const fn max_local_gen(&self) -> u64 {
         self.local_gen()
+    }
+
+    /// Clamps `timestamp` to `max` if it exceeds it. Returns 1 if clamped,
+    /// else 0 — matching `OrMap`/`LwwMap::clamp_timestamps`'s return type so
+    /// `crdt.rs`'s field macro can sum across every field uniformly.
+    pub fn clamp_timestamps(&mut self, max: i64) -> usize {
+        if self.timestamp > max {
+            self.timestamp = max;
+            1
+        } else {
+            0
+        }
     }
 
     /// Returns `Some(self)` if this register was written after `gen`, else `None`.
@@ -153,6 +173,15 @@ mod tests {
         reg.remove(100, "node-z");
         assert_eq!(reg.get(), None);
         assert!(reg.is_tombstone());
+    }
+
+    #[test]
+    fn clamp_timestamps_clamps_future_timestamp_only() {
+        let mut reg: LwwRegister<u32> = LwwRegister::default();
+        reg.set(1, 10_000, "node-a");
+        assert_eq!(reg.clamp_timestamps(1_000), 1);
+        assert_eq!(reg.timestamp(), 1_000);
+        assert_eq!(reg.clamp_timestamps(1_000), 0, "already within bound");
     }
 
     #[test]

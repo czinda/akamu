@@ -29,6 +29,13 @@ impl<K: Eq + std::hash::Hash + Clone, V: Clone> LwwMap<K, V> {
         self.entries.iter()
     }
 
+    /// Mutable access to every register. `pub(crate)`: used to clamp a
+    /// domain-specific embedded timestamp inside `V` — see
+    /// `AkaCrdt::clamp_timestamps`.
+    pub(crate) fn registers_mut(&mut self) -> impl Iterator<Item = &mut LwwRegister<V>> {
+        self.entries.values_mut()
+    }
+
     /// Set a value. Returns the `local_gen` of the register after the write
     /// (unchanged if the new timestamp did not win the LWW race).
     pub fn set(&mut self, key: K, value: V, timestamp: i64, node_id: &str) -> u64 {
@@ -112,6 +119,16 @@ impl<K: Eq + std::hash::Hash + Clone, V: Clone> LwwMap<K, V> {
             .unwrap_or(0)
     }
 
+    /// Clamps any register's timestamp exceeding `max` down to `max`.
+    /// Returns the number of registers that were clamped.
+    pub fn clamp_timestamps(&mut self, max: i64) -> usize {
+        let mut clamped = 0;
+        for r in self.entries.values_mut() {
+            clamped += r.clamp_timestamps(max);
+        }
+        clamped
+    }
+
     /// Insert a register directly from a DB row, preserving the stored `local_gen`.
     /// Used only by `db::load_from_db`; does not advance `CRDT_GENERATION`.
     #[cfg(feature = "db")]
@@ -166,5 +183,18 @@ mod tests {
         let delta = m.delta_since(0);
         assert!(delta.get("a").is_some());
         assert!(delta.get("b").is_some());
+    }
+
+    #[test]
+    fn clamp_timestamps_clamps_future_registers_only() {
+        let mut m: LwwMap<String, u32> = LwwMap::default();
+        m.set("future".to_owned(), 1, 10_000, "node-a");
+        m.set("past".to_owned(), 2, 50, "node-a");
+
+        let clamped = m.clamp_timestamps(1_000);
+
+        assert_eq!(clamped, 1);
+        assert_eq!(m.entries["future"].timestamp(), 1_000);
+        assert_eq!(m.entries["past"].timestamp(), 50);
     }
 }

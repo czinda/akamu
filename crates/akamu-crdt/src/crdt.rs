@@ -324,6 +324,37 @@ macro_rules! crdt_fields {
                 let Self { $($f,)+ $($np: _,)+ } = self;
                 $( $f.purge_old_tombstones(cutoff); )+
             }
+
+            /// Clamps every field's own timestamp metadata to `max`, logging
+            /// a warning per field that had at least one entry clamped.
+            /// Does not touch domain-specific timestamps embedded inside a
+            /// value (e.g. `OrderOwner`/`MtcWriter::claimed_at`) — see
+            /// `clamp_timestamps`, which layers that on top.
+            fn clamp_field_timestamps(&mut self, max: i64) {
+                let Self { $($f,)+ $($np,)+ } = self;
+                $(
+                    let n = $f.clamp_timestamps(max);
+                    if n > 0 {
+                        tracing::warn!(
+                            field = stringify!($f),
+                            count = n,
+                            max,
+                            "clamped future-dated CRDT entry timestamp(s) from gossip peer"
+                        );
+                    }
+                )+
+                $(
+                    let n = $np.clamp_timestamps(max);
+                    if n > 0 {
+                        tracing::warn!(
+                            field = stringify!($np),
+                            count = n,
+                            max,
+                            "clamped future-dated CRDT entry timestamp(s) from gossip peer"
+                        );
+                    }
+                )+
+            }
         }
     };
 }
@@ -335,6 +366,35 @@ crdt_fields! {
         mtc_cosignatures, order_owners,
     ],
     no_purge: [mtc_writer],
+}
+
+impl AkaCrdt {
+    /// Clamps every field's timestamps to `max`. Called on a gossip peer's
+    /// decoded `AkaCrdt` before merging it, so a compromised or
+    /// clock-skewed peer cannot use a far-future timestamp to win every
+    /// future merge tiebreak permanently — see
+    /// `gossip::handlers::gossip_sync` and `gossip::gossip_loop::run`.
+    ///
+    /// `order_owners`/`mtc_writer` additionally embed the claim timestamp
+    /// *inside* their value (`OrderOwner`/`MtcWriter::claimed_at`), which a
+    /// plain field-timestamp clamp does not touch — clamping only the
+    /// register's own external timestamp would still let a peer's
+    /// far-future `claimed_at` value make `is_order_owner`/`is_mtc_writer`
+    /// report the claim as live indefinitely, even after the register's
+    /// timestamp itself no longer wins new tiebreaks. Fix up both
+    /// embedded values here too, since `OrMap`/`LwwMap`/`LwwRegister` are
+    /// generic and have no notion of "the value contains a timestamp."
+    pub fn clamp_timestamps(&mut self, max: i64) {
+        self.clamp_field_timestamps(max);
+        for reg in self.order_owners.registers_mut() {
+            if let Some(owner) = reg.get_mut() {
+                owner.claimed_at = owner.claimed_at.min(max);
+            }
+        }
+        if let Some(writer) = self.mtc_writer.get_mut() {
+            writer.claimed_at = writer.claimed_at.min(max);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -666,6 +726,38 @@ mod tests {
 
         assert_eq!(crdt.accounts.tombstoned_values().count(), 0);
         assert!(crdt.is_mtc_writer("node-a", 100, 300));
+    }
+
+    #[test]
+    fn clamp_timestamps_bounds_an_ormap_field_and_the_no_purge_field() {
+        // A malicious or clock-skewed gossip peer asserting a far-future
+        // timestamp must not be able to win every future tiebreak forever
+        // (Finding 20) — this must hold for both a `full`-list OrMap field
+        // and the `no_purge` LwwRegister field, proving clamp_timestamps
+        // reaches every field the macro generates it for.
+        const FAR_FUTURE: i64 = 9_999_999_999;
+        let mut crdt = AkaCrdt::default();
+        crdt.accounts.upsert(
+            "acct-1".to_owned(),
+            AccountEntry {
+                account_id: "acct-1".to_owned(),
+                ..Default::default()
+            },
+            FAR_FUTURE,
+            "node-x",
+        );
+        crdt.claim_mtc_writer("node-x", FAR_FUTURE, 300);
+
+        let bound = 1_700_000_000i64;
+        crdt.clamp_timestamps(bound);
+
+        assert_eq!(
+            crdt.accounts.all_entries().next().unwrap().1.added_at,
+            bound
+        );
+        // is_mtc_writer checks claimed_at.saturating_add(ttl) >= now — with
+        // claimed_at clamped to `bound`, the claim must have lapsed by now.
+        assert!(!crdt.is_mtc_writer("node-x", bound + 301, 300));
     }
 
     #[test]

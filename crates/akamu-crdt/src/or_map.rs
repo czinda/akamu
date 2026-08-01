@@ -226,6 +226,28 @@ impl<K: Eq + std::hash::Hash + Clone, V: Clone> OrMap<K, V> {
             .max()
             .unwrap_or(0)
     }
+
+    /// Clamps any entry's `added_at`/`tombstone_at` exceeding `max` down to
+    /// `max`. Returns the number of entries that had at least one field
+    /// clamped.
+    pub fn clamp_timestamps(&mut self, max: i64) -> usize {
+        let mut clamped = 0;
+        for entry in self.entries.values_mut() {
+            let mut touched = false;
+            if entry.added_at > max {
+                entry.added_at = max;
+                touched = true;
+            }
+            if entry.tombstone_at.is_some_and(|t| t > max) {
+                entry.tombstone_at = Some(max);
+                touched = true;
+            }
+            if touched {
+                clamped += 1;
+            }
+        }
+        clamped
+    }
 }
 
 impl<K: Eq + std::hash::Hash + Clone, V: Clone> Merge for OrMap<K, V> {
@@ -444,5 +466,21 @@ mod tests {
         let once = a.get("k").copied();
         a.merge(b);
         assert_eq!(a.get("k").copied(), once);
+    }
+
+    #[test]
+    fn clamp_timestamps_clamps_added_at_and_tombstone_at() {
+        let mut m: OrMap<String, u32> = OrMap::default();
+        m.upsert("live".to_owned(), 1, 10_000, "node-a");
+        m.upsert("tombstoned".to_owned(), 2, 100, "node-a");
+        m.remove(&"tombstoned".to_owned(), 10_000, "node-a");
+        m.upsert("unaffected".to_owned(), 3, 50, "node-a");
+
+        let clamped = m.clamp_timestamps(1_000);
+
+        assert_eq!(clamped, 2, "both out-of-bound entries should be clamped");
+        assert_eq!(m.entries["live"].added_at, 1_000);
+        assert_eq!(m.entries["tombstoned"].tombstone_at, Some(1_000));
+        assert_eq!(m.entries["unaffected"].added_at, 50);
     }
 }
