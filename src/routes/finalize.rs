@@ -233,104 +233,7 @@ pub async fn finalize_order(
         return Ok(resp);
     }
 
-    // CAA check (RFC 8659 + RFC 8657): only when caa_identities is configured.
-    // Per-CA identities take precedence; fall back to server-level when the CA
-    // does not override them (matching the behaviour in directory.rs).
-    // The authz lookup is deferred inside this block so that deployments without
-    // CAA pay zero extra DB round-trips during finalization.  The account URL is
-    // constructed here and passed to check_caa for RFC 8657 §4 accounturi enforcement.
-    let effective_caa: &[String] = if !order_ca.caa_identities.is_empty() {
-        &order_ca.caa_identities
-    } else {
-        &state.config.server.caa_identities
-    };
-    if !effective_caa.is_empty() {
-        // Build identifier → authz_id map to look up the validated challenge type
-        // for each authorization (RFC 8657 validationmethods check).
-        let authz_rows = db::authz::list_by_order(&state.db_ro, &id).await?;
-        let mut identifier_to_authz: std::collections::HashMap<(String, String), String> =
-            std::collections::HashMap::new();
-        for authz in &authz_rows {
-            if let Ok(id_obj) = serde_json::from_str::<serde_json::Value>(&authz.identifier) {
-                if let (Some(t), Some(v)) = (id_obj["type"].as_str(), id_obj["value"].as_str()) {
-                    identifier_to_authz.insert((t.to_string(), v.to_string()), authz.id.clone());
-                    // RFC 9444 §5: an ancestor authz with subdomainAuthAllowed
-                    // covers all descendant subdomains; record the mapping for
-                    // each order identifier that is a subdomain of this authz.
-                    if authz.subdomain_auth_allowed != 0 && t == "dns" {
-                        for (id_type, id_value) in &allowed {
-                            if *id_type == "dns" && *id_value != v {
-                                let suffix = format!(".{v}");
-                                let bare = id_value.strip_prefix("*.").unwrap_or(id_value);
-                                if bare.ends_with(&suffix) {
-                                    identifier_to_authz
-                                        .entry((id_type.to_string(), id_value.to_string()))
-                                        .or_insert_with(|| authz.id.clone());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Batch-fetch the validated challenge type for every authz referenced
-        // above in one query instead of one round trip per dns identifier.
-        let referenced_authz_ids: Vec<&str> =
-            identifier_to_authz.values().map(String::as_str).collect();
-        let validated_types =
-            db::challenges::get_validated_types_for_authzs(&state.db_ro, &referenced_authz_ids)
-                .await?;
-
-        // Account URL is intentionally server-scoped (not per-CA): RFC 8657
-        // accounturi refers to the ACME account resource, which is shared
-        // across all CAs in server-scoped mode.
-        let account_url = format!("{}/acme/account/{account_id}", state.config.base_url);
-
-        // Collect each dns identifier's CAA-check inputs up front so the
-        // lookups themselves (independent DNS queries) can run concurrently
-        // below instead of one at a time.
-        let mut caa_inputs: Vec<(String, bool, String)> = Vec::new();
-        for (id_type, id_value) in &allowed {
-            if *id_type != "dns" {
-                continue; // IP identifiers: CAA is not applicable per RFC 8659.
-            }
-            let is_wildcard = id_value.starts_with("*.");
-            let domain = if is_wildcard {
-                id_value[2..].to_string()
-            } else {
-                id_value.to_string()
-            };
-            let challenge_type =
-                match identifier_to_authz.get(&(id_type.to_string(), id_value.to_string())) {
-                    Some(authz_id) => validated_types.get(authz_id).cloned().ok_or_else(|| {
-                        AcmeError::Internal(format!(
-                            "no validated challenge type found for authz {authz_id}"
-                        ))
-                    })?,
-                    None => String::new(),
-                };
-            caa_inputs.push((domain, is_wildcard, challenge_type));
-        }
-
-        let checks = caa_inputs
-            .iter()
-            .map(|(domain, is_wildcard, challenge_type)| {
-                crate::validation::caa::check_caa(
-                    crate::validation::caa::CaaParams {
-                        domain,
-                        ca_identities: effective_caa,
-                        is_wildcard: *is_wildcard,
-                        challenge_type,
-                        account_url: Some(account_url.as_str()),
-                        validate_dnssec: state.config.server.validate_dnssec,
-                        dot_server_name: state.config.server.dns_dot_server_name.as_deref(),
-                    },
-                    state.config.server.dns_resolver_addr.as_deref(),
-                )
-            });
-        futures_util::future::try_join_all(checks).await?;
-    }
+    check_caa_for_order(&state, order_ca, &id, &account_id, &allowed).await?;
 
     // Option A: expand KPN/MS-UPN templates against CSR DNS SANs.
     let dns_sans: Vec<&str> = validated_csr
@@ -890,4 +793,114 @@ async fn emit_crdt_hooks(
         },
     )
     .await;
+}
+
+/// CAA check (RFC 8659 + RFC 8657): only when caa_identities is configured.
+/// Per-CA identities take precedence; fall back to server-level when the CA
+/// does not override them (matching the behaviour in directory.rs). The
+/// authz lookup is deferred inside this function so that deployments
+/// without CAA pay zero extra DB round-trips during finalization. The
+/// account URL is constructed here and passed to check_caa for RFC 8657 §4
+/// accounturi enforcement.
+async fn check_caa_for_order(
+    state: &AppState,
+    order_ca: &crate::state::CaState,
+    order_id: &str,
+    account_id: &str,
+    allowed: &[(&str, &str)],
+) -> Result<(), AcmeError> {
+    let effective_caa: &[String] = if !order_ca.caa_identities.is_empty() {
+        &order_ca.caa_identities
+    } else {
+        &state.config.server.caa_identities
+    };
+    if effective_caa.is_empty() {
+        return Ok(());
+    }
+
+    // Build identifier → authz_id map to look up the validated challenge type
+    // for each authorization (RFC 8657 validationmethods check).
+    let authz_rows = db::authz::list_by_order(&state.db_ro, order_id).await?;
+    let mut identifier_to_authz: std::collections::HashMap<(String, String), String> =
+        std::collections::HashMap::new();
+    for authz in &authz_rows {
+        if let Ok(id_obj) = serde_json::from_str::<serde_json::Value>(&authz.identifier) {
+            if let (Some(t), Some(v)) = (id_obj["type"].as_str(), id_obj["value"].as_str()) {
+                identifier_to_authz.insert((t.to_string(), v.to_string()), authz.id.clone());
+                // RFC 9444 §5: an ancestor authz with subdomainAuthAllowed
+                // covers all descendant subdomains; record the mapping for
+                // each order identifier that is a subdomain of this authz.
+                if authz.subdomain_auth_allowed != 0 && t == "dns" {
+                    for (id_type, id_value) in allowed {
+                        if *id_type == "dns" && *id_value != v {
+                            let suffix = format!(".{v}");
+                            let bare = id_value.strip_prefix("*.").unwrap_or(id_value);
+                            if bare.ends_with(&suffix) {
+                                identifier_to_authz
+                                    .entry((id_type.to_string(), id_value.to_string()))
+                                    .or_insert_with(|| authz.id.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Batch-fetch the validated challenge type for every authz referenced
+    // above in one query instead of one round trip per dns identifier.
+    let referenced_authz_ids: Vec<&str> =
+        identifier_to_authz.values().map(String::as_str).collect();
+    let validated_types =
+        db::challenges::get_validated_types_for_authzs(&state.db_ro, &referenced_authz_ids).await?;
+
+    // Account URL is intentionally server-scoped (not per-CA): RFC 8657
+    // accounturi refers to the ACME account resource, which is shared
+    // across all CAs in server-scoped mode.
+    let account_url = format!("{}/acme/account/{account_id}", state.config.base_url);
+
+    // Collect each dns identifier's CAA-check inputs up front so the
+    // lookups themselves (independent DNS queries) can run concurrently
+    // below instead of one at a time.
+    let mut caa_inputs: Vec<(String, bool, String)> = Vec::new();
+    for (id_type, id_value) in allowed {
+        if *id_type != "dns" {
+            continue; // IP identifiers: CAA is not applicable per RFC 8659.
+        }
+        let is_wildcard = id_value.starts_with("*.");
+        let domain = if is_wildcard {
+            id_value[2..].to_string()
+        } else {
+            id_value.to_string()
+        };
+        let challenge_type =
+            match identifier_to_authz.get(&(id_type.to_string(), id_value.to_string())) {
+                Some(authz_id) => validated_types.get(authz_id).cloned().ok_or_else(|| {
+                    AcmeError::Internal(format!(
+                        "no validated challenge type found for authz {authz_id}"
+                    ))
+                })?,
+                None => String::new(),
+            };
+        caa_inputs.push((domain, is_wildcard, challenge_type));
+    }
+
+    let checks = caa_inputs
+        .iter()
+        .map(|(domain, is_wildcard, challenge_type)| {
+            crate::validation::caa::check_caa(
+                crate::validation::caa::CaaParams {
+                    domain,
+                    ca_identities: effective_caa,
+                    is_wildcard: *is_wildcard,
+                    challenge_type,
+                    account_url: Some(account_url.as_str()),
+                    validate_dnssec: state.config.server.validate_dnssec,
+                    dot_server_name: state.config.server.dns_dot_server_name.as_deref(),
+                },
+                state.config.server.dns_resolver_addr.as_deref(),
+            )
+        });
+    futures_util::future::try_join_all(checks).await?;
+    Ok(())
 }
