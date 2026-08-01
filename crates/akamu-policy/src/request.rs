@@ -2,13 +2,43 @@ use crate::dimension;
 use crate::PolicyError;
 use abac_rs::{AbacRequest, AttributeType};
 
-#[derive(Debug)]
+/// Prints only the set of dimension names, never their values — an
+/// `IssuanceRequest`/`IssuanceRequestBuilder` carries account IDs, Kerberos
+/// principals (as `account_group` values), and per-SAN identifiers
+/// (including literal email addresses for `email-reply-00`), so a derived
+/// `Debug` would leak PII into any log or panic message that formats one.
+fn fmt_dimensions_only(
+    name: &str,
+    req: &AbacRequest,
+    f: &mut std::fmt::Formatter<'_>,
+) -> std::fmt::Result {
+    let mut dims: Vec<&str> = req.attributes().keys().map(String::as_str).collect();
+    dims.sort_unstable();
+    f.debug_struct(name).field("dimensions", &dims).finish()
+}
+
 pub struct IssuanceRequest(pub(crate) AbacRequest);
 
-#[derive(Debug)]
+impl std::fmt::Debug for IssuanceRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fmt_dimensions_only("IssuanceRequest", &self.0, f)
+    }
+}
+
 pub struct IssuanceRequestBuilder {
     req: AbacRequest,
     error: Option<PolicyError>,
+}
+
+impl std::fmt::Debug for IssuanceRequestBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut dims: Vec<&str> = self.req.attributes().keys().map(String::as_str).collect();
+        dims.sort_unstable();
+        f.debug_struct("IssuanceRequestBuilder")
+            .field("dimensions", &dims)
+            .field("error", &self.error)
+            .finish()
+    }
 }
 
 impl IssuanceRequestBuilder {
@@ -239,6 +269,33 @@ mod tests {
             req.0.get_value(dimension::IDENTIFIER),
             Some(&AttributeType::String("dns:b.example.com".into())),
             "a second set_identifier call must overwrite, not accumulate"
+        );
+    }
+
+    /// `IssuanceRequest`/`IssuanceRequestBuilder` carry PII (account IDs,
+    /// Kerberos principals, and per-SAN identifiers including literal email
+    /// addresses for `email-reply-00`) — `{:?}` must never print any of it,
+    /// even though listing which dimensions are set is fine.
+    #[test]
+    fn debug_redacts_attribute_values() {
+        let req = IssuanceRequest::builder()
+            .account("super-secret-account-id")
+            .account_groups(vec!["kerberos/principal@EXAMPLE.COM".into()])
+            .build()
+            .unwrap()
+            .with_identifier("email", "victim@example.com")
+            .unwrap();
+
+        let debug = format!("{req:?}");
+        assert!(
+            !debug.contains("super-secret-account-id")
+                && !debug.contains("kerberos/principal@EXAMPLE.COM")
+                && !debug.contains("victim@example.com"),
+            "Debug output leaked a value: {debug}"
+        );
+        assert!(
+            debug.contains(dimension::ACCOUNT) && debug.contains(dimension::IDENTIFIER),
+            "Debug output should still list which dimensions are set: {debug}"
         );
     }
 }

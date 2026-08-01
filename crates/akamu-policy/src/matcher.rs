@@ -81,12 +81,17 @@ impl RegexMatcher {
                 // (falls through to default-deny) and only a residual risk
                 // for deny rules sharing this exact pattern, which
                 // unification with validation is meant to make unreachable.
+                // Log the pattern's length, not its content: an identifier
+                // pattern can itself be an admin-authored literal (an email
+                // address, IP, or hostname), and this is an `error!`-level
+                // log an operator may see in aggregate monitoring, not just
+                // a local debug session.
                 tracing::error!(
-                    pattern,
+                    pattern_len = pattern.len(),
                     error = %e,
                     "invariant violation: regex pattern passed validation but failed to \
-                     compile at evaluation time — search DB for rules containing this \
-                     pattern to identify the source; treating as no-match"
+                     compile at evaluation time — search DB rules by pattern length to \
+                     identify the source; treating as no-match"
                 );
                 None
             }
