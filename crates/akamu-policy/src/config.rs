@@ -24,7 +24,14 @@ pub enum RuleTypeConfig {
 /// Shared config type for TOML config files and JSON DB storage.
 /// A future schema evolution may require a separate DB record type;
 /// tracked as tech debt.
+///
+/// `deny_unknown_fields`: a misspelled field name (e.g. `identifer` for
+/// `identifier`) would otherwise silently deserialize as if the field were
+/// absent — `None` on a dimension field means "no restriction" — turning a
+/// typo'd deny rule into a silent no-op or an allow rule into an
+/// unintentionally broader grant, with no error at any layer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct PolicyRuleConfig {
     pub name: String,
@@ -42,6 +49,7 @@ pub struct PolicyRuleConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PolicyConfig {
     #[serde(default)]
     pub mode: PolicyMode,
@@ -174,6 +182,32 @@ mod tests {
         let rule: PolicyRuleConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(rule.name, "deny-all");
         assert!(matches!(rule.rule_type, RuleTypeConfig::Deny));
+    }
+
+    /// A misspelled dimension field must be a hard error, not a silent
+    /// no-op — see the `deny_unknown_fields` doc comment on
+    /// `PolicyRuleConfig` for the failure mode this prevents.
+    #[test]
+    fn deserialize_rejects_unknown_field() {
+        let toml_str = r#"
+            name = "deny-internal"
+            type = "deny"
+            identifer = ["dns:.*\\.internal\\.example\\.com$"]
+        "#;
+        let err = toml::from_str::<PolicyRuleConfig>(toml_str).unwrap_err();
+        assert!(
+            err.to_string().contains("identifer") || err.to_string().contains("unknown field"),
+            "expected an unknown-field error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn policy_config_rejects_unknown_field() {
+        let toml_str = r#"
+            mode = "enforce"
+            rulez = []
+        "#;
+        assert!(toml::from_str::<PolicyConfig>(toml_str).is_err());
     }
 
     #[test]
