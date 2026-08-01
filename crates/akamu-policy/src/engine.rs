@@ -26,31 +26,87 @@ impl std::fmt::Debug for IssuancePolicyEngine {
     }
 }
 
+/// Result of [`IssuancePolicyEngine::build_policy`]: the built policy plus
+/// the names of any rules skipped because they failed semantic validation
+/// (bad regex, empty name, invalid time window) after already passing
+/// `PolicyRuleConfig` deserialization.
+struct BuiltPolicy {
+    policy: AbacPolicy,
+    skipped: Vec<String>,
+}
+
 impl IssuancePolicyEngine {
     pub fn new(
         mode: PolicyMode,
         toml_rules: Vec<PolicyRuleConfig>,
         db_rules: Vec<PolicyRuleConfig>,
     ) -> Result<Self, PolicyError> {
-        let policy = Self::build_policy(&toml_rules, &db_rules)?;
+        let built = Self::build_policy(&toml_rules, &db_rules)?;
+        Self::guard_skipped(mode, "build", &built.skipped)?;
         Ok(Self {
-            policy: Mutex::new(policy),
+            policy: Mutex::new(built.policy),
             mode,
             toml_rules,
         })
     }
 
+    /// In Enforce mode, refuse to proceed when any rule was skipped for
+    /// semantic-validation failure — installing a filtered rule set could
+    /// silently permit issuance an operator meant to deny. In Shadow mode,
+    /// log and let the caller proceed with the incomplete set, since shadow
+    /// mode never blocks issuance on policy completeness.
+    fn guard_skipped(
+        mode: PolicyMode,
+        action: &str,
+        skipped: &[String],
+    ) -> Result<(), PolicyError> {
+        if skipped.is_empty() {
+            return Ok(());
+        }
+        if mode == PolicyMode::Enforce {
+            tracing::error!(
+                skipped = skipped.len(),
+                names = ?skipped,
+                "policy {action} REJECTED in enforce mode: rules failed semantic validation"
+            );
+            return Err(PolicyError::InvalidRule(format!(
+                "{} rule(s) failed semantic validation: {skipped:?}",
+                skipped.len()
+            )));
+        }
+        tracing::warn!(
+            skipped = skipped.len(),
+            names = ?skipped,
+            "policy {action} proceeding with incomplete rule set (shadow mode)"
+        );
+        Ok(())
+    }
+
+    /// Convert `toml_rules`/`db_rules` into an `AbacPolicy`, skipping (rather
+    /// than aborting the whole build on) any individual rule that fails
+    /// semantic validation — mirroring `parse_db_rules`'s per-row
+    /// skip-and-count behavior for JSON-deserialization failures one layer
+    /// up, instead of letting a single bad rule discard every rule already
+    /// successfully converted.
     fn build_policy(
         toml_rules: &[PolicyRuleConfig],
         db_rules: &[PolicyRuleConfig],
-    ) -> Result<AbacPolicy, PolicyError> {
+    ) -> Result<BuiltPolicy, PolicyError> {
         let mut regular_rules: Vec<AbacRule> = Vec::new();
         let mut temporal_rules: Vec<TemporalAbacRule> = Vec::new();
+        let mut skipped: Vec<String> = Vec::new();
 
         for cfg in toml_rules.iter().chain(db_rules.iter()) {
-            match cfg.to_abac_rule()? {
-                AbacRuleKind::Regular(r) => regular_rules.push(r),
-                AbacRuleKind::Temporal(t) => temporal_rules.push(t),
+            match cfg.to_abac_rule() {
+                Ok(AbacRuleKind::Regular(r)) => regular_rules.push(r),
+                Ok(AbacRuleKind::Temporal(t)) => temporal_rules.push(t),
+                Err(e) => {
+                    tracing::error!(
+                        rule_name = %cfg.name,
+                        "policy rebuild: rule failed semantic validation, skipping: {e}"
+                    );
+                    skipped.push(cfg.name.clone());
+                }
             }
         }
 
@@ -65,7 +121,7 @@ impl IssuancePolicyEngine {
 
         let policy = builder.build().map_err(PolicyError::Policy)?;
 
-        Ok(policy)
+        Ok(BuiltPolicy { policy, skipped })
     }
 
     pub fn evaluate(&self, request: &IssuanceRequest) -> Decision {
@@ -154,12 +210,13 @@ impl IssuancePolicyEngine {
     }
 
     pub fn rebuild(&self, db_rules: Vec<PolicyRuleConfig>) -> Result<(), PolicyError> {
-        let new_policy = Self::build_policy(&self.toml_rules, &db_rules)?;
+        let built = Self::build_policy(&self.toml_rules, &db_rules)?;
+        Self::guard_skipped(self.mode, "rebuild", &built.skipped)?;
         let mut guard = self.policy.lock().unwrap_or_else(|e| {
             tracing::error!("policy engine mutex was poisoned, recovering");
             e.into_inner()
         });
-        *guard = new_policy;
+        *guard = built.policy;
         Ok(())
     }
 
@@ -192,6 +249,18 @@ mod tests {
             name: name.into(),
             rule_type: RuleTypeConfig::Deny,
             profile: Some(vec![profile.into()]),
+            ..Default::default()
+        }
+    }
+
+    /// A rule that parses fine as `PolicyRuleConfig` (valid JSON/TOML shape)
+    /// but fails `to_abac_rule`'s semantic validation — an unterminated
+    /// regex group in its identifier pattern.
+    fn semantically_invalid_rule(name: &str) -> PolicyRuleConfig {
+        PolicyRuleConfig {
+            name: name.into(),
+            rule_type: RuleTypeConfig::Deny,
+            identifier: Some(vec!["(unterminated".into()]),
             ..Default::default()
         }
     }
@@ -298,6 +367,82 @@ mod tests {
             .rebuild(vec![allow_rule("db-allow-tls", "tls-server")])
             .unwrap();
         assert_eq!(engine.evaluate(&req), Decision::Allow);
+    }
+
+    /// A single semantically-invalid rule must not discard every other rule
+    /// that did convert successfully — Enforce mode still refuses to
+    /// install an incomplete set (below), but the failure must not look
+    /// like "the whole rule set was corrupt" when only one entry was.
+    #[test]
+    fn new_enforce_mode_rejects_when_any_rule_fails_semantic_validation() {
+        let err = IssuancePolicyEngine::new(
+            PolicyMode::Enforce,
+            vec![
+                deny_rule("good-deny", "tls-server"),
+                semantically_invalid_rule("bad-rule"),
+            ],
+            vec![],
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, PolicyError::InvalidRule(_)),
+            "expected InvalidRule, got {err:?}"
+        );
+    }
+
+    /// Shadow mode's fail-open counterpart: a semantically-invalid rule is
+    /// logged and skipped, and construction proceeds with the rules that did
+    /// convert — mirroring `rebuild_shadow_mode_proceeds_with_incomplete_rule_set`
+    /// in tests/policy_engine.rs, which covers the JSON-parse-level version
+    /// of this same contract.
+    #[test]
+    fn new_shadow_mode_proceeds_with_incomplete_rule_set() {
+        let engine = IssuancePolicyEngine::new(
+            PolicyMode::Shadow,
+            vec![
+                deny_rule("good-deny", "tls-server"),
+                semantically_invalid_rule("bad-rule"),
+            ],
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(engine.rule_count(), 1);
+
+        let req = IssuanceRequest::builder()
+            .profile("tls-server")
+            .ca("prod")
+            .build()
+            .unwrap();
+        assert_eq!(engine.evaluate(&req), Decision::Deny);
+    }
+
+    /// `rebuild`'s Enforce-mode counterpart to the `new` test above: a
+    /// rebuild that would install an incomplete rule set must fail and
+    /// leave the previously-installed policy in effect, matching
+    /// `rebuild_enforce_mode_rejects_corrupt_rule_and_preserves_old_engine`'s
+    /// guarantee for the JSON-parse-level failure class.
+    #[test]
+    fn rebuild_enforce_mode_rejects_semantically_invalid_rule_and_preserves_old_policy() {
+        let engine = IssuancePolicyEngine::new(
+            PolicyMode::Enforce,
+            vec![allow_rule("allow-tls", "tls-server")],
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(engine.rule_count(), 1);
+
+        let err = engine
+            .rebuild(vec![semantically_invalid_rule("bad-rule")])
+            .unwrap_err();
+        assert!(
+            matches!(err, PolicyError::InvalidRule(_)),
+            "expected InvalidRule, got {err:?}"
+        );
+        assert_eq!(
+            engine.rule_count(),
+            1,
+            "a rejected rebuild must not clear or partially apply anything"
+        );
     }
 
     #[test]
