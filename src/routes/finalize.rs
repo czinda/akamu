@@ -304,43 +304,20 @@ pub async fn finalize_order(
         order.not_after
     };
 
-    // Issue the certificate — either locally via spawn_blocking (CPU-bound
-    // crypto) or remotely via the Dogtag REST API (async I/O).
-    let issued = match &order_ca.signing {
-        crate::state::SigningBackend::Dogtag(signer) => {
-            let profile_override = cert_params.dogtag_profile_id.as_deref();
-            ca::dogtag::issue_via_dogtag(signer, &order_ca.cert_der, &csr_der, profile_override)
-                .await?
-        }
-        crate::state::SigningBackend::Local { .. } => {
-            let linter_profile = state.linter_registry.resolve_for_order(
-                cert_params.linter.as_deref(),
-                order_ca.default_linter.as_deref(),
-            )?;
-
-            let ca_arc = Arc::clone(order_ca);
-            let csr_owned = validated_csr.clone();
-            let params_owned = cert_params.clone();
-            let nb = order.not_before;
-            let na = not_after;
-            let on = extra_other_names.clone();
-            let dn = extra_dns_names.clone();
-            tokio::task::spawn_blocking(move || {
-                ca::issue::issue_with_params(ca::issue::IssueWithParamsArgs {
-                    ca: &ca_arc,
-                    csr: &csr_owned,
-                    params: &params_owned,
-                    not_before_override: nb,
-                    not_after_override: na,
-                    extra_other_names: &on,
-                    extra_dns_names: &dn,
-                    linter: &linter_profile,
-                })
-            })
-            .await
-            .map_err(|e| AcmeError::Internal(format!("issue task: {e}")))??
-        }
-    };
+    let issued = issue_leaf_certificate(
+        &state,
+        order_ca,
+        IssueLeafParams {
+            cert_params: &cert_params,
+            csr_der: &csr_der,
+            validated_csr: &validated_csr,
+            not_before: order.not_before,
+            not_after,
+            extra_other_names: &extra_other_names,
+            extra_dns_names: &extra_dns_names,
+        },
+    )
+    .await?;
 
     // For MTC issuance profiles, build a StandaloneCertificate from the issued
     // TBSCertificate + an MTC Merkle inclusion proof.  This is done synchronously
@@ -1055,4 +1032,67 @@ async fn persist_certificate(
     let authz_ids = db::orders::list_authz_ids(&state.db_ro, order_id).await?;
 
     Ok((pred_already_replaced, cert_id, authz_ids))
+}
+
+/// Parameters for [`issue_leaf_certificate`].
+struct IssueLeafParams<'a> {
+    cert_params: &'a crate::profiles::CertificateParameters,
+    csr_der: &'a [u8],
+    validated_csr: &'a ca::csr::ValidatedCsr,
+    not_before: Option<i64>,
+    not_after: Option<i64>,
+    extra_other_names: &'a [Vec<u8>],
+    extra_dns_names: &'a [String],
+}
+
+/// Issue the certificate — either locally via `spawn_blocking` (CPU-bound
+/// crypto) or remotely via the Dogtag REST API (async I/O).
+async fn issue_leaf_certificate(
+    state: &AppState,
+    order_ca: &Arc<crate::state::CaState>,
+    params: IssueLeafParams<'_>,
+) -> Result<ca::issue::IssuedCert, AcmeError> {
+    let IssueLeafParams {
+        cert_params,
+        csr_der,
+        validated_csr,
+        not_before,
+        not_after,
+        extra_other_names,
+        extra_dns_names,
+    } = params;
+
+    match &order_ca.signing {
+        crate::state::SigningBackend::Dogtag(signer) => {
+            let profile_override = cert_params.dogtag_profile_id.as_deref();
+            ca::dogtag::issue_via_dogtag(signer, &order_ca.cert_der, csr_der, profile_override)
+                .await
+        }
+        crate::state::SigningBackend::Local { .. } => {
+            let linter_profile = state.linter_registry.resolve_for_order(
+                cert_params.linter.as_deref(),
+                order_ca.default_linter.as_deref(),
+            )?;
+
+            let ca_arc = Arc::clone(order_ca);
+            let csr_owned = validated_csr.clone();
+            let params_owned = cert_params.clone();
+            let on = extra_other_names.to_vec();
+            let dn = extra_dns_names.to_vec();
+            tokio::task::spawn_blocking(move || {
+                ca::issue::issue_with_params(ca::issue::IssueWithParamsArgs {
+                    ca: &ca_arc,
+                    csr: &csr_owned,
+                    params: &params_owned,
+                    not_before_override: not_before,
+                    not_after_override: not_after,
+                    extra_other_names: &on,
+                    extra_dns_names: &dn,
+                    linter: &linter_profile,
+                })
+            })
+            .await
+            .map_err(|e| AcmeError::Internal(format!("issue task: {e}")))?
+        }
+    }
 }
