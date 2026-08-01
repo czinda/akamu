@@ -12,7 +12,7 @@ pub enum PolicyMode {
     Enforce,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
 pub enum RuleTypeConfig {
@@ -85,9 +85,11 @@ fn parse_rfc3339_millis(s: &str) -> Result<u64, PolicyError> {
 
 impl PolicyRuleConfig {
     pub fn uuid_v5(&self, scope: &str) -> String {
-        let namespace = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_DNS, b"akamu.policy");
+        static NAMESPACE: std::sync::OnceLock<uuid::Uuid> = std::sync::OnceLock::new();
+        let namespace = NAMESPACE
+            .get_or_init(|| uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_DNS, b"akamu.policy"));
         let key = format!("{scope}/{}", self.name);
-        uuid::Uuid::new_v5(&namespace, key.as_bytes()).to_string()
+        uuid::Uuid::new_v5(namespace, key.as_bytes()).to_string()
     }
 
     pub fn to_abac_rule(&self) -> Result<AbacRuleKind, PolicyError> {

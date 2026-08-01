@@ -116,7 +116,7 @@ pub async fn rebuild_issuance_policy(state: &AppState) -> Result<(), PolicyRebui
         })?;
 
     let parsed = parse_db_rules(&rows);
-    guard_corrupt_rules(*state.issuance_policy.mode(), &parsed, "policy rebuild")?;
+    guard_corrupt_rules(state.issuance_policy.mode(), &parsed, "policy rebuild")?;
 
     state.issuance_policy.rebuild(parsed.rules).map_err(|e| {
         let msg = format!("{e}");
@@ -160,7 +160,7 @@ pub async fn evaluate_issuance_policy(
     use akamu_policy::config::PolicyMode;
     use akamu_policy::Decision;
 
-    let enforce = *state.issuance_policy.mode() == PolicyMode::Enforce;
+    let enforce = state.issuance_policy.mode() == PolicyMode::Enforce;
 
     // TODO: cache profile_grants and kerberos_principal per account to avoid
     // 2 DB round-trips per finalize.  These change infrequently relative to
@@ -218,7 +218,7 @@ pub async fn evaluate_issuance_policy(
 
     let mut policy_builder = akamu_policy::request::IssuanceRequest::builder()
         .account(params.account_id)
-        .account_groups(&account_groups)
+        .account_groups(account_groups)
         .ca(params.ca_id);
     if let Some(profile_name) = params.effective_profile {
         policy_builder = policy_builder.profile(profile_name);

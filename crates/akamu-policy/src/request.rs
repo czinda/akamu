@@ -33,11 +33,9 @@ impl IssuanceRequestBuilder {
         self
     }
 
-    pub fn account_groups(mut self, groups: &[String]) -> Self {
-        let group_attrs: Vec<AttributeType> = groups
-            .iter()
-            .map(|g| AttributeType::String(g.clone()))
-            .collect();
+    pub fn account_groups(mut self, groups: Vec<String>) -> Self {
+        let group_attrs: Vec<AttributeType> =
+            groups.into_iter().map(AttributeType::String).collect();
         self.try_add(
             dimension::ACCOUNT_GROUP,
             AttributeType::String("_account_".into()),
@@ -138,7 +136,7 @@ mod tests {
     fn builder_sets_all_dimensions() {
         let req = IssuanceRequest::builder()
             .account("acct-1")
-            .account_groups(&["prod-infra".into()])
+            .account_groups(vec!["prod-infra".into()])
             .profile("tls-server")
             .ca("prod")
             .key_type("ec:P-256")

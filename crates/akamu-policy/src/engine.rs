@@ -136,10 +136,19 @@ impl IssuancePolicyEngine {
         })
     }
 
+    /// Single-identifier evaluation. Production issuance code should prefer
+    /// [`Self::evaluate_explained_identifiers`], which folds a multi-SAN
+    /// order's identifiers into one aggregate decision — calling this
+    /// directly against a folded multi-SAN request could reintroduce the
+    /// collapse bug that method exists to fix. Kept `pub` (not `pub(crate)`)
+    /// because this crate's CI runs `cargo build`/`cargo clippy` without
+    /// `--all-targets`, which would flag a `pub(crate)` item used only by
+    /// `#[cfg(test)]` code as dead code under `-D warnings`.
     pub fn evaluate(&self, request: &IssuanceRequest) -> Decision {
         self.lock_policy().evaluate(&request.0)
     }
 
+    /// See [`Self::evaluate`] — same caveat and the same reason for staying `pub`.
     pub fn evaluate_explained(&self, request: &IssuanceRequest) -> ExplainedDecision {
         self.lock_policy().evaluate_explained(&request.0)
     }
@@ -206,8 +215,8 @@ impl IssuancePolicyEngine {
             .collect()
     }
 
-    pub fn mode(&self) -> &PolicyMode {
-        &self.mode
+    pub fn mode(&self) -> PolicyMode {
+        self.mode
     }
 
     pub fn rebuild(&self, db_rules: Vec<PolicyRuleConfig>) -> Result<(), PolicyError> {
@@ -669,7 +678,7 @@ mod tests {
 
         let granted = IssuanceRequest::builder()
             .account("acct-1")
-            .account_groups(&["prod-infra".into()])
+            .account_groups(vec!["prod-infra".into()])
             .ca("prod")
             .build()
             .unwrap();
@@ -682,7 +691,7 @@ mod tests {
 
         let ungranted = IssuanceRequest::builder()
             .account("acct-2")
-            .account_groups(&["dev-infra".into()])
+            .account_groups(vec!["dev-infra".into()])
             .ca("prod")
             .build()
             .unwrap();
