@@ -286,6 +286,11 @@ fn build_other_router() -> Router<Arc<AppState>> {
         // Inter-node gossip sync (C-3): on the public listener; authentication is
         // provided by the CMS SignedData wrapper (ECDSA P-256 with pinned peer cert).
         .route("/gossip/sync", post(crate::gossip::handlers::gossip_sync))
+        // Inter-node MTC leaf-append forwarding: same trust model as /gossip/sync.
+        .route(
+            "/gossip/mtc/append",
+            post(crate::gossip::mtc_forward::handle_append),
+        )
 }
 
 /// Admin API routes (bypass halt_check; auth enforced by `admin::rbac::admin_rbac_gate`).

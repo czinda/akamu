@@ -279,6 +279,14 @@ impl AkaCrdt {
             .map(|w| w.node_id == node_id && w.claimed_at.saturating_add(ttl) >= now)
             .unwrap_or(false)
     }
+
+    /// Returns the node_id currently claiming the MTC writer election for
+    /// `ca_id`, regardless of whether that claim has since lapsed. Used to
+    /// build a "retry against this node" hint when a non-writer rejects a
+    /// forwarded leaf-append.
+    pub fn mtc_writer_claimant(&self, ca_id: &str) -> Option<&str> {
+        self.mtc_writer.get(ca_id).map(|w| w.node_id.as_str())
+    }
 }
 
 // Generates `Merge for AkaCrdt`, `AkaCrdt::max_local_gen`,

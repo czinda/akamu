@@ -154,6 +154,9 @@ pub async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppS
     std::fs::write(&mtc_key_file, &mtc_key_pem).unwrap();
 
     let mtc_spki_der = mtc_key.public_key().unwrap().spki_der().to_vec();
+    let logid_issuer_dn_der =
+        akamu::mtc::standalone::build_logid_issuer_dn_der(&mtc_spki_der, HashAlgorithm::Sha256)
+            .unwrap();
     use synta_certificate::DataHasher as _;
     let mtc_key_hash = synta_certificate::default_data_hasher()
         .hash_data("sha256", &mtc_spki_der)
@@ -200,7 +203,7 @@ pub async fn build_test_state(dir: &std::path::Path, base_url: &str) -> Arc<AppS
             signing_key_sha256: Some(mtc_key_sha256),
             tlog_origin: Some("oid/1.3.6.1.4.1.32473.2.0.1".into()),
             cosigner_name: Some("oid/1.3.6.1.4.1.32473.2".into()),
-            logid_issuer_dn_der: None,
+            logid_issuer_dn_der: Some(logid_issuer_dn_der),
         }),
         default_linter: None,
         cached_der: std::sync::OnceLock::new(),
