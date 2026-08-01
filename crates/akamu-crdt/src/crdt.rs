@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     lww_map::LwwMap,
-    lww_register::LwwRegister,
     merge::Merge,
     or_map::OrMap,
     types::{
@@ -92,9 +91,10 @@ pub struct AkaCrdt {
     /// Gossip-consensus ownership: order_id → owning node + claim timestamp.
     /// Access via `claim_order` / `is_order_owner`; not directly writable externally.
     pub(crate) order_owners: LwwMap<String, OrderOwner>,
-    /// Gossip-consensus election: single elected MTC log writer.
-    /// Access via `claim_mtc_writer` / `is_mtc_writer`; not directly writable externally.
-    pub(crate) mtc_writer: LwwRegister<MtcWriter>,
+    /// Gossip-consensus election: elected MTC log writer per CA
+    /// (ca_id → owning node + claim timestamp). Access via
+    /// `claim_mtc_writer` / `is_mtc_writer`; not directly writable externally.
+    pub(crate) mtc_writer: LwwMap<String, MtcWriter>,
 }
 
 impl AkaCrdt {
@@ -114,7 +114,7 @@ impl AkaCrdt {
             mtc_checkpoints: self.mtc_checkpoints.delta_since(gen),
             mtc_cosignatures: self.mtc_cosignatures.delta_since(gen),
             order_owners: self.order_owners.delta_since(gen),
-            mtc_writer: self.mtc_writer.delta_since(gen).unwrap_or_default(),
+            mtc_writer: self.mtc_writer.delta_since(gen),
         }
     }
 
@@ -134,10 +134,7 @@ impl AkaCrdt {
             mtc_checkpoints: self.mtc_checkpoints.delta_range(since, until),
             mtc_cosignatures: self.mtc_cosignatures.delta_range(since, until),
             order_owners: self.order_owners.delta_range(since, until),
-            mtc_writer: self
-                .mtc_writer
-                .delta_range(since, until)
-                .unwrap_or_default(),
+            mtc_writer: self.mtc_writer.delta_range(since, until),
         }
     }
 
@@ -252,16 +249,18 @@ impl AkaCrdt {
             .unwrap_or(false)
     }
 
-    /// Attempt to claim MTC log writer election for `node_id`.
+    /// Attempt to claim MTC log writer election for `node_id`, scoped to `ca_id`
+    /// — each CA hosted by the cluster elects its writer independently.
     ///
-    /// Returns `true` if this node is now the elected writer.
-    pub fn claim_mtc_writer(&mut self, node_id: &str, now: i64, ttl: i64) -> bool {
-        if let Some(writer) = self.mtc_writer.get() {
+    /// Returns `true` if this node is now the elected writer for this CA.
+    pub fn claim_mtc_writer(&mut self, ca_id: &str, node_id: &str, now: i64, ttl: i64) -> bool {
+        if let Some(writer) = self.mtc_writer.get(ca_id) {
             if writer.node_id != node_id && writer.claimed_at.saturating_add(ttl) >= now {
-                return false; // incumbent writer holds the election
+                return false; // incumbent writer holds the election for this CA
             }
         }
         self.mtc_writer.set(
+            ca_id.to_owned(),
             MtcWriter {
                 node_id: node_id.to_owned(),
                 claimed_at: now,
@@ -272,39 +271,36 @@ impl AkaCrdt {
         true
     }
 
-    /// Returns `true` if `node_id` is the elected MTC writer and has not lapsed.
-    pub fn is_mtc_writer(&self, node_id: &str, now: i64, ttl: i64) -> bool {
+    /// Returns `true` if `node_id` is the elected MTC writer for `ca_id` and
+    /// has not lapsed.
+    pub fn is_mtc_writer(&self, ca_id: &str, node_id: &str, now: i64, ttl: i64) -> bool {
         self.mtc_writer
-            .get()
+            .get(ca_id)
             .map(|w| w.node_id == node_id && w.claimed_at.saturating_add(ttl) >= now)
             .unwrap_or(false)
     }
 }
 
-// Generates `Merge for AkaCrdt`, `AkaCrdt::max_local_gen`, and
-// `AkaCrdt::purge_old_tombstones` from one field list instead of three
-// hand-copied ones. Each generated body destructures `AkaCrdt` via
-// `let Self { .. } = ..`, which the compiler exhaustiveness-checks: a new
-// field left out of both lists below fails to compile (E0027), and a field
-// listed but never used by a body is an `unused_variables` warning that
-// `cargo clippy -- -D warnings` (the CI invocation) turns into a build
-// failure. This is what actually prevents a 15th field from being silently
-// forgotten in `merge` specifically — the previous flat statement lists had
-// no such guarantee.
-//
-// `full` collections support all three operations; `no_purge` collections
-// (currently only `mtc_writer`, a single-slot `LwwRegister`) support merge
-// and max_local_gen but have nothing to purge — a tombstoned single-value
-// register isn't "old data accumulating," so purge_old_tombstones is
-// intentionally not called for it, and that exclusion is a visible argument
-// here rather than an absent line.
+// Generates `Merge for AkaCrdt`, `AkaCrdt::max_local_gen`,
+// `AkaCrdt::purge_old_tombstones`, and `AkaCrdt::clamp_field_timestamps` from
+// one field list instead of four hand-copied ones. Each generated body
+// destructures `AkaCrdt` via `let Self { .. } = ..`, which the compiler
+// exhaustiveness-checks: a new field left out of the list below fails to
+// compile (E0027), and a field listed but never used by a body is an
+// `unused_variables` warning that `cargo clippy -- -D warnings` (the CI
+// invocation) turns into a build failure. This is what actually prevents a
+// 15th field from being silently forgotten in `merge` specifically — the
+// previous flat statement lists had no such guarantee. Every field is now an
+// `OrMap`/`LwwMap` supporting all four operations uniformly — `mtc_writer`
+// used to be the sole exception (a single-slot `LwwRegister` with no
+// `purge_old_tombstones`) before its per-CA `LwwMap` migration, so the
+// earlier two-list `full`/`no_purge` split is no longer needed.
 macro_rules! crdt_fields {
-    (full: [$($f:ident),+ $(,)?], no_purge: [$($np:ident),+ $(,)?] $(,)?) => {
+    ($($f:ident),+ $(,)?) => {
         impl Merge for AkaCrdt {
             fn merge(&mut self, other: Self) {
-                let Self { $($f,)+ $($np,)+ } = other;
+                let Self { $($f,)+ } = other;
                 $( self.$f.merge($f); )+
-                $( self.$np.merge($np); )+
             }
         }
 
@@ -312,8 +308,8 @@ macro_rules! crdt_fields {
             /// Returns the highest `local_gen` across all CRDT sub-collections.
             /// Used at startup to seed `CRDT_GENERATION` after `load_from_db`.
             pub fn max_local_gen(&self) -> u64 {
-                let Self { $($f,)+ $($np,)+ } = self;
-                [$($f.max_local_gen(),)+ $($np.max_local_gen(),)+]
+                let Self { $($f,)+ } = self;
+                [$($f.max_local_gen(),)+]
                     .into_iter()
                     .max()
                     .unwrap_or(0)
@@ -321,7 +317,7 @@ macro_rules! crdt_fields {
 
             /// Permanently remove tombstones older than `cutoff` (unix seconds).
             pub fn purge_old_tombstones(&mut self, cutoff: i64) {
-                let Self { $($f,)+ $($np: _,)+ } = self;
+                let Self { $($f,)+ } = self;
                 $( $f.purge_old_tombstones(cutoff); )+
             }
 
@@ -331,23 +327,12 @@ macro_rules! crdt_fields {
             /// value (e.g. `OrderOwner`/`MtcWriter::claimed_at`) — see
             /// `clamp_timestamps`, which layers that on top.
             fn clamp_field_timestamps(&mut self, max: i64) {
-                let Self { $($f,)+ $($np,)+ } = self;
+                let Self { $($f,)+ } = self;
                 $(
                     let n = $f.clamp_timestamps(max);
                     if n > 0 {
                         tracing::warn!(
                             field = stringify!($f),
-                            count = n,
-                            max,
-                            "clamped future-dated CRDT entry timestamp(s) from gossip peer"
-                        );
-                    }
-                )+
-                $(
-                    let n = $np.clamp_timestamps(max);
-                    if n > 0 {
-                        tracing::warn!(
-                            field = stringify!($np),
                             count = n,
                             max,
                             "clamped future-dated CRDT entry timestamp(s) from gossip peer"
@@ -360,12 +345,9 @@ macro_rules! crdt_fields {
 }
 
 crdt_fields! {
-    full: [
-        cluster_nodes, accounts, orders, authorizations, challenges, certificates,
-        eab_keys, operators, delegations, policy_rules, mtc_checkpoints,
-        mtc_cosignatures, order_owners,
-    ],
-    no_purge: [mtc_writer],
+    cluster_nodes, accounts, orders, authorizations, challenges, certificates,
+    eab_keys, operators, delegations, policy_rules, mtc_checkpoints,
+    mtc_cosignatures, order_owners, mtc_writer,
 }
 
 impl AkaCrdt {
@@ -391,8 +373,10 @@ impl AkaCrdt {
                 owner.claimed_at = owner.claimed_at.min(max);
             }
         }
-        if let Some(writer) = self.mtc_writer.get_mut() {
-            writer.claimed_at = writer.claimed_at.min(max);
+        for reg in self.mtc_writer.registers_mut() {
+            if let Some(writer) = reg.get_mut() {
+                writer.claimed_at = writer.claimed_at.min(max);
+            }
         }
     }
 }
@@ -676,7 +660,7 @@ mod tests {
         let mut other = sample_crdt();
         let now = 1_700_000_000i64;
         other.claim_order("ord-owned", "node-x", now, 300);
-        other.claim_mtc_writer("node-x", now, 300);
+        other.claim_mtc_writer("acme1", "node-x", now, 300);
 
         let mut target = AkaCrdt::default();
         target.merge(other);
@@ -697,7 +681,7 @@ mod tests {
             .get(&("cp-1".to_owned(), "https://cosign/".to_owned()))
             .is_some());
         assert!(target.is_order_owner("ord-owned", "node-x", now, 300));
-        assert!(target.is_mtc_writer("node-x", now, 300));
+        assert!(target.is_mtc_writer("acme1", "node-x", now, 300));
 
         // max_local_gen must reflect generations minted for every field above,
         // not just whichever ones a hand-maintained list happened to include.
@@ -705,10 +689,11 @@ mod tests {
     }
 
     #[test]
-    fn purge_old_tombstones_skips_mtc_writer_but_purges_a_map_field() {
-        // mtc_writer (LwwRegister) has no purge_old_tombstones — confirms the
-        // `no_purge` exclusion in the field macro is honored, while a regular
-        // `full`-list field's stale tombstone is still purged.
+    fn purge_old_tombstones_purges_ormap_and_lwwmap_fields_alike() {
+        // mtc_writer's per-CA migration to LwwMap removed the field macro's
+        // one-time `no_purge` exception (a single-slot LwwRegister has no
+        // purge_old_tombstones) — every field, OrMap or LwwMap, now purges
+        // uniformly. Confirm a stale tombstone is purged from each kind.
         let mut crdt = AkaCrdt::default();
         crdt.accounts.upsert(
             "acct-1".to_owned(),
@@ -720,21 +705,22 @@ mod tests {
             "node-a",
         );
         crdt.accounts.remove(&"acct-1".to_owned(), 200, "node-a");
-        crdt.claim_mtc_writer("node-a", 100, 300);
+        crdt.mtc_writer.remove("acme1".to_owned(), 200, "node-a");
 
         crdt.purge_old_tombstones(1_000_000_000);
 
         assert_eq!(crdt.accounts.tombstoned_values().count(), 0);
-        assert!(crdt.is_mtc_writer("node-a", 100, 300));
+        assert_eq!(crdt.mtc_writer.all_entries().count(), 0);
     }
 
     #[test]
-    fn clamp_timestamps_bounds_an_ormap_field_and_the_no_purge_field() {
+    fn clamp_timestamps_bounds_an_ormap_field_and_an_lwwmap_field() {
         // A malicious or clock-skewed gossip peer asserting a far-future
         // timestamp must not be able to win every future tiebreak forever
-        // (Finding 20) — this must hold for both a `full`-list OrMap field
-        // and the `no_purge` LwwRegister field, proving clamp_timestamps
-        // reaches every field the macro generates it for.
+        // (Finding 20) — this must hold for both an OrMap field and an
+        // LwwMap field, proving clamp_timestamps reaches every field the
+        // macro generates it for, plus the embedded MtcWriter::claimed_at
+        // fixup layered on top for the per-CA election map.
         const FAR_FUTURE: i64 = 9_999_999_999;
         let mut crdt = AkaCrdt::default();
         crdt.accounts.upsert(
@@ -746,7 +732,7 @@ mod tests {
             FAR_FUTURE,
             "node-x",
         );
-        crdt.claim_mtc_writer("node-x", FAR_FUTURE, 300);
+        crdt.claim_mtc_writer("acme1", "node-x", FAR_FUTURE, 300);
 
         let bound = 1_700_000_000i64;
         crdt.clamp_timestamps(bound);
@@ -757,7 +743,7 @@ mod tests {
         );
         // is_mtc_writer checks claimed_at.saturating_add(ttl) >= now — with
         // claimed_at clamped to `bound`, the claim must have lapsed by now.
-        assert!(!crdt.is_mtc_writer("node-x", bound + 301, 300));
+        assert!(!crdt.is_mtc_writer("acme1", "node-x", bound + 301, 300));
     }
 
     #[test]
@@ -782,13 +768,36 @@ mod tests {
         let ttl = 150i64;
         let now = 1_700_000_000i64;
 
-        assert!(crdt.claim_mtc_writer("node-a", now, ttl));
-        assert!(crdt.is_mtc_writer("node-a", now, ttl));
-        assert!(!crdt.claim_mtc_writer("node-b", now + 10, ttl));
+        assert!(crdt.claim_mtc_writer("acme1", "node-a", now, ttl));
+        assert!(crdt.is_mtc_writer("acme1", "node-a", now, ttl));
+        assert!(!crdt.claim_mtc_writer("acme1", "node-b", now + 10, ttl));
 
         let lapsed_at = now + ttl + 1;
-        assert!(crdt.claim_mtc_writer("node-b", lapsed_at, ttl));
-        assert!(crdt.is_mtc_writer("node-b", lapsed_at, ttl));
+        assert!(crdt.claim_mtc_writer("acme1", "node-b", lapsed_at, ttl));
+        assert!(crdt.is_mtc_writer("acme1", "node-b", lapsed_at, ttl));
+    }
+
+    #[test]
+    fn mtc_writer_election_is_independent_per_ca() {
+        // Each CA hosted by the cluster elects its writer independently —
+        // claiming CA "acme1"'s writer role must not affect CA "acme2"'s.
+        let mut crdt = AkaCrdt::default();
+        let ttl = 150i64;
+        let now = 1_700_000_000i64;
+
+        assert!(crdt.claim_mtc_writer("acme1", "node-a", now, ttl));
+        assert!(crdt.claim_mtc_writer("acme2", "node-b", now, ttl));
+
+        assert!(crdt.is_mtc_writer("acme1", "node-a", now, ttl));
+        assert!(!crdt.is_mtc_writer("acme1", "node-b", now, ttl));
+        assert!(crdt.is_mtc_writer("acme2", "node-b", now, ttl));
+        assert!(!crdt.is_mtc_writer("acme2", "node-a", now, ttl));
+
+        // node-a already holds acme1's election; a different node must not
+        // be able to steal it, but that must not affect acme2's independent
+        // election held by node-b.
+        assert!(!crdt.claim_mtc_writer("acme1", "node-b", now + 10, ttl));
+        assert!(crdt.is_mtc_writer("acme2", "node-b", now + 10, ttl));
     }
 
     #[test]

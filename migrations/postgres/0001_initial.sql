@@ -312,8 +312,9 @@ CREATE TABLE crdt_order_owners (
 );
 
 -- MTC writer election: at most one row (application always uses id = 'singleton').
+-- One row per CA with a live or historical MTC writer election claim.
 CREATE TABLE crdt_mtc_writer (
-    id          TEXT    PRIMARY KEY,
+    ca_id       TEXT    PRIMARY KEY,
     node_id     TEXT    NOT NULL,
     claimed_at  BIGINT  NOT NULL,
     local_gen   BIGINT  NOT NULL DEFAULT 0

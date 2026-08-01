@@ -300,6 +300,7 @@ struct CrdtOrderOwnerLoad {
 
 #[derive(sqlx::FromRow)]
 struct CrdtMtcWriterLoad {
+    ca_id: String,
     node_id: String,
     claimed_at: i64,
     local_gen: i64,
@@ -716,19 +717,22 @@ pub async fn load_from_db(
     }
 
     // ── CRDT MTC writer ───────────────────────────────────────────────────────
-    // At most one row (id = 'singleton').
+    // One row per CA with a live or historical writer claim.
     let rows: Vec<CrdtMtcWriterLoad> =
-        sqlx::query_as("SELECT node_id, claimed_at, local_gen FROM crdt_mtc_writer")
+        sqlx::query_as("SELECT ca_id, node_id, claimed_at, local_gen FROM crdt_mtc_writer")
             .fetch_all(crdt_pool)
             .await?;
-    if let Some(row) = rows.into_iter().next() {
+    for row in rows {
         let gen = row.local_gen as u64;
         max_gen = max_gen.max(gen);
         let writer = MtcWriter {
             node_id: row.node_id.clone(),
             claimed_at: row.claimed_at,
         };
-        crdt.mtc_writer = LwwRegister::load(Some(writer), row.claimed_at, &row.node_id, gen);
+        crdt.mtc_writer.load_entry(
+            row.ca_id,
+            LwwRegister::load(Some(writer), row.claimed_at, &row.node_id, gen),
+        );
     }
 
     // Advance CRDT_GENERATION beyond all loaded entries so new mutations receive
@@ -794,16 +798,19 @@ pub async fn persist_crdt_cluster(pool: &AnyPool, crdt: &AkaCrdt) -> Result<(), 
 
     // ── CRDT MTC writer (full replace) ────────────────────────────────────────
     q("DELETE FROM crdt_mtc_writer").execute(&mut *tx).await?;
-    if let Some(writer) = crdt.mtc_writer.get() {
-        q(
-            "INSERT INTO crdt_mtc_writer (id, node_id, claimed_at, local_gen) \
-           VALUES ('singleton', ?, ?, ?)",
-        )
-        .bind(&writer.node_id)
-        .bind(writer.claimed_at)
-        .bind(crdt.mtc_writer.local_gen() as i64)
-        .execute(&mut *tx)
-        .await?;
+    for (ca_id, register) in crdt.mtc_writer.all_entries() {
+        if let Some(writer) = register.get() {
+            q(
+                "INSERT INTO crdt_mtc_writer (ca_id, node_id, claimed_at, local_gen) \
+               VALUES (?, ?, ?, ?)",
+            )
+            .bind(ca_id.as_str())
+            .bind(&writer.node_id)
+            .bind(writer.claimed_at)
+            .bind(register.local_gen() as i64)
+            .execute(&mut *tx)
+            .await?;
+        }
     }
 
     tx.commit().await
@@ -1147,23 +1154,28 @@ pub async fn persist_order_owner(
     Ok(())
 }
 
-/// Upsert the MTC writer election to `crdt_mtc_writer` (singleton row).
+/// Upsert a single CA's MTC writer election claim to `crdt_mtc_writer`.
+///
+/// Called from write-path hooks after `AkaCrdt::claim_mtc_writer` succeeds so
+/// the claim survives a restart without waiting for the next full persist.
 pub async fn persist_mtc_writer(
     pool: &AnyPool,
+    ca_id: &str,
     writer: &MtcWriter,
     local_gen: u64,
 ) -> Result<(), sqlx::Error> {
     q_upsert(
-        "INSERT OR REPLACE INTO crdt_mtc_writer (id, node_id, claimed_at, local_gen) \
-         VALUES ('singleton', ?, ?, ?)",
-        "REPLACE INTO crdt_mtc_writer (id, node_id, claimed_at, local_gen) \
-         VALUES ('singleton', ?, ?, ?)",
-        "INSERT INTO crdt_mtc_writer (id, node_id, claimed_at, local_gen) \
-         VALUES ('singleton', $1, $2, $3) \
-         ON CONFLICT (id) DO UPDATE SET \
+        "INSERT OR REPLACE INTO crdt_mtc_writer (ca_id, node_id, claimed_at, local_gen) \
+         VALUES (?, ?, ?, ?)",
+        "REPLACE INTO crdt_mtc_writer (ca_id, node_id, claimed_at, local_gen) \
+         VALUES (?, ?, ?, ?)",
+        "INSERT INTO crdt_mtc_writer (ca_id, node_id, claimed_at, local_gen) \
+         VALUES ($1, $2, $3, $4) \
+         ON CONFLICT (ca_id) DO UPDATE SET \
          node_id = EXCLUDED.node_id, claimed_at = EXCLUDED.claimed_at, \
          local_gen = EXCLUDED.local_gen",
     )
+    .bind(ca_id)
     .bind(&writer.node_id)
     .bind(writer.claimed_at)
     .bind(local_gen as i64)
@@ -1301,7 +1313,8 @@ pub async fn open_crdt_db(url: &str) -> Result<AnyPool, sqlx::Error> {
             registered_at            INTEGER NOT NULL,
             tombstone                INTEGER NOT NULL DEFAULT 0,
             tombstone_at             INTEGER,
-            local_gen                INTEGER NOT NULL DEFAULT 0
+            local_gen                INTEGER NOT NULL DEFAULT 0,
+            writer_node_id           TEXT    NOT NULL DEFAULT ''
         )",
     )
     .execute(&pool)
@@ -1318,9 +1331,11 @@ pub async fn open_crdt_db(url: &str) -> Result<AnyPool, sqlx::Error> {
     .execute(&pool)
     .await?;
 
+    // ca_id: which CA this writer election claim is for — one row per CA
+    // with a live or historical claim, not a singleton.
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS crdt_mtc_writer (
-            id          TEXT    PRIMARY KEY,
+            ca_id       TEXT    PRIMARY KEY,
             node_id     TEXT    NOT NULL,
             claimed_at  INTEGER NOT NULL,
             local_gen   INTEGER NOT NULL DEFAULT 0
