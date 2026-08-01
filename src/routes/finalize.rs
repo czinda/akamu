@@ -429,77 +429,22 @@ pub async fn finalize_order(
 
     let now = unix_now();
 
-    // If this order carries a `replaces` cert_id, resolve the predecessor UUID
-    // before entering the DB transaction (we need an async call for this).
-    let pred_cert_uuid: Option<String> = if let Some(ref cid) = order.replaces {
-        db::certs::get_by_cert_id(&state.db_ro, cid)
-            .await?
-            .map(|c| c.id)
-    } else {
-        None
-    };
-
-    // Persist the certificate, update the order, and fetch authz IDs atomically
-    // in a single transaction so that a crash between writes cannot leave the DB
-    // inconsistent.
-    let cert_id = issued.id.clone();
-
-    // The bool is true when the predecessor's replaced_by was already set by
-    // another concurrent finalization (RFC 9773 §5).
-    let cert_row = CertificateRow {
-        id: issued.id.clone(),
-        order_id: id.clone(),
-        account_id: account_id.clone(),
-        serial_number: issued.serial_hex.clone(),
-        status: CertStatus::Valid.as_str().to_string(),
-        der: final_cert_der,
-        pem: final_cert_pem,
-        not_before: issued.not_before,
-        not_after: issued.not_after,
-        revoked_at: None,
-        revocation_reason: None,
-        mtc_log_index: final_mtc_index,
-        created: now,
-        suggested_window_start: None,
-        suggested_window_end: None,
-        replaced_by: None,
-        subject_dn,
-        ca_id: order.ca_id.clone(),
-    };
-    let star_csr = if order.star_end_date.is_some() {
-        Some(csr_der.clone())
-    } else {
-        None
-    };
-    let pred_already_replaced = if let Some(ref coal) = state.write_coalescer {
-        coal.submit_finalize(cert_row, id.clone(), now, pred_cert_uuid.clone(), star_csr)
-            .await?
-    } else {
-        let mut tx = db::begin_write(&state.db, state.db_kind).await?;
-
-        db::certs::insert(&mut *tx, cert_row).await?;
-
-        db::orders::set_certificate(&mut *tx, &id, &cert_id, now)
-            .await
-            .map_err(|e| match e {
-                AcmeError::Conflict(_) => AcmeError::OrderNotReady,
-                other => other,
-            })?;
-
-        let pred_already_replaced = if let Some(ref pred_uuid) = pred_cert_uuid {
-            !db::certs::mark_replaced(&mut *tx, pred_uuid, &id).await?
-        } else {
-            false
-        };
-
-        if let Some(csr) = star_csr {
-            db::orders::set_star_csr(&mut *tx, &id, csr).await?;
-        }
-
-        tx.commit().await.map_err(AcmeError::from)?;
-        pred_already_replaced
-    };
-    let authz_ids = db::orders::list_authz_ids(&state.db_ro, &id).await?;
+    let (pred_already_replaced, cert_id, authz_ids) = persist_certificate(
+        &state,
+        PersistCertificateParams {
+            order: &order,
+            order_id: &id,
+            account_id: &account_id,
+            issued: &issued,
+            final_cert_der,
+            final_cert_pem,
+            final_mtc_index,
+            subject_dn,
+            csr_der: &csr_der,
+            now,
+        },
+    )
+    .await?;
 
     let principal = format!("acme:{}", ctx.jwk_thumbprint.as_deref().unwrap_or(""));
     state
@@ -994,4 +939,120 @@ async fn run_profile_and_csr_checks(
     }
 
     Ok((validated_csr, extra_other_names))
+}
+
+/// Parameters for [`persist_certificate`].
+struct PersistCertificateParams<'a> {
+    order: &'a db::schema::OrderRow,
+    order_id: &'a str,
+    account_id: &'a str,
+    issued: &'a ca::issue::IssuedCert,
+    final_cert_der: Vec<u8>,
+    final_cert_pem: String,
+    final_mtc_index: Option<i64>,
+    subject_dn: Option<String>,
+    csr_der: &'a [u8],
+    now: i64,
+}
+
+/// Persist the issued certificate, update the order, mark any predecessor
+/// (RFC 9773 `replaces`) as superseded, and fetch the order's authz IDs —
+/// all atomically in a single transaction (or via the write-coalescer, when
+/// configured) so that a crash between writes cannot leave the DB
+/// inconsistent.
+///
+/// Returns `(pred_already_replaced, cert_id, authz_ids)`, where
+/// `pred_already_replaced` is true when the predecessor's `replaced_by` was
+/// already set by another concurrent finalization (RFC 9773 §5).
+async fn persist_certificate(
+    state: &AppState,
+    params: PersistCertificateParams<'_>,
+) -> Result<(bool, String, Vec<String>), AcmeError> {
+    let PersistCertificateParams {
+        order,
+        order_id,
+        account_id,
+        issued,
+        final_cert_der,
+        final_cert_pem,
+        final_mtc_index,
+        subject_dn,
+        csr_der,
+        now,
+    } = params;
+
+    // If this order carries a `replaces` cert_id, resolve the predecessor UUID
+    // before entering the DB transaction (we need an async call for this).
+    let pred_cert_uuid: Option<String> = if let Some(ref cid) = order.replaces {
+        db::certs::get_by_cert_id(&state.db_ro, cid)
+            .await?
+            .map(|c| c.id)
+    } else {
+        None
+    };
+
+    let cert_id = issued.id.clone();
+
+    let cert_row = CertificateRow {
+        id: issued.id.clone(),
+        order_id: order_id.to_string(),
+        account_id: account_id.to_string(),
+        serial_number: issued.serial_hex.clone(),
+        status: CertStatus::Valid.as_str().to_string(),
+        der: final_cert_der,
+        pem: final_cert_pem,
+        not_before: issued.not_before,
+        not_after: issued.not_after,
+        revoked_at: None,
+        revocation_reason: None,
+        mtc_log_index: final_mtc_index,
+        created: now,
+        suggested_window_start: None,
+        suggested_window_end: None,
+        replaced_by: None,
+        subject_dn,
+        ca_id: order.ca_id.clone(),
+    };
+    let star_csr = if order.star_end_date.is_some() {
+        Some(csr_der.to_vec())
+    } else {
+        None
+    };
+    let pred_already_replaced = if let Some(ref coal) = state.write_coalescer {
+        coal.submit_finalize(
+            cert_row,
+            order_id.to_string(),
+            now,
+            pred_cert_uuid.clone(),
+            star_csr,
+        )
+        .await?
+    } else {
+        let mut tx = db::begin_write(&state.db, state.db_kind).await?;
+
+        db::certs::insert(&mut *tx, cert_row).await?;
+
+        db::orders::set_certificate(&mut *tx, order_id, &cert_id, now)
+            .await
+            .map_err(|e| match e {
+                AcmeError::Conflict(_) => AcmeError::OrderNotReady,
+                other => other,
+            })?;
+
+        let pred_already_replaced = if let Some(ref pred_uuid) = pred_cert_uuid {
+            !db::certs::mark_replaced(&mut *tx, pred_uuid, order_id).await?
+        } else {
+            false
+        };
+
+        if let Some(csr) = star_csr {
+            db::orders::set_star_csr(&mut *tx, order_id, csr).await?;
+        }
+
+        tx.commit().await.map_err(AcmeError::from)?;
+        pred_already_replaced
+    };
+    let authz_ids = db::orders::list_authz_ids(&state.db_ro, order_id).await?;
+
+    Ok((pred_already_replaced, cert_id, authz_ids))
 }
