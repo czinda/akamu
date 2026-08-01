@@ -183,3 +183,7 @@ required-features = ["test-utils"]
 [[test]]
 name = "multi_domain_flow"
 required-features = ["test-utils"]
+
+[[test]]
+name = "policy_engine"
+required-features = ["test-utils"]
