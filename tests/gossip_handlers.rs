@@ -224,6 +224,7 @@ async fn pin_peer(state: &AppState, peer: &NodeIdentity, gossip_url: &str) {
             registered_at: now,
         },
         now,
+        &peer.node_id,
     );
 }
 

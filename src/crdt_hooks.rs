@@ -134,7 +134,8 @@ pub async fn on_account_upsert(state: &AppState, p: AccountUpsertParams<'_>) {
     };
     {
         let mut crdt = write_lock_or_return!(state);
-        crdt.accounts.upsert(p.id.to_string(), entry, p.updated)
+        crdt.accounts
+            .upsert(p.id.to_string(), entry, p.updated, &state.node_id)
     };
     state.write_notify.notify_one();
 }
@@ -145,7 +146,7 @@ pub async fn on_account_tombstone(state: &AppState, id: &str, now: i64) {
     }
     {
         let mut crdt = write_lock_or_return!(state);
-        crdt.accounts.remove(&id.to_string(), now)
+        crdt.accounts.remove(&id.to_string(), now, &state.node_id)
     };
     state.write_notify.notify_one();
 }
@@ -174,7 +175,8 @@ pub async fn on_order_upsert(state: &AppState, p: OrderUpsertParams<'_>) {
     };
     {
         let mut crdt = write_lock_or_return!(state);
-        crdt.orders.upsert(p.id.to_string(), entry, p.updated)
+        crdt.orders
+            .upsert(p.id.to_string(), entry, p.updated, &state.node_id)
     };
     state.write_notify.notify_one();
 }
@@ -185,7 +187,7 @@ pub async fn on_order_tombstone(state: &AppState, id: &str, now: i64) {
     }
     {
         let mut crdt = write_lock_or_return!(state);
-        crdt.orders.remove(&id.to_string(), now)
+        crdt.orders.remove(&id.to_string(), now, &state.node_id)
     };
     state.write_notify.notify_one();
 }
@@ -211,7 +213,7 @@ pub async fn on_authz_upsert(state: &AppState, p: AuthzUpsertParams<'_>) {
     {
         let mut crdt = write_lock_or_return!(state);
         crdt.authorizations
-            .upsert(p.id.to_string(), entry, p.updated)
+            .upsert(p.id.to_string(), entry, p.updated, &state.node_id)
     };
     state.write_notify.notify_one();
 }
@@ -222,7 +224,8 @@ pub async fn on_authz_tombstone(state: &AppState, id: &str, now: i64) {
     }
     {
         let mut crdt = write_lock_or_return!(state);
-        crdt.authorizations.remove(&id.to_string(), now)
+        crdt.authorizations
+            .remove(&id.to_string(), now, &state.node_id)
     };
     state.write_notify.notify_one();
 }
@@ -273,7 +276,8 @@ pub async fn on_cert_upsert(state: &AppState, p: CertUpsertParams<'_>) {
     };
     {
         let mut crdt = write_lock_or_return!(state);
-        crdt.certificates.upsert(p.id.to_string(), entry, p.created)
+        crdt.certificates
+            .upsert(p.id.to_string(), entry, p.created, &state.node_id)
     };
     state.write_notify.notify_one();
 }
@@ -284,7 +288,8 @@ pub async fn on_cert_tombstone(state: &AppState, id: &str, now: i64) {
     }
     {
         let mut crdt = write_lock_or_return!(state);
-        crdt.certificates.remove(&id.to_string(), now)
+        crdt.certificates
+            .remove(&id.to_string(), now, &state.node_id)
     };
     state.write_notify.notify_one();
 }
@@ -340,7 +345,8 @@ pub async fn on_operator_upsert(
     };
     {
         let mut crdt = write_lock_or_return!(state);
-        crdt.operators.upsert(id.to_string(), entry, created)
+        crdt.operators
+            .upsert(id.to_string(), entry, created, &state.node_id)
     };
     state.write_notify.notify_one();
 }
@@ -351,7 +357,7 @@ pub async fn on_operator_tombstone(state: &AppState, id: i64, now: i64) {
     }
     {
         let mut crdt = write_lock_or_return!(state);
-        crdt.operators.remove(&id.to_string(), now)
+        crdt.operators.remove(&id.to_string(), now, &state.node_id)
     };
     state.write_notify.notify_one();
 }
@@ -378,7 +384,8 @@ pub async fn on_delegation_upsert(
     };
     {
         let mut crdt = write_lock_or_return!(state);
-        crdt.delegations.upsert(id.to_string(), entry, created)
+        crdt.delegations
+            .upsert(id.to_string(), entry, created, &state.node_id)
     };
     state.write_notify.notify_one();
 }
@@ -389,7 +396,8 @@ pub async fn on_delegation_tombstone(state: &AppState, id: &str, now: i64) {
     }
     {
         let mut crdt = write_lock_or_return!(state);
-        crdt.delegations.remove(&id.to_string(), now)
+        crdt.delegations
+            .remove(&id.to_string(), now, &state.node_id)
     };
     state.write_notify.notify_one();
 }
@@ -423,7 +431,8 @@ pub async fn on_policy_rule_upsert(state: &AppState, p: PolicyRuleUpsertParams<'
     };
     {
         let mut crdt = write_lock_or_return!(state);
-        crdt.policy_rules.upsert(p.id.to_string(), entry, now)
+        crdt.policy_rules
+            .upsert(p.id.to_string(), entry, now, &state.node_id)
     };
     state.write_notify.notify_one();
 }
@@ -434,7 +443,8 @@ pub async fn on_policy_rule_remove(state: &AppState, id: &str, now: i64) {
     }
     {
         let mut crdt = write_lock_or_return!(state);
-        crdt.policy_rules.remove(&id.to_string(), now)
+        crdt.policy_rules
+            .remove(&id.to_string(), now, &state.node_id)
     };
     state.write_notify.notify_one();
 }

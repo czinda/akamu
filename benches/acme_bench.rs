@@ -1027,6 +1027,7 @@ async fn spawn_node(p: SpawnParams<'_>) -> BenchServer {
             registered_at: now_ts,
         },
         now_ts,
+        &identity.node_id,
     );
 
     let nonce_prefix = identity
@@ -2595,7 +2596,7 @@ async fn main() {
                 for (j, entries) in all_entries.iter().enumerate() {
                     if j != i {
                         for (k, v) in entries {
-                            crdt.cluster_nodes.upsert(k.clone(), v.clone(), 0);
+                            crdt.cluster_nodes.upsert(k.clone(), v.clone(), 0, k);
                         }
                     }
                 }

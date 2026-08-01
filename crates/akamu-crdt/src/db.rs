@@ -15,6 +15,7 @@ use sqlx::AnyPool;
 
 use crate::crdt::AkaCrdt;
 use crate::lww_register::LwwRegister;
+use crate::or_map::OrMapEntry;
 use crate::types::{
     AccountEntry, AkaNodeEntry, AuthzEntry, CertEntry, ChallengeEntry, DelegationEntry,
     EabKeyEntry, MtcCheckpointEntry, MtcWriter, OperatorEntry, OrderEntry, OrderOwner,
@@ -361,11 +362,14 @@ pub async fn load_from_db(
         };
         crdt.accounts.load_entry(
             row.id,
-            entry,
-            row.created,
-            tombstone,
-            tombstone.then_some(row.updated),
-            gen,
+            OrMapEntry {
+                value: entry,
+                added_at: row.created,
+                tombstone,
+                tombstone_at: tombstone.then_some(row.updated),
+                node_id: node_id.to_owned(),
+                local_gen: gen,
+            },
         );
     }
 
@@ -398,11 +402,14 @@ pub async fn load_from_db(
         };
         crdt.orders.load_entry(
             row.id,
-            entry,
-            row.created,
-            tombstone,
-            tombstone.then_some(row.updated),
-            gen,
+            OrMapEntry {
+                value: entry,
+                added_at: row.created,
+                tombstone,
+                tombstone_at: tombstone.then_some(row.updated),
+                node_id: node_id.to_owned(),
+                local_gen: gen,
+            },
         );
     }
 
@@ -434,11 +441,14 @@ pub async fn load_from_db(
         };
         crdt.authorizations.load_entry(
             row.id,
-            entry,
-            row.created,
-            tombstone,
-            tombstone.then_some(row.updated),
-            gen,
+            OrMapEntry {
+                value: entry,
+                added_at: row.created,
+                tombstone,
+                tombstone_at: tombstone.then_some(row.updated),
+                node_id: node_id.to_owned(),
+                local_gen: gen,
+            },
         );
     }
 
@@ -494,8 +504,17 @@ pub async fn load_from_db(
             created: row.created,
             ca_id: row.ca_id,
         };
-        crdt.certificates
-            .load_entry(row.id, entry, row.created, tombstone, row.revoked_at, gen);
+        crdt.certificates.load_entry(
+            row.id,
+            OrMapEntry {
+                value: entry,
+                added_at: row.created,
+                tombstone,
+                tombstone_at: row.revoked_at,
+                node_id: node_id.to_owned(),
+                local_gen: gen,
+            },
+        );
     }
 
     // ── EAB Keys ──────────────────────────────────────────────────────────────
@@ -536,8 +555,17 @@ pub async fn load_from_db(
             ca_id: row.ca_id,
             created,
         };
-        crdt.operators
-            .load_entry(row.id.to_string(), entry, created, tombstone, None, gen);
+        crdt.operators.load_entry(
+            row.id.to_string(),
+            OrMapEntry {
+                value: entry,
+                added_at: created,
+                tombstone,
+                tombstone_at: None,
+                node_id: node_id.to_owned(),
+                local_gen: gen,
+            },
+        );
     }
 
     // ── Delegations ───────────────────────────────────────────────────────────
@@ -555,8 +583,17 @@ pub async fn load_from_db(
             created: row.created,
             ca_id: row.ca_id,
         };
-        crdt.delegations
-            .load_entry(row.id, entry, row.created, false, None, gen);
+        crdt.delegations.load_entry(
+            row.id,
+            OrMapEntry {
+                value: entry,
+                added_at: row.created,
+                tombstone: false,
+                tombstone_at: None,
+                node_id: node_id.to_owned(),
+                local_gen: gen,
+            },
+        );
     }
 
     // ── Policy rules ─────────────────────────────────────────────────────────
@@ -581,8 +618,17 @@ pub async fn load_from_db(
             updated_at: row.updated_at,
             created_by: row.created_by,
         };
-        crdt.policy_rules
-            .load_entry(row.id, entry, created, tombstone, row.tombstone_at, gen);
+        crdt.policy_rules.load_entry(
+            row.id,
+            OrMapEntry {
+                value: entry,
+                added_at: created,
+                tombstone,
+                tombstone_at: row.tombstone_at,
+                node_id: node_id.to_owned(),
+                local_gen: gen,
+            },
+        );
     }
 
     // ── MTC Checkpoints ───────────────────────────────────────────────────────
@@ -638,11 +684,14 @@ pub async fn load_from_db(
         };
         crdt.cluster_nodes.load_entry(
             row.node_id,
-            entry,
-            row.registered_at,
-            tombstone,
-            row.tombstone_at,
-            gen,
+            OrMapEntry {
+                value: entry,
+                added_at: row.registered_at,
+                tombstone,
+                tombstone_at: row.tombstone_at,
+                node_id: node_id.to_owned(),
+                local_gen: gen,
+            },
         );
     }
 

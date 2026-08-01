@@ -245,6 +245,7 @@ async fn spawn_node(params: SpawnParams) -> NodeHandle {
             registered_at: now_ts,
         },
         now_ts,
+        &identity.node_id,
     );
 
     let nonce_prefix = identity
@@ -426,7 +427,7 @@ async fn gossip_bootstrap_account_propagates() {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         for (k, v) in b_entries {
-            crdt_a.cluster_nodes.upsert(k, v, 0);
+            crdt_a.cluster_nodes.upsert(k.clone(), v, 0, &k);
         }
     }
     {
@@ -441,7 +442,7 @@ async fn gossip_bootstrap_account_propagates() {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         for (k, v) in a_entries {
-            crdt_b.cluster_nodes.upsert(k, v, 0);
+            crdt_b.cluster_nodes.upsert(k.clone(), v, 0, &k);
         }
     }
 

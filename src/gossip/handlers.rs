@@ -374,7 +374,8 @@ pub async fn gossip_register(
 
     {
         let mut crdt = state.crdt.write().await;
-        crdt.cluster_nodes.upsert(body.node_id.clone(), entry, now);
+        crdt.cluster_nodes
+            .upsert(body.node_id.clone(), entry, now, &state.node_id);
     }
     let crdt_snapshot = {
         let crdt = state.crdt.read().await;

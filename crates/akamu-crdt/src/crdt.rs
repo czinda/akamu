@@ -355,6 +355,7 @@ mod tests {
                 ..Default::default()
             },
             now,
+            "node-1",
         );
         c.accounts.upsert(
             "acct-1".to_owned(),
@@ -364,6 +365,7 @@ mod tests {
                 ..Default::default()
             },
             now,
+            "node-1",
         );
         c.orders.upsert(
             "ord-1".to_owned(),
@@ -373,6 +375,7 @@ mod tests {
                 ..Default::default()
             },
             now,
+            "node-1",
         );
         c.authorizations.upsert(
             "authz-1".to_owned(),
@@ -382,6 +385,7 @@ mod tests {
                 ..Default::default()
             },
             now,
+            "node-1",
         );
         c.challenges.set(
             "chall-1".to_owned(),
@@ -401,6 +405,7 @@ mod tests {
                 ..Default::default()
             },
             now,
+            "node-1",
         );
         c.eab_keys.set(
             "kid-1".to_owned(),
@@ -420,6 +425,7 @@ mod tests {
                 ..Default::default()
             },
             now,
+            "node-1",
         );
         c.delegations.upsert(
             "del-1".to_owned(),
@@ -428,6 +434,7 @@ mod tests {
                 ..Default::default()
             },
             now,
+            "node-1",
         );
         c.policy_rules.upsert(
             "rule-1".to_owned(),
@@ -442,6 +449,7 @@ mod tests {
                 created_by: Some("admin".to_owned()),
             },
             now,
+            "node-1",
         );
         c.mtc_checkpoints.set(
             1u64,
@@ -507,6 +515,7 @@ mod tests {
                 ..Default::default()
             },
             now,
+            "node-a",
         );
         crdt.accounts.upsert(
             "acct-b".to_owned(),
@@ -516,6 +525,7 @@ mod tests {
                 ..Default::default()
             },
             now,
+            "node-b",
         );
         crdt.certificates.upsert(
             "cert-a".to_owned(),
@@ -525,6 +535,7 @@ mod tests {
                 ..Default::default()
             },
             now,
+            "node-a",
         );
         crdt.eab_keys.set(
             "kid-1".to_owned(),
@@ -582,6 +593,7 @@ mod tests {
                 ..Default::default()
             },
             1_700_000_001,
+            "node-b",
         );
 
         let a_clone = a.clone();
