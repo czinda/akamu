@@ -259,6 +259,10 @@ CREATE TABLE crdt_cluster_nodes (
     tombstone                INTEGER NOT NULL DEFAULT 0,
     tombstone_at             INTEGER,
     local_gen                INTEGER NOT NULL DEFAULT 0,
+    -- Writer of this entry, for CRDT merge tiebreak; distinct from the
+    -- `node_id` column above, which is the entry's subject (the node this
+    -- row describes), not who wrote it.
+    writer_node_id           TEXT    NOT NULL DEFAULT '',
     CONSTRAINT ck_tombstone_consistency CHECK (
         (tombstone = 0 AND tombstone_at IS NULL) OR
         (tombstone = 1 AND tombstone_at IS NOT NULL)
@@ -346,17 +350,19 @@ CREATE TABLE mtc_revoked_ranges (
 
 -- Policy engine rules (soft-deletable via tombstone).
 CREATE TABLE policy_rules (
-    id           TEXT PRIMARY KEY,
-    scope        TEXT NOT NULL,
-    name         TEXT NOT NULL,
-    rule_json    TEXT NOT NULL,
-    enabled      INTEGER NOT NULL DEFAULT 1,
-    created_at   TEXT NOT NULL,
-    updated_at   TEXT NOT NULL,
-    created_by   TEXT,
-    local_gen    INTEGER NOT NULL DEFAULT 0,
-    tombstone    INTEGER NOT NULL DEFAULT 0,
-    tombstone_at INTEGER,
+    id             TEXT PRIMARY KEY,
+    scope          TEXT NOT NULL,
+    name           TEXT NOT NULL,
+    rule_json      TEXT NOT NULL,
+    enabled        INTEGER NOT NULL DEFAULT 1,
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    created_by     TEXT,
+    local_gen      INTEGER NOT NULL DEFAULT 0,
+    tombstone      INTEGER NOT NULL DEFAULT 0,
+    tombstone_at   INTEGER,
+    -- Writer of this entry, for CRDT merge tiebreak (see crdt_cluster_nodes).
+    writer_node_id TEXT NOT NULL DEFAULT '',
     CHECK ((tombstone = 0 AND tombstone_at IS NULL) OR (tombstone = 1 AND tombstone_at IS NOT NULL))
 );
 -- Partial unique index: only live (non-tombstoned) rows participate in the

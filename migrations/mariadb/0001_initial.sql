@@ -288,6 +288,10 @@ CREATE TABLE crdt_cluster_nodes (
     tombstone                TINYINT      NOT NULL DEFAULT 0,
     tombstone_at             BIGINT,
     local_gen                BIGINT       NOT NULL DEFAULT 0,
+    -- Writer of this entry, for CRDT merge tiebreak; distinct from the
+    -- `node_id` column above, which is the entry's subject (the node this
+    -- row describes), not who wrote it.
+    writer_node_id           VARCHAR(255) NOT NULL DEFAULT '',
     CONSTRAINT ck_tombstone_consistency CHECK (
         (tombstone = 0 AND tombstone_at IS NULL) OR
         (tombstone = 1 AND tombstone_at IS NOT NULL)
@@ -376,18 +380,20 @@ CREATE TABLE mtc_revoked_ranges (
 -- equivalent (MariaDB has no WHERE-clause partial indexes, but UNIQUE
 -- indexes ignore NULLs, so tombstoned rows drop out of the uniqueness check).
 CREATE TABLE policy_rules (
-    id           VARCHAR(36)  PRIMARY KEY,
-    scope        VARCHAR(64)  NOT NULL,
-    name         VARCHAR(255) NOT NULL,
-    rule_json    TEXT         NOT NULL,
-    enabled      TINYINT(1)   NOT NULL DEFAULT 1,
-    created_at   VARCHAR(30)  NOT NULL,
-    updated_at   VARCHAR(30)  NOT NULL,
-    created_by   VARCHAR(255),
-    local_gen    BIGINT       NOT NULL DEFAULT 0,
-    tombstone    INTEGER      NOT NULL DEFAULT 0,
-    tombstone_at BIGINT,
-    name_live    VARCHAR(255) AS (CASE WHEN tombstone = 0 THEN name ELSE NULL END) STORED,
+    id             VARCHAR(36)  PRIMARY KEY,
+    scope          VARCHAR(64)  NOT NULL,
+    name           VARCHAR(255) NOT NULL,
+    rule_json      TEXT         NOT NULL,
+    enabled        TINYINT(1)   NOT NULL DEFAULT 1,
+    created_at     VARCHAR(30)  NOT NULL,
+    updated_at     VARCHAR(30)  NOT NULL,
+    created_by     VARCHAR(255),
+    local_gen      BIGINT       NOT NULL DEFAULT 0,
+    tombstone      INTEGER      NOT NULL DEFAULT 0,
+    tombstone_at   BIGINT,
+    -- Writer of this entry, for CRDT merge tiebreak (see crdt_cluster_nodes).
+    writer_node_id VARCHAR(255) NOT NULL DEFAULT '',
+    name_live      VARCHAR(255) AS (CASE WHEN tombstone = 0 THEN name ELSE NULL END) STORED,
     CONSTRAINT ck_policy_tombstone_consistency CHECK (
         (tombstone = 0 AND tombstone_at IS NULL) OR
         (tombstone = 1 AND tombstone_at IS NOT NULL)
