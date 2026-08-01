@@ -1,6 +1,7 @@
 //! Axum route assembly and shared request-handling utilities.
 
 mod embedded_ui;
+mod mtc_proxy;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -225,7 +226,26 @@ fn build_acme_router(state: &Arc<AppState>) -> Router<Arc<AppState>> {
         "renewal-info/{cert_id}",
         get(renewal_info::get_renewal_info),
     );
-    // MTC log state (read-only; 404 when MTC is disabled)
+    // mtc/discovery returns static per-CA config, not log/DB state — correct
+    // on every node regardless of writer election, so it stays outside the
+    // proxied MTC sub-router below.
+    r = dual_acme_route(r, "mtc/discovery", get(mtc::get_discovery));
+    // EAB identity — legacy-only (no per-CA counterpart)
+    r = r.route("/acme/eab", get(eab_identity::get_eab_identity));
+
+    r = r.merge(build_acme_mtc_router(state));
+
+    r.layer(axum::middleware::from_fn_with_state(
+        Arc::clone(state),
+        halt_check,
+    ))
+}
+
+/// MTC log read routes (404 when MTC is disabled) — reverse-proxied to the
+/// CA's elected `mtc_writer` when this node isn't it (`mtc_proxy`), since
+/// only the writer's local log/DB state is guaranteed current.
+fn build_acme_mtc_router(state: &Arc<AppState>) -> Router<Arc<AppState>> {
+    let mut r = Router::new();
     r = dual_acme_route(r, "mtc/tree-size", get(mtc::get_tree_size));
     r = dual_acme_route(r, "mtc/root", get(mtc::get_root));
     r = dual_acme_route(
@@ -245,7 +265,6 @@ fn build_acme_router(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     // C2SP tlog-tiles API
     r = dual_acme_route(r, "mtc/checkpoint", get(mtc::get_tlog_checkpoint));
     r = dual_acme_route(r, "mtc/cosignature", get(mtc::get_tlog_cosignature));
-    r = dual_acme_route(r, "mtc/discovery", get(mtc::get_discovery));
     r = dual_acme_route(r, "mtc/tile/{*path}", get(mtc::get_tlog_tile));
     // Consistency proof for monitors
     r = dual_acme_route(r, "mtc/consistency-proof", get(mtc::get_consistency_proof));
@@ -253,12 +272,10 @@ fn build_acme_router(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     r = dual_acme_route(r, "mtc/subtree-root", get(mtc::get_subtree_root));
     // Revoked ranges
     r = dual_acme_route(r, "mtc/revoked-ranges", get(mtc::get_revoked_ranges));
-    // EAB identity — legacy-only (no per-CA counterpart)
-    r = r.route("/acme/eab", get(eab_identity::get_eab_identity));
 
-    r.layer(axum::middleware::from_fn_with_state(
+    r.route_layer(axum::middleware::from_fn_with_state(
         Arc::clone(state),
-        halt_check,
+        mtc_proxy::mtc_writer_proxy,
     ))
 }
 
