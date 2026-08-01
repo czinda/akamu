@@ -40,6 +40,34 @@ pub async fn finalize_order(
     let (ctx, account_id, order, csr_der) =
         resolve_order_and_authorize(&state, &ca_id.0, &id, body).await?;
 
+    // Best-effort cross-node duplicate-issuance guard: claim exclusive
+    // processing ownership of this order before doing any issuance work.
+    // This is a local CRDT write that gossips out asynchronously — it can
+    // still diverge across a network partition (both sides may claim the
+    // same order), which is a known, documented, accepted residual risk
+    // (see docs/src/admin/cluster.md's Network Partition Behavior section).
+    // Re-claiming your own live claim always succeeds, so a node retrying
+    // its own finalize is never blocked by this.
+    {
+        let ttl = state
+            .config
+            .gossip
+            .as_ref()
+            .map(|g| g.ownership_ttl_secs as i64)
+            .unwrap_or(150);
+        let claimed =
+            state
+                .crdt
+                .write()
+                .await
+                .claim_order(&order.id, &state.node_id, unix_now(), ttl);
+        if !claimed {
+            return Err(AcmeError::Conflict(
+                "order is currently being processed by another node".into(),
+            ));
+        }
+    }
+
     // Parse order identifiers.
     let identifiers: Vec<serde_json::Value> = serde_json::from_str(&order.identifiers)
         .map_err(|e| AcmeError::Internal(format!("corrupt identifiers in order {id}: {e}")))?;
