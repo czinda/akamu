@@ -23,146 +23,220 @@ sqlx::query_as!(Row, "SELECT … FROM …", param)
 
 ### Initialization
 
-`db::open(url, max_connections, require_tls)` in `src/db/mod.rs` performs the following in order:
+`open_databases` (`src/main.rs`) calls `db::install_drivers()` once, before opening
+any pool, to register all compiled-in sqlx drivers via
+`sqlx::any::install_default_drivers()`.
 
-1. Registers all compiled-in sqlx drivers via `sqlx::any::install_default_drivers()`.
-2. Optionally validates the URL for SSL/TLS parameters when `require_tls` is `true` (FPT_ITT.1).
-3. Opens the pool (creates the SQLite file if needed via the `?mode=rwc` URI parameter; for `:memory:` a fresh in-memory database is used).
-4. Enables WAL mode and performance pragmas for SQLite: `PRAGMA journal_mode=WAL`, `PRAGMA synchronous=NORMAL`, `PRAGMA foreign_keys=ON`, `PRAGMA mmap_size=134217728`, `PRAGMA cache_size=-65536`.
-5. Runs all pending migrations via the compiled-in `sqlx::migrate!` macro, selecting the backend-specific migration directory (`migrations/sqlite/`, `migrations/postgres/`, or `migrations/mariadb/`).
+`db::open(url, max_connections, require_tls)` in `src/db/mod.rs` then performs
+the following, in order:
+
+1. Optionally validates the URL for SSL/TLS parameters when `require_tls` is `true` (FPT_ITT.1).
+2. Opens the pool (creates the SQLite file if needed via the `?mode=rwc` URI parameter; for `:memory:` a fresh in-memory database is used).
+3. Runs all pending migrations via the compiled-in `sqlx::migrate!` macro, selecting the backend-specific migration directory (`migrations/sqlite/`, `migrations/postgres/`, or `migrations/mariadb/`).
+4. Enables WAL mode and performance pragmas for SQLite, in this order: `PRAGMA journal_mode=WAL`, `PRAGMA synchronous=NORMAL`, `PRAGMA foreign_keys=ON`, `PRAGMA mmap_size=134217728`, `PRAGMA cache_size=-65536`, `PRAGMA temp_store=MEMORY`, `PRAGMA wal_autocheckpoint=10000`.
+
+Migrations run **before** the pragmas — in particular before `PRAGMA
+foreign_keys=ON` — not after. sqlx unconditionally wraps each SQLite
+migration file in its own transaction (unlike the PostgreSQL driver, which
+honors a `-- no-transaction` marker), and `PRAGMA foreign_keys` is a
+documented no-op once a transaction is already open. A migration that
+rebuilds a table with live rows in a referencing child table (SQLite has no
+`ALTER TABLE ADD CONSTRAINT`, so drop-and-recreate is the only way to change
+such a table) would fail with "FOREIGN KEY constraint failed" if enforcement
+were already active when the migration ran. A fresh SQLite connection
+defaults `foreign_keys` to off, so running migrations first is safe;
+enforcement is turned on immediately afterward, before the pool is handed to
+any caller.
 
 At server startup, nonces older than 24 hours are swept from the in-memory `NonceBucket`.
 
-## Migration numbering
+## Migrations
 
-Each database backend has its own migration directory (`migrations/sqlite/`, `migrations/postgres/`, `migrations/mariadb/`). Two backend-specific migrations affect the numbering:
+Each database backend has its own migration directory (`migrations/sqlite/`,
+`migrations/postgres/`, `migrations/mariadb/`), and each directory currently
+contains a single file: `0001_initial.sql`. The full schema history was
+squashed into that one file per backend (no production deployment existed
+yet, so migration-replay compatibility did not need to be preserved) — see
+`migrations/NUMBERING.md` for the rationale and the numbering rule for future
+migrations (`0002_...` onward, kept in sync file-for-file across the three
+backends whenever a change affects all of them).
 
-- **SQLite 0006** (`0006_mtc_log_index.sql`) — a WAL-mode index-tuning step that does not apply to PostgreSQL or MariaDB.  All SQLite migrations from 0007 onward are therefore one higher than the corresponding PostgreSQL/MariaDB number.
-- **PostgreSQL 0015** (`0015_hot_indexes.sql`) — two partial/compound indexes on `authorizations` that are specific to PostgreSQL concurrency characteristics.  This migration has no SQLite or MariaDB counterpart.
-
-The remainder of this document uses SQLite numbers as the canonical reference and notes the PostgreSQL/MariaDB equivalent where the numbers differ.
+The three `0001_initial.sql` files define an identical schema: same tables,
+columns, indexes, and `CHECK` constraints. They differ only in backend SQL
+syntax — e.g. SQLite `BLOB`/`INTEGER`/`AUTOINCREMENT` versus PostgreSQL
+`BYTEA`/`BIGINT`/`SMALLINT`/`BIGSERIAL` versus MariaDB
+`MEDIUMBLOB`/`BIGINT`/`TINYINT`/`AUTO_INCREMENT` — plus a handful of
+PostgreSQL-specific touches such as deferring the `orders.delegation_id`
+foreign key until after `delegations` is created.
 
 ## Schema
 
-All seven core tables are created in a single initial migration (`0001_initial.sql`). Later migrations add columns and additional tables.
+The CREATE TABLE statements below are reproduced (in SQLite syntax, trimmed
+of some comments) from `migrations/sqlite/0001_initial.sql` for quick
+reference; the migration file itself is the authoritative source. Every
+CRDT-tracked table (`accounts`,
+`orders`, `authorizations`, `challenges`, `certificates`, `eab_keys`,
+`operators`, `delegations`, `mtc_checkpoints`, `mtc_cosignatures`,
+`policy_rules`) also carries a `local_gen INTEGER NOT NULL DEFAULT 0` column
+— see [`local_gen` column](#local_gen-column-on-main-database-tables) below.
 
-### Migration 0001 — Initial schema
-
-**`nonces`** — Anti-replay nonces. The in-memory `NonceBucket` is the hot path; this table exists for startup cleanup of nonces written by a previous process version.
-
-```sql
-CREATE TABLE nonces (
-    nonce   TEXT    PRIMARY KEY,
-    created INTEGER NOT NULL  -- Unix epoch seconds
-);
-CREATE INDEX idx_nonces_created ON nonces(created);
-```
+### Core ACME tables
 
 **`accounts`** — ACME accounts.
 
 ```sql
 CREATE TABLE accounts (
-    id             TEXT    PRIMARY KEY,      -- UUID
-    status         TEXT    NOT NULL DEFAULT 'valid',  -- valid|deactivated|revoked
-    contact        TEXT,                     -- JSON array of mailto: URIs
-    public_key     BLOB    NOT NULL,         -- DER-encoded SubjectPublicKeyInfo
-    jwk_thumbprint TEXT    NOT NULL UNIQUE,  -- base64url SHA-256 JWK thumbprint
-    created        INTEGER NOT NULL,
-    updated        INTEGER NOT NULL
+    id                  TEXT    PRIMARY KEY,      -- UUID
+    status              TEXT    NOT NULL DEFAULT 'valid'
+                                 CHECK(status IN ('valid','deactivated','revoked')),
+    contact             TEXT,                     -- JSON array of mailto: URIs
+    public_key          BLOB    NOT NULL,         -- DER-encoded SubjectPublicKeyInfo
+    jwk_thumbprint      TEXT    NOT NULL UNIQUE,  -- base64url SHA-256 JWK thumbprint
+    created             INTEGER NOT NULL,
+    updated             INTEGER NOT NULL,
+    profile_grants      TEXT,                     -- JSON array of allowed profile IDs; NULL = no restriction
+    ca_id               TEXT    NOT NULL DEFAULT '', -- '' = server-wide scope
+    local_gen           INTEGER NOT NULL DEFAULT 0,
+    kerberos_principal  TEXT                      -- set when created via GSSAPI-authenticated EAB
 );
+CREATE INDEX idx_accounts_ca_id ON accounts(ca_id);
 ```
 
-`jwk_thumbprint` has a unique constraint so the database enforces that no two accounts share a key.
+`jwk_thumbprint` has a unique constraint so the database enforces that no two
+accounts share a key. `ca_id = ''` means server-wide account scope (the
+account may use any CA); the empty string is not a valid CA ID (config
+validation requires CA IDs to match `^[a-z0-9]`), so it can never collide
+with a real CA.
 
-**`orders`** — ACME orders, including STAR (RFC 8739) auto-renewal fields.
+**`orders`** — ACME orders, including STAR (RFC 8739) auto-renewal fields and RFC 9115 delegation fields.
 
 ```sql
 CREATE TABLE orders (
-    id                        TEXT    PRIMARY KEY,
-    account_id                TEXT    NOT NULL REFERENCES accounts(id),
-    status                    TEXT    NOT NULL DEFAULT 'pending',
-    expires                   INTEGER,
-    identifiers               TEXT    NOT NULL,   -- JSON [{type,value}]
-    not_before                INTEGER,
-    not_after                 INTEGER,
-    error                     TEXT,               -- problem+json string if invalid
-    certificate_id            TEXT,               -- FK to certificates.id when valid
-    replaces                  TEXT,               -- RFC 9773 ARI: cert_id of predecessor
-    created                   INTEGER NOT NULL,
-    updated                   INTEGER NOT NULL,
-    -- RFC 8739 STAR auto-renewal
-    star_start_date           INTEGER,
-    star_end_date             INTEGER,
-    star_lifetime_secs        INTEGER,
-    star_lifetime_adjust_secs INTEGER NOT NULL DEFAULT 0,
-    star_allow_cert_get       INTEGER NOT NULL DEFAULT 0,
-    star_canceled_at          INTEGER,
-    star_csr_der              BLOB,               -- stored CSR DER for reissuance
+    id                         TEXT    PRIMARY KEY,
+    account_id                 TEXT    NOT NULL REFERENCES accounts(id),
+    status                     TEXT    NOT NULL DEFAULT 'pending'
+                                       CHECK(status IN ('pending','ready','processing','valid','invalid','canceled')),
+    expires                    INTEGER,
+    identifiers                TEXT    NOT NULL,         -- JSON [{type,value}]
+    not_before                 INTEGER,
+    not_after                  INTEGER,
+    error                      TEXT,                     -- problem+json string if invalid
+    certificate_id             TEXT,                     -- FK to certificates.id when valid
+    replaces                   TEXT,                     -- RFC 9773 ARI: cert_id of predecessor
+    created                    INTEGER NOT NULL,
+    updated                    INTEGER NOT NULL,
+    -- RFC 8739 STAR auto-renewal fields
+    star_start_date            INTEGER,
+    star_end_date              INTEGER,
+    star_lifetime_secs         INTEGER,
+    star_lifetime_adjust_secs  INTEGER NOT NULL DEFAULT 0,
+    star_allow_cert_get        INTEGER NOT NULL DEFAULT 0,
+    star_canceled_at           INTEGER,
+    star_csr_der               BLOB,                     -- stored CSR DER for reissuance
     -- draft-ietf-acme-profiles-01
-    profile                   TEXT
+    profile                    TEXT,
+    -- Multi-CA and RFC 9115 delegation fields
+    ca_id                      TEXT    NOT NULL DEFAULT 'default',
+    delegation_id              TEXT    REFERENCES delegations(id),
+    allow_cert_get             INTEGER NOT NULL DEFAULT 0, -- RFC 9115 §2.3.5 top-level flag
+    upstream_order_url         TEXT,
+    upstream_cert_url          TEXT,
+    local_gen                  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX idx_orders_account  ON orders(account_id);
 CREATE INDEX idx_orders_status   ON orders(status);
 CREATE INDEX idx_orders_replaces ON orders(replaces) WHERE replaces IS NOT NULL;
 CREATE INDEX idx_orders_star     ON orders(star_end_date) WHERE star_end_date IS NOT NULL;
+CREATE INDEX idx_orders_ca_id    ON orders(ca_id);
+CREATE INDEX idx_orders_ca_account ON orders(ca_id, account_id);
+CREATE INDEX idx_orders_delegation ON orders(delegation_id) WHERE delegation_id IS NOT NULL;
+CREATE INDEX idx_orders_delegation_status
+    ON orders(delegation_id, status)
+    WHERE delegation_id IS NOT NULL AND status = 'processing';
 ```
 
-**`authorizations`** — One per identifier per order. `account_id` is denormalized from the parent order to allow efficient per-account queries without joins. `subdomain_auth_allowed` records whether RFC 9444 subdomain authorization was granted.
+`ca_id = 'default'` is the canonical single-CA name used by deployments that
+never configured `[[ca]]` arrays. `delegation_id` is a nullable FK to
+`delegations(id)`: orders with a non-null `delegation_id` skip the
+authorization flow and start in `ready` status. `allow_cert_get` mirrors the
+`"allow-certificate-get"` field from the `new-order` payload. `upstream_order_url`
+and `upstream_cert_url` are set by the background delegation task as it
+progresses through the upstream ACME flow (see [RFC 9115](rfc-compliance.md)).
+
+**`authorizations`** — One per identifier per order (or standalone for RFC 8555 §7.4.1 pre-authorizations, where `order_id` is `NULL`). `account_id` is denormalized from the parent order to allow efficient per-account queries without joins. `subdomain_auth_allowed` records whether RFC 9444 subdomain authorization was granted.
 
 ```sql
 CREATE TABLE authorizations (
-    id                    TEXT    PRIMARY KEY,
-    order_id              TEXT    NOT NULL REFERENCES orders(id),
-    account_id            TEXT    NOT NULL REFERENCES accounts(id),
-    status                TEXT    NOT NULL DEFAULT 'pending',
-    identifier            TEXT    NOT NULL,   -- JSON {"type":"dns","value":"example.com"}
-    expires               INTEGER,
-    wildcard              INTEGER NOT NULL DEFAULT 0,
+    id                     TEXT    PRIMARY KEY,
+    order_id               TEXT    REFERENCES orders(id), -- NULL for standalone pre-authorizations
+    account_id             TEXT    NOT NULL REFERENCES accounts(id),
+    status                 TEXT    NOT NULL DEFAULT 'pending'
+                                   CHECK(status IN ('pending','valid','invalid','deactivated','expired','revoked')),
+    identifier             TEXT    NOT NULL,   -- JSON {"type":"dns","value":"example.com"}
+    expires                INTEGER,
+    wildcard               INTEGER NOT NULL DEFAULT 0,
     subdomain_auth_allowed INTEGER NOT NULL DEFAULT 0,  -- RFC 9444
-    created               INTEGER NOT NULL,
-    updated               INTEGER NOT NULL
+    created                INTEGER NOT NULL,
+    updated                INTEGER NOT NULL,
+    ca_id                  TEXT    NOT NULL DEFAULT 'default',
+    local_gen              INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX idx_authz_order   ON authorizations(order_id);
 CREATE INDEX idx_authz_account ON authorizations(account_id);
+CREATE INDEX idx_authzs_ca_id  ON authorizations(ca_id);
 ```
 
-**`challenges`** — One or more per authorization. All challenges for a given authorization share the same `token`.
+**`challenges`** — One or more per authorization. All challenges for a given authorization share the same `token`. `email_token_part1` and `email_message_id` support the two-channel token required by the RFC 8823 `email-reply-00` challenge; `tkauth_type` and `token_authority` support RFC 9447 `tkauth-01`.
 
 ```sql
 CREATE TABLE challenges (
-    id        TEXT    PRIMARY KEY,
-    authz_id  TEXT    NOT NULL REFERENCES authorizations(id),
-    type      TEXT    NOT NULL,     -- http-01|dns-01|tls-alpn-01
-    status    TEXT    NOT NULL DEFAULT 'pending',
-    token     TEXT    NOT NULL,
-    validated INTEGER,
-    error     TEXT,
-    created   INTEGER NOT NULL,
-    updated   INTEGER NOT NULL
+    id                TEXT    PRIMARY KEY,
+    authz_id          TEXT    NOT NULL REFERENCES authorizations(id),
+    type              TEXT    NOT NULL,     -- http-01|dns-01|tls-alpn-01|...
+    status            TEXT    NOT NULL DEFAULT 'pending'
+                               CHECK(status IN ('pending','processing','valid','invalid')),
+    token             TEXT    NOT NULL,
+    validated         INTEGER,
+    error             TEXT,
+    created           INTEGER NOT NULL,
+    updated           INTEGER NOT NULL,
+    email_token_part1 TEXT,
+    email_message_id  TEXT,
+    local_gen         INTEGER NOT NULL DEFAULT 0,
+    tkauth_type       TEXT,
+    token_authority   TEXT
 );
 CREATE INDEX idx_chall_authz ON challenges(authz_id);
+CREATE UNIQUE INDEX idx_chall_email_message_id
+    ON challenges(email_message_id)
+    WHERE email_message_id IS NOT NULL;
 ```
 
-**`certificates`** — Issued X.509 certificates. `der` stores only the leaf DER; `pem` stores the full chain (leaf + CA). Both are stored because CRL generation and MTC logging need DER while the download endpoint serves PEM.
+**`certificates`** — Issued X.509 certificates. `der`/`pem` store the full chain (leaf + CA); `mtc_standalone_der` stores the standalone (non-chained) MTC form used when serving MTC certificate downloads.
 
 ```sql
 CREATE TABLE certificates (
-    id                    TEXT    PRIMARY KEY,   -- UUID used in the cert URL path
-    order_id              TEXT    NOT NULL REFERENCES orders(id),
-    account_id            TEXT    NOT NULL REFERENCES accounts(id),
-    serial_number         TEXT    NOT NULL UNIQUE,
-    status                TEXT    NOT NULL DEFAULT 'valid',  -- valid|revoked
-    der                   BLOB    NOT NULL,
-    pem                   TEXT    NOT NULL,
-    not_before            INTEGER NOT NULL,
-    not_after             INTEGER NOT NULL,
-    revoked_at            INTEGER,
-    revocation_reason     INTEGER,
-    mtc_log_index         INTEGER,
-    created               INTEGER NOT NULL,
+    id                     TEXT    PRIMARY KEY,   -- UUID used in the cert URL path
+    order_id               TEXT    NOT NULL REFERENCES orders(id),
+    account_id             TEXT    NOT NULL REFERENCES accounts(id),
+    serial_number          TEXT    NOT NULL UNIQUE,
+    status                 TEXT    NOT NULL DEFAULT 'valid'
+                                   CHECK(status IN ('valid','revoked')),
+    der                    BLOB    NOT NULL,
+    pem                    TEXT    NOT NULL,
+    not_before             INTEGER NOT NULL,
+    not_after              INTEGER NOT NULL,
+    revoked_at             INTEGER,
+    revocation_reason      INTEGER,
+    mtc_log_index          INTEGER,
+    created                INTEGER NOT NULL,
     suggested_window_start INTEGER,  -- RFC 9773 ARI renewal window
     suggested_window_end   INTEGER,
-    replaced_by           TEXT        -- RFC 9773: order_id that superseded this cert
+    replaced_by            TEXT,     -- RFC 9773: order_id that replaced this cert
+    mtc_standalone_der     BLOB,
+    subject_dn             TEXT,     -- FAU_SCR_EXT.1 searchable subject DN
+    ca_id                  TEXT    NOT NULL DEFAULT 'default',
+    local_gen              INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX idx_certs_account                  ON certificates(account_id);
 CREATE INDEX idx_certs_serial                   ON certificates(serial_number);
@@ -171,96 +245,43 @@ CREATE INDEX idx_certs_status                   ON certificates(status);
 CREATE INDEX idx_certs_account_status_not_after ON certificates(account_id, status, not_after);
 CREATE INDEX idx_certs_replaced_by              ON certificates(replaced_by)
     WHERE replaced_by IS NOT NULL;
-```
-
-**`eab_keys`** — External Account Binding (RFC 8555 §7.3.4) pre-provisioned HMAC keys.
-
-```sql
-CREATE TABLE eab_keys (
-    kid           TEXT    PRIMARY KEY,
-    hmac_key_b64u TEXT    NOT NULL,
-    created       INTEGER NOT NULL,
-    used_at       INTEGER,
-    profile_grants TEXT               -- JSON array of profile IDs; NULL = unrestricted
-);
-```
-
-(`profile_grants` is added inline in the initial migration. The old `0007_profile_grants` migration added it as `ALTER TABLE` in the original schema; it is now baked into the `0001` baseline for new installations.)
-
-### Migration 0002 — MTC checkpoints
-
-Adds the Merkle Tree Certificate issuance-log checkpoint table:
-
-```sql
-CREATE TABLE mtc_checkpoints (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    tree_size INTEGER NOT NULL UNIQUE,
-    root_hex  TEXT    NOT NULL,
-    signature BLOB    NOT NULL,
-    created   INTEGER NOT NULL
-);
-```
-
-### Migration 0003 — MTC standalone DER
-
-```sql
-ALTER TABLE certificates ADD COLUMN mtc_standalone_der BLOB;
-```
-
-Stores the standalone (non-chained) DER encoding of an MTC-logged certificate, used when serving MTC certificate downloads.
-
-### Migration 0004 — MTC cosignatures
-
-```sql
-CREATE TABLE mtc_cosignatures (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    checkpoint_id INTEGER NOT NULL REFERENCES mtc_checkpoints(id) ON DELETE CASCADE,
-    cosigner_url  TEXT    NOT NULL,
-    signature_der BLOB    NOT NULL,
-    created       INTEGER NOT NULL,
-    UNIQUE(checkpoint_id, cosigner_url)
-);
-CREATE INDEX idx_mtc_cosignatures_checkpoint ON mtc_cosignatures(checkpoint_id);
-```
-
-### Migration 0005 — MTC landmarks
-
-```sql
-CREATE TABLE mtc_landmarks (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    sequence_no INTEGER NOT NULL UNIQUE,
-    tree_size   INTEGER NOT NULL UNIQUE,
-    cert_der    BLOB,     -- DER-encoded LandmarkCertificate; NULL until built
-    created     INTEGER NOT NULL
-);
-```
-
-### Migration 0006 — MTC log index (SQLite only)
-
-```sql
 CREATE INDEX idx_certs_mtc_log_index
     ON certificates(mtc_log_index)
     WHERE mtc_log_index IS NOT NULL;
+CREATE INDEX idx_certs_subject_dn ON certificates(subject_dn);
+CREATE INDEX idx_certs_ca_id      ON certificates(ca_id);
+CREATE INDEX idx_certs_ca_id_revoked ON certificates(ca_id) WHERE status = 'revoked';
 ```
 
-This index is specific to SQLite WAL mode and has no equivalent in the PostgreSQL/MariaDB migrations. All subsequent SQLite migration numbers are therefore one higher than their PostgreSQL/MariaDB counterparts.
-
-### Migration 0007 — Profile grants (PostgreSQL/MariaDB: 0006)
+**`nonces`** — Anti-replay nonces. The in-memory `NonceBucket` is the hot path; this table exists for startup cleanup of nonces written by a previous process version.
 
 ```sql
-ALTER TABLE accounts  ADD COLUMN profile_grants TEXT;
-ALTER TABLE eab_keys  ADD COLUMN profile_grants TEXT;
+CREATE TABLE nonces (
+    nonce   TEXT    PRIMARY KEY,
+    created INTEGER NOT NULL
+);
+CREATE INDEX idx_nonces_created ON nonces(created);
 ```
 
-`profile_grants` is a JSON array of profile IDs (e.g. `'["tls-server","mtc-tls"]'`). `NULL` means no restriction. When an EAB key has grants set, they are copied to the account at registration time.
+### Accounts, operators, and multi-CA
 
-### Migration 0008 — Audit events (PostgreSQL/MariaDB: 0007) — DROPPED
+**`eab_keys`** — External Account Binding (RFC 8555 §7.3.4) HMAC keys, whether pre-provisioned via `[server.eab_keys]` or derived on demand via `GET /acme/eab`.
 
-This migration originally created the `audit_events` database table for the PP CA v2.1 FAU structured audit trail. The table has been **dropped** by migration 0031 (SQLite) / 0032 (MariaDB) / 0033 (PostgreSQL). Audit events are now written to a dedicated systemd journal namespace (`journalctl --namespace=akamu`) via `src/journal.rs`. See `contrib/systemd/journald@akamu.conf` for retention settings.
+```sql
+CREATE TABLE eab_keys (
+    kid                    TEXT    PRIMARY KEY,
+    hmac_key_b64u          TEXT    NOT NULL,
+    created                INTEGER NOT NULL,
+    used_at                INTEGER,
+    profile_grants         TEXT,     -- JSON array of profile IDs copied to the account at creation
+    created_by_operator_id INTEGER,  -- provisioning operator; NULL = config file / derived
+    bound_principal        TEXT,     -- Kerberos principal that derived this key via /acme/eab
+    alg                    TEXT    NOT NULL DEFAULT 'sha256', -- sha256|sha384|sha512
+    local_gen              INTEGER NOT NULL DEFAULT 0
+);
+```
 
-### Migration 0009 — Operators (PostgreSQL/MariaDB: 0008)
-
-PP CA v2.1 FMT role-based access control. Operators authenticate via mTLS client certificate, Kerberos/GSSAPI, or both:
+**`operators`** — PP CA v2.1 FMT role-based access control. Each operator is identified by a client certificate fingerprint, a Kerberos principal, or both (at least one must be non-NULL, enforced by a `CHECK` constraint); `failed_attempts`/`locked_until` implement FIA_AFL.1 lockout, and `ca_id` implements per-CA operator scoping.
 
 ```sql
 CREATE TABLE operators (
@@ -268,55 +289,20 @@ CREATE TABLE operators (
     name             TEXT    NOT NULL UNIQUE,
     role             TEXT    NOT NULL
                              CHECK(role IN ('administrator','ca_operations','ca_ra','auditor')),
-    cert_fingerprint TEXT    UNIQUE,   -- SHA-256 hex of DER leaf cert
-    gssapi_principal TEXT    UNIQUE,   -- Kerberos principal e.g. alice@REALM
+    cert_fingerprint TEXT    UNIQUE,   -- SHA-256 hex of DER leaf cert; NULL = no cert auth
+    gssapi_principal TEXT    UNIQUE,   -- Kerberos principal e.g. alice@REALM; NULL = no GSSAPI auth
     created_at       TEXT    NOT NULL, -- RFC 3339
     last_seen_at     TEXT,             -- RFC 3339
     active           INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
+    failed_attempts  INTEGER NOT NULL DEFAULT 0,
+    locked_until     TEXT,
+    ca_id            TEXT    NOT NULL DEFAULT '', -- '' = server-wide; else scoped to one CA
+    local_gen        INTEGER NOT NULL DEFAULT 0,
     CHECK(cert_fingerprint IS NOT NULL OR gssapi_principal IS NOT NULL)
 );
 ```
 
-### Migration 0010 — Certificate subject DN (PostgreSQL/MariaDB: 0009)
-
-Adds a searchable subject DN column for FAU_SCR_EXT.1 audit queries:
-
-```sql
-ALTER TABLE certificates ADD COLUMN subject_dn TEXT;
-CREATE INDEX idx_certs_subject_dn ON certificates(subject_dn);
-```
-
-### Migration 0011 — Operator lockout (PostgreSQL/MariaDB: 0010)
-
-FIA_AFL.1 per-operator authentication lockout after repeated failures:
-
-```sql
-ALTER TABLE operators ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE operators ADD COLUMN locked_until TEXT;
-```
-
-### Migration 0012 — Multi-CA support (PostgreSQL/MariaDB: 0011)
-
-Adds `ca_id` to `accounts`, `orders`, and `certificates`. Sentinel conventions:
-
-- `accounts.ca_id = ''` — server-wide account scope; the account may use any CA. The empty string is not a valid CA ID (config validator requires `^[a-z0-9]`).
-- `orders.ca_id = 'default'` — backfills pre-migration rows to the canonical single-CA name.
-- `certificates.ca_id = 'default'` — same.
-
-```sql
-ALTER TABLE accounts     ADD COLUMN ca_id TEXT NOT NULL DEFAULT '';
-ALTER TABLE orders       ADD COLUMN ca_id TEXT NOT NULL DEFAULT 'default';
-ALTER TABLE certificates ADD COLUMN ca_id TEXT NOT NULL DEFAULT 'default';
-
-CREATE INDEX idx_accounts_ca_id      ON accounts(ca_id);
-CREATE INDEX idx_orders_ca_id        ON orders(ca_id);
-CREATE INDEX idx_certs_ca_id         ON certificates(ca_id);
-CREATE INDEX idx_certs_ca_id_revoked ON certificates(ca_id) WHERE status = 'revoked';
-```
-
-### Migration 0013 — Cross-certificates (PostgreSQL/MariaDB: 0012)
-
-Stores CA certificates issued by one akāmu CA for another CA's public key. Rows are insert-only.
+**`cross_certs`** — CA certificates issued by one akāmu CA for another CA's public key (used to build alternative trust chains across multi-CA deployments). Rows are insert-only.
 
 ```sql
 CREATE TABLE cross_certs (
@@ -338,91 +324,130 @@ CREATE INDEX idx_cross_certs_subject ON cross_certs(subject_ca_id)
     WHERE subject_ca_id IS NOT NULL;
 ```
 
-### Migration 0014 — Authorization CA scope (PostgreSQL/MariaDB: 0013)
+### RFC 9115 delegation
 
-Records which CA owns each authorization, enabling per-CA namespace isolation. Pre-migration rows are backfilled from the parent order's `ca_id`:
-
-```sql
-ALTER TABLE authorizations ADD COLUMN ca_id TEXT NOT NULL DEFAULT 'default';
-
-UPDATE authorizations
-   SET ca_id = COALESCE((SELECT ca_id FROM orders WHERE id = authorizations.order_id), 'default')
- WHERE order_id IS NOT NULL AND order_id != '';
-
-CREATE INDEX idx_orders_ca_account ON orders(ca_id, account_id);
-CREATE INDEX idx_authzs_ca_id      ON authorizations(ca_id);
-```
-
-### Migration 0015 — Operator CA scope (PostgreSQL/MariaDB: 0014)
-
-Scopes `ca_ra` operators to a single CA. Empty string = server-wide (the operator can act on any CA):
+**`delegations`** — A pre-configured delegation from an Identifier Owner (IdO) to a Name Delegation Consumer (NDC), carrying a CSR template the NDC must satisfy at finalize and an optional CNAME map.
 
 ```sql
-ALTER TABLE operators ADD COLUMN ca_id TEXT NOT NULL DEFAULT '';
-```
-
-### Migration 0015 (PostgreSQL only) — Hot-path indexes
-
-Two partial and compound indexes on `authorizations` that speed up the hot paths hit during every successful challenge validation. This migration has no SQLite or MariaDB equivalent because both databases perform adequately without it at typical concurrency levels; SQLite uses a single write connection that serialises concurrent writers, and MariaDB's query planner handles these patterns differently.
-
-```sql
--- Speeds up the NOT EXISTS subquery in on_valid: filters to non-valid rows only.
-CREATE INDEX IF NOT EXISTS idx_authz_order_nonvalid
-    ON authorizations(order_id)
-    WHERE status != 'valid';
-
--- Speeds up find_valid_by_account_and_identifier: covers both filter columns.
-CREATE INDEX IF NOT EXISTS idx_authz_acct_ident
-    ON authorizations(account_id, identifier);
-```
-
-SQLite migration numbers remain one higher than the PostgreSQL/MariaDB equivalents from migration 0007 onward (due to the SQLite-only MTC log index at SQLite 0006). The PostgreSQL migration directory now contains 17 migrations (0001–0016, plus the PostgreSQL-only hot-indexes file); the SQLite directory contains 17 migrations (0001–0017). The SQLite offset means its 0017 corresponds to the RFC 9115 delegation changes, which is PostgreSQL/MariaDB 0016.
-
-### Migration 0016 — Email challenge state (SQLite) / Migration 0015 (PostgreSQL/MariaDB)
-
-Adds two columns to the `challenges` table to support the two-channel token required by the RFC 8823 `email-reply-00` challenge:
-
-```sql
-ALTER TABLE challenges ADD COLUMN email_token_part1 TEXT;
-ALTER TABLE challenges ADD COLUMN email_message_id  TEXT;
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_chall_email_message_id
-    ON challenges(email_message_id)
-    WHERE email_message_id IS NOT NULL;
-```
-
-`email_token_part1` holds the server-generated first half of the RFC 8823 two-part token, delivered to the applicant in the challenge email subject. `email_message_id` is the `Message-ID` of the outbound challenge email, used to correlate the inbound webhook reply.
-
-### Migration 0017 — RFC 9115 delegation (SQLite) / Migration 0016 (PostgreSQL/MariaDB)
-
-Adds the `delegations` table and four new columns to `orders` to support RFC 9115 ACME delegated certificates:
-
-```sql
-CREATE TABLE IF NOT EXISTS delegations (
+CREATE TABLE delegations (
     id           TEXT    PRIMARY KEY,
     account_id   TEXT    NOT NULL REFERENCES accounts(id),
-    csr_template TEXT    NOT NULL,  -- JSON per RFC 9115 §4
+    csr_template TEXT    NOT NULL,  -- JSON per RFC 9115 §4 / Appendix A
     cname_map    TEXT,              -- JSON {fqdn: fqdn} or NULL
     created      INTEGER NOT NULL,
-    updated      INTEGER NOT NULL
+    updated      INTEGER NOT NULL,
+    local_gen    INTEGER NOT NULL DEFAULT 0,
+    ca_id        TEXT    NOT NULL DEFAULT ''
 );
-CREATE INDEX IF NOT EXISTS idx_delegations_account ON delegations(account_id);
-
-ALTER TABLE orders ADD COLUMN delegation_id       TEXT REFERENCES delegations(id);
-ALTER TABLE orders ADD COLUMN allow_cert_get      INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE orders ADD COLUMN upstream_order_url  TEXT;
-ALTER TABLE orders ADD COLUMN upstream_cert_url   TEXT;
-
-CREATE INDEX IF NOT EXISTS idx_orders_delegation ON orders(delegation_id)
-    WHERE delegation_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_orders_delegation_status
-    ON orders(delegation_id, status)
-    WHERE delegation_id IS NOT NULL AND status = 'processing';
+CREATE INDEX idx_delegations_account ON delegations(account_id);
 ```
 
-`delegation_id` is a nullable FK to `delegations(id)`. Orders with a non-null `delegation_id` skip the authorization flow and start in `ready` status. `allow_cert_get` mirrors the `"allow-certificate-get"` field from the `new-order` payload — when set to `1`, the certificate endpoint for that order accepts unauthenticated `GET`. `upstream_order_url` and `upstream_cert_url` are set by the background delegation task as it progresses through the upstream ACME flow.
+### tkauth-01 replay prevention
 
-The PostgreSQL version uses `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` and `CREATE INDEX CONCURRENTLY` to allow the migration to run without an exclusive table lock.
+**`tkauth_jti_cache`** — RFC 9447 `tkauth-01` JTI (JWT ID) replay-prevention cache. Pruned periodically by a background task (`[tkauth].jti_prune_interval_secs`).
+
+```sql
+CREATE TABLE tkauth_jti_cache (
+    jti      TEXT    PRIMARY KEY,
+    authz_id TEXT    NOT NULL,
+    expires  INTEGER NOT NULL,
+    created  INTEGER NOT NULL,
+    tkvalue  TEXT,                       -- JWTClaimConstraints DER for encoder-backed identifiers
+    ca_flag  INTEGER NOT NULL DEFAULT 0  -- atc.ca boolean from the authority token
+);
+CREATE INDEX tkauth_jti_expires_idx  ON tkauth_jti_cache (expires);
+CREATE INDEX tkauth_jti_authzid_idx  ON tkauth_jti_cache (authz_id, expires);
+```
+
+### Merkle Tree Certificates
+
+**`mtc_checkpoints`**, **`mtc_landmarks`**, **`mtc_cosignatures`**, **`mtc_revoked_ranges`** — support the draft-ietf-plants-merkle-tree-certs transparency log; see [MTC Implementation](mtc.md) for how they are populated.
+
+```sql
+CREATE TABLE mtc_checkpoints (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ca_id       TEXT    NOT NULL DEFAULT 'default',
+    tree_size   INTEGER NOT NULL,       -- log leaf count when checkpoint was produced
+    root_hex    TEXT    NOT NULL,       -- lowercase hex Merkle root
+    signature   BLOB    NOT NULL,       -- MTC signing key signature over DER Checkpoint
+    created     INTEGER NOT NULL,
+    local_gen   INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(ca_id, tree_size)
+);
+
+CREATE TABLE mtc_landmarks (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ca_id       TEXT    NOT NULL DEFAULT 'default',
+    sequence_no INTEGER NOT NULL,
+    tree_size   INTEGER NOT NULL,
+    cert_der    BLOB,           -- DER-encoded LandmarkCertificate; NULL until built
+    created     INTEGER NOT NULL,
+    UNIQUE(ca_id, sequence_no),
+    UNIQUE(ca_id, tree_size)
+);
+
+CREATE TABLE mtc_cosignatures (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ca_id           TEXT    NOT NULL DEFAULT 'default',
+    checkpoint_id   INTEGER NOT NULL REFERENCES mtc_checkpoints(id) ON DELETE CASCADE,
+    cosigner_url    TEXT    NOT NULL,
+    signature_der   BLOB    NOT NULL,
+    created         INTEGER NOT NULL,
+    local_gen       INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(checkpoint_id, cosigner_url)
+);
+CREATE INDEX idx_mtc_cosignatures_checkpoint ON mtc_cosignatures(checkpoint_id);
+
+-- Ranges of revoked log entry indices (draft §5.6).
+CREATE TABLE mtc_revoked_ranges (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ca_id       TEXT    NOT NULL,
+    range_start INTEGER NOT NULL,
+    range_end   INTEGER NOT NULL,
+    created     INTEGER NOT NULL,
+    UNIQUE(ca_id, range_start, range_end),
+    CHECK(range_start <= range_end)
+);
+```
+
+### Policy engine
+
+**`policy_rules`** — ABAC issuance policy rules, soft-deletable via `tombstone` so a rule name can be re-created after deletion without breaking gossip convergence.
+
+```sql
+CREATE TABLE policy_rules (
+    id           TEXT PRIMARY KEY,
+    scope        TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    rule_json    TEXT NOT NULL,
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    created_by   TEXT,
+    local_gen    INTEGER NOT NULL DEFAULT 0,
+    tombstone    INTEGER NOT NULL DEFAULT 0,
+    tombstone_at INTEGER,
+    CHECK ((tombstone = 0 AND tombstone_at IS NULL) OR (tombstone = 1 AND tombstone_at IS NOT NULL))
+);
+-- Partial unique index: only live (non-tombstoned) rows participate in the
+-- uniqueness check, so a rule can be re-created after soft-delete.
+CREATE UNIQUE INDEX uq_policy_rules_scope_name_live
+    ON policy_rules (scope, name)
+    WHERE tombstone = 0;
+CREATE INDEX idx_policy_rules_scope
+    ON policy_rules (scope)
+    WHERE tombstone = 0;
+```
+
+### Cluster / CRDT tables (main database)
+
+`node_keys`, `crdt_cluster_nodes`, `crdt_order_owners`, and `crdt_mtc_writer`
+also exist in the main database, with the same shape as their counterparts in
+the separate CRDT database — see [Schema](#schema-1) under [CRDT
+database](#crdt-database) below for their column definitions. The
+main-database copies are a historical artifact of the initial gossip
+implementation; the active code path reads from and writes to the CRDT
+database pool exclusively.
 
 ## Row types
 
@@ -700,7 +725,14 @@ Foreign key constraints are enabled at database open time. The constraint graph 
 - `delegations.account_id` → `accounts.id`
 - `orders.delegation_id` → `delegations.id` (nullable)
 
-Enabling foreign keys is done before running migrations so that any migration that would violate a constraint fails immediately rather than silently inserting orphaned rows.
+Foreign keys are enabled (`PRAGMA foreign_keys=ON`, SQLite only) **after**
+migrations run, not before — see [Initialization](#initialization) above for
+why running migrations first is required for SQLite's drop-and-recreate
+schema-change pattern to keep working. Because a fresh SQLite connection
+defaults `foreign_keys` to off, this ordering does not weaken enforcement:
+constraints are always active before the pool is handed to any caller,
+so any code path that would insert an orphaned row still fails immediately
+once the server is actually serving traffic.
 
 ## CRDT database
 
@@ -791,22 +823,18 @@ CREATE TABLE IF NOT EXISTS crdt_mtc_writer (
 
 ### Main-database migration counterparts
 
-The same three CRDT tables (`crdt_cluster_nodes`, `crdt_order_owners`, `crdt_mtc_writer`) and `node_keys` also exist in the main ACME database, created by backend-specific migrations:
-
-| Table | SQLite | MariaDB | PostgreSQL |
-|---|---|---|---|
-| `node_keys` | 0022 | 0023 | 0024 |
-| `crdt_cluster_nodes`, `crdt_order_owners`, `crdt_mtc_writer` | 0024 | 0025 | 0026 |
+The same three CRDT tables (`crdt_cluster_nodes`, `crdt_order_owners`, `crdt_mtc_writer`) and `node_keys` also exist in the main ACME database — see [Cluster / CRDT tables (main database)](#cluster--crdt-tables-main-database) above. All four are defined inline in each backend's single `0001_initial.sql`, alongside every other table.
 
 The main-database copies are a historical artifact of the initial gossip implementation; the active code path reads from and writes to the CRDT database pool exclusively.  The `open_crdt_db` inline schema creation is the authoritative schema definition.
 
 ### `local_gen` column on main-database tables
 
-Migration 0023 (SQLite) / 0024 (MariaDB) / 0025 (PostgreSQL) adds a `local_gen INTEGER NOT NULL DEFAULT 0` column to every CRDT-tracked table in the main database:
+Every CRDT-tracked table in the main database carries a `local_gen INTEGER NOT NULL DEFAULT 0` column, defined inline in `0001_initial.sql` for each backend:
 
 - `accounts`, `orders`, `authorizations`, `challenges`, `certificates`
 - `eab_keys`, `operators`, `delegations`
 - `mtc_checkpoints`, `mtc_cosignatures`
+- `policy_rules`
 
 This column records the CRDT generation counter value at the time each row was last written by gossip replication.  It enables delta computation after a restart: the highest `local_gen` across all tables seeds the process-wide `CRDT_GENERATION` counter so that deltas computed after startup do not collide with pre-existing generations.
 
