@@ -20,22 +20,25 @@
 //! ML-KEM-768/AES-256-GCM/ECDSA overhead to protect confidentiality that
 //! doesn't need protecting would be wasted cost.
 //!
-//! Scope note: `/admin/mtc/*` and `/admin/ca/{id}/mtc/*` have the same
-//! staleness exposure but are not covered here — their CA resolution is
-//! RBAC/operator-scope-dependent (query param or path param depending on
-//! the route, sometimes falling back to the operator's own CA scope) rather
-//! than the uniform `CaId` extractor these public routes use, so proxying
-//! them needs its own design pass. Tracked separately; operators hitting a
-//! non-writer node's admin MTC endpoints should cross-check against the
-//! writer in the meantime.
+//! `/admin/mtc/*` and `/admin/ca/{id}/mtc/*` have the same staleness
+//! exposure but can't reuse this mechanism: their operator identity (Bearer
+//! session, mTLS client cert, proxy-forwarded cert header) cannot survive a
+//! raw HTTP relay to a second node. [`admin_mtc_writer_proxy`] instead
+//! forwards a *description* of the already-authorized request over the
+//! authenticated peer channel `gossip::mtc_admin` provides — see that
+//! module for the full rationale.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::extract::{Request, State};
-use axum::http::StatusCode;
+use axum::extract::{MatchedPath, Path, Query, Request, State};
+use axum::http::{Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
+use crate::admin::auth::OperatorContext;
+use crate::db;
+use crate::gossip::mtc_admin::{self, AdminMtcQuery, AdminQueryForward};
 use crate::state::AppState;
 use crate::util::unix_now;
 
@@ -151,4 +154,168 @@ async fn proxy_to(client: &reqwest::Client, writer_url: &str, req: Request) -> R
         .body(axum::body::Body::from(resp_bytes))
         .map(IntoResponse::into_response)
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+// ── Admin MTC routes ─────────────────────────────────────────────────────────
+
+/// Reverse-proxy for admin MTC routes — see the module doc for why this
+/// forwards a typed query over `gossip::mtc_admin` rather than relaying the
+/// raw HTTP request the way [`mtc_writer_proxy`] does.
+///
+/// `operator` reuses whatever `admin::rbac::admin_rbac_gate` already
+/// resolved into request extensions (its `FromRequestParts` impl's fast
+/// path) — this middleware runs *after* that gate (see
+/// `routes::build_admin_router`), so RBAC has already run.
+pub(super) async fn admin_mtc_writer_proxy(
+    State(state): State<Arc<AppState>>,
+    matched: MatchedPath,
+    Path(path_params): Path<HashMap<String, String>>,
+    Query(query_params): Query<HashMap<String, String>>,
+    operator: OperatorContext,
+    req: Request,
+    next: Next,
+) -> Response {
+    let Some((ca_id, query)) = resolve_admin_mtc_query(
+        &state,
+        matched.as_str(),
+        req.method(),
+        &path_params,
+        &query_params,
+    )
+    .await
+    else {
+        // Couldn't resolve a (ca_id, query) pair — missing/invalid required
+        // params, or (for the cert-id routes) no such certificate. Defer to
+        // the real handler so it produces the correct 400/404 rather than
+        // duplicating that validation here.
+        return next.run(req).await;
+    };
+
+    let now = unix_now();
+    let ttl = state
+        .config
+        .gossip
+        .as_ref()
+        .map(|g| g.ownership_ttl_secs as i64)
+        .unwrap_or(150);
+    if state
+        .crdt
+        .read()
+        .await
+        .is_mtc_writer(&ca_id, &state.node_id, now, ttl)
+    {
+        return next.run(req).await;
+    }
+    let Some((writer_node_id, writer_url)) = current_writer(&state, &ca_id).await else {
+        return next.run(req).await;
+    };
+
+    mtc_admin::forward_admin_query(
+        &state,
+        AdminQueryForward {
+            ca_id: &ca_id,
+            writer_node_id: &writer_node_id,
+            writer_url: &writer_url,
+            operator_name: &operator.name,
+            operator_role: operator.role,
+            query,
+        },
+    )
+    .await
+}
+
+async fn current_writer(state: &AppState, ca_id: &str) -> Option<(String, String)> {
+    let crdt = state.crdt.read().await;
+    let writer_node_id = crdt.mtc_writer_claimant(ca_id)?.to_owned();
+    let gossip_url = crdt.cluster_nodes.get(&writer_node_id)?.gossip_url.clone();
+    Some((writer_node_id, gossip_url))
+}
+
+/// Map a matched admin MTC route to its `(ca_id, AdminMtcQuery)`, using
+/// whichever of the three CA-resolution strategies that route's handler
+/// (`routes::admin::mtc`) actually uses: an optional `ca_id` query parameter
+/// defaulting to the server's default CA, a `{id}`/`{seq}` path parameter, or
+/// (for the two certificate-download routes, which carry no CA identifier of
+/// their own) a DB lookup by `cert_id`.
+async fn resolve_admin_mtc_query(
+    state: &AppState,
+    route: &str,
+    method: &Method,
+    path_params: &HashMap<String, String>,
+    query_params: &HashMap<String, String>,
+) -> Option<(String, AdminMtcQuery)> {
+    let ca_id_from_query = || {
+        query_params
+            .get("ca_id")
+            .cloned()
+            .unwrap_or_else(|| (*state.default_ca_id).clone())
+    };
+
+    match (method.as_str(), route) {
+        ("GET", "/admin/mtc/tree-size") => Some((ca_id_from_query(), AdminMtcQuery::TreeSize)),
+        ("GET", "/admin/mtc/root") => Some((ca_id_from_query(), AdminMtcQuery::Root)),
+        ("GET", "/admin/mtc/landmarks") => Some((ca_id_from_query(), AdminMtcQuery::Landmarks)),
+        ("GET", "/admin/mtc/landmark-list") => {
+            Some((ca_id_from_query(), AdminMtcQuery::LandmarkList))
+        }
+        ("GET", "/admin/mtc/inclusion-proof/{cert_id}") => {
+            let cert_id = path_params.get("cert_id")?.clone();
+            let ca_id = db::certs::get_by_id(&state.db_ro, &cert_id)
+                .await
+                .ok()??
+                .ca_id;
+            Some((ca_id, AdminMtcQuery::InclusionProof { cert_id }))
+        }
+        ("GET", "/admin/mtc/standalone/{cert_id}") => {
+            let cert_id = path_params.get("cert_id")?.clone();
+            let ca_id = db::certs::get_by_id(&state.db_ro, &cert_id)
+                .await
+                .ok()??
+                .ca_id;
+            Some((ca_id, AdminMtcQuery::Standalone { cert_id }))
+        }
+        ("GET", "/admin/mtc/landmarks/{seq}/cert") => {
+            let seq: i64 = path_params.get("seq")?.parse().ok()?;
+            Some((ca_id_from_query(), AdminMtcQuery::LandmarkCert { seq }))
+        }
+        ("GET", "/admin/mtc/landmarks/{seq}/cert-details") => {
+            let seq: i64 = path_params.get("seq")?.parse().ok()?;
+            Some((
+                ca_id_from_query(),
+                AdminMtcQuery::LandmarkCertDetails { seq },
+            ))
+        }
+        ("GET", "/admin/mtc/consistency-proof") => {
+            let from: u64 = query_params.get("from")?.parse().ok()?;
+            let to: u64 = query_params.get("to")?.parse().ok()?;
+            Some((
+                ca_id_from_query(),
+                AdminMtcQuery::ConsistencyProof { from, to },
+            ))
+        }
+        ("GET", "/admin/mtc/subtree-root") => {
+            let start: u64 = query_params.get("start")?.parse().ok()?;
+            let end: u64 = query_params.get("end")?.parse().ok()?;
+            Some((
+                ca_id_from_query(),
+                AdminMtcQuery::SubtreeRoot { start, end },
+            ))
+        }
+        ("GET", "/admin/mtc/revoked-ranges") => {
+            Some((ca_id_from_query(), AdminMtcQuery::RevokedRanges))
+        }
+        ("GET", "/admin/mtc/checkpoint") => Some((ca_id_from_query(), AdminMtcQuery::Checkpoint)),
+        ("GET", "/admin/mtc/cosignature") => Some((ca_id_from_query(), AdminMtcQuery::Cosignature)),
+        ("POST", "/admin/ca/{id}/mtc/force-checkpoint") => Some((
+            path_params.get("id")?.clone(),
+            AdminMtcQuery::ForceCheckpoint,
+        )),
+        ("POST", "/admin/ca/{id}/mtc/force-landmark") => {
+            Some((path_params.get("id")?.clone(), AdminMtcQuery::ForceLandmark))
+        }
+        ("GET", "/admin/ca/{id}/mtc/log-list-entry") => {
+            Some((path_params.get("id")?.clone(), AdminMtcQuery::LogListEntry))
+        }
+        _ => None,
+    }
 }

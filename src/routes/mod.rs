@@ -308,6 +308,13 @@ fn build_other_router() -> Router<Arc<AppState>> {
             "/gossip/mtc/append",
             post(crate::gossip::mtc_forward::handle_append),
         )
+        // Inter-node admin MTC read-through: same trust model, see
+        // gossip::mtc_admin for why admin routes need this instead of a raw
+        // HTTP relay.
+        .route(
+            "/gossip/mtc/admin-query",
+            post(crate::gossip::mtc_admin::handle_admin_query),
+        )
 }
 
 /// Admin API routes (bypass halt_check; auth enforced by `admin::rbac::admin_rbac_gate`).
@@ -422,7 +429,34 @@ fn build_admin_router(state: &Arc<AppState>) -> Router<Arc<AppState>> {
             "/admin/cross-certs/{id}",
             axum::routing::get(admin::get_cross_cert),
         )
-        // ── MTC transparency log ──────────────────────────────────────────
+        .merge(build_admin_mtc_router(state))
+        .route(
+            "/admin/gossip/status",
+            axum::routing::get(crate::gossip::handlers::gossip_status),
+        )
+        // Peer enrollment (H-8): operator must pre-pin a peer's keys before gossip
+        // can proceed.  Authentication via OperatorContext (admin session).
+        .route(
+            "/admin/gossip/register",
+            post(crate::gossip::handlers::gossip_register),
+        );
+
+    r.layer(axum::middleware::from_fn_with_state(
+        Arc::clone(state),
+        admin::rbac::admin_rbac_gate,
+    ))
+}
+
+/// Admin MTC transparency-log routes, reverse-proxied via
+/// `mtc_proxy::admin_mtc_writer_proxy` to a CA's elected writer when this
+/// node isn't it (see that module and `gossip::mtc_admin` for why admin
+/// routes need a different mechanism than the public `/acme/mtc/*` ones).
+/// `route_layer` scopes the proxy middleware to just this sub-router; since
+/// it's applied here, before merging into `build_admin_router`, it runs
+/// *inside* that function's later `.layer(admin_rbac_gate)` — RBAC always
+/// runs first.
+fn build_admin_mtc_router(state: &Arc<AppState>) -> Router<Arc<AppState>> {
+    Router::new()
         .route(
             "/admin/mtc/tree-size",
             axum::routing::get(admin::get_mtc_tree_size),
@@ -484,21 +518,10 @@ fn build_admin_router(state: &Arc<AppState>) -> Router<Arc<AppState>> {
             "/admin/ca/{id}/mtc/log-list-entry",
             axum::routing::get(admin::get_mtc_log_list_entry),
         )
-        .route(
-            "/admin/gossip/status",
-            axum::routing::get(crate::gossip::handlers::gossip_status),
-        )
-        // Peer enrollment (H-8): operator must pre-pin a peer's keys before gossip
-        // can proceed.  Authentication via OperatorContext (admin session).
-        .route(
-            "/admin/gossip/register",
-            post(crate::gossip::handlers::gossip_register),
-        );
-
-    r.layer(axum::middleware::from_fn_with_state(
-        Arc::clone(state),
-        admin::rbac::admin_rbac_gate,
-    ))
+        .route_layer(axum::middleware::from_fn_with_state(
+            Arc::clone(state),
+            mtc_proxy::admin_mtc_writer_proxy,
+        ))
 }
 
 /// Build the unified axum router: ACME, admin API, and optional web UI.

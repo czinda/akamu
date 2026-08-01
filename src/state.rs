@@ -1058,6 +1058,11 @@ pub enum AdminAuthMethod {
     Gssapi,
     /// Authenticated via EAB kid + HMAC-SHA256 signature (web UI secondary login).
     Eab,
+    /// Not authenticated locally: this operator already passed
+    /// `admin_rbac_gate` on another cluster node, which forwarded the
+    /// request over the authenticated peer-to-peer gossip channel (see
+    /// `gossip::mtc_admin`) rather than replaying the original credential.
+    InternalPeer,
 }
 
 impl AdminAuthMethod {
@@ -1066,6 +1071,7 @@ impl AdminAuthMethod {
             AdminAuthMethod::Cert => "cert",
             AdminAuthMethod::CertProxy => "cert-proxy",
             AdminAuthMethod::Gssapi => "gssapi",
+            AdminAuthMethod::InternalPeer => "internal-peer",
             AdminAuthMethod::Eab => "eab",
         }
     }
