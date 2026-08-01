@@ -229,6 +229,16 @@ The following read-only endpoints are served under `/acme/mtc/` and return 404 w
 | `GET /acme/mtc/subtree-root` | `mtc::get_subtree_root` |
 | `GET /acme/mtc/revoked-ranges` | `mtc::get_revoked_ranges` |
 
+In a clustered deployment, only the CA's elected `mtc_writer` node has a current view of
+the log — every leaf-append is funneled to it (see
+[MTC Log Writer Election](gossip-replication.md#mtc-log-writer-election)). A node that
+receives one of these requests but isn't the writer transparently reverse-proxies it to
+whichever node is (`src/routes/mtc_proxy.rs`), so every endpoint above is correct
+regardless of which cluster node a client happens to hit. The equivalent `/admin/mtc/*`
+and `/admin/ca/{id}/mtc/*` endpoints are proxied the same way, but over an authenticated
+internal RPC rather than a raw relay, since admin operator identity cannot cross a raw
+HTTP hop — see `src/gossip/mtc_admin.rs`.
+
 ## C2SP tlog-tiles module (`src/mtc/tlog.rs`)
 
 `src/mtc/tlog.rs` implements the C2SP tlog-tiles, signed-note, and tlog-cosignature specifications on top of the existing `DiskBackedLog` storage.

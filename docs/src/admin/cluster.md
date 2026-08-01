@@ -138,8 +138,10 @@ tombstone_ttl_secs = 604800
 
 Lease duration in seconds for exclusive write-ownership of ACME orders and MTC log writer
 elections.  When a node claims ownership of an order (to process finalization) or the MTC
-writer role, the claim is valid for this many seconds.  If the owning node crashes or
-becomes unreachable, another node can take over after the TTL expires.
+writer role for a CA (elected independently per CA — different CAs hosted by the same
+cluster may have different writers), the claim is valid for this many seconds.  If the
+owning node crashes or becomes unreachable, another node can take over after the TTL
+expires.
 
 The default of 150 seconds is intentionally longer than a typical HTTP timeout (30–60 s)
 so that transient gossip failures do not cause ownership to flap.  With a 15-second gossip
@@ -256,8 +258,15 @@ convergence after a network partition heals without requiring consensus or coord
   each round (at `warn` level) and skipped.  The gossip loop continues with reachable
   peers.
 - Order ownership claims (`order_owners` LWW map) and MTC writer elections
-  (`mtc_writer` LWW register) may diverge: both partitions could claim ownership of the
-  same order or the MTC writer role.
+  (`mtc_writer` LWW map, keyed by CA) may diverge: both partitions could claim ownership
+  of the same order or the MTC writer role for the same CA. **The MTC writer case has a
+  sharper consequence than order ownership**: a partition's elected writer appends
+  certificates issued during the partition to its own local log, and unlike the CRDT
+  fields, the log itself is not a mergeable data structure. When the partition heals and
+  the `mtc_writer` claim converges on one winner, the losing side's log entries are not
+  folded into the winner's log — those certificates keep their standalone proofs (issued
+  and usable), but stop being covered by the elected writer's ongoing checkpoints. Avoid
+  running with a network partition open for MTC-enabled CAs longer than necessary.
 
 ### After partition healing
 
@@ -268,8 +277,7 @@ rules:
 | CRDT type | Merge rule | Potential conflict |
 |---|---|---|
 | `OrMap` (accounts, orders, certs, etc.) | Tombstone always wins; live-vs-live: higher timestamp wins | A deletion on one side and an update on the other: the deletion wins unconditionally |
-| `LwwMap` (challenges, EAB keys, ownership) | Higher timestamp wins; equal timestamps: lexicographically greater `node_id` wins | Both partitions update the same challenge status: the later write wins |
-| `LwwRegister` (MTC writer) | Higher timestamp wins; tie-break by `node_id` | Both partitions elect an MTC writer: the one with the later claim wins |
+| `LwwMap` (challenges, EAB keys, order/MTC-writer ownership) | Higher timestamp wins; equal timestamps: lexicographically greater `node_id` wins | Both partitions elect an MTC writer for the same CA, or claim the same order: the later claim wins (see the MTC-writer log caveat above) |
 
 **What may diverge:**
 
