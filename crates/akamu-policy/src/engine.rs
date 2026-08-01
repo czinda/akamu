@@ -422,4 +422,48 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].decision, Decision::Allow);
     }
+
+    /// Regression test for a real, reproduced bypass in `abac-rs`'s composite
+    /// index (fixed upstream in bac-rules commit "fix(abac-rs): index rules
+    /// with an undeclared dimension as All", not yet in a released
+    /// `abac-rs` version this workspace depends on): a rule declaring zero
+    /// dimensions (e.g. a global deny-all) was silently pruned from
+    /// `find_candidates`'s results the moment any other rule in the same
+    /// policy caused a dimension to be indexed, even though
+    /// `AbacPolicyCore::rule_matches` would have matched it. `#[ignore]`d
+    /// until `akamu-policy`'s `abac-rs` dependency is bumped past the
+    /// version carrying this bug — un-ignore it as part of that upgrade.
+    #[test]
+    #[ignore = "requires an abac-rs release with the composite-index dimension_all fix"]
+    fn zero_dimension_deny_all_rule_survives_unrelated_rule_indexing() {
+        let engine = IssuancePolicyEngine::new(
+            PolicyMode::Enforce,
+            vec![
+                PolicyRuleConfig {
+                    name: "deny-all".into(),
+                    rule_type: RuleTypeConfig::Deny,
+                    ..Default::default()
+                },
+                allow_rule_identifier("allow-corp", r"dns:.*\.corp\.example\.com$"),
+            ],
+            vec![],
+        )
+        .unwrap();
+
+        let req = IssuanceRequest::builder()
+            .account("acct-1")
+            .ca("prod")
+            .build()
+            .unwrap()
+            .with_identifier("dns", "app.corp.example.com")
+            .unwrap();
+
+        assert_eq!(
+            engine.evaluate(&req),
+            Decision::Deny,
+            "a zero-dimension deny-all rule must still apply even after another \
+             rule in the same policy causes the 'identifier' dimension to be \
+             indexed by abac-rs's composite index"
+        );
+    }
 }
