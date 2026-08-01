@@ -667,12 +667,7 @@ pub async fn finalize_order(
     };
 
     // Extract subject DN from the leaf cert for searchability (FAU_SCR_EXT.1).
-    let subject_dn = {
-        let mut dec = Decoder::new(&issued.cert_der, Encoding::Der);
-        dec.decode::<Certificate>()
-            .ok()
-            .map(|cert| format_dn(cert.tbs_certificate.subject.as_bytes()))
-    };
+    let subject_dn = extract_subject_dn(&issued.cert_der);
 
     let now = unix_now();
 
@@ -783,39 +778,14 @@ pub async fn finalize_order(
     updated_order.certificate_id = Some(issued.id.clone());
     updated_order.updated = now;
 
-    crdt_hooks::on_cert_upsert(
+    emit_crdt_hooks(
         &state,
-        crdt_hooks::CertUpsertParams {
-            id: &cert_id,
-            order_id: &id,
-            account_id: &account_id,
-            serial_number: &issued.serial_hex,
-            status: CertStatus::Valid,
-            not_before: issued.not_before,
-            not_after: issued.not_after,
-            revoked_at: None,
-            revocation_reason: None,
-            created: now,
-            ca_id: &updated_order.ca_id,
-        },
-    )
-    .await;
-    crdt_hooks::on_order_upsert(
-        &state,
-        crdt_hooks::OrderUpsertParams {
-            id: &id,
-            account_id: &updated_order.account_id,
-            status: OrderStatus::Valid,
-            expires: updated_order.expires,
-            identifiers: &updated_order.identifiers,
-            not_before: updated_order.not_before,
-            not_after: updated_order.not_after,
-            error: updated_order.error.clone(),
-            certificate_id: Some(cert_id.clone()),
-            created: updated_order.created,
-            updated: now,
-            ca_id: &updated_order.ca_id,
-        },
+        &cert_id,
+        &id,
+        &account_id,
+        &issued,
+        &updated_order,
+        now,
     )
     .await;
 
@@ -862,4 +832,62 @@ async fn append_and_build_standalone(
             .map_err(|e| AcmeError::Mtc(format!("MTC log append: {e}")))?;
 
     Ok((idx as i64, None))
+}
+
+/// Extract the RFC 4514 subject DN from a DER-encoded leaf cert, for
+/// searchability (FAU_SCR_EXT.1). Returns `None` if the DER fails to parse
+/// (should not happen for a cert just issued locally, but this is a
+/// non-critical enrichment field, not worth failing finalize over).
+fn extract_subject_dn(cert_der: &[u8]) -> Option<String> {
+    let mut dec = Decoder::new(cert_der, Encoding::Der);
+    dec.decode::<Certificate>()
+        .ok()
+        .map(|cert| format_dn(cert.tbs_certificate.subject.as_bytes()))
+}
+
+/// Emit CRDT gossip hooks for the newly-issued certificate and finalized order.
+async fn emit_crdt_hooks(
+    state: &AppState,
+    cert_id: &str,
+    order_id: &str,
+    account_id: &str,
+    issued: &ca::issue::IssuedCert,
+    updated_order: &db::schema::OrderRow,
+    now: i64,
+) {
+    crdt_hooks::on_cert_upsert(
+        state,
+        crdt_hooks::CertUpsertParams {
+            id: cert_id,
+            order_id,
+            account_id,
+            serial_number: &issued.serial_hex,
+            status: CertStatus::Valid,
+            not_before: issued.not_before,
+            not_after: issued.not_after,
+            revoked_at: None,
+            revocation_reason: None,
+            created: now,
+            ca_id: &updated_order.ca_id,
+        },
+    )
+    .await;
+    crdt_hooks::on_order_upsert(
+        state,
+        crdt_hooks::OrderUpsertParams {
+            id: order_id,
+            account_id: &updated_order.account_id,
+            status: OrderStatus::Valid,
+            expires: updated_order.expires,
+            identifiers: &updated_order.identifiers,
+            not_before: updated_order.not_before,
+            not_after: updated_order.not_after,
+            error: updated_order.error.clone(),
+            certificate_id: Some(cert_id.to_string()),
+            created: updated_order.created,
+            updated: now,
+            ca_id: &updated_order.ca_id,
+        },
+    )
+    .await;
 }
