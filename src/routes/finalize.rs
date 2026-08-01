@@ -64,7 +64,7 @@ pub async fn finalize_order(
     // structurally valid (no timing oracle for identifier-namespace probing).
     let (cert_params, default_profile_applied) = resolve_cert_params(&state, &order, order_ca)?;
 
-    let (validated_csr, mut extra_other_names) = run_profile_and_csr_checks(
+    let (validated_csr, extra_other_names) = run_profile_and_csr_checks(
         &state,
         &account_id,
         &order,
@@ -90,219 +90,19 @@ pub async fn finalize_order(
 
     check_caa_for_order(&state, order_ca, &id, &account_id, &allowed).await?;
 
-    // Option A: expand KPN/MS-UPN templates against CSR DNS SANs.
-    let dns_sans: Vec<&str> = validated_csr
-        .sans
-        .iter()
-        .filter(|s| s.san_type == "dns")
-        .map(|s| s.value.as_str())
-        .collect();
-    for tmpl in &cert_params.kpn_san_templates {
-        extra_other_names.extend(
-            crate::krb5_san::expand_kpn_template(tmpl, &dns_sans).map_err(AcmeError::Builder)?,
-        );
-    }
-    if let Some(ref tmpl) = cert_params.ms_upn_san_template {
-        if let Some(der) =
-            crate::krb5_san::expand_ms_upn_template(tmpl, &dns_sans).map_err(AcmeError::Builder)?
-        {
-            extra_other_names.push(der);
-        }
-    }
-
-    // Option B: account-stored Kerberos principal injected as KPN OtherName SAN.
-    if cert_params.inject_account_kpn {
-        if let Some(principal) =
-            db::accounts::get_kerberos_principal(&state.db_ro, &account_id).await?
-        {
-            extra_other_names.push(
-                crate::krb5_san::encode_principal_str_other_name(&principal)
-                    .map_err(AcmeError::Builder)?,
-            );
-        }
-    }
-
-    // Option D: JWTClaimConstraints-derived SANs from validated authority tokens.
-    //
-    // Two sources of JCC blobs:
-    //   1. JWTClaimConstraints identifier authzs — blob is the identifier value.
-    //   2. Encoder-backed identifier authzs (e.g., "dns") validated via tkauth-01 —
-    //      blob is the stored tkvalue retrieved from the JTI cache.
-    //
-    // OtherName encoders push to `extra_other_names`; DnsName encoders push to
-    // `extra_dns_names` (skipping values already present in order identifiers to
-    // avoid duplicate SANs).
-    //
-    // `tkauth_authz_ids` collects all authz IDs that contributed a blob so the
-    // not_after cap below can use them without a second DB round-trip.
-    let mut extra_dns_names: Vec<String> = vec![];
-    let mut tkauth_authz_ids: Vec<String> = vec![];
-    {
-        let authz_rows = db::authz::list_by_order(&state.db_ro, &id).await?;
-
-        if let Some(registry) = &state.claim_encoder_registry {
-            for authz in &authz_rows {
-                if authz.status.parse() != Ok(AuthzStatus::Valid) {
-                    continue;
-                }
-                let Ok(id_obj) = serde_json::from_str::<serde_json::Value>(&authz.identifier)
-                else {
-                    tracing::warn!(authz_id = %authz.id, "tkauth finalize: skipping authz with malformed identifier JSON");
-                    continue;
-                };
-                let authz_id_type = id_obj["type"].as_str().unwrap_or("");
-
-                // Obtain the JWTClaimConstraints blob for this authz.
-                let blob_opt: Option<String> = if authz_id_type == "JWTClaimConstraints"
-                    || authz_id_type == "EnhancedJWTClaimConstraints"
-                {
-                    id_obj["value"].as_str().map(str::to_string)
-                } else {
-                    db::tkauth::get_tkvalue_for_authz(&state.db_ro, &authz.id)
-                        .await
-                        .map_err(|e| {
-                            AcmeError::Internal(format!("tkauth finalize: tkvalue lookup: {e}"))
-                        })?
-                };
-
-                let Some(blob) = blob_opt else {
-                    continue;
-                };
-
-                // Track for the not_after cap.
-                tkauth_authz_ids.push(authz.id.clone());
-
-                let Ok(raw) = URL_SAFE_NO_PAD.decode(&blob) else {
-                    tracing::warn!(authz_id = %authz.id, "tkauth finalize: tkvalue is not valid base64url");
-                    continue;
-                };
-
-                // Parse the JWTClaimConstraints blob: try JSON (server extension),
-                // then RFC 8226 DER.  Collect (claim, values) pairs for SAN injection.
-                let entries: Vec<(String, Vec<String>)> =
-                    if let Ok(constraints) = serde_json::from_slice::<serde_json::Value>(&raw) {
-                        constraints["must-include"]
-                            .as_array()
-                            .map(|arr| {
-                                arr.iter()
-                                    .filter_map(|e| {
-                                        let claim = e["claim"].as_str()?.to_string();
-                                        let vals: Vec<String> = e["values"]
-                                            .as_array()?
-                                            .iter()
-                                            .filter_map(|v| v.as_str().map(str::to_string))
-                                            .collect();
-                                        Some((claim, vals))
-                                    })
-                                    .collect()
-                            })
-                            .unwrap_or_default()
-                    } else if let Some((_must_include, permitted, _must_exclude)) =
-                        crate::validation::tkauth01::parse_jwcc_der(&raw)
-                    {
-                        permitted
-                    } else {
-                        tracing::warn!(
-                            authz_id = %authz.id,
-                            "tkauth finalize: tkvalue blob is not valid JSON or RFC 8226 DER"
-                        );
-                        continue;
-                    };
-
-                for (claim, values) in &entries {
-                    let Some(encoder) = registry.get(claim.as_str()) else {
-                        continue; // claim not registered — skip silently
-                    };
-                    // Only encode when the constraint names exactly one value: that
-                    // value is definitively what the TA attested.  Multiple permitted
-                    // values mean "one of"; we cannot know which matched at finalize time.
-                    if values.len() != 1 {
-                        if values.len() > 1 {
-                            tracing::warn!(
-                                authz_id = %authz.id,
-                                claim = %claim,
-                                "tkauth finalize: skipping multi-value constraint for SAN injection; use a single value"
-                            );
-                        }
-                        continue;
-                    }
-                    match encoder
-                        .encode(values[0].as_str())
-                        .map_err(AcmeError::Builder)?
-                    {
-                        EncodedSan::OtherName(der) => extra_other_names.push(der),
-                        EncodedSan::DnsName(name) => {
-                            // For encoder-backed identifier authzs (e.g., dns), the dns
-                            // name is already in the order identifiers and will appear in
-                            // the certificate from the CSR — do not duplicate.
-                            let in_order = allowed
-                                .iter()
-                                .any(|(t, v)| *t == "dns" && *v == name.as_str());
-                            if authz_id_type != "EnhancedJWTClaimConstraints" && in_order {
-                                continue;
-                            }
-                            extra_dns_names.push(name);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Collect JWTClaimConstraints authz IDs not already added via the registry
-        // path, so the not_after cap covers all tkauth-validated authzs regardless
-        // of whether claim_encoders is configured.
-        for authz in &authz_rows {
-            if authz.status.parse() != Ok(AuthzStatus::Valid)
-                || tkauth_authz_ids.contains(&authz.id)
-            {
-                continue;
-            }
-            if let Ok(id_obj) = serde_json::from_str::<serde_json::Value>(&authz.identifier) {
-                if matches!(
-                    id_obj["type"].as_str(),
-                    Some("JWTClaimConstraints") | Some("EnhancedJWTClaimConstraints")
-                ) {
-                    tkauth_authz_ids.push(authz.id.clone());
-                }
-            }
-        }
-    }
-
-    // draft-ietf-acme-authority-token-jwtclaimcon §6 step 8: verify that the atc.ca
-    // flag stored for each tkauth-validated authz matches the CSR's BasicConstraints
-    // cA field.  When no tkauth authzs are present, cA=TRUE is never allowed.
-    {
-        let tkauth_ca = if !tkauth_authz_ids.is_empty() {
-            let refs: Vec<&str> = tkauth_authz_ids.iter().map(String::as_str).collect();
-            db::tkauth::get_any_ca_flag_for_authzs(&state.db_ro, &refs).await?
-        } else {
-            false
-        };
-        if validated_csr.ca_cert != tkauth_ca {
-            return Err(AcmeError::BadCsr(
-                if validated_csr.ca_cert {
-                    "CSR asserts cA=TRUE but no authority token permitted CA cert issuance"
-                } else {
-                    "authority token asserts atc.ca=true but CSR does not assert cA=TRUE"
-                }
-                .into(),
-            ));
-        }
-    }
-
-    // RFC 9447 SHOULD: do not issue certificates with a longer expiry than the
-    // authority token(s) that authorized the order.  Query the JTI cache for the
-    // minimum token expiry across all tkauth-validated authzs (JWTClaimConstraints
-    // identifiers and encoder-backed identifiers such as dns) and cap not_after.
-    let not_after = if !tkauth_authz_ids.is_empty() {
-        let refs: Vec<&str> = tkauth_authz_ids.iter().map(String::as_str).collect();
-        match db::tkauth::get_min_exp_for_authzs(&state.db_ro, &refs).await? {
-            Some(min_exp) => Some(order.not_after.map_or(min_exp, |t| t.min(min_exp))),
-            None => order.not_after,
-        }
-    } else {
-        order.not_after
-    };
+    let (extra_other_names, extra_dns_names, not_after) = inject_template_and_tkauth_sans(
+        &state,
+        SanInjectionParams {
+            order_id: &id,
+            account_id: &account_id,
+            cert_params: &cert_params,
+            validated_csr: &validated_csr,
+            allowed: &allowed,
+            order_not_after: order.not_after,
+            extra_other_names,
+        },
+    )
+    .await?;
 
     let issued = issue_leaf_certificate(
         &state,
@@ -1118,4 +918,260 @@ async fn build_mtc_outputs(
         final_mtc_index,
         mtc_standalone_pending,
     ))
+}
+
+/// Parameters for [`inject_template_and_tkauth_sans`].
+struct SanInjectionParams<'a> {
+    order_id: &'a str,
+    account_id: &'a str,
+    cert_params: &'a crate::profiles::CertificateParameters,
+    validated_csr: &'a ca::csr::ValidatedCsr,
+    allowed: &'a [(&'a str, &'a str)],
+    order_not_after: Option<i64>,
+    extra_other_names: Vec<Vec<u8>>,
+}
+
+/// Inject SANs from three sources beyond the CSR itself, then enforce the
+/// two guarantees that depend on tracking which authorizations contributed
+/// tkauth-derived SANs.
+///
+/// - Option A: expand KPN/MS-UPN templates against CSR DNS SANs.
+/// - Option B: account-stored Kerberos principal injected as a KPN
+///   OtherName SAN.
+/// - Option D: JWTClaimConstraints-derived SANs from validated authority
+///   tokens. Two sources of JCC blobs: JWTClaimConstraints identifier
+///   authzs (blob is the identifier value), and encoder-backed identifier
+///   authzs (e.g. "dns") validated via tkauth-01 (blob is the stored
+///   tkvalue retrieved from the JTI cache). OtherName encoders push into
+///   the returned `extra_other_names`; DnsName encoders push into
+///   `extra_dns_names` (skipping values already present in order
+///   identifiers, to avoid duplicate SANs). Every authz that contributed a
+///   blob is tracked so the two checks below can use them without a second
+///   DB round-trip.
+/// - draft-ietf-acme-authority-token-jwtclaimcon §6 step 8: the `atc.ca`
+///   flag stored for each tkauth-validated authz must match the CSR's
+///   BasicConstraints `cA` field — when no tkauth authzs are present,
+///   `cA=TRUE` is never allowed.
+/// - RFC 9447 SHOULD: cap `not_after` to the minimum authority-token expiry
+///   across all tkauth-validated authzs, so as not to issue a certificate
+///   that outlives the token(s) that authorized it.
+///
+/// Returns `(extra_other_names, extra_dns_names, not_after)`.
+async fn inject_template_and_tkauth_sans(
+    state: &AppState,
+    params: SanInjectionParams<'_>,
+) -> Result<(Vec<Vec<u8>>, Vec<String>, Option<i64>), AcmeError> {
+    let SanInjectionParams {
+        order_id,
+        account_id,
+        cert_params,
+        validated_csr,
+        allowed,
+        order_not_after,
+        mut extra_other_names,
+    } = params;
+
+    // Option A: expand KPN/MS-UPN templates against CSR DNS SANs.
+    let dns_sans: Vec<&str> = validated_csr
+        .sans
+        .iter()
+        .filter(|s| s.san_type == "dns")
+        .map(|s| s.value.as_str())
+        .collect();
+    for tmpl in &cert_params.kpn_san_templates {
+        extra_other_names.extend(
+            crate::krb5_san::expand_kpn_template(tmpl, &dns_sans).map_err(AcmeError::Builder)?,
+        );
+    }
+    if let Some(ref tmpl) = cert_params.ms_upn_san_template {
+        if let Some(der) =
+            crate::krb5_san::expand_ms_upn_template(tmpl, &dns_sans).map_err(AcmeError::Builder)?
+        {
+            extra_other_names.push(der);
+        }
+    }
+
+    // Option B: account-stored Kerberos principal injected as KPN OtherName SAN.
+    if cert_params.inject_account_kpn {
+        if let Some(principal) =
+            db::accounts::get_kerberos_principal(&state.db_ro, account_id).await?
+        {
+            extra_other_names.push(
+                crate::krb5_san::encode_principal_str_other_name(&principal)
+                    .map_err(AcmeError::Builder)?,
+            );
+        }
+    }
+
+    // Option D: JWTClaimConstraints-derived SANs from validated authority tokens.
+    let mut extra_dns_names: Vec<String> = vec![];
+    let mut tkauth_authz_ids: Vec<String> = vec![];
+    {
+        let authz_rows = db::authz::list_by_order(&state.db_ro, order_id).await?;
+
+        if let Some(registry) = &state.claim_encoder_registry {
+            for authz in &authz_rows {
+                if authz.status.parse() != Ok(AuthzStatus::Valid) {
+                    continue;
+                }
+                let Ok(id_obj) = serde_json::from_str::<serde_json::Value>(&authz.identifier)
+                else {
+                    tracing::warn!(authz_id = %authz.id, "tkauth finalize: skipping authz with malformed identifier JSON");
+                    continue;
+                };
+                let authz_id_type = id_obj["type"].as_str().unwrap_or("");
+
+                // Obtain the JWTClaimConstraints blob for this authz.
+                let blob_opt: Option<String> = if authz_id_type == "JWTClaimConstraints"
+                    || authz_id_type == "EnhancedJWTClaimConstraints"
+                {
+                    id_obj["value"].as_str().map(str::to_string)
+                } else {
+                    db::tkauth::get_tkvalue_for_authz(&state.db_ro, &authz.id)
+                        .await
+                        .map_err(|e| {
+                            AcmeError::Internal(format!("tkauth finalize: tkvalue lookup: {e}"))
+                        })?
+                };
+
+                let Some(blob) = blob_opt else {
+                    continue;
+                };
+
+                // Track for the not_after cap.
+                tkauth_authz_ids.push(authz.id.clone());
+
+                let Ok(raw) = URL_SAFE_NO_PAD.decode(&blob) else {
+                    tracing::warn!(authz_id = %authz.id, "tkauth finalize: tkvalue is not valid base64url");
+                    continue;
+                };
+
+                // Parse the JWTClaimConstraints blob: try JSON (server extension),
+                // then RFC 8226 DER.  Collect (claim, values) pairs for SAN injection.
+                let entries: Vec<(String, Vec<String>)> =
+                    if let Ok(constraints) = serde_json::from_slice::<serde_json::Value>(&raw) {
+                        constraints["must-include"]
+                            .as_array()
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|e| {
+                                        let claim = e["claim"].as_str()?.to_string();
+                                        let vals: Vec<String> = e["values"]
+                                            .as_array()?
+                                            .iter()
+                                            .filter_map(|v| v.as_str().map(str::to_string))
+                                            .collect();
+                                        Some((claim, vals))
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default()
+                    } else if let Some((_must_include, permitted, _must_exclude)) =
+                        crate::validation::tkauth01::parse_jwcc_der(&raw)
+                    {
+                        permitted
+                    } else {
+                        tracing::warn!(
+                            authz_id = %authz.id,
+                            "tkauth finalize: tkvalue blob is not valid JSON or RFC 8226 DER"
+                        );
+                        continue;
+                    };
+
+                for (claim, values) in &entries {
+                    let Some(encoder) = registry.get(claim.as_str()) else {
+                        continue; // claim not registered — skip silently
+                    };
+                    // Only encode when the constraint names exactly one value: that
+                    // value is definitively what the TA attested.  Multiple permitted
+                    // values mean "one of"; we cannot know which matched at finalize time.
+                    if values.len() != 1 {
+                        if values.len() > 1 {
+                            tracing::warn!(
+                                authz_id = %authz.id,
+                                claim = %claim,
+                                "tkauth finalize: skipping multi-value constraint for SAN injection; use a single value"
+                            );
+                        }
+                        continue;
+                    }
+                    match encoder
+                        .encode(values[0].as_str())
+                        .map_err(AcmeError::Builder)?
+                    {
+                        EncodedSan::OtherName(der) => extra_other_names.push(der),
+                        EncodedSan::DnsName(name) => {
+                            // For encoder-backed identifier authzs (e.g., dns), the dns
+                            // name is already in the order identifiers and will appear in
+                            // the certificate from the CSR — do not duplicate.
+                            let in_order = allowed
+                                .iter()
+                                .any(|(t, v)| *t == "dns" && *v == name.as_str());
+                            if authz_id_type != "EnhancedJWTClaimConstraints" && in_order {
+                                continue;
+                            }
+                            extra_dns_names.push(name);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Collect JWTClaimConstraints authz IDs not already added via the registry
+        // path, so the not_after cap covers all tkauth-validated authzs regardless
+        // of whether claim_encoders is configured.
+        for authz in &authz_rows {
+            if authz.status.parse() != Ok(AuthzStatus::Valid)
+                || tkauth_authz_ids.contains(&authz.id)
+            {
+                continue;
+            }
+            if let Ok(id_obj) = serde_json::from_str::<serde_json::Value>(&authz.identifier) {
+                if matches!(
+                    id_obj["type"].as_str(),
+                    Some("JWTClaimConstraints") | Some("EnhancedJWTClaimConstraints")
+                ) {
+                    tkauth_authz_ids.push(authz.id.clone());
+                }
+            }
+        }
+    }
+
+    // draft-ietf-acme-authority-token-jwtclaimcon §6 step 8: verify that the atc.ca
+    // flag stored for each tkauth-validated authz matches the CSR's BasicConstraints
+    // cA field.  When no tkauth authzs are present, cA=TRUE is never allowed.
+    {
+        let tkauth_ca = if !tkauth_authz_ids.is_empty() {
+            let refs: Vec<&str> = tkauth_authz_ids.iter().map(String::as_str).collect();
+            db::tkauth::get_any_ca_flag_for_authzs(&state.db_ro, &refs).await?
+        } else {
+            false
+        };
+        if validated_csr.ca_cert != tkauth_ca {
+            return Err(AcmeError::BadCsr(
+                if validated_csr.ca_cert {
+                    "CSR asserts cA=TRUE but no authority token permitted CA cert issuance"
+                } else {
+                    "authority token asserts atc.ca=true but CSR does not assert cA=TRUE"
+                }
+                .into(),
+            ));
+        }
+    }
+
+    // RFC 9447 SHOULD: do not issue certificates with a longer expiry than the
+    // authority token(s) that authorized the order.  Query the JTI cache for the
+    // minimum token expiry across all tkauth-validated authzs (JWTClaimConstraints
+    // identifiers and encoder-backed identifiers such as dns) and cap not_after.
+    let not_after = if !tkauth_authz_ids.is_empty() {
+        let refs: Vec<&str> = tkauth_authz_ids.iter().map(String::as_str).collect();
+        match db::tkauth::get_min_exp_for_authzs(&state.db_ro, &refs).await? {
+            Some(min_exp) => Some(order_not_after.map_or(min_exp, |t| t.min(min_exp))),
+            None => order_not_after,
+        }
+    } else {
+        order_not_after
+    };
+
+    Ok((extra_other_names, extra_dns_names, not_after))
 }
