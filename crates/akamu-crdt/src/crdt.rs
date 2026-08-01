@@ -141,44 +141,6 @@ impl AkaCrdt {
         }
     }
 
-    /// Permanently remove tombstones older than `cutoff` (unix seconds).
-    pub fn purge_old_tombstones(&mut self, cutoff: i64) {
-        self.cluster_nodes.purge_old_tombstones(cutoff);
-        self.accounts.purge_old_tombstones(cutoff);
-        self.orders.purge_old_tombstones(cutoff);
-        self.authorizations.purge_old_tombstones(cutoff);
-        self.challenges.purge_old_tombstones(cutoff);
-        self.certificates.purge_old_tombstones(cutoff);
-        self.eab_keys.purge_old_tombstones(cutoff);
-        self.operators.purge_old_tombstones(cutoff);
-        self.delegations.purge_old_tombstones(cutoff);
-        self.policy_rules.purge_old_tombstones(cutoff);
-        self.mtc_checkpoints.purge_old_tombstones(cutoff);
-        self.mtc_cosignatures.purge_old_tombstones(cutoff);
-        self.order_owners.purge_old_tombstones(cutoff);
-    }
-
-    /// Returns the highest `local_gen` across all CRDT sub-collections.
-    /// Used at startup to seed `CRDT_GENERATION` after `load_from_db`.
-    pub fn max_local_gen(&self) -> u64 {
-        let mut max = 0u64;
-        max = max.max(self.cluster_nodes.max_local_gen());
-        max = max.max(self.accounts.max_local_gen());
-        max = max.max(self.orders.max_local_gen());
-        max = max.max(self.authorizations.max_local_gen());
-        max = max.max(self.challenges.max_local_gen());
-        max = max.max(self.certificates.max_local_gen());
-        max = max.max(self.eab_keys.max_local_gen());
-        max = max.max(self.operators.max_local_gen());
-        max = max.max(self.delegations.max_local_gen());
-        max = max.max(self.policy_rules.max_local_gen());
-        max = max.max(self.mtc_checkpoints.max_local_gen());
-        max = max.max(self.mtc_cosignatures.max_local_gen());
-        max = max.max(self.order_owners.max_local_gen());
-        max = max.max(self.mtc_writer.local_gen());
-        max
-    }
-
     /// Count of live (non-tombstoned) entries per field.
     pub fn entry_counts(&self) -> AkaCrdtCounts {
         AkaCrdtCounts {
@@ -319,23 +281,60 @@ impl AkaCrdt {
     }
 }
 
-impl Merge for AkaCrdt {
-    fn merge(&mut self, other: Self) {
-        self.cluster_nodes.merge(other.cluster_nodes);
-        self.accounts.merge(other.accounts);
-        self.orders.merge(other.orders);
-        self.authorizations.merge(other.authorizations);
-        self.challenges.merge(other.challenges);
-        self.certificates.merge(other.certificates);
-        self.eab_keys.merge(other.eab_keys);
-        self.operators.merge(other.operators);
-        self.delegations.merge(other.delegations);
-        self.policy_rules.merge(other.policy_rules);
-        self.mtc_checkpoints.merge(other.mtc_checkpoints);
-        self.mtc_cosignatures.merge(other.mtc_cosignatures);
-        self.order_owners.merge(other.order_owners);
-        self.mtc_writer.merge(other.mtc_writer);
-    }
+// Generates `Merge for AkaCrdt`, `AkaCrdt::max_local_gen`, and
+// `AkaCrdt::purge_old_tombstones` from one field list instead of three
+// hand-copied ones. Each generated body destructures `AkaCrdt` via
+// `let Self { .. } = ..`, which the compiler exhaustiveness-checks: a new
+// field left out of both lists below fails to compile (E0027), and a field
+// listed but never used by a body is an `unused_variables` warning that
+// `cargo clippy -- -D warnings` (the CI invocation) turns into a build
+// failure. This is what actually prevents a 15th field from being silently
+// forgotten in `merge` specifically — the previous flat statement lists had
+// no such guarantee.
+//
+// `full` collections support all three operations; `no_purge` collections
+// (currently only `mtc_writer`, a single-slot `LwwRegister`) support merge
+// and max_local_gen but have nothing to purge — a tombstoned single-value
+// register isn't "old data accumulating," so purge_old_tombstones is
+// intentionally not called for it, and that exclusion is a visible argument
+// here rather than an absent line.
+macro_rules! crdt_fields {
+    (full: [$($f:ident),+ $(,)?], no_purge: [$($np:ident),+ $(,)?] $(,)?) => {
+        impl Merge for AkaCrdt {
+            fn merge(&mut self, other: Self) {
+                let Self { $($f,)+ $($np,)+ } = other;
+                $( self.$f.merge($f); )+
+                $( self.$np.merge($np); )+
+            }
+        }
+
+        impl AkaCrdt {
+            /// Returns the highest `local_gen` across all CRDT sub-collections.
+            /// Used at startup to seed `CRDT_GENERATION` after `load_from_db`.
+            pub fn max_local_gen(&self) -> u64 {
+                let Self { $($f,)+ $($np,)+ } = self;
+                [$($f.max_local_gen(),)+ $($np.max_local_gen(),)+]
+                    .into_iter()
+                    .max()
+                    .unwrap_or(0)
+            }
+
+            /// Permanently remove tombstones older than `cutoff` (unix seconds).
+            pub fn purge_old_tombstones(&mut self, cutoff: i64) {
+                let Self { $($f,)+ $($np: _,)+ } = self;
+                $( $f.purge_old_tombstones(cutoff); )+
+            }
+        }
+    };
+}
+
+crdt_fields! {
+    full: [
+        cluster_nodes, accounts, orders, authorizations, challenges, certificates,
+        eab_keys, operators, delegations, policy_rules, mtc_checkpoints,
+        mtc_cosignatures, order_owners,
+    ],
+    no_purge: [mtc_writer],
 }
 
 #[cfg(test)]
@@ -605,6 +604,68 @@ mod tests {
         assert!(a.accounts.get("acct-b").is_some());
         assert!(b.accounts.get("acct-1").is_some());
         assert!(b.accounts.get("acct-b").is_some());
+    }
+
+    #[test]
+    fn merge_and_max_local_gen_observe_every_field() {
+        // Regression guard for the macro-generated `Merge for AkaCrdt` and
+        // `max_local_gen` (Finding 4): if a field is ever dropped from the
+        // macro's field lists, its data goes missing after merge instead of
+        // surviving — the exact failure the macro exists to make impossible
+        // to introduce silently (a missing field fails to compile instead).
+        let mut other = sample_crdt();
+        let now = 1_700_000_000i64;
+        other.claim_order("ord-owned", "node-x", now, 300);
+        other.claim_mtc_writer("node-x", now, 300);
+
+        let mut target = AkaCrdt::default();
+        target.merge(other);
+
+        assert!(target.cluster_nodes.get("node-1").is_some());
+        assert!(target.accounts.get("acct-1").is_some());
+        assert!(target.orders.get("ord-1").is_some());
+        assert!(target.authorizations.get("authz-1").is_some());
+        assert!(target.challenges.get("chall-1").is_some());
+        assert!(target.certificates.get("cert-1").is_some());
+        assert!(target.eab_keys.get("kid-1").is_some());
+        assert!(target.operators.get("op-1").is_some());
+        assert!(target.delegations.get("del-1").is_some());
+        assert!(target.policy_rules.get("rule-1").is_some());
+        assert!(target.mtc_checkpoints.get(&1u64).is_some());
+        assert!(target
+            .mtc_cosignatures
+            .get(&("cp-1".to_owned(), "https://cosign/".to_owned()))
+            .is_some());
+        assert!(target.is_order_owner("ord-owned", "node-x", now, 300));
+        assert!(target.is_mtc_writer("node-x", now, 300));
+
+        // max_local_gen must reflect generations minted for every field above,
+        // not just whichever ones a hand-maintained list happened to include.
+        assert!(target.max_local_gen() > 0);
+    }
+
+    #[test]
+    fn purge_old_tombstones_skips_mtc_writer_but_purges_a_map_field() {
+        // mtc_writer (LwwRegister) has no purge_old_tombstones — confirms the
+        // `no_purge` exclusion in the field macro is honored, while a regular
+        // `full`-list field's stale tombstone is still purged.
+        let mut crdt = AkaCrdt::default();
+        crdt.accounts.upsert(
+            "acct-1".to_owned(),
+            AccountEntry {
+                account_id: "acct-1".to_owned(),
+                ..Default::default()
+            },
+            100,
+            "node-a",
+        );
+        crdt.accounts.remove(&"acct-1".to_owned(), 200, "node-a");
+        crdt.claim_mtc_writer("node-a", 100, 300);
+
+        crdt.purge_old_tombstones(1_000_000_000);
+
+        assert_eq!(crdt.accounts.tombstoned_values().count(), 0);
+        assert!(crdt.is_mtc_writer("node-a", 100, 300));
     }
 
     #[test]

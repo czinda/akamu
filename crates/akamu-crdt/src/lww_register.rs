@@ -92,6 +92,13 @@ impl<T: Clone> LwwRegister<T> {
         self.local_gen
     }
 
+    /// Alias for `local_gen()`, matching `OrMap`/`LwwMap`'s method name so
+    /// callers generic over "any CRDT field" (see `crdt.rs`'s field macro)
+    /// don't need a special case for single-value registers.
+    pub const fn max_local_gen(&self) -> u64 {
+        self.local_gen()
+    }
+
     /// Returns `Some(self)` if this register was written after `gen`, else `None`.
     pub fn delta_since(&self, gen: u64) -> Option<Self> {
         if self.local_gen > gen {
