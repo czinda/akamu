@@ -51,6 +51,18 @@ pub async fn finalize_order(
             Some((t, v))
         })
         .collect();
+    // A dropped entry here means an identifier-scoped policy rule (e.g. a
+    // deny rule targeting one SAN of a multi-domain order) silently never
+    // gets evaluated against it — fail closed instead of finalizing with a
+    // truncated identifier list.
+    if allowed.len() != identifiers.len() {
+        return Err(AcmeError::Internal(format!(
+            "corrupt identifiers in order {id}: {} of {} entries had a non-string \
+             type/value and were dropped",
+            identifiers.len() - allowed.len(),
+            identifiers.len()
+        )));
+    }
 
     // Resolve the CA for this order.  Done early so that profile resolution and
     // authorization checks can run before the expensive CSR and CAA operations.

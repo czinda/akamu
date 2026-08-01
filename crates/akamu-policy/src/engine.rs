@@ -126,6 +126,16 @@ impl IssuancePolicyEngine {
         });
 
         if identifiers.is_empty() {
+            // `base` carries no identifier attribute in this branch, so any
+            // identifier-scoped rule (e.g. a deny rule matching a specific
+            // SAN) cannot match and is silently skipped for this evaluation.
+            // A well-formed multi-SAN order always has at least one
+            // identifier, so reaching this with an empty slice means an
+            // upstream caller lost data — log loudly so it isn't invisible.
+            tracing::warn!(
+                "evaluate_explained_identifiers called with zero identifiers; \
+                 identifier-scoped policy rules will not be evaluated for this request"
+            );
             return Ok(vec![policy.evaluate_explained(&base.0)]);
         }
 
