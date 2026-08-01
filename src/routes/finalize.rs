@@ -62,49 +62,7 @@ pub async fn finalize_order(
     // per-profile authorization checks BEFORE validate_csr and CAA so that
     // auth failures are returned without revealing whether the CSR was
     // structurally valid (no timing oracle for identifier-namespace probing).
-    //
-    // A single registry read is performed and the result is kept in locals to
-    // avoid a TOCTOU window where a concurrent background refresh could cause
-    // the cert_params and the auth gate to diverge.
-    let (mut cert_params, default_profile_applied) = if !state.profiles.is_empty() {
-        match &order.profile {
-            Some(p) => match state.profiles.resolve_for_ca(p, &order.ca_id) {
-                Some(params) => (params, false),
-                None => {
-                    return Err(AcmeError::InvalidProfile(format!(
-                        "profile '{p}' is not available for CA '{}'",
-                        order.ca_id
-                    )));
-                }
-            },
-            None => match state.profiles.resolve_for_ca("default", &order.ca_id) {
-                Some(params) => (params, true),
-                None => (
-                    crate::profiles::CertificateParameters::from_ca(order_ca),
-                    false,
-                ),
-            },
-        }
-    } else {
-        (
-            crate::profiles::CertificateParameters::from_ca(order_ca),
-            false,
-        )
-    };
-
-    // ProfileRegistry bakes CRL/OCSP URLs from the default CA at startup.  When
-    // a non-default CA issues via a profile that did not explicitly set those URLs,
-    // the baked-in default CA URLs would appear in the certificate.  Override them
-    // with the order CA's own infrastructure URLs in that case.
-    if order.ca_id != *state.default_ca_id {
-        let def = state.default_ca();
-        if cert_params.crl_url == def.crl_url {
-            cert_params.crl_url = order_ca.crl_url.clone();
-        }
-        if cert_params.ocsp_url == def.ocsp_url {
-            cert_params.ocsp_url = order_ca.ocsp_url.clone();
-        }
-    }
+    let (cert_params, default_profile_applied) = resolve_cert_params(&state, &order, order_ca)?;
 
     // Per-profile authorization checks (identifier patterns, external hook,
     // account grants).  Runs when the client named a profile OR when a "default"
@@ -947,4 +905,60 @@ async fn resolve_order_and_authorize(
         .map_err(|e| AcmeError::BadCsr(format!("base64url decode: {e}")))?;
 
     Ok((ctx, account_id, order, csr_der))
+}
+
+/// Resolve certificate parameters from the profile registry (the actual
+/// per-profile authorization checks happen afterward, in the caller).
+///
+/// A single registry read is performed and the result is kept in locals to
+/// avoid a TOCTOU window where a concurrent background refresh could cause
+/// the cert_params and the auth gate to diverge. Also applies the CRL/OCSP
+/// URL override: ProfileRegistry bakes those URLs from the default CA at
+/// startup, so when a non-default CA issues via a profile that did not
+/// explicitly set them, they're overridden here with the order CA's own
+/// infrastructure URLs.
+///
+/// Returns `(cert_params, default_profile_applied)`.
+fn resolve_cert_params(
+    state: &AppState,
+    order: &db::schema::OrderRow,
+    order_ca: &crate::state::CaState,
+) -> Result<(crate::profiles::CertificateParameters, bool), AcmeError> {
+    let (mut cert_params, default_profile_applied) = if !state.profiles.is_empty() {
+        match &order.profile {
+            Some(p) => match state.profiles.resolve_for_ca(p, &order.ca_id) {
+                Some(params) => (params, false),
+                None => {
+                    return Err(AcmeError::InvalidProfile(format!(
+                        "profile '{p}' is not available for CA '{}'",
+                        order.ca_id
+                    )));
+                }
+            },
+            None => match state.profiles.resolve_for_ca("default", &order.ca_id) {
+                Some(params) => (params, true),
+                None => (
+                    crate::profiles::CertificateParameters::from_ca(order_ca),
+                    false,
+                ),
+            },
+        }
+    } else {
+        (
+            crate::profiles::CertificateParameters::from_ca(order_ca),
+            false,
+        )
+    };
+
+    if order.ca_id != *state.default_ca_id {
+        let def = state.default_ca();
+        if cert_params.crl_url == def.crl_url {
+            cert_params.crl_url = order_ca.crl_url.clone();
+        }
+        if cert_params.ocsp_url == def.ocsp_url {
+            cert_params.ocsp_url = order_ca.ocsp_url.clone();
+        }
+    }
+
+    Ok((cert_params, default_profile_applied))
 }
