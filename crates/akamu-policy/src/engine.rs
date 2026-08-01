@@ -8,9 +8,12 @@ use std::sync::Mutex;
 /// Thread-safe issuance policy engine.
 ///
 /// Uses `std::sync::Mutex` because `AbacPolicy::evaluate` requires `&mut self`
-/// (for internal bloom-filter and LRU cache updates). The lock hold-time is
-/// microseconds for typical rule counts (expected max ~1000 rules), so
-/// contention is minimal in practice.
+/// — not for the LRU cache (which abac-rs updates through its own interior
+/// lock, so it doesn't need `&mut self`), but for the lazy index rebuild
+/// (`build_indexes`: composite index, bloom filters, compiled evaluator,
+/// deny index) that runs on first evaluation after any rule change. The
+/// lock hold-time is microseconds for typical rule counts (expected max
+/// ~1000 rules), so contention is minimal in practice.
 pub struct IssuancePolicyEngine {
     policy: Mutex<AbacPolicy>,
     mode: PolicyMode,
