@@ -349,6 +349,21 @@ CREATE TABLE mtc_revoked_ranges (
     CHECK(range_start <= range_end)
 );
 
+-- Idempotency cache for leaf-appends forwarded to this node's MTC writer
+-- election (see gossip::mtc_forward). append_leaf has no natural
+-- idempotency (each call assigns the next sequential index regardless of
+-- whether it's a retry), so a retried forward must be answered from here
+-- instead of appending the same certificate's leaf twice.
+CREATE TABLE mtc_forwarded_appends (
+    ca_id         TEXT    NOT NULL,
+    serial_number TEXT    NOT NULL,
+    leaf_index    INTEGER NOT NULL,
+    tree_size     INTEGER NOT NULL,
+    proof_cbor    BLOB    NOT NULL,
+    created       INTEGER NOT NULL,
+    PRIMARY KEY (ca_id, serial_number)
+);
+
 -- Policy engine rules (soft-deletable via tombstone).
 CREATE TABLE policy_rules (
     id             TEXT PRIMARY KEY,
