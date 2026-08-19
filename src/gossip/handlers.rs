@@ -162,13 +162,18 @@ pub async fn gossip_sync(
         }
     }
 
-    let peer_crdt = match envelope.decode_crdt() {
+    let mut peer_crdt = match envelope.decode_crdt() {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(sender = %sender_node_id, error = %e, "gossip/sync: CBOR decode CRDT failed");
             return StatusCode::BAD_REQUEST.into_response();
         }
     };
+    // Bound per-entry timestamps to the same forward tolerance already
+    // applied to the envelope's own issued_at, so a compromised or
+    // clock-skewed peer cannot assert a far-future added_at/tombstone_at to
+    // always win merge tiebreaks going forward.
+    peer_crdt.clamp_timestamps(now_ts + clock_skew);
 
     let request_delta_since = envelope.request_delta_since;
 
@@ -374,7 +379,8 @@ pub async fn gossip_register(
 
     {
         let mut crdt = state.crdt.write().await;
-        crdt.cluster_nodes.upsert(body.node_id.clone(), entry, now);
+        crdt.cluster_nodes
+            .upsert(body.node_id.clone(), entry, now, &state.node_id);
     }
     let crdt_snapshot = {
         let crdt = state.crdt.read().await;

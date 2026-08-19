@@ -40,6 +40,34 @@ pub async fn finalize_order(
     let (ctx, account_id, order, csr_der) =
         resolve_order_and_authorize(&state, &ca_id.0, &id, body).await?;
 
+    // Best-effort cross-node duplicate-issuance guard: claim exclusive
+    // processing ownership of this order before doing any issuance work.
+    // This is a local CRDT write that gossips out asynchronously — it can
+    // still diverge across a network partition (both sides may claim the
+    // same order), which is a known, documented, accepted residual risk
+    // (see docs/src/admin/cluster.md's Network Partition Behavior section).
+    // Re-claiming your own live claim always succeeds, so a node retrying
+    // its own finalize is never blocked by this.
+    {
+        let ttl = state
+            .config
+            .gossip
+            .as_ref()
+            .map(|g| g.ownership_ttl_secs as i64)
+            .unwrap_or(150);
+        let claimed =
+            state
+                .crdt
+                .write()
+                .await
+                .claim_order(&order.id, &state.node_id, unix_now(), ttl);
+        if !claimed {
+            return Err(AcmeError::Conflict(
+                "order is currently being processed by another node".into(),
+            ));
+        }
+    }
+
     // Parse order identifiers.
     let identifiers: Vec<serde_json::Value> = serde_json::from_str(&order.identifiers)
         .map_err(|e| AcmeError::Internal(format!("corrupt identifiers in order {id}: {e}")))?;
@@ -120,7 +148,7 @@ pub async fn finalize_order(
     .await?;
 
     let (final_cert_der, final_cert_pem, final_mtc_index, mtc_standalone_pending) =
-        build_mtc_outputs(order_ca, cert_params.issue_as_mtc, &issued).await?;
+        build_mtc_outputs(&state, order_ca, cert_params.issue_as_mtc, &issued).await?;
 
     // Extract subject DN from the leaf cert for searchability (FAU_SCR_EXT.1).
     let subject_dn = extract_subject_dn(&issued.cert_der);
@@ -217,22 +245,139 @@ pub async fn finalize_order(
 /// standalone DER to be stored without cosignatures and then skipped by
 /// `produce_checkpoint`'s `mtc_standalone_der IS NULL` filter.
 async fn append_and_build_standalone(
-    mtc: &crate::state::MtcState,
+    state: &AppState,
+    order_ca: &Arc<crate::state::CaState>,
     issued: &crate::ca::issue::IssuedCert,
 ) -> Result<(i64, Option<Vec<u8>>), AcmeError> {
-    let log = mtc
+    let (idx, _proof, _tree_size) =
+        append_leaf_locally_or_forward(state, order_ca, &issued.cert_der, &issued.serial_hex)
+            .await?;
+
+    Ok((idx as i64, None))
+}
+
+/// Append a certificate's leaf to `order_ca`'s MTC log — locally if this node
+/// is (or becomes) the elected writer for it, otherwise by forwarding to
+/// whichever node currently holds the election (`gossip::mtc_forward`).
+///
+/// The MTC log is a local, per-node disk file; only the elected writer may
+/// append to it without forking the transparency log across nodes. For a
+/// single-node deployment this node is always its own uncontested writer,
+/// so the fast path below is the only one ever taken — zero forwarding
+/// overhead, identical behavior to before this existed.
+async fn append_leaf_locally_or_forward(
+    state: &AppState,
+    order_ca: &Arc<crate::state::CaState>,
+    cert_der: &[u8],
+    serial_hex: &str,
+) -> Result<(u64, Vec<Vec<u8>>, u64), AcmeError> {
+    let ca_id = &order_ca.id;
+    let now = unix_now();
+    let ttl = state
+        .config
+        .gossip
+        .as_ref()
+        .map(|g| g.ownership_ttl_secs as i64)
+        .unwrap_or(150);
+
+    if state
+        .crdt
+        .read()
+        .await
+        .is_mtc_writer(ca_id, &state.node_id, now, ttl)
+    {
+        return append_leaf_locally(order_ca, cert_der).await;
+    }
+
+    // No live writer at all for this CA yet (fresh/idle): claim it and
+    // proceed locally — the common case for the first finalize of a given
+    // CA, or after the incumbent's lease has lapsed.
+    let self_claimed = {
+        let mut crdt = state.crdt.write().await;
+        if crdt.mtc_writer_claimant(ca_id).is_none() {
+            crdt.claim_mtc_writer(ca_id, &state.node_id, now, ttl)
+        } else {
+            false
+        }
+    };
+    if self_claimed {
+        return append_leaf_locally(order_ca, cert_der).await;
+    }
+
+    // Someone else holds the election — forward, retrying once against a
+    // fresher hint if the election has moved on since our last CRDT view.
+    let mut writer_node_id = state
+        .crdt
+        .read()
+        .await
+        .mtc_writer_claimant(ca_id)
+        .map(str::to_owned);
+    let mut last_err = None;
+    for _ in 0..2 {
+        let Some(node_id) = writer_node_id.clone() else {
+            return Err(AcmeError::ServiceUnavailable(format!(
+                "no MTC writer known for CA '{ca_id}'; retry finalize"
+            )));
+        };
+        let writer_url = {
+            let crdt = state.crdt.read().await;
+            crdt.cluster_nodes
+                .get(&node_id)
+                .map(|n| n.gossip_url.clone())
+        };
+        let Some(writer_url) = writer_url else {
+            return Err(AcmeError::ServiceUnavailable(format!(
+                "MTC writer '{node_id}' for CA '{ca_id}' is not a known cluster node"
+            )));
+        };
+        match crate::gossip::mtc_forward::forward_append(
+            state,
+            ca_id,
+            &node_id,
+            &writer_url,
+            cert_der,
+            serial_hex,
+        )
+        .await?
+        {
+            crate::gossip::mtc_forward::ForwardOutcome::Success(s) => {
+                return Ok((s.leaf_index, s.proof, s.tree_size))
+            }
+            crate::gossip::mtc_forward::ForwardOutcome::NotWriter { current_writer } => {
+                writer_node_id = current_writer.map(|(id, _)| id);
+                last_err = Some(AcmeError::ServiceUnavailable(format!(
+                    "MTC writer for CA '{ca_id}' changed during forward; retry finalize"
+                )));
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        AcmeError::ServiceUnavailable(format!(
+            "MTC writer election for CA '{ca_id}' unresolved after retry"
+        ))
+    }))
+}
+
+async fn append_leaf_locally(
+    order_ca: &Arc<crate::state::CaState>,
+    cert_der: &[u8],
+) -> Result<(u64, Vec<Vec<u8>>, u64), AcmeError> {
+    let ca_mtc = &order_ca.mtc;
+    let log = ca_mtc
         .log
         .as_ref()
         .ok_or_else(|| AcmeError::Mtc("MTC log not configured".into()))?;
-    let logid_dn = mtc.logid_issuer_dn_der.clone().ok_or_else(|| {
+    let logid_dn = ca_mtc.logid_issuer_dn_der.clone().ok_or_else(|| {
         AcmeError::Mtc("logid_issuer_dn_der not configured; MTC signing key required".into())
     })?;
     let idx =
-        crate::mtc::log::append_cert_to_log(log, issued.cert_der.clone(), logid_dn, mtc.algorithm)
+        crate::mtc::log::append_cert_to_log(log, cert_der.to_vec(), logid_dn, ca_mtc.algorithm)
             .await
             .map_err(|e| AcmeError::Mtc(format!("MTC log append: {e}")))?;
-
-    Ok((idx as i64, None))
+    let (proof, tree_size) = crate::mtc::log::proof_and_tree_size(log, idx)
+        .await
+        .map_err(|e| AcmeError::Mtc(format!("MTC inclusion proof: {e}")))?;
+    Ok((idx, proof, tree_size))
 }
 
 /// Extract the RFC 4514 subject DN from a DER-encoded leaf cert, for
@@ -829,35 +974,23 @@ async fn issue_leaf_certificate(
 ///
 /// Returns `(final_cert_der, final_cert_pem, final_mtc_index, mtc_standalone_pending)`.
 async fn build_mtc_outputs(
+    state: &AppState,
     order_ca: &Arc<crate::state::CaState>,
     issue_as_mtc: bool,
     issued: &ca::issue::IssuedCert,
 ) -> Result<(Vec<u8>, String, Option<i64>, Option<Vec<u8>>), AcmeError> {
     let (final_cert_der, final_cert_pem, mut final_mtc_index) = if issue_as_mtc {
         let ca_mtc = &order_ca.mtc;
-        let Some(log) = &ca_mtc.log else {
+        if ca_mtc.log.is_none() {
             return Err(AcmeError::InvalidProfile(
                 "profile 'issue_as = \"mtc\"' requires [ca.mtc] to be enabled".into(),
             ));
-        };
+        }
 
-        let logid_dn = ca_mtc.logid_issuer_dn_der.clone().ok_or_else(|| {
-            AcmeError::Mtc("logid_issuer_dn_der not configured; MTC signing key required".into())
-        })?;
-        let idx = crate::mtc::log::append_cert_to_log(
-            log,
-            issued.cert_der.clone(),
-            logid_dn,
-            ca_mtc.algorithm,
-        )
-        .await
-        .map_err(|e| AcmeError::Mtc(format!("MTC log append for MTC-profile cert: {e}")))?;
-
-        let (proof, tree_size) = crate::mtc::log::proof_and_tree_size(log, idx)
-            .await
-            .map_err(|e| {
-                AcmeError::Mtc(format!("MTC inclusion proof for cert {}: {e}", issued.id))
-            })?;
+        let (idx, proof, tree_size) =
+            append_leaf_locally_or_forward(state, order_ca, &issued.cert_der, &issued.serial_hex)
+                .await
+                .map_err(|e| AcmeError::Mtc(format!("MTC log append for MTC-profile cert: {e}")))?;
 
         let mtc_signing_key = ca_mtc.signing_key.as_ref().ok_or_else(|| {
             AcmeError::InvalidProfile(
@@ -898,7 +1031,7 @@ async fn build_mtc_outputs(
     let mtc_standalone_pending = if issue_as_mtc {
         Some(final_cert_der.clone())
     } else if order_ca.mtc.is_enabled() {
-        match append_and_build_standalone(&order_ca.mtc, issued).await {
+        match append_and_build_standalone(state, order_ca, issued).await {
             Ok((idx, standalone)) => {
                 final_mtc_index = Some(idx);
                 standalone

@@ -53,7 +53,7 @@ holding all cluster state.  It composes two CRDT primitive types:
 | `mtc_checkpoints` | `LwwMap<u64, MtcCheckpointEntry>` | MTC checkpoint metadata |
 | `mtc_cosignatures` | `LwwMap<(String,String), MtcCosigEntry>` | External cosigner sigs |
 | `order_owners` | `LwwMap<String, OrderOwner>` | Processing-node ownership claims |
-| `mtc_writer` | `LwwRegister<MtcWriter>` | Single elected MTC log writer |
+| `mtc_writer` | `LwwMap<String, MtcWriter>` | Elected MTC log writer, per CA |
 
 **What is NOT replicated:** nonces (single-node anti-replay), CA private keys,
 admin sessions, and EAB HMAC key bytes (the `hmac_key_b64u` field has `#[serde(skip)]`
@@ -367,19 +367,51 @@ requiring explicit release.
 
 ### MTC Log Writer Election
 
-Only one node should produce MTC checkpoints per CA.  The election uses:
+The MTC log is a local, per-node disk file (an exclusive `flock` prevents
+more than one process from ever appending to it), so exactly one node per
+CA must own writes to it. The election is **per CA** — each CA hosted by
+the cluster elects its writer independently, so load can be spread across
+nodes — using:
 
 ```rust
-crdt.claim_mtc_writer(node_id, now, ownership_ttl_secs)
+crdt.claim_mtc_writer(ca_id, node_id, now, ownership_ttl_secs)
 ```
 
-backed by `mtc_writer: LwwRegister<MtcWriter>`.  The node that writes the highest
-timestamp wins; ties break by lexicographic `node_id`.  A live incumbent blocks
-challengers until its claim lapses.
+backed by `mtc_writer: LwwMap<String, MtcWriter>` keyed by `ca_id` (the same
+shape as `order_owners`). The node that writes the highest timestamp wins;
+ties break by lexicographic `node_id`. A live incumbent blocks challengers
+until its claim lapses.
 
-Both mechanisms rely on gossip propagating the claim before the TTL expires.  With a
-15-second gossip interval and a 150-second TTL, a claim survives at least nine missed
-rounds before another node can preempt.
+This is fully wired end-to-end, not just a primitive nodes may opt into:
+
+- `finalize_order` (via `append_leaf_locally_or_forward`,
+  `src/routes/finalize.rs`) appends locally when this node already holds
+  (or can freshly claim, if vacant) the election for the order's CA;
+  otherwise it forwards the leaf over `POST /gossip/mtc/append`
+  (`src/gossip/mtc_forward.rs`) — same CMS trust model as `/gossip/sync`,
+  pinned peer keys, no TOFU — to whichever node the CRDT names as writer,
+  retrying once against a `NotWriter` rejection's hinted target.
+- `spawn_checkpoint_task`/`spawn_landmark_task` (`src/mtc/checkpoint.rs`,
+  `src/mtc/landmark.rs`) call `claim_mtc_writer` on every 60-second tick
+  before acting for a CA — a no-op refresh when this node already holds a
+  live claim, a fresh claim when the CA's election is vacant, and a skip
+  when another node's claim is still live — so only the writer signs
+  checkpoints/landmarks, and a node's own lease can't lapse from
+  read-only/idle traffic and wrongly hand the role away.
+- Every `/acme/mtc/*` and `/admin/mtc/*`/`/admin/ca/{id}/mtc/*` read (plus
+  the `force-checkpoint`/`force-landmark` admin actions) is transparently
+  reverse-proxied to the CA's elected writer on any node that isn't it —
+  see `src/routes/mtc_proxy.rs` and `src/gossip/mtc_admin.rs`. The public
+  routes relay the raw HTTP request (their responses are public
+  transparency-log data); the admin routes instead forward a CMS-signed
+  description of the already-RBAC-authorized request over
+  `POST /gossip/mtc/admin-query`, since admin operator identity (Bearer
+  session, mTLS client cert, proxy-forwarded cert header) cannot survive a
+  raw relay to a second node.
+
+Both election mechanisms rely on gossip propagating the claim before the TTL
+expires. With a 15-second gossip interval and a 150-second TTL, a claim
+survives at least nine missed rounds before another node can preempt.
 
 ## Persistence and Recovery
 

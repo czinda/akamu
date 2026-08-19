@@ -292,6 +292,10 @@ CREATE TABLE crdt_cluster_nodes (
     tombstone                SMALLINT NOT NULL DEFAULT 0,
     tombstone_at             BIGINT,
     local_gen                BIGINT  NOT NULL DEFAULT 0,
+    -- Writer of this entry, for CRDT merge tiebreak; distinct from the
+    -- `node_id` column above, which is the entry's subject (the node this
+    -- row describes), not who wrote it.
+    writer_node_id           TEXT    NOT NULL DEFAULT '',
     CONSTRAINT ck_tombstone_consistency CHECK (
         (tombstone = 0 AND tombstone_at IS NULL) OR
         (tombstone = 1 AND tombstone_at IS NOT NULL)
@@ -307,9 +311,9 @@ CREATE TABLE crdt_order_owners (
     local_gen   BIGINT  NOT NULL DEFAULT 0
 );
 
--- MTC writer election: at most one row (application always uses id = 'singleton').
+-- One row per CA with a live or historical MTC writer election claim.
 CREATE TABLE crdt_mtc_writer (
-    id          TEXT    PRIMARY KEY,
+    ca_id       TEXT    PRIMARY KEY,
     node_id     TEXT    NOT NULL,
     claimed_at  BIGINT  NOT NULL,
     local_gen   BIGINT  NOT NULL DEFAULT 0
@@ -375,19 +379,36 @@ CREATE TABLE mtc_revoked_ranges (
     CHECK(range_start <= range_end)
 );
 
+-- Idempotency cache for leaf-appends forwarded to this node's MTC writer
+-- election (see gossip::mtc_forward). append_leaf has no natural
+-- idempotency (each call assigns the next sequential index regardless of
+-- whether it's a retry), so a retried forward must be answered from here
+-- instead of appending the same certificate's leaf twice.
+CREATE TABLE mtc_forwarded_appends (
+    ca_id         TEXT    NOT NULL,
+    serial_number TEXT    NOT NULL,
+    leaf_index    BIGINT  NOT NULL,
+    tree_size     BIGINT  NOT NULL,
+    proof_cbor    BYTEA   NOT NULL,
+    created       BIGINT  NOT NULL,
+    PRIMARY KEY (ca_id, serial_number)
+);
+
 -- Policy engine rules (soft-deletable via tombstone).
 CREATE TABLE policy_rules (
-    id           TEXT PRIMARY KEY,
-    scope        TEXT NOT NULL,
-    name         TEXT NOT NULL,
-    rule_json    TEXT NOT NULL,
-    enabled      INTEGER NOT NULL DEFAULT 1,
-    created_at   TEXT NOT NULL,
-    updated_at   TEXT NOT NULL,
-    created_by   TEXT,
-    local_gen    BIGINT NOT NULL DEFAULT 0,
-    tombstone    INTEGER NOT NULL DEFAULT 0,
-    tombstone_at BIGINT,
+    id             TEXT PRIMARY KEY,
+    scope          TEXT NOT NULL,
+    name           TEXT NOT NULL,
+    rule_json      TEXT NOT NULL,
+    enabled        INTEGER NOT NULL DEFAULT 1,
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    created_by     TEXT,
+    local_gen      BIGINT NOT NULL DEFAULT 0,
+    tombstone      INTEGER NOT NULL DEFAULT 0,
+    tombstone_at   BIGINT,
+    -- Writer of this entry, for CRDT merge tiebreak (see crdt_cluster_nodes).
+    writer_node_id TEXT NOT NULL DEFAULT '',
     CONSTRAINT ck_policy_tombstone_consistency CHECK (
         (tombstone = 0 AND tombstone_at IS NULL) OR
         (tombstone = 1 AND tombstone_at IS NOT NULL)

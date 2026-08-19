@@ -1787,6 +1787,69 @@ async fn test_finalize_order_not_ready() {
     );
 }
 
+/// Finding 5: finalize_order claims order_owners before processing. If
+/// another node already holds a live claim on this order, finalize must be
+/// rejected rather than proceeding to issue a duplicate certificate.
+#[tokio::test]
+async fn test_finalize_rejects_when_another_node_holds_order_claim() {
+    let base_url = "https://acme.test";
+    let (state, _tmp) = build_test_state(base_url).await;
+    let router = routes::build_router(Arc::clone(&state), None, false);
+    let db = state.db.clone();
+
+    let key = TestKey::generate();
+    let nonce = head_nonce(&router).await;
+    let jws = key.jws_with_jwk(
+        &nonce,
+        &format!("{base_url}/acme/new-account"),
+        Some(json!({"termsOfServiceAgreed": true})),
+    );
+    let (_, _, acct_headers) = post_acme(&router, "/acme/new-account", jws).await;
+    let account_url = location_header(&acct_headers);
+    let nonce = nonce_header(&acct_headers);
+
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &format!("{base_url}/acme/new-order"),
+        Some(json!({"identifiers": [{"type": "dns", "value": "claimed-elsewhere.test"}]})),
+    );
+    let (_, _, order_headers) = post_acme(&router, "/acme/new-order", jws).await;
+    let nonce = nonce_header(&order_headers);
+    let order_id: String =
+        sqlx::query_as::<_, (String,)>("SELECT id FROM orders ORDER BY created DESC LIMIT 1")
+            .fetch_one(&db)
+            .await
+            .unwrap()
+            .0;
+    mark_order_ready(&db, &order_id).await;
+
+    // Simulate another cluster node already processing this order.
+    let now = akamu::util::unix_now();
+    let claimed = state
+        .crdt
+        .write()
+        .await
+        .claim_order(&order_id, "other-node", now, 150);
+    assert!(claimed, "test setup: other-node's claim should succeed");
+
+    let csr_der = make_csr_der("claimed-elsewhere.test");
+    let csr_b64 = URL_SAFE_NO_PAD.encode(&csr_der);
+    let finalize_url = format!("{base_url}/acme/order/{order_id}/finalize");
+    let jws = key.jws_with_kid(
+        &account_url,
+        &nonce,
+        &finalize_url,
+        Some(json!({"csr": csr_b64})),
+    );
+    let (status, _, _) = post_acme(&router, &format!("/acme/order/{order_id}/finalize"), jws).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "finalize must be rejected while another node holds a live order claim"
+    );
+}
+
 /// Key-change with no payload → BadRequest.
 #[tokio::test]
 async fn test_key_change_no_payload() {

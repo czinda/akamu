@@ -135,6 +135,15 @@ pub struct CheckpointRow {
     pub created: i64,
 }
 
+/// Idempotency-cache row for a leaf-append forwarded to this node's MTC
+/// writer election. `proof_cbor` is a CBOR-encoded `Vec<Vec<u8>>`.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct MtcForwardedAppendRow {
+    pub leaf_index: i64,
+    pub tree_size: i64,
+    pub proof_cbor: Vec<u8>,
+}
+
 /// Minimal certificate projection for standalone MTC cert construction.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct CertForStandalone {

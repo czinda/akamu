@@ -438,12 +438,33 @@ pub fn spawn_checkpoint_task(state: Arc<AppState>) -> tokio::task::JoinHandle<()
         loop {
             interval.tick().await;
             let now = crate::util::unix_now();
+            let ttl = state
+                .config
+                .gossip
+                .as_ref()
+                .map(|g| g.ownership_ttl_secs as i64)
+                .unwrap_or(150);
             for (ca_id, ca) in state.cas.iter() {
                 let mtc = &ca.mtc;
                 let (Some(log), Some(signing_key)) = (mtc.log.as_ref(), mtc.signing_key.as_ref())
                 else {
                     continue;
                 };
+                // Every leaf-append for this CA is funneled to its elected
+                // writer (gossip::mtc_forward), so only the writer's log has
+                // the CA's full leaf set — only it should produce
+                // checkpoints. This tick doubles as the writer's lease
+                // renewal (and, for a CA nobody has claimed yet, its
+                // election): claim_mtc_writer is a no-op refresh for an
+                // already-live claim of ours, a fresh claim when vacant, and
+                // fails only when another node's claim is still live.
+                let is_writer = {
+                    let mut crdt = state.crdt.write().await;
+                    crdt.claim_mtc_writer(ca_id, &state.node_id, now, ttl)
+                };
+                if !is_writer {
+                    continue;
+                }
                 if now - mtc.last_checkpoint_at() < mtc.checkpoint_interval_secs as i64 {
                     continue;
                 }

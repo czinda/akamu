@@ -1,6 +1,7 @@
 //! Axum route assembly and shared request-handling utilities.
 
 mod embedded_ui;
+mod mtc_proxy;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -225,7 +226,26 @@ fn build_acme_router(state: &Arc<AppState>) -> Router<Arc<AppState>> {
         "renewal-info/{cert_id}",
         get(renewal_info::get_renewal_info),
     );
-    // MTC log state (read-only; 404 when MTC is disabled)
+    // mtc/discovery returns static per-CA config, not log/DB state — correct
+    // on every node regardless of writer election, so it stays outside the
+    // proxied MTC sub-router below.
+    r = dual_acme_route(r, "mtc/discovery", get(mtc::get_discovery));
+    // EAB identity — legacy-only (no per-CA counterpart)
+    r = r.route("/acme/eab", get(eab_identity::get_eab_identity));
+
+    r = r.merge(build_acme_mtc_router(state));
+
+    r.layer(axum::middleware::from_fn_with_state(
+        Arc::clone(state),
+        halt_check,
+    ))
+}
+
+/// MTC log read routes (404 when MTC is disabled) — reverse-proxied to the
+/// CA's elected `mtc_writer` when this node isn't it (`mtc_proxy`), since
+/// only the writer's local log/DB state is guaranteed current.
+fn build_acme_mtc_router(state: &Arc<AppState>) -> Router<Arc<AppState>> {
+    let mut r = Router::new();
     r = dual_acme_route(r, "mtc/tree-size", get(mtc::get_tree_size));
     r = dual_acme_route(r, "mtc/root", get(mtc::get_root));
     r = dual_acme_route(
@@ -245,7 +265,6 @@ fn build_acme_router(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     // C2SP tlog-tiles API
     r = dual_acme_route(r, "mtc/checkpoint", get(mtc::get_tlog_checkpoint));
     r = dual_acme_route(r, "mtc/cosignature", get(mtc::get_tlog_cosignature));
-    r = dual_acme_route(r, "mtc/discovery", get(mtc::get_discovery));
     r = dual_acme_route(r, "mtc/tile/{*path}", get(mtc::get_tlog_tile));
     // Consistency proof for monitors
     r = dual_acme_route(r, "mtc/consistency-proof", get(mtc::get_consistency_proof));
@@ -253,12 +272,10 @@ fn build_acme_router(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     r = dual_acme_route(r, "mtc/subtree-root", get(mtc::get_subtree_root));
     // Revoked ranges
     r = dual_acme_route(r, "mtc/revoked-ranges", get(mtc::get_revoked_ranges));
-    // EAB identity — legacy-only (no per-CA counterpart)
-    r = r.route("/acme/eab", get(eab_identity::get_eab_identity));
 
-    r.layer(axum::middleware::from_fn_with_state(
+    r.route_layer(axum::middleware::from_fn_with_state(
         Arc::clone(state),
-        halt_check,
+        mtc_proxy::mtc_writer_proxy,
     ))
 }
 
@@ -286,6 +303,18 @@ fn build_other_router() -> Router<Arc<AppState>> {
         // Inter-node gossip sync (C-3): on the public listener; authentication is
         // provided by the CMS SignedData wrapper (ECDSA P-256 with pinned peer cert).
         .route("/gossip/sync", post(crate::gossip::handlers::gossip_sync))
+        // Inter-node MTC leaf-append forwarding: same trust model as /gossip/sync.
+        .route(
+            "/gossip/mtc/append",
+            post(crate::gossip::mtc_forward::handle_append),
+        )
+        // Inter-node admin MTC read-through: same trust model, see
+        // gossip::mtc_admin for why admin routes need this instead of a raw
+        // HTTP relay.
+        .route(
+            "/gossip/mtc/admin-query",
+            post(crate::gossip::mtc_admin::handle_admin_query),
+        )
 }
 
 /// Admin API routes (bypass halt_check; auth enforced by `admin::rbac::admin_rbac_gate`).
@@ -400,7 +429,34 @@ fn build_admin_router(state: &Arc<AppState>) -> Router<Arc<AppState>> {
             "/admin/cross-certs/{id}",
             axum::routing::get(admin::get_cross_cert),
         )
-        // ── MTC transparency log ──────────────────────────────────────────
+        .merge(build_admin_mtc_router(state))
+        .route(
+            "/admin/gossip/status",
+            axum::routing::get(crate::gossip::handlers::gossip_status),
+        )
+        // Peer enrollment (H-8): operator must pre-pin a peer's keys before gossip
+        // can proceed.  Authentication via OperatorContext (admin session).
+        .route(
+            "/admin/gossip/register",
+            post(crate::gossip::handlers::gossip_register),
+        );
+
+    r.layer(axum::middleware::from_fn_with_state(
+        Arc::clone(state),
+        admin::rbac::admin_rbac_gate,
+    ))
+}
+
+/// Admin MTC transparency-log routes, reverse-proxied via
+/// `mtc_proxy::admin_mtc_writer_proxy` to a CA's elected writer when this
+/// node isn't it (see that module and `gossip::mtc_admin` for why admin
+/// routes need a different mechanism than the public `/acme/mtc/*` ones).
+/// `route_layer` scopes the proxy middleware to just this sub-router; since
+/// it's applied here, before merging into `build_admin_router`, it runs
+/// *inside* that function's later `.layer(admin_rbac_gate)` — RBAC always
+/// runs first.
+fn build_admin_mtc_router(state: &Arc<AppState>) -> Router<Arc<AppState>> {
+    Router::new()
         .route(
             "/admin/mtc/tree-size",
             axum::routing::get(admin::get_mtc_tree_size),
@@ -462,21 +518,10 @@ fn build_admin_router(state: &Arc<AppState>) -> Router<Arc<AppState>> {
             "/admin/ca/{id}/mtc/log-list-entry",
             axum::routing::get(admin::get_mtc_log_list_entry),
         )
-        .route(
-            "/admin/gossip/status",
-            axum::routing::get(crate::gossip::handlers::gossip_status),
-        )
-        // Peer enrollment (H-8): operator must pre-pin a peer's keys before gossip
-        // can proceed.  Authentication via OperatorContext (admin session).
-        .route(
-            "/admin/gossip/register",
-            post(crate::gossip::handlers::gossip_register),
-        );
-
-    r.layer(axum::middleware::from_fn_with_state(
-        Arc::clone(state),
-        admin::rbac::admin_rbac_gate,
-    ))
+        .route_layer(axum::middleware::from_fn_with_state(
+            Arc::clone(state),
+            mtc_proxy::admin_mtc_writer_proxy,
+        ))
 }
 
 /// Build the unified axum router: ACME, admin API, and optional web UI.

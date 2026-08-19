@@ -535,7 +535,7 @@ pub async fn run(state: Arc<AppState>) {
                 continue;
             }
 
-            let peer_crdt = match peer_envelope.decode_crdt() {
+            let mut peer_crdt = match peer_envelope.decode_crdt() {
                 Ok(c) => c,
                 Err(e) => {
                     tracing::warn!(peer = %pt.url, error = %e, "gossip: CBOR decode peer CRDT failed");
@@ -544,6 +544,12 @@ pub async fn run(state: Arc<AppState>) {
                     continue;
                 }
             };
+            // Bound per-entry timestamps to the same forward tolerance
+            // already applied to the envelope's own issued_at above, so a
+            // compromised or clock-skewed peer cannot assert a far-future
+            // added_at/tombstone_at to always win merge tiebreaks going
+            // forward — see the identical clamp in gossip::handlers::gossip_sync.
+            peer_crdt.clamp_timestamps(now + resp_clock_skew);
 
             peer_crdts.push(peer_crdt);
             validated.push(ValidatedPeer {

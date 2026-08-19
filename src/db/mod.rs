@@ -20,6 +20,7 @@ pub mod cross_certs;
 pub mod delegations;
 pub mod eab;
 pub mod landmarks;
+pub mod mtc_forwarded_appends;
 pub mod nonces;
 pub mod operators;
 pub mod orders;

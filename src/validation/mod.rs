@@ -459,10 +459,12 @@ async fn on_valid(
                                 updated: now,
                                 ..az
                             };
-                            Some(
-                                crdt.authorizations
-                                    .upsert(authz_id.to_string(), updated, now),
-                            )
+                            Some(crdt.authorizations.upsert(
+                                authz_id.to_string(),
+                                updated,
+                                now,
+                                state.node_id.as_str(),
+                            ))
                         } else {
                             None
                         };
@@ -475,7 +477,12 @@ async fn on_valid(
                                 updated: now,
                                 ..ord
                             };
-                            Some(crdt.orders.upsert(order_id.to_string(), updated, now))
+                            Some(crdt.orders.upsert(
+                                order_id.to_string(),
+                                updated,
+                                now,
+                                state.node_id.as_str(),
+                            ))
                         } else {
                             None
                         }

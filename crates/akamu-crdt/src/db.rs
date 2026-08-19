@@ -15,6 +15,7 @@ use sqlx::AnyPool;
 
 use crate::crdt::AkaCrdt;
 use crate::lww_register::LwwRegister;
+use crate::or_map::OrMapEntry;
 use crate::types::{
     AccountEntry, AkaNodeEntry, AuthzEntry, CertEntry, ChallengeEntry, DelegationEntry,
     EabKeyEntry, MtcCheckpointEntry, MtcWriter, OperatorEntry, OrderEntry, OrderOwner,
@@ -263,6 +264,7 @@ struct PolicyRuleLoad {
     local_gen: i64,
     tombstone: i64,
     tombstone_at: Option<i64>,
+    writer_node_id: String,
 }
 
 #[derive(sqlx::FromRow)]
@@ -285,6 +287,7 @@ struct CrdtClusterNodeLoad {
     tombstone: i64,
     tombstone_at: Option<i64>,
     local_gen: i64,
+    writer_node_id: String,
 }
 
 #[derive(sqlx::FromRow)]
@@ -297,6 +300,7 @@ struct CrdtOrderOwnerLoad {
 
 #[derive(sqlx::FromRow)]
 struct CrdtMtcWriterLoad {
+    ca_id: String,
     node_id: String,
     claimed_at: i64,
     local_gen: i64,
@@ -361,11 +365,14 @@ pub async fn load_from_db(
         };
         crdt.accounts.load_entry(
             row.id,
-            entry,
-            row.created,
-            tombstone,
-            tombstone.then_some(row.updated),
-            gen,
+            OrMapEntry {
+                value: entry,
+                added_at: row.created,
+                tombstone,
+                tombstone_at: tombstone.then_some(row.updated),
+                node_id: node_id.to_owned(),
+                local_gen: gen,
+            },
         );
     }
 
@@ -398,11 +405,14 @@ pub async fn load_from_db(
         };
         crdt.orders.load_entry(
             row.id,
-            entry,
-            row.created,
-            tombstone,
-            tombstone.then_some(row.updated),
-            gen,
+            OrMapEntry {
+                value: entry,
+                added_at: row.created,
+                tombstone,
+                tombstone_at: tombstone.then_some(row.updated),
+                node_id: node_id.to_owned(),
+                local_gen: gen,
+            },
         );
     }
 
@@ -434,11 +444,14 @@ pub async fn load_from_db(
         };
         crdt.authorizations.load_entry(
             row.id,
-            entry,
-            row.created,
-            tombstone,
-            tombstone.then_some(row.updated),
-            gen,
+            OrMapEntry {
+                value: entry,
+                added_at: row.created,
+                tombstone,
+                tombstone_at: tombstone.then_some(row.updated),
+                node_id: node_id.to_owned(),
+                local_gen: gen,
+            },
         );
     }
 
@@ -494,8 +507,17 @@ pub async fn load_from_db(
             created: row.created,
             ca_id: row.ca_id,
         };
-        crdt.certificates
-            .load_entry(row.id, entry, row.created, tombstone, row.revoked_at, gen);
+        crdt.certificates.load_entry(
+            row.id,
+            OrMapEntry {
+                value: entry,
+                added_at: row.created,
+                tombstone,
+                tombstone_at: row.revoked_at,
+                node_id: node_id.to_owned(),
+                local_gen: gen,
+            },
+        );
     }
 
     // ── EAB Keys ──────────────────────────────────────────────────────────────
@@ -536,8 +558,17 @@ pub async fn load_from_db(
             ca_id: row.ca_id,
             created,
         };
-        crdt.operators
-            .load_entry(row.id.to_string(), entry, created, tombstone, None, gen);
+        crdt.operators.load_entry(
+            row.id.to_string(),
+            OrMapEntry {
+                value: entry,
+                added_at: created,
+                tombstone,
+                tombstone_at: None,
+                node_id: node_id.to_owned(),
+                local_gen: gen,
+            },
+        );
     }
 
     // ── Delegations ───────────────────────────────────────────────────────────
@@ -555,14 +586,23 @@ pub async fn load_from_db(
             created: row.created,
             ca_id: row.ca_id,
         };
-        crdt.delegations
-            .load_entry(row.id, entry, row.created, false, None, gen);
+        crdt.delegations.load_entry(
+            row.id,
+            OrMapEntry {
+                value: entry,
+                added_at: row.created,
+                tombstone: false,
+                tombstone_at: None,
+                node_id: node_id.to_owned(),
+                local_gen: gen,
+            },
+        );
     }
 
     // ── Policy rules ─────────────────────────────────────────────────────────
     let rows: Vec<PolicyRuleLoad> = sqlx::query_as(
         "SELECT id, scope, name, rule_json, enabled, created_at, updated_at, \
-         created_by, local_gen, tombstone, tombstone_at FROM policy_rules",
+         created_by, local_gen, tombstone, tombstone_at, writer_node_id FROM policy_rules",
     )
     .fetch_all(pool)
     .await?;
@@ -581,8 +621,17 @@ pub async fn load_from_db(
             updated_at: row.updated_at,
             created_by: row.created_by,
         };
-        crdt.policy_rules
-            .load_entry(row.id, entry, created, tombstone, row.tombstone_at, gen);
+        crdt.policy_rules.load_entry(
+            row.id,
+            OrMapEntry {
+                value: entry,
+                added_at: created,
+                tombstone,
+                tombstone_at: row.tombstone_at,
+                node_id: row.writer_node_id,
+                local_gen: gen,
+            },
+        );
     }
 
     // ── MTC Checkpoints ───────────────────────────────────────────────────────
@@ -610,7 +659,7 @@ pub async fn load_from_db(
     let rows: Vec<CrdtClusterNodeLoad> = sqlx::query_as(
         "SELECT node_id, gossip_url, kem_public_key_der, signing_public_key_der, \
          signing_certificate_der, ca_ids, registered_at, tombstone, tombstone_at, \
-         local_gen FROM crdt_cluster_nodes",
+         local_gen, writer_node_id FROM crdt_cluster_nodes",
     )
     .fetch_all(crdt_pool)
     .await?;
@@ -638,11 +687,14 @@ pub async fn load_from_db(
         };
         crdt.cluster_nodes.load_entry(
             row.node_id,
-            entry,
-            row.registered_at,
-            tombstone,
-            row.tombstone_at,
-            gen,
+            OrMapEntry {
+                value: entry,
+                added_at: row.registered_at,
+                tombstone,
+                tombstone_at: row.tombstone_at,
+                node_id: row.writer_node_id,
+                local_gen: gen,
+            },
         );
     }
 
@@ -665,19 +717,22 @@ pub async fn load_from_db(
     }
 
     // ── CRDT MTC writer ───────────────────────────────────────────────────────
-    // At most one row (id = 'singleton').
+    // One row per CA with a live or historical writer claim.
     let rows: Vec<CrdtMtcWriterLoad> =
-        sqlx::query_as("SELECT node_id, claimed_at, local_gen FROM crdt_mtc_writer")
+        sqlx::query_as("SELECT ca_id, node_id, claimed_at, local_gen FROM crdt_mtc_writer")
             .fetch_all(crdt_pool)
             .await?;
-    if let Some(row) = rows.into_iter().next() {
+    for row in rows {
         let gen = row.local_gen as u64;
         max_gen = max_gen.max(gen);
         let writer = MtcWriter {
             node_id: row.node_id.clone(),
             claimed_at: row.claimed_at,
         };
-        crdt.mtc_writer = LwwRegister::load(Some(writer), row.claimed_at, &row.node_id, gen);
+        crdt.mtc_writer.load_entry(
+            row.ca_id,
+            LwwRegister::load(Some(writer), row.claimed_at, &row.node_id, gen),
+        );
     }
 
     // Advance CRDT_GENERATION beyond all loaded entries so new mutations receive
@@ -706,8 +761,9 @@ pub async fn persist_crdt_cluster(pool: &AnyPool, crdt: &AkaCrdt) -> Result<(), 
             serde_json::to_string(&entry.value.ca_ids).unwrap_or_else(|_| "[]".to_string());
         q("INSERT INTO crdt_cluster_nodes \
            (node_id, gossip_url, kem_public_key_der, signing_public_key_der, \
-            signing_certificate_der, ca_ids, registered_at, tombstone, tombstone_at, local_gen) \
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            signing_certificate_der, ca_ids, registered_at, tombstone, tombstone_at, local_gen, \
+            writer_node_id) \
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(node_id.as_str())
         .bind(&entry.value.gossip_url)
         .bind(&entry.value.kem_public_key_der)
@@ -718,6 +774,7 @@ pub async fn persist_crdt_cluster(pool: &AnyPool, crdt: &AkaCrdt) -> Result<(), 
         .bind(entry.tombstone as i64)
         .bind(entry.tombstone_at)
         .bind(entry.local_gen as i64)
+        .bind(&entry.node_id)
         .execute(&mut *tx)
         .await?;
     }
@@ -741,16 +798,19 @@ pub async fn persist_crdt_cluster(pool: &AnyPool, crdt: &AkaCrdt) -> Result<(), 
 
     // ── CRDT MTC writer (full replace) ────────────────────────────────────────
     q("DELETE FROM crdt_mtc_writer").execute(&mut *tx).await?;
-    if let Some(writer) = crdt.mtc_writer.get() {
-        q(
-            "INSERT INTO crdt_mtc_writer (id, node_id, claimed_at, local_gen) \
-           VALUES ('singleton', ?, ?, ?)",
-        )
-        .bind(&writer.node_id)
-        .bind(writer.claimed_at)
-        .bind(crdt.mtc_writer.local_gen() as i64)
-        .execute(&mut *tx)
-        .await?;
+    for (ca_id, register) in crdt.mtc_writer.all_entries() {
+        if let Some(writer) = register.get() {
+            q(
+                "INSERT INTO crdt_mtc_writer (ca_id, node_id, claimed_at, local_gen) \
+               VALUES (?, ?, ?, ?)",
+            )
+            .bind(ca_id.as_str())
+            .bind(&writer.node_id)
+            .bind(writer.claimed_at)
+            .bind(register.local_gen() as i64)
+            .execute(&mut *tx)
+            .await?;
+        }
     }
 
     tx.commit().await
@@ -1009,29 +1069,32 @@ pub async fn persist_crdt_acme(pool: &AnyPool, crdt: &AkaCrdt) -> Result<(), sql
 
         q_upsert(
             "INSERT INTO policy_rules \
-             (id, scope, name, rule_json, enabled, created_at, updated_at, created_by, local_gen, tombstone, tombstone_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             (id, scope, name, rule_json, enabled, created_at, updated_at, created_by, local_gen, tombstone, tombstone_at, writer_node_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET \
              scope = excluded.scope, name = excluded.name, \
              rule_json = excluded.rule_json, enabled = excluded.enabled, \
              updated_at = excluded.updated_at, local_gen = excluded.local_gen, \
-             tombstone = excluded.tombstone, tombstone_at = excluded.tombstone_at",
+             tombstone = excluded.tombstone, tombstone_at = excluded.tombstone_at, \
+             writer_node_id = excluded.writer_node_id",
             "INSERT INTO policy_rules \
-             (id, scope, name, rule_json, enabled, created_at, updated_at, created_by, local_gen, tombstone, tombstone_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             (id, scope, name, rule_json, enabled, created_at, updated_at, created_by, local_gen, tombstone, tombstone_at, writer_node_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON DUPLICATE KEY UPDATE \
              scope = VALUES(scope), name = VALUES(name), \
              rule_json = VALUES(rule_json), enabled = VALUES(enabled), \
              updated_at = VALUES(updated_at), local_gen = VALUES(local_gen), \
-             tombstone = VALUES(tombstone), tombstone_at = VALUES(tombstone_at)",
+             tombstone = VALUES(tombstone), tombstone_at = VALUES(tombstone_at), \
+             writer_node_id = VALUES(writer_node_id)",
             "INSERT INTO policy_rules \
-             (id, scope, name, rule_json, enabled, created_at, updated_at, created_by, local_gen, tombstone, tombstone_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+             (id, scope, name, rule_json, enabled, created_at, updated_at, created_by, local_gen, tombstone, tombstone_at, writer_node_id) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
              ON CONFLICT (id) DO UPDATE SET \
              scope = EXCLUDED.scope, name = EXCLUDED.name, \
              rule_json = EXCLUDED.rule_json, enabled = EXCLUDED.enabled, \
              updated_at = EXCLUDED.updated_at, local_gen = EXCLUDED.local_gen, \
-             tombstone = EXCLUDED.tombstone, tombstone_at = EXCLUDED.tombstone_at",
+             tombstone = EXCLUDED.tombstone, tombstone_at = EXCLUDED.tombstone_at, \
+             writer_node_id = EXCLUDED.writer_node_id",
         )
         .bind(id.as_str())
         .bind(&entry.value.scope)
@@ -1044,6 +1107,7 @@ pub async fn persist_crdt_acme(pool: &AnyPool, crdt: &AkaCrdt) -> Result<(), sql
         .bind(entry.local_gen as i64)
         .bind(entry.tombstone as i64)
         .bind(entry.tombstone_at)
+        .bind(&entry.node_id)
         .execute(&mut *tx)
         .await?;
     }
@@ -1090,23 +1154,28 @@ pub async fn persist_order_owner(
     Ok(())
 }
 
-/// Upsert the MTC writer election to `crdt_mtc_writer` (singleton row).
+/// Upsert a single CA's MTC writer election claim to `crdt_mtc_writer`.
+///
+/// Called from write-path hooks after `AkaCrdt::claim_mtc_writer` succeeds so
+/// the claim survives a restart without waiting for the next full persist.
 pub async fn persist_mtc_writer(
     pool: &AnyPool,
+    ca_id: &str,
     writer: &MtcWriter,
     local_gen: u64,
 ) -> Result<(), sqlx::Error> {
     q_upsert(
-        "INSERT OR REPLACE INTO crdt_mtc_writer (id, node_id, claimed_at, local_gen) \
-         VALUES ('singleton', ?, ?, ?)",
-        "REPLACE INTO crdt_mtc_writer (id, node_id, claimed_at, local_gen) \
-         VALUES ('singleton', ?, ?, ?)",
-        "INSERT INTO crdt_mtc_writer (id, node_id, claimed_at, local_gen) \
-         VALUES ('singleton', $1, $2, $3) \
-         ON CONFLICT (id) DO UPDATE SET \
+        "INSERT OR REPLACE INTO crdt_mtc_writer (ca_id, node_id, claimed_at, local_gen) \
+         VALUES (?, ?, ?, ?)",
+        "REPLACE INTO crdt_mtc_writer (ca_id, node_id, claimed_at, local_gen) \
+         VALUES (?, ?, ?, ?)",
+        "INSERT INTO crdt_mtc_writer (ca_id, node_id, claimed_at, local_gen) \
+         VALUES ($1, $2, $3, $4) \
+         ON CONFLICT (ca_id) DO UPDATE SET \
          node_id = EXCLUDED.node_id, claimed_at = EXCLUDED.claimed_at, \
          local_gen = EXCLUDED.local_gen",
     )
+    .bind(ca_id)
     .bind(&writer.node_id)
     .bind(writer.claimed_at)
     .bind(local_gen as i64)
@@ -1244,7 +1313,8 @@ pub async fn open_crdt_db(url: &str) -> Result<AnyPool, sqlx::Error> {
             registered_at            INTEGER NOT NULL,
             tombstone                INTEGER NOT NULL DEFAULT 0,
             tombstone_at             INTEGER,
-            local_gen                INTEGER NOT NULL DEFAULT 0
+            local_gen                INTEGER NOT NULL DEFAULT 0,
+            writer_node_id           TEXT    NOT NULL DEFAULT ''
         )",
     )
     .execute(&pool)
@@ -1261,9 +1331,11 @@ pub async fn open_crdt_db(url: &str) -> Result<AnyPool, sqlx::Error> {
     .execute(&pool)
     .await?;
 
+    // ca_id: which CA this writer election claim is for — one row per CA
+    // with a live or historical claim, not a singleton.
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS crdt_mtc_writer (
-            id          TEXT    PRIMARY KEY,
+            ca_id       TEXT    PRIMARY KEY,
             node_id     TEXT    NOT NULL,
             claimed_at  INTEGER NOT NULL,
             local_gen   INTEGER NOT NULL DEFAULT 0

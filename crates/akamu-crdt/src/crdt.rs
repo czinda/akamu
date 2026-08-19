@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     lww_map::LwwMap,
-    lww_register::LwwRegister,
     merge::Merge,
     or_map::OrMap,
     types::{
@@ -92,9 +91,10 @@ pub struct AkaCrdt {
     /// Gossip-consensus ownership: order_id → owning node + claim timestamp.
     /// Access via `claim_order` / `is_order_owner`; not directly writable externally.
     pub(crate) order_owners: LwwMap<String, OrderOwner>,
-    /// Gossip-consensus election: single elected MTC log writer.
-    /// Access via `claim_mtc_writer` / `is_mtc_writer`; not directly writable externally.
-    pub(crate) mtc_writer: LwwRegister<MtcWriter>,
+    /// Gossip-consensus election: elected MTC log writer per CA
+    /// (ca_id → owning node + claim timestamp). Access via
+    /// `claim_mtc_writer` / `is_mtc_writer`; not directly writable externally.
+    pub(crate) mtc_writer: LwwMap<String, MtcWriter>,
 }
 
 impl AkaCrdt {
@@ -114,7 +114,7 @@ impl AkaCrdt {
             mtc_checkpoints: self.mtc_checkpoints.delta_since(gen),
             mtc_cosignatures: self.mtc_cosignatures.delta_since(gen),
             order_owners: self.order_owners.delta_since(gen),
-            mtc_writer: self.mtc_writer.delta_since(gen).unwrap_or_default(),
+            mtc_writer: self.mtc_writer.delta_since(gen),
         }
     }
 
@@ -134,49 +134,8 @@ impl AkaCrdt {
             mtc_checkpoints: self.mtc_checkpoints.delta_range(since, until),
             mtc_cosignatures: self.mtc_cosignatures.delta_range(since, until),
             order_owners: self.order_owners.delta_range(since, until),
-            mtc_writer: self
-                .mtc_writer
-                .delta_range(since, until)
-                .unwrap_or_default(),
+            mtc_writer: self.mtc_writer.delta_range(since, until),
         }
-    }
-
-    /// Permanently remove tombstones older than `cutoff` (unix seconds).
-    pub fn purge_old_tombstones(&mut self, cutoff: i64) {
-        self.cluster_nodes.purge_old_tombstones(cutoff);
-        self.accounts.purge_old_tombstones(cutoff);
-        self.orders.purge_old_tombstones(cutoff);
-        self.authorizations.purge_old_tombstones(cutoff);
-        self.challenges.purge_old_tombstones(cutoff);
-        self.certificates.purge_old_tombstones(cutoff);
-        self.eab_keys.purge_old_tombstones(cutoff);
-        self.operators.purge_old_tombstones(cutoff);
-        self.delegations.purge_old_tombstones(cutoff);
-        self.policy_rules.purge_old_tombstones(cutoff);
-        self.mtc_checkpoints.purge_old_tombstones(cutoff);
-        self.mtc_cosignatures.purge_old_tombstones(cutoff);
-        self.order_owners.purge_old_tombstones(cutoff);
-    }
-
-    /// Returns the highest `local_gen` across all CRDT sub-collections.
-    /// Used at startup to seed `CRDT_GENERATION` after `load_from_db`.
-    pub fn max_local_gen(&self) -> u64 {
-        let mut max = 0u64;
-        max = max.max(self.cluster_nodes.max_local_gen());
-        max = max.max(self.accounts.max_local_gen());
-        max = max.max(self.orders.max_local_gen());
-        max = max.max(self.authorizations.max_local_gen());
-        max = max.max(self.challenges.max_local_gen());
-        max = max.max(self.certificates.max_local_gen());
-        max = max.max(self.eab_keys.max_local_gen());
-        max = max.max(self.operators.max_local_gen());
-        max = max.max(self.delegations.max_local_gen());
-        max = max.max(self.policy_rules.max_local_gen());
-        max = max.max(self.mtc_checkpoints.max_local_gen());
-        max = max.max(self.mtc_cosignatures.max_local_gen());
-        max = max.max(self.order_owners.max_local_gen());
-        max = max.max(self.mtc_writer.local_gen());
-        max
     }
 
     /// Count of live (non-tombstoned) entries per field.
@@ -290,16 +249,18 @@ impl AkaCrdt {
             .unwrap_or(false)
     }
 
-    /// Attempt to claim MTC log writer election for `node_id`.
+    /// Attempt to claim MTC log writer election for `node_id`, scoped to `ca_id`
+    /// — each CA hosted by the cluster elects its writer independently.
     ///
-    /// Returns `true` if this node is now the elected writer.
-    pub fn claim_mtc_writer(&mut self, node_id: &str, now: i64, ttl: i64) -> bool {
-        if let Some(writer) = self.mtc_writer.get() {
+    /// Returns `true` if this node is now the elected writer for this CA.
+    pub fn claim_mtc_writer(&mut self, ca_id: &str, node_id: &str, now: i64, ttl: i64) -> bool {
+        if let Some(writer) = self.mtc_writer.get(ca_id) {
             if writer.node_id != node_id && writer.claimed_at.saturating_add(ttl) >= now {
-                return false; // incumbent writer holds the election
+                return false; // incumbent writer holds the election for this CA
             }
         }
         self.mtc_writer.set(
+            ca_id.to_owned(),
             MtcWriter {
                 node_id: node_id.to_owned(),
                 claimed_at: now,
@@ -310,31 +271,121 @@ impl AkaCrdt {
         true
     }
 
-    /// Returns `true` if `node_id` is the elected MTC writer and has not lapsed.
-    pub fn is_mtc_writer(&self, node_id: &str, now: i64, ttl: i64) -> bool {
+    /// Returns `true` if `node_id` is the elected MTC writer for `ca_id` and
+    /// has not lapsed.
+    pub fn is_mtc_writer(&self, ca_id: &str, node_id: &str, now: i64, ttl: i64) -> bool {
         self.mtc_writer
-            .get()
+            .get(ca_id)
             .map(|w| w.node_id == node_id && w.claimed_at.saturating_add(ttl) >= now)
             .unwrap_or(false)
     }
+
+    /// Returns the node_id currently claiming the MTC writer election for
+    /// `ca_id`, regardless of whether that claim has since lapsed. Used to
+    /// build a "retry against this node" hint when a non-writer rejects a
+    /// forwarded leaf-append.
+    pub fn mtc_writer_claimant(&self, ca_id: &str) -> Option<&str> {
+        self.mtc_writer.get(ca_id).map(|w| w.node_id.as_str())
+    }
 }
 
-impl Merge for AkaCrdt {
-    fn merge(&mut self, other: Self) {
-        self.cluster_nodes.merge(other.cluster_nodes);
-        self.accounts.merge(other.accounts);
-        self.orders.merge(other.orders);
-        self.authorizations.merge(other.authorizations);
-        self.challenges.merge(other.challenges);
-        self.certificates.merge(other.certificates);
-        self.eab_keys.merge(other.eab_keys);
-        self.operators.merge(other.operators);
-        self.delegations.merge(other.delegations);
-        self.policy_rules.merge(other.policy_rules);
-        self.mtc_checkpoints.merge(other.mtc_checkpoints);
-        self.mtc_cosignatures.merge(other.mtc_cosignatures);
-        self.order_owners.merge(other.order_owners);
-        self.mtc_writer.merge(other.mtc_writer);
+// Generates `Merge for AkaCrdt`, `AkaCrdt::max_local_gen`,
+// `AkaCrdt::purge_old_tombstones`, and `AkaCrdt::clamp_field_timestamps` from
+// one field list instead of four hand-copied ones. Each generated body
+// destructures `AkaCrdt` via `let Self { .. } = ..`, which the compiler
+// exhaustiveness-checks: a new field left out of the list below fails to
+// compile (E0027), and a field listed but never used by a body is an
+// `unused_variables` warning that `cargo clippy -- -D warnings` (the CI
+// invocation) turns into a build failure. This is what actually prevents a
+// 15th field from being silently forgotten in `merge` specifically — the
+// previous flat statement lists had no such guarantee. Every field is now an
+// `OrMap`/`LwwMap` supporting all four operations uniformly — `mtc_writer`
+// used to be the sole exception (a single-slot `LwwRegister` with no
+// `purge_old_tombstones`) before its per-CA `LwwMap` migration, so the
+// earlier two-list `full`/`no_purge` split is no longer needed.
+macro_rules! crdt_fields {
+    ($($f:ident),+ $(,)?) => {
+        impl Merge for AkaCrdt {
+            fn merge(&mut self, other: Self) {
+                let Self { $($f,)+ } = other;
+                $( self.$f.merge($f); )+
+            }
+        }
+
+        impl AkaCrdt {
+            /// Returns the highest `local_gen` across all CRDT sub-collections.
+            /// Used at startup to seed `CRDT_GENERATION` after `load_from_db`.
+            pub fn max_local_gen(&self) -> u64 {
+                let Self { $($f,)+ } = self;
+                [$($f.max_local_gen(),)+]
+                    .into_iter()
+                    .max()
+                    .unwrap_or(0)
+            }
+
+            /// Permanently remove tombstones older than `cutoff` (unix seconds).
+            pub fn purge_old_tombstones(&mut self, cutoff: i64) {
+                let Self { $($f,)+ } = self;
+                $( $f.purge_old_tombstones(cutoff); )+
+            }
+
+            /// Clamps every field's own timestamp metadata to `max`, logging
+            /// a warning per field that had at least one entry clamped.
+            /// Does not touch domain-specific timestamps embedded inside a
+            /// value (e.g. `OrderOwner`/`MtcWriter::claimed_at`) — see
+            /// `clamp_timestamps`, which layers that on top.
+            fn clamp_field_timestamps(&mut self, max: i64) {
+                let Self { $($f,)+ } = self;
+                $(
+                    let n = $f.clamp_timestamps(max);
+                    if n > 0 {
+                        tracing::warn!(
+                            field = stringify!($f),
+                            count = n,
+                            max,
+                            "clamped future-dated CRDT entry timestamp(s) from gossip peer"
+                        );
+                    }
+                )+
+            }
+        }
+    };
+}
+
+crdt_fields! {
+    cluster_nodes, accounts, orders, authorizations, challenges, certificates,
+    eab_keys, operators, delegations, policy_rules, mtc_checkpoints,
+    mtc_cosignatures, order_owners, mtc_writer,
+}
+
+impl AkaCrdt {
+    /// Clamps every field's timestamps to `max`. Called on a gossip peer's
+    /// decoded `AkaCrdt` before merging it, so a compromised or
+    /// clock-skewed peer cannot use a far-future timestamp to win every
+    /// future merge tiebreak permanently — see
+    /// `gossip::handlers::gossip_sync` and `gossip::gossip_loop::run`.
+    ///
+    /// `order_owners`/`mtc_writer` additionally embed the claim timestamp
+    /// *inside* their value (`OrderOwner`/`MtcWriter::claimed_at`), which a
+    /// plain field-timestamp clamp does not touch — clamping only the
+    /// register's own external timestamp would still let a peer's
+    /// far-future `claimed_at` value make `is_order_owner`/`is_mtc_writer`
+    /// report the claim as live indefinitely, even after the register's
+    /// timestamp itself no longer wins new tiebreaks. Fix up both
+    /// embedded values here too, since `OrMap`/`LwwMap`/`LwwRegister` are
+    /// generic and have no notion of "the value contains a timestamp."
+    pub fn clamp_timestamps(&mut self, max: i64) {
+        self.clamp_field_timestamps(max);
+        for reg in self.order_owners.registers_mut() {
+            if let Some(owner) = reg.get_mut() {
+                owner.claimed_at = owner.claimed_at.min(max);
+            }
+        }
+        for reg in self.mtc_writer.registers_mut() {
+            if let Some(writer) = reg.get_mut() {
+                writer.claimed_at = writer.claimed_at.min(max);
+            }
+        }
     }
 }
 
@@ -355,6 +406,7 @@ mod tests {
                 ..Default::default()
             },
             now,
+            "node-1",
         );
         c.accounts.upsert(
             "acct-1".to_owned(),
@@ -364,6 +416,7 @@ mod tests {
                 ..Default::default()
             },
             now,
+            "node-1",
         );
         c.orders.upsert(
             "ord-1".to_owned(),
@@ -373,6 +426,7 @@ mod tests {
                 ..Default::default()
             },
             now,
+            "node-1",
         );
         c.authorizations.upsert(
             "authz-1".to_owned(),
@@ -382,6 +436,7 @@ mod tests {
                 ..Default::default()
             },
             now,
+            "node-1",
         );
         c.challenges.set(
             "chall-1".to_owned(),
@@ -401,6 +456,7 @@ mod tests {
                 ..Default::default()
             },
             now,
+            "node-1",
         );
         c.eab_keys.set(
             "kid-1".to_owned(),
@@ -420,6 +476,7 @@ mod tests {
                 ..Default::default()
             },
             now,
+            "node-1",
         );
         c.delegations.upsert(
             "del-1".to_owned(),
@@ -428,6 +485,7 @@ mod tests {
                 ..Default::default()
             },
             now,
+            "node-1",
         );
         c.policy_rules.upsert(
             "rule-1".to_owned(),
@@ -442,6 +500,7 @@ mod tests {
                 created_by: Some("admin".to_owned()),
             },
             now,
+            "node-1",
         );
         c.mtc_checkpoints.set(
             1u64,
@@ -507,6 +566,7 @@ mod tests {
                 ..Default::default()
             },
             now,
+            "node-a",
         );
         crdt.accounts.upsert(
             "acct-b".to_owned(),
@@ -516,6 +576,7 @@ mod tests {
                 ..Default::default()
             },
             now,
+            "node-b",
         );
         crdt.certificates.upsert(
             "cert-a".to_owned(),
@@ -525,6 +586,7 @@ mod tests {
                 ..Default::default()
             },
             now,
+            "node-a",
         );
         crdt.eab_keys.set(
             "kid-1".to_owned(),
@@ -582,6 +644,7 @@ mod tests {
                 ..Default::default()
             },
             1_700_000_001,
+            "node-b",
         );
 
         let a_clone = a.clone();
@@ -593,6 +656,102 @@ mod tests {
         assert!(a.accounts.get("acct-b").is_some());
         assert!(b.accounts.get("acct-1").is_some());
         assert!(b.accounts.get("acct-b").is_some());
+    }
+
+    #[test]
+    fn merge_and_max_local_gen_observe_every_field() {
+        // Regression guard for the macro-generated `Merge for AkaCrdt` and
+        // `max_local_gen` (Finding 4): if a field is ever dropped from the
+        // macro's field lists, its data goes missing after merge instead of
+        // surviving — the exact failure the macro exists to make impossible
+        // to introduce silently (a missing field fails to compile instead).
+        let mut other = sample_crdt();
+        let now = 1_700_000_000i64;
+        other.claim_order("ord-owned", "node-x", now, 300);
+        other.claim_mtc_writer("acme1", "node-x", now, 300);
+
+        let mut target = AkaCrdt::default();
+        target.merge(other);
+
+        assert!(target.cluster_nodes.get("node-1").is_some());
+        assert!(target.accounts.get("acct-1").is_some());
+        assert!(target.orders.get("ord-1").is_some());
+        assert!(target.authorizations.get("authz-1").is_some());
+        assert!(target.challenges.get("chall-1").is_some());
+        assert!(target.certificates.get("cert-1").is_some());
+        assert!(target.eab_keys.get("kid-1").is_some());
+        assert!(target.operators.get("op-1").is_some());
+        assert!(target.delegations.get("del-1").is_some());
+        assert!(target.policy_rules.get("rule-1").is_some());
+        assert!(target.mtc_checkpoints.get(&1u64).is_some());
+        assert!(target
+            .mtc_cosignatures
+            .get(&("cp-1".to_owned(), "https://cosign/".to_owned()))
+            .is_some());
+        assert!(target.is_order_owner("ord-owned", "node-x", now, 300));
+        assert!(target.is_mtc_writer("acme1", "node-x", now, 300));
+
+        // max_local_gen must reflect generations minted for every field above,
+        // not just whichever ones a hand-maintained list happened to include.
+        assert!(target.max_local_gen() > 0);
+    }
+
+    #[test]
+    fn purge_old_tombstones_purges_ormap_and_lwwmap_fields_alike() {
+        // mtc_writer's per-CA migration to LwwMap removed the field macro's
+        // one-time `no_purge` exception (a single-slot LwwRegister has no
+        // purge_old_tombstones) — every field, OrMap or LwwMap, now purges
+        // uniformly. Confirm a stale tombstone is purged from each kind.
+        let mut crdt = AkaCrdt::default();
+        crdt.accounts.upsert(
+            "acct-1".to_owned(),
+            AccountEntry {
+                account_id: "acct-1".to_owned(),
+                ..Default::default()
+            },
+            100,
+            "node-a",
+        );
+        crdt.accounts.remove(&"acct-1".to_owned(), 200, "node-a");
+        crdt.mtc_writer.remove("acme1".to_owned(), 200, "node-a");
+
+        crdt.purge_old_tombstones(1_000_000_000);
+
+        assert_eq!(crdt.accounts.tombstoned_values().count(), 0);
+        assert_eq!(crdt.mtc_writer.all_entries().count(), 0);
+    }
+
+    #[test]
+    fn clamp_timestamps_bounds_an_ormap_field_and_an_lwwmap_field() {
+        // A malicious or clock-skewed gossip peer asserting a far-future
+        // timestamp must not be able to win every future tiebreak forever
+        // (Finding 20) — this must hold for both an OrMap field and an
+        // LwwMap field, proving clamp_timestamps reaches every field the
+        // macro generates it for, plus the embedded MtcWriter::claimed_at
+        // fixup layered on top for the per-CA election map.
+        const FAR_FUTURE: i64 = 9_999_999_999;
+        let mut crdt = AkaCrdt::default();
+        crdt.accounts.upsert(
+            "acct-1".to_owned(),
+            AccountEntry {
+                account_id: "acct-1".to_owned(),
+                ..Default::default()
+            },
+            FAR_FUTURE,
+            "node-x",
+        );
+        crdt.claim_mtc_writer("acme1", "node-x", FAR_FUTURE, 300);
+
+        let bound = 1_700_000_000i64;
+        crdt.clamp_timestamps(bound);
+
+        assert_eq!(
+            crdt.accounts.all_entries().next().unwrap().1.added_at,
+            bound
+        );
+        // is_mtc_writer checks claimed_at.saturating_add(ttl) >= now — with
+        // claimed_at clamped to `bound`, the claim must have lapsed by now.
+        assert!(!crdt.is_mtc_writer("acme1", "node-x", bound + 301, 300));
     }
 
     #[test]
@@ -617,13 +776,36 @@ mod tests {
         let ttl = 150i64;
         let now = 1_700_000_000i64;
 
-        assert!(crdt.claim_mtc_writer("node-a", now, ttl));
-        assert!(crdt.is_mtc_writer("node-a", now, ttl));
-        assert!(!crdt.claim_mtc_writer("node-b", now + 10, ttl));
+        assert!(crdt.claim_mtc_writer("acme1", "node-a", now, ttl));
+        assert!(crdt.is_mtc_writer("acme1", "node-a", now, ttl));
+        assert!(!crdt.claim_mtc_writer("acme1", "node-b", now + 10, ttl));
 
         let lapsed_at = now + ttl + 1;
-        assert!(crdt.claim_mtc_writer("node-b", lapsed_at, ttl));
-        assert!(crdt.is_mtc_writer("node-b", lapsed_at, ttl));
+        assert!(crdt.claim_mtc_writer("acme1", "node-b", lapsed_at, ttl));
+        assert!(crdt.is_mtc_writer("acme1", "node-b", lapsed_at, ttl));
+    }
+
+    #[test]
+    fn mtc_writer_election_is_independent_per_ca() {
+        // Each CA hosted by the cluster elects its writer independently —
+        // claiming CA "acme1"'s writer role must not affect CA "acme2"'s.
+        let mut crdt = AkaCrdt::default();
+        let ttl = 150i64;
+        let now = 1_700_000_000i64;
+
+        assert!(crdt.claim_mtc_writer("acme1", "node-a", now, ttl));
+        assert!(crdt.claim_mtc_writer("acme2", "node-b", now, ttl));
+
+        assert!(crdt.is_mtc_writer("acme1", "node-a", now, ttl));
+        assert!(!crdt.is_mtc_writer("acme1", "node-b", now, ttl));
+        assert!(crdt.is_mtc_writer("acme2", "node-b", now, ttl));
+        assert!(!crdt.is_mtc_writer("acme2", "node-a", now, ttl));
+
+        // node-a already holds acme1's election; a different node must not
+        // be able to steal it, but that must not affect acme2's independent
+        // election held by node-b.
+        assert!(!crdt.claim_mtc_writer("acme1", "node-b", now + 10, ttl));
+        assert!(crdt.is_mtc_writer("acme2", "node-b", now + 10, ttl));
     }
 
     #[test]
