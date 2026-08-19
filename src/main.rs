@@ -815,6 +815,10 @@ async fn build_policy_engine(
                 .map_err(|e| format!("policy rules_file '{rules_file}': {e}"))?;
             rules.extend(ext_cfg.rules);
         }
+        // Convert from the TOML config-file schema into the canonical rule
+        // type the policy engine and compat_rules below both operate on.
+        let rules: Vec<akamu_policy::config::PolicyRuleConfig> =
+            rules.into_iter().map(Into::into).collect();
         (policy_cfg.mode, rules)
     } else {
         (akamu_policy::config::PolicyMode::Shadow, vec![])
@@ -837,21 +841,7 @@ async fn build_policy_engine(
         .await
         .map_err(|e| format!("load policy rules: {e}"))?;
     let parsed = akamu::policy::parse_db_rules(&db_rule_rows);
-    if parsed.skipped > 0 {
-        if mode == akamu_policy::config::PolicyMode::Enforce {
-            tracing::error!(
-                skipped = parsed.skipped,
-                ids = ?parsed.skipped_ids,
-                "startup: corrupt policy rules skipped in ENFORCE mode — policy set is incomplete"
-            );
-        } else {
-            tracing::warn!(
-                skipped = parsed.skipped,
-                ids = ?parsed.skipped_ids,
-                "startup: some policy rules have corrupt JSON and were skipped"
-            );
-        }
-    }
+    akamu::policy::guard_corrupt_rules(mode, &parsed, "startup").map_err(|e| e.to_string())?;
 
     Ok(Arc::new(
         akamu_policy::engine::IssuancePolicyEngine::new(mode, all_toml, parsed.rules)

@@ -2,13 +2,43 @@ use crate::dimension;
 use crate::PolicyError;
 use abac_rs::{AbacRequest, AttributeType};
 
-#[derive(Debug)]
+/// Prints only the set of dimension names, never their values — an
+/// `IssuanceRequest`/`IssuanceRequestBuilder` carries account IDs, Kerberos
+/// principals (as `account_group` values), and per-SAN identifiers
+/// (including literal email addresses for `email-reply-00`), so a derived
+/// `Debug` would leak PII into any log or panic message that formats one.
+fn fmt_dimensions_only(
+    name: &str,
+    req: &AbacRequest,
+    f: &mut std::fmt::Formatter<'_>,
+) -> std::fmt::Result {
+    let mut dims: Vec<&str> = req.attributes().keys().map(String::as_str).collect();
+    dims.sort_unstable();
+    f.debug_struct(name).field("dimensions", &dims).finish()
+}
+
 pub struct IssuanceRequest(pub(crate) AbacRequest);
 
-#[derive(Debug)]
+impl std::fmt::Debug for IssuanceRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fmt_dimensions_only("IssuanceRequest", &self.0, f)
+    }
+}
+
 pub struct IssuanceRequestBuilder {
     req: AbacRequest,
     error: Option<PolicyError>,
+}
+
+impl std::fmt::Debug for IssuanceRequestBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut dims: Vec<&str> = self.req.attributes().keys().map(String::as_str).collect();
+        dims.sort_unstable();
+        f.debug_struct("IssuanceRequestBuilder")
+            .field("dimensions", &dims)
+            .field("error", &self.error)
+            .finish()
+    }
 }
 
 impl IssuanceRequestBuilder {
@@ -33,11 +63,9 @@ impl IssuanceRequestBuilder {
         self
     }
 
-    pub fn account_groups(mut self, groups: &[String]) -> Self {
-        let group_attrs: Vec<AttributeType> = groups
-            .iter()
-            .map(|g| AttributeType::String(g.clone()))
-            .collect();
+    pub fn account_groups(mut self, groups: Vec<String>) -> Self {
+        let group_attrs: Vec<AttributeType> =
+            groups.into_iter().map(AttributeType::String).collect();
         self.try_add(
             dimension::ACCOUNT_GROUP,
             AttributeType::String("_account_".into()),
@@ -97,15 +125,31 @@ impl IssuanceRequest {
     /// multi-SAN order must call this once per identifier and combine the
     /// resulting decisions (see `IssuancePolicyEngine::evaluate_explained_identifiers`).
     pub fn with_identifier(&self, id_type: &str, id_value: &str) -> Result<Self, PolicyError> {
-        let mut req = self.0.clone();
+        let mut req = Self(self.0.clone());
+        req.set_identifier(id_type, id_value)?;
+        Ok(req)
+    }
+
+    /// Sets the identifier dimension on `self` in place to `id_type:id_value`,
+    /// overwriting any identifier previously set on this request.
+    ///
+    /// Unlike `with_identifier`, this mutates `self` rather than cloning —
+    /// used by `IssuancePolicyEngine::evaluate_explained_identifiers` to
+    /// evaluate every identifier of a multi-SAN order against one working
+    /// copy instead of cloning the whole request once per identifier.
+    pub(crate) fn set_identifier(
+        &mut self,
+        id_type: &str,
+        id_value: &str,
+    ) -> Result<(), PolicyError> {
         let formatted = format!("{id_type}:{id_value}");
-        req.add_attribute(
-            dimension::IDENTIFIER,
-            AttributeType::String(formatted),
-            vec![],
-        )
-        .map_err(PolicyError::Request)?;
-        Ok(Self(req))
+        self.0
+            .add_attribute(
+                dimension::IDENTIFIER,
+                AttributeType::String(formatted),
+                vec![],
+            )
+            .map_err(PolicyError::Request)
     }
 }
 
@@ -113,11 +157,16 @@ impl IssuanceRequest {
 mod tests {
     use super::*;
 
+    /// Asserts each setter's exact dimension value, not just that *some*
+    /// attribute got set — the previous `!attributes().is_empty()` assertion
+    /// could not fail if e.g. `.key_type(...)` or `.account_groups(...)`
+    /// silently stopped doing anything, as long as any other setter still
+    /// worked.
     #[test]
     fn builder_sets_all_dimensions() {
         let req = IssuanceRequest::builder()
             .account("acct-1")
-            .account_groups(&["prod-infra".into()])
+            .account_groups(vec!["prod-infra".into()])
             .profile("tls-server")
             .ca("prod")
             .key_type("ec:P-256")
@@ -125,7 +174,31 @@ mod tests {
             .unwrap()
             .with_identifier("dns", "example.com")
             .unwrap();
-        assert!(!req.0.attributes().is_empty());
+
+        assert_eq!(
+            req.0.get_value(dimension::ACCOUNT),
+            Some(&AttributeType::String("acct-1".into()))
+        );
+        assert_eq!(
+            req.0.get_groups(dimension::ACCOUNT_GROUP),
+            Some(&[AttributeType::String("prod-infra".into())][..])
+        );
+        assert_eq!(
+            req.0.get_value(dimension::PROFILE),
+            Some(&AttributeType::String("tls-server".into()))
+        );
+        assert_eq!(
+            req.0.get_value(dimension::CA),
+            Some(&AttributeType::String("prod".into()))
+        );
+        assert_eq!(
+            req.0.get_value(dimension::KEY_TYPE),
+            Some(&AttributeType::String("ec:P-256".into()))
+        );
+        assert_eq!(
+            req.0.get_value(dimension::IDENTIFIER),
+            Some(&AttributeType::String("dns:example.com".into()))
+        );
     }
 
     #[test]
@@ -136,7 +209,23 @@ mod tests {
             .ca("default")
             .build()
             .unwrap();
-        assert!(!req.0.attributes().is_empty());
+        assert_eq!(
+            req.0.get_value(dimension::ACCOUNT),
+            Some(&AttributeType::String("acct-1".into()))
+        );
+        assert_eq!(
+            req.0.get_value(dimension::PROFILE),
+            Some(&AttributeType::String("default".into()))
+        );
+        assert_eq!(
+            req.0.get_value(dimension::CA),
+            Some(&AttributeType::String("default".into()))
+        );
+        assert_eq!(
+            req.0.get_value(dimension::IDENTIFIER),
+            None,
+            "no identifier was set, and none should be assumed"
+        );
     }
 
     #[test]
@@ -158,6 +247,55 @@ mod tests {
         assert_eq!(
             b.0.get_value(dimension::IDENTIFIER),
             Some(&AttributeType::String("dns:b.example.com".into()))
+        );
+    }
+
+    #[test]
+    fn set_identifier_mutates_in_place_and_overwrites() {
+        let mut req = IssuanceRequest::builder()
+            .account("acct-1")
+            .ca("prod")
+            .build()
+            .unwrap();
+
+        req.set_identifier("dns", "a.example.com").unwrap();
+        assert_eq!(
+            req.0.get_value(dimension::IDENTIFIER),
+            Some(&AttributeType::String("dns:a.example.com".into()))
+        );
+
+        req.set_identifier("dns", "b.example.com").unwrap();
+        assert_eq!(
+            req.0.get_value(dimension::IDENTIFIER),
+            Some(&AttributeType::String("dns:b.example.com".into())),
+            "a second set_identifier call must overwrite, not accumulate"
+        );
+    }
+
+    /// `IssuanceRequest`/`IssuanceRequestBuilder` carry PII (account IDs,
+    /// Kerberos principals, and per-SAN identifiers including literal email
+    /// addresses for `email-reply-00`) — `{:?}` must never print any of it,
+    /// even though listing which dimensions are set is fine.
+    #[test]
+    fn debug_redacts_attribute_values() {
+        let req = IssuanceRequest::builder()
+            .account("super-secret-account-id")
+            .account_groups(vec!["kerberos/principal@EXAMPLE.COM".into()])
+            .build()
+            .unwrap()
+            .with_identifier("email", "victim@example.com")
+            .unwrap();
+
+        let debug = format!("{req:?}");
+        assert!(
+            !debug.contains("super-secret-account-id")
+                && !debug.contains("kerberos/principal@EXAMPLE.COM")
+                && !debug.contains("victim@example.com"),
+            "Debug output leaked a value: {debug}"
+        );
+        assert!(
+            debug.contains(dimension::ACCOUNT) && debug.contains(dimension::IDENTIFIER),
+            "Debug output should still list which dimensions are set: {debug}"
         );
     }
 }

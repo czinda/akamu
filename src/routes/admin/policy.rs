@@ -113,8 +113,12 @@ fn validate_rule_json(
             "rule must be a JSON object".into(),
         ));
     }
-    let cfg: akamu_policy::config::PolicyRuleConfig = serde_json::from_value(rule.clone())
+    // Deserialize into the admin-API request shape, then convert into the
+    // canonical type the rest of this module (and the engine) operates on —
+    // see PolicyRuleConfig's doc comment for why these are separate types.
+    let request: akamu_policy::config::PolicyRuleRequest = serde_json::from_value(rule.clone())
         .map_err(|e| AdminApiError::BadRequest(format!("invalid rule: {e}")))?;
+    let cfg: akamu_policy::config::PolicyRuleConfig = request.into();
     cfg.to_abac_rule()
         .map_err(|e| AdminApiError::BadRequest(format!("invalid rule: {e}")))?;
     Ok(cfg)
@@ -208,11 +212,20 @@ pub async fn post_policy_rule(
         );
     }
 
-    let cfg = validate_rule_json(&rule_value)?;
+    let mut cfg = validate_rule_json(&rule_value)?;
 
     let enabled = payload.enabled.unwrap_or(true);
     let now = crate::util::rfc3339_now();
     let id = uuid::Uuid::new_v4().to_string();
+
+    // The DB `enabled` column (from the top-level payload field) is the
+    // source of truth surfaced by the admin API's rule listing; force the
+    // nested `rule.enabled` field to match before persisting so the two
+    // can never silently diverge — a client sending
+    // `{"enabled": true, "rule": {"enabled": false, ...}}` must not end up
+    // with a rule the API reports as "on" while the compiled AbacRule
+    // (which reads only the nested field) is actually inert.
+    cfg.enabled = Some(enabled);
 
     let rule_json = serde_json::to_string(&cfg)
         .map_err(|e| AdminApiError::Internal(format!("serialize rule: {e}")))?;
@@ -362,10 +375,16 @@ pub async fn put_policy_rule(
         );
     }
 
-    let cfg = validate_rule_json(&rule_value)?;
+    let mut cfg = validate_rule_json(&rule_value)?;
 
     let enabled = payload.enabled.unwrap_or(existing.enabled != 0);
     let now = crate::util::rfc3339_now();
+
+    // See the identical comment in create_policy_rule: keep the DB column
+    // and the persisted rule_json's nested `enabled` field from silently
+    // diverging.
+    cfg.enabled = Some(enabled);
+
     let rule_json = serde_json::to_string(&cfg)
         .map_err(|e| AdminApiError::Internal(format!("serialize rule: {e}")))?;
 
